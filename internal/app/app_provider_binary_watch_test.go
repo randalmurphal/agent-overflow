@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -659,5 +661,73 @@ func TestProviderBinaryWatchFollowsTheNpmWrappersNativeBinary(t *testing.T) {
 	}
 	if installed := installedCodex(); installed.identity.path != realPath(t, f.wrapper) || installed.version != "0.163.0" {
 		t.Fatalf("installed = %+v, want the wrapper at 0.163.0", installed)
+	}
+}
+
+// A replacement below the Codex minimum answers the watcher's account
+// recheck with the version refusal. That is a completed observation: the
+// watcher records the replacement, drops the old catalog once and launches
+// nothing on the sweeps after it.
+func TestProviderBinaryDowngradeBelowTheMinimumIsRecordedOnce(t *testing.T) {
+	resetClaudeProbeCacheForTest(t)
+	resetCodexProbeCacheForTest(t)
+	app := newTestAppWithStore(t)
+
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "codex")
+	launchLog := filepath.Join(dir, "launches.log")
+	writeCodexProbeMockAt(t, binary, "0.155.0")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatalf("set codex binary: %v", err)
+	}
+	lists := 0
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
+		lists++
+		return []provider.ModelInfo{{Slug: "gpt-5", Provider: string(provider.Codex)}}, nil
+	}, time.Now)
+	version := "0.155.0"
+	stubProviderBinaryDetect(t, func(providerName string) string {
+		if providerName != string(provider.Codex) {
+			return "2.1.100"
+		}
+		return version
+	})
+	app.sweepProviderBinaries()
+	if _, err := app.codexModelsForBinary(context.Background(), binary); err != nil {
+		t.Fatalf("prime codex catalog: %v", err)
+	}
+
+	// The downgrade: every launch is logged, and initialize reports 0.153.4.
+	version = "0.153.4"
+	writeProviderBinaryFile(t, binary, "echo launch >> '"+launchLog+"'\n"+
+		"read -r _ || true\n"+
+		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex_cli_rs/0.153.4 (Linux 6.1; x86_64) dumb"}}'`+"\n"+
+		"read -r _ || true\nexit 0")
+	app.sweepProviderBinaries()
+	launches := func() int {
+		data, err := os.ReadFile(launchLog)
+		if errors.Is(err, os.ErrNotExist) {
+			return 0
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Count(string(data), "launch\n")
+	}
+	if n := launches(); n != 1 {
+		t.Fatalf("app-server launches after the downgrade = %d, want the one account recheck", n)
+	}
+	installed, ok := app.providerBinaries.lookupInstalled(string(provider.Codex))
+	if !ok || installed.version != "0.153.4" {
+		t.Fatalf("installed version = %q (known=%v), want the refused 0.153.4 recorded", installed.version, ok)
+	}
+	if _, _, cached := app.cachedCodexModelsForBinary(binary); cached {
+		t.Fatal("codex model cache still answers for the old binary after the downgrade")
+	}
+
+	app.sweepProviderBinaries()
+	app.sweepProviderBinaries()
+	if n := launches(); n != 1 {
+		t.Fatalf("app-server launches after two more sweeps = %d, want still 1", n)
 	}
 }

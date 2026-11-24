@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -129,7 +130,8 @@ func (a *App) sweepProviderBinaries() {
 // Every failure leaves the previous entry untouched, so the next tick sees
 // a mismatched identity and retries. That is what makes a torn read — a
 // half-written binary caught mid-upgrade — self-healing instead of a
-// permanently wrong "installed version".
+// permanently wrong "installed version". A Codex below the minimum is not a
+// failure of the read: its refusal is recorded (recordProbedProviderVersion).
 func (a *App) refreshInstalledProviderVersion(providerName string) {
 	identity, ok := a.resolveProviderBinaryIdentity(providerName)
 	if !ok {
@@ -182,16 +184,24 @@ func (a *App) recordProbedProviderVersion(providerName string, identity provider
 	}
 
 	if err := a.refreshProviderCatalogAfterUpgrade(providerName); err != nil {
-		// The catalog is still describing the old binary. Leaving the old
-		// entry in place means the next tick re-probes and retries the
-		// refresh; committing it here would strand the model picker on a
-		// version that is gone.
-		log.Printf("provider binary watch: %s %s -> %s: refresh catalog: %v",
-			providerName, previous.version, version, err)
-		return
+		if !errors.Is(err, provider.ErrCodexVersionUnsupported) {
+			// The catalog is still describing the old binary. Leaving the old
+			// entry in place means the next tick re-probes and retries the
+			// refresh; committing it here would strand the model picker on a
+			// version that is gone.
+			log.Printf("provider binary watch: %s %s -> %s: refresh catalog: %v",
+				providerName, previous.version, version, err)
+			return
+		}
+		// A Codex below the minimum refused the recheck at initialize. That
+		// answer is final for these bytes: the old catalog is already
+		// dropped, so the replacement is recorded and the next tick is a
+		// stat, not another launch.
+		log.Printf("provider binary watch: %s %s -> %s: %v", providerName, previous.version, version, err)
+	} else {
+		log.Printf("provider binary watch: %s upgraded %s -> %s; model catalog refreshed",
+			providerName, previous.version, version)
 	}
-	log.Printf("provider binary watch: %s upgraded %s -> %s; model catalog refreshed",
-		providerName, previous.version, version)
 	a.providerBinaries.storeInstalled(providerName, providerBinaryVersion{identity: identity, version: version})
 	switch providerName {
 	case string(provider.Codex):
