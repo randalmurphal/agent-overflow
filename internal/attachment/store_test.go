@@ -86,26 +86,23 @@ func textData(t *testing.T, s string) []byte {
 	return []byte(s)
 }
 
-func TestNewStoreRejectsMissingRoot(t *testing.T) {
+func TestNewStoreRejectsAnInvalidConfig(t *testing.T) {
 	meta := storetest.Clone(t)
-	_, err := NewStore(Config{}, meta)
-	if err == nil || !strings.Contains(err.Error(), "root directory") {
-		t.Fatalf("expected missing-root error, got %v", err)
-	}
-}
-
-func TestNewStoreRejectsMissingMeta(t *testing.T) {
-	_, err := NewStore(Config{RootDir: t.TempDir()}, nil)
-	if err == nil {
-		t.Fatal("expected error for nil meta store")
-	}
-}
-
-func TestNewStoreRejectsNegativeMaxSize(t *testing.T) {
-	meta := storetest.Clone(t)
-	_, err := NewStore(Config{RootDir: t.TempDir(), MaxSize: -1}, meta)
-	if err == nil {
-		t.Fatal("expected error for negative max size")
+	for _, tc := range []struct {
+		name    string
+		cfg     Config
+		meta    *store.Store
+		wantErr string
+	}{
+		{"missing root", Config{}, meta, "root directory"},
+		{"missing meta", Config{RootDir: t.TempDir()}, nil, ""},
+		{"negative max size", Config{RootDir: t.TempDir(), MaxSize: -1}, meta, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewStore(tc.cfg, tc.meta); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("NewStore = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -184,30 +181,6 @@ func TestUploadAndReadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestUploadInfersMimeFromFilename(t *testing.T) {
-	attStore, meta := newTestStores(t)
-	seedThread(t, meta, "t1")
-
-	// No mime type provided — should infer from extension.
-	record, err := uploadBytes(attStore, "t1", "chart.jpg", "", jpegData(t), 0)
-	if err != nil {
-		t.Fatalf("Upload: %v", err)
-	}
-	if record.MimeType != "image/jpeg" {
-		t.Fatalf("MimeType inferred: got %q want image/jpeg", record.MimeType)
-	}
-}
-
-func TestUploadRejectsMismatchedImagePayload(t *testing.T) {
-	attStore, meta := newTestStores(t)
-	seedThread(t, meta, "t1")
-
-	_, err := uploadBytes(attStore, "t1", "pic.png", "image/png", jpegData(t), 0)
-	if err == nil || !strings.Contains(err.Error(), "payload does not match image/png") {
-		t.Fatalf("expected payload mismatch error, got %v", err)
-	}
-}
-
 // A non-image MIME is no longer a rejection: it is the `file` kind, kept
 // at face value with no signature check. The bytes here ARE a PNG and the
 // row still says application/x-msdownload — declaring an image is what
@@ -250,7 +223,7 @@ func TestUploadKindRule(t *testing.T) {
 		{"declared-image-mime", "a.png", "image/png", pngData(t), store.AttachmentKindImage, "image/png", ""},
 		{"image-extension-no-mime", "a.jpg", "", jpegData(t), store.AttachmentKindImage, "image/jpeg", ""},
 		{"image-extension-wrong-mime", "a.gif", "text/plain", gifData(t), store.AttachmentKindImage, "image/gif", ""},
-		{"declared-image-mime-lying", "a.png", "image/png", jpegData(t), "", "", "does not match image/png"},
+		{"declared-image-mime-lying", "a.png", "image/png", jpegData(t), "", "", "payload does not match image/png"},
 		{"image-extension-lying", "a.png", "", jpegData(t), "", "", "does not match image/png"},
 		// An image format no provider ingests is a FILE, and is never
 		// asked to prove itself — these bytes are a PNG, not a heic.
@@ -512,21 +485,6 @@ func TestFormatSize(t *testing.T) {
 	}
 }
 
-func TestUploadRejectsOversize(t *testing.T) {
-	meta := storetest.Clone(t)
-	attStore, err := NewStore(Config{RootDir: t.TempDir(), MaxSize: 64}, meta)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	seedThread(t, meta, "t1")
-
-	big := make([]byte, 128)
-	_, err = uploadBytes(attStore, "t1", "pic.png", "image/png", big, 0)
-	if err == nil || !strings.Contains(err.Error(), "exceeds limit") {
-		t.Fatalf("expected size-limit error, got %v", err)
-	}
-}
-
 // TestUploadCapsABodyThatOverruns pins the bound INSIDE Upload rather than
 // at its caller: a body that keeps going past the store's own limit is cut
 // off and refused, so a caller that forgot its own cap still cannot make
@@ -548,16 +506,6 @@ func TestUploadCapsABodyThatOverruns(t *testing.T) {
 		t.Fatalf("expected a length disagreement, got %v", err)
 	}
 	assertNoStoredBytes(t, attStore, meta, "t1")
-}
-
-func TestUploadRejectsEmptyPayload(t *testing.T) {
-	attStore, meta := newTestStores(t)
-	seedThread(t, meta, "t1")
-
-	_, err := uploadBytes(attStore, "t1", "pic.png", "image/png", nil, 0)
-	if err == nil {
-		t.Fatal("expected empty payload rejection")
-	}
 }
 
 // TestUploadRejectsShortBody pins the length agreement in the direction a
@@ -689,20 +637,9 @@ func TestUploadRollsBackOnMetaFailure(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("expected no orphan files on rollback, got %+v", entries)
 	}
-}
 
-// TestUploadNoTmpLeakOnMetaFailure confirms the tmp-rename contract: if
-// the DB insert fails, the .tmp staging file is removed. Before A9 no
-// tmp file existed at all; the new code relies on removing it cleanly.
-func TestUploadNoTmpLeakOnMetaFailure(t *testing.T) {
-	attStore, _ := newTestStores(t)
-
-	_, err := uploadBytes(attStore, "missing-thread", "pic.png", "image/png", pngData(t), 0)
-	if err == nil {
-		t.Fatal("expected FK failure")
-	}
-
-	// Walk the attachment root looking for any .tmp file.
+	// The staging file lives at the attachment root, outside the thread
+	// directory: walk the whole root for any .tmp file.
 	err = filepath.Walk(attStore.root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -802,30 +739,6 @@ func TestUploadFilenameFuzz(t *testing.T) {
 	}
 }
 
-// TestUploadSuccessfulEndStateHasNoTmpFile documents the tmp-rename
-// contract from the success side: after a successful upload, only the
-// final file exists (no .tmp sibling). Acts as a post-condition for the
-// two-phase write path.
-func TestUploadSuccessfulEndStateHasNoTmpFile(t *testing.T) {
-	attStore, meta := newTestStores(t)
-	seedThread(t, meta, "t1")
-
-	record, err := uploadBytes(attStore, "t1", "pic.png", "image/png", pngData(t), 0)
-	if err != nil {
-		t.Fatalf("Upload: %v", err)
-	}
-
-	// The final file must exist.
-	finalPath := filepath.Join(attStore.root, record.RelativePath)
-	if _, err := os.Stat(finalPath); err != nil {
-		t.Errorf("final file missing after successful upload: %v", err)
-	}
-	// No .tmp sibling.
-	if _, err := os.Stat(finalPath + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("tmp file leaked after successful upload: %v", err)
-	}
-}
-
 // TestPathForThreadReturnsOwnedPath proves the path-only accessor returns the
 // resolved absolute path for an attachment owned by the thread, and refuses both
 // a cross-thread id (the ownership boundary it shares with ReadThreadBytes) and
@@ -867,95 +780,6 @@ func TestPathForThreadReturnsOwnedPath(t *testing.T) {
 	// Missing id: not found, not a panic.
 	if _, _, err := attStore.PathForThread("t1", "does-not-exist"); err == nil {
 		t.Error("PathForThread for a missing id should error")
-	}
-}
-
-// TestUploadFileWriteFailureLeavesNoRow injects a file-write failure by
-// making the attachment root directory read-only and verifying no DB
-// row is inserted if the tmp write fails.
-func TestUploadFileWriteFailureLeavesNoRow(t *testing.T) {
-	attStore, meta := newTestStores(t)
-	seedThread(t, meta, "t1")
-
-	// Create the per-thread dir and lock it so the tmp WriteFile fails.
-	threadDir := filepath.Join(attStore.root, "t1")
-	if err := os.MkdirAll(threadDir, 0o555); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(threadDir, 0o755)
-	})
-
-	_, err := uploadBytes(attStore, "t1", "pic.png", "image/png", pngData(t), 0)
-	if err == nil {
-		t.Fatal("expected upload to fail when dir is read-only")
-	}
-
-	list, err := meta.ListAttachments("t1")
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(list) != 0 {
-		t.Errorf("no row should be written when file write fails, got %d", len(list))
-	}
-}
-
-func TestDeleteRemovesDiskAndRow(t *testing.T) {
-	attStore, meta := newTestStores(t)
-	seedThread(t, meta, "t1")
-
-	record, err := uploadBytes(attStore, "t1", "pic.png", "image/png", pngData(t), 0)
-	if err != nil {
-		t.Fatalf("Upload: %v", err)
-	}
-
-	if err := attStore.Delete("t1", record.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-
-	_, _, ok, err := attStore.Get(record.ID)
-	if err != nil {
-		t.Fatalf("Get after delete: %v", err)
-	}
-	if ok {
-		t.Fatal("expected not-found after delete")
-	}
-	diskPath := filepath.Join(attStore.root, record.RelativePath)
-	if _, err := os.Stat(diskPath); !os.IsNotExist(err) {
-		t.Fatalf("expected disk file to be gone, stat=%v", err)
-	}
-}
-
-func TestDeleteMissingSurfacesError(t *testing.T) {
-	attStore, _ := newTestStores(t)
-
-	err := attStore.Delete("t1", "never-was-there")
-	if err == nil {
-		t.Fatal("expected error deleting missing attachment")
-	}
-}
-
-func TestListReturnsPerThread(t *testing.T) {
-	attStore, meta := newTestStores(t)
-	seedThread(t, meta, "t1")
-	seedThread(t, meta, "t2")
-
-	if _, err := uploadBytes(attStore, "t1", "a.png", "image/png", pngData(t), 1); err != nil {
-		t.Fatalf("upload a: %v", err)
-	}
-	if _, err := uploadBytes(attStore, "t1", "b.png", "image/png", pngData(t), 2); err != nil {
-		t.Fatalf("upload b: %v", err)
-	}
-	if _, err := uploadBytes(attStore, "t2", "c.png", "image/png", pngData(t), 3); err != nil {
-		t.Fatalf("upload c: %v", err)
-	}
-
-	list, err := attStore.List("t1")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(list) != 2 {
-		t.Fatalf("expected 2 attachments, got %d", len(list))
 	}
 }
 

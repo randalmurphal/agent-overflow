@@ -193,17 +193,7 @@ func TestReadAttachedRefusals(t *testing.T) {
 
 // A role is bounded on the computer that read it and again on the one it was
 // carried to, so the second pass must change nothing: a remote agent's role
-// reads byte for byte as a local one's.
-func TestBoundRoleIsAFixedPoint(t *testing.T) {
-	t.Parallel()
-	for _, text := range boundRoleSeeds {
-		once := BoundRole(text)
-		if twice := BoundRole(once); twice != once {
-			t.Errorf("BoundRole(%q) = %q, and bounded again %q", text, once, twice)
-		}
-	}
-}
-
+// reads byte for byte as a local one's. `go test` runs the seeds.
 func FuzzBoundRoleIsAFixedPoint(f *testing.F) {
 	for _, text := range boundRoleSeeds {
 		f.Add(text)

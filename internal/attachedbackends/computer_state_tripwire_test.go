@@ -332,27 +332,23 @@ var transitionFunctionValues = map[string]string{
 }
 
 // TestNoTransitionUsesAClient type-checks this package and walks every
-// transition (walkTransitions). It fails on a call to a deviceclient.Client
-// method outside lockFreeClientMethods: a client's mutex is taken before a
-// session file's lock (computer_state.go), so a transition that takes it
-// can wait on a renewal that waits on the transition.
+// transition (walkTransitions) once, for two rules:
+//   - it fails on a call to a deviceclient.Client method outside
+//     lockFreeClientMethods: a client's mutex is taken before a session
+//     file's lock (computer_state.go), so a transition that takes it can
+//     wait on a renewal that waits on the transition;
+//   - it fails on a write of Manager.carriers or Manager.verdicts: a
+//     transition only records its cache changes, and transact applies them
+//     once it committed (applyCache), so a failed or rolled-back one changes
+//     none.
 func TestNoTransitionUsesAClient(t *testing.T) {
 	t.Parallel()
 	c := walkTransitions(t)
 	if len(c.found) > 0 {
-		t.Fatalf("a transition calls a client method that may take its mutex:\n%s", strings.Join(c.found, "\n"))
+		t.Errorf("a transition calls a client method that may take its mutex:\n%s", strings.Join(c.found, "\n"))
 	}
-}
-
-// TestNoTransitionChangesTheCache walks every transition (walkTransitions)
-// and fails on a write of Manager.carriers or Manager.verdicts: a
-// transition only records its cache changes, and transact applies them once
-// it committed (applyCache), so a failed or rolled-back one changes none.
-func TestNoTransitionChangesTheCache(t *testing.T) {
-	t.Parallel()
-	c := walkTransitions(t)
 	if len(c.cacheWrites) > 0 {
-		t.Fatalf("a transition changes the cache before it committed:\n%s", strings.Join(c.cacheWrites, "\n"))
+		t.Errorf("a transition changes the cache before it committed:\n%s", strings.Join(c.cacheWrites, "\n"))
 	}
 }
 

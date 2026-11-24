@@ -154,40 +154,34 @@ func TestServiceInstallWritesTheUnitAndSaysWhatItDid(t *testing.T) {
 	}
 }
 
-func TestServiceInstallCarriesTheListenFlagIntoTheUnit(t *testing.T) {
-	env := testServiceEnv(t, &recordingRunner{})
-	code, stdout, stderr := runService(t, env, "install", "--listen", "0.0.0.0:7777")
-	if code != exitOK {
-		t.Fatalf("exit = %d (stderr: %s)", code, stderr)
-	}
-	unit := filepath.Join(env.home, ".config", "systemd", "user", "agent-overflow.service")
-	body, err := os.ReadFile(unit)
-	if err != nil {
-		t.Fatalf("read the unit: %v", err)
-	}
-	if !strings.Contains(string(body), "supervise --listen 0.0.0.0:7777\n") {
-		t.Errorf("the unit does not carry --listen:\n%s", body)
-	}
-	if !strings.Contains(stdout, "supervise --listen 0.0.0.0:7777") {
-		t.Errorf("stdout does not echo the command it installed:\n%s", stdout)
-	}
-}
-
 // --binary exists because the default resolves symlinks: an operator who
 // upgrades by replacing a symlink target needs the service to name the
 // symlink, not today's file.
-func TestServiceInstallHonorsAnExplicitBinary(t *testing.T) {
-	env := testServiceEnv(t, &recordingRunner{})
-	code, _, stderr := runService(t, env, "install", "--binary", "/opt/agent-overflow/current")
-	if code != exitOK {
-		t.Fatalf("exit = %d (stderr: %s)", code, stderr)
-	}
-	body, err := os.ReadFile(filepath.Join(env.home, ".config", "systemd", "user", "agent-overflow.service"))
-	if err != nil {
-		t.Fatalf("read the unit: %v", err)
-	}
-	if !strings.Contains(string(body), "ExecStart=/opt/agent-overflow/current supervise\n") {
-		t.Errorf("the unit does not start the named binary:\n%s", body)
+func TestServiceInstallCarriesItsFlagsIntoTheUnit(t *testing.T) {
+	for _, tc := range []struct {
+		name, unitLine, stdout string
+		args                   []string
+	}{
+		{"listen", "supervise --listen 0.0.0.0:7777\n", "supervise --listen 0.0.0.0:7777", []string{"--listen", "0.0.0.0:7777"}},
+		{"binary", "ExecStart=/opt/agent-overflow/current supervise\n", "/opt/agent-overflow/current supervise", []string{"--binary", "/opt/agent-overflow/current"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := testServiceEnv(t, &recordingRunner{})
+			code, stdout, stderr := runService(t, env, append([]string{"install"}, tc.args...)...)
+			if code != exitOK {
+				t.Fatalf("exit = %d (stderr: %s)", code, stderr)
+			}
+			body, err := os.ReadFile(filepath.Join(env.home, ".config", "systemd", "user", "agent-overflow.service"))
+			if err != nil {
+				t.Fatalf("read the unit: %v", err)
+			}
+			if !strings.Contains(string(body), tc.unitLine) {
+				t.Errorf("the unit does not carry %q:\n%s", tc.unitLine, body)
+			}
+			if !strings.Contains(stdout, tc.stdout) {
+				t.Errorf("stdout does not echo the command it installed:\n%s", stdout)
+			}
+		})
 	}
 }
 
