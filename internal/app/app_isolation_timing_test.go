@@ -156,6 +156,13 @@ func TestEveryIsolationIntervalReachesItsConsumer(t *testing.T) {
 			t.Errorf("%s: an isolated boot with no interval set runs on %v; the product runs on %v", field, product[field], want)
 		}
 	}
+	// A give-up limit reads the test process's patience on both sides of
+	// that comparison, so its product value is read with none.
+	unset := &App{}
+	ConfigureIsolation(unset, IsolationConfig{})
+	if got := giveUpBoundWith(unset.providerEvents.drainStall, 0, providerEventDrainStall); got != 5*time.Second {
+		t.Errorf("ProviderEventDrainStall: an isolated boot with none set gives up after %v in production; want the product 5s", got)
+	}
 	configType := reflect.TypeFor[IsolationConfig]()
 	for i := range configType.NumField() {
 		field := configType.Field(i)

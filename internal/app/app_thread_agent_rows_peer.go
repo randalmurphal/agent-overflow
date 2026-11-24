@@ -64,10 +64,7 @@ const (
 // threadAgentPeerListTimeout, or what a test set
 // (threadAgentPeerListOverride).
 func (a *App) threadAgentPeerListBound() time.Duration {
-	if a.threadAgentPeerListOverride > 0 {
-		return a.threadAgentPeerListOverride
-	}
-	return threadAgentPeerListTimeout
+	return giveUpBound(a.threadAgentPeerListOverride, threadAgentPeerListTimeout)
 }
 
 // threadAgentPeerArgs are the forwarded Agents tools' arguments.
@@ -133,7 +130,7 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 	}
 	tool, timeout := threadAgentPeerRows, a.threadAgentPeerListBound()
 	if method == "ThreadToolCall" {
-		tool, timeout = threadAgentPeerStop, threadAgentPeerStopTimeout
+		tool, timeout = threadAgentPeerStop, giveUpBound(0, threadAgentPeerStopTimeout)
 	}
 	call, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

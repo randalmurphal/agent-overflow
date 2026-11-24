@@ -39,8 +39,17 @@ type agentPeerPair struct {
 
 func newAgentPeerPair(t *testing.T, serve func(*testing.T, *App) *pairedBackend) *agentPeerPair {
 	t.Helper()
+	return newAgentPeerPairListingWithin(t, serve, 0)
+}
+
+// newAgentPeerPairListingWithin is newAgentPeerPair whose forwarded
+// listings give up at listBound, for a test of that bound. It is set before
+// the spawn, so no listing reads it while it changes.
+func newAgentPeerPairListingWithin(t *testing.T, serve func(*testing.T, *App) *pairedBackend, listBound time.Duration) *agentPeerPair {
+	t.Helper()
 	remotetest.Require(t)
 	pair := newReachPairServedBy(t, serve)
+	pair.source.threadAgentPeerListOverride = listBound
 	// Every turn there holds open and answers an interrupt, so the spawns
 	// stay open until a Stop ends them.
 	// The caller here takes the user-cancelled wake a Stop sends it.
@@ -331,7 +340,10 @@ func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeer
 // did not answer once its call gives up, and a Stop works from the ledger.
 func TestThreadAgentRowsDoNotWaitOnAComputerThatDoesNotAnswer(t *testing.T) {
 	// Serial: it times a read to 100 ms, which parallel tests would load.
-	pair := newAgentPeerPair(t, serveStalledAgentsPeer(nil))
+	// The listing's bound is under test; a Stop that waited on a listing
+	// would take that long.
+	const listBound = time.Second
+	pair := newAgentPeerPairListingWithin(t, serveStalledAgentsPeer(nil), listBound)
 	start := time.Now()
 	listing := pair.listRows(t)
 	if took := time.Since(start); took > 100*time.Millisecond {
@@ -353,7 +365,7 @@ func TestThreadAgentRowsDoNotWaitOnAComputerThatDoesNotAnswer(t *testing.T) {
 	if err != nil || stop.Outcome != threadAgentStopped {
 		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
 	}
-	if took := time.Since(start); took >= threadAgentPeerListTimeout {
+	if took := time.Since(start); took >= listBound {
 		t.Fatalf("the Stop took %v: it waited on a listing", took)
 	}
 }
@@ -505,7 +517,7 @@ func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 // does, with its cached answer aged out, until done holds of the spawn.
 func (p *agentPeerPair) askAgainUntil(t *testing.T, done func(store.ThreadRequest) bool) {
 	t.Helper()
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, testutil.WaitBudget(t), func() bool {
 		cache := &p.source.threadAgentPeers
 		cache.mu.Lock()
 		if entry, ok := cache.entries[p.spawn.Token]; ok {
@@ -640,9 +652,10 @@ func waitForPeerAnswer(t *testing.T, app *App, spawn store.ThreadRequest, within
 // the stalled computer's calls time out, it is not asked again until its
 // backoff passes.
 func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) {
-	// Serial: it counts the calls sent within a fixed 200 ms window.
+	// Serial: it counts the calls sent within a fixed 200 ms window, which
+	// the listing's bound, under test, outlasts.
 	var peer *stalledAgentsPeer
-	pair := newAgentPeerPair(t, serveStalledAgentsPeer(&peer))
+	pair := newAgentPeerPairListingWithin(t, serveStalledAgentsPeer(&peer), 2*time.Second)
 	a := pair.source
 	stalled := make([]store.ThreadRequest, 9)
 	for i := range stalled {
@@ -671,7 +684,7 @@ func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) 
 
 	// The two calls time out; the computer backs off, so the seven still
 	// waiting are dropped and no refresh asks it again.
-	waitForPeerAnswer(t, a, stalled[0], 2*threadAgentPeerListTimeout)
+	waitForPeerAnswer(t, a, stalled[0], testutil.WaitBudget(t))
 	a.threadRequestsWG.Wait()
 	asked := peer.calls.Load()
 	for _, spawn := range stalled {

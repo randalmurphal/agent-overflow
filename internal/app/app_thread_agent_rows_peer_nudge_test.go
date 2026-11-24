@@ -17,6 +17,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
@@ -103,7 +104,7 @@ func nudgeThere(t *testing.T, pair *reachPair, by, child string) {
 func (p *agentPeerPair) openNudgeRow(t *testing.T) ThreadAgentRow {
 	t.Helper()
 	var listing ThreadAgentRows
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, testutil.WaitBudget(t), func() bool {
 		cache := &p.source.threadAgentPeers
 		cache.mu.Lock()
 		if entry, ok := cache.entries[p.spawn.Token]; ok {
@@ -123,7 +124,7 @@ func (p *agentPeerPair) openNudgeRow(t *testing.T) ThreadAgentRow {
 func (p *agentPeerPair) nudgeEnded(t *testing.T, token string) store.ThreadRequest {
 	t.Helper()
 	var row store.ThreadRequest
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, testutil.WaitBudget(t), func() bool {
 		p.askAgainUntil(t, func(store.ThreadRequest) bool { return true })
 		row = p.request(t, token)
 		return row.RunEnded()

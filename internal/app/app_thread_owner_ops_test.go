@@ -918,11 +918,16 @@ func TestADoorWhoseWaitRunsOutLeavesItsOperationToTheSweep(t *testing.T) {
 }
 
 // A door waits five seconds for what it owes before it reports, unless a
-// test sets another bound.
+// test sets another bound. An App a test did not set reads the test
+// process's patience (giveUpBound), so the product value is read with none.
 func TestOwnerOpReachIsFiveSecondsUnlessATestSetsIt(t *testing.T) {
 	t.Parallel()
-	if got := (&App{}).ownerOpReach(); got != 5*time.Second {
-		t.Fatalf("ownerOpReach = %v, want 5s", got)
+	unset := &App{}
+	if got := giveUpBoundWith(unset.ownerOpReachOverride, 0, threadAgentPeerListTimeout); got != 5*time.Second {
+		t.Fatalf("ownerOpReach in production = %v, want 5s", got)
+	}
+	if got := unset.ownerOpReach(); got != giveUpPatience {
+		t.Fatalf("ownerOpReach unset in a test = %v, want the patience %v", got, giveUpPatience)
 	}
 	if got := (&App{ownerOpReachOverride: 250 * time.Millisecond}).ownerOpReach(); got != 250*time.Millisecond {
 		t.Fatalf("ownerOpReach with an override = %v, want 250ms", got)

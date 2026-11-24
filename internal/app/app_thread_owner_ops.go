@@ -487,10 +487,7 @@ const ownerOpInlineFanOut = 8
 // computer has the same bound (threadAgentPeerListTimeout); a test may set
 // another (ownerOpReachOverride).
 func (a *App) ownerOpReach() time.Duration {
-	if a.ownerOpReachOverride > 0 {
-		return a.ownerOpReachOverride
-	}
-	return threadAgentPeerListTimeout
+	return giveUpBound(a.ownerOpReachOverride, threadAgentPeerListTimeout)
 }
 
 // ownerOpTargets reads the spawns ops are owed for, for a report to name
