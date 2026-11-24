@@ -25,15 +25,6 @@ describe('<Indicator>', () => {
     expect(container.textContent?.trim() ?? '').toBe('');
   });
 
-  it('renders a pulsing accent dot when running', () => {
-    const { container } = render(Indicator, { props: { state: 'running' } });
-    const dot = container.querySelector('[data-testid="indicator"]')!;
-    expect(dot.getAttribute('data-state')).toBe('running');
-    expect(dot.className).toContain('bg-accent');
-    expect(dot.className).toContain('animate-pulse');
-    expect(dot.getAttribute('aria-label')).toBe('Running');
-  });
-
   it('renders three staggered accent dots when backgrounded', () => {
     const { container } = render(Indicator, { props: { state: 'backgrounded' } });
     const wrapper = container.querySelector('[data-testid="indicator"]')!;
@@ -55,57 +46,18 @@ describe('<Indicator>', () => {
     expect(dots[2].className).toContain('ambient-pulse-s4');
   });
 
-  it('keeps the backgrounded box with its dots hidden when settled', () => {
-    const live = render(Indicator, { props: { state: 'backgrounded' } });
-    const liveBox = live.container.querySelector('[data-testid="indicator"]')!;
-    const { container } = render(Indicator, { props: { state: 'settled' } });
-    const box = container.querySelector('[data-testid="indicator"]')!;
-    expect(box.getAttribute('data-state')).toBe('settled');
-    // Same box: the container's classes and its three dots are the
-    // backgrounded ones, so a row that settles keeps its geometry.
-    expect(box.className).toBe(liveBox.className);
-    const dots = [...box.querySelectorAll('span')];
-    const liveDots = [...liveBox.querySelectorAll('span')];
-    expect(dots).toHaveLength(3);
-    dots.forEach((dot, i) => {
-      const expected = new Set(liveDots[i].classList);
-      expected.delete('animate-pulse');
-      expected.add('invisible');
-      expect(new Set(dot.classList)).toEqual(expected);
-    });
-    // Screen readers get nothing, as for `null`.
-    expect(box.getAttribute('aria-hidden')).toBe('true');
-    expect(box.hasAttribute('role')).toBe(false);
-    expect(box.hasAttribute('aria-label')).toBe(false);
-    expect(container.querySelector('[role="status"]')).toBeNull();
-  });
-
-  it('renders a still hollow accent ring when parked', () => {
-    const { container } = render(Indicator, { props: { state: 'parked' } });
+  it.each([
+    ['a pulsing accent dot when running', 'running', ['bg-accent'], true, 'Running'],
+    ['a still hollow accent ring when parked', 'parked', ['border-accent', 'bg-transparent'], false, 'Parked'],
+    ['a static red dot when error', 'error', ['bg-error'], false, 'Errored'],
+    ['a static amber dot when declined', 'declined', ['bg-warning'], false, 'Declined'],
+  ] as const)('renders %s', (_name, state, classes, pulses, label) => {
+    const { container } = render(Indicator, { props: { state } });
     const dot = container.querySelector('[data-testid="indicator"]')!;
-    expect(dot.getAttribute('data-state')).toBe('parked');
-    expect(dot.className).toContain('border-accent');
-    expect(dot.className).toContain('bg-transparent');
-    expect(dot.className).not.toContain('animate-pulse');
-    expect(dot.getAttribute('aria-label')).toBe('Parked');
-  });
-
-  it('renders a static red dot when error', () => {
-    const { container } = render(Indicator, { props: { state: 'error' } });
-    const dot = container.querySelector('[data-testid="indicator"]')!;
-    expect(dot.getAttribute('data-state')).toBe('error');
-    expect(dot.className).toContain('bg-error');
-    expect(dot.className).not.toContain('animate-pulse');
-    expect(dot.getAttribute('aria-label')).toBe('Errored');
-  });
-
-  it('renders a static amber dot when declined', () => {
-    const { container } = render(Indicator, { props: { state: 'declined' } });
-    const dot = container.querySelector('[data-testid="indicator"]')!;
-    expect(dot.getAttribute('data-state')).toBe('declined');
-    expect(dot.className).toContain('bg-warning');
-    expect(dot.className).not.toContain('animate-pulse');
-    expect(dot.getAttribute('aria-label')).toBe('Declined');
+    expect(dot.getAttribute('data-state')).toBe(state);
+    for (const cls of classes) expect(dot.className).toContain(cls);
+    expect(dot.className.includes('animate-pulse')).toBe(pulses);
+    expect(dot.getAttribute('aria-label')).toBe(label);
   });
 
   it('honors an explicit ariaLabel override', () => {

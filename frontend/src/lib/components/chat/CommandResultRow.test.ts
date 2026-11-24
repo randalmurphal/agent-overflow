@@ -104,7 +104,7 @@ describe('<CommandResultRow>', () => {
     );
   });
 
-  it('fetches the payload on expand and grows the block in place', async () => {
+  it('fetches the payload on expand, grows the block in place, and collapses back to the inline preview', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: FULL_TEXT,
       nextOffset: FULL_TEXT.length,
@@ -127,22 +127,6 @@ describe('<CommandResultRow>', () => {
     expect(getByTestId('command-result-show-full').getAttribute('aria-expanded')).toBe('true');
     expect(getByTestId('command-result-show-full').textContent).toContain('Show less');
     expect(queryByTestId('command-result-show-more')).toBeNull();
-  });
-
-  it('collapses back to the inline preview', async () => {
-    setBindingMock('GetPayloadPreview', async () => ({
-      data: FULL_TEXT,
-      nextOffset: FULL_TEXT.length,
-      totalSize: FULL_TEXT.length,
-      isComplete: true,
-    }));
-
-    const { getByTestId } = render(CommandResultRow, { props: { item: truncatedItem() } });
-
-    await fireEvent.click(getByTestId('command-result-show-full'));
-    await waitFor(() => {
-      expect(getByTestId('command-result-output').textContent).toBe(FULL_TEXT);
-    });
 
     await fireEvent.click(getByTestId('command-result-show-full'));
     await waitFor(() => {
