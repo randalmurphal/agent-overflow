@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,8 +44,27 @@ func TestExecuteDoesNotWaitForAChildHoldingThePipes(t *testing.T) {
 		t.Skip("shell script mock git is unix-only")
 	}
 	binDir := t.TempDir()
+	// Each run's child records its pid, and the test ends it.
+	pidDir := t.TempDir()
+	t.Cleanup(func() {
+		pidFiles, err := os.ReadDir(pidDir)
+		if err != nil || len(pidFiles) != 2 {
+			t.Errorf("the held children's pids: %d recorded, err %v; want 2", len(pidFiles), err)
+		}
+		for _, pidFile := range pidFiles {
+			pid, err := strconv.Atoi(pidFile.Name())
+			if err != nil {
+				t.Errorf("the held child's pid: %v", err)
+				continue
+			}
+			if child, err := os.FindProcess(pid); err == nil {
+				_ = child.Kill() // already gone is the outcome wanted
+			}
+		}
+	})
 	mockexec.Write(t, filepath.Join(binDir, "git"), `#!/bin/sh
 sleep 30 &
+: > '`+pidDir+`'/$!
 if [ "$1" = hang ]; then wait; fi
 echo done
 `)
