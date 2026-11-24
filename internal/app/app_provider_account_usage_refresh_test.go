@@ -227,14 +227,18 @@ func TestSelectedClaudeUsageRefreshWithoutRotationPublishesLimits(t *testing.T) 
 	}
 }
 
-// The probe measured this account's real quota. Credential bookkeeping failing
-// afterwards says nothing about that measurement, so the rings must still
-// receive it rather than going blank on a race the user cannot see.
+// Another process changing the canonical credential during the probe wins:
+// the refresh refuses to commit over it, and the account's saved slot keeps
+// what it had. The probe still measured this account's real quota, and
+// credential bookkeeping failing afterwards says nothing about that
+// measurement, so the rings must still receive it rather than going blank on
+// a race the user cannot see.
 func TestSelectedClaudeUsageRefreshPublishesLimitsWhenTheCommitFails(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
+	external := []byte(`{"claudeAiOauth":{"accessToken":"external"}}`)
 	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
 
 	// Stand in for another Claude process rotating the shared credential while
@@ -243,10 +247,7 @@ func TestSelectedClaudeUsageRefreshPublishesLimitsWhenTheCommitFails(t *testing.
 		t,
 		"original",
 		func() error {
-			return providerCredentialsForTest(t, app).WriteNativeCredentialForTest(
-				string(provider.Claude),
-				[]byte(`{"claudeAiOauth":{"accessToken":"external"}}`),
-			)
+			return providerCredentialsForTest(t, app).WriteNativeCredentialForTest(string(provider.Claude), external)
 		},
 	)
 
@@ -270,6 +271,20 @@ func TestSelectedClaudeUsageRefreshPublishesLimitsWhenTheCommitFails(t *testing.
 	}
 	if usage.RateLimits.AccountID != "selected" {
 		t.Fatalf("snapshot account = %q, want selected", usage.RateLimits.AccountID)
+	}
+	active, err := providerCredentialsForTest(t, app).ReadCredential(string(provider.Claude), "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(active) != string(external) {
+		t.Fatalf("canonical credential = %s, want external credential", active)
+	}
+	saved, err := providerCredentialsForTest(t, app).ReadCredential(string(provider.Claude), "selected", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(saved) != string(original) {
+		t.Fatalf("saved credential = %s, want original credential", saved)
 	}
 }
 
@@ -552,54 +567,5 @@ func TestSelectedClaudeUsageRefreshCommitsRotationWhenRetryIsThrottled(t *testin
 	fingerprint, _ := app.providerAccounts.CredentialFingerprintForTest(string(provider.Claude))
 	if fingerprint != sha256.Sum256([]byte(rotated)) {
 		t.Fatal("credential fingerprint was not advanced to the rotated value")
-	}
-}
-
-// An in-place refresh means the CLI could return having authenticated as
-// somebody else — an external login during the probe. That must not stamp the
-// other account's rotated credential onto this one's slot.
-func TestSelectedClaudeUsageRefreshRejectsADifferentAccount(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
-	// The CLI reports the selected account (its identity record is stale);
-	// the token it now holds is the intruder's, which only the profile
-	// endpoint can tell.
-	intruderToken := claudefake.AccessToken("intruder@example.com", "org-intruder", "1")
-	rotated := `{"claudeAiOauth":{"accessToken":"` + intruderToken + `","scopes":["user:inference","user:profile"]}}`
-	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
-
-	canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary := writeClaudeRefreshMockBinary(t, canonical, rotated, "selected@example.com")
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
-		t.Fatal(err)
-	}
-	app.rateLimitProbeClientOverride = expiringUsageClient(t, intruderToken)
-
-	err = app.refreshProviderAccountUsage(
-		context.Background(),
-		string(provider.Claude),
-		"selected",
-	)
-	if err == nil {
-		t.Fatal("refreshProviderAccountUsage() accepted a refresh for a different account")
-	}
-	if !strings.Contains(err.Error(), "intruder@example.com") {
-		t.Fatalf("error = %v, want the observed account named", err)
-	}
-	saved, readErr := providerCredentialsForTest(t, app).ReadCredential(
-		string(provider.Claude),
-		"selected",
-		false,
-	)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(saved) != string(original) {
-		t.Fatalf("saved slot = %s, want it untouched", saved)
 	}
 }

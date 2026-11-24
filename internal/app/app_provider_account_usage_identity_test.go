@@ -41,126 +41,70 @@ const claudeProbeReportingNoIdentity = `{}`
 // `probeErr != nil && len(refreshed) == 0` early return, so the commit never
 // ran and the account's slot stayed on the refresh token the server had just
 // retired — one restart away from a login nothing can recover.
-func TestSelectedClaudeUsageRefreshTrustsTheBytesNotTheReportedIdentity(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	original := []byte(`{"claudeAiOauth":{"accessToken":"original","refreshToken":"original-rt"}}`)
-	rotated, rotatedBearer := selectedClaudeRotation("rotated")
-	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
-
-	canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary := writeClaudeRefreshMockBinaryReporting(
-		t,
-		canonical,
-		rotated,
-		claudeProbeReportingNoIdentity,
-	)
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
-		t.Fatal(err)
-	}
-	// Only the rotated bearer is accepted, so the first probe 401s into the
-	// refresh and the retry proves the new pair works.
-	app.rateLimitProbeClientOverride = expiringUsageClient(t, rotatedBearer)
-
-	var usage provider.UsageEvent
-	app.testEmitHook = func(name string, data any) {
-		if name == "provider:usage" {
-			usage, _ = data.(provider.UsageEvent)
-		}
-	}
-
-	if err := app.refreshProviderAccountUsage(
-		context.Background(),
-		string(provider.Claude),
-		"selected",
-	); err != nil {
-		t.Fatalf("refreshProviderAccountUsage() error = %v, want success for a healthy rotation", err)
-	}
-	if usage.RateLimits == nil || len(usage.RateLimits.Limits) == 0 {
-		t.Fatal("no usage snapshot emitted for a refresh that succeeded")
-	}
-	saved, readErr := providerCredentialsForTest(t, app).ReadCredential(
-		string(provider.Claude),
-		"selected",
-		false,
-	)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(saved) != rotated {
-		t.Fatalf("saved slot = %s, want the rotated pair %s", saved, rotated)
-	}
-}
-
-// The verdict may still be "log in again" — but it has to come from the server
-// refusing the bytes we hold, and it must NOT cost the rotation.
 //
-// Claude's refresh tokens are single-use and its endpoint retires the previous
-// one the moment it processes the request, so a rotation that reaches disk but
-// not the slot leaves the slot holding a consumed token. That is not a stale
-// read: it is a login that dies at its next use. The rotated pair therefore
+// The verdict may still be "log in again" — but it has to come from the server
+// refusing the bytes we hold, and it must NOT cost the rotation. Claude's
+// refresh tokens are single-use and its endpoint retires the previous one the
+// moment it processes the request, so a rotation that reaches disk but not the
+// slot leaves the slot holding a consumed token. The rotated pair therefore
 // goes back to the caller on the error path too, and the commit persists it
 // before the error surfaces.
-func TestSelectedClaudeUsageRefreshKeepsTheRotationWhenTheRetryStill401s(t *testing.T) {
+func TestSelectedClaudeUsageRefreshTrustsTheBytesNotTheReportedIdentity(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	original := []byte(`{"claudeAiOauth":{"accessToken":"original","refreshToken":"original-rt"}}`)
-	rotated, _ := selectedClaudeRotation("rotated")
-	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
+	rotated, rotatedBearer := selectedClaudeRotation("rotated")
+	for _, tc := range []struct {
+		name string
+		// acceptedBearer is the only bearer the usage endpoint answers, so
+		// the first probe always 401s into the refresh.
+		acceptedBearer string
+		wantErr        error
+		wantSnapshot   bool
+	}{
+		{name: "the retry proves the new pair works", acceptedBearer: rotatedBearer, wantSnapshot: true},
+		{name: "the retry still 401s", acceptedBearer: "no-bearer-works", wantErr: errClaudeCredentialsExpired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			app.settings = settings.NewService(t.TempDir())
+			original := []byte(`{"claudeAiOauth":{"accessToken":"original","refreshToken":"original-rt"}}`)
+			installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
 
-	canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary := writeClaudeRefreshMockBinaryReporting(
-		t,
-		canonical,
-		rotated,
-		claudeProbeReportingNoIdentity,
-	)
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
-		t.Fatal(err)
-	}
-	// Nothing this account holds is accepted, so the retry 401s as well.
-	app.rateLimitProbeClientOverride = expiringUsageClient(t, "no-bearer-works")
+			canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
+			if err != nil {
+				t.Fatal(err)
+			}
+			binary := writeClaudeRefreshMockBinaryReporting(t, canonical, rotated, claudeProbeReportingNoIdentity)
+			if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+				t.Fatal(err)
+			}
+			app.rateLimitProbeClientOverride = expiringUsageClient(t, tc.acceptedBearer)
 
-	var published int
-	app.testEmitHook = func(name string, _ any) {
-		if name == "provider:usage" {
-			published++
-		}
-	}
+			var usage provider.UsageEvent
+			var published int
+			app.testEmitHook = func(name string, data any) {
+				if name == "provider:usage" {
+					published++
+					usage, _ = data.(provider.UsageEvent)
+				}
+			}
 
-	err = app.refreshProviderAccountUsage(
-		context.Background(),
-		string(provider.Claude),
-		"selected",
-	)
-	if !errors.Is(err, errClaudeCredentialsExpired) {
-		t.Fatalf("refresh error = %v, want errClaudeCredentialsExpired", err)
-	}
-	saved, readErr := providerCredentialsForTest(t, app).ReadCredential(
-		string(provider.Claude),
-		"selected",
-		false,
-	)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(saved) != rotated {
-		t.Fatalf(
-			"saved slot = %s, want the rotated pair %s — the previous token is spent",
-			saved,
-			rotated,
-		)
-	}
-	if published != 0 {
-		t.Fatalf("published %d snapshots, want none from a failed probe", published)
+			err = app.refreshProviderAccountUsage(context.Background(), string(provider.Claude), "selected")
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("refresh error = %v, want %v", err, tc.wantErr)
+			}
+			hasSnapshot := usage.RateLimits != nil && len(usage.RateLimits.Limits) > 0
+			if hasSnapshot != tc.wantSnapshot || (published > 0) != tc.wantSnapshot {
+				t.Fatalf("published %d snapshots (limits %v), want a snapshot = %v", published, hasSnapshot, tc.wantSnapshot)
+			}
+			saved, err := providerCredentialsForTest(t, app).ReadCredential(string(provider.Claude), "selected", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(saved) != rotated {
+				t.Fatalf("saved slot = %s, want the rotated pair %s — the previous token is spent", saved, rotated)
+			}
+		})
 	}
 }
 

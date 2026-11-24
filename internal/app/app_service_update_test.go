@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -435,9 +436,13 @@ func newServiceUpdateFeed(t *testing.T, opts serviceUpdateOptions) *httptest.Ser
 	return srv
 }
 
-// The happy path: the artifact lands under the PREFLIGHT's version, its bytes
-// are the verified ones, the supervisor is asked for that same version, and
-// the temp download is gone.
+// The happy path: the client sees the phases in order, the artifact lands
+// under the PREFLIGHT's version, its bytes are the verified ones, the
+// supervisor is asked for that same version, and the temp download is gone.
+// The download lands under the layout ROOT, on the same filesystem as the
+// version directory it becomes, so StageBinary is a local copy rather than a
+// cross-device move that could tear; that assertion is on the path, because
+// the property is where the file is and not what it is called.
 func TestRequestServiceUpdateStagesTheVerifiedBinaryAndAsksTheSupervisor(t *testing.T) {
 	t.Parallel()
 	rig := newServiceUpdateRig(t, serviceUpdateOptions{
@@ -479,18 +484,6 @@ func TestRequestServiceUpdateStagesTheVerifiedBinaryAndAsksTheSupervisor(t *test
 	if got := rig.leftovers(); len(got) != 0 {
 		t.Errorf("the flow left %v in the layout root, want the temp download removed", got)
 	}
-}
-
-// The phases the client renders, in order, on the path that succeeds.
-func TestRequestServiceUpdatePublishesItsPhasesInOrder(t *testing.T) {
-	t.Parallel()
-	rig := newServiceUpdateRig(t, serviceUpdateOptions{
-		tags: []string{"v1.5.0"}, configure: true, supervised: true,
-	})
-	if err := rig.app.RequestServiceUpdate(context.Background(), "v1.5.0"); err != nil {
-		t.Fatalf("RequestServiceUpdate: %v", err)
-	}
-	rig.settled()
 
 	want := []string{
 		serviceUpdatePhaseResolving,
@@ -499,13 +492,32 @@ func TestRequestServiceUpdatePublishesItsPhasesInOrder(t *testing.T) {
 		serviceUpdatePhaseStaging,
 		serviceUpdatePhaseRequested,
 	}
-	got := rig.phases()
-	if len(got) != len(want) {
+	if got := rig.phases(); !slices.Equal(got, want) {
 		t.Fatalf("phases = %v, want %v", got, want)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("phases = %v, want %v", got, want)
+
+	// The preflight ran the artifact's copy of the download, which lives in
+	// its own directory beside the download in the layout root.
+	rig.mu.Lock()
+	preflighted := rig.preflightBinary
+	rig.mu.Unlock()
+	if preflighted == "" {
+		t.Fatal("the preflight never saw a downloaded file")
+	}
+	artifactDir := filepath.Dir(preflighted)
+	if filepath.Dir(artifactDir) != rig.layout.Root() {
+		t.Fatalf("the preflighted copy landed in %s, want a directory in the layout root %s", artifactDir, rig.layout.Root())
+	}
+	if _, err := os.Stat(artifactDir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the artifact copy at %s survived the flow (%v)", artifactDir, err)
+	}
+	entries, err := os.ReadDir(rig.layout.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "download-") {
+			t.Errorf("the temp download %s survived the flow", entry.Name())
 		}
 	}
 }
@@ -1222,57 +1234,6 @@ func TestRequestServiceUpdateRefusesWhileShuttingDown(t *testing.T) {
 	}
 	if got := rig.leftovers(); len(got) != 0 {
 		t.Errorf("a refused request downloaded %v", got)
-	}
-}
-
-// The temp download lands under the layout ROOT, on the same filesystem as the
-// version directory it becomes, so StageBinary is a local copy rather than a
-// cross-device move that could tear. The assertion is on the path, because the
-// property is where the file is and not what it is called.
-func TestTheDownloadLandsBesideTheVersionsItBecomes(t *testing.T) {
-	t.Parallel()
-	rig := newServiceUpdateRig(t, serviceUpdateOptions{
-		tags: []string{"v1.5.0"}, configure: true, supervised: true,
-	})
-	seen := make(chan string, 1)
-	rig.app.serviceUpdate.mu.Lock()
-	rig.app.serviceUpdate.deps.Preflight = func(_ context.Context, binary string) (supervise.Preflight, error) {
-		select {
-		case seen <- binary:
-		default:
-		}
-		return supervise.Preflight{ProtocolVersion: supervise.ProtocolVersion, Version: "1.5.0"}, nil
-	}
-	rig.app.serviceUpdate.mu.Unlock()
-
-	if err := rig.app.RequestServiceUpdate(context.Background(), "v1.5.0"); err != nil {
-		t.Fatalf("RequestServiceUpdate: %v", err)
-	}
-	rig.settled()
-
-	// The preflight runs the artifact's copy of the download, which lives in
-	// its own directory beside the download in the layout root.
-	var preflighted string
-	select {
-	case preflighted = <-seen:
-	default:
-		t.Fatal("the preflight never saw a downloaded file")
-	}
-	artifactDir := filepath.Dir(preflighted)
-	if filepath.Dir(artifactDir) != rig.layout.Root() {
-		t.Fatalf("the preflighted copy landed in %s, want a directory in the layout root %s", artifactDir, rig.layout.Root())
-	}
-	if _, err := os.Stat(artifactDir); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the artifact copy at %s survived the flow (%v)", artifactDir, err)
-	}
-	entries, err := os.ReadDir(rig.layout.Root())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "download-") {
-			t.Errorf("the temp download %s survived the flow", entry.Name())
-		}
 	}
 }
 

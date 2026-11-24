@@ -128,62 +128,6 @@ func TestSelectedCodexUsageCredentialRotationAdvancesReconnectGeneration(t *test
 	}
 }
 
-func TestSelectedUsageRefreshCannotOverwriteExternalCredentialChange(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
-	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	app.rateLimitProbeClientOverride = blockingUsageClient(t, started, release)
-
-	result := make(chan error, 1)
-	go func() {
-		result <- app.refreshProviderAccountUsage(
-			context.Background(),
-			string(provider.Claude),
-			"selected",
-		)
-	}()
-	<-started
-
-	external := []byte(`{"claudeAiOauth":{"accessToken":"external"}}`)
-	if err := providerCredentialsForTest(t, app).WriteNativeCredentialForTest(
-		string(provider.Claude),
-		external,
-	); err != nil {
-		t.Fatal(err)
-	}
-	close(release)
-
-	if err := <-result; err == nil || !strings.Contains(err.Error(), "changed") {
-		t.Fatalf("refresh error = %v, want credential-change rejection", err)
-	}
-	active, err := providerCredentialsForTest(t, app).ReadCredential(
-		string(provider.Claude),
-		"",
-		true,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(active) != string(external) {
-		t.Fatalf("canonical credential = %s, want external credential", active)
-	}
-	saved, err := providerCredentialsForTest(t, app).ReadCredential(
-		string(provider.Claude),
-		"selected",
-		false,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(saved) != string(original) {
-		t.Fatalf("saved credential = %s, want original credential", saved)
-	}
-}
-
 func TestUsageRefreshCompletesBeforeConcurrentAccountRemoval(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)

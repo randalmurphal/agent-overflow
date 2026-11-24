@@ -123,72 +123,42 @@ func remoteAdmissionFixture(t *testing.T) (*App, *remoteAdmissionReceiver, conte
 	return source, receiver, caller, input
 }
 
-func TestRemoteAdmissionRepeatedRefusalDoesNotRetainPendingWatch(t *testing.T) {
+// Every refusal a destination answers before accepting releases the fresh
+// watch, so a never-accepted request cannot block deletion, transfer or
+// forgetting the computer forever, and a repeated refusal still reaches the
+// destination. The same ID then admits an identical retry.
+func TestRemoteAdmissionPreAcceptanceRefusalsReleaseTheWatch(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	source, receiver, ctx, input := remoteAdmissionFixture(t)
-	receiver.refusal = errorsx.Public("remote_capacity", "Destination capacity is full.", nil)
-	for attempt := range 2 {
+	scope, _ := transport.CallerScopeFrom(ctx)
+	codes := []string{"remote_capacity", "remote_capacity", "remote_not_ready", "remote_shutting_down", "remote_not_accepted", transport.ErrCodeScopeRequired}
+	for attempt, code := range codes {
+		receiver.refusal = errorsx.Public(code, "refused before acceptance", nil)
 		_, err := source.AgentRemoteStart(ctx, input)
-		code, _, _ := errorsx.PublicDetails(err)
-		if code != "remote_capacity" {
-			t.Fatalf("attempt %d: %v", attempt, err)
+		if got, _, _ := errorsx.PublicDetails(err); got != code {
+			t.Fatalf("attempt %d %s: %v", attempt, code, err)
 		}
 		watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
-		if err != nil {
-			t.Fatal(err)
+		if err != nil || watch.Notification != "dismissed" || watch.Receipt.ID != "" {
+			t.Fatalf("attempt %d %s retained work: %#v %v", attempt, code, watch, err)
 		}
-		if watch.Notification != "dismissed" || watch.Receipt.ID != "" {
-			t.Fatalf("refused attempt retained work: %#v", watch)
+		if watch.ThreadID != scope.ThreadID {
+			t.Fatalf("attempt %d %s: watch thread = %q, want the caller's %q", attempt, code, watch.ThreadID, scope.ThreadID)
 		}
-		if pending, err := source.store.HasUnfinishedRemoteWatches(watch.ThreadID); err != nil || pending {
-			t.Fatalf("refusal prevents thread deletion: %v %v", pending, err)
+		if pending, err := source.store.HasUnfinishedRemoteWatches(scope.ThreadID); err != nil || pending {
+			t.Fatalf("attempt %d %s blocks the conversation: %v %v", attempt, code, pending, err)
 		}
 	}
-	if receiver.calls.Load() != 2 {
-		t.Fatalf("retry did not reach destination: %d", receiver.calls.Load())
+	if got := receiver.calls.Load(); got != int32(len(codes)) {
+		t.Fatalf("the destination saw %d starts, want every refused attempt (%d)", got, len(codes))
 	}
 	receiver.refusal = nil
 	receipt, err := source.AgentRemoteStart(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if watch.Notification != "pending" || watch.Receipt.ID != receipt.ID {
-		t.Fatalf("successful retry did not restore completion tracking: %#v", watch)
-	}
-}
-
-// Every refusal a destination answers before accepting releases the fresh
-// watch, so a never-accepted request cannot block deletion, transfer or
-// forgetting the computer forever. The same ID then admits an identical retry.
-func TestRemoteAdmissionPreAcceptanceRefusalsReleaseTheWatch(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
-	source, receiver, ctx, input := remoteAdmissionFixture(t)
-	scope, _ := transport.CallerScopeFrom(ctx)
-	for _, code := range []string{"remote_not_ready", "remote_shutting_down", "remote_not_accepted", transport.ErrCodeScopeRequired} {
-		receiver.refusal = errorsx.Public(code, "refused before acceptance", nil)
-		_, err := source.AgentRemoteStart(ctx, input)
-		if got, _, _ := errorsx.PublicDetails(err); got != code {
-			t.Fatalf("%s: %v", code, err)
-		}
-		watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
-		if err != nil || watch.Notification != "dismissed" || watch.Receipt.ID != "" {
-			t.Fatalf("%s retained work: %#v %v", code, watch, err)
-		}
-		if pending, err := source.store.HasUnfinishedRemoteWatches(scope.ThreadID); err != nil || pending {
-			t.Fatalf("%s blocks the conversation: %v %v", code, pending, err)
-		}
-	}
-	receiver.refusal = nil
-	if _, err := source.AgentRemoteStart(ctx, input); err != nil {
-		t.Fatal(err)
-	}
-	if watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.Notification != "pending" || watch.Receipt.ID != input.Request.ID {
+	if watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.Notification != "pending" || watch.Receipt.ID != input.Request.ID || watch.Receipt.ID != receipt.ID {
 		t.Fatalf("retry after refusal lost completion tracking: %#v %v", watch, err)
 	}
 }
