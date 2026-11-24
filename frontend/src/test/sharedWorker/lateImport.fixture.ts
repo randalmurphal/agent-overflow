@@ -10,5 +10,5 @@ it('starts an import it does not wait for', () => {
 });
 
 afterAll(() => {
-  setTimeout(() => fixtureState().openGate(), 0);
+  setTimeout(() => fixtureState().lateGate.open(), 0);
 });

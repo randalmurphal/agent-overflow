@@ -1,28 +1,34 @@
 // What the fixture files of sharedWorkerRunner.test.ts share across the
 // files of their worker: a worker global, since each file evaluates its
 // own instance of this module.
-import { BroadcastChannel } from 'node:worker_threads';
+// oxlint-disable-next-line no-restricted-imports -- the run's own temporary marker file, not a repository file
+import { existsSync, writeFileSync } from 'node:fs';
+
 export type FixtureState = {
   /** Calls of each file's 'ao-fixture' listener. */
   readonly hits: Record<string, number>;
-  /** Opens the gate lateModule.ts waits on. */
-  openGate(): void;
-  readonly gate: Promise<void>;
+  readonly lateGate: Gate;
+  readonly rejectGate: Gate;
   lateEvaluations: number;
   lateResets: number;
+  teardownEvaluations: number;
 };
+
+type Gate = { readonly opened: Promise<void>; open(): void };
 
 const KEY = Symbol.for('agent-overflow.test.sharedWorkerFixtures');
 
+function gate(): Gate {
+  let open = () => {};
+  const opened = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { opened, open };
+}
+
 export function fixtureState(): FixtureState {
   const worker = globalThis as { [KEY]?: FixtureState };
-  if (worker[KEY] === undefined) {
-    let openGate = () => {};
-    const gate = new Promise<void>((resolve) => {
-      openGate = resolve;
-    });
-    worker[KEY] = { hits: {}, openGate, gate, lateEvaluations: 0, lateResets: 0 };
-  }
+  worker[KEY] ??= { hits: {}, lateGate: gate(), rejectGate: gate(), lateEvaluations: 0, lateResets: 0, teardownEvaluations: 0 };
   return worker[KEY];
 }
 
@@ -51,22 +57,25 @@ export async function expectOwnListenerAndTimer(name: string): Promise<Record<st
   return hits;
 }
 
-const DONE_CHANNEL = 'agent-overflow.test.sharedWorkerFixtures.done';
+/** The environment variable that names the file the last fixture creates;
+ * fixtures.workload.ts sets it for the run. A file, because the pool stops
+ * the last fixture's worker once it is done, before a late holder asks. */
+export const FIXTURES_DONE_ENV = 'AO_SHARED_WORKER_FIXTURES_DONE';
 
-/** Resolves once the last fixture calls `fixturesFinished`, in either
- * worker of the run. */
-export function fixturesDone(): Promise<void> {
-  const channel = new BroadcastChannel(DONE_CHANNEL);
-  return new Promise((resolve) => {
-    channel.onmessage = () => {
-      channel.close();
-      resolve();
-    };
-  });
+function doneMarker(): string {
+  const path = process.env[FIXTURES_DONE_ENV];
+  if (path === undefined || path === '') throw new Error(`${FIXTURES_DONE_ENV} is unset: run the fixtures through fixtures.workload.ts`);
+  return path;
 }
 
+/** Resolves once the last fixture has called `fixturesFinished`, in the
+ * other worker of the run, whether that came before or after this call. */
+export async function fixturesDone(): Promise<void> {
+  const marker = doneMarker();
+  while (!existsSync(marker)) await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+/** Tells the holding fixture the run is done, now and to a late asker. */
 export function fixturesFinished(): void {
-  const channel = new BroadcastChannel(DONE_CHANNEL);
-  channel.postMessage('done');
-  channel.close();
+  writeFileSync(doneMarker(), '');
 }

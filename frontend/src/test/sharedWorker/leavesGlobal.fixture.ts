@@ -1,11 +1,10 @@
 // Leaves a DOM prototype member behind; its retirement fails it.
 //
 // Vitest sends a file's result as the file finishes: at once when nothing
-// was sent in the last 100ms, otherwise up to 100ms later with whatever
-// the result holds then. The last update before that is the end of the
-// file's afterAll hooks. A file fixture's teardown runs after them and
-// sends nothing, so one of 300ms makes this file's result go out at once,
-// before its retirement runs: the retirement must send it again.
+// was sent in the last 100ms, otherwise up to 100ms later with whatever the
+// result holds then. A file fixture's teardown runs after the file's hooks
+// and sends nothing, so one of 300ms makes this file's result go out at
+// once: a retirement after that point could only send it again.
 import { test } from 'vitest';
 
 Object.defineProperty(HTMLElement.prototype, 'aoFixtureLeftover', { value: () => 0, configurable: true });

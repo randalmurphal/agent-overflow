@@ -1,4 +1,4 @@
-// Holds its worker until afterLateImport.fixture.ts, the last fixture, is
+// Holds its worker until releasesWorker.fixture.ts, the last fixture, is
 // done, so every other fixture runs in the other worker, one file per run
 // request, in order.
 import { it } from 'vitest';

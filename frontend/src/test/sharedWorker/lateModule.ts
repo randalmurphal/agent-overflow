@@ -3,7 +3,7 @@
 import { fixtureState, listen } from './fixtureState';
 
 const state = fixtureState();
-await state.gate;
+await state.lateGate.opened;
 state.lateEvaluations += 1;
 const instance = state.lateEvaluations;
 listen(`late${instance}`);

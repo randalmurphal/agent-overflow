@@ -1,34 +1,39 @@
 // The test runner of the `unit` project (vitest.config.ts), whose workers
 // run many files in one process against one happy-dom window. It opens
-// each file as its collection starts and retires it (sharedWorker.ts) in
-// `onAfterRunFiles`, the one point Vitest calls after every file's last
-// hook whatever the file's mode: one that ran, one whose tests are all
-// skipped or todo (no `afterAll` runs there), and one that failed while
-// loading. The worker runs one file per `startTests`, so that point is
-// per file. A worker of a run with more than one worker gets a new runner
-// for each file, so the lifecycle is the worker's, not a runner's
-// (WorkerLifecycle). A Vitest upgrade that stops calling that point for a
-// skipped file or a file that fails while loading fails
-// sharedWorkerRunner.test.ts.
-//
-// A file that leaves something behind fails, named, in the reporter and
-// the exit code: retirement errors are added to the file's result and the
-// result is sent again. So does the file that opens after something was
-// installed while no file was open.
+// each file just before Vitest collects it (`onBeforeCollect`) and retires
+// it (sharedWorker.ts) before Vitest publishes the file's result, so a retirement failure is the
+// file's first result, in the reporter and the exit code:
+//   - a file that runs, in `onAfterRunSuite` for the file, after its last
+//     hook and fixture teardown;
+//   - a file whose tests are all skipped or todo, in `onBeforeRunSuite` for
+//     the file: none of its code runs after that;
+//   - a file that failed while loading, or was collected without a run
+//     (`vitest list`, an editor's test explorer), in `onBeforeCollect` of
+//     the worker's next file. Its result, already published, is sent again
+//     with the retirement's errors.
+// The worker's last file of that last kind is never retired; no test is
+// left for what it leaves to reach.
+// A file that opens after something was installed while no file was open
+// fails for it the same way. A worker of a run with more than one worker
+// gets a new runner for each file, so the lifecycle is the worker's, not a
+// runner's (WorkerLifecycle). sharedWorkerRunner.test.ts fails when a
+// Vitest upgrade stops calling these points or stops publishing a result
+// they change.
 //
 // Limit: work a file leaves running that is neither a dynamic import nor
 // a tracked listener or timer (a promise a Node API resolves later, a
 // MessageChannel, a library's own lazy import) can still reach the next
-// file. A listener or timer such work installs after the file retired and
-// before the next one opens is released and fails the next file; one it
-// installs later is the next file's.
+// file. A listener, timer or import such work installs after the file
+// retired and before the next one opens is released and fails the next
+// file; one it installs later is the next file's.
+import { posix } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { TestRunner, vi, type RunnerTestFile, type VitestTestRunner } from 'vitest';
+import { TestRunner, vi, type RunnerTestFile, type RunnerTestSuite, type VitestTestRunner } from 'vitest';
 import { SHARED_WORKER_KEY, TRACK_IMPORT_KEY } from './config/sharedWorkerKeys';
 import { RESET_REGISTRY_KEY } from './config/testResets';
 import type { ResetRegistry } from './resetRegistry';
 import { sharedGlobalChanges, snapshotSharedGlobals, type SharedGlobalsSnapshot } from './sharedGlobals';
-import { FileImports, FileResources, retireFile } from './sharedWorker';
+import { WorkerFiles, retireFile, type OpenFile } from './sharedWorker';
 
 // How long a file's dynamic imports may take to settle after its last
 // hook. A test that awaits what it starts never waits here.
@@ -55,20 +60,22 @@ async function resetDocument(href: string | null): Promise<void> {
   if (href !== null && location.href !== href) (window as unknown as { happyDOM: HappyDOM }).happyDOM.setURL(href);
 }
 
-// The worker's one file lifecycle, a worker global that every runner of
-// the worker uses: one set of listener and timer wrappers, one open file.
-class WorkerLifecycle {
-  private readonly resources: FileResources;
-  private readonly imports = new FileImports();
-  private file: RunnerTestFile | null = null;
-  // What was installed while no file was open, charged to this file.
-  private opening: Error | null = null;
-  private start: { readonly globals: SharedGlobalsSnapshot; readonly href: string } | null = null;
+type Start = { readonly globals: SharedGlobalsSnapshot; readonly href: string };
 
-  // Built at the first collection: the environment's window exists, and no
-  // setup file has loaded an app module yet.
+// The open file: its path, its task once collected, its state, what was
+// installed before it opened, and what it starts from once setup.ts ran.
+type Open = { readonly path: string; task: RunnerTestFile | null; readonly file: OpenFile; readonly leftovers: Error | null; start: Start | null };
+
+// The worker's one file lifecycle, a worker global that every runner of
+// the worker uses: one set of wrappers, one open file.
+class WorkerLifecycle {
+  private readonly files: WorkerFiles;
+  private current: Open | null = null;
+
+  // Built before the first collection: the environment's window exists,
+  // and no setup file has loaded an app module yet.
   constructor() {
-    const resources = new FileResources({
+    const files = new WorkerFiles({
       setTimeout: globalThis.setTimeout,
       clearTimeout: globalThis.clearTimeout,
       setInterval: globalThis.setInterval,
@@ -76,43 +83,48 @@ class WorkerLifecycle {
       setImmediate: globalThis.setImmediate,
       clearImmediate: globalThis.clearImmediate,
     });
-    resources.trackListeners(window);
-    resources.trackListeners(document);
+    files.trackListeners(window);
+    files.trackListeners(document);
     // happy-dom keeps a window resize listener for each MediaQueryList
     // change listener, out of reach of the window wrapper above.
     const matchMedia = window.matchMedia;
     window.matchMedia = function (this: Window, query: string): MediaQueryList {
       const list = matchMedia.call(this, query);
-      resources.trackListeners(list);
+      files.trackListeners(list);
       return list;
     };
-    resources.trackTimers(globalThis);
-    (globalThis as { [key: symbol]: unknown })[Symbol.for(TRACK_IMPORT_KEY)] = <T>(promise: Promise<T>, label: string) => this.imports.track(promise, label);
-    this.resources = resources;
+    files.trackTimers(globalThis);
+    (globalThis as { [key: symbol]: unknown })[Symbol.for(TRACK_IMPORT_KEY)] = <T>(promise: Promise<T>, label: string) => files.track(promise, label);
+    this.files = files;
   }
 
-  open(file: RunnerTestFile): void {
-    this.file = file;
-    this.start = null;
-    this.imports.openFile(file.name);
-    this.opening = this.resources.openFile(file.name);
+  /** Opens the file at `path`, named as Vitest names it (`name`). */
+  open(path: string, name: string): void {
+    this.current = { path, task: null, ...this.files.open(name), start: null };
+  }
+
+  /** The open file's task, once Vitest has collected it. */
+  collected(task: RunnerTestFile): void {
+    if (this.current?.path !== task.filepath) throw new Error(`Vitest collected ${task.filepath}, but ${this.current?.path ?? 'no file'} is open`);
+    this.current.task = task;
   }
 
   /** Once setup.ts has run, before the test file is imported, so the test
    * file's module-scope changes count against it (sharedWorkerStart.ts). */
   startFile(): void {
-    this.start = { globals: snapshotSharedGlobals(), href: location.href };
+    if (this.current === null) throw new Error('sharedWorkerStart.ts ran with no test file open');
+    this.current.start = { globals: snapshotSharedGlobals(), href: location.href };
   }
 
-  /** Retires the open file and returns it with what it did wrong. */
-  async retire(): Promise<{ readonly file: RunnerTestFile; readonly errors: Error[] } | null> {
-    const { file, start, resources, opening } = this;
-    if (file === null) return null;
-    this.file = null;
-    this.opening = null;
+  /** Retires the open file, when it is `task` or `task` is omitted, and
+   * returns it with what it did wrong. */
+  async retire(task?: RunnerTestFile): Promise<{ readonly task: RunnerTestFile | null; readonly name: string; readonly errors: Error[] } | null> {
+    const open = this.current;
+    if (open === null || (task !== undefined && open.task !== task)) return null;
+    this.current = null;
+    const { start } = open;
     const registry = () => (globalThis as { [key: symbol]: ResetRegistry | undefined })[Symbol.for(RESET_REGISTRY_KEY)];
-    const errors = await retireFile(file.name, {
-      imports: this.imports,
+    const errors = await retireFile(open.file, this.files, {
       takeUnansweredBindings: () => registry()?.takeUnansweredBindings() ?? [],
       restoreVitest: () => {
         vi.unstubAllGlobals();
@@ -123,20 +135,18 @@ class WorkerLifecycle {
         vi.clearAllMocks();
         vi.useRealTimers();
       },
-      releaseResources: () => resources.releaseFile(),
       resetDocument: () => resetDocument(start?.href ?? null),
       resetModules: () => vi.resetModules(),
       globalChanges: () => (start === null ? [] : sharedGlobalChanges(start.globals)),
       importBoundMs: IMPORT_BOUND_MS,
-      sleep: (ms) => sleep(ms),
-      inFlight: () => this.imports.inFlight(),
+      sleep: (ms, signal) => sleep(ms, undefined, { signal }),
     });
-    if (opening !== null) errors.unshift(opening);
+    if (open.leftovers !== null) errors.unshift(open.leftovers);
     // A file that failed before its setup finished has failed already.
-    if (start === null && file.result?.state !== 'fail') {
-      errors.push(new Error(`sharedWorkerStart.ts did not run for ${file.name}: it must be the last setup file of the unit project`));
+    if (start === null && open.task?.result?.state !== 'fail') {
+      errors.push(new Error(`sharedWorkerStart.ts did not run for ${open.file.name}: it must be the last setup file of the unit project`));
     }
-    return { file, errors };
+    return { task: open.task, name: open.file.name, errors };
   }
 }
 
@@ -147,27 +157,61 @@ function workerLifecycle(): WorkerLifecycle {
   return (worker[key] ??= new WorkerLifecycle());
 }
 
+function isFile(suite: RunnerTestSuite): suite is RunnerTestFile {
+  return 'filepath' in suite;
+}
+
+/** Adds retirement errors to the file's result, making it a failure. */
+function failFile(task: RunnerTestFile, errors: Error[]): void {
+  const result = task.result ?? { state: 'fail' as const };
+  result.state = 'fail';
+  result.errors = [...(result.errors ?? []), ...errors.map((error) => ({ name: error.name, message: error.message, stack: error.stack }))];
+  task.result = result;
+}
+
 export default class SharedWorkerRunner extends TestRunner {
   // Vitest installs it on every runner, to send task updates to the run.
   declare onTaskUpdate?: VitestTestRunner['onTaskUpdate'];
 
-  override onCollectStart(file: RunnerTestFile): void {
-    super.onCollectStart(file);
-    workerLifecycle().open(file);
+  /** Opens the file about to be collected: Vitest awaits this, before it
+   * creates the file's task (it does not await `onCollectStart`). A file
+   * still open failed while loading or was collected without a run, and its
+   * result went out already: it retires first, and its result is sent
+   * again with the retirement's errors. */
+  async onBeforeCollect(paths: string[]): Promise<void> {
+    const lifecycle = workerLifecycle();
+    const retired = await lifecycle.retire();
+    if (retired !== null && retired.errors.length > 0) {
+      // A file whose tags were refused has no task.
+      if (retired.task === null) throw new AggregateError(retired.errors, `${retired.name} left the worker changed`);
+      failFile(retired.task, retired.errors);
+      await this.onTaskUpdate?.([[retired.task.id, retired.task.result, retired.task.meta]], []);
+    }
+    if (paths.length !== 1) throw new Error(`the unit project's runner opens one file per collection; Vitest collected ${paths.length} together`);
+    lifecycle.open(paths[0]!, posix.relative(this.config.root, paths[0]!));
   }
 
-  override async onAfterRunFiles(files: RunnerTestFile[]): Promise<void> {
-    const retired = await workerLifecycle().retire();
-    if (retired !== null && retired.errors.length > 0) await this.fail(retired.file, retired.errors);
-    super.onAfterRunFiles(files);
+  async onCollected(files: RunnerTestFile[]): Promise<void> {
+    for (const file of files) workerLifecycle().collected(file);
   }
 
-  private async fail(file: RunnerTestFile, errors: Error[]): Promise<void> {
-    const result = file.result ?? { state: 'fail' as const };
-    result.state = 'fail';
-    result.errors = [...(result.errors ?? []), ...errors.map((error) => ({ name: error.name, message: error.message, stack: error.stack }))];
-    file.result = result;
-    // The file's result was sent when its suite finished; send it again.
-    await this.onTaskUpdate?.([[file.id, result, file.meta]], []);
+  /** A file whose tests are all skipped or todo retires here: none of its
+   * code runs after this, and a failed result makes Vitest report it as a
+   * file that failed early. Vitest counts it skipped as well, from the mode
+   * it collected it in. */
+  override async onBeforeRunSuite(suite: RunnerTestSuite): Promise<void> {
+    await super.onBeforeRunSuite(suite);
+    if (!isFile(suite) || (suite.mode !== 'skip' && suite.mode !== 'todo')) return;
+    const retired = await workerLifecycle().retire(suite);
+    if (retired !== null && retired.errors.length > 0) failFile(suite, retired.errors);
+  }
+
+  /** A file that ran retires after its last hook and fixture teardown, and
+   * before Vitest publishes its result, so the first result is final. */
+  override async onAfterRunSuite(suite: RunnerTestSuite): Promise<void> {
+    await super.onAfterRunSuite(suite);
+    if (!isFile(suite)) return;
+    const retired = await workerLifecycle().retire(suite);
+    if (retired !== null && retired.errors.length > 0) failFile(suite, retired.errors);
   }
 }
