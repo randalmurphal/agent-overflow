@@ -23,7 +23,7 @@
 // or past, opens beside the assistant, and once settled is listed under
 // Past alone; and a worker's question routes to the ordinary thread that
 // spawned it, whose row says so, and no prompt waits on the user.
-import { test, expect, type SeedResult } from './fixtures.js';
+import { expect, type SeedResult } from './fixtures.js';
 import {
   advanceGate,
   awaitGate,
@@ -56,6 +56,7 @@ import {
   pastTotal,
   seedAssistantWithHelper,
   seedPastWithAsk,
+  test,
 } from './agents-tray-helpers.js';
 
 const WORKERS = 10;

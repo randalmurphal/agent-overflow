@@ -18,7 +18,7 @@
 // first page.
 import type { Locator } from '@playwright/test';
 
-import { test, expect } from './fixtures.js';
+import { expect } from './fixtures.js';
 import { advanceGate, awaitGate } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 import {
@@ -46,6 +46,7 @@ import {
   seedPastWithAsk,
   seedSettledWorkers,
   startTree,
+  test,
 } from './agents-tray-helpers.js';
 
 /** The row stays inside the window, its title above its controls, and its actions are touch-sized. */

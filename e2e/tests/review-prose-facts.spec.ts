@@ -10,7 +10,9 @@
 // between the sentence's two halves. The pane asks the forge once for a
 // PR's references, GitLab's labels by one read of the project's label list
 // beside them and none by title, and a later poll that changes nothing
-// asks nothing.
+// asks nothing. The worker backend polls the PR every second
+// (pr-update=1s) instead of every 45 s, which changes when a poll runs and
+// not what it does.
 // Unit and component coverage: forgeFacts.svelte.test.ts,
 // forgeFactReferences.test.ts, forgeRepositoryFiles.test.ts,
 // ChatMarkdown.forgeFacts.browser.test.ts,
@@ -18,7 +20,8 @@
 // internal/git/forge_facts_test.go, internal/git/local_facts_test.go.
 import { randomBytes } from 'node:crypto';
 
-import { expect, test } from './fixtures.js';
+import { HARNESS_WORKER_TIMEOUT_MS, expect, test as base } from './fixtures.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import {
   expandReviewSection,
   expectEveryForgeCallHandled,
@@ -33,6 +36,17 @@ import {
   type ForgeRepo,
   type PullHistory,
 } from './forge-helpers.js';
+
+const test = base.extend<object, { harnessWorker: HarnessApp }>({
+  harnessWorker: [
+    async ({}, use) => {
+      const app = await launchHarness({ env: harnessTiming({ 'pr-update': '1s' }) });
+      await use(app);
+      await app.close();
+    },
+    { scope: 'worker', timeout: HARNESS_WORKER_TIMEOUT_MS },
+  ],
+});
 
 const TITLE = 'Prose facts';
 const LFS_POINTER = 'version https://git-lfs.github.com/spec/v1\noid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393\nsize 12345\n';

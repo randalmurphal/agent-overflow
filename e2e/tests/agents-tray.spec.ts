@@ -26,7 +26,7 @@
 // once, offering Show in Sidebar, beside the spawn and the nudge in Past,
 // and joins Past itself once the worker rests. The cross-computer rows are
 // thread-tools-paired.spec.ts's.
-import { test, expect, type SeedResult } from './fixtures.js';
+import { expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
 import { rename } from 'node:fs/promises';
 import { captureProcessIdentity, processHoldState, type ProcessIdentity } from '../src/harness-process.js';
@@ -34,6 +34,7 @@ import { advanceGate, awaitGate, awaitMockInput, awaitToolAnswer, awaitTurnCompl
 import { capture } from './wake-rows-helpers.js';
 import { scrollTimelineToTop } from './standing-agent-home-contents-helpers.js';
 import {
+  AGENT_ROW_LINGER_MS,
   CHILD,
   GRAND,
   LEAD,
@@ -51,6 +52,7 @@ import {
   pastTotal,
   seedAgentsTree,
   startTree,
+  test,
 } from './agents-tray-helpers.js';
 
 const USER_STOP = 'The user stopped it from the Agents tray';
@@ -202,11 +204,13 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(nested.notify, 'the cascade disarms the nested wake').toBe(0);
     await expect.poll(async () => (await harness.rpc<{ status: string }[]>('ListLiveBackgroundTasks', started.child))
       .filter((item) => item.status === 'running').length, { timeout: 30_000 }).toBe(0);
-    // The stopped row lingers, then leaves.
+    // The stopped row lingers (AGENT_ROW_LINGER_MS on this backend), then
+    // leaves. The row settled before the checks above, so the linger seen
+    // from here is shorter by their time; 3 s of it is allowed.
     await expect(child.getByTestId('agent-tray-row-state')).toHaveText('stopped');
     const settledAt = Date.now();
     await expect(agentsBody(page).getByTestId('agent-tray-row')).toHaveCount(0, { timeout: 30_000 });
-    expect(Date.now() - settledAt, 'the settled row lingered').toBeGreaterThan(5_000);
+    expect(Date.now() - settledAt, 'the settled row lingered').toBeGreaterThan(AGENT_ROW_LINGER_MS - 3_000);
     // The segment stays for Past, which holds the send and the stopped child.
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText('2');
     // The child is at rest: its session ended with its shell, and nothing
