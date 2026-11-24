@@ -459,7 +459,7 @@ func (s *Service) settle(id, kind string, at stamp, callErr error, record func()
 	// Checked again where it publishes: Stop takes no opMu and may have
 	// run since. A verification row record wrote stays; it is true.
 	if applies, err := s.appliesLocked(id, at); !applies {
-		return false, recorded, err
+		return false, false, err
 	}
 	if at.c != nil {
 		at.c.settled = at.gen
