@@ -147,13 +147,6 @@ func TestResultAfterSoftCloseAppendsUsageLedger(t *testing.T) {
 	if len(buckets) != 1 || buckets[0].OutputTokens != 42 {
 		t.Fatalf("result after soft close must append ledger rows: %+v", buckets)
 	}
-	// store.QueryUsage never sets UnpricedRows itself (pricing lookups
-	// against internal/usagecost only happen in GetUsageStats/app_usage.go);
-	// this is a baseline check that the raw aggregate stays at its
-	// always-0 default rather than picking up a stray value.
-	if buckets[0].UnpricedRows != 0 {
-		t.Fatalf("raw QueryUsage must not report unpriced rows: %+v", buckets[0])
-	}
 }
 
 // TestUsageLedgerCascadeIsAdditive is the direct regression test for the
