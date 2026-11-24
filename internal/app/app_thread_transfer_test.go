@@ -27,6 +27,17 @@ import (
 	"github.com/google/uuid"
 )
 
+// prebuildTransferTemplate builds the migrated database image that a
+// transfer's history validation clones (store.NewScratchFromTemplate), so the
+// first build in a process falls before any transfer wait starts instead of
+// inside it. A transfer row does not move while that build runs.
+func prebuildTransferTemplate(t *testing.T) {
+	t.Helper()
+	if err := store.PrimeMigratedTemplate(t.Context(), t.TempDir()); err != nil {
+		t.Fatalf("build the migrated database template: %v", err)
+	}
+}
+
 func transferTestBackend(t *testing.T, readiness ...func(context.Context, string) error) *App {
 	t.Helper()
 	return transferTestBackendOn(t, newPairedBackend(t), readiness...)
@@ -36,6 +47,7 @@ func transferTestBackend(t *testing.T, readiness ...func(context.Context, string
 // for one that needs a second handle on its database.
 func transferTestBackendOn(t *testing.T, backend *pairedBackend, readiness ...func(context.Context, string) error) *App {
 	t.Helper()
+	prebuildTransferTemplate(t)
 	a := backend.app
 	// The fixture clones a migrated database template. Give each transport its
 	// own published identity, as independent production installations have.

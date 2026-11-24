@@ -4,7 +4,7 @@ import { test, expect } from './base-test.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
-import { expectTransferComplete } from './conversation-transfer-helpers.js';
+import { expectTransferComplete, primeTransferRecipient } from './conversation-transfer-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string }> }
 interface Thread { id: string; projectId: string; workspacePath: string; mode: string; model: string; runtimeMode: string }
@@ -18,6 +18,7 @@ export function draftProjectTransferFlow(): void {
     try {
       source = await launchHarness();
       target = await launchHarness();
+      await primeTransferRecipient(target);
       const from = await source.rpc<Seed>('HarnessSeed', { projects: [{ name: 'Draft home project', repo: { commits: [{ files: { 'README.md': 'Source repository' } }] } }] });
       const to = await target.rpc<Seed>('HarnessSeed', { projects: [{ name: 'Draft remote project', repo: { commits: [{ files: { 'README.md': 'Destination repository' } }] } }] });
       const original = await source.rpc<Thread>('CreateThread', { projectId: from.projects[0].projectId, title: 'Moving draft', provider: 'claude', model: 'claude-sonnet-4-6', mode: 'plan', runtimeMode: 'read-only' });
