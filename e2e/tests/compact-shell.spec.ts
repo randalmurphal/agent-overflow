@@ -41,21 +41,6 @@ test.beforeEach(async ({ harness }) => {
   });
 });
 
-test('the viewport picks compact and the list is the root screen', async ({ harness, page }) => {
-  await harness.open(page);
-  await expect(page.locator('html')).toHaveClass(/layout-compact/);
-  await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
-  await expect(page.getByTestId('sidebar')).toBeVisible();
-  await expect(page.getByTestId('thread-row')).toHaveCount(3);
-  // The pane strip is mounted but not showing: visibility, not display.
-  const host = page.getByTestId('pane-host');
-  await expect(host).toBeAttached();
-  await expect(host).toBeHidden();
-  await expect(host).toHaveAttribute('inert', '');
-  await expect(page.getByTestId('sidebar-rail')).toHaveCount(0);
-  await expect(page.getByTestId('sidebar-resizer')).toHaveCount(0);
-});
-
 // The first real-phone session (Pixel 9a, 2026-09-04) opened a thread and
 // could not send: the composer toolbar's densest rung still overflowed a
 // phone's width and the clipped control was Send, at the row's right end.
@@ -113,11 +98,23 @@ test('the sidebar footer keeps its toggles inside the phone width', async ({ har
   }
 });
 
-test('opening a thread swaps to the thread screen and back returns to the list', async ({
+test('the viewport picks compact with the list as the root screen; opening a thread swaps to the thread screen and back returns to the list', async ({
   harness,
   page,
 }) => {
   await harness.open(page);
+  await expect(page.locator('html')).toHaveClass(/layout-compact/);
+  await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
+  await expect(page.getByTestId('sidebar')).toBeVisible();
+  await expect(page.getByTestId('thread-row')).toHaveCount(3);
+  // The pane strip is mounted but not showing: visibility, not display.
+  const host = page.getByTestId('pane-host');
+  await expect(host).toBeAttached();
+  await expect(host).toBeHidden();
+  await expect(host).toHaveAttribute('inert', '');
+  await expect(page.getByTestId('sidebar-rail')).toHaveCount(0);
+  await expect(page.getByTestId('sidebar-resizer')).toHaveCount(0);
+
   await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
   await expect(page.getByTestId('pane-host')).toBeVisible();

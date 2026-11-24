@@ -188,7 +188,7 @@ test.describe.serial('notifications on a remote screen', () => {
     await harness?.close();
   });
 
-  test('a completed turn raises a Web Notification on the remote screen, silently', async () => {
+  test('a completed turn raises a Web Notification on the remote screen, silently, and the host screen’s cue frame never reaches it', async () => {
     const sent = harness.waitForEvent<{ id: string; kind: string; retract?: boolean }>(
       'notification:send',
       (data) => !data.retract && data.kind === 'turn-complete',
@@ -218,10 +218,9 @@ test.describe.serial('notifications on a remote screen', () => {
     // The tag is namespaced by backend, so one machine's notification can
     // never silently replace another's.
     expect(raised.tag.endsWith(`|${presented.id}`)).toBe(true);
-  });
 
-  test('the host screen’s cue frame never reaches this page', async () => {
-    // The precondition: this page's wire was captured and did carry the
+    // The host screen's cue frame never reaches this page. The
+    // precondition: this page's wire was captured and did carry the
     // notification traffic. Without it, "no sound frame" would be equally
     // true of a page that never connected.
     expect(

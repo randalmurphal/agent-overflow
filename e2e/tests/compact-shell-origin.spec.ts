@@ -383,54 +383,39 @@ test.describe.serial('the SPA served from its own origin', () => {
     await context.close();
   });
 
-  test('the preflight the upload needs is answered by the running server', async () => {
-    // The upload route's pattern is method-scoped (`PUT /attachments/upload`),
-    // so the OPTIONS the browser sends ahead of it reaches a route that
-    // exists only to answer preflights. The browser does not surface that
-    // exchange to the page, so it is asked here directly — against the
-    // same running server the case above drove, which is what makes this
-    // an integration check rather than a second copy of the Go unit test.
-    const preflight = await fetch(backendOrigin + '/attachments/upload', {
-      method: 'OPTIONS',
-      headers: {
-        origin: bundle.origin,
-        'access-control-request-method': 'PUT',
-        'access-control-request-headers': 'content-type, x-ao-session',
-      },
-    });
-    expect(preflight.status).toBe(204);
-    expect(preflight.headers.get('access-control-allow-origin')).toBe(bundle.origin);
-    expect(preflight.headers.get('access-control-allow-methods')).toContain('PUT');
-    expect((preflight.headers.get('access-control-allow-headers') ?? '').toLowerCase())
-      .toContain('x-ao-session');
-    // The two rules that keep this one door narrow.
-    expect(preflight.headers.get('access-control-allow-credentials')).toBeNull();
-    expect(preflight.headers.get('vary')?.toLowerCase()).toContain('origin');
-  });
-
-  test('the bundle routes answer their own preflights', async () => {
-    // Same reason as the upload's: both patterns are method-qualified,
-    // so each needs its own OPTIONS route or the mux answers 405 and the
-    // browser never sends the GET. A session header makes both requests
-    // non-simple, so the preflight is not optional.
-    for (const route of ['/bundle/manifest.json', '/bundle/archive.zip']) {
+  // Each route below is method-qualified (`PUT /attachments/upload`,
+  // `GET /bundle/...`), so the OPTIONS the browser sends ahead of it reaches
+  // a route that exists only to answer preflights, or the mux answers 405
+  // and the browser never sends the request. A session header makes each
+  // request non-simple, so the preflight is not optional. The browser does
+  // not surface that exchange to the page, so it is asked here directly,
+  // against the same running server the case above drove, which
+  // is what makes this an integration check rather than a second copy of
+  // the Go unit test.
+  for (const { route, method, headers } of [
+    { route: '/attachments/upload', method: 'PUT', headers: 'content-type, x-ao-session' },
+    { route: '/bundle/manifest.json', method: 'GET', headers: 'x-ao-session, x-ao-device-key' },
+    { route: '/bundle/archive.zip', method: 'GET', headers: 'x-ao-session, x-ao-device-key' },
+  ]) {
+    test(`the preflight ${method} ${route} needs is answered by the running server`, async () => {
       const preflight = await fetch(backendOrigin + route, {
         method: 'OPTIONS',
         headers: {
           origin: bundle.origin,
-          'access-control-request-method': 'GET',
-          'access-control-request-headers': 'x-ao-session, x-ao-device-key',
+          'access-control-request-method': method,
+          'access-control-request-headers': headers,
         },
       });
-      expect(preflight.status, route).toBe(204);
-      expect(preflight.headers.get('access-control-allow-origin'), route).toBe(bundle.origin);
-      expect(preflight.headers.get('access-control-allow-methods'), route).toContain('GET');
-      expect((preflight.headers.get('access-control-allow-headers') ?? '').toLowerCase(), route)
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get('access-control-allow-origin')).toBe(bundle.origin);
+      expect(preflight.headers.get('access-control-allow-methods')).toContain(method);
+      expect((preflight.headers.get('access-control-allow-headers') ?? '').toLowerCase())
         .toContain('x-ao-session');
-      expect(preflight.headers.get('access-control-allow-credentials'), route).toBeNull();
-      expect(preflight.headers.get('vary')?.toLowerCase(), route).toContain('origin');
-    }
-  });
+      // The two rules that keep this one door narrow.
+      expect(preflight.headers.get('access-control-allow-credentials')).toBeNull();
+      expect(preflight.headers.get('vary')?.toLowerCase()).toContain('origin');
+    });
+  }
 
   test('a paired page downloads this backend\'s bundle and the archive matches its manifest', async ({
     browser,
