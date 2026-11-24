@@ -146,30 +146,18 @@ describe('dispatchTextEditing', () => {
     document.body.innerHTML = '';
   });
 
-  it('returns false for a key with no Alt or Ctrl modifier', () => {
-    const ta = createTextarea('hello', 5);
-    const ev = makeEvent('Backspace', {}, ta);
-    expect(dispatchTextEditing(ev)).toBe(false);
+  it.each<[string, string, string, number, Parameters<typeof makeEvent>[1], Partial<Pick<HTMLTextAreaElement, 'readOnly' | 'disabled'>>]>([
+    ['a key with no Alt or Ctrl modifier', 'Backspace', 'hello', 5, {}, {}],
+    ['Cmd (metaKey) held, leaving OS line ops native', 'Backspace', 'hello world', 11, { metaKey: true, altKey: true }, {}],
+    ['both Alt and Ctrl held', 'Backspace', 'hello world', 11, { altKey: true, ctrlKey: true }, {}],
+    ['IME composition', 'Backspace', 'hello', 5, { altKey: true, isComposing: true }, {}],
+    ['a readOnly textarea', 'Backspace', 'hello', 5, { altKey: true }, { readOnly: true }],
+    ['a disabled textarea', 'Backspace', 'hello', 5, { altKey: true }, { disabled: true }],
+    ['a key it does not handle (Alt+Home)', 'Home', 'hello', 5, { altKey: true }, {}],
+  ])('returns false for %s', (_name, key, value, caret, init, props) => {
+    const ta = Object.assign(createTextarea(value, caret), props);
+    expect(dispatchTextEditing(makeEvent(key, init, ta))).toBe(false);
     expect(execSpy).not.toHaveBeenCalled();
-  });
-
-  it('returns false when Cmd (metaKey) is held — leave OS line ops native', () => {
-    const ta = createTextarea('hello world', 11);
-    const ev = makeEvent('Backspace', { metaKey: true, altKey: true }, ta);
-    expect(dispatchTextEditing(ev)).toBe(false);
-    expect(execSpy).not.toHaveBeenCalled();
-  });
-
-  it('returns false when both Alt and Ctrl are held', () => {
-    const ta = createTextarea('hello world', 11);
-    const ev = makeEvent('Backspace', { altKey: true, ctrlKey: true }, ta);
-    expect(dispatchTextEditing(ev)).toBe(false);
-  });
-
-  it('returns false during IME composition', () => {
-    const ta = createTextarea('hello', 5);
-    const ev = makeEvent('Backspace', { altKey: true, isComposing: true }, ta);
-    expect(dispatchTextEditing(ev)).toBe(false);
   });
 
   it('returns false for non-text inputs', () => {
@@ -178,20 +166,6 @@ describe('dispatchTextEditing', () => {
     document.body.appendChild(input);
     input.value = '42';
     const ev = makeEvent('Backspace', { altKey: true }, input);
-    expect(dispatchTextEditing(ev)).toBe(false);
-  });
-
-  it('returns false for readOnly textarea', () => {
-    const ta = createTextarea('hello', 5);
-    ta.readOnly = true;
-    const ev = makeEvent('Backspace', { altKey: true }, ta);
-    expect(dispatchTextEditing(ev)).toBe(false);
-  });
-
-  it('returns false for disabled textarea', () => {
-    const ta = createTextarea('hello', 5);
-    ta.disabled = true;
-    const ev = makeEvent('Backspace', { altKey: true }, ta);
     expect(dispatchTextEditing(ev)).toBe(false);
   });
 
@@ -285,12 +259,6 @@ describe('dispatchTextEditing', () => {
       expect(ta.selectionStart).toBe(0);
       expect(ta.selectionEnd).toBe(5);
     });
-  });
-
-  it('returns false for a key it does not handle (e.g. Alt+Home)', () => {
-    const ta = createTextarea('hello', 5);
-    const ev = makeEvent('Home', { altKey: true }, ta);
-    expect(dispatchTextEditing(ev)).toBe(false);
   });
 
   it('handles a plain text input the same as a textarea', () => {

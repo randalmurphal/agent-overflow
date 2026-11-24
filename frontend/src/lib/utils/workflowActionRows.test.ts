@@ -71,6 +71,13 @@ describe('workflowActionRow', () => {
     expect(ids('question')).toEqual([]);
   });
 
+  // `failed` and `blocked` are two rows because each state has exactly one
+  // engine edge back and the guards are mutually exclusive: `RerunFailed`
+  // refuses anything that is not `failed`, `Resume` refuses anything that is
+  // not `needs-human`. Offering the wrong one is a button that always errors.
+  // D32 removed every affordance that spawned a NEW chat thread from a run
+  // (`take-over`, `open-in-thread`); only `take-over-unit` and
+  // `open-phase-thread`, which open an existing thread, remain.
   it.each([
     ['failed', ['rerun', 'discard']],
     ['blocked', ['resume', 'discard']],
@@ -85,32 +92,6 @@ describe('workflowActionRow', () => {
     expect(ids(kind)).toEqual([...expected]);
   });
 
-  // D32 removed every affordance that spawned a NEW chat thread from a run:
-  // run-level "Take over" / "Continue with agent" and the D17 "Open in thread"
-  // seed+bind. Unit take-over (the one that steers an EXISTING unit thread) and
-  // "Open phase thread" survive, so the row must keep exactly those two.
-  it('offers no run-level thread spawn on any row, and keeps the two thread actions that open an existing thread', () => {
-    const spawned = ALL_KINDS.flatMap((kind) => ids(kind))
-      .filter((id) => id === 'take-over' || id === 'open-in-thread');
-    expect(spawned).toEqual([]);
-    expect(ids('unit-failed')).toContain('take-over-unit');
-    expect(ids('running')).toContain('open-phase-thread');
-  });
-
-  // The reason `failed` and `blocked` are two rows. Each state has exactly one
-  // engine edge back and the guards are mutually exclusive: `RerunFailed`
-  // refuses anything that is not `failed`, `Resume` refuses anything that is
-  // not `needs-human`. Offering the wrong one is a button that always errors,
-  // which is what a single shared row used to do to every parked run.
-  it.each([
-    ['failed', 'rerun', 'resume'],
-    ['blocked', 'resume', 'rerun'],
-  ] as const)('%s offers the one continuation its state accepts, and never the other', (kind, accepted, refused) => {
-    const row = ids(kind);
-    expect(row).toContain(accepted);
-    expect(row).not.toContain(refused);
-  });
-
   it('arms every destruction that is not already behind the discard preview', () => {
     const armed = (kind: WorkflowResolutionKind) => workflowActionRow({ kind })
       .filter((action) => action.arms).map((action) => action.id);
@@ -123,12 +104,9 @@ describe('workflowActionRow', () => {
   });
 
   // The stop request is the one row entry that is not a function of the run's
-  // state: it exists only where a call boundary can honour it, and its label is
-  // the only place a human sees that a stop is already pending.
-  it('offers no stop when the run has no boundary to stop at', () => {
-    expect(ids('running')).toEqual(['pause', 'pause-end-sessions', 'open-phase-thread', 'cancel']);
-  });
-
+  // state: it exists only where a call boundary can honour it (the running row
+  // above has none without softStop), and its label is the only place a human
+  // sees that a stop is already pending.
   it.each([
     [false, 'soft-stop', 'Stop after this wave'],
     [true, 'clear-soft-stop', 'Stopping after this wave — undo'],

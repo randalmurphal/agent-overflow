@@ -42,44 +42,14 @@ describe('deriveCompletionStatus', () => {
     expect(deriveCompletionStatus(makeItem({ status: 'declined' }))).toBe('failure');
   });
 
-  it('treats status=completed with is_error=true as failure (Claude inline error shape)', () => {
-    const item = makeItem({
-      status: 'completed',
-      payloadMeta: JSON.stringify({ is_error: true }),
-    });
-    expect(deriveCompletionStatus(item)).toBe('failure');
-  });
-
-  it('treats status=completed with isError=true as failure (camelCase header shape)', () => {
-    const item = makeItem({
-      status: 'completed',
-      payloadMeta: JSON.stringify({ isError: true }),
-    });
-    expect(deriveCompletionStatus(item)).toBe('failure');
-  });
-
-  it('treats non-zero exitCode as failure even when status=completed', () => {
-    const item = makeItem({
-      status: 'completed',
-      payloadMeta: JSON.stringify({ exitCode: 7 }),
-    });
-    expect(deriveCompletionStatus(item)).toBe('failure');
-  });
-
-  it('treats non-zero exit_code (snake_case) as failure', () => {
-    const item = makeItem({
-      status: 'completed',
-      payloadMeta: JSON.stringify({ exit_code: 1 }),
-    });
-    expect(deriveCompletionStatus(item)).toBe('failure');
-  });
-
-  it('treats exit code 0 as success', () => {
-    const item = makeItem({
-      status: 'completed',
-      payloadMeta: JSON.stringify({ exitCode: 0 }),
-    });
-    expect(deriveCompletionStatus(item)).toBe('success');
+  it.each([
+    ['is_error=true (Claude inline error shape)', { is_error: true }, 'failure'],
+    ['isError=true (camelCase header shape)', { isError: true }, 'failure'],
+    ['a non-zero exitCode', { exitCode: 7 }, 'failure'],
+    ['a non-zero exit_code (snake_case)', { exit_code: 1 }, 'failure'],
+    ['exit code 0', { exitCode: 0 }, 'success'],
+  ] as const)('reads status=completed with %s', (_name, meta, expected) => {
+    expect(deriveCompletionStatus(makeItem({ status: 'completed', payloadMeta: JSON.stringify(meta) }))).toBe(expected);
   });
 
   it('ignores garbage payload meta and falls back to status alone', () => {
@@ -94,21 +64,10 @@ describe('deriveCompletionStatus', () => {
   });
 
   describe('backgrounded launch rows are stable', () => {
-    it('returns null for a backgrounded tool_call regardless of running status', () => {
-      const item = makeItem({ kind: 'tool_call', isBackground: true, status: 'running' });
-      expect(deriveCompletionStatus(item)).toBeNull();
-    });
-
-    it('returns null for a backgrounded tool_call even when status is completed', () => {
-      // The launch row is only the launch event. Completion belongs on the
-      // sibling row, so the launch itself must not produce a badge.
-      const item = makeItem({ kind: 'tool_call', isBackground: true, status: 'completed' });
-      expect(deriveCompletionStatus(item)).toBeNull();
-    });
-
-    it('returns null for a backgrounded tool_call even when status is errored', () => {
-      const item = makeItem({ kind: 'tool_call', isBackground: true, status: 'errored' });
-      expect(deriveCompletionStatus(item)).toBeNull();
+    // The launch row is only the launch event. Completion belongs on the
+    // sibling row, so the launch itself must not produce a badge.
+    it.each(['running', 'completed', 'errored'] as const)('returns null for a backgrounded tool_call with status %s', (status) => {
+      expect(deriveCompletionStatus(makeItem({ kind: 'tool_call', isBackground: true, status }))).toBeNull();
     });
 
     it('returns success for a tool_completion sibling carrying isBackground=true (the row that DOES get the badge)', () => {
@@ -151,14 +110,6 @@ describe('deriveCompletionStatus', () => {
       const item = makeItem({
         status: 'errored',
         payloadMeta: JSON.stringify({ exitCode: 0 }),
-      });
-      expect(deriveCompletionStatus(item)).toBe('failure');
-    });
-
-    it('is_error=true beats absent exit code', () => {
-      const item = makeItem({
-        status: 'completed',
-        payloadMeta: JSON.stringify({ is_error: true }),
       });
       expect(deriveCompletionStatus(item)).toBe('failure');
     });
