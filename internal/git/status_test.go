@@ -72,19 +72,6 @@ func TestParsePorcelainStatus(t *testing.T) {
 	}
 }
 
-func TestStatusReturnsNotRepoForNonGitDirectory(t *testing.T) {
-	t.Parallel()
-	core := NewCore()
-
-	status, err := core.Status(t.Context(), t.TempDir())
-	if err != nil {
-		t.Fatalf("Status returned error: %v", err)
-	}
-	if status.IsRepo {
-		t.Fatal("expected IsRepo=false")
-	}
-}
-
 // repoWithOrigin creates a bare repo + a working clone with that bare
 // repo set as origin and an initial main push, returning (workingRepo,
 // barePath).
@@ -434,39 +421,25 @@ func TestSplitUpstreamRef(t *testing.T) {
 	}
 }
 
-func TestCurrentBranchReturnsMain(t *testing.T) {
+// A branch is named before its first commit; a detached HEAD and a directory
+// outside any repository name none. TestCurrentBranchDoesNotRunForgeLookup
+// covers a checked-out branch.
+func TestCurrentBranch(t *testing.T) {
 	t.Parallel()
-	repo := initGitRepo(t)
-
-	if got := NewCore().CurrentBranch(repo); got != "main" {
-		t.Fatalf("CurrentBranch() = %q, want main", got)
-	}
-}
-
-func TestCurrentBranchReturnsUnbornBranch(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	testutil.RunGit(t, repo, "init", "-q", "-b", "new-repo")
-
-	if got := NewCore().CurrentBranch(repo); got != "new-repo" {
-		t.Fatalf("CurrentBranch() = %q, want new-repo", got)
-	}
-}
-
-func TestCurrentBranchReturnsEmptyForDetachedHEAD(t *testing.T) {
-	t.Parallel()
-	repo := initGitRepo(t)
-	testutil.RunGit(t, repo, "checkout", "--detach", "HEAD")
-
-	if got := NewCore().CurrentBranch(repo); got != "" {
-		t.Fatalf("CurrentBranch() on detached HEAD = %q, want empty", got)
-	}
-}
-
-func TestCurrentBranchReturnsEmptyOutsideRepository(t *testing.T) {
-	t.Parallel()
-	if got := NewCore().CurrentBranch(t.TempDir()); got != "" {
-		t.Fatalf("CurrentBranch() outside repository = %q, want empty", got)
+	unborn := t.TempDir()
+	testutil.RunGit(t, unborn, "init", "-q", "-b", "new-repo")
+	detached := initGitRepo(t)
+	testutil.RunGit(t, detached, "checkout", "--detach", "HEAD")
+	for _, tc := range []struct{ name, cwd, want string }{
+		{"unborn branch", unborn, "new-repo"},
+		{"detached HEAD", detached, ""},
+		{"outside a repository", t.TempDir(), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NewCore().CurrentBranch(tc.cwd); got != tc.want {
+				t.Fatalf("CurrentBranch() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

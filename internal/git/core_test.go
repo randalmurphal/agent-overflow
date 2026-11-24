@@ -284,45 +284,20 @@ func TestCreateListAndRemoveWorktree(t *testing.T) {
 	}
 }
 
-func TestCreateWorktreeRequiresPath(t *testing.T) {
-	t.Parallel()
-	repo := initGitRepo(t)
-	core := NewCore()
-
-	err := core.CreateWorktree(repo, "  ", "feature/x")
-	if err == nil {
-		t.Fatal("expected error for empty worktree path")
-	}
-	if !strings.Contains(err.Error(), "path is required") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestCreateWorktreeRequiresBranch(t *testing.T) {
-	t.Parallel()
-	repo := initGitRepo(t)
-	core := NewCore()
-
-	err := core.CreateWorktree(repo, filepath.Join(t.TempDir(), "wt"), "  ")
-	if err == nil {
-		t.Fatal("expected error for empty worktree branch")
-	}
-	if !strings.Contains(err.Error(), "branch is required") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestCreateWorktreeRejectsInvalidBranch(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)
-	core := NewCore()
-
-	err := core.CreateWorktree(repo, filepath.Join(t.TempDir(), "wt"), "--bad")
-	if err == nil {
-		t.Fatal("expected error for invalid branch name")
-	}
-	if !strings.Contains(err.Error(), "must not start with -") {
-		t.Fatalf("unexpected error: %v", err)
+	wt := filepath.Join(t.TempDir(), "wt")
+	for _, tc := range []struct{ name, path, branch, want string }{
+		{"blank path", "  ", "feature/x", "path is required"},
+		{"blank branch", wt, "  ", "branch is required"},
+		{"flag-shaped branch", wt, "--bad", "must not start with -"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := NewCore().CreateWorktree(repo, tc.path, tc.branch); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("CreateWorktree(%q, %q) = %v, want an error containing %q", tc.path, tc.branch, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -394,30 +369,23 @@ func TestAttachWorktreeAttachesExistingBranch(t *testing.T) {
 	}
 }
 
-func TestAttachWorktreeRequiresPath(t *testing.T) {
-	t.Parallel()
-	core := NewCore()
-	if _, err := core.AttachWorktreeAt(t.TempDir(), "  ", BranchRef("main")); err == nil ||
-		!strings.Contains(err.Error(), "path is required") {
-		t.Fatalf("expected path-required error, got %v", err)
-	}
-}
-
-func TestAttachWorktreeRequiresBranch(t *testing.T) {
-	t.Parallel()
-	core := NewCore()
-	if _, err := core.AttachWorktreeAt(t.TempDir(), filepath.Join(t.TempDir(), "wt"), Ref{}); err == nil ||
-		!strings.Contains(err.Error(), "ref is required") {
-		t.Fatalf("expected branch-required error, got %v", err)
-	}
-}
-
 func TestAttachWorktreeRejectsFlagShapedBranch(t *testing.T) {
 	t.Parallel()
-	core := NewCore()
-	_, err := core.AttachWorktreeAt(t.TempDir(), filepath.Join(t.TempDir(), "wt"), BranchRef("--orphan"))
-	if err == nil || !strings.Contains(err.Error(), "must not start with -") {
-		t.Fatalf("expected flag-shape rejection, got %v", err)
+	wt := filepath.Join(t.TempDir(), "wt")
+	for _, tc := range []struct {
+		name, path string
+		ref        Ref
+		want       string
+	}{
+		{"blank path", "  ", BranchRef("main"), "path is required"},
+		{"no ref", wt, Ref{}, "ref is required"},
+		{"flag-shaped branch", wt, BranchRef("--orphan"), "must not start with -"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewCore().AttachWorktreeAt(t.TempDir(), tc.path, tc.ref); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("AttachWorktreeAt(%q, %+v) = %v, want an error containing %q", tc.path, tc.ref, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -491,27 +459,6 @@ func TestFormatCommandQuotesSpecialChars(t *testing.T) {
 	}
 }
 
-func TestLimitedBufferMultipleWritesBeyondLimit(t *testing.T) {
-	t.Parallel()
-	buf := newLimitedBuffer(6)
-
-	if _, err := buf.Write([]byte("abc")); err != nil {
-		t.Fatalf("first Write: %v", err)
-	}
-	if buf.Truncated() {
-		t.Fatal("should not be truncated after first write")
-	}
-	if _, err := buf.Write([]byte("defgh")); err != nil {
-		t.Fatalf("second Write: %v", err)
-	}
-	if !buf.Truncated() {
-		t.Fatal("should be truncated after second write exceeds limit")
-	}
-	if got := buf.String(); got != "abcdef" {
-		t.Fatalf("String() = %q, want abcdef", got)
-	}
-}
-
 func TestLimitedBufferZeroMaxDropsEverything(t *testing.T) {
 	t.Parallel()
 	buf := newLimitedBuffer(0)
@@ -530,16 +477,28 @@ func TestLimitedBufferZeroMaxDropsEverything(t *testing.T) {
 
 func TestLimitedBufferTruncates(t *testing.T) {
 	t.Parallel()
-	buf := newLimitedBuffer(4)
-
-	if _, err := buf.Write([]byte("hello")); err != nil {
-		t.Fatalf("Write returned error: %v", err)
-	}
-	if got := buf.String(); got != "hell" {
-		t.Fatalf("String() = %q, want hell", got)
-	}
-	if !buf.Truncated() {
-		t.Fatal("expected buffer to report truncation")
+	for _, tc := range []struct {
+		name          string
+		limit         int64
+		writes        []string
+		want          string
+		wantTruncated bool
+	}{
+		{"one write past the limit", 4, []string{"hello"}, "hell", true},
+		{"a write within the limit", 6, []string{"abc"}, "abc", false},
+		{"a second write past the limit", 6, []string{"abc", "defgh"}, "abcdef", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := newLimitedBuffer(tc.limit)
+			for _, w := range tc.writes {
+				if _, err := buf.Write([]byte(w)); err != nil {
+					t.Fatalf("Write(%q): %v", w, err)
+				}
+			}
+			if got := buf.String(); got != tc.want || buf.Truncated() != tc.wantTruncated {
+				t.Fatalf("String() = %q, Truncated() = %v; want %q, %v", got, buf.Truncated(), tc.want, tc.wantTruncated)
+			}
+		})
 	}
 }
 

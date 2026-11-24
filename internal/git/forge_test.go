@@ -23,50 +23,23 @@ func TestPRReferenceProject(t *testing.T) {
 	}
 }
 
-func TestSplitProjectForForge_GitHub(t *testing.T) {
+func TestSplitProjectForForge(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		input    string
-		wantNS   string
-		wantRepo string
-	}{
-		{"owner/repo", "owner", "repo"},
-		{"  owner/repo  ", "owner", "repo"},
-		{"owner/repo.name", "owner", "repo.name"},
-		{"123-org/repo", "123-org", "repo"},
-	}
-	for _, tc := range cases {
-		ns, repo, err := SplitProjectForForge("github", tc.input)
-		if err != nil {
-			t.Errorf("SplitProjectForForge(github, %q) error = %v", tc.input, err)
-			continue
-		}
-		if ns != tc.wantNS || repo != tc.wantRepo {
-			t.Errorf("SplitProjectForForge(github, %q) = (%q, %q), want (%q, %q)", tc.input, ns, repo, tc.wantNS, tc.wantRepo)
-		}
-	}
-}
-
-func TestSplitProjectForForge_GitLab(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		input    string
-		wantNS   string
-		wantRepo string
-	}{
-		{"group/repo", "group", "repo"},
-		{"group/sub/repo", "group/sub", "repo"},
-		{"group/sub1/sub2/repo", "group/sub1/sub2", "repo"},
-	}
-	for _, tc := range cases {
-		ns, repo, err := SplitProjectForForge("gitlab", tc.input)
-		if err != nil {
-			t.Errorf("SplitProjectForForge(gitlab, %q) error = %v", tc.input, err)
-			continue
-		}
-		if ns != tc.wantNS || repo != tc.wantRepo {
-			t.Errorf("SplitProjectForForge(gitlab, %q) = (%q, %q), want (%q, %q)", tc.input, ns, repo, tc.wantNS, tc.wantRepo)
-		}
+	for _, tc := range []struct{ forge, input, wantNS, wantRepo string }{
+		{"github", "owner/repo", "owner", "repo"},
+		{"github", "  owner/repo  ", "owner", "repo"},
+		{"github", "owner/repo.name", "owner", "repo.name"},
+		{"github", "123-org/repo", "123-org", "repo"},
+		{"gitlab", "group/repo", "group", "repo"},
+		{"gitlab", "group/sub/repo", "group/sub", "repo"},
+		{"gitlab", "group/sub1/sub2/repo", "group/sub1/sub2", "repo"},
+	} {
+		t.Run(tc.forge+" "+tc.input, func(t *testing.T) {
+			ns, repo, err := SplitProjectForForge(tc.forge, tc.input)
+			if err != nil || ns != tc.wantNS || repo != tc.wantRepo {
+				t.Errorf("SplitProjectForForge(%s, %q) = (%q, %q, %v), want (%q, %q)", tc.forge, tc.input, ns, repo, err, tc.wantNS, tc.wantRepo)
+			}
+		})
 	}
 }
 

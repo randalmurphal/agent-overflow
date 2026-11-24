@@ -291,18 +291,28 @@ func TestWorktreeSeedWithoutABaseCutsFromHeadAndNeverFetches(t *testing.T) {
 	}
 }
 
-func TestWorktreeSeedRejectsAFlagShapedBaseBeforeFetching(t *testing.T) {
+// A flag-shaped base and a directory outside any repository are refused
+// before anything is fetched.
+func TestWorktreeSeedRejectsBeforeFetching(t *testing.T) {
 	t.Parallel()
-	repo, _ := staleClone(t)
-	core := NewCore()
-	calls := countingFetch(core)
-
-	worktree := filepath.Join(t.TempDir(), "rejected")
-	if _, err := core.CreateWorktreeFromFreshRef(t.Context(), repo, worktree, BranchRef("--upload-pack=x"), "ao-rejected"); err == nil {
-		t.Fatal("expected a flag-shaped base branch to be rejected")
-	}
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("fetch ran %d times for an invalid base, want 0", got)
+	stale, _ := staleClone(t)
+	for _, tc := range []struct {
+		name, repo string
+		base       Ref
+	}{
+		{"flag-shaped base", stale, BranchRef("--upload-pack=x")},
+		{"not a repository", t.TempDir(), BranchRef("main")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			core := NewCore()
+			calls := countingFetch(core)
+			if _, err := core.CreateWorktreeFromFreshRef(t.Context(), tc.repo, filepath.Join(t.TempDir(), "wt"), tc.base, "ao-rejected"); err == nil {
+				t.Fatalf("CreateWorktreeFromFreshRef(%q, %+v) succeeded, want an error", tc.repo, tc.base)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("fetch ran %d times, want 0", got)
+			}
+		})
 	}
 }
 
@@ -321,20 +331,6 @@ func TestWorktreeSeedReportsCreationFailureWithTheFetchDiagnostics(t *testing.T)
 	}
 	if !seed.FromRemote || seed.Ref != "origin/main" {
 		t.Fatalf("seed = %+v, want the resolved base to survive the failure", seed)
-	}
-}
-
-func TestWorktreeSeedRejectsANonRepository(t *testing.T) {
-	t.Parallel()
-	core := NewCore()
-	calls := countingFetch(core)
-	if _, err := core.CreateWorktreeFromFreshRef(
-		t.Context(), t.TempDir(), filepath.Join(t.TempDir(), "wt"), BranchRef("main"), "ao-nonrepo",
-	); err == nil {
-		t.Fatal("expected an error outside a repository")
-	}
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("fetch ran %d times outside a repository, want 0", got)
 	}
 }
 

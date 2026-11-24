@@ -61,21 +61,6 @@ func newOpenPRCore(t *testing.T, mode string) (*Core, *openPRForge) {
 	return core, forge
 }
 
-func TestLookupOpenPRReadsTheForge(t *testing.T) {
-	t.Parallel()
-	core, _ := newOpenPRCore(t, "pr7")
-	cwd := t.TempDir()
-	seedForgeCacheGitHub(t, core, cwd)
-
-	url, number, lookupErr := core.lookupOpenPR(t.Context(), cwd, "main")
-	if lookupErr != "" {
-		t.Fatalf("lookupErr = %q, want empty", lookupErr)
-	}
-	if url != "https://example.com/pr/7" || number != 7 {
-		t.Fatalf("lookup = (%q, %d), want PR 7", url, number)
-	}
-}
-
 // TestLookupOpenPRCachesResults pins that repeated lookups on the same
 // (cwd, branch) inside the TTL window do NOT reach the forge again.
 // Without the cache, gitwatch's hot path would turn every fs-event
