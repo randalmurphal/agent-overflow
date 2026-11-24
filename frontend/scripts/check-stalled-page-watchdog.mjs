@@ -13,28 +13,26 @@
 // The blocked pages wait on synchronous requests the dev server holds, so
 // they burn no CPU. It cannot live in the suite: the watchdog ends the whole
 // Vitest process it runs in.
+//
+// The scenarios below own the fixture files: the child config includes
+// exactly the files they run (STALL_FIXTURES), so a fixture no scenario
+// runs is a file nothing loads, which knip reports.
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixtures = path.join(frontend, 'src/test/stalledPage');
+const CHILD_CONFIG = fileURLToPath(new URL('../src/test/stalledPage/vitest.config.ts', import.meta.url));
 // The 8 s bound, Vitest's 10 s teardownTimeout, and startup, with room.
 const DEADLINE_MS = 60_000;
 const CHECK_BOUND = '8 s';
-
-const failures = [];
-
-const { default: config } = await import(pathToFileURL(path.join(frontend, 'vitest.config.ts')).href);
-const { StalledPageWatchdog } = await import(pathToFileURL(path.join(frontend, 'src/test/stalledPageWatchdog.ts')).href);
-const registered = (config.test?.reporters ?? []).filter((reporter) => reporter instanceof StalledPageWatchdog);
-if (registered.length !== 1) failures.push(`vitest.config.ts registers ${registered.length} stalled-page watchdogs, not 1`);
 
 async function run(files) {
   const startedAt = Date.now();
   const child = spawn(
     process.execPath,
-    [path.join(frontend, 'node_modules/vitest/vitest.mjs'), 'run', '--config', 'src/test/stalledPage/vitest.config.ts', ...files],
+    [path.join(frontend, 'node_modules/vitest/vitest.mjs'), 'run', '--config', CHILD_CONFIG, ...files],
     { cwd: frontend, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, FORCE_COLOR: '0' } },
   );
   let output = '';
@@ -81,27 +79,33 @@ const scenarios = [
   },
 ];
 
-// The child config includes the fixtures by name, which is what makes knip
-// report one no scenario runs; the scenarios run exactly those.
-const { default: childConfig } = await import(pathToFileURL(path.join(fixtures, 'vitest.config.ts')).href);
-const included = [...childConfig.test.include].map((file) => path.basename(file)).sort();
-const named = [...new Set(scenarios.flatMap((scenario) => scenario.files))].sort();
-if (included.join() !== named.join()) {
-  failures.push(`src/test/stalledPage/vitest.config.ts includes ${included.join(', ')}; the scenarios run ${named.join(', ')}`);
-}
+/** Every fixture file a scenario runs, by name under src/test/stalledPage/. */
+export const STALL_FIXTURES = [...new Set(scenarios.flatMap((scenario) => scenario.files))];
 
-for (const scenario of scenarios) {
-  const result = await run(scenario.files.map((file) => path.join('src/test/stalledPage', file)));
-  const problems = scenario.expect(result).filter((check) => check !== true);
-  if (problems.length > 0) {
-    failures.push(`${scenario.name}: ${problems.join('; ')}\n${result.output}`);
-  } else {
-    console.log(`passed: ${scenario.name} (exit ${result.code} in ${result.seconds} s)`);
+async function main() {
+  const failures = [];
+  const { default: config } = await import(pathToFileURL(path.join(frontend, 'vitest.config.ts')).href);
+  const { StalledPageWatchdog } = await import(pathToFileURL(path.join(frontend, 'src/test/stalledPageWatchdog.ts')).href);
+  const registered = (config.test?.reporters ?? []).filter((reporter) => reporter instanceof StalledPageWatchdog);
+  if (registered.length !== 1) failures.push(`vitest.config.ts registers ${registered.length} stalled-page watchdogs, not 1`);
+
+  for (const scenario of scenarios) {
+    const result = await run(scenario.files.map((file) => path.join('src/test/stalledPage', file)));
+    const problems = scenario.expect(result).filter((check) => check !== true);
+    if (problems.length > 0) {
+      failures.push(`${scenario.name}: ${problems.join('; ')}\n${result.output}`);
+    } else {
+      console.log(`passed: ${scenario.name} (exit ${result.code} in ${result.seconds} s)`);
+    }
   }
+
+  if (failures.length > 0) {
+    console.error(`check-stalled-page-watchdog FAILED:\n  ${failures.join('\n  ')}`);
+    process.exit(1);
+  }
+  console.log('check-stalled-page-watchdog passed');
 }
 
-if (failures.length > 0) {
-  console.error(`check-stalled-page-watchdog FAILED:\n  ${failures.join('\n  ')}`);
-  process.exit(1);
-}
-console.log('check-stalled-page-watchdog passed');
+// The child config imports STALL_FIXTURES from here; only a run of this
+// file runs the check.
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) await main();

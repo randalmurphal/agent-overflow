@@ -5,8 +5,11 @@
 //
 //   node scripts/ci-suites.mjs plan EVENT [PATHS_FILE]
 //       (the toolchain job) prints plan=JSON for GITHUB_OUTPUT: every job
-//       of ci.yml but toolchain and ci-result, each true or false. A pull
-//       request needs PATHS_FILE; a push or a manual run runs every suite.
+//       of ci.yml but toolchain and ci-result, each true or false; and
+//       e2e-grep-invert=, the Playwright --grep-invert pattern of the
+//       tooling specs the change cannot reach, empty to run every spec. A
+//       pull request needs PATHS_FILE; a push or a manual run runs every
+//       suite and every spec.
 //   node scripts/ci-suites.mjs verdict   (the CI result job, with PLAN and
 //       NEEDS in the environment) fails unless every job the plan selected
 //       succeeded and every job it excluded was skipped.
@@ -20,7 +23,9 @@
 // Playwright suite runs all of it: Playwright's --only-changed misses a
 // spec that reaches a changed helper through another helper
 // (review-diff-reading.spec.ts through review-diff-reading-flow.ts to
-// review-comment-actions-flow.ts).
+// review-comment-actions-flow.ts). The one exception is the specs that
+// test the suite's own tooling (toolingSpecs below), which a change skips
+// when none of its paths can change their result.
 //
 // Every path falls in the first class that matches it, and a suite runs
 // when the change holds a path of a class it reads. A path no class
@@ -102,6 +107,49 @@ export function suites(paths, harnessPackages) {
   };
 }
 
+// toolingSpecs names each Playwright spec that tests the suite's own
+// tooling rather than the app, with the classes of path that cannot change
+// its result. A pull request whose every path is in those classes, or is
+// another gate spec, skips the spec in every shard; any other path, a new
+// kind of file included, runs it. Another gate spec cannot reach it:
+// Playwright refuses a test file that imports another test file of the
+// run. A manual spec is no test file of the gate run, so it is not exempt.
+export const toolingSpecs = {
+  // A nested Playwright run, spawned with node, of tests/stalled-page/
+  // against a synthetic page server: it boots no backend and opens no app
+  // page. It reads e2e/ (the fixtures, src/page-stall.ts, Playwright's
+  // version in e2e/package.json and the lockfile) and the browsers, which
+  // are in class other.
+  'e2e/tests/stalled-page-capture.spec.ts': ['docs', 'frontend', 'frontend-test', 'go', 'go-test'],
+  // They take no page: the store, the update commands, the mock scenarios
+  // and their e2e helpers decide them.
+  'e2e/tests/upgrade-corpus-recovery.spec.ts': ['docs', 'frontend', 'frontend-test'],
+  'e2e/tests/upgrade-corpus-coverage.spec.ts': ['docs', 'frontend', 'frontend-test'],
+};
+
+const gateSpec = path => /^e2e\/tests\/.+\.spec\.ts$/.test(path) && !path.endsWith('.manual.spec.ts');
+
+// skippedSpecs lists the tooling specs a pull request with these paths
+// cannot change.
+export function skippedSpecs(paths, harnessPackages) {
+  return Object.entries(toolingSpecs)
+    .filter(([spec, classes]) => paths.every(path => path !== spec && (gateSpec(path) || classes.includes(classify(path, harnessPackages)))))
+    .map(([spec]) => spec);
+}
+
+// grepInvert matches the tests of these spec files by the file part of
+// the title Playwright greps (project, file, describes, title, tags, joined
+// by spaces), or is empty.
+export function grepInvert(specs) {
+  if (specs.length === 0) return '';
+  const files = specs.map(spec => spec.slice('e2e/tests/'.length).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return `(^| )(${files.join('|')})( |$)`;
+}
+
+export function e2eGrepInvert(event, paths, harnessPackages) {
+  return event === 'pull_request' ? grepInvert(skippedSpecs(paths, harnessPackages)) : '';
+}
+
 export const everything = { 'go-checks': true, 'go-lint': true, frontend: true, vitest: true, e2e: true, 'upgrade-lineage': true };
 
 // jobs maps each job of ci.yml the plan decides, but toolchain and
@@ -171,7 +219,9 @@ function main([command, ...args]) {
   if (command === 'plan' && (args.length === 1 || args.length === 2)) {
     const [event, pathsFile] = args;
     const paths = pathsFile === undefined ? undefined : readFileSync(pathsFile, 'utf8').split('\n').filter(Boolean);
-    console.log(`plan=${JSON.stringify(plan(event, paths, harnessTestPackages()))}`);
+    const harness = harnessTestPackages();
+    console.log(`plan=${JSON.stringify(plan(event, paths, harness))}`);
+    console.log(`e2e-grep-invert=${e2eGrepInvert(event, paths, harness)}`);
     return;
   }
   if (command === 'verdict' && args.length === 0) {
