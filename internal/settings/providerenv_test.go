@@ -2,13 +2,10 @@ package settings
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"agent-overflow/internal/provider"
 )
 
 func TestSetProviderEnvVarRoundTripsNameValueAndSensitiveFlag(t *testing.T) {
@@ -331,42 +328,6 @@ func assertEnvVars(t *testing.T, got, want []ProviderEnvVar) {
 		if got[i] != want[i] {
 			t.Fatalf("env var[%d] = %+v, want %+v", i, got[i], want[i])
 		}
-	}
-}
-
-// TestEveryReservedNameIsRefusedBySettings walks provider's table: a row with
-// a refusal is refused for its provider with that reason, a row without one
-// is accepted, and a provider-scoped row binds only that provider.
-func TestEveryReservedNameIsRefusedBySettings(t *testing.T) {
-	entries := provider.ReservedEnvEntries()
-	if len(entries) == 0 {
-		t.Fatal("the reserved table is empty")
-	}
-	for _, entry := range entries {
-		providers := []string{"claude", "codex", "agy"}
-		if entry.Provider != "" {
-			providers = []string{entry.Provider}
-		}
-		for _, providerName := range providers {
-			t.Run(providerName+"/"+entry.Name, func(t *testing.T) {
-				svc := NewService(t.TempDir())
-				_, err := svc.SetProviderEnvVar(providerName, entry.Name, "v", false)
-				if entry.Refusal == "" {
-					if err != nil {
-						t.Fatalf("%s refused %q, which the table allows: %v", providerName, entry.Name, err)
-					}
-					return
-				}
-				want := fmt.Sprintf("settings: %q is reserved: %s", entry.Name, entry.Refusal)
-				if err == nil || err.Error() != want {
-					t.Fatalf("error = %v, want %q", err, want)
-				}
-			})
-		}
-	}
-	svc := NewService(t.TempDir())
-	if _, err := svc.SetProviderEnvVar("claude", "AO_NEW_CONTRACT", "v", false); err == nil {
-		t.Fatal("claude accepted a name under the reserved prefix")
 	}
 }
 

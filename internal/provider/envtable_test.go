@@ -49,3 +49,34 @@ func TestTheZeroReservedEnvPanicsWhenBuilt(t *testing.T) {
 		})
 	}
 }
+
+// Every row of the table settles what settings does with its name: a row with
+// a refusal is refused for its provider in any case with that reason, a row
+// without one is accepted, and no two rows that reach one provider share a
+// name.
+func TestEveryReservedEnvRowDecidesItsRefusal(t *testing.T) {
+	if len(reservedEnvTable) == 0 {
+		t.Fatal("the reserved table is empty")
+	}
+	providers := []string{"claude", "codex", "agy"}
+	owner := map[string]*reservedEnvEntry{}
+	for _, entry := range reservedEnvTable {
+		reaches := providers
+		if entry.provider != "" {
+			reaches = []string{entry.provider}
+		}
+		for _, providerKey := range reaches {
+			key := providerKey + "/" + entry.name
+			if owner[key] != nil {
+				t.Errorf("%s is declared twice for %s", entry.name, providerKey)
+			}
+			owner[key] = entry
+			for _, spelling := range []string{entry.name, strings.ToLower(entry.name)} {
+				reason, refused := ReservedEnvRefusal(providerKey, spelling)
+				if refused != (entry.refusal != "") || reason != entry.refusal {
+					t.Errorf("ReservedEnvRefusal(%q, %q) = %q, %v; want %q", providerKey, spelling, reason, refused, entry.refusal)
+				}
+			}
+		}
+	}
+}

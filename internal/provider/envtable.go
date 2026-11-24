@@ -184,19 +184,3 @@ func ReservedEnvRefusal(providerKey, name string) (reason string, refused bool) 
 	}
 	return "", false
 }
-
-// ReservedEnvEntry is one table row as the settings test reads it.
-type ReservedEnvEntry struct {
-	Name     string
-	Provider string
-	Refusal  string
-}
-
-// ReservedEnvEntries lists the table, in declaration order.
-func ReservedEnvEntries() []ReservedEnvEntry {
-	out := make([]ReservedEnvEntry, 0, len(reservedEnvTable))
-	for _, entry := range reservedEnvTable {
-		out = append(out, ReservedEnvEntry{Name: entry.name, Provider: entry.provider, Refusal: entry.refusal})
-	}
-	return out
-}
