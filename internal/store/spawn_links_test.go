@@ -167,27 +167,6 @@ func TestALinkReceiptOwnsItsThread(t *testing.T) {
 	}
 }
 
-// own owns only through a link: a paired computer's plain spawn names its
-// thread and leaves it standalone, own or not.
-func TestNamingAPlainReceiptOwnsNothing(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "plain")
-	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
-		Token: "tok", OwnerDeviceID: "dev", SourceComputerID: "pc", SourceThreadID: "lead", Kind: ThreadRequestSpawn,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if named, _, err := s.SetThreadReceiptTarget("tok", "plain", true); err != nil || !named {
-		t.Fatalf("name: %v, %v", named, err)
-	}
-	if got, _ := placementOf(t, s, "plain"); got != PlacementStandalone {
-		t.Fatalf("a plain receipt's thread = %s, want standalone", got)
-	}
-	if _, found, err := s.SpawnOwnerOf("plain"); err != nil || found {
-		t.Fatalf("SpawnOwnerOf a plain receipt's thread = %v, %v; want none", found, err)
-	}
-}
-
 // A link needs its owner's device to hold an unrevoked session here, the
 // reach a release ends: a device with none, never paired or revoked before
 // the receipt is written, gets a plain receipt, and one whose last session

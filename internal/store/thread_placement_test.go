@@ -277,24 +277,6 @@ func TestOwnedThreadLosingItsLinkBecomesStandalone(t *testing.T) {
 	}
 }
 
-// A handoff leaves the old thread's placement alone: a past thread lives
-// outside every project, under its assistant, and takes no placement.
-func TestAHandOffLeavesThePastThreadUnplaced(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "old")
-	mustCreateThread(t, s, "new")
-	mustCreateAssistant(t, s, "old", "/h/agent")
-	mustPlaceInHome(t, s, "new", "/h/agent")
-	if _, err := s.HandOffAssistant("old", "new", 10); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"old", "new"} {
-		if got, _ := placementOf(t, s, id); got != PlacementStandalone {
-			t.Errorf("%s = %s, want standalone", id, got)
-		}
-	}
-}
-
 // An organize write's placement runs after its group move and before its
 // pin, and its refusals roll the whole write back.
 func TestApplyThreadOrganizeWritesPlacement(t *testing.T) {
@@ -376,7 +358,9 @@ func TestNamingWriteWithoutItsSourceRowLeavesTheThreadStandalone(t *testing.T) {
 	}
 }
 
-// An assistant's past thread, outside every project, takes no placement.
+// A handoff leaves the old thread's placement alone: an assistant's past
+// thread lives outside every project, under its assistant, and takes no
+// placement.
 func TestAPastThreadTakesNoPlacement(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "old")
@@ -385,6 +369,11 @@ func TestAPastThreadTakesNoPlacement(t *testing.T) {
 	mustPlaceInHome(t, s, "new", "/h/agent")
 	if _, err := s.HandOffAssistant("old", "new", 10); err != nil {
 		t.Fatal(err)
+	}
+	for _, id := range []string{"old", "new"} {
+		if got, _ := placementOf(t, s, id); got != PlacementStandalone {
+			t.Errorf("%s = %s, want standalone", id, got)
+		}
 	}
 	for _, placement := range []string{PlacementStandalone, PlacementOwned} {
 		if _, err := s.SetThreadPlacement([]string{"old"}, placement); !errors.Is(err, ErrPlacementOutsideProjects) {

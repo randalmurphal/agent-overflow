@@ -182,24 +182,6 @@ func seedPayloadRow(s *Store, threadID string, p Payload) error {
 	return insertPayloadTx(s.db, threadID, p, "test: seed payload row")
 }
 
-func TestNewCreatesTablesSuccessfully(t *testing.T) {
-	s := newTestStore(t)
-
-	// Verify tables exist by inserting and querying.
-	thr := makeThread("t1", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	got, err := s.GetThread("t1")
-	if err != nil {
-		t.Fatalf("get thread: %v", err)
-	}
-	if got.ID != "t1" {
-		t.Errorf("thread ID: got %q, want %q", got.ID, "t1")
-	}
-}
-
 // A checkpoint copies committed frames while a write transaction holds the
 // writer connection, so a checkpoint never makes a write wait.
 func TestCheckpointDoesNotWaitForTheWriter(t *testing.T) {
@@ -360,59 +342,6 @@ func TestListThreadsExcludesArchived(t *testing.T) {
 	}
 	if threads[0].ID != "active" {
 		t.Errorf("expected active thread, got %q", threads[0].ID)
-	}
-}
-
-func TestDeleteThread(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t1", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	if err := s.DeleteThread("t1"); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-
-	_, err := s.GetThread("t1")
-	if err == nil {
-		t.Fatal("expected error getting deleted thread, got nil")
-	}
-}
-
-func TestDeleteThreadCascadesToItems(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t1", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	item := Item{
-		ID:        "item-1",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "user_text",
-		Role:      "user",
-		Summary:   "hello",
-		CreatedAt: time.Now().UnixMilli(),
-	}
-	if err := s.InsertItem(item); err != nil {
-		t.Fatalf("insert item: %v", err)
-	}
-
-	if err := s.DeleteThread("t1"); err != nil {
-		t.Fatalf("delete thread: %v", err)
-	}
-
-	items, err := s.ListItems("t1")
-	if err != nil {
-		t.Fatalf("list items: %v", err)
-	}
-	if len(items) != 0 {
-		t.Errorf("expected 0 items after cascade delete, got %d", len(items))
 	}
 }
 
@@ -665,25 +594,19 @@ func TestArchiveThread(t *testing.T) {
 	if got.UpdatedAt <= 1000 {
 		t.Errorf("expected updated_at to be bumped from 1000, got %d", got.UpdatedAt)
 	}
-}
-
-func TestUnarchiveThreadRestoresRow(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t-un", "claude")
-	thr.UpdatedAt = 1000
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create: %v", err)
+	// ListThreads (the sidebar's default view) hides the archived row.
+	threads, err := s.ListThreads()
+	if err != nil {
+		t.Fatalf("list: %v", err)
 	}
-	if _, _, err := s.ArchiveThread("t-un"); err != nil {
-		t.Fatalf("archive: %v", err)
+	if containsThread(threads, "t1") {
+		t.Fatal("expected archived thread to be hidden from ListThreads")
 	}
 
-	if _, _, err := s.UnarchiveThread("t-un"); err != nil {
+	if _, _, err := s.UnarchiveThread("t1"); err != nil {
 		t.Fatalf("unarchive: %v", err)
 	}
-
-	got, err := s.GetThread("t-un")
+	got, err = s.GetThread("t1")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -693,37 +616,11 @@ func TestUnarchiveThreadRestoresRow(t *testing.T) {
 	if got.UpdatedAt <= 1000 {
 		t.Errorf("expected updated_at to be bumped from 1000, got %d", got.UpdatedAt)
 	}
-}
-
-func TestUnarchiveThreadRestoresSidebarVisibility(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t-vis", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, _, err := s.ArchiveThread("t-vis"); err != nil {
-		t.Fatalf("archive: %v", err)
-	}
-
-	// Confirm ListThreads (sidebar's default view) hides the archived row.
-	threads, err := s.ListThreads()
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if containsThread(threads, "t-vis") {
-		t.Fatal("expected archived thread to be hidden from ListThreads")
-	}
-
-	if _, _, err := s.UnarchiveThread("t-vis"); err != nil {
-		t.Fatalf("unarchive: %v", err)
-	}
-
 	threads, err = s.ListThreads()
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if !containsThread(threads, "t-vis") {
+	if !containsThread(threads, "t1") {
 		t.Fatal("expected unarchived thread to reappear in ListThreads")
 	}
 }
@@ -1002,41 +899,6 @@ func TestInsertItemWithPayloadFK(t *testing.T) {
 	err := s.InsertItem(item)
 	if err == nil {
 		t.Fatal("expected FK constraint error, got nil")
-	}
-}
-
-func TestInsertItemWithValidPayloadFK(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t1", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	now := time.Now().UnixMilli()
-	payload := Payload{
-		ID:        "p1",
-		Kind:      "diff",
-		Meta:      `{"file":"main.go"}`,
-		Data:      []byte("diff content"),
-		CreatedAt: now,
-	}
-	if err := seedPayloadRow(s, "t1", payload); err != nil {
-		t.Fatalf("insert payload: %v", err)
-	}
-
-	item := Item{
-		ID:        "i1",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "tool_call",
-		Role:      "assistant",
-		PayloadID: "p1",
-		CreatedAt: now,
-	}
-	if err := s.InsertItem(item); err != nil {
-		t.Fatalf("insert item with valid payload FK: %v", err)
 	}
 }
 

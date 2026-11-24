@@ -209,35 +209,6 @@ func TestDecorateSubagentAnchors_PreviewIsTheNewestToolSummary(t *testing.T) {
 	}
 }
 
-func TestDecorateSubagentAnchors_EmptySummariesOmitSummaryKey(t *testing.T) {
-	// A just-launched group whose children haven't produced text yet:
-	// the count decorates (the card shows "N entries") but no summary
-	// key is written, so the frontend falls back to its own
-	// "Initializing..." placeholder.
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	seedAnchorItem(t, s, "t", "anchor", 0, 0)
-	seedChildItem(t, s, "t", "c-blank", 0, 1, "anchor", "", "running")
-
-	paged, err := s.ListThreadSliceAround(context.Background(), "t", "", 200, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
-	if err != nil {
-		t.Fatalf("list slice: %v", err)
-	}
-	anchor, ok := itemByID(paged.Items, "anchor")
-	if !ok {
-		t.Fatal("anchor missing from window")
-	}
-	count, _, hasCount, hasSummary := decodedSubagentMeta(t, anchor)
-	if !hasCount || count != 1 {
-		t.Errorf("count: got %v (present=%v), want 1", count, hasCount)
-	}
-	if hasSummary {
-		t.Error("summary key must be omitted when no child has summary text")
-	}
-}
-
 func TestMergeSubagentAnchorMeta_MalformedMetaLeftUntouched(t *testing.T) {
 	// SQLite rejects malformed items.meta on write (the partial-index
 	// predicates json_extract it), so this guards external corruption
@@ -258,7 +229,9 @@ func TestDecorateSubagentAnchors_StaleStoredSummaryKeyDropped(t *testing.T) {
 	// The decoration owns its keys. A same-named summary key already in
 	// stored meta must not leak through when the computed summary is
 	// empty — otherwise the collapsed card would render text the backend
-	// never picked. Unrelated stored keys survive the merge.
+	// never picked. A child with no text yet still counts, and the
+	// frontend shows its own placeholder. Unrelated stored keys survive
+	// the merge.
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
