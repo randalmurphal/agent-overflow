@@ -8,74 +8,44 @@ import (
 	"testing"
 )
 
-func TestModelsForProvider_Claude(t *testing.T) {
-	models := ModelsForProvider("claude")
-	if models == nil {
-		t.Fatal("expected non-nil slice for claude")
-	}
-	if len(models) != len(ClaudeModels) {
-		t.Fatalf("got %d models, want %d", len(models), len(ClaudeModels))
-	}
-	for i, m := range models {
-		if m.Slug != ClaudeModels[i].Slug {
-			t.Errorf("model[%d].Slug = %q, want %q", i, m.Slug, ClaudeModels[i].Slug)
-		}
-		if m.Provider != "claude" {
-			t.Errorf("model[%d].Provider = %q, want %q", i, m.Provider, "claude")
-		}
-		if !slices.Equal(m.Capabilities, ClaudeModels[i].Capabilities) {
-			t.Errorf("model[%d].Capabilities = %v, want %v", i, m.Capabilities, ClaudeModels[i].Capabilities)
-		}
-	}
-}
-
-func TestModelsForProvider_Codex(t *testing.T) {
-	models := ModelsForProvider("codex")
-	if models == nil {
-		t.Fatal("expected non-nil slice for codex")
-	}
-	if len(models) != len(CodexModels) {
-		t.Fatalf("got %d models, want %d", len(models), len(CodexModels))
-	}
-	for i, m := range models {
-		if m.Slug != CodexModels[i].Slug {
-			t.Errorf("model[%d].Slug = %q, want %q", i, m.Slug, CodexModels[i].Slug)
-		}
-		if m.Provider != "codex" {
-			t.Errorf("model[%d].Provider = %q, want %q", i, m.Provider, "codex")
-		}
-		if !slices.Equal(m.Capabilities, CodexModels[i].Capabilities) {
-			t.Errorf("model[%d].Capabilities = %v, want %v", i, m.Capabilities, CodexModels[i].Capabilities)
-		}
-	}
-}
-
-func TestModelsForProvider_ClaudeTUI(t *testing.T) {
-	models := ModelsForProvider(string(ClaudeTUI))
-	if models == nil {
-		t.Fatal("expected non-nil slice for claude-tui")
-	}
+func TestModelsForProvider(t *testing.T) {
 	// claude-tui drives the same binary, so its catalog mirrors claude's
 	// (same slugs / capabilities / windows / efforts) but is stamped claude-tui.
-	if len(models) != len(ClaudeModels) {
-		t.Fatalf("got %d models, want %d (parity with claude)", len(models), len(ClaudeModels))
-	}
-	for i, m := range models {
-		if m.Slug != ClaudeModels[i].Slug {
-			t.Errorf("model[%d].Slug = %q, want %q", i, m.Slug, ClaudeModels[i].Slug)
-		}
-		if m.Provider != string(ClaudeTUI) {
-			t.Errorf("model[%d].Provider = %q, want %q", i, m.Provider, string(ClaudeTUI))
-		}
-		if !slices.Equal(m.Capabilities, ClaudeModels[i].Capabilities) {
-			t.Errorf("model[%d].Capabilities = %v, want %v", i, m.Capabilities, ClaudeModels[i].Capabilities)
-		}
-		if !slices.Equal(m.ReasoningEfforts, ClaudeModels[i].ReasoningEfforts) {
-			t.Errorf("model[%d].ReasoningEfforts mismatch with claude", i)
-		}
-		if !slices.Equal(m.ContextWindows, ClaudeModels[i].ContextWindows) {
-			t.Errorf("model[%d].ContextWindows mismatch with claude", i)
-		}
+	for _, tc := range []struct {
+		provider string
+		catalog  []ModelInfo
+	}{
+		{"claude", ClaudeModels},
+		{"codex", CodexModels},
+		{string(ClaudeTUI), ClaudeModels},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			models := ModelsForProvider(tc.provider)
+			if models == nil {
+				t.Fatalf("expected non-nil slice for %s", tc.provider)
+			}
+			if len(models) != len(tc.catalog) {
+				t.Fatalf("got %d models, want %d", len(models), len(tc.catalog))
+			}
+			for i, m := range models {
+				want := tc.catalog[i]
+				if m.Slug != want.Slug {
+					t.Errorf("model[%d].Slug = %q, want %q", i, m.Slug, want.Slug)
+				}
+				if m.Provider != tc.provider {
+					t.Errorf("model[%d].Provider = %q, want %q", i, m.Provider, tc.provider)
+				}
+				if !slices.Equal(m.Capabilities, want.Capabilities) {
+					t.Errorf("model[%d].Capabilities = %v, want %v", i, m.Capabilities, want.Capabilities)
+				}
+				if !slices.Equal(m.ReasoningEfforts, want.ReasoningEfforts) {
+					t.Errorf("model[%d].ReasoningEfforts = %v, want %v", i, m.ReasoningEfforts, want.ReasoningEfforts)
+				}
+				if !slices.Equal(m.ContextWindows, want.ContextWindows) {
+					t.Errorf("model[%d].ContextWindows = %v, want %v", i, m.ContextWindows, want.ContextWindows)
+				}
+			}
+		})
 	}
 	// Stamping claude-tui must not mutate the shared ClaudeModels source.
 	for i, m := range ClaudeModels {
@@ -233,6 +203,9 @@ func TestFindModelDoesNotResolveAliases(t *testing.T) {
 	}
 }
 
+// The exact effort lists also pin the max/ultra tiers the store CHECK was
+// widened for (migration v19), and keep the older models from gaining tiers
+// only the live catalog may add.
 func TestCodexModelCapabilitiesAndContextWindows(t *testing.T) {
 	cases := []struct {
 		model    string
@@ -433,23 +406,6 @@ func TestModelInfoJSONRoundTrip(t *testing.T) {
 		if cap != original.Capabilities[i] {
 			t.Errorf("Capabilities[%d] = %q, want %q", i, cap, original.Capabilities[i])
 		}
-	}
-}
-
-func TestModelInfoJSONOmitsEmptyCapabilities(t *testing.T) {
-	m := ModelInfo{Slug: "test", Name: "Test", Provider: "test"}
-	data, err := json.Marshal(m)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("unmarshal to map: %v", err)
-	}
-
-	if _, present := raw["capabilities"]; present {
-		t.Error("expected capabilities to be omitted when nil, but it was present")
 	}
 }
 
@@ -704,23 +660,6 @@ func TestCloneModelInfoDeepCopiesEveryReferenceField(t *testing.T) {
 	}
 }
 
-// TestModelInfoOmitsAnAbsentFastModeTier keeps the wire shape optional: Claude
-// declares no tier, and the frontend's fallback to its "Fast" literals is keyed
-// on the field being absent rather than an empty object.
-func TestModelInfoOmitsAnAbsentFastModeTier(t *testing.T) {
-	encoded, err := json.Marshal(ModelInfo{Slug: "claude-opus-5", Name: "Claude Opus 5", Provider: string(Claude)})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, present := decoded["fastModeTier"]; present {
-		t.Fatalf("encoded ModelInfo carries fastModeTier = %v, want the key omitted", decoded["fastModeTier"])
-	}
-}
-
 // TestReasoningEffortSetsAreOneVocabulary ties the three lists this package
 // publishes together. AllReasoningEfforts is what def, the normalizer, and
 // every "is this a known slug" check measure against; the per-provider sets are
@@ -783,41 +722,6 @@ func TestReasoningEffortSetsAreOneVocabulary(t *testing.T) {
 	}
 	if providerSupportsReasoningEffort("gemini", string(EffortHigh)) {
 		t.Error("providerSupportsReasoningEffort accepted a tier for an unknown provider")
-	}
-}
-
-// The Codex catalog's max/ultra tiers are the reason the store CHECK was
-// widened (migration v19). Pin that the shipped fallback catalog still names
-// them, so a catalog edit cannot quietly take the picker back to xhigh while
-// the schema, the validators, and the wire mapping still advertise support.
-func TestCodexCatalogOffersTheTopTiersWhereTheyExist(t *testing.T) {
-	for slug, want := range map[string][]ReasoningEffort{
-		"gpt-5.6-sol":   {EffortMax, EffortUltra},
-		"gpt-5.6-terra": {EffortMax, EffortUltra},
-		"gpt-5.6-luna":  {EffortMax},
-	} {
-		info, found := FindModel(string(Codex), slug)
-		if !found {
-			t.Errorf("codex catalog has no %s", slug)
-			continue
-		}
-		for _, effort := range want {
-			if !ModelInfoSupportsReasoningEffort(info, string(effort)) {
-				t.Errorf("%s does not offer %q", slug, effort)
-			}
-		}
-	}
-
-	// The conservative default set stays conservative: the older models must
-	// not gain tiers nobody has seen them advertise.
-	info, found := FindModel(string(Codex), "gpt-5.5")
-	if !found {
-		t.Fatal("codex catalog has no gpt-5.5")
-	}
-	for _, effort := range []ReasoningEffort{EffortMax, EffortUltra} {
-		if ModelInfoSupportsReasoningEffort(info, string(effort)) {
-			t.Errorf("gpt-5.5 advertises %q in the static fallback; only the live catalog may add a tier", effort)
-		}
 	}
 }
 

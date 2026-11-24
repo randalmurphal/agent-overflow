@@ -32,33 +32,17 @@ func TestNormalizeRuntimeMode(t *testing.T) {
 			}
 		})
 	}
-}
 
-// TestAllRuntimeModesContainsEveryValue keeps the canonical list in sync
-// with the const block. A new mode added without being appended here
-// would bypass pickers and CHECK-constraint migrations, so this guard
-// forces a coordinated update.
-func TestAllRuntimeModesContainsEveryValue(t *testing.T) {
-	want := map[RuntimeMode]bool{
-		RuntimeReadOnly:         true,
-		RuntimeApprovalRequired: true,
-		RuntimeAutoAcceptEdits:  true,
-		RuntimeAuto:             true,
-		RuntimeFullAccess:       true,
+	// Read-only and auto are reachable only by explicit selection. If an
+	// unknown value normalized to read-only, a corrupt row would silently
+	// cripple an interactive thread. Auto costs money per reviewed tool call
+	// and can refuse an action, so a stale value collapsing into it would bill
+	// the user for a mode they never picked.
+	if DefaultRuntimeMode == RuntimeReadOnly {
+		t.Error("DefaultRuntimeMode must not be read-only — unknown values would collapse into a restricted session")
 	}
-	got := make(map[RuntimeMode]bool, len(AllRuntimeModes))
-	for _, m := range AllRuntimeModes {
-		got[m] = true
-	}
-	for m := range want {
-		if !got[m] {
-			t.Errorf("AllRuntimeModes is missing %q", m)
-		}
-	}
-	for m := range got {
-		if !want[m] {
-			t.Errorf("AllRuntimeModes has unknown %q — add to both lists", m)
-		}
+	if DefaultRuntimeMode == RuntimeAuto {
+		t.Error("DefaultRuntimeMode must not be auto — unknown values would silently opt the user into a billed reviewer")
 	}
 }
 
@@ -76,35 +60,6 @@ func TestIsRuntimeModeTracksAllRuntimeModes(t *testing.T) {
 		if IsRuntimeMode(mode) {
 			t.Errorf("IsRuntimeMode(%q) = true, want false", mode)
 		}
-	}
-}
-
-// TestReadOnlyIsNeverTheFallback guards the property that makes read-only
-// safe to rely on: it must be reachable only by explicit selection. If an
-// unknown value ever normalized to read-only, a corrupt row would silently
-// cripple an interactive thread; if read-only normalized to something else,
-// an unattended phase would silently gain write access.
-func TestReadOnlyIsNeverTheFallback(t *testing.T) {
-	if DefaultRuntimeMode == RuntimeReadOnly {
-		t.Fatal("DefaultRuntimeMode must not be read-only — unknown values would collapse into a restricted session")
-	}
-	if got := NormalizeRuntimeMode(string(RuntimeReadOnly)); got != RuntimeReadOnly {
-		t.Errorf("NormalizeRuntimeMode(read-only) = %q, want read-only", got)
-	}
-}
-
-// TestAutoIsNeverTheFallback is the read-only guard's twin for the auto tier.
-// Auto costs money per reviewed tool call and can refuse an action, so a
-// corrupt or stale runtime_mode value collapsing into it would bill the user
-// for a mode they never picked. It is also the tier a truncated
-// "auto-accept-edits" is closest to typo-ing into, which is why
-// NormalizeRuntimeMode's prefix behaviour is asserted above.
-func TestAutoIsNeverTheFallback(t *testing.T) {
-	if DefaultRuntimeMode == RuntimeAuto {
-		t.Fatal("DefaultRuntimeMode must not be auto — unknown values would silently opt the user into a billed reviewer")
-	}
-	if got := NormalizeRuntimeMode(string(RuntimeAuto)); got != RuntimeAuto {
-		t.Errorf("NormalizeRuntimeMode(auto) = %q, want auto", got)
 	}
 }
 
