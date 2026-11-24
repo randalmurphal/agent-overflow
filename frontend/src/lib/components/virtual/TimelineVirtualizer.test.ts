@@ -16,21 +16,6 @@ function makeRows(count: number): HarnessRow[] {
 }
 
 describe('TimelineVirtualizer under happy-dom', () => {
-  it('renderAll mounts every row without geometry', () => {
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const app = mount(TimelineVirtualizerHarness, {
-      target: host,
-      props: { initialRows: makeRows(12), renderAll: true },
-    });
-    try {
-      expect(host.querySelectorAll('[data-row-index]').length).toBe(12);
-    } finally {
-      unmount(app);
-      host.remove();
-    }
-  });
-
   it('windowed mode mounts nothing until a viewport is measured', () => {
     const host = document.createElement('div');
     document.body.appendChild(host);
@@ -40,23 +25,6 @@ describe('TimelineVirtualizer under happy-dom', () => {
     });
     try {
       expect(host.querySelectorAll('[data-row-index]').length).toBe(0);
-    } finally {
-      unmount(app);
-      host.remove();
-    }
-  });
-
-  it('renderAll tracks data growth (streaming append in unit tests)', async () => {
-    const host = document.createElement('div');
-    document.body.appendChild(host);
-    const app = mount(TimelineVirtualizerHarness, {
-      target: host,
-      props: { initialRows: makeRows(3), renderAll: true },
-    });
-    try {
-      app.setRows([...app.getRows(), { id: 'row-new', heightPx: 100, label: 'New' }]);
-      await tick();
-      expect(host.querySelectorAll('[data-row-index]').length).toBe(4);
     } finally {
       unmount(app);
       host.remove();
@@ -100,10 +68,13 @@ describe('TimelineVirtualizer under happy-dom', () => {
         },
       });
       try {
+        // renderAll mounts every row with no geometry, and tracks data growth.
+        expect(host.querySelectorAll('[data-row-index]').length).toBe(3);
         expect(counts.size).toBe(3);
         counts.clear();
         app.setRows([...app.getRows(), { id: 'row-new', heightPx: 100, label: 'New' }]);
         await tick();
+        expect(host.querySelectorAll('[data-row-index]').length).toBe(4);
         expect(counts.get('row-new')).toBe(1);
         expect([...counts.keys()]).toEqual(['row-new']);
       } finally {

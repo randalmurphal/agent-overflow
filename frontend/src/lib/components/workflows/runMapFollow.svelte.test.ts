@@ -365,25 +365,15 @@ describe('escape is event-sourced', () => {
     expect(h.follow.engaged).toBe(true);
   });
 
-  it('a touch drag downward (content moving up) disengages follow', () => {
+  it.each([
+    ['a touch drag downward (content moving up) disengages follow', 312, false],
+    ['a touch drag upward does not disengage follow', 288, true],
+    ['sub-pixel touch jitter does not disengage follow', 300.5, true],
+  ])('%s', (_name, moveTo, engaged) => {
     const h = engagedHarness();
     fire(h.scroller, 'touchstart', { touches: touch(300) });
-    fire(h.scroller, 'touchmove', { touches: touch(312) });
-    expect(h.follow.engaged).toBe(false);
-  });
-
-  it('a touch drag upward does not disengage follow', () => {
-    const h = engagedHarness();
-    fire(h.scroller, 'touchstart', { touches: touch(300) });
-    fire(h.scroller, 'touchmove', { touches: touch(288) });
-    expect(h.follow.engaged).toBe(true);
-  });
-
-  it('sub-pixel touch jitter does not disengage follow', () => {
-    const h = engagedHarness();
-    fire(h.scroller, 'touchstart', { touches: touch(300) });
-    fire(h.scroller, 'touchmove', { touches: touch(300.5) });
-    expect(h.follow.engaged).toBe(true);
+    fire(h.scroller, 'touchmove', { touches: touch(moveTo) });
+    expect(h.follow.engaged).toBe(engaged);
   });
 
   it('a scroll event never escapes, not even one raised by a glide frame', () => {
@@ -858,21 +848,6 @@ describe('chipVisible', () => {
     expect(h.follow.chipVisible).toBe(false);
   });
 
-  it('appears on escape and clears when the glide lands', () => {
-    const h = engagedHarness();
-    fire(h.scroller, 'wheel', { deltaY: -10 });
-    // Reader scrolled clear of the target, then clicked the chip.
-    h.setScrollTop(0);
-    fire(h.scroller, 'scroll');
-    runFrame(0);
-    expect(h.follow.chipVisible).toBe(true);
-
-    h.follow.engage();
-    expect(h.follow.chipVisible).toBe(true); // engaged, target still off-screen
-    drainFrames();
-    expect(h.follow.chipVisible).toBe(false);
-  });
-
   it('reappears while engaged when a scroll event leaves the target off-screen', () => {
     const h = engagedHarness();
     h.setScrollTop(0);
@@ -962,8 +937,10 @@ describe('chipVisible — the disengaged offer is only rendered when it travels'
     expect(frameCount()).toBe(0);
     expect(h.follow.chipVisible).toBe(true);
 
-    // (4) The click, the one way back, and it travels.
+    // (4) The click, the one way back, and it travels. Engaged with the
+    //     target still off-screen, the chip stays until the glide lands.
     h.follow.engage();
+    expect(h.follow.chipVisible).toBe(true);
     drainFrames();
     expect(h.follow.engaged).toBe(true);
     expect(h.scrollTop()).toBe(1600 - REST_LINE_PX);
@@ -1086,16 +1063,6 @@ describe('attach / detach', () => {
     fire(h.scroller, 'wheel', { deltaY: -10 });
     expect(h.follow.engaged).toBe(false);
     cleanup();
-  });
-
-  it('throws rather than leaving a dead installation when the scroller never arrives', () => {
-    const h = makeHarness();
-    h.detachScroller();
-    h.follow.attach();
-    // Three frames of grace, then the wiring bug is stated.
-    runFrame(0);
-    runFrame(16);
-    expect(() => runFrame(32)).toThrow(/overlay scroller never rendered/);
   });
 
   // The throw is the REPORT. On its own it changed no controller state, and
