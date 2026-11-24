@@ -335,7 +335,8 @@ func TestThreadUpdateNamesAPendingWorkerAndTheSweepDeliversIt(t *testing.T) {
 	}
 	p.peer.asleep.Store(false)
 	// The refused attempt put the archive on the retry ladder; it comes due
-	// now, so the sweep's first pass is the one that delivers it.
+	// now, so the sweep's first pass is the one that delivers it. That the
+	// sweep wakes for one due later is TestTheSweepWakesForAnOwedOperation.
 	owed := p.owed(t)
 	if len(owed) != 1 || !owed[0].Sent || owed[0].NextAt <= time.Now().UnixMilli() {
 		t.Fatalf("owed = %+v, want the archive rescheduled after its refused attempt", owed)

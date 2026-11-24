@@ -111,8 +111,8 @@ func TestEnsureProvenSessionOwnsTheTeardownTheReaperRaces(t *testing.T) {
 		if !errors.Is(err, injected) || !strings.Contains(err.Error(), "No conversation found") {
 			t.Fatalf("proof = %v, want the close failure with the start's outcome", err)
 		}
-		// The proof tore the session down, so the fixture's stop at cleanup
-		// has nothing to close and reports no failure.
+		// The injection ends with the proof, so the fixture's stop at cleanup
+		// reports no failure.
 		failing.Store(false)
 	})
 }
