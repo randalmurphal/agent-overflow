@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // seedChildItem persists a subagent child row with an explicit summary
@@ -909,5 +911,90 @@ func TestDecorateSubagentAnchors_CompletionSiblingCarriesTheLaunchAggregate(t *t
 	}
 	if _, _, hasCount, _ := decodedSubagentMeta(t, bash); hasCount {
 		t.Fatalf("childless completion was decorated: %s", bash.Meta)
+	}
+}
+
+// A malformed thread whose parent_id forms a cycle (a -> b -> a) must not
+// hang either live caller of descendantsWalk: the recursive hops join by
+// UNION, which dedups (root, id) pairs so the walk converges. The cycle makes
+// the root reachable from itself; for corrupt data the guard is termination.
+// Each read runs under a deadline so a regression fails instead of hanging.
+func TestDescendantsWalkTerminatesOnAParentCycle(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedItem(t, s, "t", "a", 0, 0, "b")
+	seedItem(t, s, "t", "b", 1, 0, "a")
+	seedItem(t, s, "t", "child", 5, 0, "a")
+
+	within := func(t *testing.T, read func() error) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- read() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the descendant walk did not terminate on a parent cycle")
+		}
+	}
+
+	t.Run("anchor aggregates", func(t *testing.T) {
+		within(t, func() error {
+			roots := []string{"a"}
+			got, err := subagentAggregatesByRound(s.reader(), "t", roots, subagentRoundBoundsFor(roots, nil, nil))
+			if err != nil {
+				return err
+			}
+			if count := got["a"].descendantCount; count != 3 {
+				return fmt.Errorf("descendant count = %d, want 3 (b, child, and a itself through the cycle)", count)
+			}
+			return nil
+		})
+	})
+	t.Run("fork subtree", func(t *testing.T) {
+		within(t, func() error {
+			ids, err := timelineSubtreeTx(s.reader(), "t", []string{"a"})
+			if err != nil {
+				return err
+			}
+			slices.Sort(ids)
+			if want := []string{"a", "a", "b", "child"}; !slices.Equal(ids, want) {
+				return fmt.Errorf("subtree = %v, want %v", ids, want)
+			}
+			return nil
+		})
+	})
+}
+
+// The items key is (thread_id, id), so one id can exist on two threads. The
+// walk re-filters by thread at every hop: a collision on another thread must
+// neither count that thread's rows nor follow its children.
+func TestDescendantsWalkStaysOnItsThread(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"ta", "tb"} {
+		if err := s.CreateThread(makeThread(id, "claude")); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	seedAnchorItem(t, s, "ta", "parent", 0, 0)
+	seedItem(t, s, "ta", "child", 5, 0, "parent")
+	seedItem(t, s, "tb", "parent", 10, 0, "")
+	seedItem(t, s, "tb", "b-child", 10, 1, "parent")
+	seedItem(t, s, "tb", "child", 10, 2, "")
+	seedItem(t, s, "tb", "b-grandchild", 10, 3, "child")
+
+	for thread, want := range map[string]int{"ta": 1, "tb": 1} {
+		roots := []string{"parent"}
+		got, err := subagentAggregatesByRound(s.reader(), thread, roots, subagentRoundBoundsFor(roots, nil, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count := got["parent"].descendantCount; count != want {
+			t.Errorf("%s descendant count = %d, want %d", thread, count, want)
+		}
 	}
 }
