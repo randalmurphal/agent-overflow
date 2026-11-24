@@ -20,11 +20,11 @@ import (
 	"agent-overflow/internal/triage"
 )
 
-// The soak sends the page's default send: the reference is
+// HarnessSend sends the page's default send: the reference is
 // frontend/src/test/fixtures/pageDefaultSend.json, which a frontend test
 // holds to buildSendOptions, read here as the bound method reads a page's
 // send. Only the send id differs.
-func TestSoakSendsThePageDefaultSend(t *testing.T) {
+func TestHarnessSendsThePageDefaultSend(t *testing.T) {
 	t.Parallel()
 	raw, err := os.ReadFile(reporoot.Path(t, "frontend/src/test/fixtures/pageDefaultSend.json"))
 	if err != nil {
@@ -40,7 +40,7 @@ func TestSoakSendsThePageDefaultSend(t *testing.T) {
 	}
 	got.SendID = ""
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("soak options = %+v (draft %+v)\nthe page's default send = %s", got, got.ConsumeDraft, raw)
+		t.Fatalf("harness send options = %+v (draft %+v)\nthe page's default send = %s", got, got.ConsumeDraft, raw)
 	}
 }
 

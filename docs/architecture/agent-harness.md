@@ -306,14 +306,13 @@ Windows relay. Call methods **by name**
 `SendMessageWithOptions`, ...) share the wire. The whole Harness receiver is
 `LocalOnly`: a LAN-bound harness refuses it for non-loopback peers.
 
-A driver sends as the page's default send does: `SendMessageWithOptions`
-with the options `buildSendOptions` builds (a fresh `sendId`,
+A driver sends through `HarnessSend`, which sends as the page's default
+send does: the options `buildSendOptions` builds (a fresh `sendId`,
 `reconcileBySendId`, an empty `consumeDraft`), so a send to a working thread
 queues and the user row's id derives from the send id. Those options are
 `frontend/src/test/fixtures/pageDefaultSend.json`, which a frontend test holds
-to the builder: `HarnessApp.send` (`e2e/src/harness-app.ts`) sends them, and
-Go tests check `harnessclient.Client.Send`'s and the soak's against them.
-`HarnessApp.send` and `harnessclient.Client.Send` own that call;
+to the builder and a Go test holds to the harness's. `HarnessApp.send`
+(`e2e/src/harness-app.ts`) and `harnessclient.Client.Send` own that call;
 `HarnessApp.startSession`, `stopSession` and `items` own the other driver
 calls below.
 
@@ -1369,14 +1368,15 @@ endpoint; see the section below.
 sampling profile (100µs) of ONE scripted turn and writes
 `<dataDir>/profiles/profile-<timestamp>.cpuprofile`. It attaches the
 debugger, settles, opens the thread through the same `notification:activated`
-path `ui open` uses, settles again, refuses a thread that is working,
-arms the profiler, installs the scenario, sends, waits for the
-`provider:turn_completed` of the turn its message's row is in, and stops.
-It never reloads the page: a reload would profile the mount instead of the
-turn. `send --wait` waits the same way, through
-`harnessclient.Client.ThreadAtRest`: a message sent to a working thread
-queues behind that work, and nothing the backend publishes names the turn
-a queued message runs in.
+path `ui open` uses, settles again, arms the profiler, installs the
+scenario, sends, waits for the `provider:turn_completed` of the turn its
+message opened, and stops. It never reloads the page: a reload would
+profile the mount instead of the turn. `send --wait` waits the same way,
+through `harnessclient.Client.SendAndAwaitTurn`: the send is admitted only
+at rest (`HarnessSend` with `atRestOnly`), because a message sent to a
+working thread queues behind that work and nothing the backend publishes
+names the turn a queued message runs in. A working thread fails the
+profile with the scenario installed and the profiler stopped.
 
 The rollup it prints splits sampled time three ways. FLUSH is Svelte
 running queued effects (`flush_queued_root_effects`, `flush_queued_effects`,
