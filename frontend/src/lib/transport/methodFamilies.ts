@@ -70,6 +70,12 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   3263989430: 'subscription', // GitStatusUnsubscribe
   2473150982: 'subscription', // ReadReviewDiff
   504085501: 'subscription', // ReleaseReviewDiff
+  3524633257: 'subscription', // TrackerBoard
+  4150293291: 'subscription', // TrackerSectionRows
+  2847247437: 'subscription', // TrackerBoardPatch
+  2154788414: 'subscription', // SetTrackerSubscriptionVisible
+  247632441: 'subscription', // RefreshTrackerSubscription
+  1393115131: 'subscription', // ReleaseTrackerSubscription
 
   // A thread group is a sidebar row of ONE project on one backend; its id
   // is minted there and the group list is fanned out to every backend, so

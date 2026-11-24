@@ -1348,6 +1348,18 @@ var channelPolicies = []ChannelPolicy{
 			"pull half, is tracker:read and never carries a token.",
 	},
 	{
+		Channel:   eventchan.TrackerBoardUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeTrackerRead,
+		Why: "A subscribed board's change nudge (trackerapp.BoardEvent): " +
+			"issue IDs, at most 100, and the board's sync state, never a " +
+			"card. Every frame names other rows, so a reconnect replays them " +
+			"all: never latest-only. Unkeyed by thread. Scope: its pull half, " +
+			"TrackerBoardPatch and TrackerBoard, is tracker:read. Audience: a " +
+			"remote client subscribes to boards of this computer's projects.",
+	},
+	{
 		Channel:   eventchan.TerminalEndFailed,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

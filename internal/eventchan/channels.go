@@ -283,10 +283,17 @@ const (
 //
 // TrackerConnectionsUpdated is a payload-less refetch nudge sent after
 // every change the connection list shows: a row, a key file the app made
-// or removed, a verification, a problem. Receivers re-read through
-// TrackerConnections, which never carries a token.
+// or removed, a verification, a problem that started, changed or cleared.
+// Receivers re-read through TrackerConnections, which never carries a
+// token.
+//
+// TrackerBoardUpdated is trackerapp.BoardEvent: a subscribed board's
+// changed and removed issue IDs, whether to read the board again, its sync
+// state and its end. Receivers pull the rows through TrackerBoardPatch or
+// TrackerBoard.
 const (
 	TrackerConnectionsUpdated Channel = "tracker:connections_updated"
+	TrackerBoardUpdated       Channel = "tracker:board_updated"
 )
 
 // terminal:* — local PTY session bytes and lifecycle.

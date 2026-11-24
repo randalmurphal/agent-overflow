@@ -52,7 +52,10 @@ type Config struct {
 	MockProvider   string
 	// MockForge is the fake forge CLI run in place of gh and glab, empty
 	// when none was found (every forge call then fails).
-	MockForge       string
+	MockForge string
+	// Trackers are the boot's fake issue trackers, whose Origin the App
+	// was given; nil on a boot without them.
+	Trackers        *TrackerFake
 	AssetsFreshness string
 	AssetsDigest    string
 	Now             func() time.Time

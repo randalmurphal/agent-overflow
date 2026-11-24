@@ -66,6 +66,8 @@ type testHost struct {
 	mergedPRPolled  time.Time
 	onPause         func()
 	onResume        func()
+	// trackerResets counts ResetTrackerConnections.
+	trackerResets int
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -231,7 +233,12 @@ func (h *testHost) DropReviewDiffImages() { h.droppedImages++ }
 func (h *testHost) ResetForgeCaches()               { h.forgeCachesReset++ }
 func (h *testHost) ResetProviderUsage()             { h.usageReset++ }
 func (h *testHost) ResetProviderConnections() error { return nil }
-func (h *testHost) CancelProviderLogins()           { h.loginsCancelled++ }
+
+func (h *testHost) ResetTrackerConnections() error {
+	h.trackerResets++
+	return nil
+}
+func (h *testHost) CancelProviderLogins() { h.loginsCancelled++ }
 
 func (h *testHost) RunBackgroundFetchPass(context.Context) { h.fetchPasses++ }
 
