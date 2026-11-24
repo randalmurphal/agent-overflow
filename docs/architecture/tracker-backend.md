@@ -207,7 +207,8 @@ not final for the update (see History under Sync).
 ## Connections and key files
 
 A connection is one credential for one site: a Jira site with the account's
-email, a Tempo region tied to a Jira connection, or a Linear workspace
+email, Tempo for a Jira connection (its API address, by default the one
+that serves every region), or a Linear workspace
 named by its URL key. Two sites of one tracker coexist. Connections belong
 to the computer and are rows in `tracker_connections`.
 
@@ -241,6 +242,14 @@ to the computer and are rows in `tracker_connections`.
   expiry is the date the user enters from the token page. A status call returns
   the file's state, the last verification and the last failure, never the
   token.
+- Settings > Issues > Connections runs that sequence as steps on the new
+  row: open the token page, open the key file, the optional expiry date
+  (the start of that day on the screen that entered it) and Check. The
+  steps show while the row has never verified, its key file holds no
+  token, or its problem is a setup one. The row warns from 14 days before
+  the expiry and shows a passed one as an error, each with Renew, which
+  shows the steps again. Away from the computer the two opens are absent
+  and the row names the key file's path to copy.
 - Where a client connects is one function from a connection's kind and
   site to an API origin. Its production value is the site, or Linear's
   fixed origin. A test supplies one that answers a loopback fake, through
@@ -296,7 +305,7 @@ Durable records, restored and kept like other application records:
 | Table | Holds |
 |---|---|
 | `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity and time, and the token expiry the user entered. |
-| `project_tracker_boards` | Which boards an app project lists, in order, and which opens first. Keyed by project, connection and board; the project and the connection cascade. |
+| `project_tracker_boards` | Which boards an app project lists, in order, and which opens first, with the board's name and tracker project as the picker showed them (v166). Keyed by project, connection and board; the project and the connection cascade. |
 | `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
 
 The mirror is every table named `tracker_cache_*`. The name is the
@@ -1149,7 +1158,11 @@ method wraps (see [Build order](#build-order)).
   too slow and to try again. Their context reaches the network, so they
   are not caller-bound.
 - **A project's boards** are the boards its picker shows, in order, and
-  the one that opens first (store `project_tracker_boards`). The list is
+  the one that opens first (store `project_tracker_boards`), each with
+  its connection's kind, label, state and verified account
+  (`store.ListTrackerBoardChoices`, one join). A board's name is the
+  mirror's once the board has been read and the stored one before that,
+  so a reload names a board that was never opened. The list is
   replaced whole, and the change takes effect before the save answers,
   doing only what the list needs. The store's write names, in its
   transaction, the boards whose last listing it removed and the boards it
@@ -1182,7 +1195,10 @@ method wraps (see [Build order](#build-order)).
   arrive as it lands.
 - **Refusals** a person can cause or see carry a code and a sentence of
   what to do next, with the service's error as their cause
-  (`trackerRefusal`): `tracker_subscription_unknown`,
+  (`trackerRefusal`), on the connection methods as on the board ones:
+  `tracker_connection_invalid` (the site, account, workspace or label
+  refused, with the reason), `tracker_connection_exists`,
+  `tracker_subscription_unknown`,
   `tracker_subscription_ended`, `tracker_subscriptions_full`,
   `tracker_connection_off`, `tracker_connection_missing`,
   `tracker_connection_tempo`, `tracker_board_not_listed`,
@@ -1394,25 +1410,25 @@ guide and each read tool say so.
 Built: `internal/tracker` and the two providers, `internal/keyfile`, the
 tracker tables and their accessors, `trackerfake`, and `trackerapp` with
 its sync, pumps, reads and writes; the connection and board bound
-methods, `tracker:board_updated`, the app's calls at start, and the
-harness's fake trackers (`HarnessTrackerSeed`). Not built, owed by the app
-layer:
+methods, `tracker:board_updated`, the app's calls at start, the
+harness's fake trackers (`HarnessTrackerSeed`), and the Issues settings
+screen (Settings > Issues: Connections and Boards), with the
+`bindings.ts` wrappers of the connection methods, the two picker lists,
+`ProjectTrackerBoards` and `SetProjectTrackerBoards`, and their stores
+(`stores/trackerConnections.svelte.ts`,
+`stores/trackerProjectBoards.svelte.ts`). A failure of the linked-issues
+loop after boot reaches only the log (`Deps.LoopFailed`): its failures
+are outside the tracker (a store error, the cleanup), and a tracker
+failure of the loop's sync shows on its connection's row as its problem.
+Not built, owed by the app layer:
 
-- The board screen: the `bindings.ts` wrappers of the board methods and
-  the `tracker:board_updated` event's TypeScript type ship with it, as the
-  connection methods' wrappers ship with the Issues settings screen.
-- A failure of the linked-issues loop after boot reaches only the log
-  (`Deps.LoopFailed`); its user-facing surface is owed with the Issues
-  settings screen.
+- The board screen: the `bindings.ts` wrappers of the subscription
+  methods and the `tracker:board_updated` event's TypeScript type ship
+  with it.
 - The ticket and write bound methods, a ticket subscription tied to its
   client as a board's is, and the `tracker:issue_updated`
   (`trackerapp.IssueEvent`) channel with the read scope's policy.
   `Deps.EmitIssue` only logs.
-- The sequence that follows adding a connection: open the token page,
-  open the key file, verify. The three bound methods exist; the sequence
-  is the frontend's.
-- The warning before a token lapses, from the expiry the user entered,
-  its only source.
 - A thread's ticket link carried by a fork, which starts with its
   source's link, and by a transfer, whose header carries it and whose
   receiver replaces the link it held (a receiver too old to read it drops
