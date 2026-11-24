@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -95,164 +94,70 @@ func TestParseControlRequestWithoutPermissionSuggestions(t *testing.T) {
 
 // --- Gap 1: extended response writer ---
 
-func TestBuildApprovalResponseAllowWithUpdatedInput(t *testing.T) {
-	updatedInput := json.RawMessage(`{"command":"ls -la"}`)
-
-	data, err := buildApprovalResponse(provider.ApprovalResponse{
-		RequestID:    "req-1",
-		Decision:     "allow",
-		UpdatedInput: updatedInput,
-	})
-	if err != nil {
-		t.Fatalf("buildApprovalResponse: %v", err)
+// TestBuildApprovalResponse pins the control_response envelope and its inner
+// body for every decision shape. The inner body is compared whole, so an
+// extra field (updatedInput / updatedPermissions where none belongs) fails.
+func TestBuildApprovalResponse(t *testing.T) {
+	tests := []struct {
+		name      string
+		resp      provider.ApprovalResponse
+		wantInner string
+	}{
+		{
+			name:      "allow carries updatedInput",
+			resp:      provider.ApprovalResponse{Decision: "allow", UpdatedInput: json.RawMessage(`{"command":"ls -la"}`)},
+			wantInner: `{"behavior":"allow","updatedInput":{"command":"ls -la"}}`,
+		},
+		{
+			name: "acceptForSession carries updatedPermissions",
+			resp: provider.ApprovalResponse{
+				Decision:           "acceptForSession",
+				UpdatedPermissions: json.RawMessage(`[{"type":"addRules","rules":[{"toolName":"Bash"}],"behavior":"allow","destination":"session"}]`),
+			},
+			wantInner: `{"behavior":"allow","updatedPermissions":[{"type":"addRules","rules":[{"toolName":"Bash"}],"behavior":"allow","destination":"session"}]}`,
+		},
+		// Backward compat: omitting the extras produces the simple allow
+		// payload, and the Codex-native "accept" decisions alias the legacy
+		// "allow" ones.
+		{name: "allow without extras", resp: provider.ApprovalResponse{Decision: "allow"}, wantInner: `{"behavior":"allow"}`},
+		{name: "allow_session aliases allow", resp: provider.ApprovalResponse{Decision: "allow_session"}, wantInner: `{"behavior":"allow"}`},
+		{name: "accept aliases allow", resp: provider.ApprovalResponse{Decision: "accept"}, wantInner: `{"behavior":"allow"}`},
+		{name: "acceptForSession aliases allow", resp: provider.ApprovalResponse{Decision: "acceptForSession"}, wantInner: `{"behavior":"allow"}`},
+		{
+			// Deny never includes the extras even if a caller sets them.
+			name: "deny strips extras",
+			resp: provider.ApprovalResponse{
+				Decision:           "deny",
+				UpdatedInput:       json.RawMessage(`{"command":"ignored"}`),
+				UpdatedPermissions: json.RawMessage(`[]`),
+			},
+			wantInner: `{"behavior":"deny","message":"User denied"}`,
+		},
 	}
-
-	var msg struct {
-		Type     string `json:"type"`
-		Response struct {
-			Subtype   string `json:"subtype"`
-			RequestID string `json:"request_id"`
-			Response  struct {
-				Behavior     string          `json:"behavior"`
-				UpdatedInput json.RawMessage `json:"updatedInput,omitempty"`
-			} `json:"response"`
-		} `json:"response"`
-	}
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v (data=%s)", err, data)
-	}
-	if msg.Type != "control_response" {
-		t.Errorf("type: got %q, want control_response", msg.Type)
-	}
-	if msg.Response.Subtype != "success" {
-		t.Errorf("subtype: got %q, want success", msg.Response.Subtype)
-	}
-	if msg.Response.RequestID != "req-1" {
-		t.Errorf("request_id: got %q, want req-1", msg.Response.RequestID)
-	}
-	if msg.Response.Response.Behavior != "allow" {
-		t.Errorf("behavior: got %q, want allow", msg.Response.Response.Behavior)
-	}
-	if !bytes.Equal(msg.Response.Response.UpdatedInput, updatedInput) {
-		t.Errorf("updatedInput: got %s, want %s",
-			msg.Response.Response.UpdatedInput, updatedInput)
-	}
-}
-
-func TestBuildApprovalResponseAllowWithUpdatedPermissions(t *testing.T) {
-	updatedPerms := json.RawMessage(`[{"type":"addRules","rules":[{"toolName":"Bash"}],"behavior":"allow","destination":"session"}]`)
-
-	data, err := buildApprovalResponse(provider.ApprovalResponse{
-		RequestID:          "req-2",
-		Decision:           "acceptForSession",
-		UpdatedPermissions: updatedPerms,
-	})
-	if err != nil {
-		t.Fatalf("buildApprovalResponse: %v", err)
-	}
-
-	var msg struct {
-		Response struct {
-			Response struct {
-				Behavior           string          `json:"behavior"`
-				UpdatedPermissions json.RawMessage `json:"updatedPermissions,omitempty"`
-			} `json:"response"`
-		} `json:"response"`
-	}
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if msg.Response.Response.Behavior != "allow" {
-		t.Errorf("behavior: got %q, want allow", msg.Response.Response.Behavior)
-	}
-	if !bytes.Equal(msg.Response.Response.UpdatedPermissions, updatedPerms) {
-		t.Errorf("updatedPermissions: got %s, want %s",
-			msg.Response.Response.UpdatedPermissions, updatedPerms)
-	}
-}
-
-func TestBuildApprovalResponseAllowWithoutExtraFields(t *testing.T) {
-	// Backward compat: omitting UpdatedInput / UpdatedPermissions produces the
-	// simple allow payload with no extra fields.
-	data, err := buildApprovalResponse(provider.ApprovalResponse{
-		RequestID: "req-3",
-		Decision:  "allow",
-	})
-	if err != nil {
-		t.Fatalf("buildApprovalResponse: %v", err)
-	}
-
-	var msg map[string]any
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	inner := msg["response"].(map[string]any)["response"].(map[string]any)
-	if inner["behavior"] != "allow" {
-		t.Errorf("behavior: got %v, want allow", inner["behavior"])
-	}
-	if _, present := inner["updatedInput"]; present {
-		t.Errorf("updatedInput should be absent, got %v", inner["updatedInput"])
-	}
-	if _, present := inner["updatedPermissions"]; present {
-		t.Errorf("updatedPermissions should be absent, got %v",
-			inner["updatedPermissions"])
-	}
-}
-
-func TestBuildApprovalResponseDenyStripsExtras(t *testing.T) {
-	// Backward compat: deny decisions never include updatedInput /
-	// updatedPermissions even if callers accidentally set them.
-	data, err := buildApprovalResponse(provider.ApprovalResponse{
-		RequestID:          "req-4",
-		Decision:           "deny",
-		UpdatedInput:       json.RawMessage(`{"command":"ignored"}`),
-		UpdatedPermissions: json.RawMessage(`[]`),
-	})
-	if err != nil {
-		t.Fatalf("buildApprovalResponse: %v", err)
-	}
-
-	var msg map[string]any
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	inner := msg["response"].(map[string]any)["response"].(map[string]any)
-	if inner["behavior"] != "deny" {
-		t.Errorf("behavior: got %v, want deny", inner["behavior"])
-	}
-	if _, present := inner["updatedInput"]; present {
-		t.Errorf("updatedInput should be absent on deny, got %v",
-			inner["updatedInput"])
-	}
-	if _, present := inner["updatedPermissions"]; present {
-		t.Errorf("updatedPermissions should be absent on deny, got %v",
-			inner["updatedPermissions"])
-	}
-	if inner["message"] != "User denied" {
-		t.Errorf("message: got %v, want 'User denied'", inner["message"])
-	}
-}
-
-func TestBuildApprovalResponseAcceptAliasedToAllow(t *testing.T) {
-	// The Codex-native "accept" decision is backward-compatible with
-	// the legacy "allow" decision — both map to {"behavior":"allow"}.
-	for _, decision := range []string{"accept", "acceptForSession", "allow", "allow_session"} {
-		data, err := buildApprovalResponse(provider.ApprovalResponse{
-			RequestID: "req-alias",
-			Decision:  decision,
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.resp.RequestID = "req-1"
+			data, err := buildApprovalResponse(tc.resp)
+			if err != nil {
+				t.Fatalf("buildApprovalResponse: %v", err)
+			}
+			var msg struct {
+				Type     string `json:"type"`
+				Response struct {
+					Subtype   string          `json:"subtype"`
+					RequestID string          `json:"request_id"`
+					Response  json.RawMessage `json:"response"`
+				} `json:"response"`
+			}
+			if err := json.Unmarshal(data, &msg); err != nil {
+				t.Fatalf("unmarshal: %v (data=%s)", err, data)
+			}
+			if msg.Type != "control_response" || msg.Response.Subtype != "success" || msg.Response.RequestID != "req-1" {
+				t.Errorf("envelope = %s, want control_response/success/req-1", data)
+			}
+			if string(msg.Response.Response) != tc.wantInner {
+				t.Errorf("inner response = %s, want %s", msg.Response.Response, tc.wantInner)
+			}
 		})
-		if err != nil {
-			t.Fatalf("%s: buildApprovalResponse: %v", decision, err)
-		}
-
-		var msg map[string]any
-		if err := json.Unmarshal(data, &msg); err != nil {
-			t.Fatalf("%s: unmarshal: %v", decision, err)
-		}
-		inner := msg["response"].(map[string]any)["response"].(map[string]any)
-		if inner["behavior"] != "allow" {
-			t.Errorf("%s: behavior: got %v, want allow", decision, inner["behavior"])
-		}
 	}
 }

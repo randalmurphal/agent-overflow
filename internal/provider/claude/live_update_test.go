@@ -178,14 +178,8 @@ func TestPlanLiveUpdate(t *testing.T) {
 			},
 			wantOK: false,
 		},
-		{
-			// A prompt change is never live; see
-			// TestPlanLiveUpdateNeverCarriesASystemPrompt, which owns that
-			// whole axis.
-			name:   "system prompt change requires restart",
-			mutate: func(o *provider.SessionOptions) { o.SystemPrompt = "different prompt" },
-			wantOK: false,
-		},
+		// A prompt change is never live; TestPlanLiveUpdateNeverCarriesASystemPrompt
+		// owns that whole axis.
 	}
 
 	for _, tt := range tests {
@@ -301,26 +295,53 @@ func TestApplyLiveUpdateAppliesBasePermissionMode(t *testing.T) {
 	}
 }
 
-// TestApplyLiveUpdateBypassEscalationRequiresRestart pins the CLI
-// constraint verified on 2.1.205: a session spawned without
-// --allow-dangerously-skip-permissions cannot escalate to
-// bypassPermissions via set_permission_mode. ApplyLiveUpdate must signal
-// the restart fallback before any side effect (no wire write, model
-// untouched).
-func TestApplyLiveUpdateBypassEscalationRequiresRestart(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5", BasePermissionMode: "bypassPermissions"}, nil)
-	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
-		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
+// TestApplyLiveUpdateRestartGatesWriteNothing pins the updates this process
+// cannot take live. Each must signal ErrLiveUpdateRequiresRestart before any
+// side effect: no stdin write, so a model half riding the same update does
+// not half-apply.
+func TestApplyLiveUpdateRestartGatesWriteNothing(t *testing.T) {
+	tests := []struct {
+		name     string
+		commands []string
+		update   LiveUpdate
+	}{
+		{
+			// CLI constraint verified on 2.1.205: a session spawned without
+			// --allow-dangerously-skip-permissions cannot escalate to
+			// bypassPermissions via set_permission_mode.
+			name:   "bypass escalation without the allow flag",
+			update: LiveUpdate{Model: "claude-fable-5", BasePermissionMode: "bypassPermissions"},
+		},
+		{
+			// A session that has not advertised /effort (no init yet, older
+			// CLI, or gated account) routes the whole update to restart.
+			name:   "effort without an advertised command",
+			update: LiveUpdate{Model: "claude-fable-5", Effort: "low"},
+		},
+		{
+			// The SDK gate: /fast on a session spawned without the fastMode
+			// settings opt-in answers "not available in the Agent SDK"; the
+			// respawn adds the opt-in. Disable has no such gate.
+			name:     "fast enable without the spawn opt-in",
+			commands: []string{"effort", "fast"},
+			update:   LiveUpdate{FastMode: FastModeOn},
+		},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
+			s.replaceAdvertisedCommands(tc.commands)
 
-	// No control_request may have hit stdin — the model half of the update
-	// must not half-apply when the permission half needs a restart.
-	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %q", lines)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_, err := s.ApplyLiveUpdate(ctx, tc.update, nil)
+			if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
+				t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
+			}
+			if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+				t.Fatalf("expected no stdin writes, captured: %q", lines)
+			}
+		})
 	}
 }
 
@@ -417,7 +438,7 @@ func TestPlanLiveUpdateReadOnlyTransitionsRequireRestart(t *testing.T) {
 // The bypassPermissions asymmetry is deliberate and lives one layer down:
 // PlanLiveUpdate happily PLANS auto → full-access, and ApplyLiveUpdate is what
 // refuses it on a process spawned without --allow-dangerously-skip-permissions
-// (TestApplyLiveUpdateBypassEscalationRequiresRestart). Planning and applying
+// (TestApplyLiveUpdateRestartGatesWriteNothing). Planning and applying
 // answer different questions — "is this expressible on the wire" versus "can
 // THIS process accept it" — and collapsing them here would make the plan
 // depend on session state it does not have.
@@ -452,17 +473,6 @@ func TestPlanLiveUpdateAutoTransitions(t *testing.T) {
 		})
 	}
 
-	t.Run("auto to auto needs nothing", func(t *testing.T) {
-		prev := liveUpdateBaseOptions()
-		prev.RuntimeMode = provider.RuntimeAuto
-		update, ok := PlanLiveUpdate(prev, prev)
-		if !ok {
-			t.Fatal("PlanLiveUpdate rejected an unchanged auto session")
-		}
-		if update != (LiveUpdate{}) {
-			t.Errorf("update = %+v, want zero for an unchanged session", update)
-		}
-	})
 }
 
 // decodeCapturedUserCommand asserts a captured stdin line is a user
@@ -567,58 +577,6 @@ func TestApplyLiveUpdateOrdersModelBeforeCommands(t *testing.T) {
 	}
 }
 
-// TestApplyLiveUpdateEffortNeedsAdvertisedCommand: a session that has not
-// advertised /effort (no init yet, older CLI, or gated account) routes the
-// whole update to the restart path before any side effect.
-func TestApplyLiveUpdateEffortNeedsAdvertisedCommand(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Model: "claude-fable-5", Effort: "low"}, nil)
-	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
-		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
-	}
-	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %q", lines)
-	}
-}
-
-// TestApplyLiveUpdateRejectsUnknownEffortTier: ApplyLiveUpdate is a public
-// API; a tier outside the vocabulary AO validated against the CLI must fail
-// loudly here, because the CLI would answer it with a non-error "Invalid
-// argument" text.
-func TestApplyLiveUpdateRejectsUnknownEffortTier(t *testing.T) {
-	s, _ := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
-	s.replaceAdvertisedCommands([]string{"effort"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "ultracode"}, nil)
-	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
-		t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
-	}
-}
-
-// TestApplyLiveUpdateFastEnableRequiresSpawnOptIn pins the SDK gate: /fast
-// on a session spawned without the fastMode settings opt-in answers
-// "not available in the Agent SDK", so the enable must take the restart
-// path (the respawn adds the opt-in). Disable has no such gate.
-func TestApplyLiveUpdateFastEnableRequiresSpawnOptIn(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
-	s.replaceAdvertisedCommands([]string{"effort", "fast"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{FastMode: FastModeOn}, nil)
-	if !errors.Is(err, ErrLiveUpdateRequiresRestart) {
-		t.Fatalf("ApplyLiveUpdate error = %v, want ErrLiveUpdateRequiresRestart", err)
-	}
-	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %q", lines)
-	}
-}
-
 // TestApplyLiveUpdatePreSendRunsBeforeAnyWrite pins the confirmation-race
 // contract: preSend fires after validation and before any byte reaches the
 // wire, so the caller's pending-apply registration always beats the CLI's
@@ -651,42 +609,59 @@ func TestApplyLiveUpdatePreSendRunsBeforeAnyWrite(t *testing.T) {
 	}
 }
 
-// TestApplyLiveUpdateEffortRefusedOnEffortlessModel — the planner never
-// produces this update, but the gate must not live in caller discipline:
-// /effort against a model with no reasoning tiers fails loudly before any
-// side effect.
-func TestApplyLiveUpdateEffortRefusedOnEffortlessModel(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), Model: "claude-haiku-4-5", BasePermissionMode: "default"})
-	s.replaceAdvertisedCommands([]string{"effort"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{Effort: "low"}, func(LiveApplyReceipt) {
-		t.Error("preSend ran for a rejected update")
-	})
-	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
-		t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
+// TestApplyLiveUpdateRejectsInvalidUpdates: ApplyLiveUpdate is a public API,
+// so an update the planner never produces must fail loudly with a validation
+// error (not a restart) before preSend and before any wire write. The CLI
+// would answer each of these with non-error text.
+func TestApplyLiveUpdateRejectsInvalidUpdates(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      Config
+		commands []string
+		update   LiveUpdate
+	}{
+		{
+			// The CLI answers a tier outside AO's vocabulary with "Invalid argument".
+			name:     "unknown effort tier",
+			cfg:      Config{BasePermissionMode: "default"},
+			commands: []string{"effort"},
+			update:   LiveUpdate{Effort: "ultracode"},
+		},
+		{
+			// The gate must not live in caller discipline: /effort against a
+			// model with no reasoning tiers.
+			name:     "effort on an effortless model",
+			cfg:      Config{Model: "claude-haiku-4-5", BasePermissionMode: "default"},
+			commands: []string{"effort"},
+			update:   LiveUpdate{Effort: "low"},
+		},
+		{
+			// FastModeChange is an open string type; the CLI answers
+			// `/fast garbage` with "Usage:".
+			name:     "fast argument outside on/off",
+			cfg:      Config{BasePermissionMode: "default", FastMode: true},
+			commands: []string{"fast"},
+			update:   LiveUpdate{FastMode: FastModeChange("toggle")},
+		},
 	}
-	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %q", lines)
-	}
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.cfg.Reaper = procutiltest.Reaper()
+			s, capturePath := liveUpdateTestSession(t, tc.cfg)
+			s.replaceAdvertisedCommands(tc.commands)
 
-// TestApplyLiveUpdateRejectsGarbageFastArgument — FastModeChange is an open
-// string type; anything outside on/off must fail before the wire, because
-// the CLI answers `/fast garbage` with a non-error "Usage:" text.
-func TestApplyLiveUpdateRejectsGarbageFastArgument(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default", FastMode: true})
-	s.replaceAdvertisedCommands([]string{"fast"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, err := s.ApplyLiveUpdate(ctx, LiveUpdate{FastMode: FastModeChange("toggle")}, nil)
-	if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
-		t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
-	}
-	if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
-		t.Fatalf("expected no stdin writes, captured: %q", lines)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_, err := s.ApplyLiveUpdate(ctx, tc.update, func(LiveApplyReceipt) {
+				t.Error("preSend ran for a rejected update")
+			})
+			if err == nil || errors.Is(err, ErrLiveUpdateRequiresRestart) {
+				t.Fatalf("ApplyLiveUpdate error = %v, want a validation error", err)
+			}
+			if lines := capturedLinesBeforeSentinel(t, s, capturePath); len(lines) > 0 {
+				t.Fatalf("expected no stdin writes, captured: %q", lines)
+			}
+		})
 	}
 }
 

@@ -181,113 +181,62 @@ func TestClaudeFallbackFieldsAreBounded(t *testing.T) {
 	}
 }
 
-// TestParseTaskLifecycleEvent_CompletedPatchEmitsBackgroundTerminal is
-// the basic happy-path assertion: a task_updated envelope with
-// `patch.status=completed` emits exactly one
-// `EventBackgroundTaskTerminal`. No `EventToolComplete` is produced —
-// the tool-lifecycle completion was already emitted by the
-// backgrounded placeholder's `tool_result`.
-func TestParseTaskLifecycleEvent_CompletedPatchEmitsBackgroundTerminal(t *testing.T) {
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
-		t.Fatalf("task_started: %v", err)
+// TestParseTaskLifecycleEvent_TerminalPatchEmitsBackgroundTerminal: a
+// task_updated envelope with a terminal `patch.status` emits exactly one
+// `EventBackgroundTaskTerminal` keyed to the task's tool_use. No
+// `EventToolComplete` is produced — the tool-lifecycle completion was
+// already emitted by the backgrounded placeholder's `tool_result`.
+func TestParseTaskLifecycleEvent_TerminalPatchEmitsBackgroundTerminal(t *testing.T) {
+	tests := []struct {
+		name     string
+		patch    string
+		wantMeta map[string]any
+	}{
+		{
+			name:     "completed",
+			patch:    `{"status":"completed","end_time":1776577311261}`,
+			wantMeta: map[string]any{"task_id": "t1", "status": "completed", "end_time": float64(1776577311261), "is_error": nil},
+		},
+		{
+			// `failed` normalizes to status=failed and is_error=true.
+			name:     "failed",
+			patch:    `{"status":"failed"}`,
+			wantMeta: map[string]any{"task_id": "t1", "status": "failed", "is_error": true},
+		},
+		{
+			// `killed` survives the normalizer untouched so triage can map it
+			// onto `statusKilled` and render a gray "Stopped" badge rather
+			// than the red "Failed" bucket. The CLI emits it on the follow-up
+			// task_updated after a successful stop_task control_request. It
+			// is still a non-completed terminal, so is_error stays true.
+			name:     "killed",
+			patch:    `{"status":"killed","end_time":1776915081647}`,
+			wantMeta: map[string]any{"task_id": "t1", "status": "killed", "end_time": float64(1776915081647), "is_error": true},
+		},
 	}
-
-	events, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"completed","end_time":1776577311261}}`))
-	if err != nil {
-		t.Fatalf("task_updated: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventBackgroundTaskTerminal {
-		t.Fatalf("Kind: got %q, want %q", events[0].Kind, provider.EventBackgroundTaskTerminal)
-	}
-	if events[0].ItemID != "tu1" {
-		t.Fatalf("ItemID: got %q, want tu1", events[0].ItemID)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if meta["task_id"] != "t1" {
-		t.Fatalf("meta.task_id: got %v", meta["task_id"])
-	}
-	if meta["status"] != "completed" {
-		t.Fatalf("meta.status: got %v", meta["status"])
-	}
-	if meta["end_time"] != float64(1776577311261) {
-		t.Fatalf("meta.end_time: got %v", meta["end_time"])
-	}
-}
-
-// TestParseTaskLifecycleEvent_FailedPatchMarksIsError covers the
-// `failed` terminal mapping — the event is normalized to status=failed
-// and is_error=true. `killed` has its own distinct status (see
-// TestParseTaskLifecycleEvent_KilledPatchPreservesStatus) so it can
-// render as a gray "Stopped" badge rather than the red "Failed" bucket.
-func TestParseTaskLifecycleEvent_FailedPatchMarksIsError(t *testing.T) {
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
-		t.Fatalf("task_started: %v", err)
-	}
-	line := []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"failed"}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("task_updated: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventBackgroundTaskTerminal {
-		t.Fatalf("Kind: got %q", events[0].Kind)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if meta["status"] != "failed" {
-		t.Fatalf("meta.status: got %v, want failed", meta["status"])
-	}
-	if meta["is_error"] != true {
-		t.Fatalf("meta.is_error: got %v, want true", meta["is_error"])
-	}
-}
-
-// TestParseTaskLifecycleEvent_KilledPatchPreservesStatus confirms the
-// `killed` wire value survives the parser normalizer untouched. The CLI
-// emits this on the follow-up task_updated after a successful
-// stop_task control_request; triage maps it onto the distinct
-// `statusKilled` row state so the UI can render a "Stopped" badge
-// instead of conflating user-initiated stops with errors.
-func TestParseTaskLifecycleEvent_KilledPatchPreservesStatus(t *testing.T) {
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
-		t.Fatalf("task_started: %v", err)
-	}
-	line := []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"killed","end_time":1776915081647}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("task_updated: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventBackgroundTaskTerminal {
-		t.Fatalf("Kind: got %q", events[0].Kind)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if meta["status"] != "killed" {
-		t.Fatalf("meta.status: got %v, want killed", meta["status"])
-	}
-	if meta["is_error"] != true {
-		t.Fatalf("meta.is_error: got %v, want true (killed is still a non-completed terminal)", meta["is_error"])
-	}
-	if meta["end_time"] != float64(1776915081647) {
-		t.Fatalf("meta.end_time: got %v, want 1776915081647", meta["end_time"])
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+			if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1"}`)); err != nil {
+				t.Fatalf("task_started: %v", err)
+			}
+			events, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_updated","task_id":"t1","patch":`+tc.patch+`}`))
+			if err != nil {
+				t.Fatalf("task_updated: %v", err)
+			}
+			if len(events) != 1 || events[0].Kind != provider.EventBackgroundTaskTerminal || events[0].ItemID != "tu1" {
+				t.Fatalf("events = %+v, want one EventBackgroundTaskTerminal for tu1", events)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			for key, want := range tc.wantMeta {
+				if meta[key] != want {
+					t.Errorf("meta.%s = %v, want %v", key, meta[key], want)
+				}
+			}
+		})
 	}
 }
 
@@ -483,30 +432,6 @@ func TestParseResult_InterruptedMarksAbortedAndStopReason(t *testing.T) {
 	}
 }
 
-// TestParseResult_NonInterruptedErrorPopulatesMetaError — an
-// `error_during_execution` subtype whose errors[] does NOT match the
-// interrupt heuristic still produces a turn-complete error: ErrorMessage is
-// populated from errors[], stop_reason flips to "error", and Aborted stays
-// unset. Hard failures and user aborts split here.
-func TestParseResult_NonInterruptedErrorPopulatesMetaError(t *testing.T) {
-	parser := NewParser()
-	line := []byte(`{"type":"result","subtype":"error_during_execution","is_error":false,"errors":["disk full"]}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
-	meta := requireWireTurnComplete(t, events)
-	if meta.Aborted {
-		t.Fatal("non-interrupt errors[] should not trigger aborted flag")
-	}
-	if meta.StopReason != "error" {
-		t.Fatalf("StopReason: got %v, want error", meta.StopReason)
-	}
-	if meta.ErrorMessage != "disk full" {
-		t.Fatalf("ErrorMessage: got %v, want \"disk full\"", meta.ErrorMessage)
-	}
-}
-
 // TestParseResult_IsErrorTrueWithoutSubtypeEmitsTurnComplete pins
 // behaviour for the bare `is_error:true` shape (no subtype). The
 // envelope settles the turn but does NOT populate meta.error: the
@@ -532,7 +457,9 @@ func TestParseResult_IsErrorTrueWithoutSubtypeEmitsTurnComplete(t *testing.T) {
 // SDKResultError subtypes documented in the agent SDK. Each one must
 // produce stop_reason="error" + ErrorMessage from errors[], so triage
 // can route the turn-complete to the same error-handling path
-// regardless of which limit/cause tripped.
+// regardless of which limit/cause tripped. For error_during_execution this
+// is where hard failures and user aborts split: errors[] that does not
+// match the interrupt heuristic leaves Aborted unset.
 func TestParseResult_AllErrorSubtypesPopulateMetaError(t *testing.T) {
 	subtypes := []string{
 		"error_during_execution",
@@ -604,42 +531,38 @@ func requireCompactionStatus(t *testing.T, events []provider.ProviderEvent) prov
 	return meta
 }
 
-func TestParseSystem_StatusCompactingOpensWindow(t *testing.T) {
-	line := []byte(`{"type":"system","subtype":"status","status":"compacting","session_id":"s1","uuid":"u1"}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
+func TestParseSystem_StatusCompactionWindow(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want provider.CompactionStatusMeta
+	}{
+		{
+			name: "compacting opens the window",
+			line: `{"type":"system","subtype":"status","status":"compacting","session_id":"s1","uuid":"u1"}`,
+			want: provider.CompactionStatusMeta{Active: true},
+		},
+		{
+			name: "success closes the window",
+			line: `{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"s1","uuid":"u2"}`,
+			want: provider.CompactionStatusMeta{Result: "success"},
+		},
+		{
+			name: "failure carries the error",
+			line: `{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"API Error: Request was aborted.","session_id":"s1","uuid":"u3"}`,
+			want: provider.CompactionStatusMeta{Result: "failed", ErrorMessage: "API Error: Request was aborted."},
+		},
 	}
-	meta := requireCompactionStatus(t, events)
-	if !meta.Active || meta.Result != "" || meta.ErrorMessage != "" {
-		t.Fatalf("meta = %+v, want bare Active=true", meta)
-	}
-}
-
-func TestParseSystem_StatusCompactResultSuccessClosesWindow(t *testing.T) {
-	line := []byte(`{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"s1","uuid":"u2"}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	meta := requireCompactionStatus(t, events)
-	if meta.Active || meta.Result != "success" || meta.ErrorMessage != "" {
-		t.Fatalf("meta = %+v, want inactive success", meta)
-	}
-}
-
-func TestParseSystem_StatusCompactResultFailedCarriesError(t *testing.T) {
-	line := []byte(`{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"API Error: Request was aborted.","session_id":"s1","uuid":"u3"}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	meta := requireCompactionStatus(t, events)
-	if meta.Active || meta.Result != "failed" {
-		t.Fatalf("meta = %+v, want inactive failed", meta)
-	}
-	if meta.ErrorMessage != "API Error: Request was aborted." {
-		t.Fatalf("ErrorMessage = %q", meta.ErrorMessage)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events, err := ParseLine(testThread, []byte(tc.line))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if meta := requireCompactionStatus(t, events); meta != tc.want {
+				t.Fatalf("meta = %+v, want %+v", meta, tc.want)
+			}
+		})
 	}
 }
 
@@ -1377,55 +1300,46 @@ func TestParseCompactBoundary(t *testing.T) {
 }
 
 func TestParseCompactBoundaryPreservesCompactMetadata(t *testing.T) {
-	line := []byte(`{"type":"system","subtype":"compact_boundary","uuid":"compact-2","content":"Conversation compacted","compactMetadata":{"trigger":"auto","durationMs":111814}}`)
-
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
+	tests := []struct {
+		name           string
+		line           string
+		wantItemID     string
+		wantDurationMs float64
+	}{
+		{
+			name:           "no data",
+			line:           `{"type":"system","subtype":"compact_boundary","uuid":"compact-2","content":"Conversation compacted","compactMetadata":{"trigger":"auto","durationMs":111814}}`,
+			wantItemID:     "compact-2",
+			wantDurationMs: 111814,
+		},
+		{
+			name:           "data is not a context window",
+			line:           `{"type":"system","subtype":"compact_boundary","uuid":"compact-3","content":"Conversation compacted","data":{"note":"not a context window"},"compactMetadata":{"trigger":"auto","durationMs":222}}`,
+			wantItemID:     "compact-3",
+			wantDurationMs: 222,
+		},
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-
-	evt := events[0]
-	if evt.ItemID != "compact-2" {
-		t.Errorf("itemID: got %q, want compact-2", evt.ItemID)
-	}
-	if evt.Content != "Conversation compacted" {
-		t.Errorf("content: got %q, want Conversation compacted", evt.Content)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta["trigger"] != "auto" {
-		t.Fatalf("trigger = %v, want auto", meta["trigger"])
-	}
-	if meta["durationMs"] != float64(111814) {
-		t.Fatalf("durationMs = %v, want 111814", meta["durationMs"])
-	}
-}
-
-func TestParseCompactBoundaryPreservesCompactMetadataWhenDataIsNotContextWindow(t *testing.T) {
-	line := []byte(`{"type":"system","subtype":"compact_boundary","uuid":"compact-3","content":"Conversation compacted","data":{"note":"not a context window"},"compactMetadata":{"trigger":"auto","durationMs":222}}`)
-
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-
-	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta["trigger"] != "auto" {
-		t.Fatalf("trigger = %v, want auto", meta["trigger"])
-	}
-	if meta["durationMs"] != float64(222) {
-		t.Fatalf("durationMs = %v, want 222", meta["durationMs"])
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events, err := ParseLine(testThread, []byte(tc.line))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(events))
+			}
+			evt := events[0]
+			if evt.ItemID != tc.wantItemID || evt.Content != "Conversation compacted" {
+				t.Errorf("itemID/content = %q/%q, want %q/Conversation compacted", evt.ItemID, evt.Content, tc.wantItemID)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if meta["trigger"] != "auto" || meta["durationMs"] != tc.wantDurationMs {
+				t.Fatalf("trigger/durationMs = %v/%v, want auto/%v", meta["trigger"], meta["durationMs"], tc.wantDurationMs)
+			}
+		})
 	}
 }
 

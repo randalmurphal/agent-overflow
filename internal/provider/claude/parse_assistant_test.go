@@ -448,14 +448,15 @@ func TestParseAssistant_AdvisorResultEmitsToolComplete(t *testing.T) {
 		t.Fatalf("parse result: %v", err)
 	}
 	var completeEvent provider.ProviderEvent
+	var completeCount int
 	for _, e := range events {
 		if e.Kind == provider.EventToolComplete {
 			completeEvent = e
-			break
+			completeCount++
 		}
 	}
-	if completeEvent.Kind != provider.EventToolComplete {
-		t.Fatalf("expected EventToolComplete, got %+v", events)
+	if completeCount != 1 {
+		t.Fatalf("got %d EventToolComplete events, want 1: %+v", completeCount, events)
 	}
 	if completeEvent.ItemID != "srvtoolu_abc" {
 		t.Fatalf("ItemID: got %q, want srvtoolu_abc", completeEvent.ItemID)
@@ -470,23 +471,40 @@ func TestParseAssistant_AdvisorResultEmitsToolComplete(t *testing.T) {
 	if v, ok := meta["is_error"].(bool); !ok || v {
 		t.Fatalf("meta.is_error: got %v, want false", meta["is_error"])
 	}
+
+	// Idempotency: a second result for the same tool_use_id (re-delivery
+	// after reconnect, parser-state drift) must not emit a second
+	// EventToolComplete. The first result cleared the correlation mark, so
+	// the second falls through the orphan guard.
+	second, err := parser.ParseLine(testThreadProto, resultLine)
+	if err != nil {
+		t.Fatalf("parse second result: %v", err)
+	}
+	for _, e := range second {
+		if e.Kind == provider.EventToolComplete {
+			t.Fatalf("duplicate result emitted EventToolComplete: %+v", e)
+		}
+	}
 }
 
 // TestParseAssistant_AdvisorResultDropsOrphan covers the defensive
-// branch: an advisor_tool_result whose tool_use_id was never
-// observed (parser restart mid-turn, wire drift) must be dropped
-// rather than synthesise a completion against a non-existent
-// launch row.
+// branch: an advisor_tool_result whose tool_use_id was never observed
+// (parser restart mid-turn, wire drift), or is empty, has no launch row to
+// settle and must be dropped rather than synthesise a completion.
 func TestParseAssistant_AdvisorResultDropsOrphan(t *testing.T) {
-	line := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_unknown","content":{"type":"advisor_result","text":"x"}}]}}`)
-	events, err := ParseLine(testThreadProto, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventToolComplete {
-			t.Fatalf("orphan advisor_tool_result must not emit EventToolComplete: %+v", e)
-		}
+	for name, toolUseID := range map[string]string{"unknown id": "srvtoolu_unknown", "empty id": ""} {
+		t.Run(name, func(t *testing.T) {
+			line := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"` + toolUseID + `","content":{"type":"advisor_result","text":"x"}}]}}`)
+			events, err := ParseLine(testThreadProto, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			for _, e := range events {
+				if e.Kind == provider.EventToolComplete {
+					t.Fatalf("orphan advisor_tool_result must not emit EventToolComplete: %+v", e)
+				}
+			}
+		})
 	}
 }
 
@@ -543,116 +561,40 @@ func TestParseAssistant_ServerToolUseDropsEmptyID(t *testing.T) {
 	}
 }
 
-// TestParseAssistant_AdvisorResultDropsEmptyToolUseID covers the
-// orphan-result guard distinct from the unknown-id case: a result
-// with an empty tool_use_id has no row to settle.
-func TestParseAssistant_AdvisorResultDropsEmptyToolUseID(t *testing.T) {
-	line := []byte(`{"type":"assistant","message":{"id":"msg-x","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"","content":{"type":"advisor_result","text":"x"}}]}}`)
-	events, err := ParseLine(testThreadProto, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventToolComplete {
-			t.Fatalf("EventToolComplete on empty-tool_use_id result: %+v", e)
-		}
-	}
-}
-
-// TestParseAssistant_AdvisorResultDropsBadInnerType covers
-// decodeAdvisorResult's discriminator check. A wire-drift
-// inner shape (e.g. a future `advisor_error` envelope) must NOT
-// surface its text as if it were a normal advisor response — the
-// completion still fires so the running row settles, but with
-// empty Content.
-func TestParseAssistant_AdvisorResultDropsBadInnerType(t *testing.T) {
-	parser := NewParser()
-	callLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_xyz","name":"advisor","input":{}}]}}`)
-	if _, err := parser.ParseLine(testThreadProto, callLine); err != nil {
-		t.Fatalf("parse call: %v", err)
-	}
-	resultLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_xyz","content":{"type":"advisor_error","text":"do not surface"}}]}}`)
-	events, err := parser.ParseLine(testThreadProto, resultLine)
-	if err != nil {
-		t.Fatalf("parse result: %v", err)
-	}
-	var completeEvent provider.ProviderEvent
-	for _, e := range events {
-		if e.Kind == provider.EventToolComplete {
-			completeEvent = e
-		}
-	}
-	if completeEvent.Kind != provider.EventToolComplete {
-		t.Fatalf("expected EventToolComplete to fire even on bad inner type, got %+v", events)
-	}
-	if completeEvent.Content != "" {
-		t.Fatalf("Content for unknown inner type: got %q, want empty", completeEvent.Content)
-	}
-}
-
-// TestParseAssistant_AdvisorResultDropsMalformedContent covers the
-// json.Unmarshal failure branch in decodeAdvisorResult. The
-// completion still fires (so the running row settles) with empty
-// Content.
-func TestParseAssistant_AdvisorResultDropsMalformedContent(t *testing.T) {
-	parser := NewParser()
-	callLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_mf","name":"advisor","input":{}}]}}`)
-	if _, err := parser.ParseLine(testThreadProto, callLine); err != nil {
-		t.Fatalf("parse call: %v", err)
-	}
-	// content as a bare string instead of the expected object shape.
-	resultLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_mf","content":"raw string"}]}}`)
-	events, err := parser.ParseLine(testThreadProto, resultLine)
-	if err != nil {
-		t.Fatalf("parse result: %v", err)
-	}
-	var completeEvent provider.ProviderEvent
-	for _, e := range events {
-		if e.Kind == provider.EventToolComplete {
-			completeEvent = e
-		}
-	}
-	if completeEvent.Kind != provider.EventToolComplete {
-		t.Fatalf("expected EventToolComplete even on malformed content, got %+v", events)
-	}
-	if completeEvent.Content != "" {
-		t.Fatalf("Content for malformed content: got %q, want empty", completeEvent.Content)
-	}
-}
-
-// TestParseAssistant_AdvisorResultDuplicateDropsSecond pins the
-// idempotency contract: a second advisor_tool_result for the same
-// tool_use_id (re-delivery after reconnect, parser-state drift)
-// must not emit a second EventToolComplete. The first result clears
-// the correlation mark, the second falls through the orphan guard.
-func TestParseAssistant_AdvisorResultDuplicateDropsSecond(t *testing.T) {
-	parser := NewParser()
-	callLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_dup","name":"advisor","input":{}}]}}`)
-	if _, err := parser.ParseLine(testThreadProto, callLine); err != nil {
-		t.Fatalf("parse call: %v", err)
-	}
-	resultLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_dup","content":{"type":"advisor_result","text":"first"}}]}}`)
-	first, err := parser.ParseLine(testThreadProto, resultLine)
-	if err != nil {
-		t.Fatalf("parse first result: %v", err)
-	}
-	var firstCount int
-	for _, e := range first {
-		if e.Kind == provider.EventToolComplete {
-			firstCount++
-		}
-	}
-	if firstCount != 1 {
-		t.Fatalf("first result: got %d EventToolComplete events, want 1", firstCount)
-	}
-	second, err := parser.ParseLine(testThreadProto, resultLine)
-	if err != nil {
-		t.Fatalf("parse second result: %v", err)
-	}
-	for _, e := range second {
-		if e.Kind == provider.EventToolComplete {
-			t.Fatalf("duplicate result emitted EventToolComplete: %+v", e)
-		}
+// TestParseAssistant_AdvisorResultDropsUnreadableContent covers
+// decodeAdvisorResult's discriminator check and its json.Unmarshal failure
+// branch. A wire-drift inner shape (e.g. a future `advisor_error` envelope)
+// must NOT surface its text as if it were a normal advisor response; the
+// completion still fires so the running row settles, but with empty Content.
+func TestParseAssistant_AdvisorResultDropsUnreadableContent(t *testing.T) {
+	for name, content := range map[string]string{
+		"unknown inner type": `{"type":"advisor_error","text":"do not surface"}`,
+		"bare string":        `"raw string"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			parser := NewParser()
+			callLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_xyz","name":"advisor","input":{}}]}}`)
+			if _, err := parser.ParseLine(testThreadProto, callLine); err != nil {
+				t.Fatalf("parse call: %v", err)
+			}
+			resultLine := []byte(`{"type":"assistant","message":{"id":"msg-adv","role":"assistant","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_xyz","content":` + content + `}]}}`)
+			events, err := parser.ParseLine(testThreadProto, resultLine)
+			if err != nil {
+				t.Fatalf("parse result: %v", err)
+			}
+			var completeEvent provider.ProviderEvent
+			for _, e := range events {
+				if e.Kind == provider.EventToolComplete {
+					completeEvent = e
+				}
+			}
+			if completeEvent.Kind != provider.EventToolComplete {
+				t.Fatalf("expected EventToolComplete even on unreadable content, got %+v", events)
+			}
+			if completeEvent.Content != "" {
+				t.Fatalf("Content: got %q, want empty", completeEvent.Content)
+			}
+		})
 	}
 }
 
@@ -807,30 +749,6 @@ func TestParseAssistantExitPlanModeBlock(t *testing.T) {
 	}
 }
 
-func TestParseAssistantThinkingBlockIsSkipped(t *testing.T) {
-	// A thinking block on the coalesced `assistant` envelope is dropped
-	// when it already streamed (stream_event thinking_delta is the sole
-	// source of thinking content). The snapshot must not re-emit it on any
-	// channel — neither a streaming EventThinking nor a completed block.
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, assistantMessageStartLine("msg-1")); err != nil {
-		t.Fatalf("parse message_start: %v", err)
-	}
-	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"thinking","thinking":"Let me consider..."}]}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventThinking {
-			t.Fatalf("assistant envelope emitted EventThinking for a thinking block: %+v", e)
-		}
-		if e.Kind == provider.EventContentBlockStop && e.ContentPresent {
-			t.Fatalf("already-streamed thinking re-emitted as a completed block: %+v", e)
-		}
-	}
-}
-
 func TestParseAssistantWithUsage(t *testing.T) {
 	// Text is dropped (already streamed — message_start marks it); usage is
 	// still emitted from the assistant envelope.
@@ -861,7 +779,8 @@ func TestParseAssistantWithUsage(t *testing.T) {
 
 func TestParseAssistantMultipleBlocks(t *testing.T) {
 	// Thinking and text are dropped on the assistant envelope (already
-	// streamed — message_start marks them). Only the tool_use fires.
+	// streamed — message_start marks them). Only the tool_use fires: the
+	// snapshot re-emits neither an EventThinking nor a completed block.
 	parser := NewParser()
 	if _, err := parser.ParseLine(testThread, assistantMessageStartLine("msg-1")); err != nil {
 		t.Fatalf("parse message_start: %v", err)

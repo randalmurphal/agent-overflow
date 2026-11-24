@@ -48,26 +48,6 @@ func TestParseResult_FastModeStateAndReason(t *testing.T) {
 	}
 }
 
-// A CLI old enough to report `fast_mode_state` but not
-// `fast_mode_disabled_reason` (2.1.105) must still surface the state. The
-// missing reason is silence, not an empty answer that would be rendered
-// as a denial.
-func TestParseResult_FastModeStateWithoutReasonIsVersionTolerant(t *testing.T) {
-	parser := NewParser()
-	events, err := parser.ParseLine(testThread, []byte(
-		`{"type":"result","subtype":"success","is_error":false,"fast_mode_state":"on"}`))
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
-	status := turnCompleteFastMode(t, events[0])
-	if status == nil {
-		t.Fatal("FastMode = nil, want a status carrying state only")
-	}
-	if status.State != "on" || status.DisabledReason != "" {
-		t.Fatalf("FastMode = %+v, want {on \"\"}", *status)
-	}
-}
-
 // Neither key present is NOT "fast mode is off" — it is no signal at all,
 // and the event must carry nil so nothing downstream can read a denial
 // into it.
@@ -116,7 +96,8 @@ func TestParseSystemInit_FastModeAbsentIsNil(t *testing.T) {
 
 // The 2.1.105 capture is the version-tolerance anchor: it carries
 // fast_mode_state on `result` and has no fast_mode_disabled_reason key
-// anywhere. Parsing it must not invent a reason.
+// anywhere. The state must still surface, and the missing reason is
+// silence, not an empty answer that would be rendered as a denial.
 func TestParseResult_RealOutputFixtureCarriesStateWithoutReason(t *testing.T) {
 	file, err := os.Open("testdata/real_output.ndjson")
 	if err != nil {

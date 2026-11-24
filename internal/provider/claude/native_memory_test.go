@@ -8,8 +8,10 @@ import (
 )
 
 // NativeMemoryOff sends `autoMemoryEnabled: false` in the inline settings,
-// alone or beside the block's other keys; without it the key is absent, so
-// the user's own settings decide.
+// alone or beside the block's other keys, and states the variable that would
+// force memory back on in the inline settings' env, which outranks the user's
+// settings files and the inherited environment. Without it neither the key
+// nor the variable is sent, so the user's own settings decide.
 func TestNativeMemoryOffRidesTheInlineSettings(t *testing.T) {
 	for name, opts := range map[string]provider.SessionOptions{
 		"alone":       {Provider: "claude", Model: "claude-opus-4-7"},
@@ -17,29 +19,18 @@ func TestNativeMemoryOffRidesTheInlineSettings(t *testing.T) {
 	} {
 		cfg := ConfigFromOptions(opts)
 		cfg.NativeMemoryOff = true
-		if got, ok := settingsArg(t, buildArgs(cfg, "", ""))["autoMemoryEnabled"]; !ok || got != false {
+		settings := settingsArg(t, buildArgs(cfg, "", ""))
+		if got, ok := settings["autoMemoryEnabled"]; !ok || got != false {
 			t.Errorf("%s: autoMemoryEnabled = %v, %v", name, got, ok)
 		}
-		cfg.NativeMemoryOff = false
-		if strings.Contains(strings.Join(buildArgs(cfg, "", ""), " "), "autoMemoryEnabled") {
-			t.Errorf("%s: sent autoMemoryEnabled without NativeMemoryOff", name)
+		if env, _ := settings["env"].(map[string]any); env[AutoMemoryOffEnv] != "1" {
+			t.Errorf("%s: inline env = %v", name, env)
 		}
-	}
-}
-
-// NativeMemoryOff also states the variable that would force memory back on
-// in the inline settings' env, which outranks the user's settings files and
-// the inherited environment; without it the block names no such variable.
-func TestNativeMemoryOffStatesTheVariable(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
-	cfg.NativeMemoryOff = true
-	env, _ := settingsArg(t, buildArgs(cfg, "", ""))["env"].(map[string]any)
-	if env[AutoMemoryOffEnv] != "1" {
-		t.Fatalf("inline env = %v", env)
-	}
-	cfg.NativeMemoryOff = false
-	if strings.Contains(strings.Join(buildArgs(cfg, "", ""), " "), AutoMemoryOffEnv) {
-		t.Fatal("stated the variable without NativeMemoryOff")
+		cfg.NativeMemoryOff = false
+		joined := strings.Join(buildArgs(cfg, "", ""), " ")
+		if strings.Contains(joined, "autoMemoryEnabled") || strings.Contains(joined, AutoMemoryOffEnv) {
+			t.Errorf("%s: sent autoMemoryEnabled or %s without NativeMemoryOff: %s", name, AutoMemoryOffEnv, joined)
+		}
 	}
 }
 
