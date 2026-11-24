@@ -111,7 +111,8 @@ which creates worker data roots in the host's temp directory rather than
 the namespace's, and leaves a failed test's at the `dataRoot` the launch
 record names. A backend a spec
 launches itself keeps its console in
-`<root>/agent-overflow/logs/harness-console.log` and is not copied.
+`<root>/agent-overflow/logs/harness-console.log` and is not copied, except
+by the schema coverage gate, whose header says what a failure keeps.
 
 A failed test also gets a `stalled page` attachment for each open page that
 did not answer a trivial evaluate: its paused JavaScript stack with source,
