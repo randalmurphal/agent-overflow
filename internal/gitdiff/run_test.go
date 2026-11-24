@@ -3,7 +3,11 @@ package gitdiff
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,20 +23,38 @@ func TestGitSucceedsWhenAChildHoldsAPipe(t *testing.T) {
 	gitPipeWaitDelay = 100 * time.Millisecond
 	t.Cleanup(func() { gitPipeWaitDelay = original })
 	// The child holds the pipe far longer than three loaded spawns take, so
-	// the bound below tells a held run from a slow machine.
-	holdsStdout := []string{"-c", "alias.leak=!sleep 10 & echo done", "leak"}
-	holdsStderr := []string{"-c", "alias.leak=!sleep 10 >/dev/null & echo done", "leak"}
+	// the bound below tells a held run from a slow machine. Each spawn's
+	// child records its pid, and the test ends it.
+	holds := func(redirect string) []string {
+		pidFile := filepath.Join(t.TempDir(), "pid")
+		t.Cleanup(func() {
+			raw, err := os.ReadFile(pidFile)
+			if err != nil {
+				t.Errorf("the held child's pid: %v", err)
+				return
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err != nil {
+				t.Errorf("the held child's pid: %v", err)
+				return
+			}
+			if child, err := os.FindProcess(pid); err == nil {
+				_ = child.Kill() // already gone is the outcome wanted
+			}
+		})
+		return []string{"-c", "alias.leak=!sleep 10 " + redirect + "& echo $! > '" + pidFile + "'; echo done", "leak"}
+	}
 
 	started := time.Now()
-	stdout, _, code, err := runGit(context.Background(), t.TempDir(), nil, false, holdsStdout...)
+	stdout, _, code, err := runGit(context.Background(), t.TempDir(), nil, false, holds("")...)
 	if err != nil || code != 0 || stdout != "done\n" {
 		t.Fatalf("runGit: stdout %q, code %d, err %v; want git's output and no error", stdout, code, err)
 	}
-	stdout, _, code, err = runGitWithStdin(context.Background(), t.TempDir(), nil, nil, false, holdsStdout...)
+	stdout, _, code, err = runGitWithStdin(context.Background(), t.TempDir(), nil, nil, false, holds("")...)
 	if err != nil || code != 0 || stdout != "done\n" {
 		t.Fatalf("runGitWithStdin: stdout %q, code %d, err %v; want git's output and no error", stdout, code, err)
 	}
-	diff := newDiff(t.TempDir(), nil, nil, holdsStderr)
+	diff := newDiff(t.TempDir(), nil, nil, holds(">/dev/null "))
 	patch, err := openAndRead(t, diff, nil)
 	if err != nil || patch != "done\n" {
 		t.Fatalf("stream: patch %q, err %v; want git's output and no error", patch, err)
