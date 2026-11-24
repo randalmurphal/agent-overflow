@@ -1,0 +1,204 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import TrackerBoardsSettings from './TrackerBoardsSettings.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
+import { trackerBoardChoice, trackerConnection } from '../../../test/helpers/trackerConnections';
+import { noteProject } from '../../transport/entityIndex';
+import { getPinnedBackend } from '../../transport/backends';
+import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
+import { TransportError } from '../../transport/wsClient';
+import { addProjectLocal } from '../../stores/projects.svelte';
+import { openTrackerBoardsSettings } from '../../stores/settingsOverlay.svelte';
+import type { TrackerBoardChoice, TrackerProjectBoard } from '../../stores/bindings';
+
+/** Each project's stored list: what ProjectTrackerBoards answers and SetProjectTrackerBoards replaces. */
+let stored: Record<string, TrackerBoardChoice[]> = {};
+
+function asStored(project: string, boards: TrackerProjectBoard[]): TrackerBoardChoice[] {
+  return boards.map((b) =>
+    trackerBoardChoice({
+      project,
+      connection: b.connection,
+      board: b.board,
+      name: b.name ?? '',
+      tracker_project: b.tracker_project ?? '',
+      opens_first: b.opens_first ?? false,
+    }),
+  );
+}
+
+let saves: TrackerProjectBoard[][] = [];
+
+beforeEach(async () => {
+  setBindingMock('ListProjects', async () => []);
+  await readSidebarCatalogs();
+  for (const [id, name] of [['p1', 'web'], ['p2', 'ops']]) {
+    noteProject(id, '');
+    addProjectLocal({ id, name, path: `/repos/${name}`, createdAt: 1, updatedAt: 1, sortPosition: id === 'p1' ? 0 : 1, archived: false });
+  }
+  stored = { p1: [], p2: [] };
+  saves = [];
+  setBindingMock('TrackerConnections', async () => [
+    trackerConnection(),
+    trackerConnection({ id: 'tempo-1', kind: 'tempo', parentId: 'jira-1', account: '', site: 'https://api.tempo.io' }),
+    trackerConnection({ id: 'lin-off', kind: 'linear', site: 'example', account: '', enabled: false }),
+  ]);
+  setBindingMock('ProjectTrackerBoards', async (project: string) => stored[project]);
+  setBindingMock('SetProjectTrackerBoards', async (project: string, boards: TrackerProjectBoard[]) => {
+    saves.push(boards);
+    stored[project] = asStored(project, boards);
+    return stored[project];
+  });
+});
+
+/** Mounts the page on project p1. */
+async function renderOnP1(): Promise<void> {
+  render(TrackerBoardsSettings);
+  const select = (await screen.findByTestId('settings-tracker-boards-project')) as HTMLSelectElement;
+  await fireEvent.change(select, { target: { value: 'p1' } });
+}
+
+const names = (): string[] => screen.queryAllByTestId('tracker-board-name').map((el) => el.textContent ?? '');
+
+describe('<TrackerBoardsSettings>', () => {
+  it('lists a board from a connection’s project, and the first one added opens first', async () => {
+    const targets: (BackendKey | null)[] = [];
+    const projects = setBindingMock('TrackerProjects', async () => {
+      targets.push(getPinnedBackend());
+      return [
+        { id: '10000', key: 'WEB', name: 'Web' },
+        { id: '10001', key: 'OPS', name: 'Operations' },
+      ];
+    });
+    const boards = setBindingMock('TrackerBoards', async () => {
+      targets.push(getPinnedBackend());
+      return [{ id: '1', project: 'WEB', name: 'WEB board', plans_sprints: true }];
+    });
+    await renderOnP1();
+    await screen.findByTestId('settings-tracker-boards-empty');
+
+    await fireEvent.click(screen.getByTestId('tracker-board-add-open'));
+    // Only Jira and Linear connections that are on can list boards; the one there is is chosen.
+    const select = screen.getByTestId('tracker-board-add-connection') as HTMLSelectElement;
+    expect([...select.options].filter((o) => !o.disabled).map((o) => o.value)).toEqual(['jira-1']);
+    await waitFor(() => expect(projects).toHaveBeenCalledWith('jira-1'));
+
+    await fireEvent.input(await screen.findByTestId('tracker-board-add-filter'), { target: { value: 'oper' } });
+    expect(screen.getAllByTestId('tracker-board-add-project').map((el) => el.textContent?.trim())).toEqual(['OPS · Operations']);
+    await fireEvent.input(screen.getByTestId('tracker-board-add-filter'), { target: { value: 'web' } });
+    await fireEvent.click(screen.getByTestId('tracker-board-add-project'));
+    await waitFor(() => expect(boards).toHaveBeenCalledWith('jira-1', '10000'));
+    await fireEvent.click(await screen.findByTestId('tracker-board-add-board'));
+
+    await waitFor(() => expect(names()).toEqual(['WEB board']));
+    expect(saves).toEqual([[{ connection: 'jira-1', board: '1', name: 'WEB board', tracker_project: 'WEB', opens_first: true }]]);
+    expect(screen.getByTestId('tracker-board-opens-first')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByTestId('tracker-board-picker')).toBeNull());
+    expect(targets).toEqual([HOME_BACKEND, HOME_BACKEND]);
+  });
+
+  it('marks a board the project lists already, and does not offer it again', async () => {
+    stored.p1 = [trackerBoardChoice({ opens_first: true })];
+    setBindingMock('TrackerProjects', async () => [{ id: '10000', key: 'WEB', name: 'Web' }]);
+    setBindingMock('TrackerBoards', async () => [
+      { id: '1', name: 'WEB board', plans_sprints: true },
+      { id: '2', name: 'Second board', plans_sprints: false },
+    ]);
+    await renderOnP1();
+    await fireEvent.click(await screen.findByTestId('tracker-board-add-open'));
+    await fireEvent.click(await screen.findByTestId('tracker-board-add-project'));
+    const offered = await screen.findAllByTestId('tracker-board-add-board');
+    expect(offered.map((b) => [b.textContent?.trim(), (b as HTMLButtonElement).disabled])).toEqual([
+      ['WEB board · listed', true],
+      ['Second board', false],
+    ]);
+    await fireEvent.click(offered[1]);
+    await waitFor(() => expect(names()).toEqual(['WEB board', 'Second board']));
+    expect(saves[0].map((b) => [b.board, b.opens_first])).toEqual([['1', true], ['2', false]]);
+  });
+
+  it('shows the tracker being too slow as its sentence, and Try again asks again', async () => {
+    const answers: (() => Promise<unknown>)[] = [
+      async () => {
+        throw new TransportError(
+          'method_budget_exceeded',
+          "Listing the tracker's projects took longer than 1m0s, so it was stopped; the tracker was too slow, so try again.",
+          { detail: { ref: 'r', method: 'TrackerProjects', at: 1, chain: ['context deadline exceeded'] } },
+        );
+      },
+      async () => [{ id: '10000', key: 'WEB', name: 'Web' }],
+    ];
+    const projects = setBindingMock('TrackerProjects', () => answers.shift()!());
+    await renderOnP1();
+    await fireEvent.click(await screen.findByTestId('tracker-board-add-open'));
+    expect((await screen.findByTestId('tracker-board-add-projects-error')).textContent).toBe(
+      "Listing the tracker's projects took longer than 1m0s, so it was stopped; the tracker was too slow, so try again.",
+    );
+    await fireEvent.click(screen.getByTestId('tracker-board-add-projects-retry'));
+    await screen.findByTestId('tracker-board-add-project');
+    expect(projects).toHaveBeenCalledTimes(2);
+  });
+
+  it('reorders, chooses which board opens first and removes, saving the whole list each time', async () => {
+    stored.p1 = [
+      trackerBoardChoice({ board: '1', name: 'A', opens_first: true }),
+      trackerBoardChoice({ board: '2', name: 'B' }),
+      trackerBoardChoice({ board: '3', name: 'C', connection: 'lin-off', connection_enabled: false }),
+    ];
+    await renderOnP1();
+    await waitFor(() => expect(names()).toEqual(['A', 'B', 'C']));
+    const rows = () => screen.getAllByTestId('tracker-board-row');
+    expect(within(rows()[2]).getByTestId('tracker-board-connection-off')).toBeTruthy();
+    expect((within(rows()[0]).getByTestId('tracker-board-up') as HTMLButtonElement).disabled).toBe(true);
+    expect((within(rows()[2]).getByTestId('tracker-board-down') as HTMLButtonElement).disabled).toBe(true);
+
+    await fireEvent.click(within(rows()[0]).getByTestId('tracker-board-down'));
+    await waitFor(() => expect(names()).toEqual(['B', 'A', 'C']));
+    await waitFor(() => expect((within(rows()[2]).getByTestId('tracker-board-open-first') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(within(rows()[2]).getByTestId('tracker-board-open-first'));
+    await waitFor(() => expect(within(rows()[2]).queryByTestId('tracker-board-opens-first')).toBeTruthy());
+    await waitFor(() => expect((within(rows()[2]).getByTestId('tracker-board-remove') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(within(rows()[2]).getByTestId('tracker-board-remove'));
+    await waitFor(() => expect(names()).toEqual(['B', 'A']));
+
+    expect(saves.map((list) => list.map((b) => `${b.board}${b.opens_first ? '*' : ''}`))).toEqual([
+      ['2', '1*', '3'],
+      ['2', '1', '3*'],
+      ['2*', '1'],
+    ]);
+  });
+
+  it('shows a refused save under the list and keeps the stored list', async () => {
+    stored.p1 = [trackerBoardChoice({ board: '1', name: 'A', opens_first: true })];
+    setBindingMock('SetProjectTrackerBoards', async () => {
+      throw new TransportError('tracker_connection_missing', 'this tracker connection was removed from this computer; add it again in the Issues settings, or choose another board', {
+        detail: { ref: 'r', method: 'SetProjectTrackerBoards', at: 1, chain: [] },
+      });
+    });
+    await renderOnP1();
+    await fireEvent.click(await screen.findByTestId('tracker-board-remove'));
+    expect((await screen.findByTestId('settings-tracker-boards-save-error')).textContent).toBe(
+      'This tracker connection was removed from this computer; add it again in the Issues settings, or choose another board.',
+    );
+    expect(names()).toEqual(['A']);
+  });
+
+  it('shows the project a deep link names, then each project’s own boards', async () => {
+    stored.p2 = [trackerBoardChoice({ project: 'p2', board: '9', name: 'Ops board' })];
+    openTrackerBoardsSettings('p2', HOME_BACKEND);
+    render(TrackerBoardsSettings);
+    await waitFor(() => expect(names()).toEqual(['Ops board']));
+    const select = screen.getByTestId('settings-tracker-boards-project') as HTMLSelectElement;
+    expect(select.value).toBe('p2');
+
+    await fireEvent.change(select, { target: { value: 'p1' } });
+    await screen.findByTestId('settings-tracker-boards-empty');
+  });
+
+  it('names a board that was never read by its id', async () => {
+    stored.p1 = [trackerBoardChoice({ board: '42', name: '', tracker_project: '' })];
+    await renderOnP1();
+    await waitFor(() => expect(names()).toEqual(['Board 42']));
+  });
+});

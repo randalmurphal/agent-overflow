@@ -1296,6 +1296,12 @@ import type { AgentProfile, Settings as SettingsSnapshot } from '../../../bindin
 import type { PastAgentRowsCursor, StandingAgent as StandingAgentRow, Thread as StoreThread } from '../../../bindings/agent-overflow/internal/store/models.js';
 import { methodId } from '../transport/methodId';
 import { orOlder, ThreadsPartlyDeleted, withNote } from './olderComputer';
+import {
+  TrackerConnections as TrackerConnectionsRaw,
+  ProjectTrackerBoards as ProjectTrackerBoardsRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import type { TrackerConnection as TrackerConnectionRow } from '../../../bindings/agent-overflow/internal/app/models.js';
+import type { BoardChoice as TrackerBoardChoiceRow } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
 export { ArchiveThreadResult, DeleteDependents, DeleteThreadResult };
 
@@ -1478,12 +1484,6 @@ export function ResolveForgeFacts(
 // it: every caller pins it (stores/trackerConnections.svelte.ts,
 // stores/trackerProjectBoards.svelte.ts). A computer whose release has no
 // tracker reads none.
-import {
-  TrackerConnections as TrackerConnectionsRaw,
-  ProjectTrackerBoards as ProjectTrackerBoardsRaw,
-} from '../../../bindings/agent-overflow/app.js';
-import type { TrackerConnection as TrackerConnectionRow } from '../../../bindings/agent-overflow/internal/app/models.js';
-import type { BoardChoice as TrackerBoardChoiceRow } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
 export {
   AddTrackerConnection,

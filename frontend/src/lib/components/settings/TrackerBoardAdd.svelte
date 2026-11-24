@@ -186,7 +186,7 @@
                   onclick={() => chooseProject(p)}
                   data-testid="tracker-board-add-project"
                 >
-                  {#if p.key && p.key !== p.name}<span class="font-medium">{p.key}</span> · {/if}{p.name}
+                  {#if p.key && p.key !== p.name}<span class="font-medium">{p.key}</span>{' · '}{/if}{p.name}
                 </button>
               </li>
             {:else}
@@ -224,7 +224,7 @@
                     onclick={() => void add(board)}
                     data-testid="tracker-board-add-board"
                   >
-                    {board.name}{#if already}<span class="text-fg-hint"> · listed</span>{/if}
+                    {board.name}{#if already}<span class="text-fg-hint">{' · listed'}</span>{/if}
                   </button>
                 </li>
               {/each}

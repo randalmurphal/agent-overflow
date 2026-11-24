@@ -2,8 +2,8 @@ import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, type Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
-import type { SeedResult } from './fixtures.js';
 import { completeClaudeSignIn, completeCodexSignIn, seedNativeClaudeLogin } from './provider-account-helpers.js';
+import { connectFakeJiraBoard } from './tracker-helpers.js';
 
 export interface LayoutFault {
   section: string;
@@ -203,7 +203,11 @@ export async function settingsLayoutFaults(
   compact: boolean,
   viewports?: Array<{ width: number; height: number }>,
 ): Promise<LayoutFault[]> {
-  await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name: 'settings-layout', repo: {} }] });
+  // The project the pages show, listing a verified Jira connection's board,
+  // and that connection's Tempo, which shows the steps that set its token.
+  const board = await connectFakeJiraBoard(harness, 'settings-layout');
+  await harness.rpc('AddTrackerConnection', { kind: 'tempo', site: '', parentId: board.connectionId });
+  await harness.rpc('SetTrackerConnectionTokenExpiry', board.connectionId, Date.now() + 5 * 24 * 3600_000);
   await page.addInitScript(() => {
     const voice = {
       voiceURI: 'layout-voice',

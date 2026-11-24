@@ -39,6 +39,24 @@ export interface ConnectedBoard {
  * board on the project.
  */
 export async function connectFakeJiraBoard(harness: HarnessApp, name: string): Promise<ConnectedBoard> {
+  const jiraURL = await seedFakeJira(harness);
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {} }] });
+  const projectId = seed.projects[0].projectId;
+  const added = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
+  // The token a person would paste into the key file the app named.
+  await writeFile(added.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
+  const verified = await harness.rpc<TrackerConnection>('VerifyTrackerConnection', added.id);
+  if (verified.problem) throw new Error(`the fake Jira refused the connection: ${JSON.stringify(verified.problem)}`);
+  // As the board picker sends it: with the name and project it showed.
+  await harness.rpc('SetProjectTrackerBoards', projectId, [{ connection: added.id, board: BOARD_ID, opens_first: true, name: 'WEB board', tracker_project: 'WEB' }]);
+  return { projectId, connectionId: added.id, jiraURL };
+}
+
+/**
+ * Seeds the fake Jira site alone (see connectFakeJiraBoard) and answers
+ * its base URL.
+ */
+export async function seedFakeJira(harness: HarnessApp): Promise<string> {
   const day = new Date(Date.now() - 48 * 3600_000).toISOString();
   const sprintEnd = new Date(Date.now() + 12 * 24 * 3600_000).toISOString();
   const origins = await harness.rpc<{ jira: Record<string, string> }>('HarnessTrackerSeed', {
@@ -59,16 +77,7 @@ export async function connectFakeJiraBoard(harness: HarnessApp, name: string): P
   });
   const jiraURL = origins.jira[JIRA_SITE];
   if (!jiraURL) throw new Error(`HarnessTrackerSeed served no ${JIRA_SITE}: ${JSON.stringify(origins)}`);
-
-  const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {} }] });
-  const projectId = seed.projects[0].projectId;
-  const added = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'jira', site: JIRA_SITE, account: JIRA_ACCOUNT });
-  // The token a person would paste into the key file the app named.
-  await writeFile(added.keyFilePath, JIRA_TOKEN, { mode: 0o600 });
-  const verified = await harness.rpc<TrackerConnection>('VerifyTrackerConnection', added.id);
-  if (verified.problem) throw new Error(`the fake Jira refused the connection: ${JSON.stringify(verified.problem)}`);
-  await harness.rpc('SetProjectTrackerBoards', projectId, [{ connection: added.id, board: BOARD_ID, opens_first: true }]);
-  return { projectId, connectionId: added.id, jiraURL };
+  return jiraURL;
 }
 
 /** Renames an issue in the fake Jira, as a person editing it there would. */

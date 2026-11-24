@@ -934,7 +934,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'thread_pull_requests', columns: ['merged_at', 'handled_at', 'removal_failed_at', 'outcome'], values: { forge: ['gitlab'], outcome: ['removed', 'kept', 'gone', 'closed', 'skipped'] }, reason: "the top-up's pull request stays open, so no merge cleanup runs; one forge's pull request proves the table" },
   { table: 'pr_list_projects', reason: "the Pull requests list's stored copy of a forge project's read; the top-up's one forge-origin project names a repository the fake forge does not have, so its read fails and nothing is stored" },
   { table: 'tracker_connections', reason: 'an issue tracker connection (v162); no app method writes the tracker tables yet' },
-  { table: 'project_tracker_boards', reason: 'the tracker boards a project lists (v162); no app method writes the tracker tables yet' },
+  { table: 'project_tracker_boards', reason: 'the tracker boards a project lists (v162), with the name and tracker project the picker showed (v166); the top-up connects no tracker, so no project lists a board' },
   { table: 'thread_tickets', reason: 'the ticket a thread is linked to (v162); no app method writes the tracker tables yet' },
   { table: 'tracker_cache_roots', reason: 'the root of a tracker mirror (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_users', reason: 'a tracker user a mirror holds (v162); no app method syncs a tracker yet' },

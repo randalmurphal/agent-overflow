@@ -169,7 +169,7 @@
                   {/if}
                 </div>
                 <span class="truncate text-[0.71875rem] text-fg-hint">
-                  {#if board.tracker_project}{board.tracker_project} · {/if}{connectionNameOf(board)}
+                  {#if board.tracker_project}{`${board.tracker_project} · `}{/if}{connectionNameOf(board)}
                 </span>
                 <div class="flex flex-wrap items-center gap-1.5">
                   <IconButton

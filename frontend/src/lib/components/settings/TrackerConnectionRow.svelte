@@ -143,7 +143,7 @@
         <span class="truncate text-[0.71875rem] text-fg-hint">{where}</span>
       {/if}
       <span class="text-[0.75rem] {TONE_CLASS[status.tone]}" data-testid="tracker-connection-status" data-tone={status.tone}>
-        {status.label}{#if status.tone === 'ok' && connection.verifiedAt > 0}<span class="text-fg-hint"> · checked {relativeTime(connection.verifiedAt, 'locale', backend)}</span>{/if}
+        {status.label}{#if status.tone === 'ok' && connection.verifiedAt > 0}<span class="text-fg-hint">{` · checked ${relativeTime(connection.verifiedAt, 'locale', backend)}`}</span>{/if}
       </span>
       {#if status.detail}
         <span class="text-[0.71875rem] text-fg-muted" data-testid="tracker-connection-detail">{status.detail}</span>

@@ -22,6 +22,10 @@ export const METHODS_AFTER_V0_0_19 = [
   'SpendProviderAccountReset',
   'StartNextAssistantThread', 'StopThreadAgentIncoming', 'StopThreadAgentRows',
   'StopThreadAgentRow', 'ThreadToolWatch', 'WakeThreadWakeNow', 'WorkflowPauseItemAndEndSessions',
+  'TrackerConnections', 'AddTrackerConnection', 'RenameTrackerConnection', 'SetTrackerConnectionEnabled',
+  'SetTrackerConnectionTokenExpiry', 'RemoveTrackerConnection', 'VerifyTrackerConnection',
+  'EditTrackerKeyFile', 'OpenTrackerTokenPage', 'TrackerProjects', 'TrackerBoards',
+  'ProjectTrackerBoards', 'SetProjectTrackerBoards',
 ] as const;
 
 /** The App methods that answer a value in this build and `null` on v0.0.19. */
