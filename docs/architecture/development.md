@@ -137,8 +137,9 @@ and then `cache-cleanup`. A manual run runs every job but dependency review
 and `cache-cleanup`. The jobs are one Linux job for `fmt-check`,
 `tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile` and
 `bindings-check`, a macOS `go-build` and `exhaustive` pass, one job for
-`go-lint`, `go-lint-exhaustive` and `go-vuln`, the frontend job (`check`,
-`build`, `frontend-lint`), `go-test` in three shards by package weight
+`go-lint`, `go-lint-unused`, `go-lint-exhaustive` and `go-vuln`, the
+frontend job (`check`, `build`, `frontend-deadcode`, `frontend-lint`),
+`go-test` in three shards by package weight
 (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus `make go-test-noremote`, the
 Vitest projects as `make vitest-unit` and `make vitest-browser` (on a
 pull request with `VITEST_BASE`, so only the test files its diff can
@@ -258,6 +259,21 @@ launcher's packages as Windows compiles them. The macOS job runs the linter
 over the default file set alone, which holds every file only macOS
 compiles. A Windows-only file outside the
 launcher's packages is compiled by no job and is not checked.
+
+Dead code fails two whole-tree gates, neither with a backlog. The
+`go-lint` job runs `unused` alone (`make go-lint-unused`) over the Linux
+file set with no build tag, test files included, after the change step,
+whose golangci-lint cache halves its time. It reports an unexported
+identifier nothing uses, which the new-issues gate misses when a change
+deletes the last use and not the identifier. A helper that only another
+platform or a build tag calls lives in that platform's or tag's files. The
+frontend job runs knip (`make frontend-deadcode`, rules in
+`frontend/knip.config.ts`): a file, export, type or dependency nothing
+uses, tests included, fails it. No gate reports an exported Go identifier
+nothing uses, or code that only tests reach: `golang.org/x/tools/cmd/deadcode`
+and knip's production mode find those, but on this tree each needs a long
+list of named exceptions for code reached through cgo, another platform or
+a test seam by design.
 
 ## Releases
 

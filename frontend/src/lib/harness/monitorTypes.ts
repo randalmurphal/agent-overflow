@@ -79,6 +79,7 @@ export const BUILTIN_MONITORS = [
   { id: 'focus-clipping-settledness', title: 'Focus, clipping and settledness', description: 'Checks focus ownership, clipping and post-mutation settling.', compatibilityLeg: 'functional', perturbation: 'layout-read', requires: ['dom', 'focus'] },
 ] as const satisfies readonly MonitorDescriptor[];
 
+/** @public The Playwright suite reads it (e2e/src/flow-model.ts). */
 export type BuiltinMonitorId = (typeof BUILTIN_MONITORS)[number]['id'];
 
 export interface MonitorContext {

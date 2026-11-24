@@ -1,4 +1,4 @@
-.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen forge-schemas linear-schema go-lint go-lint-exhaustive go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build e2e-browsers harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen forge-schemas linear-schema go-lint go-lint-exhaustive go-lint-unused go-vet fmt-check go-vuln bindings-check frontend-lint frontend-deadcode install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build e2e-browsers harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -9,7 +9,7 @@ help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
 		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=... | make go-test-noremote | make vitest-unit | make vitest-browser | make script-tests' \
-		'Static:  make fmt-check | make go-vet | make go-lint | make go-lint-exhaustive | make frontend-lint | make bindings-check | make go-vuln' \
+		'Static:  make fmt-check | make go-vet | make go-lint | make go-lint-exhaustive | make go-lint-unused | make frontend-lint | make frontend-deadcode | make bindings-check | make go-vuln' \
 		'Android: make apk | make apk-release | make e2e-android' \
 		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
 		'Harness: make harness | make harness-window | make harness-wsl' \
@@ -323,6 +323,16 @@ go-lint-exhaustive: $(GOLANGCI_LINT_BUILD)
 		GOOS=windows CGO_ENABLED=0 $(GO_LINT_EXHAUSTIVE) --build-tags "$$tags" $$packages; \
 	done
 
+# go-lint-unused runs the unused linter alone over every Go file this host
+# compiles with no build tag, test files included. The new-issues gate does
+# not report an identifier whose last use a change deleted, because the
+# identifier's own lines are not in the change; this pass has no backlog,
+# so it does. It reads one file set: a helper that only another platform or
+# a build tag calls lives in that platform's or tag's files, beside its
+# callers.
+go-lint-unused: $(GOLANGCI_LINT_BUILD)
+	$(GOLANGCI_LINT) run --timeout 20m --enable-only unused ./...
+
 go-vet:
 	go vet $(GO_PACKAGE_ROOTS)
 	go vet -tags nogui $(GO_PACKAGE_ROOTS)
@@ -358,6 +368,11 @@ bindings-check:
 OXLINT_FLAGS ?=
 frontend-lint: $(FRONTEND_DEPS)
 	cd frontend && pnpm exec oxlint $(OXLINT_FLAGS)
+
+# frontend-deadcode runs knip over the frontend (frontend/knip.config.ts): a
+# file, export, type or dependency nothing uses fails it.
+frontend-deadcode: $(FRONTEND_DEPS)
+	cd frontend && pnpm run deadcode
 
 # test-race exercises the concurrency-sensitive packages under -race.
 # Scoped to packages with non-trivial goroutine wiring rather than the
