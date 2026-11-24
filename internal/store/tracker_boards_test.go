@@ -28,7 +28,7 @@ func TestReplaceProjectTrackerBoards(t *testing.T) {
 
 	replace := func(project string, boards []ProjectTrackerBoard, want bool) {
 		t.Helper()
-		changed, err := s.ReplaceProjectTrackerBoards(project, boards)
+		changed, _, err := s.ReplaceProjectTrackerBoards(project, boards)
 		if err != nil || changed != want {
 			t.Fatalf("replace %s with %+v: changed %v, %v; want %v", project, boards, changed, err, want)
 		}
@@ -93,7 +93,7 @@ func TestReplaceProjectTrackerBoardsRefusals(t *testing.T) {
 	jira := mustCreateTrackerConnection(t, s, jiraConnection("https://example.atlassian.net", "user1@example.com", 1))
 	tempo := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindTempo, Site: "https://api.eu.tempo.io", ParentID: jira.ID, CreatedAt: 1})
 	stored := []ProjectTrackerBoard{{ConnectionID: jira.ID, BoardID: "10", OpensFirst: true}}
-	if _, err := s.ReplaceProjectTrackerBoards(p, stored); err != nil {
+	if _, _, err := s.ReplaceProjectTrackerBoards(p, stored); err != nil {
 		t.Fatal(err)
 	}
 
@@ -105,14 +105,40 @@ func TestReplaceProjectTrackerBoardsRefusals(t *testing.T) {
 		"missing connection": {{ConnectionID: "missing", BoardID: "11"}},
 		"tempo connection":   {{ConnectionID: tempo.ID, BoardID: "11"}},
 	} {
-		if _, err := s.ReplaceProjectTrackerBoards(p, boards); !errors.Is(err, ErrInvalidTrackerBoards) {
+		if _, _, err := s.ReplaceProjectTrackerBoards(p, boards); !errors.Is(err, ErrInvalidTrackerBoards) {
 			t.Errorf("%s: %v; want ErrInvalidTrackerBoards", name, err)
 		}
 	}
-	if _, err := s.ReplaceProjectTrackerBoards("missing", nil); !errors.Is(err, sql.ErrNoRows) {
+	if _, _, err := s.ReplaceProjectTrackerBoards("missing", nil); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("missing project: %v; want sql.ErrNoRows", err)
 	}
 	if got, err := s.ListProjectTrackerBoards(p); err != nil || !slices.Equal(got, stored) {
 		t.Fatalf("after refusals = %+v, %v; want %+v", got, err, stored)
 	}
+}
+
+// A replace names the boards it leaves no project listing: those it
+// removed that another project does not list, as the retire trigger
+// judges them.
+func TestReplaceProjectTrackerBoardsNamesTheBoardsItUnlists(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	p := mustCreateTrackerProject(t, s, "p")
+	q := mustCreateTrackerProject(t, s, "q")
+	jira := mustCreateTrackerConnection(t, s, jiraConnection("https://example.atlassian.net", "user1@example.com", 1))
+	board := func(id string) ProjectTrackerBoard { return ProjectTrackerBoard{ConnectionID: jira.ID, BoardID: id} }
+	replace := func(project string, boards []ProjectTrackerBoard, want []TrackerBoardRef) {
+		t.Helper()
+		_, unlisted, err := s.ReplaceProjectTrackerBoards(project, boards)
+		if err != nil || !slices.Equal(unlisted, want) {
+			t.Fatalf("replace %s with %+v: unlisted %+v, %v; want %+v", project, boards, unlisted, err, want)
+		}
+	}
+	replace(p, []ProjectTrackerBoard{board("10"), board("11"), board("12")}, nil)
+	replace(q, []ProjectTrackerBoard{board("10")}, nil)
+	// 10 stays listed by q; 11 goes; 12 stays.
+	replace(p, []ProjectTrackerBoard{board("12")}, []TrackerBoardRef{{jira.ID, "11"}})
+	// A reorder or a same list unlists nothing.
+	replace(p, []ProjectTrackerBoard{board("12")}, nil)
+	replace(q, nil, []TrackerBoardRef{{jira.ID, "10"}})
 }

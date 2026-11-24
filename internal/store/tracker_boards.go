@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,10 +67,12 @@ func validateProjectTrackerBoards(boards []ProjectTrackerBoard) error {
 // ErrInvalidTrackerBoards; either leaves the stored list as it was. Only
 // the listings it removes are deleted, so a board whose last listing goes
 // is retired in its mirror (trg_project_tracker_boards_retire) and one
-// still listed is not.
-func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTrackerBoard) (changed bool, err error) {
+// still listed is not. unlisted names the boards it retired that way:
+// those it removed that no project lists after it, by the trigger's own
+// test in the write's transaction.
+func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTrackerBoard) (changed bool, unlisted []TrackerBoardRef, err error) {
 	if err := validateProjectTrackerBoards(boards); err != nil {
-		return false, err
+		return false, nil, err
 	}
 	rows := make([]trackerBoardRow, 0, len(boards))
 	connections := make([]string, 0, len(boards))
@@ -79,36 +82,36 @@ func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTr
 	}
 	encodedRows, err := json.Marshal(rows)
 	if err != nil {
-		return false, fmt.Errorf("store: replace project %s tracker boards: encode: %w", projectID, err)
+		return false, nil, fmt.Errorf("store: replace project %s tracker boards: encode: %w", projectID, err)
 	}
 	encodedConnections, err := json.Marshal(uniqueNonEmptyStrings(connections))
 	if err != nil {
-		return false, fmt.Errorf("store: replace project %s tracker boards: encode: %w", projectID, err)
+		return false, nil, fmt.Errorf("store: replace project %s tracker boards: encode: %w", projectID, err)
 	}
 
 	action := fmt.Sprintf("store: replace project %s tracker boards", projectID)
 	tx, err := s.db.Begin()
 	if err != nil {
-		return false, fmt.Errorf("%s: begin: %w", action, err)
+		return false, nil, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
 	if err := tx.QueryRow(`SELECT 1 FROM projects WHERE id = ?`, projectID).Scan(new(int)); err != nil {
-		return false, fmt.Errorf("%s: read project: %w", action, err)
+		return false, nil, fmt.Errorf("%s: read project: %w", action, err)
 	}
 	unknown, err := queryIDs(tx, `SELECT value FROM json_each(?)
 		WHERE value NOT IN (SELECT id FROM tracker_connections WHERE kind <> 'tempo') ORDER BY value`, string(encodedConnections))
 	if err != nil {
-		return false, fmt.Errorf("%s: check connections: %w", action, err)
+		return false, nil, fmt.Errorf("%s: check connections: %w", action, err)
 	}
 	if len(unknown) > 0 {
-		return false, fmt.Errorf("%w: connection %s does not exist or has no boards", ErrInvalidTrackerBoards, unknown[0])
+		return false, nil, fmt.Errorf("%w: connection %s does not exist or has no boards", ErrInvalidTrackerBoards, unknown[0])
 	}
 	current, err := listProjectTrackerBoards(tx, projectID)
 	if err != nil {
-		return false, fmt.Errorf("%s: %w", action, err)
+		return false, nil, fmt.Errorf("%s: %w", action, err)
 	}
 	if slices.Equal(current, boards) {
-		return false, nil
+		return false, nil, nil
 	}
 	// Kept listings move past every new position first, so the upsert
 	// never meets a position or an opens-first another row still holds.
@@ -126,13 +129,54 @@ func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTr
 			[]any{projectID, string(encodedRows)}},
 	} {
 		if _, err := tx.Exec(step.query, step.args...); err != nil {
-			return false, fmt.Errorf("%s: %s: %w", action, step.what, err)
+			return false, nil, fmt.Errorf("%s: %s: %w", action, step.what, err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("%s: commit: %w", action, err)
+	unlisted, err = unlistedTrackerBoards(tx, current, boards)
+	if err != nil {
+		return false, nil, fmt.Errorf("%s: %w", action, err)
 	}
-	return true, nil
+	if err := tx.Commit(); err != nil {
+		return false, nil, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return true, unlisted, nil
+}
+
+// unlistedTrackerBoards is the boards of was that now leaves out and no
+// project lists any more, read in the transaction that replaced was by
+// now, with trg_project_tracker_boards_retire's test.
+func unlistedTrackerBoards(tx *sql.Tx, was, now []ProjectTrackerBoard) ([]TrackerBoardRef, error) {
+	kept := make(map[TrackerBoardRef]bool, len(now))
+	for _, b := range now {
+		kept[TrackerBoardRef{ConnectionID: b.ConnectionID, BoardID: b.BoardID}] = true
+	}
+	var removed []trackerBoardRow
+	for _, b := range was {
+		if !kept[TrackerBoardRef{ConnectionID: b.ConnectionID, BoardID: b.BoardID}] {
+			removed = append(removed, trackerBoardRow{ConnectionID: b.ConnectionID, BoardID: b.BoardID})
+		}
+	}
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(removed)
+	if err != nil {
+		return nil, fmt.Errorf("encode the removed boards: %w", err)
+	}
+	rows, err := tx.Query(`SELECT value ->> 'c', value ->> 'b' FROM json_each(?1) WHERE NOT EXISTS (
+		SELECT 1 FROM project_tracker_boards WHERE connection_id = value ->> 'c' AND board_id = value ->> 'b')`, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("read the boards no project lists: %w", err)
+	}
+	var out []TrackerBoardRef
+	for rows.Next() {
+		var ref TrackerBoardRef
+		if err := rows.Scan(&ref.ConnectionID, &ref.BoardID); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		out = append(out, ref)
+	}
+	return out, errors.Join(rows.Err(), rows.Close())
 }
 
 // ListProjectTrackerBoards lists the boards projectID lists, in picker

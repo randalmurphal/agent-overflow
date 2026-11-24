@@ -29,7 +29,7 @@ type Store interface {
 	RecordTrackerConnectionVerification(id string, v store.TrackerVerification) (store.TrackerConnection, bool, error)
 	DeleteTrackerConnection(id string) ([]string, error)
 	ListProjectTrackerBoards(projectID string) ([]store.ProjectTrackerBoard, error)
-	ReplaceProjectTrackerBoards(projectID string, boards []store.ProjectTrackerBoard) (bool, error)
+	ReplaceProjectTrackerBoards(projectID string, boards []store.ProjectTrackerBoard) (bool, []store.TrackerBoardRef, error)
 }
 
 // Deps are the service's capabilities. Every field is required but

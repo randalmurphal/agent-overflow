@@ -1126,8 +1126,14 @@ method wraps (see [Build order](#build-order)).
 
 - **A project's boards** are the boards its picker shows, in order, and
   the one that opens first (store `project_tracker_boards`). The list is
-  replaced whole; a board it drops that no other project lists stops
-  being mirrored, and its subscriptions end.
+  replaced whole, and the change takes effect before the save answers:
+  the store names the boards the write left no project listing, their
+  subscriptions end (`Ended`, shown or hidden), and the mirror cleanup
+  drains them and starts the next lifetime of a board listed again, so a
+  board removed and added back opens at once. The save waits on that
+  drain: 1.06 s for a 20,050-issue board. A project's delete retires its
+  boards in the store and does not end their subscriptions; the
+  project's panes close and release them.
 - **A board subscription belongs to the client connection that made it.**
   The subscribe ties its handle to that connection inside the service's
   publication of the handle (`trackerapp.Tie`): the connection's end
