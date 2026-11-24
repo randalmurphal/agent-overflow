@@ -19,6 +19,9 @@ import (
 // setup-failed reason instead of reporting an agent failure.
 var ErrSetupFailed = errors.New("workflow setup failed")
 
+// ErrRunActive refuses TakeOverParked on an item the engine is driving.
+var ErrRunActive = errors.New("the run is active")
+
 // ErrWiringFailed marks runner startup failures where the frozen definition and
 // the live project profile cannot produce runnable work — a tool phase whose
 // binding the profile no longer declares, an argument referencing a variable

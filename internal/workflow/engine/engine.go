@@ -300,6 +300,13 @@ func (e *Engine) TakeOver(itemID string) error {
 	return e.request(takeoverCommand{itemID: itemID})
 }
 
+// TakeOverParked is TakeOver for a phase attempt that is already parked: it
+// refuses, with ErrRunActive, an item the engine is driving, before anything
+// is stopped or recorded.
+func (e *Engine) TakeOverParked(itemID string) error {
+	return e.request(takeoverCommand{itemID: itemID, parkedOnly: true})
+}
+
 // CompleteTakeover starts one schema-attached finalize turn on the phase
 // thread that was taken over.
 func (e *Engine) CompleteTakeover(itemID string) error {

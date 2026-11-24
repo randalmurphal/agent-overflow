@@ -367,6 +367,44 @@ func TestTakeoverFinalizeValidationFailureReparksAndResumeIsFresh(t *testing.T) 
 	}
 }
 
+// TakeOverParked leaves an item the engine is driving as it is: its runner
+// keeps running and no intervention is recorded. A parked item is taken over
+// as TakeOver takes it.
+func TestTakeOverParkedRefusesARunningItem(t *testing.T) {
+	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	item := testItem("item", "project", "question", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOverParked(item.ID); !errors.Is(err, ErrRunActive) {
+		t.Fatalf("TakeOverParked of a running item = %v, want ErrRunActive", err)
+	}
+	requireItemState(t, h.store, item.ID, StateRunning, "")
+	if takeovers := h.runner.takeovers(); len(takeovers) != 0 {
+		t.Fatalf("takeover stops = %+v, want none", takeovers)
+	}
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 1 || len(phases[0].Intervention) != 0 {
+		t.Fatalf("phases = %+v, want one attempt with no intervention", phases)
+	}
+
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOverParked(item.ID); err != nil {
+		t.Fatalf("TakeOverParked of a parked item: %v", err)
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
+}
+
 func TestTakeoverOfParkedQuestionLeavesAnswerPathUntouchedUntilTakeover(t *testing.T) {
 	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
 	h := newHarness(t, Config{}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)

@@ -476,7 +476,7 @@ func (a *App) sendMessageWithOptions(
 			} else if found {
 				return record.item, nil
 			}
-			itemID, err := a.prepareWorkflowTakeoverSend(ctx, peek)
+			itemID, err := a.prepareWorkflowTakeoverSend(ctx, peek, opts.Admission == admitAtRest)
 			if err != nil {
 				return store.Item{}, fmt.Errorf("send message: %w", err)
 			}
@@ -999,7 +999,12 @@ func (a *App) sendMessageLocked(
 // It MUST NOT run while holding the thread's action lock: TakeOver
 // round-trips the engine command loop, whose teardown interrupts the
 // live phase turn via InterruptTurn — which acquires that same lock.
-func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thread) (string, error) {
+//
+// atRestOnly takes over only what is already parked: the engine refuses an
+// item it is driving (TakeOverParked), and a unit that is not already taken
+// over is refused here, since the engine takes over only a live one. Either
+// refusal leaves the run as it was.
+func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thread, atRestOnly bool) (string, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return "", err
@@ -1013,7 +1018,7 @@ func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thre
 		return "", fmt.Errorf("workflow takeover: %w", err)
 	}
 	if isUnit {
-		return a.prepareWorkflowUnitTakeoverSend(ctx, workflowEngine, thread, unit)
+		return a.prepareWorkflowUnitTakeoverSend(ctx, workflowEngine, thread, unit, atRestOnly)
 	}
 	item, err := a.store.GetWorkItemByPhaseThread(thread.ID)
 	if err != nil {
@@ -1041,7 +1046,13 @@ func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thre
 		}
 		return item.ID, nil
 	}
-	if err := workflowEngine.TakeOver(item.ID); err != nil {
+	takeOver := workflowEngine.TakeOver
+	if atRestOnly {
+		takeOver = workflowEngine.TakeOverParked
+	}
+	if err := takeOver(item.ID); errors.Is(err, engine.ErrRunActive) {
+		return "", errThreadWorking
+	} else if err != nil {
 		return "", fmt.Errorf("workflow takeover: detach item: %w", err)
 	}
 	if err := a.workflowApplication().RegisterTakeover(ctx, item.ID, thread.ID); err != nil {
@@ -1055,7 +1066,7 @@ func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thre
 // a send into an already-detached one re-registers it. The unit's siblings are
 // untouched — they keep running, and the attempt parks once they rest.
 func (a *App) prepareWorkflowUnitTakeoverSend(
-	ctx context.Context, workflowEngine *engine.Engine, thread store.Thread, unit store.WorkItemUnit,
+	ctx context.Context, workflowEngine *engine.Engine, thread store.Thread, unit store.WorkItemUnit, atRestOnly bool,
 ) (string, error) {
 	item, err := a.store.GetWorkItem(unit.ItemID)
 	if err != nil {
@@ -1077,6 +1088,9 @@ func (a *App) prepareWorkflowUnitTakeoverSend(
 			"workflow takeover: unit %q of item %s is %s; only a running unit can be taken over",
 			unit.UnitID, item.ID, unit.Status,
 		)
+	}
+	if atRestOnly {
+		return "", errThreadWorking
 	}
 	if err := workflowEngine.TakeOverUnit(item.ID, unit.UnitID); err != nil {
 		return "", fmt.Errorf("workflow takeover: detach unit %q: %w", unit.UnitID, err)
