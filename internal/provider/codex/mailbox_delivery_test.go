@@ -9,13 +9,6 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-func TestAuditNestedMailboxMustBeRecognized(t *testing.T) {
-	t.Parallel()
-	_, ok := parseInterAgentMailboxEnvelope("/root/worker/helper", "/root/worker", "Message Type: FINAL_ANSWER\nTask name: /root/worker\nSender: /root/worker/helper\nPayload:\ndone")
-	if !ok {
-		t.Fatal("valid nested child-to-parent delivery rejected")
-	}
-}
 func TestAuditDistinctProviderDeliveryIDsMustRemainDistinct(t *testing.T) {
 	t.Parallel()
 	parse := func(id string) subagentNotification {

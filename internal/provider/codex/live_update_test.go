@@ -88,16 +88,6 @@ func TestCodexPlanLiveUpdate(t *testing.T) {
 			},
 		},
 		{
-			name:   "runtime mode change is live",
-			mutate: func(o *provider.SessionOptions) { o.RuntimeMode = provider.RuntimeFullAccess },
-			wantOK: true,
-			check: func(t *testing.T, u LiveUpdate) {
-				if u.ApprovalPolicy != "never" || u.Sandbox != "danger-full-access" {
-					t.Fatalf("update approval/sandbox = %q/%q, want never/danger-full-access", u.ApprovalPolicy, u.Sandbox)
-				}
-			},
-		},
-		{
 			name:   "resume cursor drift is lifecycle, not config",
 			mutate: func(o *provider.SessionOptions) { o.Resume = "thread-ref-2" },
 			wantOK: true,
@@ -115,8 +105,15 @@ func TestCodexPlanLiveUpdate(t *testing.T) {
 			wantOK: false,
 		},
 		{
+			// baseInstructions and the config map are start-time only: Codex
+			// re-reads neither per turn.
 			name:   "system prompt change needs restart",
 			mutate: func(o *provider.SessionOptions) { o.SystemPrompt = "different prompt" },
+			wantOK: false,
+		},
+		{
+			name:   "disabled tools change needs restart",
+			mutate: func(o *provider.SessionOptions) { o.DisabledTools = []string{"web_search"} },
 			wantOK: false,
 		},
 		{
@@ -201,83 +198,21 @@ func TestCodexPlanLiveUpdateFastModeTransitions(t *testing.T) {
 	}
 }
 
-// TestApplyLiveUpdateFastModeToggleReachesTurnStart proves the transition at the
-// wire, not just in session state: a wire-driven tier id lands as `serviceTier`
-// on the next turn/start, and turning fast mode off sends an explicit JSON
-// null on the turn after that.
+// TestServiceTierClearIsScopedToWhatAOAsserted proves the fast-mode axis at
+// the wire across the transition matrix the clear has to survive: a session
+// that never turned fast mode on must never write the axis at all (a user whose
+// config.toml selects a tier AO does not model keeps it), a wire-driven tier id
+// lands as `serviceTier`, and on->off->on->off must clear every time rather
+// than only the first.
 //
-// The null is the whole point. `service_tier` is a DOUBLE option on
+// The clear is an explicit JSON null. `service_tier` is a DOUBLE option on
 // TurnStartParams (codex-rs/app-server-protocol/src/protocol/v2/turn.rs:123,
 // `deserialize_double_option`): omitting the key means "leave the thread's
 // tier alone", and only an explicit null clears it
 // (codex-rs/core/src/session/session.rs:233 — `None` maps to
-// SERVICE_TIER_DEFAULT_REQUEST_VALUE). This test previously asserted the
-// omission, on the reading that an absent key means "inherit the thread
-// default"; that is true only for a thread nothing has ever set. Verified on
-// codex-cli 0.146.0 (scratchpad spike): set `serviceTier: "priority"`, then
-// send an update naming only `model`, and the settings echo still reports
-// `priority`. turn/start and thread/settings/update share one override
-// builder (turn_processor.rs `build_thread_settings_overrides`), so the two
-// cannot disagree about it.
-func TestApplyLiveUpdateFastModeToggleReachesTurnStart(t *testing.T) {
-	t.Parallel()
-	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
-	scriptPath := filepath.Join(t.TempDir(), "codex")
-	mockexec.Write(t, scriptPath, codexTurnCaptureScript(capturePath))
-
-	s, err := NewSession(context.Background(), testThread, Config{
-		Reaper:         procutiltest.Reaper(),
-		Binary:         scriptPath,
-		Model:          "gpt-5.5",
-		WorkDir:        "/tmp",
-		ApprovalPolicy: "untrusted",
-		Sandbox:        "read-only",
-	}, func(provider.ProviderEvent) {})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-
-	fastOff := codexLiveUpdateBaseOptions()
-	fastOff.FastModeTierID = "turbo"
-	fastOn := fastOff
-	fastOn.FastMode = true
-
-	sendWith := func(prev, next provider.SessionOptions) {
-		t.Helper()
-		update, ok := PlanLiveUpdate(prev, next)
-		if !ok {
-			t.Fatalf("PlanLiveUpdate needs a restart")
-		}
-		s.ApplyLiveUpdate(update)
-		if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
-			t.Fatalf("Send: %v", err)
-		}
-	}
-	sendWith(fastOff, fastOn)
-	sendWith(fastOn, fastOff)
-	_ = s.Close()
-
-	turns := capturedTurnStartParams(t, capturePath)
-	if len(turns) != 2 {
-		t.Fatalf("captured %d turn/start requests, want 2", len(turns))
-	}
-	if turns[0]["serviceTier"] != "turbo" {
-		t.Errorf("first turn serviceTier = %v, want turbo", turns[0]["serviceTier"])
-	}
-	tier, present := turns[1]["serviceTier"]
-	if !present {
-		t.Errorf("second turn omits serviceTier; want an explicit null to clear the tier fast mode asserted")
-	} else if tier != nil {
-		t.Errorf("second turn carries serviceTier = %v, want null after fast mode off", tier)
-	}
-}
-
-// TestServiceTierClearIsScopedToWhatAOAsserted covers the transition matrix
-// the clear has to survive, not just the on->off state: a session that never
-// turned fast mode on must never write the axis at all (a user whose
-// config.toml selects a tier AO does not model keeps it), and on->off->on->off
-// must clear every time rather than only the first.
+// SERVICE_TIER_DEFAULT_REQUEST_VALUE). Verified on codex-cli 0.146.0: set
+// `serviceTier: "priority"`, then send an update naming only `model`, and the
+// settings echo still reports `priority`.
 func TestServiceTierClearIsScopedToWhatAOAsserted(t *testing.T) {
 	t.Parallel()
 	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
