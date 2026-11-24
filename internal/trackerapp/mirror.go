@@ -40,7 +40,7 @@ type MirrorStore interface {
 	DetachMirror(connectionID string) (bool, error)
 	FinishMirrorCleanup(ctx context.Context, pause store.ChunkPause) error
 	KeepMirrorTicket(rootID int64, issueID string, session, pump int64, opened store.MirrorRead) (store.MirrorBind, bool, error)
-	ActivateMirrorBind(b store.MirrorBind)
+	ActivateMirrorBind(b store.MirrorBind) bool
 	EndMirrorBind(b store.MirrorBind)
 	DropMirrorTicket(session, pump int64) (bool, error)
 	DropMirrorTicketsOfOtherSessions(session int64) (int64, error)

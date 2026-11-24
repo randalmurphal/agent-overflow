@@ -18,7 +18,9 @@ func boundOf(t *testing.T, s *Store, root int64, issue string, pump, at int64) M
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.ActivateMirrorBind(bind)
+	if !s.ActivateMirrorBind(bind) {
+		t.Fatalf("the keep's bind %+v did not activate", bind)
+	}
 	return bind
 }
 
@@ -218,6 +220,59 @@ func TestABindIsCurrentFromItsActivationToItsEnd(t *testing.T) {
 	binds := map[MirrorBind]bool{first: true, second: true, third: true, again: true}
 	if len(binds) != 4 {
 		t.Fatalf("the binds %+v %+v %+v %+v repeat", first, second, third, again)
+	}
+}
+
+// A bind moves from pending to current once: it activates at most once,
+// never after its end, and never once a newer keep of its issue issued
+// another, whether that one is current or ended. A refused activation
+// leaves the current bind as it was, and no bind stays pending once each
+// is activated, ended or replaced.
+func TestABindActivatesOnceWhilePending(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+	sweep := currentSweep(s, root)
+	pump := int64(0)
+	keep := func() MirrorBind {
+		t.Helper()
+		pump++
+		b, _, err := s.KeepMirrorTicket(root, "10001", 1, pump, mirrorReadAt(100+pump))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	admits := func(b MirrorBind) bool {
+		t.Helper()
+		return storeBoundTicket(t, s, root, sweep, "10001", b, 200+pump, []byte(`{"v":"x"}`)).Body == MirrorBodyStored
+	}
+	a := keep()
+	if !s.ActivateMirrorBind(a) || s.ActivateMirrorBind(a) || !admits(a) {
+		t.Fatal("a bind activated twice, or not current after its first activation")
+	}
+	ended := keep()
+	s.EndMirrorBind(ended)
+	if s.ActivateMirrorBind(ended) || !admits(a) {
+		t.Fatal("a bind ended while pending activated, or moved the current one")
+	}
+	older, newer := keep(), keep()
+	if !s.ActivateMirrorBind(newer) || s.ActivateMirrorBind(older) || admits(older) || !admits(newer) {
+		t.Fatal("an older pending bind activated after a newer one of its issue")
+	}
+	older, newer = keep(), keep()
+	if !s.ActivateMirrorBind(newer) {
+		t.Fatal("the newer bind did not activate")
+	}
+	s.EndMirrorBind(newer)
+	if s.ActivateMirrorBind(older) || admits(older) {
+		t.Fatal("an older pending bind activated after a newer one of its issue ended")
+	}
+	if s.ActivateMirrorBind(MirrorBind{}) {
+		t.Fatal("no bind activated")
+	}
+	if n := len(s.mirrorBinds.pending); n != 0 {
+		t.Fatalf("%d binds still pending", n)
 	}
 }
 

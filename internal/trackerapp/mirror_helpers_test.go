@@ -413,8 +413,9 @@ func (m *mirrorFixture) loseKeeps() {
 }
 
 // keepsLost is a store whose keep of an open ticket succeeds and leaves no
-// row, and whose bind never becomes the issue's current one: the ticket's
-// reads store no body, and its pump holds the content it shows.
+// row, and whose bind never becomes the issue's current one though its
+// activation reports it did: the ticket's reads store no body, and its
+// pump holds the content it shows.
 type keepsLost struct{ *store.Store }
 
 func (k keepsLost) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (store.MirrorBind, bool, error) {
@@ -428,7 +429,7 @@ func (k keepsLost) KeepMirrorTicket(root int64, issue string, session, pump int6
 	return bind, false, nil
 }
 
-func (keepsLost) ActivateMirrorBind(store.MirrorBind) {}
+func (keepsLost) ActivateMirrorBind(store.MirrorBind) bool { return true }
 
 // testBoards are the boards a mirror fixture's connection lists.
 var testBoards = []tracker.BoardID{testBoard, "2", "7", "9"}

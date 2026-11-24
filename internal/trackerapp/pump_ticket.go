@@ -456,13 +456,20 @@ func (r *run) bindTickets(reads []*ticketRead) error {
 
 // keepTicketLocked writes tp's keep under root, kept at opened (store
 // KeepMirrorTicket), and reports whether it showed the issue's held record
-// again. Once the row committed, the row is the pump's to drop, and the
-// bind the keep issued becomes the issue's current one (store
-// ActivateMirrorBind), ending the pump's earlier one, only while tp is
-// still live, of generation gen: a pump retired during the keep gets none,
-// and its goroutine drops the row.
-// The caller holds opMu, and the keep's SQL runs before subMu is taken.
+// again, only while tp is live, of generation gen, both as the keep starts
+// and once it committed: a pump retired before makes no row, and one
+// retired during the keep shows nothing, its bind ends unactivated and its
+// goroutine drops the row. Once the row committed, the row is the pump's
+// to drop, and the bind the keep issued becomes the issue's current one
+// (store ActivateMirrorBind), ending the pump's earlier one.
+// The caller holds opMu, and the keep's SQL runs without subMu held.
 func (s *Service) keepTicketLocked(tp *ticketPump, root int64, gen uint64, opened store.MirrorRead) (bool, error) {
+	s.subMu.Lock()
+	live := s.ticketLiveLocked(tp, gen)
+	s.subMu.Unlock()
+	if !live {
+		return false, nil
+	}
 	bind, shown, err := s.store.KeepMirrorTicket(root, string(tp.key.issue), s.session, tp.number, opened)
 	if err != nil {
 		return false, err
@@ -471,11 +478,15 @@ func (s *Service) keepTicketLocked(tp *ticketPump, root int64, gen uint64, opene
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	if !s.ticketLiveLocked(tp, gen) {
-		return shown, nil
+		s.store.EndMirrorBind(bind)
+		return false, nil
 	}
 	// A bind of the root a restore emptied ends as this one replaces it.
 	s.store.EndMirrorBind(tp.bind)
-	s.store.ActivateMirrorBind(bind)
+	tp.bind = store.MirrorBind{}
+	if !s.store.ActivateMirrorBind(bind) {
+		return false, fmt.Errorf("trackerapp: the store refused to activate the bind its keep of %s just issued", tp.key.issue)
+	}
 	tp.bind = bind
 	return shown, nil
 }

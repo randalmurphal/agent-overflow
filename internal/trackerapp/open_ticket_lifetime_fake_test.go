@@ -119,10 +119,10 @@ func TestAClosedTicketsAnswerStoresNothingWhateverBecameOfItsRow(t *testing.T) {
 
 // A ticket's first read is held before its keep, or in it, and its last
 // handle is released meanwhile; while held before its keep, the ticket
-// opens again, binds, stores its body and closes, its row dropped. The
-// held read then keeps the issue: its pump retired, so the keep's bind is
-// never made current, the read writes nothing, and the pump's exit drops
-// the row.
+// opens again, binds, stores its body and closes, its row dropped. Its
+// pump retired, so the held read keeps nothing (held before its keep) or
+// its keep's bind is never made current (held in it), the read writes
+// nothing, and the pump's exit drops any row.
 func TestARetiredPumpsKeepGivesItNoBind(t *testing.T) {
 	t.Parallel()
 	for _, inKeep := range []bool{false, true} {
@@ -162,6 +162,81 @@ func TestARetiredPumpsKeepGivesItNoBind(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A ticket closed and opened again before the cleanup has its first read
+// held before its keep, and its last handle is released meanwhile: the
+// retired pump makes no row and never shows the closed ticket's record
+// again, its goroutine's drop held or not.
+func TestAPumpRetiredBeforeItsKeepMakesNoRowAndShowsNothing(t *testing.T) {
+	t.Parallel()
+	s, conn, gate, _, _ := bindScenario(t)
+	s.closeTicket(t, conn, s.openTicket(t, conn, "10105"), "10105")
+	if card, doc := s.kept(t, conn, "10105"); card || doc {
+		t.Fatalf("the closed ticket's issue shows its card %v and document %v", card, doc)
+	}
+	h := gate.hold(t, "(*run).bindTickets(")
+	drop := gate.holdCall(t, callDrop, "")
+	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105"))
+	waitClosed(t, "the read's keep", h.arrived)
+	p := s.svc.ticketPumpOf(conn.ID, "10105")
+	s.svc.ReleaseSubscription(sub.ID)
+	h.open()
+	select {
+	case <-drop.arrived:
+	case <-p.exited:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the retired pump neither dropped its row nor returned")
+	}
+	if _, ok := gate.kept(p.number); ok {
+		t.Error("the retired pump's keep made a row")
+	}
+	if card, doc := s.kept(t, conn, "10105"); card || doc {
+		t.Errorf("the retired pump showed the closed ticket's card %v and document %v", card, doc)
+	}
+	drop.open()
+	exited(t, p)
+}
+
+// A ticket closed and opened again before the cleanup has its first keep
+// held, and its last handle is released meanwhile: the keep commits and
+// shows the closed ticket's record again, but its pump retired, so it
+// publishes nothing, and its bind ends never activated: a ticket that
+// shows the issue rebuilds nothing until the pump's drop, held here, ends
+// the keep.
+func TestAKeepWhosePumpRetiredMeanwhilePublishesNothing(t *testing.T) {
+	t.Parallel()
+	s, conn, gate, other, _ := bindScenario(t)
+	s.closeTicket(t, conn, s.openTicket(t, conn, "10105"), "10105")
+	s.svc.subMu.Lock()
+	other.shows = append(other.shows, "10105")
+	inputs := other.inputs
+	s.svc.subMu.Unlock()
+	keep := gate.holdCall(t, callKeep, "")
+	drop := gate.holdCall(t, callDrop, "")
+	sub := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10105"))
+	waitClosed(t, "the read's keep", keep.arrived)
+	p := s.svc.ticketPumpOf(conn.ID, "10105")
+	s.svc.ReleaseSubscription(sub.ID)
+	keep.open()
+	waitClosed(t, "the retired pump's drop", drop.arrived)
+	if card, _ := s.kept(t, conn, "10105"); !card {
+		t.Fatal("the keep did not show the closed ticket's record again")
+	}
+	s.svc.subMu.Lock()
+	moved := other.inputs != inputs
+	s.svc.subMu.Unlock()
+	if moved {
+		t.Error("the retired pump's keep was published")
+	}
+	gate.mu.Lock()
+	bind, ended := gate.keeps[p.number], slices.Clone(gate.ended)
+	gate.mu.Unlock()
+	if bind.IsZero() || !slices.Contains(ended, bind) || !s.svc.bindOf(p).IsZero() {
+		t.Errorf("the retired pump's keep bind %+v; the binds ended %+v; want it ended, not held", bind, ended)
+	}
+	drop.open()
+	exited(t, p)
 }
 
 // A ticket whose first paint is held is read by a comment's refresh,

@@ -23,7 +23,9 @@ import (
 // this process's memory (mirrorBinds): a keep issues a pending bind
 // (KeepMirrorTicket); the caller makes it the issue's current bind once
 // the keep committed and the ticket is still open (ActivateMirrorBind),
-// and ends it as the ticket closes (EndMirrorBind). A read a pump makes
+// and ends it as the ticket closes (EndMirrorBind). A bind is pending
+// once: it activates at most once, never after its end, and never once a
+// newer keep of its issue issued another. A read a pump makes
 // carries its bind (MirrorTicket.Bind), and a ticket write admits its
 // body and its opening only while that bind is the issue's current one,
 // looked up once per ticket in the write's transaction: a write that
@@ -60,7 +62,14 @@ func (b MirrorBind) IsZero() bool { return b == MirrorBind{} }
 type mirrorBinds struct {
 	mu sync.Mutex
 	// last is the number of the last bind issued.
-	last    uint64
+	last uint64
+	// pending is, per issue, the number of the last bind a keep issued
+	// while that bind is neither activated nor ended: one entry per issue
+	// at most, as a newer keep's replaces it, a keep that fails to commit
+	// withdraws its own, and none stays once the caller activates or ends
+	// what each keep returns (the service does one of them under the lock
+	// its keeps hold, so between its keeps it leaves none).
+	pending map[mirrorBindKey]uint64
 	current map[mirrorBindKey]MirrorBind
 }
 
@@ -69,12 +78,27 @@ type mirrorBindKey struct {
 	issue string
 }
 
-// issue is a new bind of issueID in rootID opened at opened.
+// issue is a new bind of issueID in rootID opened at opened, pending.
 func (m *mirrorBinds) issue(rootID int64, issueID string, opened int64) MirrorBind {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.last++
+	if m.pending == nil {
+		m.pending = map[mirrorBindKey]uint64{}
+	}
+	m.pending[mirrorBindKey{rootID, issueID}] = m.last
 	return MirrorBind{n: m.last, root: rootID, issue: issueID, opened: opened}
+}
+
+// take reports whether b is pending and makes it pending no more. The
+// caller holds mu.
+func (m *mirrorBinds) take(b MirrorBind) bool {
+	k := mirrorBindKey{b.root, b.issue}
+	if b.IsZero() || m.pending[k] != b.n {
+		return false
+	}
+	delete(m.pending, k)
+	return true
 }
 
 // mirrorAdmission is what a ticket write may record of a ticket: whether
@@ -103,29 +127,33 @@ func (m *mirrorBinds) admit(rootID int64, tickets []MirrorTicket) []mirrorAdmiss
 	return out
 }
 
-// ActivateMirrorBind makes b, a bind a keep that committed issued, the
-// current bind of its issue, in place of any other: the caller has just
-// found the ticket it was issued for still open. No bind is no change.
-func (s *Store) ActivateMirrorBind(b MirrorBind) {
-	if b.IsZero() {
-		return
-	}
+// ActivateMirrorBind makes b, a pending bind a keep that committed issued,
+// the current bind of its issue, in place of any other, and reports
+// whether it did: the caller has just found the ticket it was issued for
+// still open. A bind that is not pending (no bind, one activated or ended
+// already, one a newer keep of its issue replaced) is refused.
+func (s *Store) ActivateMirrorBind(b MirrorBind) bool {
 	m := &s.mirrorBinds
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if !m.take(b) {
+		return false
+	}
 	if m.current == nil {
 		m.current = map[mirrorBindKey]MirrorBind{}
 	}
 	m.current[mirrorBindKey{b.root, b.issue}] = b
+	return true
 }
 
-// EndMirrorBind ends b: no write admits it from then on. Ending a bind
-// that is not its issue's current one (replaced, ended, or never
-// activated) does nothing.
+// EndMirrorBind ends b: no write admits it from then on, and a pending b
+// never activates. Ending a bind that is not its issue's current one
+// (replaced, ended, or never activated) changes nothing else.
 func (s *Store) EndMirrorBind(b MirrorBind) {
 	m := &s.mirrorBinds
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.take(b)
 	if k := (mirrorBindKey{b.root, b.issue}); !b.IsZero() && m.current[k] == b {
 		delete(m.current, k)
 	}
@@ -193,6 +221,7 @@ func (s *Store) KeepMirrorTicket(rootID int64, issueID string, session, pump int
 	}
 	bind = s.mirrorBinds.issue(rootID, issueID, openedAt)
 	if err = tx.Commit(); err != nil {
+		s.EndMirrorBind(bind)
 		return MirrorBind{}, false, fmt.Errorf("%s: commit: %w", action, err)
 	}
 	return bind, kept && hidden, nil

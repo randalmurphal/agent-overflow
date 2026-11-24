@@ -32,6 +32,9 @@ type bindGate struct {
 	refuse     int
 	refuseKeep string
 	ended      []store.MirrorBind
+	// keeps are the binds of the keeps the gate passed on that committed,
+	// by pump: its last.
+	keeps map[int64]store.MirrorBind
 }
 
 // The kinds of call a bindGate holds.
@@ -144,7 +147,24 @@ func (g *bindGate) KeepMirrorTicket(root int64, issue string, session, pump int6
 	if h := g.wait(callKeep); h != nil {
 		defer close(h.done)
 	}
-	return g.Store.KeepMirrorTicket(root, issue, session, pump, opened)
+	bind, shown, err := g.Store.KeepMirrorTicket(root, issue, session, pump, opened)
+	if err == nil {
+		g.mu.Lock()
+		if g.keeps == nil {
+			g.keeps = map[int64]store.MirrorBind{}
+		}
+		g.keeps[pump] = bind
+		g.mu.Unlock()
+	}
+	return bind, shown, err
+}
+
+// kept is the bind of pump's last keep that committed, if any.
+func (g *bindGate) kept(pump int64) (store.MirrorBind, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	b, ok := g.keeps[pump]
+	return b, ok
 }
 
 func (g *bindGate) DropMirrorTicket(session, pump int64) (bool, error) {

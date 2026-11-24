@@ -453,10 +453,13 @@ keep yet before it reads it (`trackerapp.bindTickets`): a probe of the
 issue's keep and an insert of one row, the drop two statements
 (`TestOpenTicketKeepCosts`). The row only keeps the issue. Which of the
 ticket's reads store its body is its bind's rule, held in the process's
-memory (`store.MirrorBind`): the keep issues a bind, which becomes the
-issue's current one only after the keep committed and while the pump is
-still live (`trackerapp.keepTicketLocked`, `store.ActivateMirrorBind`),
-and ends, with no I/O, where the pump retires
+memory (`store.MirrorBind`): a pump retired before its keep starts makes
+no row, and the keep issues a pending bind, which becomes the issue's
+current one only after the keep committed and while the pump is still
+live (`trackerapp.keepTicketLocked`, `store.ActivateMirrorBind`); a keep
+whose pump retired meanwhile publishes nothing and ends its bind. A bind
+activates at most once, never after its end and never once a newer keep
+of its issue issued another. It ends, with no I/O, where the pump retires
 (`trackerapp.retireTicketLocked`): its last subscription released, its
 connection turned off or removed, its mirror generation ended, a read that
 found it ended, and `Stop`. Every read an open ticket makes carries the
