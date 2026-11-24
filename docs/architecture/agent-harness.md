@@ -1507,7 +1507,8 @@ hand-written provider homes written into the harness's redirected `HOME`
 `e2e/tests/harness-bridge.spec.ts` covers the frontend bridge: the viewport
 snapshot's row ids matching what the backend seeded, element and globals
 queries, a perf run streaming frames and stopping with a two-sided report,
-reset disarming a run, and the no-page timeout plus its dropped late reply.
+and reset disarming a run. The no-page timeout and its dropped late reply
+are `internal/harnessrpc/ui_test.go`'s.
 
 ```
 make e2e          # harness-build + playwright test
