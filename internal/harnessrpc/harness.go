@@ -11,6 +11,7 @@
 package harnessrpc
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -66,6 +67,9 @@ type Harness struct {
 	// the page URL and bootstrap manifest, and is required when a frontend
 	// registers for targeted harness queries.
 	pageMarker string
+	// primeTemplate builds the migrated database image under a directory;
+	// a test replaces it to hold the build.
+	primeTemplate func(ctx context.Context, parent string) error
 
 	mu            sync.Mutex
 	replayer      *harness.Replayer     // lazy; see replayerEngine
@@ -135,7 +139,7 @@ func New(config Config) *Harness {
 	if config.ShutdownTimeout <= 0 {
 		config.ShutdownTimeout = 10 * time.Second
 	}
-	h := &Harness{config: config, pageMarker: newHarnessPageMarker(), forgeToken: rand.Text()}
+	h := &Harness{config: config, pageMarker: newHarnessPageMarker(), forgeToken: rand.Text(), primeTemplate: store.PrimeMigratedTemplate}
 	var commit func(forgefake.CommitRequest) (string, error)
 	if config.DataRoot != "" {
 		h.origins = newForgeOrigins(config.DataRoot)
