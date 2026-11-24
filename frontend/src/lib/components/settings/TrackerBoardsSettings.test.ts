@@ -185,14 +185,16 @@ describe('<TrackerBoardsSettings>', () => {
   });
 
   it('shows the project a deep link names, then each project’s own boards', async () => {
-    stored.p2 = [trackerBoardChoice({ project: 'p2', board: '9', name: 'Ops board' })];
-    openTrackerBoardsSettings('p2', HOME_BACKEND);
+    stored.p1 = [trackerBoardChoice({ board: '9', name: 'Web board' })];
     render(TrackerBoardsSettings);
-    await waitFor(() => expect(names()).toEqual(['Ops board']));
-    const select = screen.getByTestId('settings-tracker-boards-project') as HTMLSelectElement;
-    expect(select.value).toBe('p2');
+    const select = (await screen.findByTestId('settings-tracker-boards-project')) as HTMLSelectElement;
+    // Without a link the page opens on another project.
+    await waitFor(() => expect(select.value).toBe('p2'));
+    openTrackerBoardsSettings('p1', HOME_BACKEND);
+    await waitFor(() => expect(names()).toEqual(['Web board']));
+    expect(select.value).toBe('p1');
 
-    await fireEvent.change(select, { target: { value: 'p1' } });
+    await fireEvent.change(select, { target: { value: 'p2' } });
     await screen.findByTestId('settings-tracker-boards-empty');
   });
 
