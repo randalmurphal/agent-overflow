@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -124,30 +125,45 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 // board once, after the walk. A listing that fails leaves the pass open
 // and not listed. A rows read that refuses the listing's rule
 // (tracker.ErrRuleRefused, the tracker refusing the query that carried
-// it) ends the pass, the rows stored before it standing, and the board
-// lists again at once unless the pump did so for a refusal within the
-// last reconcile interval (ruleRelist). Then the pass ends with the
-// refusal, which the pump holds: until that interval has passed each
-// reconcile answers with it, making no request, so the board's failure
-// stays shown, and the next one lists; a pass that completes, or another
-// board lifetime, clears it. Every other failed rows read keeps the
-// pass's candidates. An open pass, and a held refusal, are due at the
-// pump's next tick whatever the interval (boardDue), so a pass a refresh
-// began goes on at once.
+// it) ends the pass, the rows stored before it standing, and is the
+// reconcile's failure: the store holds it, refused, and the board lists
+// again a reconcile interval after it (Service.refusalWaits), or at a
+// person's refresh. Every other failed rows read keeps the pass's
+// candidates. An open pass is due at the pump's next tick whatever the
+// interval (boardDue), so a pass a refresh began goes on at once. The
+// reconcile's outcome is explicit
+// (run.reconciled): completed when the pass attempted every candidate of
+// its listing, failed with the read its failing call began and the time
+// that call returned, and neither while it goes on (More).
 func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
+	out, err := r.reconcileUnit(board)
+	switch {
+	case err != nil:
+		r.reconciled = reconcileOutcome{failed: true, read: r.lastRead, returned: millis(r.s.now())}
+	case !out.More:
+		r.reconciled = reconcileOutcome{completed: true}
+	}
+	return out, err
+}
+
+// reconcileOutcome is how a tick's reconcile ended (run.reconciled): the
+// zero outcome is one that did not run or goes on.
+type reconcileOutcome struct {
+	completed, failed bool
+	// read is the read the failing call began, and returned when it
+	// returned, in Unix ms, set when failed.
+	read     store.MirrorRead
+	returned int64
+}
+
+// reconcileUnit is the reconcile's pass: its reads and the cascade.
+func (r *run) reconcileUnit(board tracker.BoardID) (UnitResult, error) {
 	lifetime, err := r.lifetime(board)
 	if err != nil {
 		return UnitResult{}, err
 	}
-	if r.relisted.lifetime != lifetime {
-		// Another board lifetime's listing again and refusal are none.
-		*r.relisted = ruleRelist{}
-	}
 	pass := r.pass
 	if !pass.openIn(lifetime) {
-		if r.relisted.refusal != nil && r.relisted.waits(r.s) {
-			return UnitResult{}, r.relisted.refusal
-		}
 		*pass = reconcilePass{lifetime: lifetime}
 	}
 	if r.walking {
@@ -155,16 +171,8 @@ func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	}
 	var log changeLog
 	err = r.reconcileReads(board, pass, &log)
-	if errors.Is(err, tracker.ErrRuleRefused) && !r.relisted.waits(r.s) {
-		*r.relisted = ruleRelist{lifetime: lifetime, wall: millis(r.s.now())}
-		err = r.reconcileReads(board, pass, &log)
-	}
-	switch {
-	case errors.Is(err, tracker.ErrRuleRefused):
+	if errors.Is(err, tracker.ErrRuleRefused) {
 		*pass = reconcilePass{}
-		r.relisted.refusal = err
-	case err == nil && !pass.openIn(lifetime):
-		*r.relisted = ruleRelist{}
 	}
 	out := UnitResult{More: len(pass.left) > 0}
 	if err == nil {
@@ -188,29 +196,6 @@ type reconcilePass struct {
 
 // openIn reports whether p is open in board lifetime lifetime.
 func (p *reconcilePass) openIn(lifetime int64) bool { return p.lifetime == lifetime && lifetime != 0 }
-
-// ruleRelist is when a board pump's reconcile last listed the board again
-// because a rows read refused the listing's rule (boardPump.relisted), by
-// the wall clock in Unix ms, and the board lifetime it listed in: a
-// listing again for a refusal waits a reconcile interval from it, so a
-// refusal that persists costs one more listing an interval. refusal is
-// the refusal that ended the pass after that listing, which each
-// reconcile answers with while the listing waits. A pass that completes
-// clears both, and so does a reconcile of another lifetime.
-type ruleRelist struct {
-	lifetime int64
-	wall     int64
-	refusal  error
-}
-
-// waits reports whether a listing again for a refusal waits for l: it was
-// less than a reconcile interval ago. None never was, and a wall clock
-// behind l waits for nothing, as an interval whose start is unknown is
-// due (sinceWall).
-func (l *ruleRelist) waits(s *Service) bool {
-	since, known := s.sinceWall(l.wall)
-	return l.wall != 0 && known && since < s.cadence.Reconcile
-}
 
 // reconcileReads lists board when pass, open in the run's lifetime of
 // board, has no candidate left, then attempts up to reconcileBatches

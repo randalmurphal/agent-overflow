@@ -45,12 +45,14 @@ type run struct {
 	// walking reports that the tick's delta stopped with more of its walk
 	// to read, which the tick's reconcile waits for (run.reconcile).
 	walking bool
-	// pass is the reconcile pass the tick goes on with, and relisted when
-	// its reconcile last listed again for a refused rule and the refusal
-	// that followed, both its pump's;
-	// nil for a run no pump makes, which does not reconcile (syncBoard).
-	pass     *reconcilePass
-	relisted *ruleRelist
+	// pass is the reconcile pass the tick goes on with, its pump's; nil for
+	// a run no pump makes, which does not reconcile (syncBoard).
+	pass *reconcilePass
+	// reconciled is how the tick's reconcile ended (run.reconcile), which
+	// the tick records (run.record); lastRead is the read the run began
+	// last (beginRead), the failing call's when a call failed.
+	reconciled reconcileOutcome
+	lastRead   store.MirrorRead
 	// lifetimes are the lifetimes of the boards a write's refresh reads
 	// through, captured before its reads (refreshTargets); a tick names its
 	// own board's from state.
@@ -345,6 +347,7 @@ func (r *run) beginRead() (store.MirrorRead, error) {
 	if err != nil {
 		return store.MirrorRead{}, fmt.Errorf("trackerapp: begin a read of %s: %w", r.row.ID, err)
 	}
+	r.lastRead = read
 	return read, nil
 }
 

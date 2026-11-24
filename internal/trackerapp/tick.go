@@ -14,9 +14,9 @@ type step struct {
 	unit Unit
 	body func(*run) (UnitResult, error)
 	// records marks a unit whose success the tick records in the scope's
-	// sync state as a read, or with reconcile as a reconcile, at the time
-	// the unit began; with whole only when it finished (not More).
-	records, reconcile, whole bool
+	// sync state as a read at the time the unit began, or with reconcile as
+	// a reconcile when the pass completed (run.reconciled).
+	records, reconcile bool
 	// history marks a unit that holds the connection's history lock.
 	history bool
 }
@@ -113,7 +113,7 @@ func boardSteps(b tracker.BoardID, due BoardDue) []step {
 	}
 	if due.Reconcile {
 		steps = append(steps, step{unit: UnitReconcile, body: func(r *run) (UnitResult, error) { return r.reconcile(b) },
-			records: true, reconcile: true, whole: true})
+			records: true, reconcile: true})
 	}
 	if due.History {
 		steps = append(steps, step{unit: UnitHistory, body: func(r *run) (UnitResult, error) { return r.history() }, history: true})
@@ -185,7 +185,7 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 	defer r.finish()
 	r.scope, r.origin = scope, origin
 	if origin != nil && origin.board != nil {
-		r.pass, r.relisted = &origin.board.pass, &origin.board.relisted
+		r.pass = &origin.board.pass
 	}
 	if err := r.readState(); errors.Is(err, errEnded) || endsMirror(err) {
 		return ended(out), nil
@@ -235,20 +235,26 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 		}
 	}
 	callErr, stop, err := r.failed(&out, err)
-	if err != nil || stop {
-		return out, err
+	if out.Ended {
+		return out, nil
 	}
-	if err := r.settleCalls(callErr); err != nil {
-		return out, err
-	}
-	a, err := r.record(steps[:done], began, out)
-	if endsMirror(err) {
+	// The one finalizer of the tick: the units that finished are recorded
+	// on every exit, before and whatever the connection's settlement, so
+	// neither a stop nor a settlement Stop overtook loses them.
+	recorded, rerr := r.record(steps[:done], began, out, callErr)
+	if endsMirror(rerr) {
 		return ended(out), nil
 	}
-	if err == nil && origin != nil {
-		origin.sync, origin.recorded = syncAfter(r.state, a), true
+	if rerr == nil && origin != nil {
+		origin.sync, origin.recorded = syncViewOf(recorded), true
 	}
-	return out, err
+	if err != nil || stop {
+		return out, errors.Join(err, rerr)
+	}
+	if err := r.settleCalls(callErr); err != nil {
+		return out, errors.Join(err, rerr)
+	}
+	return out, rerr
 }
 
 // tickOrigin is the pump a tick runs for, which emits what the tick
@@ -264,22 +270,17 @@ type tickOrigin struct {
 	recorded bool
 }
 
-// syncAfter is the sync view of a scope whose state was st after a record
-// of a, as the store applies it: the order times decide, and only move
-// forward, a success clears a failure no later than it, and a's failure is
-// the scope's. Each time shown is the wall time of the read that won.
-func syncAfter(st store.MirrorSync, a store.MirrorSyncAttempt) SyncView {
-	v := SyncView{ReadAt: st.ReadWall, ReconciledAt: st.ReconciledWall}
-	if a.ReadAt.At() > st.ReadAt {
-		v.ReadAt = a.ReadAt.Wall()
-	}
-	if a.ReconciledAt.At() > st.ReconciledAt {
-		v.ReconciledAt = a.ReconciledAt.Wall()
-	}
-	switch f := st.Failure; {
-	case a.Failure.At.At() > 0:
-		v.Failure = &FailureView{Kind: a.Failure.Kind, Message: a.Failure.Message, At: a.Failure.At.Wall()}
-	case f.Kind != "" && f.At > max(a.ReadAt.At(), a.ReconciledAt.At()):
+// syncViewOf is the sync view of a scope's recorded outcome: the times of
+// its last read and reconcile, and the newer of its two failures by order
+// time, the reconcile's on a tie, each shown at its wall time. When the
+// newer one clears, the other shows again with its own time.
+func syncViewOf(o store.MirrorSyncOutcome) SyncView {
+	v := SyncView{ReadAt: o.ReadWall, ReconciledAt: o.ReconciledWall}
+	f, rf := o.Failure, o.ReconcileFailure
+	switch {
+	case rf.Kind != "" && (f.Kind == "" || rf.At >= f.At):
+		v.Failure = &FailureView{Kind: rf.Kind, Message: rf.Message, At: rf.Wall}
+	case f.Kind != "":
 		v.Failure = &FailureView{Kind: f.Kind, Message: f.Message, At: f.Wall}
 	}
 	return v
@@ -299,32 +300,45 @@ func (r *run) runStep(st step) (UnitResult, error) {
 }
 
 // record writes the tick's outcome in the scope's sync state in one
-// statement: the success of each unit of done (the units that ran without
-// failing) that records one, at the time it began, and the tick's failure
-// at the time its unit began, so a failure is never older than a success
-// it follows. A tick with nothing to record writes nothing, and the store
+// statement and returns the outcome the state holds after it: the success
+// of each unit of done (the units that ran without failing) that records
+// one, at the time it began (a reconcile only when its pass completed),
+// and the tick's tracker failure, if any. A failed reconcile's goes to the
+// reconcile's slot, at the read its failing call began and the time that
+// call returned (run.reconciled), with whether the tracker refused the
+// listing's rule (callErr); any other unit's goes to the other slot at the
+// time its unit began, so a failure is never older than a success it
+// follows. A tick with nothing to record writes nothing, and the store
 // writes nothing when the attempt changes nothing.
-func (r *run) record(done []step, began []store.MirrorRead, out Outcome) (store.MirrorSyncAttempt, error) {
+func (r *run) record(done []step, began []store.MirrorRead, out Outcome, callErr error) (store.MirrorSyncOutcome, error) {
 	a := store.MirrorSyncAttempt{Lifetime: r.state.Lifetime}
 	for i, st := range done {
 		switch {
-		case !st.records || st.whole && out.Ran[i].More:
+		case !st.records:
 		case st.reconcile:
-			a.ReconciledAt = began[i]
+			if r.reconciled.completed {
+				a.ReconciledAt = began[i]
+			}
 		default:
 			a.ReadAt = began[i]
 		}
 	}
-	if out.Failure != nil {
+	switch rc := r.reconciled; {
+	case out.Failure == nil:
+	case rc.failed:
+		a.ReconcileFailure = store.MirrorReconcileAttempt{At: rc.read, Returned: rc.returned, Kind: string(out.Failure.Kind),
+			Message: out.Failure.Message, Refused: errors.Is(callErr, tracker.ErrRuleRefused)}
+	default:
 		a.Failure = store.MirrorAttemptFailure{At: began[len(out.Ran)-1], Kind: string(out.Failure.Kind), Message: out.Failure.Message}
 	}
 	if a == (store.MirrorSyncAttempt{Lifetime: a.Lifetime}) {
-		return a, nil
+		return r.state.MirrorSyncOutcome, nil
 	}
-	if _, _, err := r.s.store.RecordMirrorSyncAttempt(r.root, string(r.scope.Board), a); err != nil {
-		return a, fmt.Errorf("trackerapp: record the sync outcome of %s board %q: %w", r.row.ID, r.scope.Board, err)
+	recorded, _, err := r.s.store.RecordMirrorSyncAttempt(r.root, string(r.scope.Board), a)
+	if err != nil {
+		return store.MirrorSyncOutcome{}, fmt.Errorf("trackerapp: record the sync outcome of %s board %q: %w", r.row.ID, r.scope.Board, err)
 	}
-	return a, nil
+	return recorded, nil
 }
 
 // structureUnit is the structure unit: the read.

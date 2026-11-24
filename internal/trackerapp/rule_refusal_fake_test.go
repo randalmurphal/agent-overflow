@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/harness/trackerfake"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -119,8 +120,8 @@ func (s *ruleScenario) reconcileRequests() int {
 	return s.count(reqListing) + s.count(reqRowRead) + s.count(reqMatch) + s.count(reqBulk) + s.count(reqSprints)
 }
 
-// failed reports whether the board's stored sync state shows a failure.
-func (s *ruleScenario) failed(t *testing.T) bool {
+// stored is the board's stored sync state.
+func (s *ruleScenario) stored(t *testing.T) store.MirrorSync {
 	t.Helper()
 	root, ok, err := s.st.GetMirrorRoot(s.conn.ID)
 	if err != nil || !ok {
@@ -130,7 +131,22 @@ func (s *ruleScenario) failed(t *testing.T) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return st.Failure.Kind != ""
+	return st
+}
+
+// failed reports whether the board's stored sync state holds a failure,
+// in either slot.
+func (s *ruleScenario) failed(t *testing.T) bool {
+	t.Helper()
+	st := s.stored(t)
+	return st.Failure.Kind != "" || st.ReconcileFailure.Kind != ""
+}
+
+// refused reports whether the board's stored reconcile failure is a
+// refusal of the listing's rule.
+func (s *ruleScenario) refused(t *testing.T) bool {
+	t.Helper()
+	return s.stored(t).ReconcileFailure.Refused
 }
 
 // pumpTick runs a tick of the board as its pump does, every unit its due
@@ -157,6 +173,17 @@ func (s *ruleScenario) tick(t *testing.T) Outcome {
 	return out
 }
 
+// refresh runs the reconcile of a person's refresh, which lists the board
+// whatever its due rule says.
+func (s *ruleScenario) refresh(t *testing.T) Outcome {
+	t.Helper()
+	out, _, err := s.svc.syncBoard(t.Context(), s.pump, Interactive, func(*run) BoardDue { return BoardDue{Reconcile: true} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // reply answers w with status and body as Jira's JSON.
 func reply(w http.ResponseWriter, status int, body string) bool {
 	w.Header().Set("Content-Type", "application/json")
@@ -168,11 +195,12 @@ func reply(w http.ResponseWriter, status int, body string) bool {
 const badRequest = `{"errorMessages":["Bad request"],"errors":{}}`
 
 // A sprint the listing's rule names is deleted between the listing and
-// the reads by ID, which Jira refuses: the reconcile lists the board
-// again at once, reading no sprint to judge why the rows read was
-// refused, and the pass completes in the tick, removing the completed
-// issue's row.
-func TestADeletedSprintListsTheBoardAgainAndThePassCompletes(t *testing.T) {
+// the reads by ID, which Jira refuses: the pass ends with the refusal
+// stored, reading no sprint to judge why and listing nothing more, the
+// completed issue's row kept. A refresh lists the board again and the
+// pass completes, removing that row and clearing the refusal. Counted in
+// wire requests.
+func TestADeletedSprintEndsThePassUntilARefresh(t *testing.T) {
 	t.Parallel()
 	s := newRuleScenario(t)
 	var deleted atomic.Bool
@@ -189,18 +217,24 @@ func TestADeletedSprintListsTheBoardAgainAndThePassCompletes(t *testing.T) {
 		return false
 	})
 	out := s.tick(t)
+	if out.Failure == nil || len(out.Changes().Removed) != 0 || !s.refused(t) || !s.rowStored(t, s.conn.ID, done) {
+		t.Fatalf("the tick %+v, refused %v; want the refusal stored and the row kept", out, s.refused(t))
+	}
+	if n, rows, sprints := s.count(reqListing), s.count(reqRowRead), s.count(reqSprints); n != 1 || rows != 1 || sprints != 0 || s.pump.pass.openIn(s.lifetime(t)) {
+		t.Fatalf("%d listings, %d rows reads, %d sprint reads, the pass %+v; want 1, 1, 0 and the pass ended", n, rows, sprints, s.pump.pass)
+	}
+	out = s.refresh(t)
 	if out.Failure != nil || out.More() || fmt.Sprint(out.Changes().Removed) != "["+done+"]" {
-		t.Fatalf("the tick %+v; want the completed issue removed and the pass done", out)
+		t.Fatalf("the refresh %+v; want the completed issue removed and the pass done", out)
 	}
-	// The listing, the rows read Jira refuses, the listing again, which
-	// Jira refuses for the sprint the client still holds, so the provider
-	// reads the sprints and lists once more (BoardIssues), and the rows
-	// read under that listing's rule.
+	// The refresh's listing, which Jira refuses for the sprint the client
+	// still holds, so the provider reads the sprints and lists once more
+	// (one BoardIssues call), and the rows read under that listing's rule.
 	if n, rows := s.count(reqListing), s.count(reqRowRead); n != 3 || rows != 2 {
-		t.Fatalf("%d listings and %d rows reads; want 3 and 2", n, rows)
+		t.Fatalf("%d listings and %d rows reads in all; want 3 and 2", n, rows)
 	}
-	if s.pump.pass.openIn(s.lifetime(t)) || s.failed(t) || s.pump.relisted != (ruleRelist{}) {
-		t.Fatalf("the pass %+v, the board failed %v, the relist %+v; want all clear", s.pump.pass, s.failed(t), s.pump.relisted)
+	if s.pump.pass.openIn(s.lifetime(t)) || s.failed(t) {
+		t.Fatalf("the pass %+v, the board failed %v; want all clear", s.pump.pass, s.failed(t))
 	}
 }
 
@@ -208,8 +242,9 @@ func TestADeletedSprintListsTheBoardAgainAndThePassCompletes(t *testing.T) {
 // issue the list left out, and Jira answers the match with an error for
 // it (not judged, not a refusal of the rule): the rows read reads the
 // board's configuration again and the rows once more, whose list Jira
-// refuses with a 400 for the deleted sprint, so the reconcile lists the
-// board again in the same tick and the pass completes.
+// refuses with a 400 for the deleted sprint, so the pass ends with the
+// refusal stored. A refresh lists the board again and the pass completes.
+// Counted in wire requests.
 func TestAMatchNotJudgedForADeletedSprintRecoversByTheList(t *testing.T) {
 	t.Parallel()
 	s := newRuleScenario(t)
@@ -228,10 +263,15 @@ func TestAMatchNotJudgedForADeletedSprintRecoversByTheList(t *testing.T) {
 		return reply(w, http.StatusOK, `{"matches":[{"matchedIssues":[],"errors":["The value '1' does not exist for the field 'sprint'."]}]}`)
 	})
 	out := s.tick(t)
-	if out.Failure != nil || out.More() || fmt.Sprint(out.Changes().Removed) != "["+done+"]" {
-		t.Fatalf("the tick %+v; want the completed issue removed and the pass done", out)
+	if out.Failure == nil || !s.refused(t) || !deleted.Load() || s.count(reqListing) != 1 || s.count(reqMatch) != 1 || s.count(reqRowRead) != 2 {
+		t.Fatalf("the tick %+v, refused %v, deleted %v after %d listings, %d matches and %d rows reads; want the refusal after 1, 1 and 2",
+			out, s.refused(t), deleted.Load(), s.count(reqListing), s.count(reqMatch), s.count(reqRowRead))
 	}
-	if !deleted.Load() || s.count(reqListing) != 2 || s.count(reqMatch) != 2 || s.count(reqRowRead) != 3 {
+	out = s.refresh(t)
+	if out.Failure != nil || out.More() || fmt.Sprint(out.Changes().Removed) != "["+done+"]" || s.failed(t) {
+		t.Fatalf("the refresh %+v, the board failed %v; want the completed issue removed, the pass done and no failure", out, s.failed(t))
+	}
+	if s.count(reqListing) != 2 || s.count(reqMatch) != 2 || s.count(reqRowRead) != 3 {
 		t.Fatalf("deleted %v after %d listings, %d matches and %d rows reads; want 2, 2 and 3", deleted.Load(), s.count(reqListing), s.count(reqMatch), s.count(reqRowRead))
 	}
 }
@@ -260,8 +300,8 @@ func TestASignInCheckRefusedAfterAMatchKeepsThePass(t *testing.T) {
 	if n, m, checks := s.count(reqListing), s.count(reqMatch), s.count(http.MethodGet+" /rest/api/3/myself"); n != 1 || m != 1 || checks != 1 {
 		t.Fatalf("%d listings, %d matches, %d sign-in checks; want 1, 1 and 1", n, m, checks)
 	}
-	if !slices.Contains(s.pump.pass.left, done) || !s.pump.pass.openIn(s.lifetime(t)) || s.pump.relisted != (ruleRelist{}) {
-		t.Fatalf("the pass %+v, the relist %+v; want the pass open holding %s and no refusal", s.pump.pass, s.pump.relisted, done)
+	if !slices.Contains(s.pump.pass.left, done) || !s.pump.pass.openIn(s.lifetime(t)) || s.refused(t) {
+		t.Fatalf("the pass %+v, refused %v; want the pass open holding %s and no refusal", s.pump.pass, s.refused(t), done)
 	}
 	if !s.rowStored(t, s.conn.ID, done) {
 		t.Fatalf("the failed match removed the row of %s", done)
@@ -269,12 +309,11 @@ func TestASignInCheckRefusedAfterAMatchKeepsThePass(t *testing.T) {
 }
 
 // Jira refuses every read by ID with a 400 while every sprint is valid:
-// the reconcile lists again once, then fails, with no sprint read. Every
-// tick of the pump until the reconcile interval passed, its delta
-// succeeding, fails with that refusal, the board's failure shown after
-// each, and its reconcile makes no request; then it lists once and once
-// again.
-func TestAPersistent400ListsTheBoardAgainOnceAnInterval(t *testing.T) {
+// the reconcile lists once and fails, with no sprint read. Every tick of
+// the pump until a reconcile interval passed since the refusal, its delta
+// succeeding, does not fail and makes no reconcile request, the refusal
+// stored after each; then it lists once. Counted in wire requests.
+func TestAPersistent400ListsTheBoardOnceAnInterval(t *testing.T) {
 	t.Parallel()
 	s := newRuleScenario(t)
 	// The units other than the reconcile run first, so that the ticks
@@ -289,8 +328,8 @@ func TestAPersistent400ListsTheBoardAgainOnceAnInterval(t *testing.T) {
 	s.answering(func(kind string, w http.ResponseWriter, _ *http.Request, _ *httputil.ReverseProxy) bool {
 		return kind == reqRowRead && reply(w, http.StatusBadRequest, badRequest)
 	})
-	if out := s.tick(t); out.Failure == nil || s.count(reqListing) != 2 || s.count(reqSprints) != 0 {
-		t.Fatalf("the refused tick %+v: %d listings, %d sprint reads; want a failure, 2 and 0", out, s.count(reqListing), s.count(reqSprints))
+	if out := s.tick(t); out.Failure == nil || !s.refused(t) || s.count(reqListing) != 1 || s.count(reqSprints) != 0 {
+		t.Fatalf("the refused tick %+v, refused %v: %d listings, %d sprint reads; want the refusal, 1 and 0", out, s.refused(t), s.count(reqListing), s.count(reqSprints))
 	}
 	if !s.rowStored(t, s.conn.ID, done) {
 		t.Fatal("the refusal removed the completed issue's row")
@@ -301,17 +340,17 @@ func TestAPersistent400ListsTheBoardAgainOnceAnInterval(t *testing.T) {
 		})
 		s.shift.Store(int64(2*time.Hour + at))
 		out := s.pumpTick(t)
-		if out.Failure == nil || !s.failed(t) || s.reconcileRequests() != 0 {
-			t.Fatalf("the tick %v after the refusal %+v: the board failed %v after %d reconcile requests; want the refusal shown and none",
-				at, out, s.failed(t), s.reconcileRequests())
+		if out.Failure != nil || !s.refused(t) || s.reconcileRequests() != 0 {
+			t.Fatalf("the tick %v after the refusal %+v: refused %v after %d reconcile requests; want no failure, the refusal stored and none",
+				at, out, s.refused(t), s.reconcileRequests())
 		}
 		if !slices.ContainsFunc(out.Ran, func(u UnitResult) bool { return u.Unit == UnitDelta }) {
 			t.Fatalf("the tick %v after the refusal ran %+v; want its delta", at, out.Ran)
 		}
 	}
-	s.shift.Store(int64(2*time.Hour + s.svc.cadence.Reconcile))
-	if out := s.tick(t); out.Failure == nil || s.count(reqListing) != 2 || s.count(reqSprints) != 0 {
-		t.Fatalf("the tick once the interval passed %+v: %d listings, %d sprint reads; want a failure, 2 and 0", out, s.count(reqListing), s.count(reqSprints))
+	s.shift.Store(int64(2*time.Hour + s.svc.cadence.Reconcile + time.Second))
+	if out := s.tick(t); out.Failure == nil || s.count(reqListing) != 1 || s.count(reqSprints) != 0 {
+		t.Fatalf("the tick once the interval passed %+v: %d listings, %d sprint reads; want a failure, 1 and 0", out, s.count(reqListing), s.count(reqSprints))
 	}
 }
 

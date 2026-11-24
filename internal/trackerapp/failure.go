@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/linear"
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -136,6 +137,12 @@ func ClassifyFailure(kind string, err error) Failure {
 		return Failure{Kind: FailureSetup, Message: msg}
 	case errors.As(err, &status) && status.Status == http.StatusForbidden:
 		return Failure{Kind: FailureForbidden, Message: name + " refused access (HTTP 403): the token may not make this request"}
+	case errors.As(err, &status) && errors.Is(err, tracker.ErrRuleRefused):
+		// The reconcile waits a reconcile interval for this refusal, from
+		// when it was stored, and longer while a delta walk defers it, so
+		// the sentence names no time.
+		return Failure{Kind: FailureTracker, Message: fmt.Sprintf("%s refused the query for this board's issues (HTTP %d). "+
+			"Refresh to try again now. Agent Overflow tries again by itself later while the board is open", name, status.Status)}
 	case errors.As(err, &status):
 		return Failure{Kind: FailureTracker, Message: fmt.Sprintf("%s answered HTTP %d", name, status.Status)}
 	case errors.As(err, &tooLarge):

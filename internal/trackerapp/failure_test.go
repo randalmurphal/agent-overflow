@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/keyfile"
+	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/linear"
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -62,6 +63,10 @@ func TestClassifyFailureSortsEveryKind(t *testing.T) {
 			FailureRateLimited, "Linear is limiting requests"},
 		"a 403": {"jira", wrap(&trackerapi.StatusError{Tracker: "jira", Status: 403, Message: secret, Body: secret}),
 			FailureForbidden, "Jira refused access (HTTP 403)"},
+		"a refused rule": {"jira", fmt.Errorf("%w: %w", tracker.ErrRuleRefused, &trackerapi.StatusError{Tracker: "jira", Status: 400, Body: secret}),
+			FailureTracker, "Jira refused the query for this board's issues (HTTP 400). Refresh to try again now. Agent Overflow tries again by itself later while the board is open"},
+		"a 400": {"jira", wrap(&trackerapi.StatusError{Tracker: "jira", Status: 400, Body: secret}),
+			FailureTracker, "Jira answered HTTP 400"},
 		"a 500": {"tempo", &trackerapi.StatusError{Tracker: "tempo", Status: 500, Body: secret},
 			FailureTracker, "Tempo answered HTTP 500"},
 		"a body too large": {"jira", &trackerapi.BodyTooLargeError{Tracker: "jira", Limit: 1},

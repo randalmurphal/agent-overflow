@@ -221,10 +221,7 @@ func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 	if err != nil {
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)
 	}
-	v.Sync = SyncView{ReadAt: sync.ReadWall, ReconciledAt: sync.ReconciledWall}
-	if sync.Failure.Kind != "" {
-		v.Sync.Failure = &FailureView{Kind: sync.Failure.Kind, Message: sync.Failure.Message, At: sync.Failure.Wall}
-	}
+	v.Sync = syncViewOf(sync.MirrorSyncOutcome)
 	v.Sections = pages
 	return v, nil
 }
