@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/wake"
 )
 
@@ -609,6 +610,7 @@ func TestAMessageForAClaimedThreadIsQueuedAndWaitsForTheDecision(t *testing.T) {
 				during := func() {
 					sendID = c.deliver(t)
 					awaitQueuedWake(t, f.app, f.caller.ID, sendID)
+					waitAtGates(t, f.app, 1)
 					f.startedNothing(t)
 					if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 1 {
 						t.Errorf("queued on a claimed thread = %+v, want the one message", rows)
@@ -941,7 +943,8 @@ func TestAClaimHeldAcrossManySweepsWritesNothing(t *testing.T) {
 // A live session's queue is not dispatched while a delete claims its
 // thread: its one dispatch waits for the decision with the session kept,
 // what the app queues meanwhile (reminders, a workflow wake and a loop's
-// wake) stays in the durable queue, a message withdrawn meanwhile leaves it,
+// wake, recorded as delivered) is handed to that dispatch and stays in the
+// durable queue, a message withdrawn meanwhile leaves it,
 // a refused delete's release sends the rest once in the order they were
 // queued, and a committed delete's teardown gives them back to their owners.
 func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
@@ -957,6 +960,28 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 			workflowMarker, loopMarker := "workflow-"+entityid.New(), "loop "+entityid.New()
 			loop := registerTestWake(t, f.app, store.AgentWake{ThreadID: f.caller.ID, Kind: store.AgentWakeLoop, Label: "board", Note: loopMarker,
 				IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
+			// handedToDispatch fails unless the message queued under sendID was
+			// handed to the session's dispatch, whose one worker waits at the
+			// delete's gate: a message held back for a later turn boundary
+			// would be sent without waiting for the decision's release.
+			handedToDispatch := func(what, sendID string) {
+				t.Helper()
+				row := awaitQueuedWake(t, f.app, f.caller.ID, sendID)
+				for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+					f.app.flushDispatch.mu.Lock()
+					held := slices.Clone(f.app.flushDispatch.dispatching[f.caller.ID])
+					for _, batch := range f.app.flushDispatch.queues[f.caller.ID] {
+						held = append(held, batch.items...)
+					}
+					f.app.flushDispatch.mu.Unlock()
+					if slices.ContainsFunc(held, func(item triage.QueuedFlushItem) bool { return item.ID == row.ID }) {
+						return
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("the %s was not handed to the live session's dispatch: %+v", what, held)
+					}
+				}
+			}
 			during := func() {
 				for _, token := range tokens {
 					insertTestReminder(t, f.app, token, f.caller.ID, "remind "+token, time.Now().Add(-time.Second).UnixMilli())
@@ -969,11 +994,19 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 				if err := f.app.queueWorkflowWake(f.caller.ID, "release", wake.Message{Notice: wake.DataNotice, Data: workflowMarker}, nil); err != nil {
 					t.Fatalf("queue the workflow wake: %v", err)
 				}
+				if ids := queuedSendIDsOf(t, f.app, f.caller.ID, workflowWakeSendIDRoot); len(ids) == 1 {
+					handedToDispatch("workflow wake", ids[0])
+				}
 				now := time.Now()
 				if err := f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}); err != nil {
 					t.Fatal("the fire did not start")
 				}
-				awaitQueuedWake(t, f.app, f.caller.ID, agentWakeSendID(loop.ID, now.UnixMilli()))
+				handedToDispatch("loop's wake", agentWakeSendID(loop.ID, now.UnixMilli()))
+				// The fire records the wake it queued as delivered.
+				waitUntil(t, 10*time.Second, func() bool { return wakeRow(t, f.app, loop.ID).State == store.AgentWakeArmed })
+				if row := wakeRow(t, f.app, loop.ID); row.LastOutcome != agentWakeOutcomeDelivered || row.Undelivered != "" {
+					t.Errorf("the loop = %+v, want its fire recorded as delivered", row)
+				}
 				quietAtGates(t, f.app)
 				if ids := queuedSendIDsOf(t, f.app, f.caller.ID, threadWakeSendID("")); len(ids) != 2 {
 					t.Errorf("queued while claimed = %q, want the two not withdrawn", ids)
