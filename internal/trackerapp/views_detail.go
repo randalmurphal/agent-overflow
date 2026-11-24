@@ -386,7 +386,8 @@ type shownDetail struct {
 // when the mirror keeps one, is the card shown: it holds every field a
 // card holds as the latest read of any path found it (a project key or a
 // label renamed at an unchanged update time included), and the time its
-// status began as the record decided it.
+// status began as the record decided it. The body is behind when the card
+// shown is of a later version than the body.
 func shownDetailOf(doc ticketDoc, want []string, mirrored map[string]store.MirrorCard) shownDetail {
 	d := doc.d
 	out := shownDetail{d: d, links: slices.Clone(d.Links)}
@@ -400,7 +401,7 @@ func shownDetailOf(doc ticketDoc, want []string, mirrored map[string]store.Mirro
 		case !ok:
 		case id == string(d.Card.ID):
 			out.d.Card, _ = cardOf(m)
-			out.since, out.behind = m.StatusSince, m.UpdatedAt > doc.version
+			out.since = m.StatusSince
 		default:
 			if c, ok := cardOf(m); ok {
 				cards[c.ID] = c
@@ -416,6 +417,10 @@ func shownDetailOf(doc ticketDoc, want []string, mirrored map[string]store.Mirro
 	if p, ok := cards[out.d.Card.Parent]; ok && out.d.Card.Parent != "" {
 		out.parent = &p
 	}
+	// Judged from the card rendered, wherever it came from: a body's own
+	// card is the record's at its read (bodyOf), which may be newer than
+	// the body when the mirror stopped keeping the issue since.
+	out.behind = millis(out.d.Card.Updated) > doc.version
 	return out
 }
 

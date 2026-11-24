@@ -382,7 +382,12 @@ shows the record's card, its URL included (Linear's is a stored card
 field; Jira's is the site and the key, `jiraprovider.IssueURL`), with its
 body, and says when the body is of an older version than the card
 (`DetailView.BodyBehind`). An issue the mirror does not keep shows the
-read's own card, and its pump holds its document.
+read's own card, and its pump holds its document. The mark is judged once,
+from the card the view renders, after that card is chosen: a returned
+detail holds a body of the rendered card's version or is marked behind,
+and no additional full read is made solely for version skew (the sweep
+recovery in `againIfSwept` stays). A card stored after the body makes an
+open ticket's pump due a read as any card change does.
 
 A body is ordered by its version and then its read: a body of a later
 update, or of the same update from a later read, replaces the record's;
