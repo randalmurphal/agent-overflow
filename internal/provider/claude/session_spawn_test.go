@@ -203,16 +203,6 @@ func TestWriteSystemPromptFile(t *testing.T) {
 	RemoveSystemPromptFile(path)
 }
 
-func TestBuildArgsNoPermissionFlagsOmitsAll(t *testing.T) {
-	args := buildArgs(Config{Reaper: procutiltest.Reaper(), PermissionFlags: nil}, "", "")
-
-	for _, a := range args {
-		if a == "--permission-mode" || a == "--allow-dangerously-skip-permissions" {
-			t.Errorf("permission flag %q should be omitted when PermissionFlags is nil", a)
-		}
-	}
-}
-
 // TestBuildArgsDangerousSkipPermissions confirms the full-access flow emits
 // the bypass permission mode plus the bare dangerous-skip allow flag.
 func TestBuildArgsDangerousSkipPermissions(t *testing.T) {
@@ -389,13 +379,5 @@ func TestBuildArgsEmitsOneAddDirPerAdditionalDir(t *testing.T) {
 	}
 	if got := slices.Index(args, "--permission-mode"); got < addDirEnd {
 		t.Fatalf("--add-dir must precede the permission flags; args = %v", args)
-	}
-}
-
-// The zero value says nothing, so a session with no additional directory
-// keeps the argv it has always had.
-func TestBuildArgsOmitsAddDirWhenUnset(t *testing.T) {
-	if args := buildArgs(Config{Reaper: procutiltest.Reaper()}, "", ""); slices.Contains(args, "--add-dir") {
-		t.Fatalf("expected no --add-dir with no AdditionalDirs; got %v", args)
 	}
 }

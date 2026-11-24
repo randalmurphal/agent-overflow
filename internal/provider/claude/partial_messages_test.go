@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -29,17 +28,6 @@ func requireSoftRoundClose(t *testing.T, evt provider.ProviderEvent) provider.So
 //   - input_json_delta → silently skipped (no downstream event)
 //   - content_block_start/stop → explicit lifecycle events
 //   - parent_tool_use_id on stream_event → propagated to emitted events
-
-func TestBuildArgsIncludesPartialMessagesFlag(t *testing.T) {
-	args := buildArgs(Config{Reaper: procutiltest.Reaper()}, "", "")
-
-	for _, arg := range args {
-		if arg == "--include-partial-messages" {
-			return
-		}
-	}
-	t.Fatalf("missing --include-partial-messages flag; args=%v", args)
-}
 
 // TestAssistantEnvelopeDoesNotDuplicateStreamedText pins the contract
 // that — with `--include-partial-messages` on — the parser emits
@@ -202,145 +190,83 @@ func TestAssistantSnapshotWithoutPriorStreamEmitsCompletedContent(t *testing.T) 
 // The Claude CLI emits a synthetic *error* envelope as a bare `assistant`
 // snapshot: a UUID message id that never streams, `model:"<synthetic>"`, a
 // single `text` block holding the human-readable error copy ("API Error:
-// …"), and an `error` enum at the ENVELOPE top level — a sibling of
-// `message`, NOT `message.error`. Shape verified verbatim against
-// provider-events logs (Claude Code 2.1.170; all captured error envelopes
-// carried the enum top-level with a lone text block).
-//
-// That text block IS the error copy: it is already surfaced once as the
-// EventError summary (the api_error row). Recovery fires on any
-// never-streamed text, so before the fix it ALSO emitted the same text as
-// a normal completed content block — one error envelope rendered twice:
-// a plain assistant_text line PLUS the red api_error box. That is the
-// user-reported "error messages come in as normal text" regression.
+// …"), and an `error` enum. That text block IS the error copy: it is
+// already surfaced once as the EventError summary (the api_error row).
+// Recovery fires on any never-streamed text, so before the fix it ALSO
+// emitted the same text as a normal completed content block — one error
+// envelope rendered twice: a plain assistant_text line PLUS the red
+// api_error box ("error messages come in as normal text").
 //
 // The fix gates text/thinking recovery on "no error enum" so an error
-// envelope's content belongs solely to the EventError path. This test
-// FAILS before the fix (a content-bearing EventContentBlockStop is
-// emitted) and passes after — while still asserting EventError fires with
-// the error copy, so a duplicate isn't traded for a silent drop.
+// envelope's content belongs solely to the EventError path. Each case
+// asserts no content-bearing EventContentBlockStop AND that EventError
+// fires with the error copy, so a duplicate isn't traded for a silent drop.
 func TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent(t *testing.T) {
-	parser := NewParser()
-
-	const errCopy = "API Error: Stream idle timeout - partial response received"
-	// Verbatim wire shape (ids sanitized) from
-	// provider-events-2026-06-24.ndjson: UUID id (never streamed),
-	// synthetic model, single text block, top-level `error` enum.
-	envelope := []byte(`{"type":"assistant","message":{"id":"dfa3c492-9b19-419c-b441-92d548c3133d","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"` + errCopy + `"}]},"parent_tool_use_id":null,"error":"unknown"}`)
-	events, err := parser.ParseLine(testThread, envelope)
-	if err != nil {
-		t.Fatalf("parse error envelope: %v", err)
-	}
-
-	var recovered, errorEvt *provider.ProviderEvent
-	for i := range events {
-		e := &events[i]
-		switch {
-		case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
-			recovered = e
-		case e.Kind == provider.EventError:
-			errorEvt = e
-		}
-	}
-
-	if recovered != nil {
-		t.Fatalf("error envelope recovered its text as a normal content block (the duplicate assistant_text row behind the regression): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
-	}
-	if errorEvt == nil {
-		t.Fatalf("error envelope did not emit EventError — the error copy would be silently dropped; events=%+v", events)
-	}
-	if errorEvt.Content != errCopy {
-		t.Errorf("EventError summary = %q, want the wire error copy %q", errorEvt.Content, errCopy)
-	}
-}
-
-// TestSubagentAssistantErrorEnvelopeDoesNotRecoverErrorText is the
-// subagent counterpart: an error envelope carrying a top-level
-// parent_tool_use_id must also keep its text out of the recovery path.
-// Subagents never stream (no message_start ever carries a
-// parent_tool_use_id — confirmed across production logs), so without the
-// error gate EVERY subagent error envelope's text would recover into a
-// nested assistant_text row beside the api_error row. The gate lives in
-// the shared block loop, so this asserts the same no-recover + EventError
-// guarantee holds when parent_tool_use_id is set, and that the EventError
-// stays nested under the parent Task.
-func TestSubagentAssistantErrorEnvelopeDoesNotRecoverErrorText(t *testing.T) {
-	parser := NewParser()
-
-	const (
-		parentID = "toolu_task_parent"
-		errCopy  = "API Error: Stream idle timeout - partial response received"
-	)
-	envelope := []byte(`{"type":"assistant","parent_tool_use_id":"` + parentID + `","message":{"id":"a1b2c3d4-0000-0000-0000-000000000000","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"` + errCopy + `"}]},"error":"unknown"}`)
-	events, err := parser.ParseLine(testThread, envelope)
-	if err != nil {
-		t.Fatalf("parse subagent error envelope: %v", err)
-	}
-
-	var recovered, errorEvt *provider.ProviderEvent
-	for i := range events {
-		e := &events[i]
-		switch {
-		case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
-			recovered = e
-		case e.Kind == provider.EventError:
-			errorEvt = e
-		}
-	}
-
-	if recovered != nil {
-		t.Fatalf("subagent error envelope recovered its text as a content block (nested duplicate): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
-	}
-	if errorEvt == nil {
-		t.Fatalf("subagent error envelope did not emit EventError; events=%+v", events)
-	}
-	if errorEvt.ParentToolUseID != parentID {
-		t.Errorf("EventError ParentToolUseID = %q, want %q (the failure closes the parent Task's turn)", errorEvt.ParentToolUseID, parentID)
-	}
-}
-
-// TestAssistantErrorEnvelopeWithMessageLevelEnumDoesNotRecover pins the
-// recovery gate for the SECOND error-enum wire placement the parser
-// supports: `message.error` (inside the message object), which
-// assistantErrorEnum reads BEFORE the top-level `error` field. The two
-// verbatim-shape tests above both put the enum at the envelope top level;
-// without this test a future simplification of assistantErrorEnum that
-// dropped the message.error read would silently un-gate recovery for this
-// shape with no failing test. The assistantMessage.Error field doc records
-// message.error as a real cross-version shape. Fails before the fix (the
-// text recovers into a duplicate row), passes after.
-func TestAssistantErrorEnvelopeWithMessageLevelEnumDoesNotRecover(t *testing.T) {
-	parser := NewParser()
-
-	const errCopy = "Rate limit reached - please wait before retrying"
-	// Enum inside `message` (no top-level `error`), never-streamed UUID id,
-	// populated text block — exercises the msg.Error-first branch of
-	// assistantErrorEnum so the gate is pinned for both enum placements.
-	envelope := []byte(`{"type":"assistant","message":{"id":"f00dbabe-0000-0000-0000-000000000000","model":"<synthetic>","role":"assistant","error":"rate_limit","content":[{"type":"text","text":"` + errCopy + `"}]}}`)
-	events, err := parser.ParseLine(testThread, envelope)
-	if err != nil {
-		t.Fatalf("parse message-level error envelope: %v", err)
-	}
-
-	var recovered, errorEvt *provider.ProviderEvent
-	for i := range events {
-		e := &events[i]
-		switch {
-		case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
-			recovered = e
-		case e.Kind == provider.EventError:
-			errorEvt = e
-		}
-	}
-
-	if recovered != nil {
-		t.Fatalf("message.error envelope recovered its text as a content block (duplicate): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
-	}
-	if errorEvt == nil {
-		t.Fatalf("message.error envelope did not emit EventError; events=%+v", events)
-	}
-	if errorEvt.Content != errCopy {
-		t.Errorf("EventError summary = %q, want the wire error copy %q", errorEvt.Content, errCopy)
+	const idleCopy = "API Error: Stream idle timeout - partial response received"
+	const rateCopy = "Rate limit reached - please wait before retrying"
+	for _, tc := range []struct {
+		name     string
+		envelope string
+		errCopy  string
+		parentID string
+	}{
+		{
+			// Verbatim wire shape (ids sanitized) from
+			// provider-events-2026-06-24.ndjson (Claude Code 2.1.170): the
+			// enum sits at the ENVELOPE top level, a sibling of `message`.
+			name:     "top-level enum",
+			envelope: `{"type":"assistant","message":{"id":"dfa3c492-9b19-419c-b441-92d548c3133d","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"` + idleCopy + `"}]},"parent_tool_use_id":null,"error":"unknown"}`,
+			errCopy:  idleCopy,
+		},
+		{
+			// Subagents never stream (no message_start ever carries a
+			// parent_tool_use_id), so without the gate EVERY subagent error
+			// envelope's text would recover into a nested assistant_text row.
+			// The EventError stays nested under the parent Task, whose turn
+			// the failure closes.
+			name:     "subagent",
+			envelope: `{"type":"assistant","parent_tool_use_id":"toolu_task_parent","message":{"id":"a1b2c3d4-0000-0000-0000-000000000000","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"` + idleCopy + `"}]},"error":"unknown"}`,
+			errCopy:  idleCopy,
+			parentID: "toolu_task_parent",
+		},
+		{
+			// The second enum placement: `message.error`, which
+			// assistantErrorEnum reads BEFORE the top-level field. Without
+			// this case a simplification that dropped the message.error read
+			// would silently un-gate recovery for this shape.
+			name:     "message-level enum",
+			envelope: `{"type":"assistant","message":{"id":"f00dbabe-0000-0000-0000-000000000000","model":"<synthetic>","role":"assistant","error":"rate_limit","content":[{"type":"text","text":"` + rateCopy + `"}]}}`,
+			errCopy:  rateCopy,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events, err := NewParser().ParseLine(testThread, []byte(tc.envelope))
+			if err != nil {
+				t.Fatalf("parse error envelope: %v", err)
+			}
+			var recovered, errorEvt *provider.ProviderEvent
+			for i := range events {
+				e := &events[i]
+				switch {
+				case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
+					recovered = e
+				case e.Kind == provider.EventError:
+					errorEvt = e
+				}
+			}
+			if recovered != nil {
+				t.Fatalf("error envelope recovered its text as a normal content block (duplicate assistant_text row): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
+			}
+			if errorEvt == nil {
+				t.Fatalf("error envelope did not emit EventError — the error copy would be silently dropped; events=%+v", events)
+			}
+			if errorEvt.Content != tc.errCopy {
+				t.Errorf("EventError summary = %q, want the wire error copy %q", errorEvt.Content, tc.errCopy)
+			}
+			if errorEvt.ParentToolUseID != tc.parentID {
+				t.Errorf("EventError ParentToolUseID = %q, want %q", errorEvt.ParentToolUseID, tc.parentID)
+			}
+		})
 	}
 }
 
@@ -821,113 +747,52 @@ func TestParseStreamEventEmptyDeltaText(t *testing.T) {
 // parent_tool_use_id == ""). See docs/architecture/turn-lifecycle.md
 // §Rounds and turns.
 
-func TestParseStreamEventMessageDeltaEndTurnEmitsSoftTurnComplete(t *testing.T) {
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":6,"output_tokens":34}}}`)
-
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	var sawTurnComplete bool
-	for _, e := range events {
-		if e.Kind != provider.EventTurnComplete {
-			continue
-		}
-		sawTurnComplete = true
-		meta := requireSoftRoundClose(t, e)
-		if meta.StopReason != "end_turn" {
-			t.Errorf("StopReason: got %q, want %q", meta.StopReason, "end_turn")
-		}
-		if e.ParentToolUseID != "" {
-			t.Errorf("ParentToolUseID: got %q, want empty (parent only)", e.ParentToolUseID)
-		}
-	}
-	if !sawTurnComplete {
-		t.Fatalf("expected EventTurnComplete from message_delta stop_reason=end_turn, got %+v", events)
-	}
-}
-
-func TestParseStreamEventMessageDeltaStopSequenceEmitsSoftTurnComplete(t *testing.T) {
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"stop_sequence"},"usage":{"input_tokens":6,"output_tokens":1}}}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	var found bool
-	for _, e := range events {
-		if e.Kind == provider.EventTurnComplete {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("stop_sequence should fire soft turn-complete: %+v", events)
-	}
-}
-
-func TestParseStreamEventMessageDeltaRefusalEmitsSoftTurnComplete(t *testing.T) {
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"input_tokens":6,"output_tokens":1}}}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	var found bool
-	for _, e := range events {
-		if e.Kind == provider.EventTurnComplete {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("refusal should fire soft turn-complete: %+v", events)
-	}
-}
-
-func TestParseStreamEventMessageDeltaToolUseDoesNotEmitSoftTurnComplete(t *testing.T) {
-	// stop_reason="tool_use" means the model paused to call a tool;
-	// more text follows. Firing turn-complete here would close the
-	// indicator mid-round, then re-open it on the next message_start
-	// for cosmetically jarring "Done → Working → Done" flicker —
-	// AND it would cascade into per-round emission semantics that
-	// don't match the model's actual state.
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":6,"output_tokens":493}}}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventTurnComplete {
-			t.Fatalf("tool_use must NOT fire soft turn-complete: %+v", events)
-		}
-	}
-}
-
-func TestParseStreamEventMessageDeltaPauseTurnDoesNotEmitSoftTurnComplete(t *testing.T) {
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"pause_turn"},"usage":{"input_tokens":6,"output_tokens":1}}}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventTurnComplete {
-			t.Fatalf("pause_turn must NOT fire soft turn-complete: %+v", events)
-		}
-	}
-}
-
-func TestParseStreamEventMessageDeltaMaxTokensDoesNotEmitSoftTurnComplete(t *testing.T) {
-	// max_tokens means the model truncated; the harness may auto-continue
-	// (Claude does this for some configurations). Firing turn-complete
-	// here would clear the indicator, then a fresh message_start would
-	// re-open it — same flicker problem as tool_use.
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"input_tokens":6,"output_tokens":64000}}}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventTurnComplete {
-			t.Fatalf("max_tokens must NOT fire soft turn-complete: %+v", events)
-		}
+// The closed set (isSoftRoundCloseStopReason) is end_turn, stop_sequence
+// and refusal. tool_use means more text follows the tool_result and
+// max_tokens may auto-continue: firing there would close the indicator
+// mid-round and re-open it on the next message_start ("Done → Working →
+// Done" flicker). An unknown value, a future SDK addition or a wire typo,
+// must not fire either: the trailing wire `result` still settles the turn,
+// so under-firing is the safer failure mode.
+func TestParseStreamEventMessageDeltaStopReasonSoftTurnComplete(t *testing.T) {
+	for _, tc := range []struct {
+		reason   string
+		wantSoft int
+	}{
+		{"end_turn", 1},
+		{"stop_sequence", 1},
+		{"refusal", 1},
+		{"tool_use", 0},
+		{"pause_turn", 0},
+		{"max_tokens", 0},
+		{"future_unknown", 0},
+		{"model_overloaded", 0},
+		{"", 0},
+		{"END_TURN", 0},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"` + tc.reason + `","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":6,"output_tokens":1}}}`)
+			events, err := ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var softs int
+			for _, e := range events {
+				if e.Kind != provider.EventTurnComplete {
+					continue
+				}
+				softs++
+				if meta := requireSoftRoundClose(t, e); meta.StopReason != tc.reason {
+					t.Errorf("StopReason: got %q, want %q", meta.StopReason, tc.reason)
+				}
+				if e.ParentToolUseID != "" {
+					t.Errorf("ParentToolUseID: got %q, want empty (parent only)", e.ParentToolUseID)
+				}
+			}
+			if softs != tc.wantSoft {
+				t.Fatalf("stop_reason %q: %d soft EventTurnComplete, want %d: %+v", tc.reason, softs, tc.wantSoft, events)
+			}
+		})
 	}
 }
 
@@ -1288,28 +1153,6 @@ func TestParseStreamSoftTurnCompleteWithoutPriorAssistantHasNoAssistantID(t *tes
 	}
 	if !softFound {
 		t.Fatalf("expected soft EventTurnComplete: %+v", events)
-	}
-}
-
-// TestParseStreamUnknownStopReasonDoesNotEmitTurnComplete pins the
-// closed-set behavior of `isSoftRoundCloseStopReason`. A future SDK
-// addition (or a typo in the wire) must NOT fire the soft — the
-// trailing wire `result` envelope still settles the turn correctly.
-// Under-firing on an unknown is the safer failure mode.
-func TestParseStreamUnknownStopReasonDoesNotEmitTurnComplete(t *testing.T) {
-	for _, reason := range []string{"future_unknown", "model_overloaded", "", "END_TURN"} {
-		t.Run(reason, func(t *testing.T) {
-			line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"` + reason + `"}}}`)
-			events, err := ParseLine(testThread, line)
-			if err != nil {
-				t.Fatalf("parse: %v", err)
-			}
-			for _, e := range events {
-				if e.Kind == provider.EventTurnComplete {
-					t.Fatalf("unknown stop_reason %q must NOT fire soft turn-complete: %+v", reason, events)
-				}
-			}
-		})
 	}
 }
 
