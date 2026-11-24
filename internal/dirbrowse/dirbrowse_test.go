@@ -127,46 +127,35 @@ func TestBrowseEmptyDirectory(t *testing.T) {
 	}
 }
 
-func TestBrowseNonExistentPath(t *testing.T) {
-	// A typed-but-not-yet-valid path is an expected UI state (the modal
-	// calls Browse on every keystroke). It must return a zero listing
-	// with Exists=false and no error — logging a server ERR for every
-	// incomplete keystroke would flood the logs.
-	missing := filepath.Join(t.TempDir(), "does-not-exist")
-
-	listing, err := Browse(missing)
-	if err != nil {
-		t.Fatalf("Browse(missing) error = %v, want nil", err)
-	}
-	if listing.Exists {
-		t.Errorf("Exists = true, want false for a missing path")
-	}
-	if len(listing.Entries) != 0 {
-		t.Errorf("len(Entries) = %d, want 0", len(listing.Entries))
-	}
-	if listing.Path != filepath.Clean(missing) {
-		t.Errorf("Path = %q, want %q (cleaned absolute path echoed back)", listing.Path, filepath.Clean(missing))
-	}
-}
-
-func TestBrowsePathIsFile(t *testing.T) {
-	// Same contract as missing-path: the UI treats "path points at a
-	// file" as an empty-listing state, not a hard error.
+// A typed-but-not-yet-valid path is an expected UI state (the modal calls
+// Browse on every keystroke), and so is a path that points at a file. Each
+// returns a zero listing with Exists=false and no error: logging a server
+// ERR for every incomplete keystroke would flood the logs.
+func TestBrowseUnlistablePath(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "a.txt")
 	if err := os.WriteFile(file, []byte("hi"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-
-	listing, err := Browse(file)
-	if err != nil {
-		t.Fatalf("Browse(file) error = %v, want nil", err)
-	}
-	if listing.Exists {
-		t.Errorf("Exists = true, want false for a file path")
-	}
-	if len(listing.Entries) != 0 {
-		t.Errorf("len(Entries) = %d, want 0", len(listing.Entries))
+	for name, path := range map[string]string{
+		"missing": filepath.Join(root, "does-not-exist"),
+		"file":    file,
+	} {
+		t.Run(name, func(t *testing.T) {
+			listing, err := Browse(path)
+			if err != nil {
+				t.Fatalf("Browse(%s) error = %v, want nil", name, err)
+			}
+			if listing.Exists {
+				t.Errorf("Exists = true, want false for a %s path", name)
+			}
+			if len(listing.Entries) != 0 {
+				t.Errorf("len(Entries) = %d, want 0", len(listing.Entries))
+			}
+			if listing.Path != filepath.Clean(path) {
+				t.Errorf("Path = %q, want %q (cleaned absolute path echoed back)", listing.Path, filepath.Clean(path))
+			}
+		})
 	}
 }
 

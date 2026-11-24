@@ -159,9 +159,13 @@ func TestScanKeepsAHandNamedPortWithNothingServing(t *testing.T) {
 
 // A dev server restarting is the common case, and the URL must survive
 // it. The row stays for the grace, marked not listening, and goes when
-// the grace lapses.
+// the grace lapses. The held row keeps the scheme it was serving on: the
+// server comes back on the same one, and the listener held through the
+// grace has to keep speaking it.
 func TestScanHoldsAnAttributedPortThroughARestart(t *testing.T) {
-	_, port := htmlServer(t)
+	secure := httptest.NewTLSServer(http.HandlerFunc(htmlHandler))
+	t.Cleanup(secure.Close)
+	port := loopbackPort(t, secure)
 
 	f := newProcFixture(t)
 	f.listenRow(false, hexLoopbackV4, port, 100)
@@ -182,6 +186,7 @@ func TestScanHoldsAnAttributedPortThroughARestart(t *testing.T) {
 	}
 
 	// The dev server goes away: same proc root, empty socket table.
+	secure.Close()
 	(&procFixture{root: root}).write(t)
 
 	now = now.Add(attributedGrace / 2)
@@ -195,6 +200,9 @@ func TestScanHoldsAnAttributedPortThroughARestart(t *testing.T) {
 	}
 	if !row.Allowed || row.ThreadID != "thread-a" || row.Source != SourceAttributed || row.Process != "vite" {
 		t.Errorf("the held row lost what it was: %+v", row)
+	}
+	if row.Scheme != "https" {
+		t.Errorf("held row scheme = %q, want the one it was serving on", row.Scheme)
 	}
 
 	now = now.Add(attributedGrace)
@@ -418,46 +426,5 @@ func TestScanCarriesTheSchemeThatAnswered(t *testing.T) {
 	}
 	if row := rowFor(t, servers, securePort); row.Scheme != "https" {
 		t.Errorf("TLS row scheme = %q, want https: it is listed, so it must be dialable", row.Scheme)
-	}
-}
-
-// A dev server restarting keeps its row through the grace, and the row
-// keeps the scheme it was serving on. It comes back on the same one, and
-// the listener held through the grace has to keep speaking it.
-func TestTheGraceRowKeepsTheScheme(t *testing.T) {
-	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte("<!doctype html>"))
-	}))
-	securePort := loopbackPort(t, secure)
-
-	f := newProcFixture(t)
-	f.listenRow(false, hexLoopbackV4, securePort, 100)
-	f.process(t, 500, 300, 300, "vite", 100)
-	f.process(t, 300, 1, 300, "claude")
-	root := f.write(t)
-
-	owners := []Owner{{ThreadID: "thread-a", PID: 300, PGID: 300}}
-	scanner := newScanner(root, time.Now)
-	if _, err := scanner.Scan(context.Background(), owners, nil); err != nil {
-		t.Fatalf("first scan: %v", err)
-	}
-
-	// The dev server goes, and so does its socket.
-	secure.Close()
-	gone := newProcFixture(t)
-	goneRoot := gone.write(t)
-	scanner.procRoot = goneRoot
-
-	servers, err := scanner.Scan(context.Background(), owners, nil)
-	if err != nil {
-		t.Fatalf("second scan: %v", err)
-	}
-	row := rowFor(t, servers, securePort)
-	if row.Listening {
-		t.Fatal("the socket is gone; the row must say so")
-	}
-	if row.Scheme != "https" {
-		t.Errorf("grace row scheme = %q, want the one it was serving on", row.Scheme)
 	}
 }

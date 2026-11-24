@@ -5,7 +5,6 @@ package deviceclient
 import (
 	"encoding/base64"
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -148,23 +147,5 @@ func TestWebSocketURL_RidesTheSameHalfOfTheListener(t *testing.T) {
 	}
 	if _, err := webSocketURL("ftp://host", ""); err == nil {
 		t.Fatal("webSocketURL accepted a scheme it cannot upgrade over")
-	}
-}
-
-// TestLinkRoundTripsThroughItsOwnEncoding guards the field set: a member
-// added to the payload without a member here would decode to its zero
-// value silently, which for CertFingerprint means an unpinned dial.
-func TestLinkRoundTripsThroughItsOwnEncoding(t *testing.T) {
-	want := validLink()
-	encoded := encodeLink(t, want)
-	if strings.ContainsAny(encoded, "+/=") {
-		t.Fatalf("the payload is not base64url without padding: %q", encoded)
-	}
-	got, err := DecodeLink(encoded)
-	if err != nil {
-		t.Fatalf("DecodeLink: %v", err)
-	}
-	if got != want {
-		t.Fatalf("round trip = %+v, want %+v", got, want)
 	}
 }

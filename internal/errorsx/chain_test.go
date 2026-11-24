@@ -8,41 +8,36 @@ import (
 	"testing"
 )
 
-func TestChainSplitsWrapLayers(t *testing.T) {
-	cause := errors.New(`stored provider uuid "u1" is missing from session /tmp/a: b.jsonl`)
-	err := fmt.Errorf("revert and resend: %w", fmt.Errorf("write rolled-back session: %w", fmt.Errorf("claude rollback: %w", cause)))
-	want := []string{"revert and resend", "write rolled-back session", "claude rollback", cause.Error()}
-	if got := Chain(err); !slices.Equal(got, want) {
-		t.Fatalf("Chain = %q, want %q", got, want)
-	}
-}
-
 type opaque struct{ inner error }
 
 func (o opaque) Error() string { return "opaque failure" }
 func (o opaque) Unwrap() error { return o.inner }
 
-func TestChainKeepsALayerThatDoesNotEndWithItsCause(t *testing.T) {
-	err := fmt.Errorf("outer: %w", opaque{inner: errors.New("hidden")})
-	want := []string{"outer", "opaque failure"}
-	if got := Chain(err); !slices.Equal(got, want) {
-		t.Fatalf("Chain = %q, want %q", got, want)
-	}
-}
-
-func TestChainFollowsJoinedBranches(t *testing.T) {
-	err := fmt.Errorf("cleanup: %w", errors.Join(fmt.Errorf("remove a: %w", errors.New("busy")), errors.New("close b")))
-	want := []string{"cleanup", "remove a", "busy", "close b"}
-	if got := Chain(err); !slices.Equal(got, want) {
-		t.Fatalf("Chain = %q, want %q", got, want)
-	}
-}
-
-func TestChainIncludesPublicCause(t *testing.T) {
-	err := Public("x", "Could not do it", fmt.Errorf("step: %w", errors.New("root")))
-	want := []string{"Could not do it", "step", "root"}
-	if got := Chain(err); !slices.Equal(got, want) {
-		t.Fatalf("Chain = %q, want %q", got, want)
+func TestChain(t *testing.T) {
+	cause := errors.New(`stored provider uuid "u1" is missing from session /tmp/a: b.jsonl`)
+	for _, tc := range []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{"splits wrap layers",
+			fmt.Errorf("revert and resend: %w", fmt.Errorf("write rolled-back session: %w", fmt.Errorf("claude rollback: %w", cause))),
+			[]string{"revert and resend", "write rolled-back session", "claude rollback", cause.Error()}},
+		{"keeps a layer that does not end with its cause",
+			fmt.Errorf("outer: %w", opaque{inner: errors.New("hidden")}),
+			[]string{"outer", "opaque failure"}},
+		{"follows joined branches",
+			fmt.Errorf("cleanup: %w", errors.Join(fmt.Errorf("remove a: %w", errors.New("busy")), errors.New("close b"))),
+			[]string{"cleanup", "remove a", "busy", "close b"}},
+		{"includes public cause",
+			Public("x", "Could not do it", fmt.Errorf("step: %w", errors.New("root"))),
+			[]string{"Could not do it", "step", "root"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Chain(tc.err); !slices.Equal(got, tc.want) {
+				t.Fatalf("Chain = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
