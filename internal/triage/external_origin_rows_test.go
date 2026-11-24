@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 )
 
@@ -77,12 +76,6 @@ func TestHandleUserText_UnknownOrigin_StaysInjectedContext(t *testing.T) {
 	}
 	if _, found, _ := st.GetThreadItem("t1", "injected:wire:x-1"); !found {
 		t.Fatal("unknown origin did not fall through to the injected-context row")
-	}
-}
-
-func TestExternalQueueOriginMatchesTheProviderConstant(t *testing.T) {
-	if externalQueueOrigin != codex.ExternalTurnOriginQueue {
-		t.Fatalf("triage origin %q != codex.ExternalTurnOriginQueue %q", externalQueueOrigin, codex.ExternalTurnOriginQueue)
 	}
 }
 

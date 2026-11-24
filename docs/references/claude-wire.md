@@ -2783,7 +2783,7 @@ usage, and in `meta` the run it closes: `parked_commands` (N),
 root written since the run began, when there is one), `run_started_at`
 and `run_woke`. The keys are mirrored in
 `frontend/src/lib/utils/parkedStop.ts` and pinned by
-`TestParkedStopMetaKeysMatchFrontendMirror`. A parked sibling settles
+`TestStoreMetaKeysMatchFrontendMirrors`. A parked sibling settles
 nothing and ends nothing: the settle triggers pass over it and the
 agent end (`agent_end.go`) fires only for the ending sibling.
 
