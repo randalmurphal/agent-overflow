@@ -70,6 +70,9 @@ func writeMockClaudeInitScript(t *testing.T, tmpDir, accountJSON, subtype, errMs
 	return path
 }
 
+// Every mock script emits the SessionStart hook events the live CLI
+// writes before the control_response: the probe reads the control_response
+// specifically, and the intervening system events must not confuse it.
 func TestProbeAccountExtractsSubscriptionType(t *testing.T) {
 	binary := writeMockClaudeInitScript(t, t.TempDir(),
 		`{"subscriptionType":"Claude Max","tokenSource":"oauth","apiProvider":"firstParty"}`,
@@ -140,27 +143,6 @@ func TestProbeAccountExtractsSparseAccountShapes(t *testing.T) {
 				t.Fatalf("AccountInfo = %+v, want %+v", info, tc.want)
 			}
 		})
-	}
-}
-
-func TestProbeAccountSkipsHookNoiseBeforeResponse(t *testing.T) {
-	// The probe reads the control_response specifically; intervening
-	// system events (SessionStart hooks observed in the live spike)
-	// must not confuse the matcher.
-	binary := writeMockClaudeInitScript(t, t.TempDir(),
-		`{"subscriptionType":"Claude Pro"}`,
-		"success", "")
-
-	info, err := ProbeAccount(context.Background(), ProbeConfig{
-		Reaper:    procutiltest.Reaper(),
-		Retention: UserHomeRetention(0),
-		WorkDir:   probeWorkDir,
-		Binary:    binary})
-	if err != nil {
-		t.Fatalf("ProbeAccount: %v", err)
-	}
-	if info.SubscriptionType != "Claude Pro" {
-		t.Errorf("SubscriptionType: got %q, want Claude Pro", info.SubscriptionType)
 	}
 }
 

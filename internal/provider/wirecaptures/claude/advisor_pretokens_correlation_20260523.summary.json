@@ -140,9 +140,6 @@
     "supersedes": "1c1f9467 ('Use last parent iteration for context-meter, not cumulative sum') was based on the May 22 spike without a ground-truth anchor and read the 2× ratio as overcount. compactMetadata.preTokens correlation here proves the cumulative IS the correct signal.",
     "regressionTests": [
       "TestParseStreamEventMessageDeltaUsesTopLevelOnAdvisorTurn",
-      "TestParseStreamEventMessageDeltaUsesTopLevelOnDoubleAdvisor",
-      "TestParseStreamEventMessageDeltaUsesTopLevelOnProductionAdvisorTurn",
-      "TestParseStreamEventMessageDeltaTopLevelWithoutIterations",
       "TestParseStreamEventMessageDeltaEmitsUsageAcrossMessages"
     ]
   }

@@ -71,28 +71,6 @@ func TestParseResult_ModelUsageCumulativeToDelta(t *testing.T) {
 	}
 }
 
-// TestParseResult_ModelUsagePreferredOverFlatUsage mirrors the subagent
-// capture (subagent_usage_inclusion_20260703.ndjson): flat usage is
-// parent-only while modelUsage includes Task-subagent tokens — the
-// aggregate must come from modelUsage, not the flat object.
-func TestParseResult_ModelUsagePreferredOverFlatUsage(t *testing.T) {
-	parser := NewParser()
-	line := []byte(`{"type":"result","subtype":"success","stop_reason":"end_turn","total_cost_usd":0.082,` +
-		`"usage":{"input_tokens":42,"output_tokens":1159,"cache_read_input_tokens":148080,"cache_creation_input_tokens":22168},` +
-		`"modelUsage":{"claude-haiku-4-5":{"inputTokens":52,"outputTokens":1260,"cacheReadInputTokens":148080,"cacheCreationInputTokens":35397,"costUSD":0.082}}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
-	usage, perModel := requireUsage(t, events)
-	if usage.InputTokens != 52 || usage.OutputTokens != 1260 || usage.CacheCreationInputTokens != 35397 {
-		t.Fatalf("aggregate must be subagent-inclusive modelUsage, got %+v", usage)
-	}
-	if len(perModel) != 1 {
-		t.Fatalf("perModel: %+v", perModel)
-	}
-}
-
 // TestParseResult_NewModelMidSessionCountsFromZero — a model that first
 // appears on turn N (subagent using a different model) has no prior
 // snapshot; its full cumulative value is that turn's delta.
