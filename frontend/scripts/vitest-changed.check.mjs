@@ -25,6 +25,15 @@ const READERS = [
   { kind: 'glob', changed: 'src/styles/syntax.css', reader: 'src/lib/styleInvalidation.test.ts' },
   { kind: 'file outside frontend/', changed: '../internal/stringsx/findfold_table.go', reader: 'src/lib/utils/findMatch.test.ts' },
   { kind: 'child-process workload', changed: 'src/lib/markdown/parser/index.ts', reader: 'src/lib/markdown/parseBlockRetention.test.ts' },
+  { kind: 'fixture a child Vitest runs', changed: 'src/test/sharedWorker/skipped.fixture.ts', reader: 'src/test/sharedWorkerRunner.test.ts' },
+];
+
+// Inputs every file of one project reads: its runner and what the runner
+// imports. Vitest follows a project's runner itself.
+const PROJECT_INPUTS = [
+  { changed: 'src/test/sharedWorkerRunner.ts', project: 'unit' },
+  { changed: 'src/test/sharedWorker.ts', project: 'unit' },
+  { changed: 'src/test/sharedGlobals.ts', project: 'unit' },
 ];
 
 // Inputs every test file reads without an import: a change to the
@@ -118,7 +127,16 @@ try {
     if (!found) failures.push(`${kind}: a change to ${changed} does not select ${reader}`);
   }
   vitest.config.related = undefined;
-  const total = (await vitest.getRelevantTestSpecifications()).length;
+  const everySpec = await vitest.getRelevantTestSpecifications();
+  const total = everySpec.length;
+  for (const { changed, project } of PROJECT_INPUTS) {
+    const projectTotal = everySpec.filter((spec) => spec.project.name === project).length;
+    vitest.config.related = [resolve(FRONTEND, changed)];
+    const selected = (await vitest.getRelevantTestSpecifications()).filter((spec) => spec.project.name === project).length;
+    console.log(`a change to ${changed} selects ${selected} of the ${projectTotal} ${project} files`);
+    if (selected !== projectTotal) failures.push(`a change to ${changed} selects ${selected} of the ${projectTotal} ${project} files, expected all`);
+  }
+  vitest.config.related = undefined;
   for (const { changed, all } of TRIGGERS) {
     vitest.config.related = [resolve(FRONTEND, changed)];
     const selected = (await vitest.getRelevantTestSpecifications()).length;

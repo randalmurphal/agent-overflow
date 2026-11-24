@@ -158,8 +158,8 @@ export default defineConfig({
     // one runs everything: the frontend's lockfile (dependency versions), its
     // TypeScript config (transform options), and the files this config
     // loads: those in src/test/config/ (the transforms and the between-test
-    // contract), the `unit` runner with the modules it imports, and the
-    // stalled-page watchdog, with its package.json and this config. They
+    // contract) and the stalled-page watchdog, with its package.json and
+    // this config. Vitest follows a project's runner itself. They
     // are this directory's own: Vitest's defaults match any package.json and
     // config in the repository, so e2e/package.json would run every file.
     forceRerunTriggers: [
@@ -168,7 +168,6 @@ export default defineConfig({
       resolve(import.meta.dirname, 'pnpm-lock.yaml'),
       resolve(import.meta.dirname, 'tsconfig*.json'),
       resolve(import.meta.dirname, 'src/test/config/**'),
-      resolve(import.meta.dirname, 'src/test/{sharedWorkerRunner,sharedWorker,sharedGlobals}.ts'),
       resolve(import.meta.dirname, 'src/test/stalledPageWatchdog.ts'),
     ],
     reporters: [...configDefaults.reporters, new StalledPageWatchdog({ boundMs: STALLED_PAGE_MS })],
