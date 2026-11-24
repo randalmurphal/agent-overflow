@@ -162,11 +162,6 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 	case rd.err != nil:
 		return DetailView{}, ch, fmt.Errorf("%w: issue %s of %s", rd.err, issue, id)
 	}
-	doc := rd.detail
-	if doc == nil {
-		// The check confirmed the body the record held when the read began.
-		doc = rd.stored
-	}
 	if err := s.enter(); err != nil {
 		return DetailView{}, ch, err
 	}
@@ -175,7 +170,7 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 	if err != nil {
 		return DetailView{}, ch, err
 	}
-	v, _, err := s.detailView(res.root, row, *doc)
+	v, _, err := s.detailView(res.root, row, *rd.detail)
 	return v, ch, err
 }
 

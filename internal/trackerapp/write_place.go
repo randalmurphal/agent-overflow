@@ -93,7 +93,7 @@ func (r *run) place(f *refreshed, n newIssue, boards []tracker.BoardID) (settled
 		settled = true
 	}
 	for _, br := range pl.Rows {
-		taken, err := r.storePlaced(f, br, pl.Catalog, read)
+		taken, err := r.storePlaced(br, pl.Catalog, read)
 		switch {
 		case errors.Is(err, store.ErrTrackerCacheGone):
 			f.ended = true
@@ -113,7 +113,7 @@ func (r *run) place(f *refreshed, n newIssue, boards []tracker.BoardID) (settled
 // storePlaced stores br, read at read, and reports whether the store took
 // the row: false when it kept a row a later read stored or refused a new
 // row from a read that began before the board last lost rows.
-func (r *run) storePlaced(f *refreshed, br tracker.BoardRow, cat tracker.Catalog, read store.MirrorRead) (bool, error) {
+func (r *run) storePlaced(br tracker.BoardRow, cat tracker.Catalog, read store.MirrorRead) (bool, error) {
 	lifetime, err := r.lifetime(br.Board)
 	if err != nil {
 		return false, err

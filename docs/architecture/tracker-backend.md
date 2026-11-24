@@ -421,8 +421,9 @@ stored its card is read in full when that card is newer than its body,
 with no cards read, and checked otherwise. No body is written outside
 such a full read. A view shows its parent's key and title and each linked
 issue's key, title and status from the mirror's cards, read in one
-`ListMirrorCards`, with the issue's own card unless the body came from
-the record, whose statement read that card with it. A linked issue the mirror
+`ListMirrorCards` with the issue's own card, the one a direct read's
+check committed; an open ticket's view, built from the record, takes
+its own card from the statement that read its body. A linked issue the mirror
 keeps no card of shows as the body holds it, at most 30 minutes old; a
 parent it keeps no card of shows its ID alone. A failed check leaves the
 stored body as it is. An open ticket's first paint is its view built

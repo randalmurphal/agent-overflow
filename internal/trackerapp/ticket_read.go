@@ -31,14 +31,15 @@ type ticketRead struct {
 	// (UpdatedAt zero: none), and behind whether that body is of an older
 	// version than its card: the pump's view's (ticketReads), or the
 	// record's for a read no pump makes (storedBodies), which keeps the
-	// body it read, decoded (stored), to show when the check confirms it.
+	// body it read (stored), decoded when the check is made, to show when
+	// the check confirms it.
 	prior  store.MirrorBodyState
 	behind bool
 	stored *ticketDoc
 
-	// detail is the document a full read no pump makes found, which
-	// IssueDetail shows; held is the record's body as the read's write
-	// left it.
+	// detail is the document IssueDetail shows of a read no pump makes:
+	// the one its full read found, or the stored body its check confirmed;
+	// held is the record's body as the read's write left it.
 	detail *ticketDoc
 	held   store.MirrorBodyState
 	// unsettled reports an issue the mirror keeps whose record's status
@@ -204,9 +205,13 @@ func (r *run) verifiedDetails(reads []*ticketRead, opened bool) error {
 // the card the tracker returned, or whose own card is of another. A read
 // no pump makes is checked against the body it read from the record before
 // (storedBodies), which it shows, so another body the record holds now is
-// read in full too. A confirmed ticket is answered with the record's body.
+// read in full too; that body is decoded only once the check is to be
+// made, and one this version does not read (bodyOf) is none, read in full
+// without the cards read. A confirmed ticket is answered with the
+// record's body.
 func (r *run) checkDetails(reads []*ticketRead, opening store.MirrorRead) ([]*ticketRead, error) {
-	if err := r.storedBodies(reads); err != nil {
+	stored, err := r.storedBodies(reads)
+	if err != nil {
 		return nil, err
 	}
 	var toRead, checked []*ticketRead
@@ -216,6 +221,17 @@ func (r *run) checkDetails(reads []*ticketRead, opening store.MirrorRead) ([]*ti
 		case rd.full, rd.prior.UpdatedAt == 0, rd.behind, !known, age > detailMaxAge:
 			toRead = append(toRead, rd)
 		default:
+			if b, ok := stored[rd]; ok {
+				doc, readable := bodyOf(*b)
+				if !readable {
+					toRead = append(toRead, rd)
+					continue
+				}
+				// Its card is the record's before the check's write; the view
+				// reads the card that write committed (detailViews).
+				doc.record = false
+				rd.stored = &doc
+			}
 			checked = append(checked, rd)
 		}
 	}
@@ -246,6 +262,9 @@ func (r *run) checkDetails(reads []*ticketRead, opening store.MirrorRead) ([]*ti
 			case rd.stored != nil && w.Held.ReadAt != rd.prior.ReadAt:
 				toRead = append(toRead, rd)
 			default:
+				if rd.stored != nil {
+					rd.detail = rd.stored
+				}
 				rd.held, rd.unsettled, rd.answered = w.Held, !w.StatusFinal, true
 			}
 		}
@@ -253,36 +272,34 @@ func (r *run) checkDetails(reads []*ticketRead, opening store.MirrorRead) ([]*ti
 	return toRead, nil
 }
 
-// storedBodies reads from the record, in one read, the bodies of the reads
-// of reads no pump makes and none asks in full (prior, stored): what their
-// checks start from. A body this version does not read (bodyOf) is none:
-// its read is made in full.
-func (r *run) storedBodies(reads []*ticketRead) error {
+// storedBodies reads from the record, a store.MirrorMaxBodies a
+// statement, the bodies of the reads of reads no pump makes and none asks
+// in full: what their checks start from (prior), and the body each read,
+// undecoded, by read.
+func (r *run) storedBodies(reads []*ticketRead) (map[*ticketRead]*store.MirrorBody, error) {
 	var ids []string
 	for _, rd := range reads {
 		if rd.tp == nil && !rd.full {
 			ids = append(ids, string(rd.issue))
 		}
 	}
+	out := map[*ticketRead]*store.MirrorBody{}
 	for batch := range slices.Chunk(ids, store.MirrorMaxBodies) {
 		bodies, err := r.s.store.ListMirrorBodies(r.root, batch)
 		if err != nil {
-			return fmt.Errorf("trackerapp: read the bodies of %d issues from the mirror: %w", len(batch), err)
+			return nil, fmt.Errorf("trackerapp: read the bodies of %d issues from the mirror: %w", len(batch), err)
 		}
-		for _, b := range bodies {
-			doc, ok := bodyOf(b)
-			if !ok {
-				continue
-			}
+		for i := range bodies {
+			b := &bodies[i]
 			for _, rd := range reads {
 				if rd.tp == nil && !rd.full && string(rd.issue) == b.IssueID {
 					rd.prior = store.MirrorBodyState{UpdatedAt: b.UpdatedAt, ReadAt: b.ReadAt, Wall: b.Wall}
-					rd.behind, rd.stored = b.Card.UpdatedAt > b.UpdatedAt, &doc
+					rd.behind, out[rd] = b.Card.UpdatedAt > b.UpdatedAt, b
 				}
 			}
 		}
 	}
-	return nil
+	return out, nil
 }
 
 // ticketCards reads the cards of the issues of reads (at most readBatch)

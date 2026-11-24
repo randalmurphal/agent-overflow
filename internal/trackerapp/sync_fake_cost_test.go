@@ -267,7 +267,7 @@ func TestFakeJiraRequestCosts(t *testing.T) {
 	// mirror card already newer, the age bound and a refresh read the
 	// detail with no check.
 	s.detailCosts(t, conn, scope, "10102", "10000", "10002", "10000", map[string][2]int{
-		"detail, none stored": {2, 5}, "detail, verified unchanged": {1, 4},
+		"detail, none stored": {2, 5}, "detail, verified unchanged": {1, 5},
 		"detail, the mirror's copy": {0, 3}, "detail, verified unchanged with 3 links": {1, 5},
 		"detail, after a comment": {3, 6}, "detail, the mirror already newer": {2, 5},
 		"detail, older than the age bound": {2, 5}, "detail, forced refresh": {2, 4},
