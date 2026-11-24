@@ -20,8 +20,9 @@ import (
 // ticket while it closes and opens again, against the fake Jira site.
 
 // bindGate is a store that records every ticket write and, for each frame
-// armed, holds until released the next BeginMirrorRead (hold) or
-// StoreMirrorTickets (holdStore) whose stack names it; the first refuse
+// armed, holds until released the next call of a kind whose stack names
+// it: BeginMirrorRead (hold), StoreMirrorTickets (holdStore),
+// KeepMirrorTicket and DropMirrorTicket (holdCall); the first refuse
 // drops of an open ticket fail, and the first keep of refuseKeep.
 type bindGate struct {
 	*store.Store
@@ -30,19 +31,28 @@ type bindGate struct {
 	writes     []ticketWrite
 	refuse     int
 	refuseKeep string
+	ended      []store.MirrorBind
 }
 
+// The kinds of call a bindGate holds.
+const (
+	callRead  = "read"
+	callStore = "store"
+	callKeep  = "keep"
+	callDrop  = "drop"
+)
+
 // gateHold is one armed hold of a bindGate: arrived closes when a call
-// arrives at it, which then waits for release; done closes when the held
-// call returned.
+// arrives at it, which then waits for release and fails with fail when
+// set; done closes when the held call returned.
 type gateHold struct {
-	frame                  string
-	store                  bool
+	frame, kind            string
+	fail                   error
 	arrived, release, done chan struct{}
 	once                   sync.Once
 }
 
-// open releases the read h holds, once.
+// open releases the call h holds, once.
 func (h *gateHold) open() { h.once.Do(func() { close(h.release) }) }
 
 // ticketWrite is one StoreMirrorTickets call a bindGate passed on, with
@@ -53,14 +63,23 @@ type ticketWrite struct {
 }
 
 // hold arms a hold of the next BeginMirrorRead whose stack names frame.
-func (g *bindGate) hold(t *testing.T, frame string) *gateHold { return g.arm(t, frame, false) }
+func (g *bindGate) hold(t *testing.T, frame string) *gateHold { return g.holdCall(t, callRead, frame) }
 
 // holdStore arms a hold of the next StoreMirrorTickets whose stack names
 // frame.
-func (g *bindGate) holdStore(t *testing.T, frame string) *gateHold { return g.arm(t, frame, true) }
+func (g *bindGate) holdStore(t *testing.T, frame string) *gateHold {
+	return g.holdCall(t, callStore, frame)
+}
 
-func (g *bindGate) arm(t *testing.T, frame string, store bool) *gateHold {
-	h := &gateHold{frame: frame, store: store, arrived: make(chan struct{}), release: make(chan struct{}), done: make(chan struct{})}
+// holdCall arms a hold of the next call of kind whose stack names frame
+// (any, for "").
+func (g *bindGate) holdCall(t *testing.T, kind, frame string) *gateHold {
+	return g.holdFailing(t, kind, frame, nil)
+}
+
+// holdFailing is holdCall of a call that fails with fail once released.
+func (g *bindGate) holdFailing(t *testing.T, kind, frame string, fail error) *gateHold {
+	h := &gateHold{frame: frame, kind: kind, fail: fail, arrived: make(chan struct{}), release: make(chan struct{}), done: make(chan struct{})}
 	t.Cleanup(h.open)
 	g.mu.Lock()
 	g.holds = append(g.holds, h)
@@ -68,13 +87,13 @@ func (g *bindGate) arm(t *testing.T, frame string, store bool) *gateHold {
 	return h
 }
 
-// wait holds the caller at the first armed hold of its kind whose frame
-// its stack names, until released, and returns the hold (nil for none),
-// whose done the caller closes when its call returned.
-func (g *bindGate) wait(store bool) *gateHold {
+// wait holds the caller at the first armed hold of kind whose frame its
+// stack names, until released, and returns the hold (nil for none), whose
+// done the caller closes when its call returned.
+func (g *bindGate) wait(kind string) *gateHold {
 	stack := string(debug.Stack())
 	g.mu.Lock()
-	i := slices.IndexFunc(g.holds, func(h *gateHold) bool { return h.store == store && strings.Contains(stack, h.frame) })
+	i := slices.IndexFunc(g.holds, func(h *gateHold) bool { return h.kind == kind && strings.Contains(stack, h.frame) })
 	var h *gateHold
 	if i >= 0 {
 		h = g.holds[i]
@@ -89,15 +108,18 @@ func (g *bindGate) wait(store bool) *gateHold {
 }
 
 func (g *bindGate) BeginMirrorRead(root, now int64) (store.MirrorRead, error) {
-	if h := g.wait(false); h != nil {
+	if h := g.wait(callRead); h != nil {
 		defer close(h.done)
+		if h.fail != nil {
+			return store.MirrorRead{}, h.fail
+		}
 	}
 	return g.Store.BeginMirrorRead(root, now)
 }
 
 func (g *bindGate) StoreMirrorTickets(root, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog,
 	opened, read store.MirrorRead) (store.MirrorTicketsWrite, error) {
-	if h := g.wait(true); h != nil {
+	if h := g.wait(callStore); h != nil {
 		defer close(h.done)
 	}
 	out, err := g.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
@@ -117,12 +139,18 @@ func (g *bindGate) KeepMirrorTicket(root int64, issue string, session, pump int6
 	}
 	g.mu.Unlock()
 	if refused {
-		return 0, false, errors.New("test: the store refused the keep")
+		return store.MirrorBind{}, false, errors.New("test: the store refused the keep")
+	}
+	if h := g.wait(callKeep); h != nil {
+		defer close(h.done)
 	}
 	return g.Store.KeepMirrorTicket(root, issue, session, pump, opened)
 }
 
 func (g *bindGate) DropMirrorTicket(session, pump int64) (bool, error) {
+	if h := g.wait(callDrop); h != nil {
+		defer close(h.done)
+	}
 	g.mu.Lock()
 	refused := g.refuse > 0
 	g.refuse--
@@ -131,6 +159,38 @@ func (g *bindGate) DropMirrorTicket(session, pump int64) (bool, error) {
 		return false, errors.New("test: the store refused the drop")
 	}
 	return g.Store.DropMirrorTicket(session, pump)
+}
+
+func (g *bindGate) EndMirrorBind(b store.MirrorBind) {
+	g.mu.Lock()
+	if !b.IsZero() {
+		g.ended = append(g.ended, b)
+	}
+	g.mu.Unlock()
+	g.Store.EndMirrorBind(b)
+}
+
+// writesOf are the tickets of issue the gate's writes stored from the
+// write numbered from on.
+func (g *bindGate) writesOf(issue tracker.IssueID, from int) []store.MirrorTicket {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []store.MirrorTicket
+	for _, w := range g.writes[from:] {
+		for _, tk := range w.tickets {
+			if tk.Card.IssueID == string(issue) {
+				out = append(out, tk)
+			}
+		}
+	}
+	return out
+}
+
+// written is the number of writes the gate passed on.
+func (g *bindGate) written() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.writes)
 }
 
 // bodies are the outcomes of the bodies of issue that the writes of the
@@ -160,7 +220,7 @@ func (g *bindGate) waitBodies(t *testing.T, issue tracker.IssueID, bind store.Mi
 			return got
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the bodies of %s under bind %d are %v; want %d", issue, bind, got, n)
+			t.Fatalf("the bodies of %s under bind %+v are %v; want %d", issue, bind, got, n)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -168,8 +228,8 @@ func (g *bindGate) waitBodies(t *testing.T, issue tracker.IssueID, bind store.Mi
 
 // bindOf is tp's bind.
 func (s *Service) bindOf(tp *ticketPump) store.MirrorBind {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
 	return tp.bind
 }
 
@@ -218,7 +278,7 @@ func TestAReadOfAClosedTicketBegunAfterTheReopenStoresNoBody(t *testing.T) {
 	s.openTicket(t, conn, "10101")
 	newBind := s.svc.bindOf(s.svc.ticketPumpOf(conn.ID, "10101"))
 	if newBind == oldBind || !slices.Contains(gate.bodies("10101", newBind), store.MirrorBodyStored) {
-		t.Fatalf("the reopened ticket's bind %d (the old %d) stored %v", newBind, oldBind, gate.bodies("10101", newBind))
+		t.Fatalf("the reopened ticket's bind %+v (the old %+v) stored %v", newBind, oldBind, gate.bodies("10101", newBind))
 	}
 	s.renameLater(t, conn)
 	h.open()
@@ -245,10 +305,10 @@ func TestAReadOfAClosedTicketStoresNoBody(t *testing.T) {
 }
 
 // The old ticket's drop fails, and fails again at each run's start, so it
-// is owed when the ticket opens again, which binds and reads it, its bind
-// taking the issue's row; the reopened ticket closes first, and the old
-// read lands after both: no bind admits it, and the owed drop deletes
-// nothing when it is paid.
+// is owed when the ticket opens again, which keeps the issue beside the
+// owed row and binds and reads it; the reopened ticket closes first, and
+// the old read lands after both: no bind admits it, and the owed drop
+// deletes the old row when it is paid.
 func TestAReadOfAClosedTicketWhoseDropIsOwedStoresNoBody(t *testing.T) {
 	t.Parallel()
 	s, conn, gate, oldPump, old := bindScenario(t)
@@ -312,7 +372,7 @@ func TestACheckByCardOfAClosedTicketRecordsNoOpeningForTheReopenedOne(t *testing
 	gate.mu.Unlock()
 	if i := slices.IndexFunc(last, func(tk store.MirrorTicket) bool { return tk.Card.IssueID == "10101" }); i < 0 ||
 		last[i].Body != nil || last[i].Bind != oldBind {
-		t.Fatalf("the last ticket write %+v; want the closed ticket's check by card under bind %d", last, oldBind)
+		t.Fatalf("the last ticket write %+v; want the closed ticket's check by card under bind %+v", last, oldBind)
 	}
 	if mid := must[store.MirrorBody](t)(bodyOrFail(t, s, root)); mid.OpenedAt != before.OpenedAt {
 		t.Fatalf("the closed ticket's check by card moved the body's opening from %d to %d before the reopened ticket wrote",
@@ -348,7 +408,7 @@ func TestASecondHandleSharesItsTicketsBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.svc.bindOf(tp) != bind {
-		t.Fatalf("the second handle made a bind %d; want the pump's %d", s.svc.bindOf(tp), bind)
+		t.Fatalf("the second handle made a bind %+v; want the pump's %+v", s.svc.bindOf(tp), bind)
 	}
 	if got := gate.bodies("10101", bind); len(got) != 2 || got[1] != store.MirrorBodyStored {
 		t.Fatalf("the pump's bodies %v; want the first read's and the refresh's stored", got)
@@ -373,8 +433,8 @@ func TestAReadOfAClosedTicketLandingBeforeTheReopenedReadStoresNoBody(t *testing
 	waitClosed(t, "the reopened ticket's first read", opening.arrived)
 	newPump := s.svc.ticketPumpOf(conn.ID, "10101")
 	newBind := s.svc.bindOf(newPump)
-	if newBind == 0 || newBind == oldBind {
-		t.Fatalf("the reopened ticket's bind %d (the old %d); want its own, made before its read", newBind, oldBind)
+	if newBind.IsZero() || newBind == oldBind {
+		t.Fatalf("the reopened ticket's bind %+v (the old %+v); want its own, made before its read", newBind, oldBind)
 	}
 	h.open()
 	if got := gate.waitBodies(t, "10101", oldBind, 2); len(got) != 2 || got[1] != store.MirrorBodyNotKept {
@@ -433,7 +493,7 @@ func TestADirectReadHeldAcrossACloseAndReopenIsOrderedByItsVersion(t *testing.T)
 	}
 	round.open()
 	quiet(t, s.svc)
-	if got := gate.bodies("10101", 0); len(got) != 1 || got[0] != store.MirrorBodyStored {
+	if got := gate.bodies("10101", store.MirrorBind{}); len(got) != 1 || got[0] != store.MirrorBodyStored {
 		t.Fatalf("the direct read's bodies %v; want it stored", got)
 	}
 	after := must[store.MirrorBody](t)(bodyOrFail(t, s, root))
@@ -473,7 +533,7 @@ func TestATicketEndedBeforeItsBindIsNotRead(t *testing.T) {
 	s.renameIssueLater(t, conn, "10105")
 	h.open()
 	quiet(t, s.svc)
-	if got := gate.bodies("10105", 0); len(got) != 0 {
+	if got := gate.bodies("10105", store.MirrorBind{}); len(got) != 0 {
 		t.Fatalf("the ended ticket's read stored bodies %v", got)
 	}
 }

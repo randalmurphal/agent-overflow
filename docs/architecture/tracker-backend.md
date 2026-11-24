@@ -448,48 +448,57 @@ An open ticket keeps its issue through one row of
 `tracker_cache_open_tickets` per ticket pump, whatever brought the person
 to it: a search, a parent or a link opened from another ticket, a done
 issue older than the window, an issue a reconcile dropped from its board,
-or one on a board not read yet. The row is the ticket's one record of its
-lifetime, its bind: a read binds a ticket the mirror does not keep yet
-before it reads it (`trackerapp.bindTickets`), and the store names the
-bind by the order time of the read that made it (`opened_at`,
-`store.MirrorBind`). An issue has at most one row: a bind deletes the
-issue's other rows, whose pumps ended, and a pump of the session earlier
-than the one holding the issue's row cannot bind it, so a bind that was
-replaced is never current again, whatever order the rows are dropped in.
-Every read an open ticket makes carries its pump's bind
-(`store.MirrorTicket.Bind`), and the write admits its body, and on a
-cards-only write its opening and the record's cap order, only while that
-bind is the issue's row: a read of a closed ticket, held across a close
-or a close and reopen, stores no body, and the reopened ticket's first
-read stores its own. A read no open ticket made (`IssueDetail`'s) carries
-no bind and is ordered by (version, read) alone, and its body is the
-shared cached body: a first paint or a Jira prior check may show it as
-the cached body, and a higher provider version from a direct read begun
-earlier than an open ticket's read wins over that read's. The pump's
-goroutine deletes the row as it returns, the one place each end of the
-pump comes to (its last subscription released, its connection turned off
-or removed, `Stop`), and no bind follows; the bind is a probe of the
-issue's keep and rows and an insert of one row, with a delete when the
-issue has another row, the drop two statements
-(`TestOpenTicketKeepCosts`). When the drop leaves the issue kept by
-nothing, or a bind keeps a record the mirror held unkept, every view that
-shows it as a parent or a link is told (`Changes.Visibility`). A pump
-keeps one issue; a bind of another fails. A bind that fails is the
-ticket's failure, a failure
-outside the tracker that its next read retries; until a bind succeeds the
-ticket is not read. A pump has one row, so the table holds at most the
-cap of open tickets (64) of the live process. Rows a process left when it
-ended without deleting them are deleted by this process's first run
+or one on a board not read yet. A read keeps a ticket the mirror does not
+keep yet before it reads it (`trackerapp.bindTickets`): a probe of the
+issue's keep and an insert of one row, the drop two statements
+(`TestOpenTicketKeepCosts`). The row only keeps the issue. Which of the
+ticket's reads store its body is its bind's rule, held in the process's
+memory (`store.MirrorBind`): the keep issues a bind, which becomes the
+issue's current one only after the keep committed and while the pump is
+still live (`trackerapp.keepTicketLocked`, `store.ActivateMirrorBind`),
+and ends, with no I/O, where the pump retires
+(`trackerapp.retireTicketLocked`): its last subscription released, its
+connection turned off or removed, its mirror generation ended, a read that
+found it ended, and `Stop`. Every read an open ticket makes carries the
+bind it began under (`store.MirrorTicket.Bind`), and a ticket write admits
+its body, and on a cards-only write its opening and the record's cap
+order, only while that bind is the issue's current one, looked up once
+per ticket in the write's transaction: a write admitted before the
+retirement commits though the retirement came before its commit, and every
+write whose lookup follows it is refused, whatever became of the row. So a
+read of a closed ticket, held across a close or a close and reopen, stores
+no body, and the reopened ticket's first read stores its own. A bind names
+its issue and its root; a write of one issue under another's bind fails.
+A read no open ticket made (`IssueDetail`'s) carries no bind, is ordered
+by (version, read) alone and records its own opening, never a bind's; its
+body is the shared cached body: a first paint or a Jira prior check may
+show it as the cached body, and confirms it as a direct opening
+(`store.ConfirmMirrorBody`), and a higher provider version from a direct
+read begun earlier than an open ticket's read wins over that read's. The
+pump's goroutine deletes the row as it returns, and every pump's goroutine
+runs, one stopped before its launch included (a write's refresh may have
+kept its issue during the first paint). When the drop leaves the issue
+kept by nothing, or a keep keeps a record the mirror held unkept, every
+view that shows it as a parent or a link is told (`Changes.Visibility`). A
+pump keeps one issue; a keep of another fails. A keep that fails is the
+ticket's failure, a failure outside the tracker that its next read
+retries; until a keep succeeds the ticket is not read. A pump's delete
+that fails stays owed: each run's start tries it again, and `Stop` makes a
+last try whose failure is logged, the next process's first run deleting
+what it left. So an issue may have two rows, a closed ticket's owed row
+beside the reopened ticket's, and what bounds the table is that cleanup,
+not the cap of open tickets (64). Rows a process left when it ended
+without deleting them are deleted by this process's first run
 (`trackerapp.dropEarlierTickets`): every run passes that step as it
-starts and every bind is made in a run, a view read included, so the
-delete completes before any row of this process is written; a delete
-that fails fails its run, and the next run tries it again. A pump's
-delete that fails stays owed: each run's start tries it again, and
-`Stop` makes a last try whose failure is logged, the next process's
-first run deleting what it left. The cleanup then removes what nothing else
-keeps. A restore empties the table with the mirror while pumps live: the
-run that makes the connection's new root binds every live open ticket of
-its mirror generation again, one whose earlier bind failed included
+starts and every keep is made in a run, a view read included, so the
+delete completes before any row of this process is written; a delete that
+fails fails its run, and the next run tries it again. The cleanup then
+removes what nothing else keeps. A restore empties the table with the
+mirror while pumps live, and a root ID is never another root's (the
+roots' sequence survives the restore), so a bind of the emptied root
+admits nothing: the run that makes the connection's new root keeps every
+live open ticket of its mirror generation again, one whose earlier keep
+failed included, and binds each one still live once its keep commits
 (`trackerapp.keepTicketsAgainLocked`).
 
 A board whose last listing goes is retired: absent to reads and writes,

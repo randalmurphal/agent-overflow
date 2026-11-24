@@ -57,7 +57,8 @@ type MirrorBody struct {
 // MirrorTicket is one ticket as a read found it: its card, its body (nil
 // for a read that brought none, a check by card), the evidence of its
 // status time (nil for none), and the bind of the open ticket whose read
-// it is (KeepMirrorTicket), zero for a read no open ticket made.
+// it is (KeepMirrorTicket, of the card's issue), zero for a read no open
+// ticket made.
 type MirrorTicket struct {
 	Card   MirrorCard
 	Body   []byte
@@ -80,7 +81,7 @@ const (
 	MirrorBodySuperseded
 	// MirrorBodyNotKept is a body the record keeps none of: the mirror does
 	// not keep the issue, the read is of an open ticket's bind that is not
-	// the issue's current one, a read no open ticket made is not a person's
+	// the issue's current one (ActivateMirrorBind), a read no open ticket made is not a person's
 	// opening and the record holds no body, or the cap dropped it in the
 	// same write.
 	MirrorBodyNotKept
@@ -128,15 +129,13 @@ type MirrorTicketsWrite struct {
 // refuses the card (mirrorCardRefusedSQL) or admits it from an earlier
 // read (mirrorCardAdvancesSQL), and whether the card names other sprints
 // (mirrorCardSprintsMovedSQL); the record's update time and status time
-// with its finality; its body's bookkeeping; and the bind of the issue's
-// open ticket (zero for none), the one row KeepMirrorTicket leaves it.
+// with its finality; and its body's bookkeeping.
 type mirrorCardState struct {
 	kept, present, refused, advances bool
 	sprintsMoved                     bool
 	updatedAt, since, finalFor       int64
 	body                             MirrorBodyState
 	bodyOpened                       int64
-	bind                             MirrorBind
 	digest                           []byte
 }
 
@@ -147,8 +146,7 @@ var mirrorCardStatesSQL = `SELECT c.key, ` + mirrorIssueKept("?1", "c.value ->> 
 	    coalesce(` + mirrorCardRefusedSQL("?3") + `, 0), coalesce(` + mirrorCardAdvancesSQL("?3") + `, 0), ` + mirrorCardSprintsMovedSQL + `,
 	    coalesce(i.updated_at, 0), coalesce(i.status_since, 0), coalesce(i.status_final_for, 0),
 	    coalesce(i.body_updated_at, 0), coalesce(i.body_read_at, 0), coalesce(i.body_wall, 0), coalesce(i.body_opened_at, 0),
-	    coalesce(i.body_digest, x''),
-	    coalesce((SELECT o.opened_at FROM tracker_cache_open_tickets o WHERE o.root_id = ?1 AND o.issue_id = c.value ->> 'i'), 0)
+	    coalesce(i.body_digest, x'')
 	FROM json_each(?2) c LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'`
 
 // readMirrorCardStatesTx reads the state of each of n encoded cards read
@@ -161,7 +159,7 @@ func readMirrorCardStatesTx(tx *sql.Tx, rootID int64, encoded string, n int, rea
 		var at int
 		var st mirrorCardState
 		if err := r.Scan(&at, &st.kept, &st.present, &st.refused, &st.advances, &st.sprintsMoved, &st.updatedAt, &st.since, &st.finalFor,
-			&st.body.UpdatedAt, &st.body.ReadAt, &st.body.Wall, &st.bodyOpened, &st.digest, &st.bind); err != nil {
+			&st.body.UpdatedAt, &st.body.ReadAt, &st.body.Wall, &st.bodyOpened, &st.digest); err != nil {
 			return err
 		}
 		if at < 0 || at >= n {
@@ -284,30 +282,21 @@ func evictMirrorBodiesTx(tx *sql.Tx, rootID int64) ([]string, error) {
 	return dropped, nil
 }
 
-// admits reports whether a read made under bind (zero for a read no open
-// ticket made) writes the body bookkeeping and the opening of the issue's
-// record: a read no open ticket made, or one made under the issue's
-// current bind. A read of an open ticket's earlier lifetime writes neither,
-// whatever bodies the record holds.
-func (st mirrorCardState) admits(bind MirrorBind) bool {
-	return bind == 0 || bind == st.bind
-}
-
 // bodyOutcome is the rule for a body brought by a ticket of version
-// updatedAt read from readAt under bind (zero for none), with openedAt
-// the person's opening it records (zero for none), against the issue's
-// state st: not kept when the mirror does not keep the issue, when an open
-// ticket's read is not of the issue's current bind (admits), or when the
+// updatedAt read from readAt, admitted as a (mirrorBinds.admit), with
+// openedAt the person's opening it records (zero for none), against the
+// issue's state st: not kept when the mirror does not keep the issue, when
+// an open ticket's read is not of the issue's current bind, or when the
 // record holds no body and a read no open ticket made is not the opening;
 // superseded by a held body of a later (update time, read) pair; the same
 // body when the digest is the held one's; and else stored, starting a body
 // when the record held none.
-func (st mirrorCardState) bodyOutcome(updatedAt, readAt, openedAt int64, bind MirrorBind, digest []byte) (out MirrorBodyOutcome, write, start bool) {
+func (st mirrorCardState) bodyOutcome(updatedAt, readAt, openedAt int64, a mirrorAdmission, digest []byte) (out MirrorBodyOutcome, write, start bool) {
 	held := st.body.ReadAt > 0
 	switch {
-	case !st.kept, !st.admits(bind):
+	case !st.kept, !a.admitted:
 		return MirrorBodyNotKept, false, false
-	case !held && bind == 0 && (openedAt <= 0 || readAt < openedAt):
+	case !held && a.unbound && (openedAt <= 0 || readAt < openedAt):
 		return MirrorBodyNotKept, false, false
 	case held && (updatedAt < st.body.UpdatedAt || updatedAt == st.body.UpdatedAt && readAt < st.body.ReadAt):
 		return MirrorBodySuperseded, false, false
@@ -329,11 +318,13 @@ func (st mirrorCardState) bodyOutcome(updatedAt, readAt, openedAt int64, bind Mi
 // person's opening or refresh the read serves (the zero read for none),
 // which orders the bodies the cap keeps. A ticket an open ticket read
 // (MirrorTicket.Bind) writes its body, its opening and the order the cap
-// keeps by only while its bind is the issue's (admits), with a body or as
-// a check by card alike; its card and status evidence are ordered as any
-// read's. A read no open ticket made is ordered by its (update time,
-// read) alone: its body is the record's like any, which a later view of
-// the issue may show. sweep is the root's sweep
+// keeps by only while its bind is the issue's current one, looked up once
+// in the transaction (mirrorBinds.admit), with a body or as a check by
+// card alike, its opening the later of opened and the bind's; its card
+// and status evidence are ordered as any read's. A read no open ticket
+// made is ordered by its (update time, read) alone and records opened
+// alone: its body is the record's like any, which a later view of the
+// issue may show. sweep is the root's sweep
 // captured before the read (ErrTrackerCacheSwept). The outcomes are of the
 // committed state: a body the cap dropped, started by this write or held
 // before, is not held.
@@ -365,8 +356,11 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 		if slices.ContainsFunc(tickets[:i], func(o MirrorTicket) bool { return o.Card.IssueID == t.Card.IssueID }) {
 			return MirrorTicketsWrite{}, fmt.Errorf("%w: issue %s is read twice", ErrInvalidTrackerCache, t.Card.IssueID)
 		}
-		if t.Bind < 0 {
-			return MirrorTicketsWrite{}, fmt.Errorf("%w: issue %s is read under bind %d", ErrInvalidTrackerCache, t.Card.IssueID, t.Bind)
+		// A bind of another root (a run that began before a restore made the
+		// pump's new root) is refused as an ended one is; one of another
+		// issue is no read of this ticket.
+		if !t.Bind.IsZero() && t.Bind.issue != t.Card.IssueID {
+			return MirrorTicketsWrite{}, fmt.Errorf("%w: issue %s is read under a bind of issue %s", ErrInvalidTrackerCache, t.Card.IssueID, t.Bind.issue)
 		}
 		if e := t.Status; e != nil && (e.UpdatedAt != t.Card.UpdatedAt || e.Status != t.Card.StatusID) {
 			return MirrorTicketsWrite{}, fmt.Errorf("%w: the status evidence of issue %s is not of its card", ErrInvalidTrackerCache, t.Card.IssueID)
@@ -394,6 +388,7 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 		if err != nil {
 			return err
 		}
+		admitted := s.mirrorBinds.admit(rootID, tickets)
 		moves := make([]mirrorTicketMove, 0, len(tickets))
 		// Whether a ticket moves the body version or the opening the record
 		// holds (mirrorTicketMoveSQL.full).
@@ -419,15 +414,15 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 				out.Changes.Superseded = append(out.Changes.Superseded, id)
 			}
 			m := mirrorTicketMove{ID: id, Advance: st.advances, U: t.Card.UpdatedAt}
-			if st.admits(t.Bind) {
+			if a := admitted[i]; a.admitted {
 				// The opening the record orders its bodies by: this read's, or
-				// the open ticket's bind when later.
-				m.O = max(opening.at, int64(st.bind))
+				// its bind's when later.
+				m.O = max(opening.at, a.opened)
 			}
 
 			if t.Body != nil {
 				var write, start bool
-				w.Body, write, start = st.bodyOutcome(t.Card.UpdatedAt, readAt, opening.at, t.Bind, digests[i])
+				w.Body, write, start = st.bodyOutcome(t.Card.UpdatedAt, readAt, opening.at, admitted[i], digests[i])
 				m.Body = w.Body == MirrorBodyStored
 				if m.Body {
 					m.D = hex.EncodeToString(digests[i])

@@ -366,7 +366,7 @@ func (m *mirrorFixture) refuseKeeps() {
 type keepRefused struct{ *store.Store }
 
 func (keepRefused) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) (store.MirrorBind, bool, error) {
-	return 0, false, errors.New("test: the store refused the keep")
+	return store.MirrorBind{}, false, errors.New("test: the store refused the keep")
 }
 
 // keepsMade records the issues of the open tickets the store kept, and
@@ -385,11 +385,11 @@ func (k *keepsMade) KeepMirrorTicket(root int64, issue string, session, pump int
 	k.refused = k.refused || refuse
 	k.mu.Unlock()
 	if refuse {
-		return 0, false, errors.New("test: the store refused the keep")
+		return store.MirrorBind{}, false, errors.New("test: the store refused the keep")
 	}
 	bind, shown, err := k.Store.KeepMirrorTicket(root, issue, session, pump, opened)
 	if err != nil {
-		return 0, false, err
+		return store.MirrorBind{}, false, err
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -412,15 +412,23 @@ func (m *mirrorFixture) loseKeeps() {
 	m.svc.store = keepsLost{m.st}
 }
 
-// keepsLost is a store whose bind of an open ticket succeeds and writes no
-// row: the bind it returns names none, so it is never the issue's current
-// bind, the ticket's reads store no body, and its pump holds the content
-// it shows.
+// keepsLost is a store whose keep of an open ticket succeeds and leaves no
+// row, and whose bind never becomes the issue's current one: the ticket's
+// reads store no body, and its pump holds the content it shows.
 type keepsLost struct{ *store.Store }
 
-func (keepsLost) KeepMirrorTicket(_ int64, _ string, _, _ int64, opened store.MirrorRead) (store.MirrorBind, bool, error) {
-	return store.MirrorBind(opened.At()), false, nil
+func (k keepsLost) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (store.MirrorBind, bool, error) {
+	bind, _, err := k.Store.KeepMirrorTicket(root, issue, session, pump, opened)
+	if err != nil {
+		return store.MirrorBind{}, false, err
+	}
+	if _, err := k.Store.DropMirrorTicket(session, pump); err != nil {
+		return store.MirrorBind{}, false, err
+	}
+	return bind, false, nil
 }
+
+func (keepsLost) ActivateMirrorBind(store.MirrorBind) {}
 
 // testBoards are the boards a mirror fixture's connection lists.
 var testBoards = []tracker.BoardID{testBoard, "2", "7", "9"}

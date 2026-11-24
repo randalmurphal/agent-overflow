@@ -188,25 +188,25 @@ func showsOf(d tracker.Detail) []tracker.IssueID {
 
 // boundDetails binds the open tickets of reads the mirror does not keep
 // yet (bindTickets) and reads the others as the tracker says they are now
-// (verifiedDetails), each open ticket's under its pump's bind
-// (ticketRead.bind): a ticket whose bind failed is answered with its
-// failure and not read, and so is one whose pump ended before it was ever
-// bound.
+// (verifiedDetails), each open ticket's under its pump's bind as the read
+// begins (ticketRead.bind): a ticket whose bind failed is answered with
+// its failure and not read, and so is one whose pump retired, bound or
+// not. A read made under a bind is never written under none.
 func (r *run) boundDetails(reads []*ticketRead, opened bool) error {
 	if err := r.bindTickets(reads); err != nil {
 		return err
 	}
-	r.s.opMu.Lock()
+	r.s.subMu.Lock()
 	for _, rd := range reads {
 		switch {
 		case rd.tp == nil || rd.answered:
-		case rd.tp.bind == 0:
+		case rd.tp.bind.IsZero():
 			rd.err, rd.answered = ErrSubscriptionEnded, true
 		default:
 			rd.bind = rd.tp.bind
 		}
 	}
-	r.s.opMu.Unlock()
+	r.s.subMu.Unlock()
 	pending := slices.DeleteFunc(slices.Clone(reads), func(rd *ticketRead) bool { return rd.answered })
 	if len(pending) == 0 {
 		return nil

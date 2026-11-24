@@ -106,14 +106,15 @@ func TestTrackerOpenTicketsTable(t *testing.T) {
 		('j1','jira','https://example.atlassian.net','user1@example.com',1), ('l1','linear','workspace-a','',1)`)
 	mustExec(t, db, `INSERT INTO tracker_cache_roots(connection_id,created_at) VALUES ('j1',1), ('l1',1)`)
 	const open = `INSERT INTO tracker_cache_open_tickets(root_id,issue_id,session,pump,opened_at) VALUES `
-	mustExec(t, db, open+`(1,'10001',7,1,5), (2,'issue-1',7,3,5), (1,'10002',8,1,5)`)
+	// A closed ticket's row whose drop is owed stands beside the reopened
+	// ticket's: an issue may have two.
+	mustExec(t, db, open+`(1,'10001',7,1,5), (2,'issue-1',7,3,5), (1,'10002',8,1,5), (1,'10001',7,2,6)`)
 	for name, bad := range map[string]string{
-		"missing root":              open + `(9,'10003',7,4,5)`,
-		"empty issue":               open + `(1,'',7,4,5)`,
-		"pump zero":                 open + `(1,'10003',7,0,5)`,
-		"a pump's second":           open + `(1,'10003',7,1,5)`,
-		"no bind time":              open + `(1,'10003',7,4,0)`,
-		"a second bind of an issue": open + `(1,'10001',7,2,5)`,
+		"missing root":    open + `(9,'10003',7,4,5)`,
+		"empty issue":     open + `(1,'',7,4,5)`,
+		"pump zero":       open + `(1,'10003',7,0,5)`,
+		"a pump's second": open + `(1,'10003',7,1,5)`,
+		"no keep time":    open + `(1,'10003',7,4,0)`,
 	} {
 		if _, err := db.Exec(bad); err == nil {
 			t.Errorf("%s: accepted", name)

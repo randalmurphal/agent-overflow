@@ -252,6 +252,9 @@ var mirrorNonWriters = []string{
 	// A read's clock, which stores its lease only when a read passes it
 	// (TestAReadClockStoresALeaseOnlyOnALiveRoot).
 	"BeginMirrorRead",
+	// An open ticket's bind, which is memory: a write naming an ended root
+	// fails whatever bind it carries (TestARestoreNeverReusesARootID).
+	"ActivateMirrorBind", "EndMirrorBind",
 }
 
 // Every writer refuses a detached root, and a root that never existed,

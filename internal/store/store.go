@@ -62,6 +62,9 @@ type Store struct {
 	// mirrorReads is each tracker mirror root's read clock
 	// (BeginMirrorRead).
 	mirrorReads mirrorReadClocks
+	// mirrorBinds is the current bind of each open ticket's issue
+	// (ActivateMirrorBind).
+	mirrorBinds mirrorBinds
 	// assistantsPaused keeps the due reads off the threads that live under
 	// an assistant while assistants are turned off (assistants_paused.go).
 	assistantsPaused atomic.Bool
