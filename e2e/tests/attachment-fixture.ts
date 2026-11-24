@@ -45,7 +45,24 @@ export function solidPng(width: number, height: number, rgb: [number, number, nu
     row[2 + x * 3] = rgb[1];
     row[3 + x * 3] = rgb[2];
   }
-  const raw = Buffer.concat(Array.from({ length: height }, () => row));
+  return encodePng(width, height, Buffer.concat(Array.from({ length: height }, () => row)));
+}
+
+// A truecolour PNG of deterministic noise, which deflates to about its raw
+// size: a large file whose every byte a transfer has to carry.
+export function noisePng(width: number, height: number): Buffer {
+  const raw = Buffer.alloc(height * (1 + width * 3));
+  let state = 0x2545f491;
+  for (let y = 0; y < height; y++) {
+    for (let i = 1; i <= width * 3; i++) {
+      state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+      raw[y * (1 + width * 3) + i] = state >>> 24;
+    }
+  }
+  return encodePng(width, height, raw);
+}
+
+function encodePng(width: number, height: number, raw: Buffer): Buffer {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
