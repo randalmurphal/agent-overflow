@@ -31,9 +31,9 @@ func (s *Service) CheckTransferReadiness(ctx context.Context, name string) error
 		if name == string(provider.Codex) && (status.Status == "version_too_old" || status.Status == "error") && status.Message != "" {
 			// The detection message names the installed version, the
 			// minimum and the binary.
-			return fmt.Errorf("This computer cannot receive the conversation yet. %s", status.Message)
+			return fmt.Errorf("This computer cannot receive the conversation yet. %s", status.Message) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		}
-		return fmt.Errorf("Set up %s on this computer before receiving the conversation (%s).", name, status.Status)
+		return fmt.Errorf("Set up %s on this computer before receiving the conversation (%s).", name, status.Status) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
 	if name == string(provider.Claude) && s.deps.CheckClaudeTransferAccount != nil {
 		return s.deps.CheckClaudeTransferAccount(ctx, binary)

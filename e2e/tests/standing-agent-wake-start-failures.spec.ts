@@ -252,12 +252,13 @@ echo "the report nobody could read"
         }
       };
       await expect.poll(() => errorRows().some((row) => row.startsWith(rowPrefix)), { timeout: 15_000 }).toBe(true);
-      // The start's one row, naming what failed.
+      // The start's one row, naming what failed once: the row already says
+      // the agent could not start, so it carries the cause alone.
       expect(errorRows()).toEqual([
         rowPrefix +
           (provider === 'codex'
-            ? 'start session: codex: initialize handshake failed: codex: initialize: mock: the app-server refused to start (code -32603)'
-            : `start session: workspace ${home} no longer exists`),
+            ? 'codex: initialize handshake failed: codex: initialize: mock: the app-server refused to start (code -32603)'
+            : `workspace ${home} no longer exists`),
       ]);
       const queued = () => {
         const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });

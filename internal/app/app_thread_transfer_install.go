@@ -348,31 +348,31 @@ func transferInstallTargets(manifest transferManifest, target store.Thread, file
 func validateTransferredNative(ctx context.Context, stage string, manifest transferManifest, files []transferfiles.File) error {
 	if manifest.SessionRef == "" {
 		if len(manifest.Native) != 0 || len(manifest.NativePaths) != 0 {
-			return errors.New("A new conversation cannot contain another native session.")
+			return errors.New("A new conversation cannot contain another native session.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		}
 	} else if len(manifest.Native) == 0 || len(manifest.NativePaths) != len(manifest.Native) {
-		return errors.New("The native conversation graph is incomplete.")
+		return errors.New("The native conversation graph is incomplete.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
 	seen := make(map[string]bool, len(manifest.Native))
 	for _, ref := range manifest.Native {
 		if _, err := uuid.Parse(ref.Ref); err != nil || ref.Provider != manifest.Thread.Provider || seen[ref.Ref] {
-			return errors.New("The native conversation identity is invalid.")
+			return errors.New("The native conversation identity is invalid.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		}
 		seen[ref.Ref] = true
 		name := manifest.NativePaths[ref.Ref]
 		if !transferfiles.ValidName(name) || !strings.HasPrefix(name, "native/"+ref.Provider+"/") {
-			return errors.New("A native session points outside its transfer directory.")
+			return errors.New("A native session points outside its transfer directory.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		}
 	}
 	var collected []transferfiles.Source
 	if manifest.SessionRef != "" {
 		if !seen[manifest.SessionRef] {
-			return errors.New("The native root session is missing.")
+			return errors.New("The native root session is missing.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		}
 		switch manifest.Thread.Provider {
 		case "claude":
 			if len(seen) != 1 {
-				return errors.New("Claude child sessions must be inside their parent session directory.")
+				return errors.New("Claude child sessions must be inside their parent session directory.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 			}
 			var err error
 			collected, err = sessionfork.TransferFiles(ctx, filepath.Join(stage, "native", "claude"), manifest.SessionRef, "")
@@ -380,13 +380,13 @@ func validateTransferredNative(ctx context.Context, stage string, manifest trans
 				return err
 			}
 			if len(collected) == 0 || collected[0].Name != manifest.NativePaths[manifest.SessionRef] {
-				return errors.New("The Claude transcript does not match the selected native root.")
+				return errors.New("The Claude transcript does not match the selected native root.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 			}
 		case "codex":
 			resolve := func(ctx context.Context, id string) (rollout.TransferReference, error) {
 				name := manifest.NativePaths[id]
 				if name == "" {
-					return rollout.TransferReference{}, errors.New("A saved child session is missing from the transfer.")
+					return rollout.TransferReference{}, errors.New("A saved child session is missing from the transfer.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 				}
 				return rollout.TransferReference{SessionID: id, Path: filepath.Join(stage, filepath.FromSlash(name))}, nil
 			}
@@ -399,7 +399,7 @@ func validateTransferredNative(ctx context.Context, stage string, manifest trans
 				return err
 			}
 			if len(refs) != len(seen) {
-				return errors.New("The native transfer includes an unrelated session.")
+				return errors.New("The native transfer includes an unrelated session.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 			}
 			collected = source
 		case "agy":
@@ -423,13 +423,13 @@ func validateTransferredNative(ctx context.Context, stage string, manifest trans
 	for _, file := range files {
 		if strings.HasPrefix(file.Name, "native/") {
 			if !expected[file.Name] {
-				return fmt.Errorf("Unexpected native transfer file: %s", file.Name)
+				return fmt.Errorf("Unexpected native transfer file: %s", file.Name) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 			}
 			delete(expected, file.Name)
 		}
 	}
 	if len(expected) != 0 {
-		return errors.New("The transfer is missing native session files.")
+		return errors.New("The transfer is missing native session files.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
 	return nil
 }
