@@ -253,22 +253,29 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 	})
 }
 
-// The one place claude-tui's environment differs from headless Claude's: a
-// todo variable exported in the shell Agent Overflow runs under outranks the
-// TUI's default, where headless Claude's default outranks it. Serial: it
-// sets the process environment.
-func TestBuildEnvLeavesAnInheritedTodoValueOverItsDefault(t *testing.T) {
+// claude-tui applies the todo defaults as headless Claude does: they
+// outrank a value only inherited from the shell Agent Overflow runs under,
+// and a custom value outranks them. Serial: it sets the process environment.
+func TestBuildEnvTodoDefaultsOutrankAnInheritedValue(t *testing.T) {
 	todoTools := provider.ClaudeTodoToolsEnv.Name()
 	reminder := provider.ClaudeTodoReminderModeEnv.Name()
 	t.Setenv(todoTools, "false")
 	t.Setenv(reminder, "baseline")
 
 	env := tuiEnv(Config{DisableTodoReminders: true})
-	if n, v := countEnv(env, todoTools); n != 1 || v != "false" {
-		t.Fatalf("%s: got %d entries (last %q), want the inherited =false", todoTools, n, v)
+	if n, v := countEnv(env, todoTools); n != 1 || v != "true" {
+		t.Fatalf("%s: got %d entries (last %q), want the default =true over the inherited value", todoTools, n, v)
 	}
-	if n, v := countEnv(env, reminder); n != 1 || v != "baseline" {
-		t.Fatalf("%s: got %d entries (last %q), want the inherited =baseline", reminder, n, v)
+	if n, v := countEnv(env, reminder); n != 1 || v != "off" {
+		t.Fatalf("%s: got %d entries (last %q), want the default =off over the inherited value", reminder, n, v)
+	}
+
+	env = tuiEnv(Config{Env: custom(todoTools, "no", reminder, "custom"), DisableTodoReminders: true})
+	if n, v := countEnv(env, todoTools); n != 1 || v != "no" {
+		t.Fatalf("%s: got %d entries (last %q), want the custom =no", todoTools, n, v)
+	}
+	if n, v := countEnv(env, reminder); n != 1 || v != "custom" {
+		t.Fatalf("%s: got %d entries (last %q), want the custom =custom", reminder, n, v)
 	}
 }
 

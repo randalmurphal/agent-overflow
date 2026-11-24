@@ -343,6 +343,16 @@ func WithCommandTimeoutEnv(env provider.EnvInput, hours int) provider.EnvInput {
 // The value itself is `provider.ClaudeEntrypointOrigin`: the session
 // importer reads it back out of transcripts, so writer and reader share
 // one declaration rather than two literals that can drift apart.
+func withClaudeSessionEnvDefaults(env provider.EnvInput, disableTodoReminders bool) provider.EnvInput {
+	env = env.Pin(provider.ClaudeEntrypointEnv, provider.ClaudeEntrypointOrigin)
+	env = env.Default(provider.ClaudeMCPDescriptionLengthEnv, provider.ClaudeMCPDescriptionLengthValue)
+	return WithTodoDefaults(env, disableTodoReminders)
+}
+
+// WithTodoDefaults returns env with the todo tool surface defaulted on and,
+// when disableReminders is set, the todo reminder defaulted off. As defaults
+// they outrank an inherited host value, and a custom value outranks them.
+// Exported for the claude-tui spawn, which applies the same defaults.
 //
 // CLAUDE_CODE_ENABLE_TODO_TOOLS opts the session into the TodoWrite / Task*
 // tool surface. Claude ≥2.1.233 removes those tools for modern models
@@ -359,7 +369,7 @@ func WithCommandTimeoutEnv(env provider.EnvInput, hours int) provider.EnvInput {
 // A default, not a pin: internal/provider/envtable.go lists it with no
 // refusal, so a user who wants the vendor's stock tool surface can set it
 // to "false" in the provider's custom environment, which outranks the
-// default withClaudeSessionEnvDefaults adds.
+// default WithTodoDefaults adds.
 //
 // CLAUDE_CODE_TODO_REMINDER_MODE controls the CLI's periodic "track your
 // work with the todo tools" nudge. "off" silences it while keeping the
@@ -369,11 +379,9 @@ func WithCommandTimeoutEnv(env provider.EnvInput, hours int) provider.EnvInput {
 // user turned reminders off in Settings (Config.DisableTodoReminders),
 // and like the opt-in above it is a default, not a pin: a user value in
 // the provider's custom environment wins.
-func withClaudeSessionEnvDefaults(env provider.EnvInput, disableTodoReminders bool) provider.EnvInput {
-	env = env.Pin(provider.ClaudeEntrypointEnv, provider.ClaudeEntrypointOrigin)
+func WithTodoDefaults(env provider.EnvInput, disableReminders bool) provider.EnvInput {
 	env = env.Default(provider.ClaudeTodoToolsEnv, "true")
-	env = env.Default(provider.ClaudeMCPDescriptionLengthEnv, provider.ClaudeMCPDescriptionLengthValue)
-	if disableTodoReminders {
+	if disableReminders {
 		env = env.Default(provider.ClaudeTodoReminderModeEnv, "off")
 	}
 	return env

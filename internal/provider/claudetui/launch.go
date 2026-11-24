@@ -256,12 +256,7 @@ func hookCommand(cfg Config) (string, error) {
 // Claude launch uses; the peer-inbox gate and peer-visible name, since
 // CLAUDE_CODE_HARBOR_KITE is a parsed boolean the CLI reads before any
 // settings layer; and the task-list key, the thread's identity), and the
-// todo-tools defaults.
-//
-// The todo defaults are the one place this environment differs from the
-// headless provider's: here a value the user's shell exports sits over the
-// default, so the default is left out when the inherited environment names
-// it. Headless Claude's default sits over an inherited value.
+// todo defaults headless Claude applies (claude.WithTodoDefaults).
 func buildEnv(line claude.CommandLine, cfg Config, gatewayURL, hookURL, hookToken string) []string {
 	in := line.Env(cfg.Env).
 		Pin(provider.ClaudeBaseURLEnv, gatewayURL).
@@ -273,11 +268,5 @@ func buildEnv(line claude.CommandLine, cfg Config, gatewayURL, hookURL, hookToke
 	if cfg.TaskListID != "" {
 		in = in.Pin(provider.ClaudeTaskListIDEnv, cfg.TaskListID)
 	}
-	if _, inherited := os.LookupEnv(provider.ClaudeTodoToolsEnv.Name()); !inherited {
-		in = in.Default(provider.ClaudeTodoToolsEnv, "true")
-	}
-	if _, inherited := os.LookupEnv(provider.ClaudeTodoReminderModeEnv.Name()); cfg.DisableTodoReminders && !inherited {
-		in = in.Default(provider.ClaudeTodoReminderModeEnv, "off")
-	}
-	return provider.BuildEnvironment(in)
+	return provider.BuildEnvironment(claude.WithTodoDefaults(in, cfg.DisableTodoReminders))
 }
