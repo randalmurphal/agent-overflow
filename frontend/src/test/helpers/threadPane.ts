@@ -152,7 +152,6 @@ export function installThreadPaneTestEnv(): void {
     interactive: { approvals: [], userInputs: [] },
     todo: null,
   }));
-  setBindingMock('ListItems', async () => [] as Item[]);
   // switchThread calls ListRecentTurns as part of rehydration. Default
   // to an empty list so tests that don't care about turn rehydration
   // don't need to plumb the mock themselves.

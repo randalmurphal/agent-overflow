@@ -20,7 +20,6 @@ beforeEach(async () => {
   setBindingMock('ListThreads', async () => []);
   await loadSidebarCatalogs();
   setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
   setBindingMock('ListRecentTurns', async () => []);
 });
 

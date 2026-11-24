@@ -256,7 +256,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3057473088: 'thread', // ListDiffReviewComments
 	3779338822: 'selected', // ListForgeProjects
 	99668597: 'selected', // ListImportableSessions
-	2158085763: 'thread', // ListItems
 	2915892537: 'thread', // ListItemsAfterCursor
 	162135710: 'thread', // ListItemsBeforeCursor
 	320784263: 'thread', // ListLiveBackgroundTasks
@@ -431,7 +430,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3852272821: 'workspace', // SearchWorkspaceFiles
 	2317109106: 'thread', // SendDiffReviewComments
 	2956817699: 'thread', // SendExternalThreadMessage
-	1496882310: 'thread', // SendMessage
 	3632185196: 'thread', // SendMessageWithOptions
 	2605216420: 'selected', // SendPRDiffReviewComments
 	1407159655: 'thread', // SendPlanRevisionComments
@@ -474,7 +472,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1484798083: 'home', // StartProviderLogin
 	531852766: 'home', // StartSSHComputer
 	2623175319: 'home', // StartSSHConnection
-	2850159713: 'thread', // StartSession
 	3009548683: 'selected', // StartTerminal
 	2580445357: 'thread', // StopBackgroundTasks
 	536320598: 'thread', // StopClaudeTask

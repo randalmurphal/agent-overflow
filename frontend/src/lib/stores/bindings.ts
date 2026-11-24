@@ -100,14 +100,12 @@ export {
   SetThreadPlacement,
 
   // Session management
-  StartSession,
   AutoResumeThread,
   StopSession,
   ReconnectSession,
   DismissSessionBanner,
   DismissUnsavedThreadRows,
   GetThreadUnsavedRows,
-  SendMessage,
   InterruptTurn,
   GetConversationMutationState,
   GetThreadLiveState,
@@ -152,7 +150,6 @@ export {
   GetPayloadPreview,
   GetPayloadChunk,
   GetPayloadData,
-  ListItems,
 
   // Settings (GetSettings and UpdateSettings are below: answers as sent)
   GetClaudeTranscriptRetention,

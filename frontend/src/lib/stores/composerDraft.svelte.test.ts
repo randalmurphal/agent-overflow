@@ -190,7 +190,7 @@ describe('composerDraft store', () => {
     expect(store.content).toBe('');
     expect(store.attachments).toHaveLength(0);
 
-    // The page dies before SendMessage reaches the host. A new store loads
+    // The page dies before SendMessageWithOptions reaches the host. A new store loads
     // the saved draft rather than relying on the lost optimistic snapshot.
     resetComposerDraftSnapshotStateForTest();
     const reopened = createStore({ debounceMs: 0 });

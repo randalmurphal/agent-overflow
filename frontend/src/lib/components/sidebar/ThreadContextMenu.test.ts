@@ -47,7 +47,6 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 
 function renderMenu(thread: Thread) {
   setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
   const pane = createThreadPane();
   const anchor = document.createElement('div');
   document.body.appendChild(anchor);
@@ -171,7 +170,6 @@ describe('<ThreadContextMenu> Archive Thread', () => {
     const archive = setBindingMock('ArchiveThread', vi.fn(async () => ({})));
     const onClose = vi.fn();
     setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
     const anchor = document.createElement('div');
     document.body.appendChild(anchor);
     const { getByRole, queryByRole } = render(ThreadContextMenu, {
@@ -1045,7 +1043,6 @@ describe('<ThreadContextMenu> standing agent', () => {
 
   function renderAgentMenu(thread: Thread, extra: { agentBound?: boolean } = {}) {
     setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
     const pane = createThreadPane();
     const anchor = document.createElement('div');
     document.body.appendChild(anchor);

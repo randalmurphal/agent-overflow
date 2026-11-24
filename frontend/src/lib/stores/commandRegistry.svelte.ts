@@ -32,7 +32,7 @@ export interface CommandFlags {
   turnActive: boolean;
   /**
    * True between the moment the user clicks Send and the moment
-   * SendMessage resolves. Lets the interrupt keybinding fire
+   * SendMessageWithOptions resolves. Lets the interrupt keybinding fire
    * during the dispatch window before `provider:turn_started`
    * lands.
    */

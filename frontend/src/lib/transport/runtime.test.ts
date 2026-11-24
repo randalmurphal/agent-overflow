@@ -397,7 +397,7 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
   });
 
   // The last three name a subscription id, which every caller pins.
-  it.each([1098302047, 1496882310, 1186337974, 70120675, 1078249699, 2888550814, 3263989430])('refuses unknown entity ownership with two computers for method %s', async (method) => {
+  it.each([1098302047, 3632185196, 1186337974, 70120675, 1078249699, 2888550814, 3263989430])('refuses unknown entity ownership with two computers for method %s', async (method) => {
     const callByID = remoteClient(null);
     await expect(Call.ByID(method, 'unseen')).rejects.toThrow('computer that owns');
     expect(callByID).not.toHaveBeenCalled();

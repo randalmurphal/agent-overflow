@@ -308,7 +308,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListDiffReviewComments", ID: 3057473088, Scope: "threads:read", Route: "thread"},                                                 // main.App.ListDiffReviewComments
 	{Name: "ListForgeProjects", ID: 3779338822, Scope: "git:operate", Route: "selected"},                                                     // main.App.ListForgeProjects
 	{Name: "ListImportableSessions", ID: 99668597, Scope: "threads:operate", Route: "selected"},                                              // main.App.ListImportableSessions
-	{Name: "ListItems", ID: 2158085763, Scope: "threads:read", Route: "thread"},                                                              // main.App.ListItems
 	{Name: "ListItemsAfterCursor", ID: 2915892537, Scope: "threads:read", Route: "thread", CallerBound: true},                                // main.App.ListItemsAfterCursor
 	{Name: "ListItemsBeforeCursor", ID: 162135710, Scope: "threads:read", Route: "thread", CallerBound: true},                                // main.App.ListItemsBeforeCursor
 	{Name: "ListLiveBackgroundTasks", ID: 320784263, Scope: "threads:read", Route: "thread"},                                                 // main.App.ListLiveBackgroundTasks
@@ -483,7 +482,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SearchWorkspaceFiles", ID: 3852272821, Scope: "files:read", Route: "workspace"},                                                  // main.App.SearchWorkspaceFiles
 	{Name: "SendDiffReviewComments", ID: 2317109106, Scope: "threads:operate", Route: "thread"},                                              // main.App.SendDiffReviewComments
 	{Name: "SendExternalThreadMessage", ID: 2956817699, Scope: "threads:operate", Route: "thread"},                                           // main.App.SendExternalThreadMessage
-	{Name: "SendMessage", ID: 1496882310, Scope: "threads:operate", Route: "thread"},                                                         // main.App.SendMessage
 	{Name: "SendMessageWithOptions", ID: 3632185196, Scope: "threads:operate", Route: "thread"},                                              // main.App.SendMessageWithOptions
 	{Name: "SendPRDiffReviewComments", ID: 2605216420, Scope: "git:operate", Route: "selected"},                                              // main.App.SendPRDiffReviewComments
 	{Name: "SendPlanRevisionComments", ID: 1407159655, Scope: "threads:operate", Route: "thread"},                                            // main.App.SendPlanRevisionComments
@@ -526,7 +524,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "StartProviderLogin", ID: 1484798083, Scope: "access:admin", Route: "home"},                                                       // main.App.StartProviderLogin
 	{Name: "StartSSHComputer", ID: 531852766, Scope: "host", Route: "home", Remote: true},                                                    // main.App.StartSSHComputer
 	{Name: "StartSSHConnection", ID: 2623175319, Scope: "host", Route: "home", Remote: true},                                                 // main.App.StartSSHConnection
-	{Name: "StartSession", ID: 2850159713, Scope: "threads:operate", Route: "thread"},                                                        // main.App.StartSession
 	{Name: "StartTerminal", ID: 3009548683, Scope: "terminal:operate", Route: "selected"},                                                    // main.App.StartTerminal
 	{Name: "StopBackgroundTasks", ID: 2580445357, Scope: "threads:operate", Route: "thread"},                                                 // main.App.StopBackgroundTasks
 	{Name: "StopClaudeTask", ID: 536320598, Scope: "threads:operate", Route: "thread"},                                                       // main.App.StopClaudeTask

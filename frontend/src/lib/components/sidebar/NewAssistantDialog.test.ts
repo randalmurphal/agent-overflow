@@ -29,7 +29,6 @@ describe('<NewAssistantDialog>', () => {
     ]);
     await readSidebarCatalogs();
     setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
   });
   afterEach(() => closeNewAssistantDialog());
 

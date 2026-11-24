@@ -79,7 +79,7 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
   return {
     // Drafts and comment sends are queueable mid-round. Implement-only
     // still requires an idle turn because it runs the plan implementation
-    // helper, not just a SendMessage RPC.
+    // helper, not just a SendMessageWithOptions RPC.
     canSend: !input.isDisabled
       && sendGranted(input)
       && !input.askCopy

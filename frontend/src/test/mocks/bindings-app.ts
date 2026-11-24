@@ -1,7 +1,7 @@
 // Fake for `bindings/agent-overflow/app.js` — the auto-generated Wails
 // bindings that the real app imports via `lib/stores/bindings.ts`.
 //
-// Tests call `setBindingMock('ListItems', impl)` to stub specific RPC methods.
+// Tests call `setBindingMock('GetThread', impl)` to stub specific RPC methods.
 // A call to anything not mocked, except the passive loads below, throws, and
 // the reset registry fails the test that made it, even when the code under
 // test catches the error. A test that needs a binding absent installs a mock
@@ -380,7 +380,6 @@ export class TerminalOpenOptions {
   }
 }
 
-export const StartSession = dispatch('StartSession');
 export const AutoResumeThread = dispatch('AutoResumeThread');
 export const StopSession = dispatch('StopSession');
 export const ReconnectSession = dispatch('ReconnectSession');
@@ -396,7 +395,6 @@ export const GetThreadUnsavedRows = async (threadId: unknown): Promise<unknown> 
   if (explicit) return explicit(threadId);
   return { threadId, rows: [] };
 };
-export const SendMessage = dispatch('SendMessage');
 export const SendMessageWithOptions = dispatch('SendMessageWithOptions');
 export const InterruptTurn = dispatch('InterruptTurn');
 export const GetConversationMutationState = dispatch('GetConversationMutationState');
@@ -442,7 +440,6 @@ export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
 export const GetPayloadPreview = dispatch('GetPayloadPreview');
 export const GetPayloadChunk = dispatch('GetPayloadChunk');
 export const GetPayloadData = dispatch('GetPayloadData');
-export const ListItems = dispatch('ListItems');
 export const GetRateLimitsSnapshots = dispatch('GetRateLimitsSnapshots');
 export const ListProviderAccounts = dispatch('ListProviderAccounts');
 export const StartProviderLogin = dispatch('StartProviderLogin');

@@ -130,7 +130,6 @@ function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThr
     oldestTurnIndex: -1,
     hasMore: false,
   }));
-  setBindingMock('ListItems', async () => []);
   const pane = createThreadPane();
   const thread: Thread = {
     id: 'thread-1',
@@ -2028,7 +2027,6 @@ describe('thread.fork command', () => {
       updatedAt: 1,
       archived: false,
     };
-    setBindingMock('ListItems', async () => []);
     setBindingMock('SwitchThread', async () => forked);
     // The new thread is auto-pinned.
     setBindingMock('PinThread', async () => forked);

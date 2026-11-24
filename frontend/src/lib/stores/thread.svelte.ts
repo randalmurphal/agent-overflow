@@ -897,7 +897,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     /**
      * True between the moment the user clicks Send and the moment
-     * SendMessage resolves (success or failure). The composer uses
+     * SendMessageWithOptions resolves (success or failure). The composer uses
      * this to render the stop button before
      * `provider:turn_started` lands; the keybindings dispatcher uses
      * it to enable Esc → thread.interrupt during the same window.

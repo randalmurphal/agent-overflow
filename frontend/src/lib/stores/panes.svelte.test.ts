@@ -700,7 +700,6 @@ describe('panes store', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [], oldestTurnIndex: -1, hasMore: false,
       }));
-      setBindingMock('ListItems', async () => []);
       setBindingMock('ListRecentTurns', async () => []);
       setBindingMock('MarkThreadRead', async () => {});
       setBindingMock('MarkThreadUnread', async () => {});
