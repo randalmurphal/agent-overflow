@@ -2,6 +2,7 @@ package trackerapp
 
 import (
 	"errors"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -66,7 +67,7 @@ func TestWriteOutcomes(t *testing.T) {
 			}
 			for i, o := range c.outcomes {
 				if f := v.Parts[i].Failure; o.State() == tracker.StateUnknown &&
-					(f == nil || !strings.HasSuffix(f.Message, "may or may not have been made; look at the ticket before you try again")) {
+					(f == nil || !strings.HasSuffix(f.Message, "may or may not have been made; look at the issue's place on the board before you try again")) {
 					t.Errorf("an unknown part's failure %+v", f)
 				}
 			}
@@ -121,7 +122,7 @@ func TestCreateOfUnknownOutcome(t *testing.T) {
 	if !v.CreateUnknown || v.Created != "" || !slices.Equal(states(v), []string{" create unknown"}) || len(v.Stale) > 0 {
 		t.Fatalf("view %+v", v)
 	}
-	if f := v.Parts[0].Failure; f == nil || f.Kind != string(FailureTransient) || !strings.HasSuffix(f.Message, "look for it on the board before you try again") {
+	if f := v.Parts[0].Failure; f == nil || f.Kind != string(FailureTransient) || !strings.HasSuffix(f.Message, "may or may not have been created; search the tracker for the issue before you try again") {
 		t.Fatalf("the lost create's failure %+v", f)
 	}
 	if got := f.callsSince(before); !slices.Equal(got, []string{"Create", "ChangedRows"}) {
@@ -228,9 +229,34 @@ func TestAWriteSettlesTheProblem(t *testing.T) {
 	if f.problem() != FailureTransient {
 		t.Fatalf("after an edit that could not reach the tracker, problem %q", f.problem())
 	}
+	// A file that stopped arriving says nothing of the connection.
+	f.answer(tracker.Result{Parts: []tracker.Part{{Issue: "10001", Step: tracker.StepUpload,
+		Outcome: tracker.NotSent(&trackerapi.SourceError{Err: errors.New("upload part 0 ended 5 bytes short of its declared size")})}}})
+	if _, err := f.svc.Attach(t.Context(), f.conn.ID, "10001", []tracker.File{{Name: "a.txt", Content: strings.NewReader("12345"), Size: 10}}); err != nil {
+		t.Fatal(err)
+	}
+	if f.problem() != FailureTransient {
+		t.Fatalf("after an attach whose file stopped arriving, problem %q", f.problem())
+	}
 	edit(tracker.Result{Parts: []tracker.Part{{Issue: "10001", Step: tracker.StepEdit, Outcome: tracker.Refused(tracker.Refusal{Reason: tracker.ReasonStale, Message: "changed"})}}})
 	if f.problem() != "" {
 		t.Fatalf("after an edit the tracker refused, problem %q", f.problem())
+	}
+}
+
+// A write refused for its credential says what the connection's problem
+// says: what to do about the key file.
+func TestAWriteRefusedForItsCredentialSaysWhatToDo(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.answer(tracker.Result{Parts: []tracker.Part{{Issue: "10001", Step: tracker.StepEdit, Outcome: tracker.Refused(tracker.Refusal{
+		Reason: tracker.ReasonTracker, Message: "the tracker refused the credential (HTTP 401)", Err: &trackerapi.AuthError{Status: http.StatusUnauthorized}})}}})
+	v, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"New"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := v.Parts[0].Refusal; r == nil || r.Message != "Jira refused the token in the key file; put a valid token in it" {
+		t.Fatalf("a credential refused: %+v", r)
 	}
 }
 

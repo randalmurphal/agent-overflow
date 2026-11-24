@@ -1,11 +1,14 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -33,7 +36,7 @@ func TestTrackerTicketMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	read, operate := transport.ScopeTrackerRead, transport.ScopeTrackerOperate
 	// A method that names a connection is routed by its client (family
 	// trackerConnection) and generated as home.
-	write := want{operate, transport.RouteHome, false, 3 * time.Minute}
+	write := want{operate, transport.RouteHome, false, trackerWriteBudget}
 	form := want{read, transport.RouteHome, false, 0}
 	for name, w := range map[string]want{
 		"SubscribeTrackerTicket":              {read, transport.RouteHome, true, 0},
@@ -266,6 +269,101 @@ func TestATrackerUploadCutShortAttachesNothing(t *testing.T) {
 	}
 }
 
+// stallUpload PUTs the first half of a size-byte file to the upload path
+// over a raw connection that then sends nothing more, as a client whose
+// network went away mid-upload does, and answers the connection to read
+// the answer from.
+func stallUpload(t *testing.T, base, path string, size int) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(base, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	head := fmt.Sprintf("PUT %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n\r\n", path, strings.TrimPrefix(base, "http://"), size)
+	if _, err := conn.Write(append([]byte(head), bytes.Repeat([]byte("x"), size/2)...)); err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+// answerOf reads the HTTP answer on conn within 15 seconds.
+func answerOf(t *testing.T, conn net.Conn, what string) (*http.Response, []byte) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("%s: no answer within 15s: %v", what, err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+	return resp, body
+}
+
+// An upload whose client stops sending ends at the attach's bound, shortened
+// here (trackerBudget): the read of the stalled body is ended, and the part
+// is not sent, for the file's own failure.
+func TestATrackerUploadWhoseClientStallsEndsAtItsBound(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: trackerBoardSite(), budget: time.Second})
+	base := f.serveTrackerTransfers(t)
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	const size = 64 << 10
+	path, err := f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", "notes.txt", size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, body := answerOf(t, stallUpload(t, base, path, size), "a stalled upload")
+	var v trackerapp.WriteView
+	if err := json.Unmarshal(body, &v); err != nil || resp.StatusCode != http.StatusOK || len(v.Parts) != 1 ||
+		v.Parts[0].State != "not_sent" || v.Parts[0].Failure == nil || v.Parts[0].Failure.Kind != string(trackerapp.FailureUpload) {
+		t.Fatalf("a stalled upload answered %d %s (%v)", resp.StatusCode, body, err)
+	}
+}
+
+// The tracker service stops promptly with an upload in flight whose client
+// stopped sending, and the upload is answered.
+func TestTrackersStopWithAStalledUploadInFlight(t *testing.T) {
+	t.Parallel()
+	arrived := make(chan struct{}, 1)
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: trackerBoardSite(), arrive: func(r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/attachments") {
+			arrived <- struct{}{}
+		}
+	}})
+	base := f.serveTrackerTransfers(t)
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	const size = 64 << 10
+	path, err := f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", "notes.txt", size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := stallUpload(t, base, path, size)
+	select {
+	case <-arrived:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the upload never reached the tracker")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		f.a.trackers.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the tracker service did not stop within 15s with a stalled upload in flight")
+	}
+	if resp, body := answerOf(t, conn, "an upload the stop ended"); resp.StatusCode == http.StatusOK {
+		t.Fatalf("an upload the stop ended answered %d %s", resp.StatusCode, body)
+	}
+}
+
 // A write the tracker holds past its method's budget answers within it,
 // through the bound method, with the part told as unknown and what to do:
 // look before trying again. The budget is shortened (trackerBudget).
@@ -328,8 +426,17 @@ func TestTrackerTicketRefusalsSayWhatToDo(t *testing.T) {
 		{"a file for a tracker that stores none", "tracker_attachments_unsupported", tracker.ErrUnsupported, func() error {
 			return ignoreResult(f.a.MintTrackerAttachmentUploadTicket(ctx, linear.ID, "ENG-1", "a.txt", 1))
 		}},
-		{"a file name with a NUL", "tracker_request_invalid", trackerapp.ErrInvalidRequest, func() error {
+		{"a file name with a NUL", "tracker_request_invalid", tracker.ErrInvalidInput, func() error {
 			return ignoreResult(f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", "a\x00b", 1))
+		}},
+		{"a file name over 255 bytes", "tracker_request_invalid", tracker.ErrInvalidInput, func() error {
+			return ignoreResult(f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", strings.Repeat("n", 256), 1))
+		}},
+		{"an upload to an issue ID over 64 bytes", "tracker_request_invalid", tracker.ErrInvalidInput, func() error {
+			return ignoreResult(f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, strings.Repeat("1", 65), "a.txt", 1))
+		}},
+		{"a ticket of an issue ID over 64 bytes", "tracker_request_invalid", tracker.ErrInvalidInput, func() error {
+			return ignoreResult(f.a.SubscribeTrackerTicket(ctx, f.conn.ID, strings.Repeat("1", 65)))
 		}},
 		{"an attachment the ticket does not show", "tracker_attachment_unknown", trackerapp.ErrUnknownAttachment, func() error {
 			return ignoreResult(f.a.MintTrackerAttachmentDownloadTicket(ctx, sub.ID, "99999"))
@@ -349,6 +456,14 @@ func TestTrackerTicketRefusalsSayWhatToDo(t *testing.T) {
 		if !ok || code != tc.code || (tc.cause != nil && !errors.Is(err, tc.cause)) || message == "" {
 			t.Errorf("%s = %v (code %q), want %s with cause %v", tc.name, err, code, tc.code, tc.cause)
 		}
+	}
+	_, err = f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", strings.Repeat("n", 256), 1)
+	if _, message, _ := errorsx.PublicDetails(err); message != "nothing was sent: a file name is at most 255 bytes, and this one is 256; rename the file" {
+		t.Errorf("a long file name says %q", message)
+	}
+	if _, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, strings.Repeat("1", 65)); err == nil ||
+		!strings.Contains(err.Error(), "an issue ID is at most 64 bytes, and this one is 65") {
+		t.Errorf("a long issue ID's sentence: %v", err)
 	}
 	if _, err := f.a.AddTrackerComment(ctx, f.conn.ID, trackerapp.CommentRequest{Issue: "10101", Markdown: "x", Audience: "everyone"}); err == nil ||
 		!strings.Contains(err.Error(), `comment audience "everyone" is not public or internal`) {

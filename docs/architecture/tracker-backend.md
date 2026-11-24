@@ -1178,9 +1178,14 @@ selected computer.
   seconds finishes far inside it, and one slow enough to reach it has
   the run cut, each part then told as applied, unknown or not sent. A
   part whose answer was lost says the change may or may not have been
-  made and to look at the ticket (for a create, the board) before trying
-  again (`partViews`). A write's context is the server's, not the
-  caller's.
+  made and where to look before trying again, by what the write was
+  (`trackerapp.LostWriteCheck`): a created issue is searched for, since
+  its board's filter may leave it out; a sprint is among the board's
+  sprints, a worklog in the day's logged time, a rank in the board's
+  order, and any other change on its ticket. The budget's sentence and a
+  result the provider may not give (`tracker_write_unclear`) say the
+  same. A part refused for its credential says what the connection's
+  problem says. A write's context is the server's, not the caller's.
 - **A ticket subscription** belongs to its client connection as a
   board's does: `SubscribeTrackerTicket` ties its handle inside the
   service's publication, and the board's visibility, refresh and release
@@ -1193,25 +1198,48 @@ selected computer.
   (Linear, `tracker_attachments_unsupported`) and a file over the largest
   its tracker stores (`tracker_attachment_too_large`; Jira Cloud's per-file
   ceiling, `jira.MaxAttachmentBytes`, 2 GB), before any byte crosses the
-  network. The ticket names the connection, the issue, the file name and
-  its exact size; the route refuses a declared length that differs, caps
-  the body at the size and passes it to `Service.Attach` as it arrives,
-  which streams it to Jira under that length (`trackerapi.Multipart`). A
-  body that ends short, runs long or stops arriving fails the Jira
-  request before it completes: its part is `not_sent` with the failure
-  kind `upload`, which is not the connection's problem. The write runs on
-  the app's lifetime with the request's values, so a client that leaves
-  after its last byte still has the file attached. The answer is the
-  write's `WriteView` as JSON.
+  network. An issue ID over 64 bytes (`tracker.CheckIssueID`; Jira's
+  are numbers, Linear's 36-byte UUIDs) and a file name over 255 bytes
+  (`tracker.CheckFileName`) are refused there too, and a ticket
+  subscribe refuses the same issue IDs. The ticket names the connection,
+  the issue, the file name and its exact size; the route refuses a
+  declared length that differs (`tracker_upload_size_changed`: select
+  the file again), caps the body at the size and passes it to
+  `Service.Attach` as it arrives, which streams it to Jira under that
+  length (`trackerapi.Multipart`). A body that ends short, runs long or
+  stops arriving fails the Jira request before it completes: its part is
+  `not_sent` with the failure kind `upload`, which is not the
+  connection's problem and does not clear one. A client that stops
+  sending is not waited on: when the Jira request ends (its 90 second
+  stall timer, `Service.Stop`, or the write's bound), the tracker client
+  closes the body it did not read to its end (`trackerapi.Part`), which
+  ends the route's read of the request by moving its read deadline to
+  now. The write runs with the request's values and not its end, so a
+  client that leaves after its last byte still has the file attached,
+  and its whole run is bounded by the transfer window for the file's
+  size, the 5 minutes Jira has to answer (`trackerapi.AnswerTimeout`)
+  and a write's 3 minute budget for the refresh (`trackerAttachBound`):
+  13 minutes up to 10 MiB, about 17 hours for 2 GB. The answer is the
+  write's `WriteView` as JSON, given a deadline of its own once the
+  write ends.
 - **An attachment is saved** through `GET /attachments/tracker/{attachmentID}`.
   The mint asks the tracker nothing: the attachment must be on the
   ticket as the subscription last showed it (`tracker_attachment_unknown`
   otherwise), and its name becomes the download's. The route streams
   `Service.Download` as `application/octet-stream` with an attachment
   disposition and no declared length, read up to the largest file the
-  tracker stores. Its status waits for the first byte, so a failure
-  before it answers the refusal's code and sentence as JSON; one after it
-  ends the response short, which the relays carry as a cut transfer.
+  tracker stores, and bounded by its progress, not a total
+  (`transport.DownloadByProgress`): it ends 90 seconds after its last
+  byte moved, here and on each relay. Its status waits for the first
+  byte, so a failure before it answers the refusal's code and sentence
+  as JSON; one after it ends the response short, which the relays carry
+  as a cut transfer.
+- **Limits of these routes:** an upload carried by a relay
+  (`backendproxy.CarryTransfer`) keeps the relay's window for its size,
+  so its answer is lost when the upload and Jira's answer together
+  outlast that window, at least 5 minutes; the file is attached all the
+  same. The Android shell refuses an upload over 50 MiB and a download
+  over 128 MiB, and says the file is over its limit.
 - **A project's boards** are the boards its picker shows, in order, and
   the one that opens first (store `project_tracker_boards`). The list is
   replaced whole, and the change takes effect before the save answers,

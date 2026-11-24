@@ -113,10 +113,14 @@ type TicketSubscription struct {
 // the subscribers were last told), then the pump made on the issue's first
 // handle reads it as the tracker says it is now, interactive, and the
 // connection's round reads it every Cadence.Ticket while shown. It is
-// refused, and tied by tie, as SubscribeBoard is.
+// refused, and tied by tie, as SubscribeBoard is, and refused for an
+// issue ID tracker.CheckIssueID refuses.
 func (s *Service) SubscribeTicket(id string, issue tracker.IssueID, tie Tie) (TicketSubscription, error) {
 	if id == "" || issue == "" || tie == nil {
 		return TicketSubscription{}, fmt.Errorf("%w: a ticket subscribe names its connection and issue and ties its handle to its client", ErrInvalidRequest)
+	}
+	if err := tracker.CheckIssueID(issue); err != nil {
+		return TicketSubscription{}, err
 	}
 	if err := s.enter(); err != nil {
 		return TicketSubscription{}, err

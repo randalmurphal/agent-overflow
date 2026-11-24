@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -206,6 +208,9 @@ type trackerBoardSetup struct {
 	site    trackerfake.JiraSite
 	cadence trackerapp.Cadence
 	budget  time.Duration
+	// arrive, when set, sees each request to the Jira site as it arrives,
+	// before its body is read.
+	arrive func(*http.Request)
 }
 
 func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoardFixture {
@@ -221,6 +226,19 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Close)
+	jiraURL := srv.JiraURL("example.atlassian.net")
+	if setup.arrive != nil {
+		h, err := e.Handler(trackerBoardOrigin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			setup.arrive(r)
+			h.ServeHTTP(w, r)
+		}))
+		t.Cleanup(seen.Close)
+		jiraURL = seen.URL
+	}
 	t.Cleanup(func() {
 		for _, r := range e.Unhandled() {
 			t.Errorf("unhandled request %s %s: %s", r.Method, r.Path, r.Detail)
@@ -228,6 +246,9 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 	})
 	a := newTrackerTestApp(t, func(a *App) {
 		ConfigureIsolation(a, IsolationConfig{TrackerOrigin: func(_, site string) (string, error) {
+			if strings.TrimPrefix(site, "https://") == "example.atlassian.net" {
+				return jiraURL, nil
+			}
 			return srv.JiraURL(strings.TrimPrefix(site, "https://")), nil
 		}})
 		a.trackerCadence = setup.cadence

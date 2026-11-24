@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Writes. Every edit goes to the tracker first, through one path
@@ -212,10 +213,14 @@ func happened(res tracker.Result) bool {
 }
 
 // sentNothing reports a result every part of which was refused before
-// anything was sent: input the provider's checks refused, or a write the
-// tracker cannot make. Such a write says nothing of the connection.
+// anything was sent (input the provider's checks refused, or a write the
+// tracker cannot make) or stopped by its own file, which ended before the
+// tracker had it whole. Such a write says nothing of the connection.
 func sentNothing(res tracker.Result) bool {
 	for _, p := range res.Parts {
+		if _, cut := errors.AsType[*trackerapi.SourceError](p.Outcome.Err()); cut && p.Outcome.State() == tracker.StateNotSent {
+			continue
+		}
 		r, ok := p.Outcome.Refusal()
 		if !ok || r.Reason != tracker.ReasonInvalid && r.Reason != tracker.ReasonUnsupported {
 			return false

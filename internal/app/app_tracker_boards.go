@@ -323,8 +323,6 @@ func trackerRefusal(err error) (code, message string) {
 		return "tracker_boards_refused", "this board list cannot be saved; fix what the detail names and save again"
 	case errors.Is(err, trackerapp.ErrUnknownAttachment):
 		return "tracker_attachment_unknown", "this ticket no longer shows that attachment; look at the ticket again"
-	case errors.Is(err, trackerapp.ErrBadResult):
-		return "tracker_write_unclear", "the tracker's answer to this change could not be read, so it may or may not have been made; look at the ticket before you try again"
 	}
 	return "", ""
 }

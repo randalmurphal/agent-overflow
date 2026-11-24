@@ -125,6 +125,13 @@ func partViews(kind string, res tracker.Result, at int64) []PartView {
 		switch {
 		case refused:
 			v.Refusal = refusalView(r)
+			// A credential refused is the connection's setup, and says what
+			// the connection's problem says.
+			if r.Err != nil {
+				if f := ClassifyFailure(kind, r.Err); f.Kind == FailureSetup {
+					v.Refusal.Message = f.Message
+				}
+			}
 		case state == tracker.StateUnknown:
 			// What failed matters less than that it may have happened: a
 			// second try could make the change twice.
@@ -147,9 +154,31 @@ func partViews(kind string, res tracker.Result, at int64) []PartView {
 func unknownOutcome(kind string, step tracker.Step) string {
 	lost := trackerName(kind) + "'s answer did not arrive in full, so "
 	if step == tracker.StepCreate {
-		return lost + "the issue may or may not have been created; look for it on the board before you try again"
+		return lost + "the issue may or may not have been created; " + LostWriteCheck(step)
 	}
-	return lost + "this change may or may not have been made; look at the ticket before you try again"
+	return lost + "this change may or may not have been made; " + LostWriteCheck(step)
+}
+
+// LostWriteCheck is what to look at, after a write of step whose outcome
+// is not known, before trying it again: where the change shows if it was
+// made. A created issue may not match its board's filter, so it is
+// searched for; a sprint shows among the board's sprints, a worklog in
+// the day's logged time, a rank in the board's order, and every other
+// change on its ticket.
+func LostWriteCheck(step tracker.Step) string {
+	switch step {
+	case tracker.StepCreate:
+		return "search the tracker for the issue before you try again"
+	case tracker.StepSprint:
+		return "look at the board's sprints before you try again"
+	case tracker.StepWorklog:
+		return "look at the time you logged that day before you try again"
+	case tracker.StepRank:
+		return "look at the issue's place on the board before you try again"
+	case tracker.StepUpload, tracker.StepEdit, tracker.StepMove, tracker.StepEstimate,
+		tracker.StepSprintMove, tracker.StepComment, tracker.StepLink:
+	}
+	return "look at the ticket before you try again"
 }
 
 func refusalView(r tracker.Refusal) *RefusalView {

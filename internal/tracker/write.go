@@ -3,6 +3,7 @@ package tracker
 import (
 	"io"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -362,7 +363,10 @@ func (in UnlinkInput) Check() error {
 }
 
 // File is one file to attach: Content holds exactly Size bytes. The
-// provider reads Content once, as it sends it.
+// provider reads Content once, as it sends it; a Content that is an
+// io.Closer and not an io.Seeker is closed if the write ends before
+// reading it to its end (trackerapi.Part), which must end a read of it
+// in progress.
 type File struct {
 	Name    string
 	Content io.Reader
@@ -375,16 +379,58 @@ type AttachInput struct {
 	Files []File
 }
 
-// Check refuses an attach that names no issue or file, or a file with no
-// name or content or a negative size.
+// Check refuses an attach that names no issue or file, an issue ID or a
+// file name CheckIssueID or CheckFileName refuses, or a file with no
+// content or a negative size.
 func (in AttachInput) Check() error {
 	if in.Issue == "" || len(in.Files) == 0 {
 		return invalidf("an attach needs an issue and a file")
 	}
+	if err := CheckIssueID(in.Issue); err != nil {
+		return err
+	}
 	for _, f := range in.Files {
-		if f.Name == "" || f.Content == nil || f.Size < 0 {
-			return invalidf("an attached file needs a name, content and a size")
+		if err := CheckFileName(f.Name); err != nil {
+			return err
 		}
+		if f.Content == nil || f.Size < 0 {
+			return invalidf("an attached file needs content and a size")
+		}
+	}
+	return nil
+}
+
+// MaxIssueIDBytes is the longest issue ID a client may name. A tracker's
+// issue IDs are far shorter: Jira's are numbers (at most 19 digits) and
+// Linear's are UUIDs (36 bytes).
+const MaxIssueIDBytes = 64
+
+// MaxFileNameBytes is the longest file name an attachment may have: the
+// longest one name most file systems hold.
+const MaxFileNameBytes = 255
+
+// CheckIssueID refuses an issue ID a client sent that is empty or longer
+// than MaxIssueIDBytes.
+func CheckIssueID(id IssueID) error {
+	switch {
+	case id == "":
+		return invalidf("no issue is named")
+	case len(id) > MaxIssueIDBytes:
+		return invalidf("an issue ID is at most %d bytes, and this one is %d", MaxIssueIDBytes, len(id))
+	}
+	return nil
+}
+
+// CheckFileName refuses an attachment's file name that is empty, holds a
+// NUL character or is longer than MaxFileNameBytes.
+func CheckFileName(name string) error {
+	switch {
+	case name == "":
+		return invalidf("the file has no name")
+	case strings.ContainsRune(name, 0):
+		return invalidf("the file name holds a NUL character")
+	case len(name) > MaxFileNameBytes:
+		return invalidf("a file name is at most %d bytes, and this one is %d; rename the file", MaxFileNameBytes, len(name))
 	}
 	return nil
 }

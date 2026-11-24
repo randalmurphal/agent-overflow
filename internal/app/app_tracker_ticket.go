@@ -6,10 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
+	"time"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 )
@@ -69,11 +70,11 @@ func (a *App) TrackerTicket(ctx context.Context, subscriptionID string) (tracker
 //ao:scope tracker:operate
 //ao:route home
 func (a *App) MintTrackerAttachmentUploadTicket(ctx context.Context, connectionID, issue, filename string, size int64) (string, error) {
-	switch {
-	case issue == "" || filename == "" || size < 0:
-		return "", errorsx.Public("tracker_request_invalid", "nothing was sent: an attachment needs a ticket, a file name and a size", trackerapp.ErrInvalidRequest)
-	case strings.ContainsRune(filename, 0):
-		return "", errorsx.Public("tracker_request_invalid", "nothing was sent: the file name holds a NUL character", trackerapp.ErrInvalidRequest)
+	if size < 0 {
+		return "", errorsx.Public("tracker_request_invalid", "nothing was sent: an attachment needs a size", trackerapp.ErrInvalidRequest)
+	}
+	if err := errors.Join(tracker.CheckIssueID(tracker.IssueID(issue)), tracker.CheckFileName(filename)); err != nil {
+		return "", trackerError(err)
 	}
 	svc, err := a.trackerService()
 	if err != nil {
@@ -141,25 +142,41 @@ func TrackerTransfer(a *App) transport.TrackerTransfer { return trackerTransfer{
 
 type trackerTransfer struct{ app *App }
 
-// AttachTrackerFile attaches the upload's file. The write runs on this
-// computer's lifetime with the request's values, so a client that leaves
-// after its last byte still has its file attached and its ticket told; one
-// that leaves before stops the body, and the write is not applied.
+// AttachTrackerFile attaches the upload's file. The write runs with the
+// request's values and not its end, so a client that leaves after its
+// last byte still has its file attached and its ticket told; one that
+// leaves or stops sending before ends the body's read, and the write is
+// not applied. Its whole run is bounded (trackerAttachBound).
 func (t trackerTransfer) AttachTrackerFile(upload transport.TrackerUpload) (json.RawMessage, error) {
 	svc, err := t.app.trackerService()
 	if err != nil {
 		return nil, err
 	}
-	view, err := svc.Attach(context.WithoutCancel(upload.Context), upload.Connection, upload.Issue,
+	ctx, cancel := withinBudget(context.WithoutCancel(upload.Context), budgetExceeded{
+		doing: "Attaching the file", budget: t.app.trackerAttachBound(upload.Size), then: trackerapp.LostWriteCheck(tracker.StepUpload)})
+	defer cancel()
+	view, err := svc.Attach(ctx, upload.Connection, upload.Issue,
 		[]tracker.File{{Name: upload.Filename, Content: upload.Body, Size: upload.Size}})
 	if err != nil {
-		return nil, trackerError(err)
+		return nil, trackerWriteError(ctx, tracker.StepUpload, err)
 	}
 	out, err := json.Marshal(view)
 	if err != nil {
 		return nil, fmt.Errorf("tracker attachment: encode the write's outcome: %w", err)
 	}
 	return out, nil
+}
+
+// trackerAttachBound is the whole run of an attach of size bytes: the
+// window the route gives the file's transfer for its size, the tracker's
+// wait for its answer after the last byte, and a write's budget for the
+// refresh after it. 13 minutes up to 10 MiB; about 17 hours for 2 GB,
+// nearly all of it the transfer at its slowest rate.
+func (a *App) trackerAttachBound(size int64) time.Duration {
+	if a.trackerBudget > 0 {
+		return a.trackerBudget
+	}
+	return transport.AttachmentTransferWindowFor(size) + trackerapi.AnswerTimeout + trackerWriteBudget
 }
 
 // DownloadTrackerAttachment streams one attachment to to, ending with ctx.
