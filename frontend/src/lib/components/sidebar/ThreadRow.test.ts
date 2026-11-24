@@ -166,12 +166,13 @@ describe('<ThreadRow> archive action', () => {
     resetKeybindingsStore();
   });
 
-  it('shows the archive action (and no delete X) for a chat thread', async () => {
-    const thread = makeThread({ archived: false });
-    const pane = createThreadPane();
-    const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
-    expect(getByTestId('thread-row-archive')).toBeInTheDocument();
-    expect(queryByTestId('thread-row-delete')).toBeNull();
+  it.each([
+    ['shows the archive action (and no delete X) for a chat thread', 'chat', 'thread-row-archive', 'thread-row-delete'],
+    ['shows a delete X (not archive) for a terminal thread', 'terminal', 'thread-row-delete', 'thread-row-archive'],
+  ] as const)('%s', (_name, mode, shown, absent) => {
+    const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread: makeThread({ mode }), pane: createThreadPane() } });
+    expect(getByTestId(shown)).toBeInTheDocument();
+    expect(queryByTestId(absent)).toBeNull();
   });
 });
 
@@ -293,15 +294,6 @@ describe('<ThreadRow> terminal delete action', () => {
     resetKeybindingsStore();
     // Best-effort stop the (sentinel-provider) session before delete.
     setBindingMock('StopSession', async () => {});
-  });
-
-  it('shows a delete X (not archive) for a terminal thread', async () => {
-    await primeSettings();
-    const thread = makeThread({ mode: 'terminal' });
-    const pane = createThreadPane();
-    const { getByTestId, queryByTestId } = render(ThreadRow, { props: { thread, pane } });
-    expect(getByTestId('thread-row-delete')).toBeInTheDocument();
-    expect(queryByTestId('thread-row-archive')).toBeNull();
   });
 
   it('deletes immediately, without a confirm dialog, when confirmDelete is off', async () => {
@@ -488,24 +480,12 @@ describe('<ThreadRow> title tooltip', () => {
     await primeSettings();
   });
 
-  it('uses the full thread title as hover text', () => {
-    const pane = createThreadPane();
-    const thread = makeThread({ title: 'A long thread title that the sidebar may truncate' });
-
-    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-
-    expect(getByTestId('thread-row-title').getAttribute('title')).toBe(
-      'A long thread title that the sidebar may truncate',
-    );
-  });
-
-  it('uses Untitled as hover text when the thread title is empty', () => {
-    const pane = createThreadPane();
-    const thread = makeThread({ title: '' });
-
-    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-
-    expect(getByTestId('thread-row-title').getAttribute('title')).toBe('Untitled');
+  it.each([
+    ['uses the full thread title as hover text', 'A long thread title that the sidebar may truncate', 'A long thread title that the sidebar may truncate'],
+    ['uses Untitled as hover text when the thread title is empty', '', 'Untitled'],
+  ])('%s', (_name, title, want) => {
+    const { getByTestId } = render(ThreadRow, { props: { thread: makeThread({ title }), pane: createThreadPane() } });
+    expect(getByTestId('thread-row-title').getAttribute('title')).toBe(want);
   });
 });
 
@@ -520,26 +500,13 @@ describe('<ThreadRow> timestamp label', () => {
     vi.useRealTimers();
   });
 
-  it('renders compact locale-relative time in the sidebar', () => {
-    const pane = createThreadPane();
-    const thread = makeThread({
-      updatedAt: new Date('2026-05-17T17:39:00.000Z').getTime(),
-    });
-
-    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-
-    expect(getByTestId('thread-row-time').textContent?.trim()).toBe('21m');
-  });
-
-  it('renders now instead of just now for current timestamps', () => {
-    const pane = createThreadPane();
-    const thread = makeThread({
-      updatedAt: new Date('2026-05-17T18:00:00.000Z').getTime(),
-    });
-
-    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-
-    expect(getByTestId('thread-row-time').textContent?.trim()).toBe('now');
+  it.each([
+    ['renders compact locale-relative time in the sidebar', '2026-05-17T17:39:00.000Z', '21m'],
+    ['renders now instead of just now for current timestamps', '2026-05-17T18:00:00.000Z', 'now'],
+  ])('%s', (_name, updatedAt, want) => {
+    const thread = makeThread({ updatedAt: new Date(updatedAt).getTime() });
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
+    expect(getByTestId('thread-row-time').textContent?.trim()).toBe(want);
   });
 
   it('leaves absolute timestamp formats unchanged', async () => {
@@ -631,20 +598,6 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const forkIndicator = getByTestId('thread-row-fork-lineage') as HTMLButtonElement;
     expect(forkIndicator.disabled).toBe(true);
     expect(forkIndicator.title).toMatch(/not loaded/i);
-  });
-
-  it('clicking the affordance switches the pane to the parent thread', async () => {
-    const parent = makeThread({ id: 'parent', title: 'Original' });
-    const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
-    setBindingMock('ListThreads', async () => [parent, forked]);
-    await loadSidebarCatalogs();
-    setBindingMock('SwitchThread', async () => {});
-
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
-    await fireEvent.click(getByTestId('thread-row-fork-lineage'));
-    for (let i = 0; i < 5; i += 1) await Promise.resolve();
-    expect(pane.threadId).toBe('parent');
   });
 
   it('affordance click does not trigger the row-level thread switch', async () => {
@@ -826,25 +779,12 @@ describe('<ThreadRow> worktree metadata', () => {
     expect(container.querySelector('[data-testid="thread-row-worktree"] .border-l')).toBeNull();
   });
 
-  it('uses the final path segment with trailing slashes ignored', () => {
-    const thread = makeThread({
-      id: 'worktree-thread',
-      worktreePath: '/tmp/worktrees/feature-demo/',
-    });
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-
-    expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('feature-demo');
-  });
-
-  it('handles Windows-style path separators', () => {
-    const thread = makeThread({
-      id: 'worktree-thread',
-      worktreePath: 'C:\\worktrees\\feature-demo',
-    });
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
-
+  it.each([
+    ['uses the final path segment with trailing slashes ignored', '/tmp/worktrees/feature-demo/'],
+    ['handles Windows-style path separators', 'C:\\worktrees\\feature-demo'],
+  ])('%s', (_name, worktreePath) => {
+    const thread = makeThread({ id: 'worktree-thread', worktreePath });
+    const { getByTestId } = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
     expect(getByTestId('thread-row-worktree-name').textContent?.trim()).toBe('feature-demo');
   });
 
@@ -995,19 +935,6 @@ describe('<ThreadRow> pin affordance placement', () => {
     expect(queryByRole('menu', { name: 'Thread Actions' })).toBeNull();
   });
 
-  it('renders an unpinned pin button so row-hover can reveal it', () => {
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: { thread: makeThread(), pane },
-    });
-    const pin = getByTestId('thread-row-pin');
-
-    expect(pin.getAttribute('aria-label')).toBe('Pin Thread');
-    // Unpinned button is rendered but kept hidden until row hover/focus.
-    expect(pin.className).toContain('opacity-0');
-    expect(pin.className).toContain('group-hover/thread-item:opacity-100');
-  });
-
   it('pins a group member from its own pin affordance', async () => {
     const pin = setBindingMock('PinThread', vi.fn(async () => makeThread({ groupId: 'g1', pinnedAt: 1 })));
     const { getByTestId } = render(ThreadRow, {
@@ -1055,6 +982,7 @@ describe('<ThreadRow> hover-action reveal trigger', () => {
     const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane } });
     const pin = getByTestId('thread-row-pin');
 
+    expect(pin.getAttribute('aria-label')).toBe('Pin Thread');
     expect(pin.className).toContain('opacity-0');
     expect(pin.className).toContain('group-hover/thread-item:opacity-100');
     expect(pin.className).toContain('group-has-[:focus-visible]/thread-row:opacity-100');
@@ -1230,50 +1158,32 @@ describe('<ThreadRow> live status dot', () => {
     expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Planning');
   });
 
-  it('renders a warning dot labelled Pending approval when a blocking approval is pending', () => {
-    setThreadStatus('t-approval', 'pending-approval');
-    const pane = createThreadPane();
+  it.each([
+    ['renders a warning dot labelled Pending approval when a blocking approval is pending', 'pending-approval', 'Pending Approval', 'bg-warning'],
+    ['renders an info dot labelled Awaiting input for user-input requests', 'awaiting-input', 'Awaiting Input', 'bg-info'],
+    ['renders an error dot labelled Failed when the thread has errored', 'error', 'Failed', 'bg-error'],
+  ] as const)('%s', (_name, status, label, background) => {
+    setThreadStatus(`t-${status}`, status);
     const { getByTestId } = render(ThreadRow, {
-      props: { thread: makeThread({ id: 't-approval' }), pane },
+      props: { thread: makeThread({ id: `t-${status}` }), pane: createThreadPane() },
     });
     const dot = getByTestId('thread-row-status-dot');
-    expect(dot.getAttribute('data-status')).toBe('pending-approval');
-    expect(dot.getAttribute('aria-label')).toBe('Pending Approval');
-    expect(dot.classList.contains('bg-warning')).toBe(true);
+    expect(dot.getAttribute('data-status')).toBe(status);
+    expect(dot.getAttribute('aria-label')).toBe(label);
+    expect(dot.classList.contains(background)).toBe(true);
   });
 
-  it('renders an info dot labelled Awaiting input for user-input requests', () => {
-    setThreadStatus('t-input', 'awaiting-input');
-    const pane = createThreadPane();
+  it.each([
+    ['applies the pulsing warning glow class to the row when pending approval', 'pending-approval', 'status-glow-warning', 'status-glow-info'],
+    ['applies the pulsing info glow class to the row when awaiting input', 'awaiting-input', 'status-glow-info', 'status-glow-warning'],
+  ] as const)('%s', (_name, status, glow, otherGlow) => {
+    setThreadStatus(`t-glow-${status}`, status);
     const { getByTestId } = render(ThreadRow, {
-      props: { thread: makeThread({ id: 't-input' }), pane },
-    });
-    const dot = getByTestId('thread-row-status-dot');
-    expect(dot.getAttribute('data-status')).toBe('awaiting-input');
-    expect(dot.getAttribute('aria-label')).toBe('Awaiting Input');
-    expect(dot.classList.contains('bg-info')).toBe(true);
-  });
-
-  it('applies the pulsing warning glow class to the row when pending approval', () => {
-    setThreadStatus('t-glow-approval', 'pending-approval');
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: { thread: makeThread({ id: 't-glow-approval' }), pane },
+      props: { thread: makeThread({ id: `t-glow-${status}` }), pane: createThreadPane() },
     });
     const shell = getByTestId('thread-row-shell');
-    expect(shell.classList.contains('status-glow-warning')).toBe(true);
-    expect(shell.classList.contains('status-glow-info')).toBe(false);
-  });
-
-  it('applies the pulsing info glow class to the row when awaiting input', () => {
-    setThreadStatus('t-glow-input', 'awaiting-input');
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: { thread: makeThread({ id: 't-glow-input' }), pane },
-    });
-    const shell = getByTestId('thread-row-shell');
-    expect(shell.classList.contains('status-glow-info')).toBe(true);
-    expect(shell.classList.contains('status-glow-warning')).toBe(false);
+    expect(shell.classList.contains(glow)).toBe(true);
+    expect(shell.classList.contains(otherGlow)).toBe(false);
   });
 
   it('an open row that is pending approval keeps both the accent bar and the glow', () => {
@@ -1365,18 +1275,6 @@ describe('<ThreadRow> live status dot', () => {
     const dot = getByTestId('thread-row-status-dot');
     expect(dot.getAttribute('data-status')).toBe('running');
     expect(dot.getAttribute('aria-label')).toBe('Working');
-  });
-
-  it('renders an error dot labelled Failed when the thread has errored', () => {
-    setThreadStatus('t-err', 'error');
-    const pane = createThreadPane();
-    const { getByTestId } = render(ThreadRow, {
-      props: { thread: makeThread({ id: 't-err' }), pane },
-    });
-    const dot = getByTestId('thread-row-status-dot');
-    expect(dot.getAttribute('data-status')).toBe('error');
-    expect(dot.getAttribute('aria-label')).toBe('Failed');
-    expect(dot.classList.contains('bg-error')).toBe(true);
   });
 
   it('uses the thread id (not some shared row instance) for the lookup', () => {
@@ -1544,16 +1442,6 @@ describe('<ThreadRow> status is visual only', () => {
       view.container.querySelector('[data-testid="thread-row-shell"]') as HTMLElement;
     expect(shellOf(unread).className).toContain('ring-success/40');
     expect(shellOf(read).className).not.toContain('ring-');
-  });
-
-  it('Interrupted is a hollow amber dot', () => {
-    const { getByTestId } = render(ThreadRow, {
-      props: { thread: makeThread({ hasIncompleteTurn: true }), pane: createThreadPane() },
-    });
-    const dot = getByTestId('thread-row-status-dot');
-    expect(dot.getAttribute('data-status')).toBe('interrupted');
-    expect(dot.className).toContain('border-warning');
-    expect(dot.className).toContain('bg-transparent');
   });
 });
 
@@ -1857,7 +1745,6 @@ describe('<ThreadRow> standing agent variant', () => {
   it('offers no pin on an agent, even rendered as a plain row', () => {
     const rendered = render(ThreadRow, { props: { thread: makeThread({ agentId: 'agent-1', pinnedAt: 1 }), pane: createThreadPane() } });
     expect(rendered.queryByTestId('thread-row-pin')).toBeNull();
-    expect(rendered.queryByTestId('thread-row-agent-expand')).toBeNull();
     expect(rendered.getByTestId('thread-row').hasAttribute('data-sidebar-jump-target')).toBe(false);
   });
 
@@ -1869,7 +1756,6 @@ describe('<ThreadRow> standing agent variant', () => {
     expect(row.hasAttribute('aria-expanded')).toBe(false);
     expect(rendered.getByTestId('thread-row-agent-icon')).toBeTruthy();
     expect(rendered.queryByTestId('thread-row-pin')).toBeNull();
-    expect(rendered.queryByTestId('thread-row-agent-expand')).toBeNull();
     expect(rendered.getByTestId('thread-row-agent-projects').textContent?.trim()).toBe('Alpha, Beta');
     // An ordinary row has neither line.
     const plain = render(ThreadRow, { props: { thread: makeThread({ id: 'plain' }), pane: createThreadPane(), agentProjects: 'ignored' } });

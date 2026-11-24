@@ -224,11 +224,14 @@ describe('<ProjectContextMenu> delete flow', () => {
       return baseElement;
     }
 
-    it('names the one checkout a delete removes, and its own threads, when the entry has others', async () => {
-      const page = await openDelete(oneOfSeveral(), emptyPreview());
-      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
-        'Permanently delete "app" on Laptop and all 3 threads it contains there. Checkouts on other computers are not affected. This cannot be undone.',
-      );
+    it.each([
+      ['names the one checkout a delete removes, and its own threads, when the entry has others', oneOfSeveral,
+        'Permanently delete "app" on Laptop and all 3 threads it contains there. Checkouts on other computers are not affected. This cannot be undone.'],
+      ["keeps today's delete text for an entry with one checkout", makeTarget,
+        'Permanently delete "Repo" and all 2 threads it contains. This cannot be undone.'],
+    ])('%s', async (_name, target, sentence) => {
+      const page = await openDelete(target(), emptyPreview());
+      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(sentence);
     });
 
     it('says the same in the dialog for a project with workflow work', async () => {
@@ -238,25 +241,14 @@ describe('<ProjectContextMenu> delete flow', () => {
       );
     });
 
-    it("keeps today's delete text for an entry with one checkout", async () => {
-      const page = await openDelete(makeTarget(), emptyPreview());
-      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
-        'Permanently delete "Repo" and all 2 threads it contains. This cannot be undone.',
-      );
-    });
-
-    it('names the one checkout an archive hides when the entry has others', async () => {
-      const page = await openArchive(oneOfSeveral());
-      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
-        'Archive "app" on Laptop. Its threads there remain and it can be unarchived from Settings. Checkouts on other computers are not affected.',
-      );
-    });
-
-    it("keeps today's archive text for an entry with one checkout", async () => {
-      const page = await openArchive(makeTarget());
-      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
-        'Hide "Repo" from the sidebar. Threads remain and the project can be unarchived from Settings.',
-      );
+    it.each([
+      ['names the one checkout an archive hides when the entry has others', oneOfSeveral,
+        'Archive "app" on Laptop. Its threads there remain and it can be unarchived from Settings. Checkouts on other computers are not affected.'],
+      ["keeps today's archive text for an entry with one checkout", makeTarget,
+        'Hide "Repo" from the sidebar. Threads remain and the project can be unarchived from Settings.'],
+    ])('%s', async (_name, target, sentence) => {
+      const page = await openArchive(target());
+      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(sentence);
     });
   });
 

@@ -287,21 +287,13 @@ it('system stats footer counts an offline computer as settled', async () => {
   await waitFor(() => expect(getTelemetryFooterShape(key)).toEqual({ lines: 2, picker: true }));
 });
 
-it('usage footer keeps a pending selection visible when the last answer was empty', async () => {
+it('usage footer keeps a pending selection visible when the last answer was empty, and records only a settled answer', async () => {
   recordUsageShape(0);
   setBindingMock('GetUsageStats', async () => [claudeBucket()]);
   stageBackend({ id: 'remote', name: 'Remote computer', status: 'disconnected' });
   const view = render(UsageFooter);
   await waitFor(() => expect(view.getAllByTestId('usage-footer-row')).toHaveLength(1));
   expect(view.queryByTestId('sidebar-usage-footer')).not.toBeNull();
-});
-
-it('usage footer records only a settled answer', async () => {
-  recordUsageShape(0);
-  setBindingMock('GetUsageStats', async () => [claudeBucket()]);
-  stageBackend({ id: 'remote', name: 'Remote computer', status: 'disconnected' });
-  const view = render(UsageFooter);
-  await waitFor(() => expect(view.getAllByTestId('usage-footer-row')).toHaveLength(1));
   await new Promise((done) => setTimeout(done, 50));
   // Home has answered; the remote computer is still pending.
   expect(getTelemetryFooterShape(usageKey)?.lines).toBe(0);

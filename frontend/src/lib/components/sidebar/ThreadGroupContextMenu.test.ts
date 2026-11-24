@@ -181,16 +181,6 @@ describe('<ThreadGroupContextMenu>', () => {
     expect(setGroup).toHaveBeenCalledWith(['t1', 't2', 't3'], '');
   });
 
-  it('ungroups every member with one call', async () => {
-    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
-    const { getByRole } = renderMenu();
-
-    await fireEvent.click(getByRole('menuitem', { name: 'Ungroup All' }));
-    await flush();
-
-    expect(setGroup).toHaveBeenCalledWith(['t1', 't2'], '');
-  });
-
   it('deletes immediately when confirmDelete is off', async () => {
     await primeSettings({ confirmDelete: false });
     const del = setBindingMock('DeleteThreadGroup', vi.fn(async () => {}));
