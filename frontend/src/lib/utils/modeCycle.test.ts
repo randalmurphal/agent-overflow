@@ -3,12 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { MODE_CYCLE, cycleMode } from './modeCycle';
 
 describe('cycleMode', () => {
-  it('advances chat → plan', () => {
-    expect(cycleMode('chat')).toBe('plan');
-  });
-
-  it('wraps plan → chat', () => {
-    expect(cycleMode('plan')).toBe('chat');
+  it.each([
+    ['advances', 'chat', 'plan'],
+    ['wraps', 'plan', 'chat'],
+  ])('%s %s → %s', (_name, from, to) => {
+    expect(cycleMode(from)).toBe(to);
   });
 
   it('falls back to chat on unknown mode', () => {

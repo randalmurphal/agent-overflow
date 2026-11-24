@@ -15,22 +15,17 @@ describe('disambiguatedPathLabels', () => {
     expect(labels.get('b')).toEqual({ prefix: '', name: 'api' });
   });
 
-  it('adds one parent segment for a simple duplicate', () => {
+  it.each([
+    ['adds one parent segment for a simple duplicate', '/work/clients/web', '/work/personal/web', 'clients', 'personal'],
+    ['deepens the prefix only until the group is distinct', '/alpha/src/web', '/beta/src/web', '/alpha/src', '/beta/src'],
+    ['handles Windows separators', 'C:\\repos\\clients\\web', 'C:\\repos\\personal\\web', 'clients', 'personal'],
+  ])('%s', (_name, a, b, prefixA, prefixB) => {
     const labels = disambiguatedPathLabels([
-      { id: 'a', name: 'web', path: '/work/clients/web' },
-      { id: 'b', name: 'web', path: '/work/personal/web' },
+      { id: 'a', name: 'web', path: a },
+      { id: 'b', name: 'web', path: b },
     ]);
-    expect(labels.get('a')).toEqual({ prefix: 'clients', name: 'web' });
-    expect(labels.get('b')).toEqual({ prefix: 'personal', name: 'web' });
-  });
-
-  it('deepens the prefix only until the group is distinct', () => {
-    const labels = disambiguatedPathLabels([
-      { id: 'a', name: 'web', path: '/alpha/src/web' },
-      { id: 'b', name: 'web', path: '/beta/src/web' },
-    ]);
-    expect(labels.get('a')).toEqual({ prefix: '/alpha/src', name: 'web' });
-    expect(labels.get('b')).toEqual({ prefix: '/beta/src', name: 'web' });
+    expect(labels.get('a')).toEqual({ prefix: prefixA, name: 'web' });
+    expect(labels.get('b')).toEqual({ prefix: prefixB, name: 'web' });
   });
 
   it.each([
@@ -53,15 +48,6 @@ describe('disambiguatedPathLabels', () => {
     ]);
     expect(labels.get('a')).toEqual({ prefix: 'backend', name: 'svc' });
     expect(labels.get('b')).toEqual({ prefix: '/work', name: 'svc' });
-  });
-
-  it('handles Windows separators', () => {
-    const labels = disambiguatedPathLabels([
-      { id: 'a', name: 'web', path: 'C:\\repos\\clients\\web' },
-      { id: 'b', name: 'web', path: 'C:\\repos\\personal\\web' },
-    ]);
-    expect(labels.get('a')).toEqual({ prefix: 'clients', name: 'web' });
-    expect(labels.get('b')).toEqual({ prefix: 'personal', name: 'web' });
   });
 
   it('disambiguates three-way groups', () => {
@@ -95,21 +81,14 @@ describe('formatPathLabel', () => {
 });
 
 describe('pathBasename', () => {
-  it('returns the final path segment', () => {
-    expect(pathBasename('/tmp/worktrees/feature-demo')).toBe('feature-demo');
-  });
-
-  it('ignores trailing separators', () => {
-    expect(pathBasename('/tmp/worktrees/feature-demo///')).toBe('feature-demo');
-  });
-
-  it('handles Windows separators', () => {
-    expect(pathBasename('C:\\worktrees\\feature-demo')).toBe('feature-demo');
-  });
-
-  it('returns an empty string for empty or root-only paths', () => {
-    expect(pathBasename(undefined)).toBe('');
-    expect(pathBasename('')).toBe('');
-    expect(pathBasename('/')).toBe('');
+  it.each<[string, string | undefined, string]>([
+    ['returns the final path segment', '/tmp/worktrees/feature-demo', 'feature-demo'],
+    ['ignores trailing separators', '/tmp/worktrees/feature-demo///', 'feature-demo'],
+    ['handles Windows separators', 'C:\\worktrees\\feature-demo', 'feature-demo'],
+    ['returns an empty string for a missing path', undefined, ''],
+    ['returns an empty string for an empty path', '', ''],
+    ['returns an empty string for a root-only path', '/', ''],
+  ])('%s', (_name, path, expected) => {
+    expect(pathBasename(path)).toBe(expected);
   });
 });

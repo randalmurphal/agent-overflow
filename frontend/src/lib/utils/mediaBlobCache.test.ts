@@ -199,31 +199,20 @@ describe('the media blob cache', () => {
       expect(__mediaBlobCacheKeysForTest()).toEqual(['c', 'd']);
     });
 
-    it('waits for the second of two holders', async () => {
+    it('waits for the second of two holders, counting a repeated release once', async () => {
       __setMediaBlobCacheLimitsForTest({ maxBytes: 4 });
       const first = acquireMediaBlob('big', async () => bytes('12345'));
       const second = acquireMediaBlob('big', async () => bytes('12345'));
       await first.value;
+      first.release();
       first.release();
       expect(URL.revokeObjectURL).not.toHaveBeenCalled();
       expect(__mediaBlobCacheKeysForTest()).toEqual(['big']);
       second.release();
-      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:12345');
-      expect(__mediaBlobCacheKeysForTest()).toEqual([]);
-    });
-
-    it('counts a repeated release once', async () => {
-      __setMediaBlobCacheLimitsForTest({ maxBytes: 4 });
-      const first = acquireMediaBlob('big', async () => bytes('12345'));
-      const second = acquireMediaBlob('big', async () => bytes('12345'));
-      await first.value;
-      first.release();
-      first.release();
-      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
-      second.release();
       second.release();
       expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
       expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:12345');
+      expect(__mediaBlobCacheKeysForTest()).toEqual([]);
     });
 
     it('drops an entry released while it loads when the cache is over its limit, and revokes its late value', async () => {

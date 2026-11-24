@@ -3,35 +3,20 @@ import { parseJsonObject } from './parseJsonObject';
 
 describe('parseJsonObject', () => {
 
-  it('returns null for undefined / null / empty input', () => {
-    expect(parseJsonObject(undefined)).toBeNull();
-    expect(parseJsonObject(null)).toBeNull();
-    expect(parseJsonObject('')).toBeNull();
+  it.each<[string, Array<string | null | undefined>]>([
+    ['undefined / null / empty input', [undefined, null, '']],
+    // Arrays satisfy `typeof === 'object'` but the helper's contract
+    // is "Record-shaped object or null" — array roots must not leak
+    // through as records.
+    ['an array root (Array.isArray guard)', ['[]', '[1, 2, 3]']],
+    ['primitive JSON roots', ['null', '"hello"', '42', 'true']],
+    ['input JSON.parse rejects', ['not json', '{', '{"a":']],
+  ])('returns null for %s', (_name, inputs) => {
+    for (const input of inputs) expect(parseJsonObject(input)).toBeNull();
   });
 
   it('parses a valid JSON object', () => {
     expect(parseJsonObject('{"a":1,"b":"x"}')).toEqual({ a: 1, b: 'x' });
-  });
-
-  it('returns null for an array root (Array.isArray guard)', () => {
-    // Arrays satisfy `typeof === 'object'` but the helper's contract
-    // is "Record-shaped object or null" — array roots must not leak
-    // through as records.
-    expect(parseJsonObject('[]')).toBeNull();
-    expect(parseJsonObject('[1, 2, 3]')).toBeNull();
-  });
-
-  it('returns null for primitive JSON roots', () => {
-    expect(parseJsonObject('null')).toBeNull();
-    expect(parseJsonObject('"hello"')).toBeNull();
-    expect(parseJsonObject('42')).toBeNull();
-    expect(parseJsonObject('true')).toBeNull();
-  });
-
-  it('returns null when JSON.parse throws on garbage input', () => {
-    expect(parseJsonObject('not json')).toBeNull();
-    expect(parseJsonObject('{')).toBeNull();
-    expect(parseJsonObject('{"a":')).toBeNull();
   });
 
   it('returns the same object reference for repeated calls with the same source string', () => {
@@ -44,13 +29,6 @@ describe('parseJsonObject', () => {
     const second = parseJsonObject(source);
     expect(first).not.toBeNull();
     expect(first).toBe(second);
-  });
-
-  it('caches the null result when JSON.parse fails so repeated bad input does not re-throw', () => {
-    const first = parseJsonObject('garbage');
-    const second = parseJsonObject('garbage');
-    expect(first).toBeNull();
-    expect(second).toBeNull();
   });
 
   it('serves distinct sources independently', () => {

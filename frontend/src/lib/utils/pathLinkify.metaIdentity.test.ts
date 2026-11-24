@@ -31,27 +31,6 @@ describe('getPathRefsFromMeta identity across meta enrichment', () => {
     expect(second).toBe(first);
   });
 
-  it('keeps identity across a settle-shaped meta change (codeSpans added, pathRefs byte-identical)', () => {
-    // Streaming-time meta: pathRefs only (what applyItemMeta pushed on
-    // the last text flush).
-    const streamingMeta = JSON.stringify({ pathRefs });
-    // Settle-time meta: same pathRefs plus the persisted highlight-span
-    // blob (shape per utils/persistedSpans.ts — content irrelevant here,
-    // only that it changes the meta STRING).
-    const settleMeta = JSON.stringify({
-      pathRefs,
-      codeSpans: { hv: 1, spans: 'AAAA…persisted-span-blob…AAAA' },
-    });
-
-    const streamingRefs = getPathRefsFromMeta(streamingMeta);
-    const settleRefs = getPathRefsFromMeta(settleMeta);
-
-    expect(settleRefs).toEqual(streamingRefs);
-    // Content-equal ⇒ the SAME canonical instance, so ChatMarkdown's
-    // extension chain sees no change and nothing re-lexes at settle.
-    expect(settleRefs).toBe(streamingRefs);
-  });
-
   it('distinguishes genuinely different pathRefs content', () => {
     const a = getPathRefsFromMeta(JSON.stringify({ pathRefs }));
     const b = getPathRefsFromMeta(

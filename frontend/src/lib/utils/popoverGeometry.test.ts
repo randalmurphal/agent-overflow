@@ -138,31 +138,16 @@ describe('intersectClipBoundary', () => {
 describe('clipPathRule', () => {
   const CLIP = { top: 50, left: 300, right: 700, bottom: 600 };
 
-  it('emits nothing while the element sits fully inside the boundary', () => {
-    expect(clipPathRule(CLIP, 100, 400, 100, 50)).toBe('');
-  });
-
   // inset() argument order is top/right/bottom/left — a swap renders as a
   // cut on the wrong edge, so each arm is pinned individually.
-  it('cuts the left edge', () => {
-    expect(clipPathRule(CLIP, 100, 280, 100, 50)).toBe('clip-path: inset(0px 0px 0px 20px);');
-  });
-
-  it('cuts the right edge', () => {
-    expect(clipPathRule(CLIP, 100, 650, 100, 50)).toBe('clip-path: inset(0px 50px 0px 0px);');
-  });
-
-  it('cuts the top edge', () => {
-    expect(clipPathRule(CLIP, 40, 400, 100, 50)).toBe('clip-path: inset(10px 0px 0px 0px);');
-  });
-
-  it('cuts the bottom edge', () => {
-    expect(clipPathRule(CLIP, 580, 400, 100, 50)).toBe('clip-path: inset(0px 0px 30px 0px);');
-  });
-
-  it('cuts multiple edges at once', () => {
-    expect(clipPathRule(CLIP, 40, 280, 500, 600)).toBe(
-      'clip-path: inset(10px 80px 40px 20px);',
-    );
+  it.each<[string, number, number, number, number, string]>([
+    ['emits nothing while the element sits fully inside the boundary', 100, 400, 100, 50, ''],
+    ['cuts the left edge', 100, 280, 100, 50, 'clip-path: inset(0px 0px 0px 20px);'],
+    ['cuts the right edge', 100, 650, 100, 50, 'clip-path: inset(0px 50px 0px 0px);'],
+    ['cuts the top edge', 40, 400, 100, 50, 'clip-path: inset(10px 0px 0px 0px);'],
+    ['cuts the bottom edge', 580, 400, 100, 50, 'clip-path: inset(0px 0px 30px 0px);'],
+    ['cuts multiple edges at once', 40, 280, 500, 600, 'clip-path: inset(10px 80px 40px 20px);'],
+  ])('%s', (_name, top, left, width, height, expected) => {
+    expect(clipPathRule(CLIP, top, left, width, height)).toBe(expected);
   });
 });
