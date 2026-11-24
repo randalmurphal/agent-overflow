@@ -88,7 +88,7 @@ async function driveToParked(harness: HarnessApp, page: Page, slug: string, titl
   await harness.open(page);
   await page.getByText(title).click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'watch the gate', null);
+  await harness.send(threadId, 'watch the gate');
   await harness.waitForEvent('provider:turn_completed');
   await page.getByTestId('activity-rail-background-toggle').click();
   await waitForGate(harness, 'park');

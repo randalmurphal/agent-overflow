@@ -89,7 +89,7 @@ func (r agyLaunchRig) startAgyThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.app.StartSession(thread.ID); err != nil {
+	if err := r.app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 }

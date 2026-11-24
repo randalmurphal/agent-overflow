@@ -154,7 +154,7 @@ test('an agent pane finds only its own transcript, and the thread pane only its 
   await page.getByText('Agent find', { exact: true }).click();
   await startMock(harness, threadId);
   const settled = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'survey', null);
+  await harness.send(threadId, 'survey');
   await settled;
   const threadPane = page.locator('section[data-pane-kind="thread"]');
   await expect(threadPane.getByText('Both surveys are done.', { exact: true })).toBeVisible();
@@ -241,7 +241,7 @@ test('a live turn: the count follows streamed text, and Escape closes the find b
   await page.getByText('Live find', { exact: true }).click();
   const mockId = await startMock(harness, threadId);
   const more = waitForGate(harness, 'more');
-  await harness.rpc('SendMessage', threadId, 'go', null);
+  await harness.send(threadId, 'go');
   await more;
   const pane = page.locator('section[data-pane-kind="thread"]');
   await expect(pane.getByText('Working on it.', { exact: false })).toBeVisible();

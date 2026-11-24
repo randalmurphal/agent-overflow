@@ -109,7 +109,7 @@ func TestAHeldRequestReadsTheThreadsBelowItFresh(t *testing.T) {
 		{"a message typed there", func(t *testing.T, f *requestFixture, worker, child string) func(*testing.T) {
 			gate := filepath.Join(t.TempDir(), "child-turn")
 			installMockClaudeTurns(t, f.app, [][]string{gatedTurn(gate, "Looking.")})
-			if err := f.app.SendMessage(t.Context(), child, "how is it going?", nil); err != nil {
+			if _, err := f.app.SendMessageWithOptions(t.Context(), child, "how is it going?", SendMessageOptions{}); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			return func(t *testing.T) { release(t, gate) }

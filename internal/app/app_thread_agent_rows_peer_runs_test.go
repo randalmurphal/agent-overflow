@@ -29,7 +29,7 @@ func TestARemoteWorkersLaterRunIsANudgeOfItsSpawner(t *testing.T) {
 	if err != nil || !ended.Tracked || ended.Open || ended.End == nil {
 		t.Fatalf("the spawn's run there %+v, %v; want it ended with the worker's figures", ended, err)
 	}
-	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
+	if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "now also update the changelog", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {

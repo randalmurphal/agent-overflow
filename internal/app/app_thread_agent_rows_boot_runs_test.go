@@ -69,7 +69,10 @@ func TestAMessageDuringTheBootsRecoveryEndsTheEarlierRunFirst(t *testing.T) {
 			worker := f.restedWorkerAtBoot(t, "boot-spawn", placement)
 
 			done := make(chan error, 1)
-			go func() { done <- f.app.SendMessage(t.Context(), worker.ID, "also check the docs", nil) }()
+			go func() {
+				_, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{})
+				done <- err
+			}()
 			stillWaiting(t, done)
 			f.app.recoverRestAtBoot()
 			if err := within(t, "the message", done); err != nil {
@@ -161,7 +164,7 @@ func TestAMessageWaitingTooLongForTheBootsRecoveryFails(t *testing.T) {
 	f.watchAgentRows()
 	f.app.restRecoveryWaitOverride = 200 * time.Millisecond
 	worker := f.restedWorkerAtBoot(t, "waiting-spawn", store.PlacementOwned)
-	if err := f.app.SendMessage(t.Context(), worker.ID, "also check the docs", nil); !errors.Is(err, errRestRecovering) {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{}); !errors.Is(err, errRestRecovering) {
 		t.Fatalf("SendMessage = %v; want %v", err, errRestRecovering)
 	}
 	items, err := f.app.store.ListItems(worker.ID)

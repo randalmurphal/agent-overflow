@@ -237,7 +237,7 @@ test('every stop of a background agent is a card at its own position, and a resu
 
     // --- Run 1 parks, wakes; run 2 parks, wakes; run 3 ends ------------
     const turn1 = harness.waitForEvent('provider:turn_completed');
-    await harness.rpc('SendMessage', threadId, 'watch the gate', null);
+    await harness.send(threadId, 'watch the gate');
     await turn1;
     await openTray(page);
 
@@ -322,7 +322,7 @@ test('every stop of a background agent is a card at its own position, and a resu
 
     // --- The resume after completion is a run of its own ----------------
     const turn2 = harness.waitForEvent('provider:turn_completed');
-    await harness.rpc('SendMessage', threadId, 'check it again', null);
+    await harness.send(threadId, 'check it again');
     await turn2;
     await openTray(page);
     await gate(harness, mockId, 'park-3');

@@ -95,7 +95,7 @@ func TestItemWindow_EveryPathProjectsTheSameWay(t *testing.T) {
 	if got := countPreviewPatches(older.Items); got != 0 {
 		t.Errorf("the older pager shipped %d unprojected previews into the same window", got)
 	}
-	all, err := app.ListItems(thread.ID, false)
+	all, err := app.listThreadItems(thread.ID, false)
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}

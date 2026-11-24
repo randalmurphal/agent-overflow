@@ -69,7 +69,7 @@ func nudgeThere(t *testing.T, pair *reachPair, by, child string) {
 	t.Helper()
 	switch by {
 	case "the person there":
-		if err := pair.dest.SendMessage(context.Background(), child, "also check the docs", nil); err != nil {
+		if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "also check the docs", SendMessageOptions{}); err != nil {
 			t.Fatalf("SendMessage there: %v", err)
 		}
 	case "a thread there":

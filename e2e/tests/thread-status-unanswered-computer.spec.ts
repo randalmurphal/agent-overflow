@@ -74,8 +74,8 @@ test('a wait reads a thread a down computer may hold as unresolved beside the th
   bench = undefined;
   await down.close();
 
-  await home.rpc('StartSession', caller);
-  await home.rpc('SendMessage', caller, 'wait on both threads', null);
+  await home.startSession(caller);
+  await home.send(caller, 'wait on both threads');
   const answer = await awaitToolAnswer<StatusAnswer>(home, { tool: 'thread_status', cwd: local.path, timeoutMs: 120_000 });
   expect(answer.isError, answer.text).toBe(false);
   const [here, unresolved] = answer.value!.threads;

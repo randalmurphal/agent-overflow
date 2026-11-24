@@ -43,9 +43,9 @@ test('todos and background controls fit beside a wide spinner and tokens', async
   await harness.open(page);
   await page.getByTestId('thread-row').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'report usage', null);
+  await harness.send(threadId, 'report usage');
   await harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'research sources', null);
+  await harness.send(threadId, 'research sources');
   await waitForGate(harness, 'finish');
   const row = page.locator('[data-activity-rail-row]');
   const todos = row.getByRole('button', { name: 'Todos 2/6', exact: true });

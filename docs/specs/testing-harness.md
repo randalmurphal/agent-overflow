@@ -160,8 +160,8 @@ omits:
 | `scenario set\|list\|clear` | Scenario rules. `set` takes `--name lib-name` or `-f file.json`, `--cwd`, `--session-ref`. |
 | `scenario validate <file…>` | Offline: parse + pacing rules + fixture-path existence. No instance needed. Used by tests and authors. |
 | `mock list\|advance\|emit\|exit` | `HarnessListMocks` / `HarnessMockCommand`. |
-| `threads` / `items --thread T [--turn N]` | Thread rows (harness escape hatch) / items via App RPCs. |
-| `send --thread T <text…>` | `SendMessage`. |
+| `threads` / `items --thread T [--turn N]` | Thread rows (harness escape hatch) / items via `HarnessListItems`. |
+| `send --thread T <text…>` | `SendMessageWithOptions`, as the page's default send. |
 | `events tail [--channel C…]` / `events await --channel C [--where path=value] [--timeout 15s]` / `events count` | Live WS subscribe with ring replay; await consumes matches exactly like the TS client so two awaits see two occurrences. Tail defaults to 1,000 records on stdout. `--file` captures without an event-count cap, bounded by `--max-bytes` or `--timeout`, and reports when the capture is incomplete. |
 | `record start\|stop`, `bundles`, `replay bundle\|file\|pause\|resume\|step\|stop\|status` | Bundle workflow. |
 | `logs backend\|frontend-errors\|ui-trace [-f] [-n N]` | Tails the evidence files `HarnessInfo` names (backend = the stderr capture from `up`). |

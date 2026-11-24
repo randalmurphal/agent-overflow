@@ -150,7 +150,7 @@ export function wakeInput(harness: HarnessApp, cwd: string, prefix: string, time
  */
 export async function laterMessage(harness: HarnessApp, thread: string, cwd: string, text = `Anything else? ${randomUUID()}`): Promise<void> {
   const read = wakeInput(harness, cwd, text, 60_000);
-  await harness.rpc('SendMessage', thread, text, null);
+  await harness.send(thread, text);
   await read;
 }
 

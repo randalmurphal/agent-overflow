@@ -75,7 +75,7 @@ export function reportNonBenignInterruptError(
  */
 export type DirectSendOutcome = 'accepted' | 'refused' | 'unknown';
 
-// This client's direct sends whose SendMessage call has not answered, by
+// This client's direct sends whose SendMessageWithOptions call has not answered, by
 // thread.
 const unansweredSends = new Map<string, Promise<DirectSendOutcome>>();
 

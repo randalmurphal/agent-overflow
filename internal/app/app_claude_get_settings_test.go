@@ -304,7 +304,7 @@ func TestSpawnedClaudeSessionReadsProjectAliasThroughProbeList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	t.Cleanup(func() { _ = app.StopSession(thread.ID) })

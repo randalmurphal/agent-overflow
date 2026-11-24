@@ -508,7 +508,7 @@ test.describe('mid-loop consumption', () => {
 
       // The reservation: the consumed message's quiet row, before it moves to
       // where the drain consumes it.
-      const consumedRows = async () => (await harness.rpc('ListItems', caller, true) as ListedItem[]).filter((item) =>
+      const consumedRows = async () => (await harness.items(caller, true) as ListedItem[]).filter((item) =>
         item.kind === 'user_text' && (source === 'agent'
           ? (item.meta ?? '').includes('thread-wake:')
           : (item.summary ?? '').includes(MID_LOOP_QUEUED)));

@@ -290,7 +290,7 @@ func TestAStopRestsWhatTheThreadSpawnedAndOnlyCancelsWhatItSent(t *testing.T) {
 	}
 	f.awaitReceiptRunning(t, grand.Token)
 	other := f.plainThread(t)
-	if err := f.app.StartSession(other.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), other.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	sent, err := f.adapter().Send(t.Context(), f.targetIdentity(t, child.ThreadID), threadtools.SendCall{ThreadID: other.ID, Message: "look at this", Notify: true})

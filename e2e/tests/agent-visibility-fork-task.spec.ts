@@ -90,7 +90,7 @@ test('a forked skill on a task settles in place and leaves no background row', a
   await harness.open(page);
   await page.getByText('Fork task').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'review the change', null);
+  await harness.send(threadId, 'review the change');
   await harness.waitForEvent('provider:turn_completed');
 
   await expect
@@ -132,7 +132,7 @@ test("Stop in a running fork's pane stops the fork and the main turn goes on", a
   await harness.open(page);
   await page.getByText('Fork stop').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'review the change', null);
+  await harness.send(threadId, 'review the change');
   await waitForGate(harness, 'stopped');
 
   const timeline = page.getByTestId('message-timeline-scroll');
@@ -178,7 +178,7 @@ test("the turn's Stop ends a running fork with the turn", async ({ harness, page
   await harness.open(page);
   await page.getByText('Fork interrupt').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'review the change', null);
+  await harness.send(threadId, 'review the change');
 
   const timeline = page.getByTestId('message-timeline-scroll');
   const card = timeline.getByTestId('subagent-group').first();
@@ -228,7 +228,7 @@ test('a typed forked command becomes the fork card and settles with the fork', a
   await harness.open(page);
   await page.getByText('Typed fork').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, '/code-review high', null);
+  await harness.send(threadId, '/code-review high');
   await harness.waitForEvent('provider:turn_completed');
 
   await expect
@@ -266,7 +266,7 @@ test("Stop in a typed fork's pane stops the fork by its task id", async ({ harne
   await harness.open(page);
   await page.getByText('Typed fork stop').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, '/code-review high', null);
+  await harness.send(threadId, '/code-review high');
   await waitForGate(harness, 'stopped');
 
   const card = page.getByTestId('message-timeline-scroll').getByTestId('subagent-group').first();
@@ -382,7 +382,7 @@ async function runTypedForkChild(harness: HarnessApp, page: Page, name: string, 
   await harness.open(page);
   await page.getByText(title).click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, '/code-review high', null);
+  await harness.send(threadId, '/code-review high');
   await harness.waitForEvent('provider:turn_completed');
 
   await expect
@@ -536,11 +536,11 @@ test('a resume a typed fork sends keeps the resumed round running until the agen
   await harness.open(page);
   await page.getByText('Typed fork resume').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'ask an agent for alpha', null);
+  await harness.send(threadId, 'ask an agent for alpha');
   await harness.waitForEvent('provider:turn_completed');
 
   const turn2 = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, `/resume-fork ${AGENT_TASK}`, null);
+  await harness.send(threadId, `/resume-fork ${AGENT_TASK}`);
   await turn2;
   await waitForGate(harness, 'resumed');
   await expectResumedRound(harness, threadId, true);
@@ -557,9 +557,9 @@ test('after a restart, a resume a typed fork sends finds the agent the earlier p
   await harness.open(page);
   await page.getByText('Typed fork restart').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'ask an agent for alpha', null);
+  await harness.send(threadId, 'ask an agent for alpha');
   await harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('StopSession', threadId);
+  await harness.stopSession(threadId);
 
   await harness.rpc('HarnessSetScenario', {
     scenario: claudeScenario('typed-fork-resume-after-restart', [
@@ -570,7 +570,7 @@ test('after a restart, a resume a typed fork sends finds the agent the earlier p
   });
   const mockId = await startMock(harness, threadId);
   const turn = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, `/resume-fork ${AGENT_TASK}`, null);
+  await harness.send(threadId, `/resume-fork ${AGENT_TASK}`);
   await turn;
   await waitForGate(harness, 'resumed');
   await expectResumedRound(harness, threadId, true);
@@ -588,11 +588,11 @@ test("after a restart, a resumed typed fork's rows return to its command card", 
   await harness.open(page);
   await page.getByText('Typed fork resumed').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, '/code-review high', null);
+  await harness.send(threadId, '/code-review high');
   await harness.waitForEvent('provider:turn_completed');
   const fork = await typedForkRow(harness, threadId);
   expect(fork?.id).toMatch(/^claude-command:/);
-  await harness.rpc('StopSession', threadId);
+  await harness.stopSession(threadId);
 
   // The resumed fork has no launching tool_use: its rows reach only the
   // mirror (local_agent_resumed_by_typed_fork_20261014, turn 3).
@@ -618,7 +618,7 @@ test("after a restart, a resumed typed fork's rows return to its command card", 
   });
   const mockId = await startMock(harness, threadId);
   const turn = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'ask the reviewer for more', null);
+  await harness.send(threadId, 'ask the reviewer for more');
   await turn;
   await waitForGate(harness, 'fork-round');
   await advance(harness, mockId, 'fork-round');

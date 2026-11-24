@@ -193,7 +193,6 @@ export function installPaneMocks(items: Item[] = [], runs: ActivityRunStub[] = [
     interactive: { approvals: [], userInputs: [] },
     todo: null,
   }));
-  setBindingMock('ListItems', async () => items);
   setBindingMock('GetThreadItem', async (threadId: string, itemId: string) => items.find(item => item.threadId === threadId && item.id === itemId) ?? null);
   // Empty turn history by default. Tests that want to exercise rehydration
   // override this via setBindingMock('ListRecentTurns', ...) after calling

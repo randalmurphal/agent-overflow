@@ -123,7 +123,7 @@ func TestStopBeforeACodexTurnOpensEndsInOneOutcome(t *testing.T) {
 			if _, err := app.settings.Update(map[string]any{"codexBinaryPath": writeCodexStopBeforeTurnBinary(t, capture, tc.resolution, tc.stops)}); err != nil {
 				t.Fatalf("set binary: %v", err)
 			}
-			if err := app.StartSession(thread.ID); err != nil {
+			if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
 			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
@@ -131,7 +131,7 @@ func TestStopBeforeACodexTurnOpensEndsInOneOutcome(t *testing.T) {
 			const message = "stop me before I start"
 			if tc.queued {
 				dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{ID: "queue:stop-before", Message: message}})
-			} else if err := app.SendMessage(context.Background(), thread.ID, message, nil); err != nil {
+			} else if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, message, SendMessageOptions{}); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			if got := turnStartsCarrying(t, capture, message); got != 1 {

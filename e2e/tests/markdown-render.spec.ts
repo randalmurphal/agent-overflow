@@ -71,7 +71,7 @@ test('a multi-delta stream renders math, mermaid, tables, link policy, and footn
   await harness.open(page);
   await page.getByText('Markdown check').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'render everything', null);
+  await harness.send(threadId, 'render everything');
   await harness.waitForEvent('provider:turn_completed');
 
   const timeline = page.getByTestId('message-timeline-scroll');
@@ -133,7 +133,7 @@ test('the footnote popup opens, navigates a chained reference, and closes from i
   await harness.open(page);
   await page.getByText('Footnote check').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'render footnotes', null);
+  await harness.send(threadId, 'render footnotes');
   await harness.waitForEvent('provider:turn_completed');
 
   const timeline = page.getByTestId('message-timeline-scroll');

@@ -301,7 +301,7 @@ func TestThreadRequestSettlesOnlyOnTheTurnThatConsumedIt(t *testing.T) {
 		t.Fatalf("request did not settle: %+v", f.request(t, ack.Token))
 	}
 	// A second, human turn in the same thread.
-	if err := f.app.SendMessage(context.Background(), ack.ThreadID, "and now the other platform", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(context.Background(), ack.ThreadID, "and now the other platform", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	f.bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 10*time.Second)
@@ -652,7 +652,6 @@ func TestAnAsksCopyRefusesAPersonsMessageAndKeep(t *testing.T) {
 			t.Fatalf("%s on the ask's copy = %v; want it refused as %s", what, err, askCopyReadOnlyCode)
 		}
 	}
-	refused("SendMessage", f.app.SendMessage(context.Background(), copyRow.ID, "and also look at the tests", nil))
 	_, err = f.app.SendMessageWithOptions(t.Context(), copyRow.ID, "and also the docs", SendMessageOptions{SendID: "person-send"})
 	refused("SendMessageWithOptions", err)
 	_, err = f.app.PromoteScratchThread(t.Context(), copyRow.ID)
@@ -3467,7 +3466,7 @@ func TestThreadStatusSaysTheQueuedMessageIsStillComing(t *testing.T) {
 		// calls thread_status is. Its queue hands the wake straight to the
 		// session, where it waits for the turn boundary: no durable queue
 		// row is left, and the message has still not arrived.
-		if err := f.app.SendMessage(context.Background(), f.caller.ID, "look into the backfill", nil); err != nil {
+		if _, err := f.app.SendMessageWithOptions(context.Background(), f.caller.ID, "look into the backfill", SendMessageOptions{}); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 		// Mid-turn means the turn is open in the store, not only that the

@@ -146,7 +146,7 @@ func claudeStarted(app *App, threadID, argvPath string) startSession {
 	return func(t *testing.T) startedSession {
 		t.Helper()
 		_ = os.Remove(argvPath)
-		if err := app.StartSession(threadID); err != nil {
+		if err := app.startSessionTakingLock(context.Background(), threadID); err != nil {
 			t.Fatalf("StartSession: %v", err)
 		}
 		argv := spawnedClaudeArgv(t, argvPath)
@@ -229,7 +229,7 @@ func codexStarted(app *App, threadID, logPath string) startSession {
 		if err := os.Truncate(logPath, 0); err != nil && !os.IsNotExist(err) {
 			t.Fatalf("truncate logPath: %v", err)
 		}
-		if err := app.StartSession(threadID); err != nil {
+		if err := app.startSessionTakingLock(context.Background(), threadID); err != nil {
 			t.Fatalf("StartSession: %v", err)
 		}
 		var started *startedSession
@@ -278,7 +278,7 @@ func codexStarted(app *App, threadID, logPath string) startSession {
 			}
 		}
 		// A turn carries the folders it may write.
-		if err := app.SendMessage(context.Background(), threadID, "hello", nil); err != nil {
+		if _, err := app.SendMessageWithOptions(context.Background(), threadID, "hello", SendMessageOptions{}); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 		started.dirs = codexTurnWritableRoots(t, logPath)
@@ -606,7 +606,7 @@ func TestStandingAgentStartFailureStillReportsAnUnreadableHomeFile(t *testing.T)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": filepath.Join(t.TempDir(), "no-claude")}); err != nil {
 		t.Fatalf("settings: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err == nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err == nil {
 		t.Fatal("StartSession with no provider binary succeeded")
 	}
 	requireHomeWarningRow(t, app, thread.ID, path, "not a regular file")
@@ -618,7 +618,7 @@ func TestStandingAgentStartFailureStillReportsAnUnreadableHomeFile(t *testing.T)
 func TestStandingAgentCompactionReportsAnUnreadableHomeFile(t *testing.T) {
 	t.Parallel()
 	app, thread, home, argvPath := unreadableHomeFixture(t)
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	spawnedClaudeArgv(t, argvPath)

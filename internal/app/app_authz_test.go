@@ -250,9 +250,6 @@ func TestCreateThreadJudgesTheResolvedMode(t *testing.T) {
 // keeps it the set the code has.
 func threadDrivingCalls(app *App) map[string]func(t *testing.T, ctx context.Context, threadID string) error {
 	return map[string]func(t *testing.T, ctx context.Context, threadID string) error{
-		"SendMessage": func(_ *testing.T, ctx context.Context, id string) error {
-			return app.SendMessage(ctx, id, "hi", nil)
-		},
 		"SendMessageWithOptions": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.SendMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
 			return err

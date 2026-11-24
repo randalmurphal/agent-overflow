@@ -59,7 +59,7 @@ test('the working sprite strip is fetched once across turns', async ({ harness, 
     projects: [{ name: 'sprite-app', repo: {}, threads: [{ title: 'Sprite turns' }] }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const registered = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) => ev.report.kind === 'registered',
@@ -72,7 +72,7 @@ test('the working sprite strip is fetched once across turns', async ({ harness, 
   // An empty thread is not listed, so turn 1 is under way before the page
   // opens; the app's boot and the rail then race for the same strip.
   let gate = finishGate();
-  await harness.rpc('SendMessage', threadId, 'turn 1', null);
+  await harness.send(threadId, 'turn 1');
   await gate;
 
   const stripFetches: string[] = [];
@@ -89,7 +89,7 @@ test('the working sprite strip is fetched once across turns', async ({ harness, 
   for (const turn of [1, 2]) {
     if (turn > 1) {
       gate = finishGate();
-      await harness.rpc('SendMessage', threadId, `turn ${turn}`, null);
+      await harness.send(threadId, `turn ${turn}`);
       await gate;
     }
     await expect(sprite).toHaveAttribute('data-sprite-id', SPRITE);

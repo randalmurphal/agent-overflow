@@ -96,12 +96,12 @@ echo "the report while the start was held"
         afterTurns: 'silent',
       }),
     );
-    await harness.rpc('StartSession', thread);
-    await harness.rpc('SendMessage', thread, 'report once', null);
+    await harness.startSession(thread);
+    await harness.send(thread, 'report once');
     const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
     expect(ack.isError, ack.text).toBe(false);
     await awaitTurnCompleted(harness, thread);
-    await harness.rpc('StopSession', thread);
+    await harness.stopSession(thread);
 
     // The next start is held at the handshake. The send may join the
     // wake's turn or take one of its own, so every reply reads the same.
@@ -221,12 +221,12 @@ echo "the report nobody could read"
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'report once', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'report once');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
       await awaitTurnCompleted(harness, thread);
-      await harness.rpc('StopSession', thread);
+      await harness.stopSession(thread);
 
       const b = startBreaker(harness, provider, home);
       breaker = b;
@@ -293,7 +293,7 @@ echo "the report nobody could read"
         }),
       );
       const withdrawn = harness.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
-      await harness.rpc('StartSession', thread);
+      await harness.startSession(thread);
       await withdrawn;
       const wake = await wakeInput(harness, home, 'Watch "once" reported.');
       expect(wake.report.input).toContain('"the report nobody could read"');
@@ -366,14 +366,14 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'watch tick', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'watch tick');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
       await awaitTurnCompleted(harness, thread);
 
       const brk = async () => {
-        await harness.rpc('StopSession', thread);
+        await harness.stopSession(thread);
         await b.brk();
       };
       const mend = async (name: string) => {
@@ -553,11 +553,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         threadToolsScenario({ name: `wakes-restart-mended-${provider}`, provider, turns: [{ text: 'Noted.' }], afterTurns: 'silent' }),
       );
       const withdrawn = h.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
-      await h.rpc('StartSession', thread);
+      await h.startSession(thread);
       await withdrawn;
-      await h.rpc('StopSession', thread);
-      await h.rpc('StartSession', thread);
-      await h.rpc('StopSession', thread);
+      await h.stopSession(thread);
+      await h.startSession(thread);
+      await h.stopSession(thread);
       expect(h.countEvents<NotificationSend>('notification:send', startFailure(true))).toBe(1);
       expect(h.countEvents<NotificationSend>('notification:send', startFailure(false))).toBe(0);
     } finally {
@@ -612,8 +612,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'watch tick', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'watch tick');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
       await awaitTurnCompleted(harness, thread);
@@ -648,7 +648,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       };
 
       // A wake and an outside send held behind a failed start.
-      await harness.rpc('StopSession', thread);
+      await harness.stopSession(thread);
       await b.brk();
       await say('report 1');
       await harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
@@ -681,9 +681,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         }),
       );
       const withdrawn = harness.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
-      await harness.rpc('StartSession', thread);
+      await harness.startSession(thread);
       await withdrawn;
-      await harness.rpc('SendMessage', thread, 'anything waiting?', null);
+      await harness.send(thread, 'anything waiting?');
       await wakeInput(harness, home, 'anything waiting?');
       await awaitTurnCompleted(harness, thread);
       expect(countInputs(harness, home, 'Watch "tick" reported.')).toBe(0);
@@ -760,8 +760,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'run the nightly build on the build box', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'run the nightly build on the build box');
       const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
       expect(started.report.isError, started.report.result).toBeFalsy();
       expect(started.report.result).toContain('"backgrounded":true');
@@ -797,7 +797,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       // The job finishes while the thread's start fails: its completion is
       // held in the queue.
-      await harness.rpc('StopSession', thread);
+      await harness.stopSession(thread);
       await b.brk();
       await writeFile(release, '');
       await harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
@@ -905,8 +905,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'run the nightly build on the build box', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'run the nightly build on the build box');
       const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
       expect(started.report.isError, started.report.result).toBeFalsy();
       await awaitTurnCompleted(harness, thread);
@@ -931,7 +931,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       // The job finishes while the thread's start fails: its completion is
       // held in the queue, an incoming row in the Agents tray.
-      await harness.rpc('StopSession', thread);
+      await harness.stopSession(thread);
       await b.brk();
       await writeFile(release, '');
       await harness.waitForEvent<NotificationSend>('notification:send', startFailure, 60_000);
@@ -970,7 +970,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         (ev) => ev.report.kind === 'user_input' && ev.cwd === cwd && (ev.report.input ?? '').includes(completion),
       );
       await delivered.expectNoneThrough(async () => {
-        await harness.rpc('StartSession', thread);
+        await harness.startSession(thread);
         await expect.poll(() => nextCheck(controlId), { timeout: 30_000 }).toBeGreaterThanOrEqual(due + WATCH_POLL_MS);
         const after = nextCheck(controlId);
         await expect.poll(() => nextCheck(controlId), { timeout: 30_000 }).not.toBe(after);

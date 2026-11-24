@@ -332,7 +332,7 @@ async function openLiveCut(harness: HarnessApp, page: Page, hold: PagingHold): P
   await expect(scroller.getByText('Earlier answer.', { exact: true }).last()).toBeVisible();
 
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'Cut question', null);
+  await harness.send(threadId, 'Cut question');
   await awaitTurnCompleted(harness, threadId);
   await expectRevealedInOrder(scroller, [LIVE_RETRY_TEXT, ...LIVE_NOTES, LIVE_LAST_TEXT]);
   await expect(scroller.getByText(LIVE_LAST_TEXT, { exact: true })).toBeVisible();

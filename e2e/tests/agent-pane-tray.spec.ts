@@ -71,7 +71,7 @@ test("an agent pane's tray lists the agent's rows and stops only them", async ({
   await harness.open(page);
   await page.getByTestId('thread-row-title').getByText('Agent pane tray', { exact: true }).click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'start the work', null);
+  await harness.send(threadId, 'start the work');
   await harness.waitForEvent('provider:turn_completed');
 
   const mainBody = page.getByTestId('activity-rail-background-body');

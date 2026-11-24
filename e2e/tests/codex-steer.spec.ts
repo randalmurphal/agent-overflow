@@ -36,7 +36,7 @@ test('messages sent during a codex turn steer into it and land in order', async 
     ],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const registered = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) => ev.report.kind === 'registered',
@@ -56,7 +56,7 @@ test('messages sent during a codex turn steer into it and land in order', async 
     );
 
   // Turn 1 opens and parks with a command still running.
-  await harness.rpc('SendMessage', threadId, 'first prompt', null);
+  await harness.send(threadId, 'first prompt');
   expect((await nextUserInput()).report.input).toBe('first prompt');
   await gate('hold-first-turn');
 
@@ -77,7 +77,7 @@ test('messages sent during a codex turn steer into it and land in order', async 
   // back.
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       return items.filter((i) => i.kind === 'user_text').map((i) => i.summary);
     })
     .toEqual(['first prompt', 'second prompt', 'third prompt']);
@@ -86,7 +86,7 @@ test('messages sent during a codex turn steer into it and land in order', async 
   // `clientUserMessageId` back as `clientId`, so each message landed on the
   // row it was minted for. An unmatched echo would have persisted as a
   // notification ("Injected provider context") instead.
-  const midTurnItems = await harness.rpc<Item[]>('ListItems', threadId, true);
+  const midTurnItems = await harness.items<Item>(threadId, true);
   expect(midTurnItems.filter((i) => i.kind === 'notification')).toEqual([]);
 
   // Release turn 1 and let it finish.
@@ -98,14 +98,14 @@ test('messages sent during a codex turn steer into it and land in order', async 
   // double-delivery bug the queue revert exists to prevent.
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       return items
         .filter((i) => i.kind === 'user_text' || i.kind === 'assistant_text')
         .map((i) => i.summary);
     })
     .toEqual(['first prompt', 'second prompt', 'third prompt', 'Finished turn 1.']);
 
-  const settled = await harness.rpc<Item[]>('ListItems', threadId, true);
+  const settled = await harness.items<Item>(threadId, true);
   expect(settled.filter((i) => i.status !== 'completed')).toEqual([]);
 });
 
@@ -133,7 +133,7 @@ test('repeated Codex sends remain pending through reload until provider consumpt
   await harness.open(page);
   await page.getByText('Pending Codex', { exact: true }).click();
   const registered = harness.waitForEvent<HarnessMockEvent>('harness:mock', ev => ev.report.kind === 'registered');
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const mockId = (await registered).mockId;
   const held = harness.waitForEvent<HarnessMockEvent>('harness:mock', ev => ev.mockId === mockId && ev.report.kind === 'waiting_signal' && ev.report.detail === 'hold-first-turn');
   await page.getByLabel('Message Input').fill('first prompt');

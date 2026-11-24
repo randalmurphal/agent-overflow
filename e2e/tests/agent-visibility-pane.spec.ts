@@ -100,7 +100,7 @@ async function runSurveyTurn(
   await harness.open(page);
   await page.getByText(title).click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'survey the parser', null);
+  await harness.send(threadId, 'survey the parser');
   await harness.waitForEvent('provider:turn_completed');
   return threadId;
 }

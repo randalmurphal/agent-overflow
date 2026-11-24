@@ -51,7 +51,7 @@ async function watermarkCase(harness: HarnessApp, page: Page): Promise<void> {
 
   await startMock(harness, streaming);
   const settled = harness.waitForEvent('provider:turn_completed', undefined, 30_000);
-  await harness.rpc('SendMessage', streaming, 'stream while unwatched', null);
+  await harness.send(streaming, 'stream while unwatched');
   await settled;
 
   // The harness client states no watch set, so its newest item_event seq is

@@ -31,7 +31,7 @@ test('typing offers open tabs and recent addresses, by keyboard and by mouse', a
     }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const activeURL = async (): Promise<string> => {
     const state = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
     return state.pages?.find((tab) => tab.id === state.activePageId)?.url ?? '';
@@ -113,7 +113,7 @@ test('a dev server the thread runs is offered, read when the field takes focus',
     }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await harness.open(page);
   await page.getByText('Browser dev server').click();
   await page.getByTestId('browser-companion-toggle').click();
@@ -218,7 +218,7 @@ async function seedTabs(harness: HarnessApp, title: string, urls: string[]): Pro
     projects: [{ name: 'browser-drafts', repo: {}, threads: [{ title, turns: [{ userText: 'Hello', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }] }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const ids: string[] = [];
   for (const address of urls) {
     const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });

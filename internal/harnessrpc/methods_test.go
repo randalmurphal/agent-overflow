@@ -102,7 +102,7 @@ func TestHarnessListMethodsIsAJSONArray(t *testing.T) {
 
 func TestHarnessCapabilitiesCatalogIsVersionedAndDefensive(t *testing.T) {
 	h, _ := newHarnessTestHost(t)
-	h.setWireMethods([]string{"HarnessCapabilities", "SendMessage"})
+	h.setWireMethods([]string{"HarnessCapabilities", "SendMessageWithOptions"})
 	caps, err := h.HarnessCapabilities()
 	if err != nil {
 		t.Fatalf("HarnessCapabilities: %v", err)
@@ -110,7 +110,7 @@ func TestHarnessCapabilitiesCatalogIsVersionedAndDefensive(t *testing.T) {
 	if caps.ProtocolRevision != harnessProtocolRevision {
 		t.Fatalf("protocol revision = %d, want %d", caps.ProtocolRevision, harnessProtocolRevision)
 	}
-	for _, name := range []string{"HarnessCapabilities", "SendMessage"} {
+	for _, name := range []string{"HarnessCapabilities", "SendMessageWithOptions"} {
 		if !slices.Contains(caps.Methods, name) {
 			t.Errorf("methods omit %q: %v", name, caps.Methods)
 		}

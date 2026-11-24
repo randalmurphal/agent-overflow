@@ -183,7 +183,7 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
 
         for (const [round, kind] of (['copy', 'move'] as const).entries()) {
           const used = new Set((await source.rpc<Array<{ mockId: string }>>('HarnessListMocks')).map((mock) => mock.mockId));
-          await source.rpc('SendMessage', sourceThread, 'Check the deploy every five minutes.', null);
+          await source.send(sourceThread, 'Check the deploy every five minutes.');
           await expect.poll(async () => (await listItems(source, sourceThread)).filter((item) => item.summary === reply).length, { timeout: 20_000 }).toBe(round + 1);
           const mocks = await source.rpc<Array<{ mockId: string; registration: { resumeRef?: string } }>>('HarnessListMocks');
           const mockId = mocks.find((mock) => mock.registration.resumeRef === nativeID && !used.has(mock.mockId))?.mockId;

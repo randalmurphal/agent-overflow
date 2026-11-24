@@ -48,7 +48,8 @@ func TestEveryDoorRefusesAClaimedThread(t *testing.T) {
 	plain := func(t *testing.T, f *requestFixture) string { return f.plainThread(t).ID }
 	doors := map[string]door{
 		"send": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
-			return f.app.SendMessage(context.Background(), id, "hello", nil)
+			_, err := f.app.SendMessageWithOptions(context.Background(), id, "hello", SendMessageOptions{})
+			return err
 		}},
 		"session start": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
 			return f.app.startSession(t.Context(), id)
@@ -199,7 +200,7 @@ func TestEveryAppMessageDoorQueuesForAClaimedThread(t *testing.T) {
 				door.seed(t, f.app, id)
 			}
 			if door.live {
-				if err := f.app.StartSession(id); err != nil {
+				if err := f.app.startSessionTakingLock(context.Background(), id); err != nil {
 					t.Fatal(err)
 				}
 			}

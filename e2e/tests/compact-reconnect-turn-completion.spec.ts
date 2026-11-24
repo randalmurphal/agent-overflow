@@ -85,7 +85,7 @@ test(`completion during an outage clears Stop on the paired phone without reload
     await page.getByTestId('thread-row').click();
     await expect(page.getByLabel('Message Input')).toBeEnabled();
     const mockId = await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'finish while disconnected', null);
+    await harness.send(threadId, 'finish while disconnected');
     await waitForGate(harness, 'finish');
     await expect(page.getByText('Working before disconnect.', { exact: true })).toBeVisible();
     const stop = page.getByRole('button', { name: 'Interrupt current turn', exact: true });

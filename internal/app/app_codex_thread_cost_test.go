@@ -104,7 +104,7 @@ func startThreadCostSession(t *testing.T, app *App, id, usageReply, capturePath 
 	}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if err := app.StartSession(id); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), id); err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
 	t.Cleanup(func() {
@@ -113,7 +113,7 @@ func startThreadCostSession(t *testing.T, app *App, id, usageReply, capturePath 
 			t.Errorf("stop cost fixture session: %v", err)
 		}
 	})
-	if err := app.SendMessage(context.Background(), id, "price this", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), id, "price this", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	return id

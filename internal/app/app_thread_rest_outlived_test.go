@@ -91,7 +91,7 @@ func workerStoppedTexts(t *testing.T, a *App, threadID, token string) []string {
 // work again.
 func continueWorker(t *testing.T, a *App, threadID string) {
 	t.Helper()
-	if err := a.SendMessage(context.Background(), threadID, "keep going", nil); err != nil {
+	if _, err := a.SendMessageWithOptions(context.Background(), threadID, "keep going", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {

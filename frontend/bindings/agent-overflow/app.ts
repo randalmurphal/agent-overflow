@@ -3282,24 +3282,13 @@ export function ListImportableSessions(req: app$0.ImportScanRequest): $Cancellab
 }
 
 /**
- * ListItems returns every item persisted for a thread in chronological
- * order. Unwindowed, so it carries the byte backstop the same way the
- * paged loads do; active panes use the bounded slice surface instead.
- */
-export function ListItems(threadID: string, inlinePreviews: boolean): $CancellablePromise<store$0.Item[]> {
-    return $Call.ByID(2158085763, threadID, inlinePreviews).then(($result: any) => {
-        return $$createType168($result);
-    });
-}
-
-/**
  * ListItemsAfterCursor loads newer items on demand, strictly after the
  * frontend's current item-coordinate window ceiling. It is the forward pager
  * companion to ListItemsBeforeCursor.
  */
 export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCursor, itemBudget: number, options: app$0.TimelinePageOptions): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(2915892537, threadID, after, itemBudget, options).then(($result: any) => {
-        return $$createType169($result);
+        return $$createType168($result);
     });
 }
 
@@ -3312,7 +3301,7 @@ export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCu
  */
 export function ListItemsBeforeCursor(threadID: string, before: store$0.TimelineCursor, itemBudget: number, options: app$0.TimelinePageOptions): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(162135710, threadID, before, itemBudget, options).then(($result: any) => {
-        return $$createType169($result);
+        return $$createType168($result);
     });
 }
 
@@ -3332,7 +3321,7 @@ export function ListItemsBeforeCursor(threadID: string, before: store$0.Timeline
  */
 export function ListLiveBackgroundTasks(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(320784263, threadID).then(($result: any) => {
-        return $$createType168($result);
+        return $$createType169($result);
     });
 }
 
@@ -3597,7 +3586,7 @@ export function ListThreadPastAgentRows(threadID: string, after: store$0.PastAge
  */
 export function ListThreadProposedPlans(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(2485050629, threadID).then(($result: any) => {
-        return $$createType168($result);
+        return $$createType169($result);
     });
 }
 
@@ -3639,7 +3628,7 @@ export function ListThreadRemoteCommands(threadID: string): $CancellablePromise<
  */
 export function ListThreadSliceAround(threadID: string, anchorItemID: string, targetItemCount: number, options: app$0.TimelinePageOptions): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(4176102096, threadID, anchorItemID, targetItemCount, options).then(($result: any) => {
-        return $$createType169($result);
+        return $$createType168($result);
     });
 }
 
@@ -5545,14 +5534,6 @@ export function SendExternalThreadMessage(threadID: string, text: string): $Canc
 }
 
 /**
- * SendMessage is the Wails-bound compatibility entry point for user-typed
- * content. The options-aware path below owns newer composer controls.
- */
-export function SendMessage(threadID: string, content: string, attachmentIDs: string[]): $CancellablePromise<void> {
-    return $Call.ByID(1496882310, threadID, content, attachmentIDs);
-}
-
-/**
  * SendMessageWithOptions applies send-time composer settings and dispatches the
  * user turn. RuntimeMode is staged in the composer and persisted here, under
  * the same per-thread action lock as provider session start/send.
@@ -6112,23 +6093,6 @@ export function StartSSHConnection(request: sshsetup$0.Request): $CancellablePro
     return $Call.ByID(2623175319, request).then(($result: any) => {
         return $$createType98($result);
     });
-}
-
-/**
- * StartSession is the Wails-bound entry point for "bring this thread's
- * provider subprocess up." The sendMessage path also calls
- * startSessionNow via runRegisteredSessionStart when a thread has no active
- * session yet.
- * 
- * Takes the per-thread action lock: an unserialized start racing a
- * revert can read the pre-revert SessionRef, clear the stopped-thread
- * gate mid-revert (MarkThreadActive), and register a session bound to
- * the old provider thread after the revert repointed the row. Internal
- * callers that already hold the lock (sends, deferred config restarts)
- * go through a.startSession / runRegisteredSessionStart directly.
- */
-export function StartSession(threadID: string): $CancellablePromise<void> {
-    return $Call.ByID(2850159713, threadID);
 }
 
 /**
@@ -7535,8 +7499,8 @@ const $$createType164 = $Create.Array($$createType29);
 const $$createType165 = app$0.ForgeProject.createFrom;
 const $$createType166 = $Create.Array($$createType165);
 const $$createType167 = app$0.ImportScanResult.createFrom;
-const $$createType168 = $Create.Array($$createType110);
-const $$createType169 = store$0.PagedItems.createFrom;
+const $$createType168 = store$0.PagedItems.createFrom;
+const $$createType169 = $Create.Array($$createType110);
 const $$createType170 = owndevices$0.List.createFrom;
 const $$createType171 = git$0.ReviewThread.createFrom;
 const $$createType172 = $Create.Array($$createType171);

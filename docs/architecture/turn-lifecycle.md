@@ -629,7 +629,7 @@ One-to-one with a user → assistant round-trip. The authoritative
 ### Participants
 
 **Claude**:
-- Turn start: `SendMessage` registers a pending-send marker, then
+- Turn start: a send registers a pending-send marker, then
   Claude's wire `system/init` drives `handleTurnStart` through
   `handleInit`. The start claims the first pending send that has not
   opened a turn (`OpenedTurn`) and uses its index; a send that is never

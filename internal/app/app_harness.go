@@ -24,6 +24,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/def"
+
+	"github.com/google/uuid"
 )
 
 type harnessHost struct {
@@ -328,8 +330,16 @@ func (h *harnessHost) BroadcastThreadRow(threadID string) {
 	h.app.announceThread(h.app.listedAction(threadID), threadID)
 }
 
+func (h *harnessHost) StartSession(threadID string) error {
+	return h.app.startSessionTakingLock(context.Background(), threadID)
+}
+
 func (h *harnessHost) StopSession(threadID string) error {
 	return h.app.StopSession(threadID)
+}
+
+func (h *harnessHost) ListItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
+	return h.app.listThreadItems(threadID, inlinePreviews)
 }
 
 func (h *harnessHost) AwaitSessionEndWork() []string {
@@ -501,8 +511,18 @@ func (h *harnessHost) PublishStoreIdentity(identity store.Identity) {
 	h.app.storeIdentity.Store(&identity)
 }
 
+// SendMessage sends with the options the page's default send builds
+// (frontend/src/lib/utils/sendOptions.ts buildSendOptions): a fresh send
+// id, rows found by that id, and an empty draft snapshot, which consumes
+// no composer draft.
 func (h *harnessHost) SendMessage(threadID, message string) error {
-	return h.app.SendMessage(context.Background(), threadID, message, nil)
+	_, err := h.app.SendMessageWithOptions(context.Background(), threadID, message, SendMessageOptions{
+		AttachmentIDs:     []string{},
+		ConsumeDraft:      &DraftSnapshot{AttachmentIDs: []string{}, TerminalChips: []TerminalChip{}},
+		SendID:            uuid.NewString(),
+		ReconcileBySendID: true,
+	})
+	return err
 }
 
 var _ harnessrpc.Host = (*harnessHost)(nil)

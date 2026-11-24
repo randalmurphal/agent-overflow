@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -359,7 +360,7 @@ done
 	}
 	take := recordProviderStatuses(app)
 
-	if err := app.StartSession(id); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), id); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	t.Cleanup(func() { _ = app.StopSession(id) })

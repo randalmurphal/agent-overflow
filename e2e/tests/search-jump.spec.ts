@@ -171,7 +171,7 @@ test.describe('agent transcripts', () => {
     await page.getByText('Agent history', { exact: true }).click();
     await startMock(harness, threadId);
     const settled = harness.waitForEvent('provider:turn_completed');
-    await harness.rpc('SendMessage', threadId, 'survey', null);
+    await harness.send(threadId, 'survey');
     await settled;
     await expect(page.getByText('Both surveys are done.', { exact: true })).toBeVisible();
   }

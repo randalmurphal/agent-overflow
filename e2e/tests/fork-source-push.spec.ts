@@ -150,7 +150,7 @@ test('an open fork pane keeps its snapshot while the source’s agent writes and
     'provider:turn_completed',
     (event) => event.threadId === sourceId,
   );
-  await harness.rpc('SendMessage', sourceId, 'review in the background', null);
+  await harness.send(sourceId, 'review in the background');
   await turnDone;
   await waitForGate(harness, WORK_GATE);
 
@@ -235,7 +235,7 @@ test('an open fork pane keeps the rows its source reverts, then deletes', async 
     'provider:turn_completed',
     (event) => event.threadId === sourceId,
   );
-  await harness.rpc('SendMessage', sourceId, 'And descending?', null);
+  await harness.send(sourceId, 'And descending?');
   await turnDone;
 
   const fork = await harness.rpc<{ id: string; title: string }>('ForkThread', sourceId, null);

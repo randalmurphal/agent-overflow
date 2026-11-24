@@ -78,12 +78,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await harness.open(page);
       await page.getByTestId('thread-row-title').getByText(title, { exact: true }).click();
       const first = await startMock(harness, threadId);
-      await harness.rpc('SendMessage', threadId, 'Answer once.', null);
+      await harness.send(threadId, 'Answer once.');
       await expect(page.getByText('First answer.', { exact: true })).toBeVisible();
       await expect.poll(() => updateWorkReason(harness)).toBe('');
 
       // The second turn parks before writing anything the test is about.
-      await harness.rpc('SendMessage', threadId, 'Arm the schedule.', null);
+      await harness.send(threadId, 'Arm the schedule.');
       await harness.waitForEvent('harness:mock', (ev: any) => ev.mockId === first && ev.report.kind === 'waiting_signal' && ev.report.detail === 'queue');
 
       await harness.rpc('HarnessStallProviderEvents', threadId);
@@ -119,7 +119,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect.soft(items.filter((item) => item.summary.includes(STALE_REPLY) || item.summary.includes('Armed the schedule.')), 'a stopped session\'s reply reached the replacement').toEqual([]);
       expect.soft(items.filter((item) => item.toolName === 'ScheduleWakeup' || item.toolName === 'CronCreate'), 'a stopped session\'s schedule call reached the replacement').toEqual([]);
       // The replacement serves the thread, and the stale reply never shows.
-      await harness.rpc('SendMessage', threadId, 'Answer again.', null);
+      await harness.send(threadId, 'Answer again.');
       await expect(page.getByText(REPLACEMENT_REPLY, { exact: true })).toBeVisible();
       await expect(page.getByText('First answer.', { exact: true })).toBeVisible();
       await expect(page.getByText(STALE_REPLY)).toHaveCount(0);

@@ -3253,7 +3253,7 @@ describe('<Composer>', () => {
     expect(queryByText('Drop files to attach')).not.toBeNull();
   });
 
-  it('enqueues mid-turn instead of dispatching SendMessage (Enter key)', async () => {
+  it('enqueues mid-turn instead of dispatching SendMessageWithOptions (Enter key)', async () => {
     // Mid-round behaviour matches both reference UIs (Claude Code's
     // commandQueue, Codex's VecDeque<QueuedUserMessage>): the user
     // can keep typing and submit; the message lands in the per-thread
@@ -3523,7 +3523,7 @@ describe('<Composer>', () => {
     expect([...(item.revisionSourceCommentIds ?? [])]).toEqual(['comment-1']);
   });
 
-  it('still dispatches SendMessage when no turn is active', async () => {
+  it('still dispatches SendMessageWithOptions when no turn is active', async () => {
     const pane = await buildPane();
     // No setActiveTurn — pane is idle.
     const draft = await buildDraft();

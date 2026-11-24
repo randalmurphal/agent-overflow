@@ -292,8 +292,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       );
 
       // ---- A watch on a thread that is not a standing agent is refused.
-      await harness.rpc('StartSession', plainThread);
-      await harness.rpc('SendMessage', plainThread, 'watch something for me', null);
+      await harness.startSession(plainThread);
+      await harness.send(plainThread, 'watch something for me');
       const refused = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: plainP.path, timeoutMs: 60_000 });
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain("thread_watch is for assistants, and this thread is not an assistant's current thread");
@@ -303,9 +303,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const turnComplete = (data: NotificationSend) =>
         !data.retract && data.kind === 'turn-complete' && data.target.threadId === loopThread;
       const retraction = (data: NotificationSend) => Boolean(data.retract) && data.id === `thread:${loopThread}`;
-      await harness.rpc('StartSession', loopThread);
+      await harness.startSession(loopThread);
       const firstRest = harness.waitForEvent<NotificationSend>('notification:send', turnComplete, 60_000);
-      await harness.rpc('SendMessage', loopThread, 'keep an eye on the board', null);
+      await harness.send(loopThread, 'keep an eye on the board');
       const loopAck = await awaitToolAnswer<WakeRow>(harness, { tool: 'thread_loop', cwd: homes[loopThread], timeoutMs: 60_000 });
       expect(loopAck.isError, loopAck.text).toBe(false);
       expect(loopAck.value!.kind).toBe('loop');
@@ -335,7 +335,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         (data) => !data.retract && data.kind === 'turn-complete' && data.target.threadId === plainThread,
         60_000,
       );
-      await harness.rpc('SendMessage', plainThread, 'still there?', null);
+      await harness.send(plainThread, 'still there?');
       await awaitTurnCompleted(harness, plainThread);
       await plainRest;
       expect(harness.countEvents<NotificationSend>('notification:send', turnComplete)).toBe(restsBefore);
@@ -343,7 +343,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       // A person's turn on the same thread still notifies.
       const personRest = harness.waitForEvent<NotificationSend>('notification:send', turnComplete, 60_000);
-      await harness.rpc('SendMessage', loopThread, 'anything new?', null);
+      await harness.send(loopThread, 'anything new?');
       await awaitTurnCompleted(harness, loopThread);
       await personRest;
       expect(harness.countEvents<NotificationSend>('notification:send', turnComplete)).toBe(restsBefore + 1);
@@ -351,8 +351,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(digestAck.isError, digestAck.text).toBe(false);
 
       // ---- Interval watches: output becomes a wake, a failure an outcome.
-      await harness.rpc('StartSession', watchThread);
-      await harness.rpc('SendMessage', watchThread, 'watch the build', null);
+      await harness.startSession(watchThread);
+      await harness.send(watchThread, 'watch the build');
       const pollAck = await awaitToolAnswer<WakeRow>(harness, { tool: 'thread_watch', cwd: homes[watchThread], timeoutMs: 60_000 });
       expect(pollAck.isError, pollAck.text).toBe(false);
       expect(pollAck.value!.label).toBe('poll');
@@ -382,7 +382,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         .toBe('error: exit status 3; stderr: fatal: token expired');
       expect(countInputs(harness, homes[watchThread], 'Watch "broken"')).toBe(0);
 
-      await harness.rpc('SendMessage', watchThread, 'what are you watching?', null);
+      await harness.send(watchThread, 'what are you watching?');
       const status = await awaitToolAnswer<StatusAnswer>(harness, { tool: 'thread_status', cwd: homes[watchThread], timeoutMs: 60_000 });
       expect(status.isError, status.text).toBe(false);
       const wakes = status.value!.wakes ?? [];
@@ -395,8 +395,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await awaitTurnCompleted(harness, watchThread);
 
       // ---- Long-running watch: each burst of lines is its own wake.
-      await harness.rpc('StartSession', tailThread);
-      await harness.rpc('SendMessage', tailThread, 'tail the event stream', null);
+      await harness.startSession(tailThread);
+      await harness.send(tailThread, 'tail the event stream');
       const tailAck = await awaitToolAnswer<WakeRow>(harness, { tool: 'thread_watch', cwd: homes[tailThread], timeoutMs: 60_000 });
       expect(tailAck.isError, tailAck.text).toBe(false);
       expect(tailAck.value!.long_running).toBe(true);
@@ -475,7 +475,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       );
       await awaitTurnCompleted(harness, loopThread);
       // No session was started on this boot: the replay started one.
-      await harness.rpc('StopSession', loopThread);
+      await harness.stopSession(loopThread);
       await setScenario(
         harness,
         homes[loopThread],
@@ -527,8 +527,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(countInputs(harness, homes[loopThread], 'Watch "digest" reported.')).toBe(1);
 
       // ---- A watch run cut by a crash is recorded and rerun.
-      await harness.rpc('StartSession', watchThread);
-      await harness.rpc('SendMessage', watchThread, 'also watch the slow job', null);
+      await harness.startSession(watchThread);
+      await harness.send(watchThread, 'also watch the slow job');
       const slowAck = await awaitToolAnswer<WakeRow>(harness, { tool: 'thread_watch', cwd: homes[watchThread], timeoutMs: 60_000 });
       expect(slowAck.isError, slowAck.text).toBe(false);
       await awaitTurnCompleted(harness, watchThread);
@@ -649,8 +649,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
             afterTurns: 'silent',
           }),
         );
-        await harness.rpc('StartSession', thread);
-        await harness.rpc('SendMessage', thread, 'hold on', null);
+        await harness.startSession(thread);
+        await harness.send(thread, 'hold on');
         const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
         expect(ack.isError, ack.text).toBe(false);
         await awaitTurnCompleted(harness, thread);
@@ -851,8 +851,8 @@ test.describe('an assistant copied to another computer', () => {
         await writeFile(scenarioFile, JSON.stringify(codexTransferScenario(nativeID, join(source.bootstrap.homeDir, nativePath))));
       }
       await setScenario(source, home, scenario);
-      await source.rpc('StartSession', thread);
-      await source.rpc('SendMessage', thread, 'keep watch', null);
+      await source.startSession(thread);
+      await source.send(thread, 'keep watch');
       const ack = await awaitToolAnswer(source, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
       await awaitTurnCompleted(source, thread);
@@ -969,8 +969,8 @@ while [ $i -lt 1000 ]; do printf 'line %064d\\n' $i; i=$((i+1)); done
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'watch both', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'watch both');
       const bigAck = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(bigAck.isError, bigAck.text).toBe(false);
       const stuckAck = await awaitToolAnswer<WakeRow & { timeout_seconds?: number }>(harness, {
@@ -1061,15 +1061,15 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           (data) => !data.retract && data.kind === 'turn-complete' && data.target.threadId === barrier,
           60_000,
         );
-        await harness.rpc('SendMessage', barrier, 'still there?', null);
+        await harness.send(barrier, 'still there?');
         await rest;
       };
-      await harness.rpc('StartSession', barrier);
-      await harness.rpc('StartSession', ticker);
+      await harness.startSession(barrier);
+      await harness.startSession(ticker);
 
       // ---- The failed tick raises an error and nothing else.
       const personRest = harness.waitForEvent<NotificationSend>('notification:send', sends('turn-complete'), 60_000);
-      await harness.rpc('SendMessage', ticker, 'watch the board', null);
+      await harness.send(ticker, 'watch the board');
       await personRest;
       await settle();
       const retractionsBefore = count(retractions);
@@ -1084,7 +1084,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       // ---- A tick that finds nothing raises and takes back nothing.
       const againRest = harness.waitForEvent<NotificationSend>('notification:send', sends('turn-complete'), 60_000);
-      await harness.rpc('SendMessage', ticker, 'and again', null);
+      await harness.send(ticker, 'and again');
       await againRest;
       await settle();
       const restsBefore = count(sends('turn-complete'));
@@ -1172,8 +1172,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'watch tick', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'watch tick');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
       await awaitTurnCompleted(harness, thread);
@@ -1202,7 +1202,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       // A start that fails holds report 1 in the queue, so the run that
       // reads report 2 is skipped and its output stays on the row.
-      await harness.rpc('StopSession', thread);
+      await harness.stopSession(thread);
       await b.brk();
       await say('report 1');
       await harness.waitForEvent<NotificationSend>(
@@ -1317,8 +1317,8 @@ echo "arrived mid-turn"
       }),
     );
     const rest = (data: NotificationSend) => !data.retract && data.kind === 'turn-complete' && data.target.threadId === thread;
-    await harness.rpc('StartSession', thread);
-    await harness.rpc('SendMessage', thread, 'do the work', null);
+    await harness.startSession(thread);
+    await harness.send(thread, 'do the work');
     const { mockId } = await awaitGate(harness, 'hold', home);
     await writeFile(join(home, 'mid.release'), '');
     const steered = await wakeInput(harness, home, 'Watch "mid" reported.');
@@ -1392,17 +1392,17 @@ test('claude: a wake flushed mid-turn is a tick only when it runs as its own tur
     // after an event comes after anything that event raised.
     const settleNotifications = async () => {
       const barrierRest = harness.waitForEvent<NotificationSend>('notification:send', rests(barrier), 60_000);
-      await harness.rpc('SendMessage', barrier, 'still there?', null);
+      await harness.send(barrier, 'still there?');
       await barrierRest;
     };
-    await harness.rpc('StartSession', barrier);
+    await harness.startSession(barrier);
 
     for (const [thread, cwd, turns] of [
       [pickup, pickupHome, 2],
       [drain, drainHome, 1],
     ] as const) {
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'do the work', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'do the work');
       const { mockId } = await awaitGate(harness, 'hold', cwd);
       // The loop fires while the person's turn is parked, and the app flushes
       // its wake into the running session.
@@ -1423,7 +1423,7 @@ test('claude: a wake flushed mid-turn is a tick only when it runs as its own tur
     // own: the person's next turn is theirs, and its start withdraws the
     // last rest.
     const retractionsBefore = harness.countEvents<NotificationSend>('notification:send', retractions(drain));
-    await harness.rpc('SendMessage', drain, 'one more thing', null);
+    await harness.send(drain, 'one more thing');
     await expect.poll(() => turnsOf(drain), { timeout: 60_000 }).toBe(2);
     await settleNotifications();
     expect(harness.countEvents<NotificationSend>('notification:send', rests(drain))).toBe(2);

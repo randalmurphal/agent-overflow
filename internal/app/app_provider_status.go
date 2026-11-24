@@ -38,8 +38,8 @@ func (a *App) probeStartupProviderStatuses() {
 // emitProviderStatusOnSessionStartError inspects why a session start
 // failed and, when the failure looks like a provider-level problem
 // (binary missing, version too old, broken install), emits a
-// provider:status event so the banner can update before the
-// StartSession RPC returns. We re-run DetectProvider rather than
+// provider:status event so the banner can update before the start's
+// caller returns. We re-run DetectProvider rather than
 // pattern-matching on the session error text because the detect path
 // is the authoritative source of the status string.
 func (a *App) emitProviderStatusOnSessionStartError(providerName string) {

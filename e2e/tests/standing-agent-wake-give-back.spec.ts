@@ -176,8 +176,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', caller);
-      await harness.rpc('SendMessage', caller, 'ask for the release notes and run the nightly build', null);
+      await harness.startSession(caller);
+      await harness.send(caller, 'ask for the release notes and run the nightly build');
       const sent = await awaitToolAnswer<{ token: string; outcome: string; notify: boolean }>(harness, {
         tool: 'thread_send',
         cwd: callerPath,
@@ -246,7 +246,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       // The answer arrives and the job finishes while the caller's start
       // fails: both are held in the durable queue, and the app crashes.
-      await harness.rpc('StopSession', caller);
+      await harness.stopSession(caller);
       const b = startBreaker(harness, provider, callerPath);
       breaker = b;
       await b.brk();
@@ -292,7 +292,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await away.restore();
       const relaunched = harness;
       const deliveries = () => countInputs(relaunched, callerPath, completion);
-      await harness.rpc('StartSession', caller);
+      await harness.startSession(caller);
       const input = await wakeInput(harness, callerPath, completion, 60_000);
       expect(input.report.input).toContain(`${aoMessageOpening('the remote job "nightly build" on "Build box"')}Remote job finished on Build box: nightly build`);
       expect(input.report.input).toContain('build 812 finished: green');
@@ -325,9 +325,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       // The thread_status turn is the barrier: a second delivery queued
       // for the thread reaches its session before that turn's message.
       await again.expectNoneThrough(async () => {
-        await harness!.rpc('StopSession', caller);
-        await harness!.rpc('StartSession', caller);
-        await harness!.rpc('SendMessage', caller, 'did the notes come back?', null);
+        await harness!.stopSession(caller);
+        await harness!.startSession(caller);
+        await harness!.send(caller, 'did the notes come back?');
         const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string }[] }>(harness!, {
           tool: 'thread_status',
           cwd: callerPath,
@@ -441,8 +441,8 @@ async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provide
       afterTurns: 'silent',
     }),
   );
-  await app().rpc('StartSession', caller);
-  await app().rpc('SendMessage', caller, 'ask for the release notes and run the nightly build', null);
+  await app().startSession(caller);
+  await app().send(caller, 'ask for the release notes and run the nightly build');
   const sent = await awaitToolAnswer<{ token: string; outcome: string }>(app(), {
     tool: 'thread_send',
     cwd: callerPath,
@@ -515,7 +515,7 @@ async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provide
     );
   // Each message starts a session that holds as `held` says.
   const holdNextSession = async (scenario: string) => {
-    await app().rpc('StopSession', caller);
+    await app().stopSession(caller);
     await held(scenario);
   };
   // The mock can hold before the app settles the write that reached it, so
@@ -657,7 +657,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await expect.poll(() => g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
       expect(g.marks().answer).toBe(0);
       const answerAgain = harness.watchEvents('harness:mock', inputWith(g.callerPath, ANSWER));
-      await harness.rpc('StopSession', g.caller);
+      await harness.stopSession(g.caller);
       expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
 
       // ---- The completion, and an archive. Its delivery is the answer's
@@ -758,7 +758,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await expect.poll(() => g.state(), { timeout: 60_000 }).toMatchObject({ watch: 'queued', rows: 1 });
       expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '' });
       await away.restore();
-      await app.rpc('StartSession', g.caller);
+      await app.startSession(g.caller);
       const input = await wakeInput(app, g.callerPath, g.completion, 60_000);
       expect(input.report.input).toContain('build 812 finished: green');
       const again = app.watchEvents('harness:mock', inputWith(g.callerPath, g.completion));
@@ -788,9 +788,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       // The thread_status turn is the barrier: a second delivery queued for
       // the thread reaches its session before that turn's message.
       await again.expectNoneThrough(async () => {
-        await app.rpc('StopSession', g.caller);
-        await app.rpc('StartSession', g.caller);
-        await app.rpc('SendMessage', g.caller, 'did the notes come back?', null);
+        await app.stopSession(g.caller);
+        await app.startSession(g.caller);
+        await app.send(g.caller, 'did the notes come back?');
         const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string }[] }>(app, {
           tool: 'thread_status',
           cwd: g.callerPath,
@@ -836,7 +836,7 @@ test('codex: a completion the provider took in before its session died reaches t
     // A session that records each message in its thread as it takes it in,
     // as Codex writes the user message to the rollout, then holds the turn
     // without echoing it.
-    await harness.rpc('StopSession', g.caller);
+    await harness.stopSession(g.caller);
     await setScenario(harness, g.callerPath, {
       ...threadToolsScenario({
         name: 'give-back-duplicate-held',
@@ -962,12 +962,12 @@ test('codex: an answer queued while an archive waits behind a start goes back to
         afterTurns: 'silent',
       }),
     );
-    await harness.rpc('StartSession', caller);
+    await harness.startSession(caller);
     const first = await harness.waitForEvent<HarnessMockEventData>(
       'harness:mock',
       (ev) => ev.report.kind === 'registered' && ev.cwd === callerPath,
     );
-    await harness.rpc('SendMessage', caller, 'ask for the release notes', null);
+    await harness.send(caller, 'ask for the release notes');
     const sent = await awaitToolAnswer<{ token: string; outcome: string; notify: boolean }>(harness, {
       tool: 'thread_send',
       cwd: callerPath,
@@ -979,7 +979,7 @@ test('codex: an answer queued while an archive waits behind a start goes back to
     const token = sent.value!.token;
     await awaitTurnCompleted(harness, caller);
     const responder = await awaitGate(harness, 'answer', targetPath);
-    await harness.rpc('StopSession', caller);
+    await harness.stopSession(caller);
 
     const db = () => new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
     const queued = () => {
@@ -1026,7 +1026,7 @@ test('codex: an answer queued while an archive waits behind a start goes back to
       startupGate: 'held-start',
     });
     let settled = '';
-    const starting = harness.rpcWithin(60_000, 'StartSession', caller).then(() => (settled ||= 'start'));
+    const starting = harness.startSession(caller, { timeoutMs: 60_000 }).then(() => (settled ||= 'start'));
     const held = await awaitGate(harness, 'held-start', callerPath);
     expect(held.mockId).not.toBe(first.mockId);
     const archiving = harness.rpcWithin(60_000, 'ArchiveThread', caller).then(() => (settled ||= 'archive'));
@@ -1074,8 +1074,8 @@ test('codex: an answer queued while an archive waits behind a start goes back to
       }),
     );
     await harness.rpc('UnarchiveThread', caller);
-    await harness.rpc('StartSession', caller);
-    await harness.rpc('SendMessage', caller, 'did the notes come back?', null);
+    await harness.startSession(caller);
+    await harness.send(caller, 'did the notes come back?');
     const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string; delivered?: string }[] }>(harness, {
       tool: 'thread_status',
       cwd: callerPath,
@@ -1162,8 +1162,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', caller);
-      await harness.rpc('SendMessage', caller, 'ask for the release notes', null);
+      await harness.startSession(caller);
+      await harness.send(caller, 'ask for the release notes');
       const sent = await awaitToolAnswer<{ token: string; outcome: string; notify: boolean }>(harness, {
         tool: 'thread_send',
         cwd: callerPath,
@@ -1202,7 +1202,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       // The answer arrives while the caller's start fails: its wake is held
       // in the queue.
-      await harness.rpc('StopSession', caller);
+      await harness.stopSession(caller);
       const b = startBreaker(harness, provider, callerPath);
       breaker = b;
       await b.brk();
@@ -1236,15 +1236,15 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StopSession', caller);
+      await harness.stopSession(caller);
       expect({ queued: queued(), request: request() }).toEqual({ queued: [], request: { delivered: 0, how: '', notify: 0 } });
       expect((await harness.rpc<unknown[] | null>('GetQueueState', caller)) ?? []).toEqual([]);
       expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
       // The start below is the barrier: an answer the Stop left queued, or a
       // start of its own, reaches the session before the person's message.
 
-      await harness.rpc('StartSession', caller);
-      await harness.rpc('SendMessage', caller, 'did the notes come back?', null);
+      await harness.startSession(caller);
+      await harness.send(caller, 'did the notes come back?');
       const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string }[] }>(harness, {
         tool: 'thread_status',
         cwd: callerPath,
@@ -1320,8 +1320,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'run the nightly build on the build box', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'run the nightly build on the build box');
       const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
       expect(started.report.isError, started.report.result).toBeFalsy();
       expect(started.report.result).toContain('"backgrounded":true');
@@ -1352,7 +1352,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       // The job finishes while the thread's start fails: its completion is
       // held in the queue.
-      await harness.rpc('StopSession', thread);
+      await harness.stopSession(thread);
       const b = startBreaker(harness, provider, cwd);
       breaker = b;
       await b.brk();
@@ -1380,7 +1380,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       );
       // Every delivery from the Stop on is counted, however soon it comes.
       const deliveries = harness.watchEvents('harness:mock', inputWith(cwd, completion));
-      await harness.rpc('StopSession', thread);
+      await harness.stopSession(thread);
       // Back at its watch, or already queued again by the watcher's next
       // pass; never queued with nothing left to deliver it.
       const watched = watch();
@@ -1466,8 +1466,8 @@ async function archiveJustAfterARemoteFinish(provider: ProviderName, harness: Ha
       afterTurns: 'silent',
     }),
   );
-  await harness.rpc('StartSession', thread);
-  await harness.rpc('SendMessage', thread, 'run the nightly build and the soak test on the build box', null);
+  await harness.startSession(thread);
+  await harness.send(thread, 'run the nightly build and the soak test on the build box');
   await awaitTurnCompleted(harness, thread);
 
   const read = <T>(root: string, sql: string, ...params: string[]) => {

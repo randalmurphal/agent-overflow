@@ -86,8 +86,8 @@ export async function runWorkerWaiting(harness: HarnessApp, page: Page, provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'watch the build and the board', null);
+  await harness.startSession(lead);
+  await harness.send(lead, 'watch the build and the board');
   const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd: loopP.path, timeoutMs: 60_000 });
   expect(loop.isError, loop.text).toBe(false);
   let spawns: ReturnType<typeof ledgerRequests> = [];
@@ -153,8 +153,8 @@ export async function runAncestorWaiting(harness: HarnessApp, page: Page, provid
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'run the board', null);
+  await harness.startSession(lead);
+  await harness.send(lead, 'run the board');
   const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd: grandP.path, timeoutMs: 60_000 });
   expect(loop.isError, loop.text).toBe(false);
   let spawn: ReturnType<typeof ledgerRequests>[number] | undefined;
@@ -345,8 +345,8 @@ export async function runHeldWorkerFacts(harness: HarnessApp, page: Page, provid
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'run the build', null);
+  await harness.startSession(lead);
+  await harness.send(lead, 'run the build');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const { token, thread_id: worker } = spawn.value!;
@@ -419,7 +419,7 @@ export async function runHeldWorkerFacts(harness: HarnessApp, page: Page, provid
   // The shell ends in its next turn: the spawn settles finished with that
   // turn's message, and the spawner is told.
   const told = awaitMockInput(harness, { cwd: leadP.path, includes: [token, FACTS_ANSWER] });
-  await harness.rpc('SendMessage', worker, 'is the build done?', null);
+  await harness.send(worker, 'is the build done?');
   await told;
   const span = Date.now() - started;
   expect(ledgerRow(harness, token)).toMatchObject({ state: 'finished', answer: FACTS_ANSWER });
@@ -481,8 +481,8 @@ export async function runReplyThenRest(harness: HarnessApp, page: Page, provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'start the deploy', null);
+  await harness.startSession(lead);
+  await harness.send(lead, 'start the deploy');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   // The reply waits for the spawn to return, so it reaches the lead as a message.
   await releaseAfterBackgrounded(spawn, { harness, gate: 'reply-send', cwd: workerP.path });
@@ -553,8 +553,8 @@ export async function runHeldThenError(harness: HarnessApp, page: Page, provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'watch the board', null);
+  await harness.startSession(lead);
+  await harness.send(lead, 'watch the board');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const { token, thread_id: worker } = spawn.value!;
@@ -572,7 +572,7 @@ export async function runHeldThenError(harness: HarnessApp, page: Page, provider
 
   // A later turn fails: the spawn settles failed with its error, once.
   const told = awaitMockInput(harness, { cwd: leadP.path, includes: [token] });
-  await harness.rpc('SendMessage', worker, 'look at the board now', null);
+  await harness.send(worker, 'look at the board now');
   await told;
   expect(ledgerRow(harness, token)).toMatchObject({ state: 'errored' });
   expect(ledgerRow(harness, token)!.answer).toContain(HELD_FAILURE);

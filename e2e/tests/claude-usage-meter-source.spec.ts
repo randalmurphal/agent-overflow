@@ -27,7 +27,7 @@ test('Claude rate_limit_event lines do not move the usage meters', async ({ harn
   await harness.open(page);
   await page.getByTestId('thread-row').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'go', null);
+  await harness.send(threadId, 'go');
   await harness.waitForEvent('provider:turn_completed');
 
   // The rate_limit_event lines precede the result on the same ordered

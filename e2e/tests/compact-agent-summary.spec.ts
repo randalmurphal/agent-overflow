@@ -39,7 +39,7 @@ test('agent metrics fit the phone, the name expands the digest and the open butt
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: 'Agent layout' }).click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'research the sources', null);
+  await harness.send(threadId, 'research the sources');
   await harness.waitForEvent('provider:turn_completed');
   await page.getByTestId('activity-rail-background-toggle').click();
   await waitForGate(harness, 'tick');
@@ -98,7 +98,7 @@ test('a background launch row keeps its open-in-pane door in place when the laun
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: 'Launch settle' }).click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'check the notes', null);
+  await harness.send(threadId, 'check the notes');
   await harness.waitForEvent('provider:turn_completed');
 
   const timeline = page.getByTestId('message-timeline-scroll');

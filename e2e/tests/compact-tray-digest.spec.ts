@@ -26,7 +26,7 @@ test('the tray digest fits a phone and stays touch-scrollable', async ({ harness
   await harness.open(page);
   await page.getByTestId('thread-row').filter({ hasText: 'Compact digest' }).click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'read it all', null);
+  await harness.send(threadId, 'read it all');
   await harness.waitForEvent('provider:turn_completed');
 
   for (const width of [412, 360, 320]) {

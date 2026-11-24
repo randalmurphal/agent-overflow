@@ -149,7 +149,7 @@ func TestHandOffMovesAnUnreadRequest(t *testing.T) {
 	f := newAssistantFixture(t)
 	stdinLog := f.mockClaudeHoldingTheTurnRecording(t, "busy")
 	target, _ := f.assistantTarget(t, "Reviewer.")
-	if err := f.app.SendMessage(context.Background(), target.ID, "work on something", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(context.Background(), target.ID, "work on something", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {
@@ -226,7 +226,7 @@ func TestHandOffWhileATurnRuns(t *testing.T) {
 	f := newAssistantFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "busy")
 	f.assistantCaller(t)
-	if err := f.app.SendMessage(context.Background(), f.caller.ID, "start working", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(context.Background(), f.caller.ID, "start working", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {
@@ -254,7 +254,7 @@ func TestHandOffMovesALoopWakeTheOldSessionHadNotTakenIn(t *testing.T) {
 	f := newAssistantFixture(t)
 	stdinLog := f.mockClaudeHoldingTheTurnRecording(t, "busy")
 	target, _ := f.assistantTarget(t, "Reviewer.")
-	if err := f.app.SendMessage(context.Background(), target.ID, "work on something", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(context.Background(), target.ID, "work on something", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {

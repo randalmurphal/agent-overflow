@@ -193,7 +193,7 @@ test.describe.serial('notifications on a remote screen', () => {
       'notification:send',
       (data) => !data.retract && data.kind === 'turn-complete',
     );
-    await harness.rpc('SendMessage', threadId, 'first question', null);
+    await harness.send(threadId, 'first question');
     const presented = await sent;
 
     await expect
@@ -240,7 +240,7 @@ test.describe.serial('notifications on a remote screen', () => {
       'notification:send',
       (data) => Boolean(data.retract) && data.id === `thread:${threadId}`,
     );
-    await harness.rpc('SendMessage', threadId, 'second question', null);
+    await harness.send(threadId, 'second question');
     await withdrawn;
 
     // A retraction is gated by nothing on either screen: what it withdraws is

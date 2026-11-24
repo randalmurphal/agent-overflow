@@ -1,4 +1,5 @@
 import { type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -289,6 +290,28 @@ interface PendingRpc {
 }
 
 /** A live harness-mode backend plus one WS connection to it. */
+/**
+ * Fields of the page's send options (`OutgoingSendOptions` in
+ * frontend/src/lib/utils/sendOptions.ts) a spec replaces in `send`.
+ */
+export interface SendOptions {
+  attachmentIds?: string[];
+  consumeDraft?: {
+    content: string;
+    attachmentIds: string[];
+    terminalChips: unknown[];
+    sourceProposedPlan: unknown;
+  };
+  runtimeMode?: string;
+  sourceProposedPlan?: unknown;
+  revisionSourceProposedPlan?: unknown;
+  revisionSourceCommentIds?: string[];
+  revisionSourceDiffReview?: unknown;
+  revisionSourceDiffCommentIds?: string[];
+  sendId?: string;
+  reconcileBySendId?: boolean;
+}
+
 export class HarnessApp {
   // A root launchHarness created belongs to its app until close() removes
   // it. One a spec leaves by ending on stop() or crash() is removed when
@@ -504,7 +527,9 @@ export class HarnessApp {
 
   /**
    * Invoke a backend method by exported name — Harness* RPCs and every
-   * bound App method (CreateThread, SendMessage, ...) share the wire.
+   * bound App method (CreateThread, ListThreads, ...) share the wire. A
+   * send, a session start or stop, and the full item read go through
+   * `send`, `startSession`, `stopSession` and `items`, which own the call.
    */
   async rpc<T = unknown>(method: string, ...params: unknown[]): Promise<T> {
     return await this.rpcWithin<T>(RPC_TIMEOUT_MS, method, ...params);
@@ -518,6 +543,49 @@ export class HarnessApp {
    */
   async rpcWithin<T = unknown>(timeoutMs: number, method: string, ...params: unknown[]): Promise<T> {
     return (await this.call(timeoutMs, false, method, params)) as T;
+  }
+
+  /**
+   * Send `text` to a thread as the page's default send does: through
+   * `SendMessageWithOptions`, the page's entry, with the options its
+   * `buildSendOptions` (frontend/src/lib/utils/sendOptions.ts) builds for a
+   * send that consumes no composer draft, under a fresh send id. A send to
+   * a working thread queues behind its turn, and its user row's id derives
+   * from the send id. `options` replaces fields of that argument for a spec
+   * about another shape: attachments, a runtime mode, a repeated send id.
+   * Its Go twin is `harnessclient.Client.Send`.
+   */
+  async send(threadId: string, text: string, options: SendOptions = {}): Promise<void> {
+    await this.rpc('SendMessageWithOptions', threadId, text, {
+      attachmentIds: [],
+      consumeDraft: { content: '', attachmentIds: [], terminalChips: [], sourceProposedPlan: null },
+      sendId: randomUUID(),
+      reconcileBySendId: true,
+      ...options,
+    });
+  }
+
+  /**
+   * Bring a thread's provider session up without sending anything
+   * (`HarnessStartSession`). No page does this: a send starts the session
+   * itself, so a spec that sends next needs no start of its own.
+   */
+  async startSession(threadId: string, options: { timeoutMs?: number } = {}): Promise<void> {
+    await this.rpcWithin(options.timeoutMs ?? RPC_TIMEOUT_MS, 'HarnessStartSession', threadId);
+  }
+
+  /** End a thread's provider session and drop its queue (`StopSession`). */
+  async stopSession(threadId: string): Promise<void> {
+    await this.rpc('StopSession', threadId);
+  }
+
+  /**
+   * Every item of a thread in order (`HarnessListItems`), the assertion
+   * read; a page reads bounded slices instead. `inlinePreviews` asks for
+   * complete payload metadata rather than the wire projection's elided copy.
+   */
+  async items<T = unknown>(threadId: string, inlinePreviews: boolean): Promise<T[]> {
+    return await this.rpc<T[]>('HarnessListItems', threadId, inlinePreviews);
   }
 
   /**

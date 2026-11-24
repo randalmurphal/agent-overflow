@@ -34,9 +34,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
     // A first turn gives the thread a provider session; the session ends.
     const firstTurn = awaitTurnCompleted(harness, first);
-    await harness.rpc('SendMessage', first, 'Check the board.', null);
+    await harness.send(first, 'Check the board.');
     await firstTurn;
-    await harness.rpc('StopSession', first);
+    await harness.stopSession(first);
     const { sessionRef } = await harness.rpc<{ sessionRef: string }>('GetThread', first);
     expect(sessionRef).not.toBe('');
 
@@ -97,14 +97,14 @@ test('a plain thread whose session is gone stays where it is', async ({ harness 
   const [thread] = threadIds;
   await setScenario(harness, cwd, plainScenario({ name: 'plain-session-loss', provider: 'claude', texts: ['On it.'], afterTurns: 'repeatLast', echoUserMessage: true }));
   const firstTurn = awaitTurnCompleted(harness, thread);
-  await harness.rpc('SendMessage', thread, 'Check the board.', null);
+  await harness.send(thread, 'Check the board.');
   await firstTurn;
-  await harness.rpc('StopSession', thread);
+  await harness.stopSession(thread);
   const { sessionRef } = await harness.rpc<{ sessionRef: string }>('GetThread', thread);
   rmSync(join(harness.bootstrap.homeDir!, '.claude', 'projects', 'mock', `${sessionRef}.jsonl`));
 
   const next = awaitTurnCompleted(harness, thread);
-  await harness.rpc('SendMessage', thread, 'Anything new?', null);
+  await harness.send(thread, 'Anything new?');
   await next;
   expect((await threadRows(harness)).filter((row) => row.title === 'Plain').map((row) => row.id)).toEqual([thread]);
 });

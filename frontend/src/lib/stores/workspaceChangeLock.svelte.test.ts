@@ -80,7 +80,6 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 
 async function buildPane(thread: Thread = makeThread()): Promise<ThreadPane> {
   setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
   const pane = createThreadPane();
   await pane.switchThread(thread);
   return pane;

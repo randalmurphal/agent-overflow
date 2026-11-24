@@ -201,9 +201,9 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
     ],
   }));
 
-  await app.rpc('StartSession', leadThreadId);
+  await app.startSession(leadThreadId);
   const spawnTurn = awaitTurnCompleted(app, leadThreadId);
-  await app.rpc('SendMessage', leadThreadId, 'spawn the crash triage', null);
+  await app.send(leadThreadId, 'spawn the crash triage');
   // The spawned thread answers inside the call's wait, so no wake will
   // take the next turn.
   const spawn = await awaitToolAnswer<{ outcome: string }>(app, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 60_000 });
@@ -212,7 +212,7 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
   await spawnTurn;
   // A watch runs a script from a standing agent's home, so the lead is one.
   await app.rpc('HarnessMakeAssistant', leadThreadId);
-  await app.rpc('SendMessage', leadThreadId, 'run every tool once', null);
+  await app.send(leadThreadId, 'run every tool once');
   const last = await app.awaitMcpResult({ server: REMOTE, tool: 'remote_run', cwd: lead.path, timeoutMs: 120_000 });
   expect(last.report.isError, last.report.result).toBeFalsy();
   return { leadThreadId, targetThreadId };

@@ -49,7 +49,7 @@ for (const { forge, command, open } of cases) {
     const mockId = await startMock(harness, threadId);
     const creating = waitForGate(harness, 'creating');
     const completed = harness.waitForEvent('provider:turn_completed');
-    await harness.rpc('SendMessage', threadId, 'open a PR', null);
+    await harness.send(threadId, 'open a PR');
     await creating;
     await seedForge(harness, [{ ...repo, pulls: [{ number: 1, title: 'Add the feature', headRef: BRANCH }] }]);
     await advance(harness, mockId, 'creating');

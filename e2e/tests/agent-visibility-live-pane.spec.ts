@@ -96,7 +96,7 @@ test('an open pane shows prose, thinking, and the final text as the agent stream
   await harness.open(page);
   await page.getByText('Live pane').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'map surfaces', null);
+  await harness.send(threadId, 'map surfaces');
 
   await waitForGate(harness, 'open');
   const timeline = page.getByTestId('message-timeline-scroll');

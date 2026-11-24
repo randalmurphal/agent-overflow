@@ -125,8 +125,8 @@ test('a late reply the other computer dropped before it was collected reads as e
       text: 'They are written.',
     }],
   }));
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'have the release notes written over there', null);
+  await home.startSession(caller.threadIds[0]);
+  await home.send(caller.threadIds[0], 'have the release notes written over there');
   const sent = await awaitToolAnswer<{ token: string; state: string }>(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 120_000 });
   expect(sent.isError, sent.text).toBe(false);
   expect(sent.value!.state).toBe('finished');
@@ -193,8 +193,8 @@ test('a command running when the computer is paired again finishes under the new
     ],
     afterTurns: 'silent',
   }));
-  await home.rpc('StartSession', builder.threadIds[0]);
-  await home.rpc('SendMessage', builder.threadIds[0], 'run the release build over there', null);
+  await home.startSession(builder.threadIds[0]);
+  await home.send(builder.threadIds[0], 'run the release build over there');
   const started = await home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd: builder.path, timeoutMs: 60_000 });
   expect(started.report.isError, started.report.result).toBeFalsy();
   expect(started.report.result).toContain('"backgrounded":true');
@@ -266,8 +266,8 @@ test('a command running on a computer that revokes this one is told once with it
     ],
     afterTurns: 'silent',
   }));
-  await home.rpc('StartSession', builder.threadIds[0]);
-  await home.rpc('SendMessage', builder.threadIds[0], 'run the nightly build over there', null);
+  await home.startSession(builder.threadIds[0]);
+  await home.send(builder.threadIds[0], 'run the nightly build over there');
   const started = await home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd: builder.path, timeoutMs: 60_000 });
   expect(started.report.isError, started.report.result).toBeFalsy();
   expect(started.report.result).toContain('"backgrounded":true');

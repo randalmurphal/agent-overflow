@@ -154,7 +154,7 @@ test(
     const watch = watchRender(page);
     await page.getByText('Multi delivery').click();
     const mockId = await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'scan everything', null);
+    await harness.send(threadId, 'scan everything');
 
     const timeline = page.getByTestId('message-timeline-scroll');
     await waitForGate(harness, 'first-stop');
@@ -209,7 +209,7 @@ test(
     const watch = watchRender(page);
     await page.getByText('Codex deliveries').click();
     await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'review this', null);
+    await harness.send(threadId, 'review this');
     await harness.waitForEvent('provider:turn_completed');
 
     const timeline = page.getByTestId('message-timeline-scroll');

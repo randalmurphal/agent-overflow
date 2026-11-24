@@ -41,7 +41,7 @@ test('a weekly-only account shows one 7d meter, with a scoped weekly limit as it
   await page.getByTestId('thread-row').click();
   await startMock(harness, threadId);
 
-  await harness.rpc('SendMessage', threadId, 'go', null);
+  await harness.send(threadId, 'go');
   await harness.waitForEvent('provider:turn_completed');
 
   // A 5h meter that stays names the readings the backend holds, which tells
@@ -67,7 +67,7 @@ test('a weekly-only account shows one 7d meter, with a scoped weekly limit as it
   await expect(weekly.locator('[data-meter-arc="main"]')).toHaveAttribute('stroke-width', '3.5');
   const singleBox = (await weekly.locator('svg').boundingBox())!;
 
-  await harness.rpc('SendMessage', threadId, 'again', null);
+  await harness.send(threadId, 'again');
   await harness.waitForEvent('provider:turn_completed');
 
   // A scoped weekly limit adds the inner ring; the account-wide ring keeps

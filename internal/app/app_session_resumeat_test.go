@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -55,7 +56,7 @@ func TestColdClaudeResumePassesNoResumeCursor(t *testing.T) {
 			if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeArgvRecordingClaude(t, argvPath)}); err != nil {
 				t.Fatal(err)
 			}
-			if err := app.StartSession(thread.ID); err != nil {
+			if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
 			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
@@ -92,7 +93,7 @@ func TestPinnedClaudeForkStartPassesItsResumeCursor(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeArgvRecordingClaude(t, argvPath)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.StartSession(fork.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), fork.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	t.Cleanup(func() { _ = app.StopSession(fork.ID) })
@@ -118,7 +119,7 @@ func coldResumedMidTurnSource(t *testing.T, binary string) (*App, store.Thread, 
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.StartSession(source.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), source.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	t.Cleanup(func() { _ = app.StopSession(source.ID) })

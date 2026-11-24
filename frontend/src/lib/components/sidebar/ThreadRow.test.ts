@@ -639,7 +639,6 @@ describe('<ThreadRow> fork lineage affordance', () => {
     setBindingMock('ListThreads', async () => [parent, forked]);
     await loadSidebarCatalogs();
     setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
@@ -654,7 +653,6 @@ describe('<ThreadRow> fork lineage affordance', () => {
     setBindingMock('ListThreads', async () => [parent, forked]);
     await loadSidebarCatalogs();
     setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
 
     let rowSelectCalled = 0;
     const pane = createThreadPane();
@@ -680,7 +678,6 @@ describe('<ThreadRow> keyboard activation', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
   });
 
   async function settle(): Promise<void> {

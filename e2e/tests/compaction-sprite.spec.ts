@@ -52,12 +52,12 @@ test('compaction shows the default compaction sprite with field settings', async
     projects: [{ name: 'compact-app', repo: {}, threads: [{ title: 'Compact turn' }] }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) => ev.report.kind === 'registered',
   );
-  await harness.rpc('SendMessage', threadId, 'go compact', null);
+  await harness.send(threadId, 'go compact');
   await harness.waitForEvent('provider:compacting');
 
   await harness.open(page);

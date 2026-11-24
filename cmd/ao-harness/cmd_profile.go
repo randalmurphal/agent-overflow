@@ -98,7 +98,7 @@ func runProfileContext(ctx context.Context, e *env, args []string) error {
 			return fmt.Errorf("profile requires an active memory watchdog: %w", err)
 		}
 		if err := requireHarnessProtocol(client, capabilityRequirements{
-			Methods: []string{"HarnessSetScenario", "HarnessUIQuery", "HarnessEmit", "SendMessage"},
+			Methods: []string{"HarnessSetScenario", "HarnessUIQuery", "HarnessEmit", harnessclient.SendMethod},
 			Queries: []string{"element", "globals", "viewport"},
 		}); err != nil {
 			return err

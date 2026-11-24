@@ -425,7 +425,7 @@ export function projectSendStarted(threadId: string): void {
 }
 
 /**
- * Clear the pending-send flag. Called by composerSend when SendMessage
+ * Clear the pending-send flag. Called by composerSend when SendMessageWithOptions
  * rejects (with `error: true` so the pill flips to Failed rather than
  * idle), by early provider process failure before `turn_started`, or when
  * turn lifecycle events arrive and take over ownership of the running signal.

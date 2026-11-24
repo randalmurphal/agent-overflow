@@ -130,9 +130,9 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     // A second Codex turn, then the first message reverted and resent edited.
     const reverted = scenarioThreads['codex-revert-paginated'];
     const second = harness.waitForEvent<{ threadId?: string }>('provider:turn_completed', (ev) => ev.threadId === reverted, TURN_TIMEOUT_MS);
-    await harness.rpc('SendMessage', reverted, 'Second top-up question.', null);
+    await harness.send(reverted, 'Second top-up question.');
     await second;
-    const rows = await harness.rpc<Array<{ id: string; kind: string; summary: string }>>('ListItems', reverted, false);
+    const rows = await harness.items<{ id: string; kind: string; summary: string }>(reverted, false);
     const target = rows.find((row) => row.kind === 'user_text' && row.summary === 'Second top-up question.');
     if (!target) throw new Error('codex-revert-paginated: the second user message is not in the timeline');
     const resent = harness.waitForEvent<{ threadId?: string }>('provider:turn_completed', (ev) => ev.threadId === reverted, TURN_TIMEOUT_MS);
@@ -202,7 +202,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const record = await harness.rpc<{ home: string }>('GetStandingAgent', agent.id);
     const home = record.home;
     // The scenario below applies to the session it starts.
-    await harness.rpc('StopSession', agent.id);
+    await harness.stopSession(agent.id);
     await harness.rpc('HarnessSetScenario', {
       cwd: home,
       scenario: plainScenario({ name: 'topup-helper', provider: 'codex', texts: ['Collected the notes.', 'Added your note.'] }),
@@ -253,9 +253,9 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
         afterTurns: 'silent',
       }),
     });
-    await harness.rpc('StartSession', agent.id);
+    await harness.startSession(agent.id);
     const scheduled = awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
-    await harness.rpc('SendMessage', agent.id, 'Look at the board and the inbox every hour.', null);
+    await harness.send(agent.id, 'Look at the board and the inbox every hour.');
     const spawned = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', timeoutMs: TURN_TIMEOUT_MS });
     if (spawned.isError || !spawned.value) throw new Error(`top-up thread_spawn of a helper was refused: ${spawned.text}`);
     await awaitTurnCompleted(harness, spawned.value.thread_id, TURN_TIMEOUT_MS);
@@ -275,7 +275,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     // The person's message to the helper, which has no sidebar row, is a
     // nudge: its work is a run of the assistant's (thread_requests.nudge).
     const nudged = awaitTurnCompleted(harness, spawned.value.thread_id, TURN_TIMEOUT_MS);
-    await harness.rpc('SendMessage', spawned.value.thread_id, 'Add one more note.', null);
+    await harness.send(spawned.value.thread_id, 'Add one more note.');
     await nudged;
     // A cancel keeps nothing the row carried, so the hourly watch, run once
     // now, is the row that keeps a stderr tail. It stays armed an hour out.
@@ -458,7 +458,7 @@ async function runScenarioTurn(
     model: MODEL[provider],
     mode: 'chat',
   });
-  await harness.rpc('StartSession', thread.id);
+  await harness.startSession(thread.id);
   await harness.waitForEvent<MockEvent>('harness:mock', (ev) => ev.report.kind === 'registered');
   const approval = scenario.approve
     ? harness.waitForEvent<ApprovalEvent>('provider:approval',
@@ -472,7 +472,7 @@ async function runScenarioTurn(
       (ev) => ev.threadId === thread.id, TURN_TIMEOUT_MS)
     : harness.waitForEvent<{ threadId?: string }>('provider:turn_completed',
       (ev) => ev.threadId === thread.id, TURN_TIMEOUT_MS);
-  await harness.rpc('SendMessage', thread.id, `Top-up turn for ${scenario.name}.`, null);
+  await harness.send(thread.id, `Top-up turn for ${scenario.name}.`);
   if (approval) {
     const pending = await approval;
     await harness.rpc('RespondToApproval', thread.id, { requestId: pending.request!.requestId, decision: scenario.approve });

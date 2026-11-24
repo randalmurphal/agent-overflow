@@ -60,7 +60,7 @@ test('a login past its refresh deadline with a live access token reads as workin
     claudeUsageResult(10, 5),
   ])]) });
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'go', null);
+  await harness.send(threadId, 'go');
   await harness.waitForEvent('provider:turn_completed');
 
   const accounts = await harness.rpc<ManagedProviderAccount[]>('ListProviderAccounts');

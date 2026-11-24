@@ -33,8 +33,8 @@ async function openStorageSettings(harness: HarnessApp, page: Page): Promise<voi
 // new spawn's launch config.
 async function spawn(harness: HarnessApp, threadId: string, running: boolean): Promise<MockSessionConfig> {
   const known = new Set((await mockSessions(harness, 'claude', 0)).map((mock) => mock.mockId));
-  if (running) await harness.rpc('StopSession', threadId);
-  await harness.rpc('StartSession', threadId);
+  if (running) await harness.stopSession(threadId);
+  await harness.startSession(threadId);
   let fresh: MockInfo | undefined;
   await expect
     .poll(async () => {
@@ -86,7 +86,7 @@ test('a longer retention window reaches Claude as cleanupPeriodDays unless the C
     await expect(note).toHaveCount(0);
     expect((await spawn(harness, threadId, true)).cleanupPeriodDays).toBeUndefined();
   } finally {
-    await harness.rpc('StopSession', threadId);
+    await harness.stopSession(threadId);
     await rm(settingsPath, { force: true });
     await harness.rpc('UpdateSettings', { retention: { days: 30 } });
   }

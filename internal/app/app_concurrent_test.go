@@ -155,10 +155,10 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "go", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "go", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -181,7 +181,7 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 					return
 				default:
 				}
-				items, err := app.ListItems(thread.ID, true)
+				items, err := app.listThreadItems(thread.ID, true)
 				if err != nil {
 					t.Errorf("ListItems: %v", err)
 					return
@@ -224,7 +224,7 @@ func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := app.StartSession(thread.ID); err != nil {
+		if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 			t.Errorf("StartSession: %v", err)
 		}
 	}()

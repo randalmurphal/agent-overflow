@@ -379,7 +379,7 @@ for (const theme of ['light', 'dark'] as const) {
 
       const atRecord = waitForGate(harness, GATE_RECORD);
       const completed = harness.waitForEvent('provider:turn_completed');
-      await harness.rpc('SendMessage', threadId, 'say something long', null);
+      await harness.send(threadId, 'say something long');
       await atRecord;
 
       // The row as the user read it: settled, all of it revealed, unmarked.

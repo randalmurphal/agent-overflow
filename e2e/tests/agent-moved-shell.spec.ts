@@ -68,7 +68,7 @@ async function openTray(harness: HarnessApp, page: Page, title: string): Promise
   await harness.open(page);
   await page.getByTestId('thread-row-title').getByText(title, { exact: true }).click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'run the tests', null);
+  await harness.send(threadId, 'run the tests');
   await harness.waitForEvent('provider:turn_completed');
   await page.getByTestId('activity-rail-background-toggle').click();
   await expect(page.locator('[data-testid="background-task-tray-row"][data-row-id="tu-bg"]')).toHaveCount(1);

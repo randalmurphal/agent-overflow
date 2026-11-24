@@ -273,7 +273,7 @@ test('a live run larger than its window grows at its tail without reading the ru
   await openThread('Away');
   await expect(page.getByText('Away answer.', { exact: true })).toBeVisible();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'Start', null);
+  await harness.send(threadId, 'Start');
   await waitForGate(harness, 'grow');
   // The gate opens once the mock has written the rows, which can be before
   // the backend has persisted them. A page read then ships an older window
@@ -361,7 +361,7 @@ test('a live run a jump left holding its head counts the members it gains until 
   await openThread('Away');
   await expect(page.getByText('Away answer.', { exact: true })).toBeVisible();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'Start', null);
+  await harness.send(threadId, 'Start');
   await waitForGate(harness, 'grow');
 
   // Opened mid-run, the page ships the run's newest members; the pane's
@@ -476,7 +476,7 @@ test('a live run a switch-back sync ships mid-run counts the members it gained d
   await openThread('Away');
   await expect(page.getByText('Away answer.', { exact: true })).toBeVisible();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'Start', null);
+  await harness.send(threadId, 'Start');
   await waitForGate(harness, 'grow');
   // As in the growth test above: the gate opens before the backend has
   // persisted the rows, and a read in that gap ships an older span.

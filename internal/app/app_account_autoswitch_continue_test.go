@@ -125,7 +125,7 @@ func TestAutoSwitchRefusedClaudeTurnSwitchesAndContinues(t *testing.T) {
 			rig.start(t)
 			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
 
-			if err := app.SendMessage(context.Background(), thread.ID, "go", nil); err != nil {
+			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "go", SendMessageOptions{}); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 10*time.Second)

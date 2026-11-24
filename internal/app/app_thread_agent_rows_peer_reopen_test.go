@@ -54,7 +54,7 @@ func TestARemoteWorkerContinuedThereIsANudgeRowOfItsSpawner(t *testing.T) {
 	pair.source.threadAgentPeers.mu.Unlock()
 
 	startReconciledOwner(t, pair)
-	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
+	if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "now also update the changelog", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {

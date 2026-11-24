@@ -198,7 +198,7 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 	}
 
 	// Its spawner's pane stays closed while the destination resumes.
-	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
+	if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "now also update the changelog", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	// The turn's row there reports the run open before its turn is open,
@@ -276,7 +276,7 @@ func TestDisconnectedOwnerKeepsRestingAnswerUntilReconciled(t *testing.T) {
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	spawn, child := remoteRestedWorker(t, pair)
-	if err := pair.dest.SendMessage(t.Context(), child, "continue this worker", nil); err != nil {
+	if _, err := pair.dest.SendMessageWithOptions(t.Context(), child, "continue this worker", SendMessageOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	expirePastTheFloor(pair.source)

@@ -109,7 +109,7 @@ func codexInjections(t *testing.T, requestLog, codexThreadID string) []string {
 // which the session emits after any injection.
 func startCodexSessionAndWait(t *testing.T, app *App, bus *capturedEventBus, threadID string) {
 	t.Helper()
-	if err := app.StartSession(threadID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), threadID); err != nil {
 		t.Fatalf("StartSession(%s): %v", threadID, err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 10*time.Second)
@@ -389,8 +389,12 @@ func TestCodexInjectPrecedesASendRacingTheResume(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	wg.Add(2)
-	go func() { defer wg.Done(); errs <- app.StartSession(thread.ID) }()
-	go func() { defer wg.Done(); errs <- app.SendMessage(context.Background(), thread.ID, "hello", nil) }()
+	go func() { defer wg.Done(); errs <- app.startSessionTakingLock(context.Background(), thread.ID) }()
+	go func() {
+		defer wg.Done()
+		_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", SendMessageOptions{})
+		errs <- err
+	}()
 	wg.Wait()
 	close(errs)
 	for err := range errs {

@@ -36,8 +36,8 @@ async function nextClaudeSpawn(harness: HarnessApp, known: readonly MockInfo[]):
 
 async function restart(harness: HarnessApp, threadId: string): Promise<MockSessionConfig> {
   const before = await mockSessions(harness, 'claude', 0);
-  await harness.rpc('StopSession', threadId);
-  await harness.rpc('StartSession', threadId);
+  await harness.stopSession(threadId);
+  await harness.startSession(threadId);
   return nextClaudeSpawn(harness, before);
 }
 
@@ -70,7 +70,7 @@ test('the command timeout reaches Claude as BASH_MAX_TIMEOUT_MS, at the next spa
     await shootRow(page, testInfo, 'default');
 
     await harness.rpc('GetProviderStatuses');
-    await harness.rpc('StartSession', threadId);
+    await harness.startSession(threadId);
     const first = await nextClaudeSpawn(harness, []);
     expect(first.bashMaxTimeoutMs).toBe('18000000');
 
@@ -93,7 +93,7 @@ test('the command timeout reaches Claude as BASH_MAX_TIMEOUT_MS, at the next spa
     const custom = await restart(harness, threadId);
     expect(custom.bashMaxTimeoutMs).toBe('99999999');
   } finally {
-    await harness.rpc('StopSession', threadId);
+    await harness.stopSession(threadId);
     await harness.rpc('DeleteProviderCustomEnvVar', 'claude', 'BASH_MAX_TIMEOUT_MS');
     await harness.rpc('UpdateSettings', { claudeMaxCommandTimeoutHours: 5 });
   }

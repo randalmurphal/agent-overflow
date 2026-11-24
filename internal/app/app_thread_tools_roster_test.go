@@ -149,7 +149,7 @@ func TestStartSession_AWorkerAtTheLimitStartsWithoutSpawning(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeArgvRecordingClaude(t, argvPath)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.StartSession(chain[1].ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), chain[1].ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	argv := spawnedClaudeArgv(t, argvPath)
@@ -255,7 +255,7 @@ func TestStartSession_SpawnInstructionsSurviveARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	for start := range 2 {
-		if err := app.StartSession(thread.ID); err != nil {
+		if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 			t.Fatalf("start %d: %v", start, err)
 		}
 		argv := spawnedClaudeArgv(t, argvPath)

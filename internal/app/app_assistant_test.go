@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -401,7 +402,7 @@ func TestASessionTheProviderCleanedUpMovesTheAssistant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = f.app.StartSession(thread.ID)
+	err = f.app.startSessionTakingLock(context.Background(), thread.ID)
 	if !errors.Is(err, errAssistantSessionGone) {
 		t.Fatalf("StartSession = %v, want errAssistantSessionGone", err)
 	}
@@ -515,7 +516,7 @@ func TestACodexSessionTheProviderCleanedUpMovesTheAssistant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := f.app.StartSession(thread.ID); !errors.Is(err, errAssistantSessionGone) {
+	if err := f.app.startSessionTakingLock(context.Background(), thread.ID); !errors.Is(err, errAssistantSessionGone) {
 		t.Fatalf("StartSession = %v, want errAssistantSessionGone", err)
 	}
 	if successor := awaitCurrentThread(t, f.app, thread.ID); successor == thread.ID {
@@ -529,7 +530,7 @@ func TestACodexSessionTheProviderCleanedUpMovesTheAssistant(t *testing.T) {
 	if _, err := f.app.store.UpdateSessionRef(plain.ID, "gone-rollout"); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.StartSession(plain.ID); err == nil || errors.Is(err, errAssistantSessionGone) {
+	if err := f.app.startSessionTakingLock(context.Background(), plain.ID); err == nil || errors.Is(err, errAssistantSessionGone) {
 		t.Fatalf("an ordinary thread's refused resume = %v, want the provider's own error", err)
 	}
 }

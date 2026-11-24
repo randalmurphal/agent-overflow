@@ -122,7 +122,7 @@ test('a parent pane receives an agent’s rows only while a view of that agent i
 
   const mockId = await startMock(harness, threadId);
   const openGate = waitForGate(harness, 'open');
-  await harness.rpc('SendMessage', threadId, 'watch scopes', null);
+  await harness.send(threadId, 'watch scopes');
   await openGate;
   await waitForRootRow(page, threadId, 'tu-root-one');
   const launch = (await listItems(harness, threadId)).find((item) => item.toolName === 'Agent');
@@ -234,7 +234,7 @@ async function measureTurn(page: Page, harness: HarnessApp, threadId: string, te
     .filter((event) => event.channel === 'provider:turn_completed' && event.threadId === threadId).length;
   const start = await readWire(page);
   const completedBefore = completions(start);
-  await harness.rpc('SendMessage', threadId, text, null);
+  await harness.send(threadId, text);
   await expect.poll(async () => completions(await readWire(page)), { timeout: 120_000 }).toBeGreaterThan(completedBefore);
   const end = await readWire(page);
   const events = itemEvents({ ...end, received: end.received.slice(start.received.length) }, threadId);

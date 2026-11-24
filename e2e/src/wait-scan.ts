@@ -617,7 +617,7 @@ export const WAIT_SCAN_SAMPLES: { flagged: string[]; allowed: string[]; bareTest
     `await expect.poll(() => count()).toBe(1);`,
     `const timer = setTimeout(() => reject(new Error('timed out')), 5_000);`,
     `await new Promise((resolve, reject) => { const t = setTimeout(() => reject(new Error('late')), ms); done.then(resolve); });`,
-    `await harness.rpc('StopSession', id).catch(() => undefined);`,
+    `await harness.stopSession(id).catch(() => undefined);`,
     `await Promise.all(document.getAnimations().map((a) => a.finished.catch(() => undefined)));`,
     `const value = await read().then((v) => v, (error) => { throw error; });`,
     `const value = await read().then(use, () => false);`,

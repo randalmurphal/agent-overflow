@@ -313,7 +313,7 @@ test('a Codex generated image opens the image menu and copies its original bytes
   await harness.open(page);
   await page.getByText(title, { exact: true }).click();
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'draw a card', null);
+  await harness.send(threadId, 'draw a card');
   await completed;
 
   const tile = page.getByTestId('generated-image-attachments').getByLabel(`Preview ${filename}`);

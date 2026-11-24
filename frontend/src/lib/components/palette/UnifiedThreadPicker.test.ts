@@ -43,7 +43,6 @@ async function seedThreads(threads: Thread[]): Promise<void> {
 beforeEach(async () => {
   resetThreadStatuses();
   setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
   await seedThreads([]);
 });
 

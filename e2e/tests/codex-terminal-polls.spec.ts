@@ -42,7 +42,7 @@ for (const interrupted of [false, true]) {
     await harness.open(page);
     await page.getByText(title, { exact: true }).click();
     const mock = await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'run command', null);
+    await harness.send(threadId, 'run command');
     await waitForGate(harness, 'polling');
     const chip = page.getByTestId('activity-rail-working');
     await expect(chip.locator('[data-activity-rail-verb]')).toHaveText('Vibing');
@@ -52,7 +52,7 @@ for (const interrupted of [false, true]) {
       await page.getByRole('button', { name: 'Interrupt current turn', exact: true }).click();
       await expect(chip).toHaveCount(0);
       await stopped;
-      await harness.rpc('SendMessage', threadId, 'answer now', null);
+      await harness.send(threadId, 'answer now');
     } else await advance(harness, mock, 'polling');
     await waitForGate(harness, 'answer-started');
     await expect(page.getByTestId('assistant-message-body').filter({ hasNotText: 'Ready.' })).toHaveText(PREFIX.trim());
@@ -61,7 +61,7 @@ for (const interrupted of [false, true]) {
       sprite: el.querySelector('.working-sprite')?.getAttribute('data-sprite-id'), leds: !!el.querySelector('[data-testid="activity-rail-working-leds"]') }));
     await advance(harness, mock, 'answer-started');
     await waitForGate(harness, 'late-events');
-    const rows = await harness.rpc<Row[]>('ListItems', threadId, true);
+    const rows = await harness.items<Row>(threadId, true);
     expect(rows.filter(row => row.kind === 'terminal_interaction')).toEqual([]);
     expect(rows.filter(row => row.kind === 'assistant_text' && row.summary !== 'Ready.')).toHaveLength(1);
     expect(rows.find(row => row.kind === 'assistant_text' && row.summary !== 'Ready.')?.status).toBe('streaming');
@@ -76,14 +76,14 @@ for (const interrupted of [false, true]) {
     await expect(page.getByTestId('assistant-message-body').filter({ hasNotText: 'Ready.' })).toHaveCount(1);
     await expect(chip).toHaveCount(0);
     await expect(page.locator('[data-item-id="late-command"]')).toBeVisible();
-    const final = await harness.rpc<Row[]>('ListItems', threadId, true);
+    const final = await harness.items<Row>(threadId, true);
     expect(final.filter(row => row.kind === 'terminal_interaction')).toEqual([]);
     expect(final.filter(row => row.kind === 'assistant_text' && row.summary !== 'Ready.').map(row => row.summary)).toEqual([ANSWER]);
     const answer = final.find(row => row.kind === 'assistant_text' && row.summary !== 'Ready.')!;
     expect(final.find(row => row.id === 'late-command')!.itemIndex).toBeGreaterThan(answer.itemIndex);
     await page.reload();
     await expect(page.getByTestId('assistant-message-body').filter({ hasNotText: 'Ready.' })).toHaveText(ANSWER);
-    expect((await harness.rpc<Row[]>('ListItems', threadId, true)).map(row => [row.id, row.itemIndex, row.summary]))
+    expect((await harness.items<Row>(threadId, true)).map(row => [row.id, row.itemIndex, row.summary]))
       .toEqual(final.map(row => [row.id, row.itemIndex, row.summary]));
   });
 }
@@ -101,7 +101,7 @@ test('a completed singleton and following answer arriving together render expand
   await harness.open(page);
   await page.getByText('Singleton activity', { exact: true }).click();
   const mock = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'quick command', null);
+  await harness.send(threadId, 'quick command');
   await waitForGate(harness, 'burst');
   await advance(harness, mock, 'burst');
   await waitForGate(harness, 'finished');

@@ -165,7 +165,7 @@ func testWorkerPromptsByRun(t *testing.T, placement string) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = app.StopSession(worker.ID) })
-			if err := app.SendMessage(context.Background(), worker.ID, "go", nil); err != nil {
+			if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, "go", SendMessageOptions{}); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			if row := requestRow(t, app, "middle-worker"); !row.RunEnded() {

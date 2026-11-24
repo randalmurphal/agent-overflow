@@ -91,7 +91,7 @@ export function resetAppState(): void {
   resetProviderModelsForTest();
   // Per-thread send queue is in-memory only; clear it between tests
   // so a stale queued item from a prior case doesn't drain into the
-  // next test's first SendMessage call.
+  // next test's first SendMessageWithOptions call.
   resetSendQueueForTest();
   resetThreadTerminalStatesForTest();
   // The terminal-focus registry is a module-scoped counter shared across
@@ -220,7 +220,6 @@ export function installThreadViewDefaults(): void {
     interactive: { approvals: [], userInputs: [] },
     todo: null,
   }));
-  setBindingMock('ListItems', async () => []);
   // The message-nav rail reads its whole-thread tick baseline once per
   // thread switch — default to none so unrelated tests stay quiet.
   setBindingMock('GetThreadUserMessageTicks', async () => []);
@@ -273,7 +272,7 @@ export function installThreadViewDefaults(): void {
   setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
 }
 
-// Composer-adjacent bindings that fire on mount. NOT included: SendMessage
+// Composer-adjacent bindings that fire on mount. NOT included: SendMessageWithOptions
 // and InterruptTurn — callers should set those themselves so per-test mocks
 // aren't overwritten by the helper.
 export function installComposerDefaults(threadId: string): void {

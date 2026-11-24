@@ -69,7 +69,7 @@ func TestASpawnFromASessionAStopEndedStartsNothing(t *testing.T) {
 	f := newRequestFixture(t)
 	f.mockClaude(t, "done", "done", "done")
 	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	live, ok := f.app.sessionManager().get(f.caller.ID)
@@ -106,7 +106,7 @@ func TestASpawnFromASessionAStopEndedStartsNothing(t *testing.T) {
 		t.Fatalf("requests after the late spawn = %+v, %v; want none", rows, err)
 	}
 
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatalf("StartSession again: %v", err)
 	}
 	fresh, ok := f.app.sessionManager().get(f.caller.ID)
@@ -135,7 +135,7 @@ func TestARunStartFromASessionAStopEndedStartsNoRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.app.StartSession(thread.ID); err != nil {
+	if err := fixture.app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	live, ok := fixture.app.sessionManager().get(thread.ID)
@@ -167,7 +167,7 @@ func TestARunStartFromASessionAStopEndedStartsNoRun(t *testing.T) {
 		t.Fatalf("runs after the late start = %d, %v; want none", len(runs), err)
 	}
 
-	if err := fixture.app.StartSession(thread.ID); err != nil {
+	if err := fixture.app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession again: %v", err)
 	}
 	fresh, ok := fixture.app.sessionManager().get(thread.ID)

@@ -300,12 +300,12 @@ async function runProbe(
       requestAnimationFrame(loop);
     });
 
-    await harness.rpc('StartSession', threadId);
+    await harness.startSession(threadId);
     await harness.waitForEvent<HarnessMockEvent>(
       'harness:mock',
       (ev) => ev.report.kind === 'registered',
     );
-    await harness.rpc('SendMessage', threadId, 'run the reveal slide probe', null);
+    await harness.send(threadId, 'run the reveal slide probe');
     await harness.waitForEvent('provider:turn_completed');
     // The prose releases only once the think frontier catches up (~1.6s
     // after the burst); the result envelope lands after that.

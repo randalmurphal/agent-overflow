@@ -35,7 +35,8 @@ test('a saved release upgrades without losing conversations, pins, or drafts', a
       const draft = `Unsent ${provider} draft before upgrade`;
       await app.rpc('SaveDraft', id, draft, [], [], null);
       await app.rpc('PinThread', id);
-      // v0.0.14 predates ListItems' includePayloads parameter.
+      // The saved v0.0.14 binary reads items only through its own ListItems,
+      // which predates the includePayloads parameter.
       const items = await app.rpc<Array<{ id: string; kind: string; summary: string }>>('ListItems', id);
       expect(items.length).toBeGreaterThan(0);
       threads.push({ id, title, draft, items: items.map(({ id, kind, summary }) => ({ id, kind, summary })) });

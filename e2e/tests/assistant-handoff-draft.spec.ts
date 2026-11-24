@@ -18,7 +18,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const cwd = await assistantHome(harness, first);
     await setScenario(harness, cwd, plainScenario({ name: `assistant-handoff-draft-${provider}`, provider, texts: ['Picked up.'], afterTurns: 'repeatLast', echoUserMessage: true }));
     const turn = awaitTurnCompleted(harness, first);
-    await harness.rpc('SendMessage', first, 'hello', null);
+    await harness.send(first, 'hello');
     await turn;
     await harness.open(page);
     await page.locator(`[data-sidebar-thread-id="${first}"]`).click();

@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,7 +66,7 @@ func TestProviderBackendHelper(t *testing.T) {
 	started := make(chan error, 1)
 	go func() {
 		if start != codexForkStart {
-			started <- app.StartSession(thread.ID)
+			started <- app.startSessionTakingLock(context.Background(), thread.ID)
 			return
 		}
 		thread.SessionRef = "thr-fork-source"

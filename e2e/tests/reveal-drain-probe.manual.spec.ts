@@ -198,12 +198,12 @@ async function runProbe(
       requestAnimationFrame(loop);
     });
 
-    await harness.rpc('StartSession', threadId);
+    await harness.startSession(threadId);
     await harness.waitForEvent<HarnessMockEvent>(
       'harness:mock',
       (ev) => ev.report.kind === 'registered',
     );
-    await harness.rpc('SendMessage', threadId, 'run the reveal probe', null);
+    await harness.send(threadId, 'run the reveal probe');
     await harness.waitForEvent('provider:turn_completed');
     // The turn's wire completes early; DONE only appears after the FULL
     // ordered drain — ~13s for this scenario's ~4.1KB think backlog at the

@@ -76,7 +76,7 @@ async function waitForUserMessage(
   // engine's command loop), so it reads as "nothing yet".
   await expect
     .poll(async () => {
-      seen = (await harness.rpc<ThreadItem[] | null>('ListItems', threadId, true)) ?? [];
+      seen = (await harness.items<ThreadItem>(threadId, true)) ?? [];
       wake = seen.find((item) => item.kind === 'user_text' && match(item.summary));
       return wake !== undefined;
     }, { timeout: 15_000, intervals: [100], message: `thread ${threadId} never received the expected user message` })
@@ -168,7 +168,7 @@ test('a bound run wakes its origin thread when it rests', async ({ harness, page
   // The wake is the workflow's report, not the person's: it renders as an
   // agent row naming the workflow (docs/specs/agent-thread-tools.md, "How
   // agent messages appear").
-  const items = (await harness.rpc<Array<ThreadItem & { meta?: string }>>('ListItems', thread.id, true)) ?? [];
+  const items = (await harness.items<ThreadItem & { meta?: string }>(thread.id, true)) ?? [];
   const wakeItem = items.find((entry) => entry.kind === 'user_text' && entry.summary === wake)!;
   expect(JSON.parse(wakeItem.meta ?? '{}')).toMatchObject({
     origin: 'agent-wake',

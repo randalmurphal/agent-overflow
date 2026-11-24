@@ -715,7 +715,7 @@ func TestAProjectRemovalRefusesWhileAWorkerOutsideRuns(t *testing.T) {
 				runningSession(t, f.app, worker.ID)
 			} else {
 				f.app.deleteClaimedForTest = func([]string) {
-					sendErr = f.app.SendMessage(context.Background(), worker.ID, "more", nil)
+					_, sendErr = f.app.SendMessageWithOptions(context.Background(), worker.ID, "more", SendMessageOptions{})
 					runningSession(t, f.app, worker.ID)
 				}
 			}

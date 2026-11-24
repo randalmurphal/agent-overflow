@@ -99,7 +99,7 @@ test('one turn launches 100 background agents; each streams to its own scope and
   await harness.open(page);
   await page.getByText('Agent scale').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'sweep every shard', null);
+  await harness.send(threadId, 'sweep every shard');
   await harness.waitForEvent('provider:turn_completed');
 
   // --- Launched -------------------------------------------------------
