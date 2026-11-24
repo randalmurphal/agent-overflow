@@ -125,12 +125,27 @@ func (s *Service) genLocked(conn string) uint64 {
 	return s.subs.gens[conn]
 }
 
-// handle is one subscriber's reference on a pump.
+// handle is one subscriber's reference on a pump. untie, when set, is
+// the release of the tie the subscribe made (Tie): every removal of the
+// handle runs it, so the client that held the handle keeps no release for
+// it.
 type handle struct {
 	board  *boardPump
 	ticket *ticketPump
 	ref    *pump.Handle[readRequest]
+	untie  func()
 }
+
+// Tie ties a subscription's handle to the client that holds it as the
+// subscribe publishes it: the client's end releases the handle. It runs
+// with the subscription lock held, so it must not block or call the
+// service. An error refuses the handle before anything is made. Its answer
+// runs once the handle is gone, however it goes: released, ended with its
+// pump, or at Stop.
+type Tie func(id string) (untie func(), err error)
+
+// newHandleID is a new handle's ID.
+func newHandleID() string { return rand.Text() }
 
 // ticketKey names an open ticket's pump.
 type ticketKey struct {
@@ -151,26 +166,28 @@ func (s *Service) newCore() pump.Core[readRequest] {
 	return pump.NewCore[readRequest](s.life, pump.Refusals{Stopped: ErrSubscriptionEnded, LifetimeEnded: ErrStopped})
 }
 
-// takeHandleLocked registers a handle on core and returns its ID. The
-// caller holds subMu and has checked the cap.
-func (s *Service) takeHandleLocked(h *handle, core *pump.Core[readRequest]) string {
+// takeHandleLocked registers h on core as handle id (newHandleID). The
+// caller holds subMu and has checked the cap, and has tied the handle
+// first when its subscribe ties one.
+func (s *Service) takeHandleLocked(id string, h *handle, core *pump.Core[readRequest]) {
 	if s.subs.handles == nil {
 		s.subs.handles = map[string]*handle{}
 	}
 	h.ref = core.TakeLocked()
-	id := rand.Text()
 	s.subs.handles[id] = h
 	if h.board != nil {
 		s.subs.boardHandles++
 	} else {
 		s.subs.ticketHandles++
 	}
-	return id
 }
 
-// forgetHandleLocked drops handle id from the registry. The caller holds
-// subMu.
+// forgetHandleLocked drops handle id from the registry and unties it from
+// its client. The caller holds subMu.
 func (s *Service) forgetHandleLocked(id string, h *handle) {
+	if h.untie != nil {
+		h.untie()
+	}
 	delete(s.subs.handles, id)
 	if h.board != nil {
 		s.subs.boardHandles--
@@ -195,6 +212,31 @@ func (s *Service) SetSubscriptionVisible(id string, visible bool) error {
 		s.followRoundLocked(h.ticket.key.connection)
 	}
 	return nil
+}
+
+// SubscriptionBoard is the board handle id subscribes to, for the reads a
+// board subscription makes (Board, SectionRows, BoardPatch). A handle the
+// service does not hold fails with ErrUnknownSubscription, and a ticket's
+// with ErrInvalidRequest.
+func (s *Service) SubscriptionBoard(id string) (Scope, error) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	h := s.subs.handles[id]
+	switch {
+	case h == nil:
+		return Scope{}, fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
+	case h.board == nil:
+		return Scope{}, fmt.Errorf("%w: subscription %s is a ticket's, not a board's", ErrInvalidRequest, id)
+	}
+	return h.board.scope, nil
+}
+
+// SubscriptionCountsForTesting reports the board and ticket handles the
+// service holds and the board pumps live.
+func (s *Service) SubscriptionCountsForTesting() (boardHandles, ticketHandles, boardPumps int) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return s.subs.boardHandles, s.subs.ticketHandles, len(s.subs.boards)
 }
 
 // ReleaseSubscription drops handle id; the last handle on a pump stops
@@ -268,9 +310,10 @@ func (s *Service) haltSubscriptions() {
 	for conn := range s.subs.rounds {
 		s.stopRoundLocked(conn)
 	}
-	clear(s.subs.handles)
+	for id, h := range s.subs.handles {
+		s.forgetHandleLocked(id, h)
+	}
 	clear(s.subs.boards)
-	s.subs.boardHandles, s.subs.ticketHandles = 0, 0
 	s.stopLoopLocked()
 }
 

@@ -25,7 +25,7 @@ func TestOneRowChangeCost(t *testing.T) {
 	rows := realisticRows(0, readBatch, at)
 	m.tracks(rows)
 	sections := []Section{{Kind: SectionSprint, Sprint: "1"}, {Kind: SectionBacklog}, {Kind: SectionColumn}}
-	if _, err := m.svc.SubscribeBoard(m.project(), scope, sections); err != nil {
+	if _, err := m.svc.SubscribeBoard(m.project(), scope, sections, untied); err != nil {
 		t.Fatal(err)
 	}
 	first := len(m.events.boardEvents(t, 1))

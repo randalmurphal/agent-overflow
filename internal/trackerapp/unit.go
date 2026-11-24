@@ -439,6 +439,7 @@ func (r *run) failed(out *Outcome, err error) (callErr error, stop bool, _ error
 
 // settleCalls settles the outcome of the run's tracker calls as the
 // connection's problem: callErr, or a success when the run made a call.
+// Changed is told only when the problem started, changed or cleared.
 // A run that made none and did not fail leaves the problem as it is. A
 // run whose connection was turned off or removed meanwhile (its client
 // closed, so its calls failed) has its outcome dropped by settle.
@@ -447,9 +448,9 @@ func (r *run) settleCalls(callErr error) error {
 		return nil
 	}
 	r.s.opMu.Lock()
-	moved, err := r.s.settle(r.row.ID, r.row.Kind, r.at, callErr, nil)
+	_, changed, err := r.s.settle(r.row.ID, r.row.Kind, r.at, callErr, nil)
 	r.s.opMu.Unlock()
-	if moved {
+	if changed {
 		r.s.changed()
 	}
 	return err

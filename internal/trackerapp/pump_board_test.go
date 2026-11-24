@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,7 +56,7 @@ func (m *mirrorFixture) tracks(rows []tracker.Row) {
 // the backlog.
 func (m *mirrorFixture) subscribe(t *testing.T, b tracker.BoardID) BoardSubscription {
 	t.Helper()
-	sub, err := m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: b}, []Section{{Kind: SectionBacklog}})
+	sub, err := m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: b}, []Section{{Kind: SectionBacklog}}, untied)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,10 +107,10 @@ func TestBoardSubscribeAnswersFromTheMirror(t *testing.T) {
 	if got := len(m.p.callsInOrder()); got != len(calls) {
 		t.Fatalf("a second handle on the board made %d more calls", got-len(calls))
 	}
-	if _, err := m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: "99"}, nil); !errors.Is(err, ErrNotListed) {
+	if _, err := m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: "99"}, nil, untied); !errors.Is(err, ErrNotListed) {
 		t.Fatalf("a board the project does not list: %v", err)
 	}
-	if _, err := m.svc.SubscribeBoard("other", m.scope(), nil); !errors.Is(err, ErrNotListed) {
+	if _, err := m.svc.SubscribeBoard("other", m.scope(), nil, untied); !errors.Is(err, ErrNotListed) {
 		t.Fatalf("a project that lists nothing: %v", err)
 	}
 }
@@ -197,7 +198,7 @@ func TestBoardHandlesShareOnePump(t *testing.T) {
 		for range maxBoardSubscriptions {
 			m.subscribe(t, testBoard)
 		}
-		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil); !errors.Is(err, ErrTooManySubscriptions) {
+		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, untied); !errors.Is(err, ErrTooManySubscriptions) {
 			t.Fatalf("one handle over the cap: %v", err)
 		}
 	})
@@ -338,4 +339,147 @@ func (l *eventLog) firstHandle(t *testing.T, m *mirrorFixture) string {
 func newMirrorFixtureWith(t *testing.T, cad Cadence) *mirrorFixture {
 	t.Helper()
 	return newMirrorFixtureOn(t, newFixtureWith(t, cad))
+}
+
+// The connection list is told only when what it shows moves: a shown
+// board's ticks that keep succeeding tell nothing, a failure is told when
+// it starts and when it clears, and the same failure again is not.
+func TestConnectionsToldOnlyWhenTheProblemMoves(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	m.subscribe(t, testBoard)
+	m.events.boardEvents(t, 1)
+	p := m.svc.boardPumpOf(m.scope())
+	var failing atomic.Bool
+	m.p.set(func(s *scripted) {
+		s.block = func(_ context.Context, name string) error {
+			if name == "ChangedRows" && failing.Load() {
+				return &trackerapi.TransientError{Err: errors.New("reset")}
+			}
+			return nil
+		}
+	})
+	step := func(what string, fail bool, want int64) {
+		t.Helper()
+		failing.Store(fail)
+		before := m.changes.Load()
+		m.svc.boardTick(p, false, Background)
+		if got := m.changes.Load() - before; got != want {
+			t.Fatalf("%s told the connection list %d times, want %d", what, got, want)
+		}
+	}
+	for range 3 {
+		step("a tick that succeeded again", false, 0)
+	}
+	step("the first failed tick", true, 1)
+	step("the same failure again", true, 0)
+	step("the tick that recovered", false, 1)
+	step("a success after the recovery", false, 0)
+}
+
+// tieLog records the ties a board subscribe made and the unties run.
+type tieLog struct {
+	mu      sync.Mutex
+	tied    []string
+	untied  map[string]int
+	refused error
+}
+
+func (l *tieLog) tie(id string) (func(), error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.refused != nil {
+		return nil, l.refused
+	}
+	l.tied = append(l.tied, id)
+	return func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.untied == nil {
+			l.untied = map[string]int{}
+		}
+		l.untied[id]++
+	}, nil
+}
+
+func (l *tieLog) untiedOf(id string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.untied[id]
+}
+
+// A board handle is tied to its client as it is published and untied by
+// every removal: a release, its pump's end (the connection turned off),
+// and Stop. A refused tie publishes no handle and makes no pump.
+func TestBoardHandlesAreUntiedByEveryRemoval(t *testing.T) {
+	t.Parallel()
+	subscribe := func(t *testing.T, m *mirrorFixture, ties *tieLog) string {
+		t.Helper()
+		sub, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, ties.tie)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(ties.tied, sub.ID) {
+			t.Fatalf("handle %s was published untied (tied %v)", sub.ID, ties.tied)
+		}
+		if scope, err := m.svc.SubscriptionBoard(sub.ID); err != nil || scope != m.scope() {
+			t.Fatalf("the handle's board = %+v, %v", scope, err)
+		}
+		return sub.ID
+	}
+	for name, remove := range map[string]func(*testing.T, *mirrorFixture, string){
+		"released": func(_ *testing.T, m *mirrorFixture, id string) { m.svc.ReleaseSubscription(id) },
+		"its connection turned off": func(t *testing.T, m *mirrorFixture, _ string) {
+			if _, err := m.svc.SetEnabled(m.conn.ID, false); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"stopped": func(_ *testing.T, m *mirrorFixture, _ string) { m.svc.Stop() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := newMirrorFixture(t)
+			m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+			ties := &tieLog{}
+			id := subscribe(t, m, ties)
+			remove(t, m, id)
+			if n := ties.untiedOf(id); n != 1 {
+				t.Fatalf("the handle was untied %d times, want 1", n)
+			}
+			if _, err := m.svc.SubscriptionBoard(id); !errors.Is(err, ErrUnknownSubscription) {
+				t.Fatalf("the removed handle's board: %v", err)
+			}
+			m.svc.ReleaseSubscription(id)
+			if n := ties.untiedOf(id); n != 1 {
+				t.Fatalf("a release after the removal untied it again: %d", n)
+			}
+		})
+	}
+	t.Run("refused", func(t *testing.T) {
+		t.Parallel()
+		m := newMirrorFixture(t)
+		refusal := errors.New("the client's connection is closing")
+		ties := &tieLog{refused: refusal}
+		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, ties.tie); !errors.Is(err, refusal) {
+			t.Fatalf("a refused tie's subscribe = %v", err)
+		}
+		if b, tk, pumps := m.svc.SubscriptionCountsForTesting(); b+tk+pumps != 0 {
+			t.Fatalf("a refused tie left %d board handles, %d ticket handles and %d pumps", b, tk, pumps)
+		}
+		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, nil); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("a subscribe with no tie = %v", err)
+		}
+	})
+	t.Run("a ticket's handle", func(t *testing.T) {
+		t.Parallel()
+		m := newMirrorFixture(t)
+		sub, err := m.svc.SubscribeTicket(m.conn.ID, "10001")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.svc.SubscriptionBoard(sub.ID); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("a ticket handle's board: %v", err)
+		}
+	})
 }
