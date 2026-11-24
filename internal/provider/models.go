@@ -576,19 +576,17 @@ func CoerceReasoningEffortForModel(providerName, model string, effort ReasoningE
 // while the claude binary's `--effort` has no none/minimal tier and stops at
 // `max`. claude-tui drives the same claude binary, so it shares claude's set.
 //
-// Three packages keep hand-written copies of these sets, because neither may
-// import this one (internal/store stays provider-free; internal/settings would
-// close a dependency cycle). Each copy is pinned by a test that can see both
-// sides, and a new tier belongs in all of them in the same commit:
+// internal/settings validates text generation against
+// ReasoningEffortsForProvider itself. Two packages keep hand-written copies of
+// these sets instead (internal/store stays provider-free). Each copy is pinned
+// by a test that can see both sides, and a new tier belongs in all of them in
+// the same commit:
 //
 //   - internal/store: legalEffortForProvider plus the provider/effort coupling
 //     CHECK on threads + chat_model_profiles —
 //     TestReasoningEffortSetsMatchProvider (internal/store, test-only import).
 //     A tier added here without a migration would fail at INSERT time in
 //     production, which is what that test exists to prevent.
-//   - internal/settings: allowedCodexTextGenerationEfforts /
-//     allowedClaudeTextGenerationEfforts —
-//     TestTextGenerationEffortsMatchTheProviderSets (root package).
 //   - internal/workflow/def: EffortTiers(), against AllReasoningEfforts —
 //     TestWorkflowEffortTiersMatchTheProviderReasoningEfforts (root package).
 //
