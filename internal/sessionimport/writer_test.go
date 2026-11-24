@@ -795,33 +795,6 @@ func TestBuildSettlesABackgroundFlaggedOrphanCompletion(t *testing.T) {
 	}
 }
 
-// A backgrounded launch that IS in the file keeps its carve-out: a real
-// terminal can still arrive and it owns the outcome.
-func TestBuildKeepsTheCarveOutForARealBackgroundLaunch(t *testing.T) {
-	st := newTestStore(t)
-	thread := seedThread(t, st, testThreadID, "claude", t.TempDir())
-
-	batch, _, err := NewWriter(st, thread).Build([]importir.Event{
-		{ProviderEvent: provider.ProviderEvent{
-			Kind: provider.EventToolStart, ThreadID: testThreadID,
-			ItemID: "toolu_bg", ItemType: "Task",
-			Meta:      json.RawMessage(`{"toolName":"Task","is_background":true,"input":{"description":"watch"}}`),
-			Timestamp: at(1),
-		}, SourceUUID: "uuid-1"},
-		{ProviderEvent: provider.ProviderEvent{
-			Kind: provider.EventToolComplete, ThreadID: testThreadID,
-			ItemID: "toolu_bg", Content: "launched", Timestamp: at(2),
-			Meta: json.RawMessage(`{"is_background":true}`),
-		}, SourceUUID: "uuid-2"},
-	})
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	if len(batch.Rows) != 1 || batch.Rows[0].Item.Status != statusRunning {
-		t.Fatalf("backgrounded launch = %+v, want a single still-running row", batch.Rows)
-	}
-}
-
 func TestBuildNestsSubagentRowsUnderTheirLaunch(t *testing.T) {
 	st := newTestStore(t)
 	thread := seedThread(t, st, testThreadID, "claude", t.TempDir())

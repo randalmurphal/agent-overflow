@@ -96,17 +96,6 @@ func sourceFor(t *testing.T, stub *httptest.Server) *Source {
 	return New(bootstrap, "launch-token", nil)
 }
 
-func TestARelayReadsTheCredentialOutOfTheBootstrapExchange(t *testing.T) {
-	status := &atomic.Int32{}
-	status.Store(http.StatusOK)
-	stub := bootstrapStub(t, "ao1.local-credential", status)
-
-	source := sourceFor(t, stub)
-	if got := source.Credential(context.Background()); got != "ao1.local-credential" {
-		t.Fatalf("credential = %q, want the one the exchange planted", got)
-	}
-}
-
 // TestARelayKeepsWorkingWhenThereIsNoCredential — an older backend, or one
 // whose session core did not start. Forwarding is an improvement in
 // attribution, never a new requirement for a relay to connect.

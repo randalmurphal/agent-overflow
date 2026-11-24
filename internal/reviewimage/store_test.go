@@ -126,7 +126,9 @@ func TestConcurrentMissesShareOneLoad(t *testing.T) {
 }
 
 // An entry a response is reading stays; a load that needs its room waits
-// for the close, and past its wait refuses with a sentence.
+// for the close, and past its wait refuses with a sentence. The reader
+// guard: the refused load leaves the entry listed, so it still opens
+// before that reader closes.
 func TestAnEntryBeingReadIsNotFreed(t *testing.T) {
 	t.Parallel()
 	store := newMetered(100, 50*time.Millisecond)
@@ -144,6 +146,11 @@ func TestAnEntryBeingReadIsNotFreed(t *testing.T) {
 	if store.Held() != 70 || store.max != 70 {
 		t.Fatalf("held %d (max %d) while refusing, want 70", store.Held(), store.max)
 	}
+	second, ok := store.Open(a.ID)
+	if !ok {
+		t.Fatal("a no longer opens after a competing load failed")
+	}
+	_ = second.Close()
 	if err := content.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -273,27 +280,6 @@ func TestLoadRefusesWhatCannotFit(t *testing.T) {
 	if _, err := store.Load(context.Background(), "a", 101, fillWith(1)); err == nil {
 		t.Fatal("a load over the budget was accepted")
 	}
-}
-
-// The reader guard: a competing load that finds no room leaves the entry a
-// response is reading listed, so it still opens before that reader closes.
-func TestAnEntryBeingReadStaysListedPastAFailedLoad(t *testing.T) {
-	t.Parallel()
-	store := newMetered(100, 20*time.Millisecond)
-	a, err := store.Load(context.Background(), "a", 70, fillWith(1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, _ := store.Open(a.ID)
-	if _, err := store.Load(context.Background(), "b", 70, fillWith(2)); !errors.Is(err, ErrNoRoom) {
-		t.Fatalf("b = %v, want ErrNoRoom", err)
-	}
-	second, ok := store.Open(a.ID)
-	if !ok {
-		t.Fatal("a no longer opens after a competing load failed")
-	}
-	_ = second.Close()
-	_ = first.Close()
 }
 
 // A waiting load whose caller leaves answers the caller's error at once,

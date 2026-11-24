@@ -232,25 +232,14 @@ func TestSystemdInstallWritesThenTellsTheManager(t *testing.T) {
 		t.Errorf("the written unit does not start the backend:\n%s", body)
 	}
 
+	// daemon-reload before enable, not after: systemd enables the unit it has
+	// read, so the reverse order enables a stale one (or nothing at all on a
+	// first install).
 	want := []string{
 		"systemctl --user daemon-reload",
 		"systemctl --user enable --now agent-overflow.service",
 	}
 	assertCalls(t, runner, want)
-}
-
-// daemon-reload before enable, not after: systemd enables the unit it has
-// read, so the reverse order enables a stale one (or nothing at all on a
-// first install).
-func TestSystemdInstallReloadsBeforeEnabling(t *testing.T) {
-	runner := newRunner()
-	manager := mustNew(t, linuxConfig(t.TempDir()), runner)
-	if err := manager.Install(context.Background()); err != nil {
-		t.Fatalf("Install: %v", err)
-	}
-	if len(runner.calls) < 2 || !strings.Contains(runner.calls[0], "daemon-reload") {
-		t.Errorf("daemon-reload is not the first command: %v", runner.calls)
-	}
 }
 
 // A unit file that was written but could not be enabled must leave the reason

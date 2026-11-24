@@ -195,12 +195,18 @@ func TestSampleAllRootTakesEveryDescendant(t *testing.T) {
 // our business costs one cheap read and never an expensive `status` one.
 // Proving that from the outside means proving the walk still answers when
 // the foreign processes have no `status` file at all — which is also what
-// happens for real when a stranger's pid exits mid-walk.
+// happens for real when a stranger's pid exits mid-walk. A pid that exits
+// between the readdir and the `stat` read is skipped, not fatal: the tree
+// is racy by construction and a perf series must not develop holes because
+// a renderer restarted.
 func TestSampleRootDoesNotNeedStatusForProcessesItDoesNotReport(t *testing.T) {
 	root := writeProc(t, map[int]string{
 		100: status("agent-overflow", 1, "51200"),
 		101: status("WebKitWebProce", 100, "204800"),
 	}, nil)
+	if err := os.MkdirAll(filepath.Join(root, "102"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	} // pid 102 has no stat or status file at all
 	// A hundred strangers with a stat file and nothing else.
 	for pid := 1000; pid < 1100; pid++ {
 		dir := filepath.Join(root, strconv.Itoa(pid))
@@ -248,25 +254,5 @@ func TestSampleRootFailsWhenTheNamedProcessIsGone(t *testing.T) {
 	root := writeProc(t, map[int]string{1: status("systemd", 0, "9000")}, nil)
 	if _, err := SampleRoot(root, 4242, DefaultWebviewPrefixes); err == nil {
 		t.Fatal("SampleRoot must fail when its own pid has no status file")
-	}
-}
-
-// A descendant that exits between the readdir and the read is skipped, not
-// fatal: the tree is racy by construction and a perf series must not
-// develop holes because a renderer restarted.
-func TestSampleRootSkipsAnUnreadableDescendant(t *testing.T) {
-	root := writeProc(t, map[int]string{
-		100: status("agent-overflow", 1, "51200"),
-		101: status("WebKitWebProce", 100, "204800"),
-	}, nil)
-	if err := os.MkdirAll(filepath.Join(root, "102"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	} // pid 102 has no status file at all
-	tree, err := SampleRoot(root, 100, DefaultWebviewPrefixes)
-	if err != nil {
-		t.Fatalf("SampleRoot: %v", err)
-	}
-	if len(tree.Children) != 1 || tree.Children[0].PID != 101 {
-		t.Fatalf("children = %+v, want only pid 101", tree.Children)
 	}
 }

@@ -35,41 +35,65 @@ func TestExtractAndValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("matches a simple relative path with extension", func(t *testing.T) {
-		ws := seedWorkspace(t, "src/lib/foo.ts")
-		got := ExtractAndValidate(ws, "see src/lib/foo.ts for context")
-		if len(got) != 1 || got[0].Path != "src/lib/foo.ts" {
-			t.Fatalf("expected one ref for src/lib/foo.ts, got %#v", got)
-		}
-	})
-
-	t.Run("captures line and col", func(t *testing.T) {
-		ws := seedWorkspace(t, "src/lib/foo.ts")
-		got := ExtractAndValidate(ws, "error in src/lib/foo.ts:42:7 today")
-		if len(got) != 1 {
-			t.Fatalf("expected one ref, got %#v", got)
-		}
-		if got[0].Line != 42 || got[0].Col != 7 {
-			t.Fatalf("expected line=42 col=7, got %#v", got[0])
-		}
-	})
-
-	t.Run("path with :line-endLine range lands on allowlist at start line", func(t *testing.T) {
+	for _, tc := range []struct {
+		name, seed, text string
+		want             PathRef
+	}{
+		{"matches a simple relative path with extension", "src/lib/foo.ts", "see src/lib/foo.ts for context", PathRef{Path: "src/lib/foo.ts"}},
+		{"captures line and col", "src/lib/foo.ts", "error in src/lib/foo.ts:42:7 today", PathRef{Path: "src/lib/foo.ts", Line: 42, Col: 7}},
 		// The frontend tokenizer (`pathLinkExtension.ts`) accepts the
 		// `:18-23` suffix and linkifies the full token; that depends on
 		// the Go extractor still emitting the path with line=18 even
 		// when the input carries a trailing `-23` the Go regex doesn't
-		// consume. Lock that contract so a future Go regex change
-		// doesn't silently break the frontend linkifier.
-		ws := seedWorkspace(t, "src/lib/foo.ts")
-		got := ExtractAndValidate(ws, "see src/lib/foo.ts:18-23 for context")
-		if len(got) != 1 {
-			t.Fatalf("expected one ref, got %#v", got)
-		}
-		if got[0].Path != "src/lib/foo.ts" || got[0].Line != 18 || got[0].Col != 0 {
-			t.Fatalf("expected {Path: src/lib/foo.ts, Line: 18, Col: 0}, got %#v", got[0])
-		}
-	})
+		// consume.
+		{"path with :line-endLine range lands on allowlist at start line", "src/lib/foo.ts", "see src/lib/foo.ts:18-23 for context", PathRef{Path: "src/lib/foo.ts", Line: 18}},
+		{"multi-dot filenames pass (config.json)", "src/app/my.config.json", "edit src/app/my.config.json next", PathRef{Path: "src/app/my.config.json"}},
+		{"matches paths inside parentheses", "src/lib/foo.ts", "see (src/lib/foo.ts:5) for the bug", PathRef{Path: "src/lib/foo.ts", Line: 5}},
+		{"matches paths inside backticks", "src/lib/foo.ts", "check `src/lib/foo.ts:42` for bug", PathRef{Path: "src/lib/foo.ts", Line: 42}},
+		{"matches paths inside double quotes", "src/lib/foo.ts", `Edited "src/lib/foo.ts" successfully`, PathRef{Path: "src/lib/foo.ts"}},
+		{"accepts @-prefixed mention when boundary is safe", "src/foo.ts", "see @src/foo.ts:1 next", PathRef{Path: "src/foo.ts", Line: 1}},
+		{"accepts leading `./` relative path", "src/foo.ts", "see ./src/foo.ts", PathRef{Path: "./src/foo.ts"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractAndValidate(seedWorkspace(t, tc.seed), tc.text)
+			if want := []PathRef{tc.want}; !slices.Equal(got, want) {
+				t.Fatalf("ExtractAndValidate(%q) = %#v, want %#v", tc.text, got, want)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		seed []string
+		text string
+	}{
+		// Existence oracle defense: `/etc/passwd` exists on a Linux host,
+		// so os.Stat would succeed.
+		{"absolute path outside workspace is rejected", []string{"inside.ts"}, "see /etc/passwd for the user list"},
+		{"rejects nonexistent paths even when shape matches", []string{"src/lib/foo.ts"}, "see foo/bar.nonsense or imaginary/x.ts"},
+		{"rejects URLs", nil, "see https://example.com/foo for docs"},
+		{"rejects scoped npm packages", nil, "install @sveltejs/kit and use it"},
+		{"rejects emails", nil, "contact user@example.com please"},
+		{"rejects bare module names without slashes", nil, "we use the marked package"},
+		{"rejects directory-shaped paths without filename extension", []string{"path/to/dir/x.ts"}, "look in path/to/dir please"},
+		// Regression: `something/else.` used to linkify because the
+		// heuristic only required ANY dot in the final segment.
+		{"rejects trailing-dot tokens", nil, "look in something/else. please"},
+		{"rejects version strings", nil, "upgrade lib/1.2.3"},
+		{"rejects path embedded inside URL", []string{"path/to/foo.bar"}, "see https://x.com/path/to/foo.bar"},
+		// Even when host/path.ts exists, the preceding context says this
+		// is an email, not a path.
+		{"rejects path right after `@` of an email", []string{"host/path.ts"}, "user@host/path.ts contacted us"},
+		// Regression guard for the existence oracle that an unbounded
+		// `..`-escape would otherwise create.
+		{"rejects deep `../../etc/passwd`-style traversal", nil, "see ../../../etc/passwd for the list"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExtractAndValidate(seedWorkspace(t, tc.seed...), tc.text); got != nil {
+				t.Fatalf("ExtractAndValidate(%q) = %#v, want nil", tc.text, got)
+			}
+		})
+	}
 
 	t.Run("absolute path inside workspace validates", func(t *testing.T) {
 		ws := seedWorkspace(t, "abs.ts")
@@ -77,91 +101,6 @@ func TestExtractAndValidate(t *testing.T) {
 		got := ExtractAndValidate(ws, "crashed at "+abs+":10")
 		if len(got) != 1 || got[0].Path != abs || got[0].Line != 10 {
 			t.Fatalf("expected one ref for absolute path with line=10, got %#v", got)
-		}
-	})
-
-	t.Run("absolute path outside workspace is rejected", func(t *testing.T) {
-		// Existence oracle defense: agent prose containing
-		// `/etc/passwd` (which definitely exists on a Linux host)
-		// must not validate, even though os.Stat would succeed.
-		ws := seedWorkspace(t, "inside.ts")
-		got := ExtractAndValidate(ws, "see /etc/passwd for the user list")
-		if got != nil {
-			t.Fatalf("expected nil for out-of-workspace absolute path, got %#v", got)
-		}
-	})
-
-	t.Run("rejects nonexistent paths even when shape matches", func(t *testing.T) {
-		ws := seedWorkspace(t, "src/lib/foo.ts")
-		got := ExtractAndValidate(ws, "see foo/bar.nonsense or imaginary/x.ts")
-		if got != nil {
-			t.Fatalf("expected nil, got %#v", got)
-		}
-	})
-
-	t.Run("rejects URLs", func(t *testing.T) {
-		ws := seedWorkspace(t)
-		got := ExtractAndValidate(ws, "see https://example.com/foo for docs")
-		if got != nil {
-			t.Fatalf("expected nil for URL, got %#v", got)
-		}
-	})
-
-	t.Run("rejects scoped npm packages", func(t *testing.T) {
-		ws := seedWorkspace(t)
-		got := ExtractAndValidate(ws, "install @sveltejs/kit and use it")
-		if got != nil {
-			t.Fatalf("expected nil for scoped package, got %#v", got)
-		}
-	})
-
-	t.Run("rejects emails", func(t *testing.T) {
-		ws := seedWorkspace(t)
-		got := ExtractAndValidate(ws, "contact user@example.com please")
-		if got != nil {
-			t.Fatalf("expected nil for email, got %#v", got)
-		}
-	})
-
-	t.Run("rejects bare module names without slashes", func(t *testing.T) {
-		ws := seedWorkspace(t)
-		got := ExtractAndValidate(ws, "we use the marked package")
-		if got != nil {
-			t.Fatalf("expected nil for bare module, got %#v", got)
-		}
-	})
-
-	t.Run("rejects directory-shaped paths without filename extension", func(t *testing.T) {
-		ws := seedWorkspace(t, "path/to/dir/x.ts")
-		got := ExtractAndValidate(ws, "look in path/to/dir please")
-		if got != nil {
-			t.Fatalf("expected nil for directory-only path, got %#v", got)
-		}
-	})
-
-	t.Run("rejects trailing-dot tokens", func(t *testing.T) {
-		// Regression: `something/else.` used to linkify because the
-		// heuristic only required ANY dot in the final segment.
-		ws := seedWorkspace(t)
-		got := ExtractAndValidate(ws, "look in something/else. please")
-		if got != nil {
-			t.Fatalf("expected nil for trailing-dot token, got %#v", got)
-		}
-	})
-
-	t.Run("rejects version strings", func(t *testing.T) {
-		ws := seedWorkspace(t)
-		got := ExtractAndValidate(ws, "upgrade lib/1.2.3")
-		if got != nil {
-			t.Fatalf("expected nil for version-string token, got %#v", got)
-		}
-	})
-
-	t.Run("multi-dot filenames pass (config.json)", func(t *testing.T) {
-		ws := seedWorkspace(t, "src/app/my.config.json")
-		got := ExtractAndValidate(ws, "edit src/app/my.config.json next")
-		if len(got) != 1 || got[0].Path != "src/app/my.config.json" {
-			t.Fatalf("expected one ref for my.config.json, got %#v", got)
 		}
 	})
 
@@ -180,64 +119,6 @@ func TestExtractAndValidate(t *testing.T) {
 		}
 		if got[0].Line != 1 || got[1].Line != 2 || got[1].Col != 3 {
 			t.Fatalf("line/col mismatch: %#v", got)
-		}
-	})
-
-	t.Run("matches paths inside parentheses", func(t *testing.T) {
-		ws := seedWorkspace(t, "src/lib/foo.ts")
-		got := ExtractAndValidate(ws, "see (src/lib/foo.ts:5) for the bug")
-		if len(got) != 1 || got[0].Line != 5 {
-			t.Fatalf("expected one ref with line=5, got %#v", got)
-		}
-	})
-
-	t.Run("matches paths inside backticks", func(t *testing.T) {
-		ws := seedWorkspace(t, "src/lib/foo.ts")
-		got := ExtractAndValidate(ws, "check `src/lib/foo.ts:42` for bug")
-		if len(got) != 1 || got[0].Line != 42 {
-			t.Fatalf("expected one ref with line=42, got %#v", got)
-		}
-	})
-
-	t.Run("matches paths inside double quotes", func(t *testing.T) {
-		ws := seedWorkspace(t, "src/lib/foo.ts")
-		got := ExtractAndValidate(ws, `Edited "src/lib/foo.ts" successfully`)
-		if len(got) != 1 {
-			t.Fatalf("expected one ref, got %#v", got)
-		}
-	})
-
-	t.Run("rejects path embedded inside URL", func(t *testing.T) {
-		ws := seedWorkspace(t, "path/to/foo.bar")
-		got := ExtractAndValidate(ws, "see https://x.com/path/to/foo.bar")
-		if got != nil {
-			t.Fatalf("expected nil for URL-embedded path, got %#v", got)
-		}
-	})
-
-	t.Run("rejects path right after `@` of an email", func(t *testing.T) {
-		// `name@host/path.ts` — even when host/path.ts exists, the
-		// preceding context says this is an email, not a path.
-		ws := seedWorkspace(t, "host/path.ts")
-		got := ExtractAndValidate(ws, "user@host/path.ts contacted us")
-		if got != nil {
-			t.Fatalf("expected nil for email-tail path, got %#v", got)
-		}
-	})
-
-	t.Run("accepts @-prefixed mention when boundary is safe", func(t *testing.T) {
-		ws := seedWorkspace(t, "src/foo.ts")
-		got := ExtractAndValidate(ws, "see @src/foo.ts:1 next")
-		if len(got) != 1 || got[0].Path != "src/foo.ts" || got[0].Line != 1 {
-			t.Fatalf("expected one ref for src/foo.ts with line=1, got %#v", got)
-		}
-	})
-
-	t.Run("accepts leading `./` relative path", func(t *testing.T) {
-		ws := seedWorkspace(t, "src/foo.ts")
-		got := ExtractAndValidate(ws, "see ./src/foo.ts")
-		if len(got) != 1 || got[0].Path != "./src/foo.ts" {
-			t.Fatalf("expected one ref for ./src/foo.ts, got %#v", got)
 		}
 	})
 
@@ -263,16 +144,6 @@ func TestExtractAndValidate(t *testing.T) {
 		got := ExtractAndValidate(ws, "relative ../sibling/x.ts:1")
 		if got != nil {
 			t.Fatalf("expected nil for escape-out path, got %#v", got)
-		}
-	})
-
-	t.Run("rejects deep `../../etc/passwd`-style traversal", func(t *testing.T) {
-		// Regression guard for the existence oracle that an
-		// unbounded `..`-escape would otherwise create.
-		ws := seedWorkspace(t)
-		got := ExtractAndValidate(ws, "see ../../../etc/passwd for the list")
-		if got != nil {
-			t.Fatalf("expected nil for deep traversal, got %#v", got)
 		}
 	})
 
