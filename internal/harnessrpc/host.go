@@ -131,9 +131,12 @@ type Host interface {
 	CancelWorkflowItem(context.Context, string) error
 	SyncWorkflowEngine() error
 	PublishStoreIdentity(store.Identity)
-	// SendMessage sends message as the page's default send does, through
-	// its entry and with the options it builds.
-	SendMessage(threadID, message string) error
+	// Send sends text with the options the page's default send builds,
+	// through the composer's send under a fresh send id, as the caller of
+	// ctx. With atRestOnly a
+	// thread that is working refuses it, recording nothing; without, the
+	// message queues behind that work as the composer's does.
+	Send(ctx context.Context, threadID, text string, atRestOnly bool) (HarnessSendResult, error)
 	// PushSent answers what the harness push recorder has been handed, and
 	// ForgetPushSent drops it. Both answer harmlessly on a boot with no
 	// recorder, which is every shipping one.

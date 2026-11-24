@@ -204,7 +204,7 @@ func TestCancellingADispatchedRequestStopsItsTurn(t *testing.T) {
 	if _, err := f.app.sendMessageWithOptions(t.Context(), target.ID, "look at the crash report", sendMessageOptions{
 		SendID:            threadRequestSendID(token),
 		ReconcileBySendID: true,
-		QueueIfActive:     true,
+		Admission:         admitQueueing,
 		PreserveDraft:     true,
 	}); err != nil {
 		t.Fatalf("dispatch the request message: %v", err)

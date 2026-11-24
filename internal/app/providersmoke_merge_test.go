@@ -91,7 +91,7 @@ func TestProviderSmokeClaudeCrossDrainMergeFold(t *testing.T) {
 	queue := func(sendID, content string) store.Item {
 		t.Helper()
 		if _, err := app.sendMessageWithOptions(ctx, thread.ID, content, sendMessageOptions{
-			SendID: sendID, ReconcileBySendID: true, QueueIfActive: true,
+			SendID: sendID, ReconcileBySendID: true, Admission: admitQueueing,
 		}); err != nil {
 			t.Fatalf("queue %s: %v", sendID, err)
 		}

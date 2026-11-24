@@ -321,7 +321,7 @@ func (a *App) finishShellCommand(ctx context.Context, result shellrun.Result) er
 			AttachmentIDs:     []string{record.ID},
 			SendID:            result.RunID,
 			ReconcileBySendID: true,
-			QueueIfActive:     true,
+			Admission:         admitQueueing,
 			// The command did not come from the draft the composer holds now.
 			PreserveDraft: true,
 		})

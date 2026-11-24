@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 
 	"agent-overflow/internal/provider"
@@ -15,6 +16,7 @@ const (
 	messageDirect         userMessageIntent = iota // Internal turn-opening send.
 	messageComposer                                // Queue when the backend is active or starting.
 	messageLegacyComposer                          // Caller predicts numeric IDs; only idle admission is safe.
+	messageAtRest                                  // Refuse when the backend is active or starting.
 	messageFlush                                   // Dispatch an accepted queue item.
 	messageFlushFallback                           // Provider refused steer: start a fresh turn.
 )
@@ -40,13 +42,16 @@ type userMessagePlacement struct {
 	joinsActiveTurn bool
 }
 
+// errThreadWorking refuses a send admitted only at rest.
+var errThreadWorking = errors.New("thread is working: a message sent now would queue behind that work, and the turn it runs in could not be named; wait for the thread to rest, or send without waiting")
+
 // resolveUserMessagePlacement is the sole App-side owner of turn placement.
 // Call under the thread action lock; provider events can still complete a turn
 // concurrently, so a rejected steer must explicitly resolve a fresh fallback.
 func (a *App) resolveUserMessagePlacement(thread store.Thread, intent userMessageIntent) (userMessagePlacement, error) {
 	var active store.Turn
 	var found bool
-	composer := intent == messageComposer || intent == messageLegacyComposer
+	composer := intent == messageComposer || intent == messageLegacyComposer || intent == messageAtRest
 	if composer || intent == messageFlush {
 		var err error
 		active, found, err = a.store.GetActiveTurn(thread.ID)
@@ -69,6 +74,9 @@ func (a *App) resolveUserMessagePlacement(thread store.Thread, intent userMessag
 	if composer && found {
 		if intent == messageLegacyComposer {
 			return userMessagePlacement{}, fmt.Errorf("This thread is already working. Reopen the app to update it, or wait for the turn to finish before sending again.")
+		}
+		if intent == messageAtRest {
+			return userMessagePlacement{}, errThreadWorking
 		}
 		return userMessagePlacement{queue: true}, nil
 	}
@@ -141,7 +149,7 @@ func (a *App) userMessageItemID(threadID, sendID string, turnIndex int, intent u
 	switch intent {
 	case messageFlush, messageFlushFallback:
 		scope = "flush"
-	case messageDirect, messageComposer, messageLegacyComposer:
+	case messageDirect, messageComposer, messageLegacyComposer, messageAtRest:
 	}
 	if sendID != "" && intent != messageLegacyComposer {
 		id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(sendID)).String()

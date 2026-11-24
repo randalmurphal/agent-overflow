@@ -1,6 +1,7 @@
 package harnessrpc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +38,7 @@ func ArmSoakSteadyState(receiver *Harness, config SoakConfig) error {
 		return err
 	}
 	log.Printf("soak: arming live background-agent turn on thread %s", threadID)
-	if err := receiver.config.Host.SendMessage(threadID, config.Prompt); err != nil {
+	if _, err := receiver.config.Host.Send(context.Background(), threadID, config.Prompt, false); err != nil {
 		return fmt.Errorf("send soak prompt: %w", err)
 	}
 	return nil

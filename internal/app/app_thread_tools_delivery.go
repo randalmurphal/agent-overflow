@@ -51,7 +51,7 @@ func (t threadToolsApp) dispatchRequest(
 	item, err := t.app.sendMessageWithOptions(ctx, targetThreadID, message.Text(), sendMessageOptions{
 		SendID:            sendID,
 		ReconcileBySendID: true,
-		QueueIfActive:     true,
+		Admission:         admitQueueing,
 		// The target's composer holds whatever the person at that thread
 		// typed and has not sent. An agent's message must never take it.
 		PreserveDraft:     true,
