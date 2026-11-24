@@ -26,10 +26,12 @@ function vitestProjectFiles(): string[] {
   return [...files].map((file) => relative(import.meta.dirname, file));
 }
 
-// A child Vitest run (src/test/stalledPage, src/test/sharedWorker) is
-// started with its config's path and runs the files its include names, so
-// the config and those files are entries, read from the config itself.
-async function childVitestFiles(): Promise<string[]> {
+// A child Vitest run (src/test/stalledPage, src/test/sharedWorker) runs the
+// files its config's include names, which are entries here, read from the
+// config. The config itself is not: the code that starts the run names it
+// as `new URL('<path>', import.meta.url)`, which knip follows, so a config
+// nothing runs is reported.
+async function childVitestIncludes(): Promise<string[]> {
   const configs = globSync('src/**/vitest.config.ts', { cwd: import.meta.dirname });
   if (configs.length === 0) throw new Error('knip.workspace.ts found no child Vitest config under src/');
   const files: string[] = [];
@@ -37,16 +39,22 @@ async function childVitestFiles(): Promise<string[]> {
     const { default: child } = (await import(resolve(import.meta.dirname, config))) as { default: { test?: { include?: string[] } } };
     const include = child.test?.include ?? [];
     if (include.length === 0) throw new Error(`${config} names no include for knip.workspace.ts to read`);
-    files.push(config, ...include);
+    files.push(...include);
   }
   return files;
 }
 
 export const frontendWorkspace = async (): Promise<Workspace> => ({
   entry: [
-    // CLIs run with `node scripts/<name>.mjs`.
-    'scripts/*.mjs',
-    ...(await childVitestFiles()),
+    // The package scripts run the other scripts/*.mjs, which knip reads
+    // from package.json. These are run by hand, each as its header says:
+    // the generator of src/lib/utils/forgeEmojiTable.ts, the generator of
+    // the corpus src/lib/markdown/freezeReplay.manual.ts replays, and the
+    // check of the affected-test selection (scripts/vitest-changed.mjs).
+    'scripts/generate-forge-emoji.mjs',
+    'scripts/generate-freeze-replay-fixture.mjs',
+    'scripts/vitest-changed.check.mjs',
+    ...(await childVitestIncludes()),
     ...vitestProjectFiles(),
   ],
   // bindings/ is generated (`wails3 generate bindings`) and outside the

@@ -130,8 +130,11 @@ of the real-provider smoke tests.
 manual run. Every step calls a Make target, or a binary `make
 harness-build` built, so the local command is the same check. The
 `toolchain` job publishes the run's plan (`scripts/ci-suites.mjs`, which
-holds the rules): every other job, true or false. A pull request runs the
-jobs its changed paths can reach, plus dependency review. A push to `main`
+holds the rules): every other job, true or false, and the Playwright
+specs that test the suite's own tooling which the change cannot reach. A
+pull request runs the jobs its changed paths can reach, plus dependency
+review, and its Playwright shards skip those tooling specs; a push or a
+manual run runs every spec. A push to `main`
 runs every job but the upgrade lineage check, which its pull request ran,
 and then `cache-cleanup`. A manual run runs every job but dependency review
 and `cache-cleanup`. The jobs are one Linux job for `fmt-check`,
@@ -145,9 +148,9 @@ Vitest projects as `make vitest-unit` and `make vitest-browser` (on a
 pull request with `VITEST_BASE`, so only the test files its diff can
 affect run), and one
 `make harness-build` whose output eight Playwright shards run with
-`bin/ao-harness-e2e --shard=N/8` and three workers each
-(`AO_E2E_WORKERS`). `upgrade-lineage` runs `scripts/release-upgrade-check.sh`
-on the same binaries when the change reaches the store, the check or the
+`bin/ao-harness-e2e --shard=N/8`, three workers each (`AO_E2E_WORKERS`)
+and the plan's `--grep-invert` of the skipped tooling specs.
+`upgrade-lineage` runs `scripts/release-upgrade-check.sh` on the same binaries when the change reaches the store, the check or the
 version ([release upgrade check](release-upgrade-check.md)). The `rest`
 shard also runs `make script-tests`. `CI result` passes only when every
 job the plan selected succeeded and every job it excluded was skipped, so

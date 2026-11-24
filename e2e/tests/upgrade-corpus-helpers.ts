@@ -127,22 +127,6 @@ export interface CensusGrowth {
   removed?: { tables: Record<string, number>; threadItems: Record<string, number>; bytes?: number };
 }
 
-/** mergeGrowth adds up the growths of the phases between two censuses. */
-export function mergeGrowth(...growths: CensusGrowth[]): CensusGrowth {
-  const exact: Partial<Record<CensusEntity, number>> = {};
-  const removed = { tables: {} as Record<string, number>, threadItems: {} as Record<string, number>, bytes: 0 };
-  const add = (into: Record<string, number>, from: Record<string, number> = {}) => {
-    for (const [key, n] of Object.entries(from)) into[key] = (into[key] ?? 0) + n;
-  };
-  for (const growth of growths) {
-    add(exact, growth.exact);
-    add(removed.tables, growth.removed?.tables);
-    add(removed.threadItems, growth.removed?.threadItems);
-    removed.bytes += growth.removed?.bytes ?? 0;
-  }
-  return { exact, removed };
-}
-
 /** One thread a sweep rule selects, as the store the trial left holds it. */
 interface SweptThread {
   rule: string;

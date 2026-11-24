@@ -118,10 +118,6 @@ export function chip(scope: Locator, name: string): Locator {
   return scope.locator(`[data-testid="review-reaction-chip"][data-reaction="${name}"]`);
 }
 
-export async function press(target: Locator, compact: boolean): Promise<void> {
-  await (compact ? target.tap() : target.click());
-}
-
 export async function closeAll(page: Page, harness: HarnessApp): Promise<void> {
   await page.close();
   await harness.close();

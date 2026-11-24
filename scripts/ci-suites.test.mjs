@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
-import { harnessTestPackages, jobs, plan, suites, verdict } from './ci-suites.mjs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { e2eGrepInvert, grepInvert, harnessTestPackages, jobs, plan, skippedSpecs, suites, toolingSpecs, verdict } from './ci-suites.mjs';
 
 const harness = harnessTestPackages('# packages\nE2E_TEST_PACKAGES := ./internal/frontendclient ./internal/store\n');
 const run = paths => suites(paths, harness);
@@ -62,6 +62,64 @@ test('the upgrade lineage check runs for the store, its corpus, the check and th
   }
 });
 
+const stalled = 'e2e/tests/stalled-page-capture.spec.ts';
+const recovery = 'e2e/tests/upgrade-corpus-recovery.spec.ts';
+const coverage = 'e2e/tests/upgrade-corpus-coverage.spec.ts';
+const skipped = paths => skippedSpecs(paths, harness);
+
+test('the tooling specs are the Playwright specs the table names', () => {
+  assert.deepEqual(Object.keys(toolingSpecs).sort(), [stalled, coverage, recovery].sort());
+  for (const spec of Object.keys(toolingSpecs)) assert.ok(existsSync(new URL(`../${spec}`, import.meta.url)), `${spec} exists`);
+});
+
+test('a pull request skips a tooling spec only when no path it changes can change the spec', () => {
+  const cases = [
+    [['frontend/src/lib/stores/x.svelte.ts', 'frontend/src/lib/a.test.ts', 'frontend/package.json', 'docs/x.md'], [stalled, recovery, coverage]],
+    // Another gate spec is in no spec's imports.
+    [['e2e/tests/pane-find.spec.ts', 'e2e/tests/compact-pane-find.spec.ts', 'frontend/src/lib/x.ts'], [stalled, recovery, coverage]],
+    [['internal/app/app.go', 'internal/app/app_test.go', 'internal/store/store_test.go', 'cmd/ao-harness-e2e/main.go', 'go.sum'], [stalled]],
+    [['internal/store/migrations.go', 'e2e/tests/pane-find.spec.ts'], [stalled]],
+  ];
+  for (const [paths, want] of cases) assert.deepEqual(skipped(paths).sort(), want.sort(), paths.join(' '));
+});
+
+test('each path that can change the stalled-page capture spec runs it', () => {
+  for (const path of [stalled, 'e2e/package.json', 'e2e/pnpm-lock.yaml', 'e2e/src/page-stall.ts', 'e2e/src/harness.ts',
+    'e2e/tests/base-test.ts', 'e2e/tests/fixtures.ts', 'e2e/tests/stalled-page/blocked-page.fixture.ts', 'e2e/tests/stalled-page/blocked-page.ts',
+    'e2e/tests/stalled-page/playwright.config.ts', 'e2e/playwright.config.ts', 'e2e/test-files.ts', 'e2e/tests/x.manual.spec.ts',
+    'build/test-inputs.mk', 'scripts/playwright-browsers.sh', 'ci/Dockerfile', 'Makefile']) {
+    assert.ok(!skipped(['frontend/src/lib/x.ts', path]).includes(stalled), path);
+  }
+});
+
+test('each path outside frontend/ and the other specs runs the upgrade-corpus specs', () => {
+  for (const spec of [recovery, coverage]) {
+    for (const path of [spec, 'internal/store/migrations.go', 'internal/app/app.go', 'main_update.go', 'internal/store/store_test.go', 'go.sum',
+      'internal/harness/scenario/library/x.json', 'build/config.yml', 'e2e/tests/upgrade-corpus-config.ts', 'e2e/tests/update-launcher-helpers.ts',
+      'e2e/tests/fixtures.ts', 'e2e/src/harness.ts', 'e2e/package.json', 'e2e/tests/upgrade-corpus.manual.spec.ts', 'Makefile']) {
+      assert.ok(!skipped(['frontend/src/lib/x.ts', path]).includes(spec), `${spec}: ${path}`);
+    }
+  }
+});
+
+test('the skip pattern matches the skipped files in the title Playwright greps, and only on a pull request', () => {
+  const pattern = new RegExp(grepInvert([stalled, coverage]), 'gi');
+  const matches = title => { pattern.lastIndex = 0; return pattern.test(title); };
+  assert.ok(matches(' desktop stalled-page-capture.spec.ts a failed test attaches the stack'));
+  assert.ok(matches(' mobile-webkit stalled-page-capture.spec.ts a failed test'));
+  assert.ok(matches(' desktop upgrade-corpus-coverage.spec.ts the corpus and the top-up'));
+  for (const title of [' desktop upgrade-corpus-recovery.spec.ts t', ' compact compact-stalled-page-capture.spec.ts t',
+    ' desktop stalled-page-capturexspec.ts t', ' desktop pane-find.spec.ts mentions stalled-page-capture.spec.tsx']) {
+    assert.ok(!matches(title), title);
+  }
+  assert.equal(grepInvert([]), '');
+  const frontendOnly = ['frontend/src/lib/x.ts'];
+  assert.equal(e2eGrepInvert('pull_request', frontendOnly, harness), grepInvert([stalled, recovery, coverage]));
+  assert.equal(e2eGrepInvert('pull_request', ['Makefile'], harness), '');
+  assert.equal(e2eGrepInvert('push', undefined, harness), '');
+  assert.equal(e2eGrepInvert('workflow_dispatch', undefined, harness), '');
+});
+
 const all = Object.fromEntries(Object.keys(jobs).map(job => [job, true]));
 
 test('the plan names every job, from the event', () => {
@@ -108,6 +166,7 @@ function workflowJobs(file) {
       if: /\n    if: (.*)\n/.exec(block)?.[1] ?? '',
       env: section('env'),
       permissions: section('permissions'),
+      outputs: section('outputs'),
       steps: section('steps').split(/\n(?=      - )/).filter(step => step.trim()),
     };
   }
@@ -127,6 +186,18 @@ test('every job ci.yml runs follows its own key of the plan, and the result job 
   // It runs whatever the others did, and it is the verdict that fails it.
   assert.equal(found['ci-result'].if, 'always()');
   assert.ok(found['ci-result'].steps.some(step => /run: node scripts\/ci-suites\.mjs verdict\n/.test(step + '\n')), 'ci-result runs the verdict');
+});
+
+test('every Playwright shard skips the specs the plan names, and only those', () => {
+  const found = ciJobs();
+  assert.match(found.toolchain.outputs, /^      e2e-grep-invert: \$\{\{ steps\.plan\.outputs\.e2e-grep-invert \}\}$/m);
+  const runs = found.e2e.steps.filter(step => /run: bin\/ao-harness-e2e --shard=/.test(step));
+  assert.equal(runs.length, 1);
+  assert.match(runs[0], /run: bin\/ao-harness-e2e --shard=\$\{\{ matrix\.shard \}\}\/8 \$\{E2E_GREP_INVERT:\+"--grep-invert=\$E2E_GREP_INVERT"\}\n/);
+  assert.match(runs[0], /^          E2E_GREP_INVERT: \$\{\{ needs\.toolchain\.outputs\.e2e-grep-invert \}\}$/m);
+  for (const [id, job] of Object.entries(found)) {
+    if (id !== 'e2e' && id !== 'toolchain') assert.doesNotMatch(job.steps.join('\n') + job.env, /grep-invert/, id);
+  }
 });
 
 // launches names a step that starts the Playwright launcher, directly or
@@ -160,6 +231,8 @@ test('make e2e-browsers installs and runs nothing; the run targets run their own
   const full = launch('e2e');
   assert.equal(full.length, 1);
   assert.doesNotMatch(full[0], /\.spec\.ts/);
+  // A local run has no change to select from: it runs every spec.
+  assert.doesNotMatch(full[0], /grep-invert/);
 });
 
 test('only the jobs that run the typechecked artifact skip the typecheck, and the build checks before it packs', () => {

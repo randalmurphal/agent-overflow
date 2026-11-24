@@ -63,8 +63,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   about the launcher's side of an update extends it rather than spawning
   the backend itself.
 - `upgrade-corpus-*.ts` own the upgrade corpus: the generator, the top-up
-  the candidate writes after a migration, the schema coverage gate every
-  pull request runs, and the release upgrade check
+  the candidate writes after a migration, the schema coverage gate (run on
+  the pull requests `scripts/ci-suites.mjs` selects for it), and the
+  release upgrade check
   ([release upgrade check](../docs/architecture/release-upgrade-check.md)).
   A new mock scenario is listed in `upgrade-corpus-config.ts` as a top-up
   turn or excluded with the reason; the coverage spec fails until it is.

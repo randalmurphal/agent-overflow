@@ -4,8 +4,10 @@
 database the previous release wrote, migrates it through the launcher's real
 update path, boots on it, serves its sidebar and threads, and writes its own
 slice of use into it. It is a release gate and an operator tool, and it runs
-on the pull requests that can break it; every pull request runs the coverage
-gate below, which keeps the corpus representative of the schema.
+on the pull requests that can break it. The coverage gate below, which keeps
+the corpus representative of the schema, runs on every pull request that
+changes a path that can change its result, as `scripts/ci-suites.mjs`
+decides, and on every push to `main` and manual run.
 
 The check is `e2e/tests/upgrade-corpus.manual.spec.ts` under the manual
 Playwright config; the corpus generator, census, top-up, coverage and
@@ -84,7 +86,7 @@ gate or the archive; the loops, watches and runs it leaves armed or open are
 not turns.
 
 The coverage gate, `e2e/tests/upgrade-corpus-coverage.spec.ts` in `make e2e`,
-holds the seed and the top-up to the schema on every pull request: it
+holds the seed and the top-up to the schema on the runs named above: it
 seeds a smoke-scale corpus, runs the top-up on the current build, then
 reads `sqlite_master` and fails on any table with no rows, any column no row
 sets to a non-default value, and any `CHECK (column IN (...))` value no row
@@ -306,8 +308,8 @@ request's build (`bin/agent-overflow` from the `Harness build` job) against
 the newest release's corpus when the change touches `internal/store/`, the
 check's own sources and script, or the version bump (`build/config.yml`,
 `frontend/package.json`), as `scripts/ci-suites.mjs` decides, and on
-`workflow_dispatch`. The coverage gate runs in the Playwright suite
-regardless.
+`workflow_dispatch`. The coverage gate runs in the Playwright suite, on
+the pull requests `scripts/ci-suites.mjs` selects for it.
 
 ## Running it
 
