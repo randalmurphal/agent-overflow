@@ -210,43 +210,33 @@ func TestDispatchLineParentTokenUsageStillMetersTheParent(t *testing.T) {
 	}
 }
 
-// TestDispatchLineSuppressesChildCompacted ensures child-thread compaction
-// notifications do not pollute parent state.
-func TestDispatchLineSuppressesChildCompacted(t *testing.T) {
+// TestDispatchLineSuppressesChildThreadNotifications ensures child-thread
+// compaction and name updates do not pollute parent state: no compaction
+// divider and no rename on the parent thread. Older Codex builds emitted
+// `thread/compacted`; current builds emit `item/completed` with item.type =
+// contextCompaction.
+func TestDispatchLineSuppressesChildThreadNotifications(t *testing.T) {
 	t.Parallel()
-	var events []provider.ProviderEvent
-	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
-		events = append(events, evt)
-	})
-	s.collab = sessionCollabState{
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-	}
+	for _, tc := range []struct{ name, line string }{
+		{"thread/compacted", `{"jsonrpc":"2.0","method":"thread/compacted","params":{"threadId":"child-provider-1"}}`},
+		{"contextCompaction item", `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"child-provider-1","turnId":"child-turn-1","item":{"type":"contextCompaction","id":"compact-child-1"},"completedAtMs":1781709441420}}`},
+		{"thread/name/updated", `{"jsonrpc":"2.0","method":"thread/name/updated","params":{"threadId":"child-provider-1","threadName":"Subagent Title"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []provider.ProviderEvent
+			s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+				events = append(events, evt)
+			})
+			s.collab = sessionCollabState{
+				childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+			}
 
-	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/compacted","params":{"threadId":"child-provider-1"}}`))
+			feed(t, s, []byte(tc.line))
 
-	if len(events) != 0 {
-		t.Fatalf("expected no events for child compaction, got %+v", events)
-	}
-}
-
-// TestDispatchLineSuppressesChildContextCompactionItem ensures the newer
-// `contextCompaction` item lifecycle cannot leak a child compaction divider
-// onto the parent thread. Older Codex builds emitted `thread/compacted`;
-// current builds emit `item/completed` with item.type = contextCompaction.
-func TestDispatchLineSuppressesChildContextCompactionItem(t *testing.T) {
-	t.Parallel()
-	var events []provider.ProviderEvent
-	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
-		events = append(events, evt)
-	})
-	s.collab = sessionCollabState{
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-	}
-
-	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"child-provider-1","turnId":"child-turn-1","item":{"type":"contextCompaction","id":"compact-child-1"},"completedAtMs":1781709441420}}`))
-
-	if len(events) != 0 {
-		t.Fatalf("expected no events for child context compaction item, got %+v", events)
+			if len(events) != 0 {
+				t.Fatalf("expected no events for the child notification, got %+v", events)
+			}
+		})
 	}
 }
 
@@ -273,25 +263,6 @@ func TestDispatchLineEmitsParentContextCompactionItem(t *testing.T) {
 	}
 	if events[0].ThreadID != "parent-thread" {
 		t.Fatalf("thread id = %q, want parent-thread", events[0].ThreadID)
-	}
-}
-
-// TestDispatchLineSuppressesChildNameUpdated ensures child-thread name updates
-// don't rename the parent thread.
-func TestDispatchLineSuppressesChildNameUpdated(t *testing.T) {
-	t.Parallel()
-	var events []provider.ProviderEvent
-	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
-		events = append(events, evt)
-	})
-	s.collab = sessionCollabState{
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-	}
-
-	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/name/updated","params":{"threadId":"child-provider-1","threadName":"Subagent Title"}}`))
-
-	if len(events) != 0 {
-		t.Fatalf("expected no events for child name update, got %+v", events)
 	}
 }
 

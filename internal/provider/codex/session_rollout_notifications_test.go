@@ -124,78 +124,6 @@ func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
 	}
 }
 
-func TestWatchRolloutSubagentNotificationsEmitsSplitLine(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "rollout-2026-06-16T00-01-18-parent-provider-thread.jsonl")
-	if err := os.WriteFile(path, nil, 0644); err != nil {
-		t.Fatalf("write empty rollout: %v", err)
-	}
-
-	events := make(chan provider.ProviderEvent, 1)
-	s := &Session{
-		threadID: "parent-thread",
-		readDone: make(chan struct{}),
-		onEvent: func(evt provider.ProviderEvent) {
-			events <- evt
-		},
-	}
-	s.setRootThreadID("parent-provider-thread")
-	path, offset, err := prepareRolloutSubagentNotificationObserver(path, "parent-provider-thread")
-	if err != nil {
-		t.Fatalf("prepare rollout observer: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.watchRolloutSubagentNotifications(ctx, path, offset)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatal("rollout watcher did not exit after cancel")
-		}
-	})
-
-	line := append(rolloutUserSubagentNotificationLine(t, "child-resumed", "completed"), '\n')
-	split := len(line) / 2
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		t.Fatalf("open append: %v", err)
-	}
-	if _, err := file.Write(line[:split]); err != nil {
-		file.Close()
-		t.Fatalf("append first half: %v", err)
-	}
-	select {
-	case evt := <-events:
-		t.Fatalf("watcher emitted before newline: %+v", evt)
-	case <-time.After(rolloutSubagentNotificationPollInterval * 2):
-	}
-	if _, err := file.Write(line[split:]); err != nil {
-		file.Close()
-		t.Fatalf("append second half: %v", err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatalf("close rollout: %v", err)
-	}
-
-	select {
-	case evt := <-events:
-		if evt.Kind != provider.EventSubagentNotification {
-			t.Fatalf("event kind = %q, want %q", evt.Kind, provider.EventSubagentNotification)
-		}
-		if evt.ItemID != "" {
-			t.Fatalf("ItemID = %q, want empty for persisted triage resolution", evt.ItemID)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for rollout notification event")
-	}
-}
-
 func TestReadRolloutAppendStartsAfterExistingHistory(t *testing.T) {
 	t.Parallel()
 	const threadID = "0199c0de-dead-beef-cafe-000000000001"
@@ -540,6 +468,9 @@ func TestWatchRolloutSubagentNotificationsAssemblesAcrossManyTicks(t *testing.T)
 		case evt := <-events:
 			if evt.Kind != provider.EventSubagentNotification {
 				t.Fatalf("event kind = %q, want %q", evt.Kind, provider.EventSubagentNotification)
+			}
+			if evt.ItemID != "" {
+				t.Fatalf("ItemID = %q, want empty for persisted triage resolution", evt.ItemID)
 			}
 			var meta map[string]any
 			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
