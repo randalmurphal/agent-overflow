@@ -170,7 +170,7 @@ func (t trackerTransfer) AttachTrackerFile(upload transport.TrackerUpload) (json
 // window the route gives the file's transfer for its size and the
 // allowance every hop gives its answer (transport.AnswerAllowance:
 // the tracker's wait for its answer after the last byte and a write's
-// budget for the refresh after it). 13 minutes up to 10 MiB; about 17 hours for 2 GB,
+// budget for the refresh after it). 14 minutes up to 10 MiB; about 17 hours for 2 GB,
 // nearly all of it the transfer at its slowest rate.
 func (a *App) trackerAttachBound(size int64) time.Duration {
 	if a.trackerBudget > 0 {

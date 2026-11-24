@@ -274,13 +274,17 @@ func TestATrackerUploadCutShortAttachesNothing(t *testing.T) {
 // begin, and the attach is bounded by it: it covers what an attach does
 // after its last byte (the tracker's answer and the refresh) and what a
 // download waits for its first byte (the tracker's answer and its first
-// body byte).
+// body byte), each with a minute for the answer to cross the hops. A
+// relay's wait starts when it reads the last byte, before the backend's
+// does, so an allowance of exactly the backend's longest would cut an
+// answer the backend gives at its bound.
 func TestTheAnswerAllowanceCoversTheTracker(t *testing.T) {
 	t.Parallel()
-	if need := trackerapi.AnswerTimeout + trackerWriteBudget; transport.AnswerAllowance < need {
+	const crossing = time.Minute
+	if need := trackerapi.AnswerTimeout + trackerWriteBudget + crossing; transport.AnswerAllowance < need {
 		t.Errorf("AnswerAllowance %s is shorter than an attach's answer and refresh, %s", transport.AnswerAllowance, need)
 	}
-	if need := trackerapi.AnswerTimeout + transport.TransferStallWindow; transport.AnswerAllowance < need {
+	if need := trackerapi.AnswerTimeout + transport.TransferStallWindow + crossing; transport.AnswerAllowance < need {
 		t.Errorf("AnswerAllowance %s is shorter than a download's wait for its first byte, %s", transport.AnswerAllowance, need)
 	}
 }

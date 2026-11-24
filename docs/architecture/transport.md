@@ -324,7 +324,8 @@ once a second (`ProgressEvery`). Such a download that stops moving ends
 A relay (`backendproxy.CarryTransfer`) carries every byte route with one
 rule, owned by one timer per request (`internal/backendproxy/transfer.go`):
 the transfer ends when no byte moves for `TransferStallWindow`, in either
-direction, except that the upstream has `AnswerAllowance` (8 min) from the
+direction, except that the upstream has `AnswerAllowance` (9 min: the slowest backend answer, a tracker
+upload's at 8 min, and a minute to cross the hops) from the
 request's last byte to its answer's headers. Nothing is sized from a
 declared length, and nothing relies on the backend's timers or on a
 dialer's keepalive, since the backend may be another computer on another

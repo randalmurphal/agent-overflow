@@ -505,14 +505,16 @@ func extendTransferDeadline(w http.ResponseWriter, window time.Duration) {
 
 // AnswerAllowance is how long a carried transfer's answer may take to
 // begin after the request's last byte. It covers the slowest a backend
-// route answers: a tracker upload's answer, the tracker client's wait for
-// the tracker (trackerapi.AnswerTimeout, 5 minutes) and a write's refresh
+// route answers, with a minute for the answer to cross the hops (a
+// relay's wait starts when it reads the last byte, before the backend
+// does): a tracker upload's answer, the tracker client's wait for the
+// tracker (trackerapi.AnswerTimeout, 5 minutes) and a write's refresh
 // after it (its 3 minute budget), and a tracker download's first byte,
 // that wait and the first body byte (TransferStallWindow), 6.5 minutes.
 // The app bounds an attach by the transfer window plus this, and pins
 // that it covers both (app's TestTheAnswerAllowanceCoversTheTracker).
 // Every other carried route answers at once.
-const AnswerAllowance = 8 * time.Minute
+const AnswerAllowance = 9 * time.Minute
 
 // uploadAnswerWrite is the write of an upload's answer, a few KB of JSON.
 const uploadAnswerWrite = time.Minute

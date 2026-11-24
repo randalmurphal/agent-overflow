@@ -1218,8 +1218,9 @@ selected computer.
   client that leaves after its last byte still has the file attached,
   and its whole run is bounded by the transfer window for the file's
   size plus the answer's allowance (`transport.AnswerAllowance`:
-  the 5 minutes Jira has to answer, `trackerapi.AnswerTimeout`, and a
-  write's 3 minute budget for the refresh; `trackerAttachBound`): 13
+  the 5 minutes Jira has to answer, `trackerapi.AnswerTimeout`, a
+  write's 3 minute budget for the refresh, and a minute for the answer
+  to cross the relays; `trackerAttachBound`): 14
   minutes up to 10 MiB, about 17 hours for 2 GB. The answer is the
   write's `WriteView` as JSON, written within `transport.UploadWindow`;
   a relay gives that answer the same allowance from the upload's last
