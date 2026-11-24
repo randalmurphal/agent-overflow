@@ -34,32 +34,13 @@ describe('popoverNav', () => {
   });
 
   describe('ArrowDown / ArrowUp movement', () => {
-    it('ArrowDown advances by one', () => {
-      expect(popoverNav({ key: 'ArrowDown', activeIndex: 0, itemCount: 3 })).toEqual({
-        kind: 'move',
-        nextIndex: 1,
-      });
-    });
-
-    it('ArrowDown clamps at the tail (no wrap)', () => {
-      expect(popoverNav({ key: 'ArrowDown', activeIndex: 2, itemCount: 3 })).toEqual({
-        kind: 'move',
-        nextIndex: 2,
-      });
-    });
-
-    it('ArrowUp retreats by one', () => {
-      expect(popoverNav({ key: 'ArrowUp', activeIndex: 2, itemCount: 3 })).toEqual({
-        kind: 'move',
-        nextIndex: 1,
-      });
-    });
-
-    it('ArrowUp clamps at the head (no wrap)', () => {
-      expect(popoverNav({ key: 'ArrowUp', activeIndex: 0, itemCount: 3 })).toEqual({
-        kind: 'move',
-        nextIndex: 0,
-      });
+    it.each([
+      { case: 'ArrowDown advances by one', key: 'ArrowDown', activeIndex: 0, nextIndex: 1 },
+      { case: 'ArrowDown clamps at the tail (no wrap)', key: 'ArrowDown', activeIndex: 2, nextIndex: 2 },
+      { case: 'ArrowUp retreats by one', key: 'ArrowUp', activeIndex: 2, nextIndex: 1 },
+      { case: 'ArrowUp clamps at the head (no wrap)', key: 'ArrowUp', activeIndex: 0, nextIndex: 0 },
+    ])('$case', ({ key, activeIndex, nextIndex }) => {
+      expect(popoverNav({ key, activeIndex, itemCount: 3 })).toEqual({ kind: 'move', nextIndex });
     });
   });
 

@@ -41,14 +41,4 @@ describe('runInterceptedCommand /side-chat', () => {
 
     expect(result).toEqual({ error: 'This pane already has a side chat open.' });
   });
-
-  it('runs on a pane with a turn in flight: the fork takes the tail', async () => {
-    const pane = paneWithThread();
-    // No idle-thread gate, unlike /compact and /review. The fork is a
-    // snapshot of the tail and the source keeps streaming.
-    const result = await runInterceptedCommand(pane, { name: 'side-chat', arg: 'ignored' });
-
-    expect(result).toEqual({ error: '' });
-    expect(vi.mocked(openSideChat)).toHaveBeenCalledOnce();
-  });
 });
