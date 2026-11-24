@@ -994,9 +994,11 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 				if err := f.app.queueWorkflowWake(f.caller.ID, "release", wake.Message{Notice: wake.DataNotice, Data: workflowMarker}, nil); err != nil {
 					t.Fatalf("queue the workflow wake: %v", err)
 				}
-				if ids := queuedSendIDsOf(t, f.app, f.caller.ID, workflowWakeSendIDRoot); len(ids) == 1 {
-					handedToDispatch("workflow wake", ids[0])
+				workflowWakes := queuedSendIDsOf(t, f.app, f.caller.ID, workflowWakeSendIDRoot)
+				if len(workflowWakes) != 1 {
+					t.Fatalf("queued workflow wakes = %q, want the one", workflowWakes)
 				}
+				handedToDispatch("workflow wake", workflowWakes[0])
 				now := time.Now()
 				if err := f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}); err != nil {
 					t.Fatal("the fire did not start")
