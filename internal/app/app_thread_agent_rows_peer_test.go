@@ -340,31 +340,38 @@ func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeer
 }
 
 // A computer that does not answer holds up neither the pane's read nor a
-// Stop: this computer's rows come back at once, the row says that computer
-// did not answer once its call gives up, and a Stop works from the ledger.
+// Stop: this computer's rows come back while that computer's call is still
+// held, the row says that computer did not answer once its call gives up,
+// and a Stop works from the ledger.
 func TestThreadAgentRowsDoNotWaitOnAComputerThatDoesNotAnswer(t *testing.T) {
-	// Serial: it times a read to 100 ms, which parallel tests would load.
+	t.Parallel()
 	// The listing's bound is under test, set small so the row says so soon.
 	pair := newAgentPeerPairListingWithin(t, serveStalledAgentsPeer(nil), time.Second)
-	start := time.Now()
 	listing := pair.listRows(t)
-	if took := time.Since(start); took > 100*time.Millisecond {
-		t.Fatalf("ListThreadAgentRows took %v with one computer not answering", took)
+	// That computer holds the call the read asked for until the call gives
+	// up at the bound, a second away: a read that waited on the call
+	// returns with its give-up recorded.
+	if answer, ok := pair.source.cachedPeerAgentRows(pair.spawn); ok {
+		t.Fatalf("ListThreadAgentRows returned after the call to the computer not answering ended: %+v", answer)
 	}
-	if _, ok := agentRowByToken(listing.Rows, pair.spawn.Token); !ok {
+	parent, ok := agentRowByToken(listing.Rows, pair.spawn.Token)
+	if !ok {
 		t.Fatalf("the spawn is not listed: %+v", listing.Rows)
+	}
+	if parent.NestedUnavailable != "" {
+		t.Fatalf("the first read says %q: it waited for the call to give up", parent.NestedUnavailable)
 	}
 	listing = pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
 		parent, _ := agentRowByToken(rows.Rows, pair.spawn.Token)
 		return parent.NestedUnavailable != ""
 	})
-	parent, _ := agentRowByToken(listing.Rows, pair.spawn.Token)
+	parent, _ = agentRowByToken(listing.Rows, pair.spawn.Token)
 	if want := parent.Computer + " did not answer; its agents are not shown"; parent.NestedUnavailable != want {
 		t.Fatalf("the spawn row says %q, want %q", parent.NestedUnavailable, want)
 	}
 	// A Stop that waited on a listing would now wait its product bound.
 	pair.source.threadAgentPeerListOverride = threadAgentPeerListTimeout
-	start = time.Now()
+	start := time.Now()
 	stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, pair.spawn.Token)
 	if err != nil || stop.Outcome != threadAgentStopped {
 		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
