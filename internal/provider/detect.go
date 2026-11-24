@@ -73,7 +73,7 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 		parsedVersion := parseCodexCLIVersion(version)
 		if parsedVersion != "" && !isCodexCLIVersionSupported(parsedVersion) {
 			status.Status = "version_too_old"
-			status.Message = formatCodexCLIUpgradeMessage(parsedVersion)
+			status.Message = formatCodexCLIUpgradeMessage(parsedVersion, resolvedPath)
 		}
 	}
 

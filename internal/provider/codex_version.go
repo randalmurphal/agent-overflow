@@ -7,12 +7,12 @@ import (
 	"strings"
 )
 
-// minimumCodexCLIVersion gates the Codex provider on `thread/fork`
-// accepting `lastTurnId` (added in 0.143.0), which every revert / fork
-// flow relies on since the `thread/rollback` migration — upstream
-// deprecated rollback in 0.144 and will remove it. Older CLIs lack any
-// non-rollback way to cut history at a turn boundary.
-const minimumCodexCLIVersion = "0.143.0"
+// minimumCodexCLIVersion is the oldest Codex that honors
+// `thread_unload_delay_secs`, which the shared app-server is started with
+// (codex.codexSharedAppServerArgs) so a closed thread unloads at once. An
+// older Codex ignores the setting and keeps a closed thread loaded, with its
+// writer lock and MCP children.
+const minimumCodexCLIVersion = "0.154.0"
 
 var codexVersionPattern = regexp.MustCompile(`\bv?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)\b`)
 
@@ -165,16 +165,13 @@ func isCodexCLIVersionSupported(version string) bool {
 	return compareCodexCLIVersions(version, minimumCodexCLIVersion) >= 0
 }
 
-func formatCodexCLIUpgradeMessage(version string) string {
-	if version == "" {
-		return fmt.Sprintf(
-			"Codex CLI is too old for Agent Overflow. Upgrade to v%s or newer and restart the app.",
-			minimumCodexCLIVersion,
-		)
-	}
+// formatCodexCLIUpgradeMessage names the installed version, the binary it
+// came from and the minimum.
+func formatCodexCLIUpgradeMessage(version, path string) string {
 	return fmt.Sprintf(
-		"Codex CLI v%s is too old for Agent Overflow. Upgrade to v%s or newer and restart the app.",
+		"Codex CLI v%s (%s) is too old for Agent Overflow. Upgrade to v%s or newer and restart the app.",
 		version,
+		path,
 		minimumCodexCLIVersion,
 	)
 }

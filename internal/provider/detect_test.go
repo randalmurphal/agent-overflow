@@ -57,14 +57,14 @@ func TestRunVersionCommandWithMock(t *testing.T) {
 }
 
 func TestDetectProviderCodexReadyWithMock(t *testing.T) {
-	script := createMockBinary(t, "#!/bin/sh\necho 'codex 0.143.0'")
+	script := createMockBinary(t, "#!/bin/sh\necho 'codex 0.154.0'")
 
 	status := DetectProvider("codex", script)
 	if !status.Installed || status.Status != "ready" {
 		t.Fatalf("expected ready codex status, got %+v", status)
 	}
-	if status.Version != "codex 0.143.0" {
-		t.Fatalf("expected version 'codex 0.143.0', got %q", status.Version)
+	if status.Version != "codex 0.154.0" {
+		t.Fatalf("expected version 'codex 0.154.0', got %q", status.Version)
 	}
 }
 
@@ -89,7 +89,7 @@ func TestDetectProviderVersionError(t *testing.T) {
 }
 
 func TestDetectProviderCodexUnsupportedVersion(t *testing.T) {
-	script := createMockBinary(t, "#!/bin/sh\necho 'codex 0.36.0'")
+	script := createMockBinary(t, "#!/bin/sh\necho 'codex 0.153.4'")
 
 	status := DetectProvider("codex", script)
 
@@ -99,10 +99,13 @@ func TestDetectProviderCodexUnsupportedVersion(t *testing.T) {
 	if status.Status != "version_too_old" {
 		t.Fatalf("expected Status 'version_too_old' for unsupported Codex CLI, got %q", status.Status)
 	}
-	if status.Version != "codex 0.36.0" {
+	if status.Version != "codex 0.153.4" {
 		t.Fatalf("expected raw Version to be preserved, got %q", status.Version)
 	}
-	wantMessage := "Codex CLI v0.36.0 is too old for Agent Overflow. Upgrade to v0.143.0 or newer and restart the app."
+	wantMessage := "Codex CLI v0.153.4 (" + status.BinaryPath + ") is too old for Agent Overflow. Upgrade to v0.154.0 or newer and restart the app."
+	if status.BinaryPath != script {
+		t.Fatalf("BinaryPath = %q, want the binary that was run, %q", status.BinaryPath, script)
+	}
 	if status.Message != wantMessage {
 		t.Fatalf("Message = %q, want %q", status.Message, wantMessage)
 	}
