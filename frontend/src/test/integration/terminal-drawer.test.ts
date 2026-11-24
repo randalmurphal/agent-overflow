@@ -124,15 +124,7 @@ describe('App integration — terminal drawer', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
-  it('Mod+J toggles the terminal drawer open', async () => {
-    const rendered = await mountWithActiveThread();
-    expect(rendered.queryByTestId('terminal-drawer')).toBeNull();
-    pressModJ();
-    await flush(10);
-    await waitForTerminalDrawer(rendered);
-  });
-
-  it('Mod+J closes the drawer when focus sits in a terminal-style textarea', async () => {
+  it('Mod+J opens the drawer, and closes it when focus sits in a terminal-style textarea', async () => {
     // The real close trigger is the focused xterm <textarea>:
     // handleGlobalKeydown treats editable targets specially and only fires
     // terminal.toggle from inside one because the command is in
@@ -142,6 +134,7 @@ describe('App integration — terminal drawer', () => {
     // (calling runCommand directly) bypass: drop the flag and this fails while
     // every unit test stays green.
     const rendered = await mountWithActiveThread();
+    expect(rendered.queryByTestId('terminal-drawer')).toBeNull();
     pressModJ();
     await flush(10);
     await waitForTerminalDrawer(rendered);

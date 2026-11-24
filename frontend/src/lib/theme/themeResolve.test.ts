@@ -70,81 +70,62 @@ const DARK_CODE = theme('monokai-ish', {
 });
 
 describe('serialization gates', () => {
-  it('accepts the shapes a color value really takes', () => {
-    for (const value of [
-      'red',
-      'oklch(0.58 0.19 276)',
-      'oklch(0 0 0 / 60%)',
-      'rgb(12 34 56)',
-      'color-mix(in oklab, oklch(0.5 0.1 250) 55%, transparent)',
-      'color(display-p3 1 0 0)',
-      'light-dark(white, black)',
-      '#d97757',
-    ]) {
-      expect(isSafeDeclarationValue(value), value).toBe(true);
-    }
-  });
-
-  it('refuses everything that could end the declaration or the element', () => {
-    for (const value of [
-      'red; --accent: blue',
-      'red } html { --accent: blue',
-      'red /* comment */',
-      'red\n--accent: blue',
-      'red !important',
-      "red'",
-      'red\\3b',
-      '</style><script>x()</script>',
-      '@import "x"',
-      // An unclosed function swallows to EOF in CSS's tokenizer, which would
-      // eat the closing brace of its own block and everything after it.
-      'oklch(0.5 0.1 250',
-      'red)',
-      '((((((((((red))))))))))',
-    ]) {
-      expect(isSafeDeclarationValue(value), value).toBe(false);
-    }
-  });
-
-  it('refuses every function that would fetch (R3: theme values are not a network surface)', () => {
-    // The apply-time `CSS.supports('color', …)` gate is SKIPPED on an engine
-    // that cannot discriminate colors, and there is no CSP behind it, so a
-    // value carrying a fetch would be a beacon. This gate is pure and
-    // unconditional, which is the whole point.
-    for (const value of [
-      'url(//evil.example/beacon)',
-      'url(https://evil.example/x.png)',
-      'URL(//evil.example/x)',
-      'url (//evil.example/x)',
-      'url\t(//evil.example/x)',
-      'image-set(//evil.example/x 1x)',
-      '-webkit-image-set(//evil.example/x 1x)',
-      'IMAGE-SET(//evil.example/x 1x)',
-      'src(//evil.example/x)',
-      'color-mix(in oklab, url(//evil.example/x) 50%, red)',
-    ]) {
-      expect(isSafeDeclarationValue(value), value).toBe(false);
-    }
-  });
-
-  it('refuses references, which blank every consumer when they fail (R5)', () => {
+  it.each([
+    // The shapes a color value really takes.
+    ['red', true],
+    ['oklch(0.58 0.19 276)', true],
+    ['oklch(0 0 0 / 60%)', true],
+    ['rgb(12 34 56)', true],
+    ['color-mix(in oklab, oklch(0.5 0.1 250) 55%, transparent)', true],
+    ['color(display-p3 1 0 0)', true],
+    ['light-dark(white, black)', true],
+    ['#d97757', true],
+    // Everything that could end the declaration or the element.
+    ['red; --accent: blue', false],
+    ['red } html { --accent: blue', false],
+    ['red /* comment */', false],
+    ['red\n--accent: blue', false],
+    ['red !important', false],
+    ["red'", false],
+    ['red\\3b', false],
+    ['</style><script>x()</script>', false],
+    ['@import "x"', false],
+    // An unclosed function swallows to EOF in CSS's tokenizer, which would
+    // eat the closing brace of its own block and everything after it.
+    ['oklch(0.5 0.1 250', false],
+    ['red)', false],
+    ['((((((((((red))))))))))', false],
+    // Every function that would fetch (R3: theme values are not a network
+    // surface). The apply-time `CSS.supports('color', …)` gate is SKIPPED on
+    // an engine that cannot discriminate colors, and there is no CSP behind
+    // it, so a value carrying a fetch would be a beacon. This gate is pure
+    // and unconditional, which is the whole point.
+    ['url(//evil.example/beacon)', false],
+    ['url(https://evil.example/x.png)', false],
+    ['URL(//evil.example/x)', false],
+    ['url (//evil.example/x)', false],
+    ['url\t(//evil.example/x)', false],
+    ['image-set(//evil.example/x 1x)', false],
+    ['-webkit-image-set(//evil.example/x 1x)', false],
+    ['IMAGE-SET(//evil.example/x 1x)', false],
+    ['src(//evil.example/x)', false],
+    ['color-mix(in oklab, url(//evil.example/x) 50%, red)', false],
+    // References, which blank every consumer when they fail (R5).
     // `var(--nope)` is well-shaped and is a valid color declaration as far as
     // any static check goes; it makes the custom property invalid at
     // COMPUTED-VALUE time, unsetting every property that reads it. One bad
     // token must cost one token, so this cannot be admitted at all.
-    for (const value of [
-      'var(--nope)',
-      'var(--surface-1)',
-      'VAR(--surface-1)',
-      'var (--surface-1)',
-      'oklch(from var(--accent) l c h / 0.18)',
-      'color-mix(in oklab, var(--accent) 55%, transparent)',
-      'attr(data-x color)',
-      'env(safe-area-inset-top)',
-      'ENV(x)',
-    ]) {
-      expect(isSafeDeclarationValue(value), value).toBe(false);
-    }
+    ['var(--nope)', false],
+    ['var(--surface-1)', false],
+    ['VAR(--surface-1)', false],
+    ['var (--surface-1)', false],
+    ['oklch(from var(--accent) l c h / 0.18)', false],
+    ['color-mix(in oklab, var(--accent) 55%, transparent)', false],
+    ['attr(data-x color)', false],
+    ['env(safe-area-inset-top)', false],
+    ['ENV(x)', false],
+  ] as const)('isSafeDeclarationValue(%j) is %s', (value, safe) => {
+    expect(isSafeDeclarationValue(value)).toBe(safe);
   });
 
   it('refuses property names that are not plain kebab identifiers', () => {
