@@ -1100,12 +1100,55 @@ added with the agent tools.
 
 ## Methods and events
 
-The connection methods are bound (`internal/app/app_tracker.go`): each
-takes a leading context and carries a scope, `tracker:read` at the
-observe tier or `tracker:operate` at the execute tier, and a route, and
-their event is `tracker:connections_updated`. Every other method below is
-a `trackerapp.Service` method that no bound method wraps
-(see [Build order](#build-order)).
+The connection methods (`internal/app/app_tracker.go`) and the board
+methods (`internal/app/app_tracker_boards.go`) are bound: each takes a
+leading context and carries a scope, `tracker:read` at the observe tier
+or `tracker:operate` at the execute tier, and a route. Their events are
+`tracker:connections_updated`, sent when a connection or its problem
+changed, and `tracker:board_updated` (`trackerapp.BoardEvent`), both at
+`tracker:read`. The ticket, write and form-read methods below, but for
+`Projects` and `Boards`, are `trackerapp.Service` methods that no bound
+method wraps (see [Build order](#build-order)).
+
+| Bound method | Service method | Scope | Route |
+|---|---|---|---|
+| `TrackerProjects(connectionID)` | `Projects` | read | selected |
+| `TrackerBoards(connectionID, project)` | `Boards` | read | selected |
+| `ProjectTrackerBoards(projectID)` | `ProjectBoards` | read | project |
+| `SetProjectTrackerBoards(projectID, boards)` | `SetProjectBoards` | operate | project |
+| `SubscribeTrackerBoard(projectID, connectionID, boardID, sections)` | `SubscribeBoard` | read | project, caller-bound |
+| `TrackerBoard(subscriptionID, sections)` | `Board` | read | home |
+| `TrackerSectionRows(subscriptionID, section, after)` | `SectionRows` | read | home |
+| `TrackerBoardPatch(subscriptionID, sections, issues, held)` | `BoardPatch` | read | home |
+| `SetTrackerSubscriptionVisible(subscriptionID, visible)` | `SetSubscriptionVisible` | read | home |
+| `RefreshTrackerSubscription(subscriptionID)` | `RefreshSubscription` | read | home |
+| `ReleaseTrackerSubscription(subscriptionID)` | `ReleaseSubscription` | read | home |
+
+- **A project's boards** are the boards its picker shows, in order, and
+  the one that opens first (store `project_tracker_boards`). The list is
+  replaced whole; a board it drops that no other project lists stops
+  being mirrored, and its subscriptions end.
+- **A board subscription belongs to the client connection that made it.**
+  The subscribe ties its handle to that connection inside the service's
+  publication of the handle (`trackerapp.Tie`): the connection's end
+  releases the handle, and every removal of the handle (a release from any
+  caller, a turn off, a removal, `Stop`) unties the connection. The reads
+  after a subscribe name the handle, and a client pins them to the
+  computer that answered the subscribe (`methodFamilies.ts`, family
+  `subscription`); the board's scope comes from the handle
+  (`SubscriptionBoard`). A release of an unknown handle is a no-op, since
+  the connection's end may have released it first.
+- **A refresh's wait is bounded** by its method's budget. A wait cut there
+  answers `tracker_refresh_waiting`; the read goes on and its events
+  arrive as it lands.
+- **Refusals** a person can cause or see carry a code and a sentence of
+  what to do next, with the service's error as their cause
+  (`trackerRefusal`): `tracker_subscription_unknown`,
+  `tracker_subscription_ended`, `tracker_subscriptions_full`,
+  `tracker_connection_off`, `tracker_connection_missing`,
+  `tracker_connection_tempo`, `tracker_board_not_listed`,
+  `tracker_board_not_read`, `tracker_page_stale`,
+  `tracker_project_missing` and `tracker_boards_refused`.
 
 A board answer is bounded: the subscribe returns the board's structure,
 its sprints and the cards of the sections on screen, and a section's
@@ -1137,6 +1180,14 @@ remaining cards are read by page.
 - `BoardPatch(scope, sections, issues, held)` is the patch read below;
   `held` names the totals the client holds.
 - `StartLinkedSync` arms the linked-issues loop. `New` starts nothing.
+  The app's boot step `tracker.start` (`startTrackers`, with the
+  unattended work) arms it, and once the first client's reads settle runs
+  `FinishMirrorCleanup`, which finishes a drain the last run left with no
+  connection on; a failure of either is a boot failure every client
+  shows. Before clients are served it reads the connections once:
+  70 µs with a 20,000-issue mirror and 50 kept tickets. After the first
+  reads, the cleanup with nothing pending costs 0.1 ms, and a drain of a
+  detached 20,000-issue root 1.06 s in 542 writes of at most 15 ms.
 
 Events go to `Deps.EmitBoard` and `Deps.EmitIssue`, and the loop's
 failures go to `Deps.LoopFailed`. `Deps.Settled` and `Deps.ClientConnected`
@@ -1303,20 +1354,21 @@ guide and each read tool say so.
 
 Built: `internal/tracker` and the two providers, `internal/keyfile`, the
 tracker tables and their accessors, `trackerfake`, and `trackerapp` with
-its sync, pumps, reads and writes, and the connection bound methods. Not
-built, owed by the app layer:
+its sync, pumps, reads and writes; the connection and board bound
+methods, `tracker:board_updated`, the app's calls at start, and the
+harness's fake trackers (`HarnessTrackerSeed`). Not built, owed by the app
+layer:
 
-- The app's calls at start: nothing calls `StartLinkedSync` or
-  `FinishMirrorCleanup`, so the linked-issues loop does not run, and the
-  rows of a drain a crash cut short, a retired board or an issue an unlink
-  left unkept stay until the next turn off or removal.
-- The board, ticket and write bound methods, routed by project when the
-  first parameter is `projectID` and `selected` otherwise, a client
-  pinning a subscription's calls to the computer that answered the
-  subscribe and releasing its handles when it goes; and the
-  `tracker:board_updated` (`trackerapp.BoardEvent`) and
-  `tracker:issue_updated` (`trackerapp.IssueEvent`) channels, with the
-  read scope's policy. `Deps.EmitBoard` and `Deps.EmitIssue` only log.
+- The board screen: the `bindings.ts` wrappers of the board methods and
+  the `tracker:board_updated` event's TypeScript type ship with it, as the
+  connection methods' wrappers ship with the Issues settings screen.
+- A failure of the linked-issues loop after boot reaches only the log
+  (`Deps.LoopFailed`); its user-facing surface is owed with the Issues
+  settings screen.
+- The ticket and write bound methods, a ticket subscription tied to its
+  client as a board's is, and the `tracker:issue_updated`
+  (`trackerapp.IssueEvent`) channel with the read scope's policy.
+  `Deps.EmitIssue` only logs.
 - The sequence that follows adding a connection: open the token page,
   open the key file, verify. The three bound methods exist; the sequence
   is the frontend's.
@@ -1333,5 +1385,4 @@ built, owed by the app layer:
   Start work defaults, draft settings and what agents may do. Anything a
   query needs from it is copied into the mirror, never the other way.
 - The time-draft posting path (Agent tools).
-- Start work, the agent tools (`internal/trackertools`), and the harness
-  and browser test wiring.
+- Start work and the agent tools (`internal/trackertools`).
