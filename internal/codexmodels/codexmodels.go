@@ -1,10 +1,11 @@
-// Package codexmodels caches Codex's live `model/list` response per
-// launch: the binary and the working directory and environment it starts
-// with, because a launcher can pick a different build from either. The
-// lookup spawns a Codex CLI subprocess, so settings pages and model menus
-// would otherwise fan out one Codex process per render. The Cache TTLs the
-// result and single-flights concurrent lookups of one launch so a flurry
-// of UI calls collapses into one CLI spawn.
+// Package codexmodels caches Codex's live `model/list` response per binary
+// path. The entry records the launch it was read with (working directory
+// and environment, because a launcher can pick a different build from
+// either), and a read with another launch replaces it. The lookup spawns a
+// Codex CLI subprocess, so settings pages and model menus would otherwise
+// fan out one Codex process per render. The Cache TTLs the result and
+// single-flights concurrent lookups of one launch so a flurry of UI calls
+// collapses into one CLI spawn.
 package codexmodels
 
 import (
@@ -30,39 +31,49 @@ const (
 	DefaultErrorTTL = 15 * time.Second
 )
 
-// Launch is how a lookup starts Codex. A session's app-server starts with the
-// same working directory and environment, so the catalog lists the build a
-// session would run: a version manager's shim can pick the build from its
-// environment or directory, not only from the binary path.
+// Launch is how a lookup starts Codex. The application passes the
+// person's configured Codex environment, which a session's app-server also
+// starts with, so the catalog lists the build a session would run: a
+// version manager's shim can pick the build from its environment or
+// directory, not only from the binary path.
 type Launch struct {
 	Binary  string
 	WorkDir string
 	Env     map[string]string
 }
 
-// key is the cache key of a launch. The environment is a digest: it may
-// hold a credential and the key is a long-lived map key. NUL separates the
-// fields because no path contains one.
+// key identifies a launch: the binary, its working directory and a digest
+// of its environment, which may hold a credential. NUL separates the fields
+// because no path contains one.
 func (l Launch) key() string {
 	return strings.TrimSpace(l.Binary) + "\x00" + l.WorkDir + "\x00" + provider.EnvFingerprint(l.Env)
 }
+
+// binary is the entry's map key: one entry per binary path.
+func (l Launch) binary() string { return strings.TrimSpace(l.Binary) }
 
 // Lister is the seam tests use to stub out the CLI shell-out. Production
 // wires it to codexprovider.ListModels.
 type Lister func(ctx context.Context, launch Launch, reaper procutil.Reaper) ([]provider.ModelInfo, error)
 
-// Cache TTLs Codex model lookups per launch and single-flights
-// concurrent calls. Construct with New; the zero value is unusable.
+// Cache holds one Codex model lookup per binary path, TTLs it, and
+// single-flights concurrent calls of one launch. Construct with New; the
+// zero value is unusable.
 type Cache struct {
-	mu       sync.Mutex
-	ttl      time.Duration
-	list     Lister
-	now      func() time.Time
+	mu   sync.Mutex
+	ttl  time.Duration
+	list Lister
+	now  func() time.Time
+	// entries is keyed by binary path; inflight by launch key, and an
+	// in-flight load leaves it when it completes.
 	entries  map[string]entry
 	inflight map[string]*load
 }
 
 type entry struct {
+	// launch is the key of the launch the entry was read with. A read
+	// with another launch misses and replaces the entry.
+	launch    string
 	models    []provider.ModelInfo
 	known     []provider.ModelInfo
 	err       error
@@ -118,7 +129,7 @@ func (c *Cache) Get(ctx context.Context, launch Launch, reaper procutil.Reaper) 
 	launch.Env = maps.Clone(launch.Env)
 	key := launch.key()
 	c.mu.Lock()
-	if e, ok := c.entries[key]; ok && c.now().Before(e.expiresAt) {
+	if e, ok := c.entries[launch.binary()]; ok && e.launch == key && c.now().Before(e.expiresAt) {
 		models := provider.CloneModels(e.models)
 		c.mu.Unlock()
 		return models, e.err
@@ -153,7 +164,12 @@ func (c *Cache) run(ctx context.Context, key string, launch Launch, reaper procu
 	// lookup that started after the reset.
 	if c.inflight[key] == l {
 		delete(c.inflight, key)
-		known := c.entries[key].known
+		// Remembered capabilities belong to the launch that observed them;
+		// another launch's entry is replaced without them.
+		var known []provider.ModelInfo
+		if previous := c.entries[launch.binary()]; previous.launch == key {
+			known = previous.known
+		}
 		if err == nil {
 			known = rememberModels(known, models)
 		}
@@ -161,7 +177,8 @@ func (c *Cache) run(ctx context.Context, key string, launch Launch, reaper procu
 		if err != nil {
 			entryTTL = DefaultErrorTTL
 		}
-		c.entries[key] = entry{
+		c.entries[launch.binary()] = entry{
+			launch:    key,
 			models:    provider.CloneModels(models),
 			known:     known,
 			err:       err,
@@ -173,12 +190,17 @@ func (c *Cache) run(ctx context.Context, key string, launch Launch, reaper procu
 }
 
 // KnownModel returns previously observed capabilities without waiting for a refresh.
-// Expiry and refresh failures do not revoke that evidence. Reset clears it when
-// the provider identity changes. The latest catalog returned by Get stays separate.
+// Expiry and refresh failures do not revoke that evidence; a read with another
+// launch replaces it, and Reset clears it when the provider identity changes.
+// The latest catalog returned by Get stays separate.
 func (c *Cache) KnownModel(launch Launch, slug string) (provider.ModelInfo, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, model := range c.entries[launch.key()].known {
+	e := c.entries[launch.binary()]
+	if e.launch != launch.key() {
+		return provider.ModelInfo{}, false
+	}
+	for _, model := range e.known {
 		if model.Slug == slug {
 			return provider.CloneModelInfo(model), true
 		}
@@ -240,8 +262,8 @@ func (c *Cache) Peek(launch Launch) ([]provider.ModelInfo, error, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	e, ok := c.entries[launch.key()]
-	if !ok || !c.now().Before(e.expiresAt) {
+	e, ok := c.entries[launch.binary()]
+	if !ok || e.launch != launch.key() || !c.now().Before(e.expiresAt) {
 		return nil, nil, false
 	}
 	return provider.CloneModels(e.models), e.err, true

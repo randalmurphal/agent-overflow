@@ -300,10 +300,11 @@ func TestGet_FirstCallerLeavingEndsOnlyItsWait(t *testing.T) {
 	}
 }
 
-// A launch's working directory and environment are part of its key: a
-// launcher can pick another build from either, so one launch's catalog
-// never answers for another. The lister receives the launch as given.
-func TestCacheKeysTheWholeLaunch(t *testing.T) {
+// One binary path holds one entry, as on main: a read with another launch
+// (working directory or environment) replaces it, and its models and its
+// remembered capabilities go with it. Rotating a custom environment value
+// therefore never accumulates catalogs.
+func TestCacheHoldsOneEntryPerBinary(t *testing.T) {
 	t.Parallel()
 	var got []Launch
 	cache := NewWith(time.Hour, func(_ context.Context, launch Launch, _ procutil.Reaper) ([]provider.ModelInfo, error) {
@@ -313,10 +314,11 @@ func TestCacheKeysTheWholeLaunch(t *testing.T) {
 	launches := []Launch{
 		{Binary: "codex", WorkDir: "/w", Env: map[string]string{"PICK": "a"}},
 		{Binary: "codex", WorkDir: "/w", Env: map[string]string{"PICK": "b"}},
-		{Binary: "codex", WorkDir: "/v", Env: map[string]string{"PICK": "a"}},
-		{Binary: " codex ", WorkDir: "/w", Env: map[string]string{"PICK": "a"}},
+		{Binary: " codex ", WorkDir: "/w", Env: map[string]string{"PICK": "b"}},
+		{Binary: "codex", WorkDir: "/v", Env: map[string]string{"PICK": "b"}},
+		{Binary: "codex", WorkDir: "/w", Env: map[string]string{"PICK": "a"}},
 	}
-	want := []string{"a/w", "b/w", "a/v", "a/w"}
+	want := []string{"a/w", "b/w", "b/w", "b/v", "a/w"}
 	for i, launch := range launches {
 		models, err := cache.Get(context.Background(), launch, procutiltest.Reaper())
 		if err != nil {
@@ -325,17 +327,29 @@ func TestCacheKeysTheWholeLaunch(t *testing.T) {
 		if len(models) != 1 || models[0].Slug != want[i] {
 			t.Fatalf("launch %d answered %+v, want %q", i, models, want[i])
 		}
+		cache.mu.Lock()
+		entries := len(cache.entries)
+		cache.mu.Unlock()
+		if entries != 1 {
+			t.Fatalf("after launch %d the cache holds %d entries, want one for the binary", i, entries)
+		}
 	}
-	if len(got) != 3 {
-		t.Fatalf("lister ran %d times, want 3: the trimmed binary shares the first launch", len(got))
+	if len(got) != 4 {
+		t.Fatalf("lister ran %d times, want 4: only the trimmed binary reuses the entry before it", len(got))
 	}
 	if got[1].Env["PICK"] != "b" || got[2].WorkDir != "/v" {
 		t.Fatalf("lister launches = %+v, want each launch as given", got)
 	}
+	if _, _, ok := cache.Peek(launches[1]); ok {
+		t.Fatal("Peek read a launch the binary's entry no longer holds")
+	}
+	if _, ok := cache.KnownModel(launches[1], "b/w"); ok {
+		t.Fatal("KnownModel kept a replaced launch's models")
+	}
+	if _, ok := cache.KnownModel(launches[4], "a/w"); !ok {
+		t.Fatal("KnownModel did not read the current launch's catalog")
+	}
 	if _, _, ok := cache.Peek(Launch{Binary: "codex", WorkDir: "/w"}); ok {
 		t.Fatal("a launch without the environment read another launch's catalog")
-	}
-	if _, ok := cache.KnownModel(Launch{Binary: "codex", WorkDir: "/w", Env: map[string]string{"PICK": "b"}}, "b/w"); !ok {
-		t.Fatal("KnownModel did not read its own launch's catalog")
 	}
 }
