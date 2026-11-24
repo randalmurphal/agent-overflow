@@ -66,16 +66,10 @@ var discardEnds = []struct {
 }
 
 // A discard whose removal fails keeps the bytes left on disk charged to
-// both quotas; one whose removal succeeds charges nothing.
+// both quotas. One whose removal succeeds charges nothing, which
+// TestADiscardRemovesTheFileItsRowWasAdmittedWith asserts.
 func TestADiscardSettlesWhatItsRemovalLeft(t *testing.T) {
 	for _, end := range discardEnds {
-		t.Run(end.name+", removed", func(t *testing.T) {
-			manager, access, file, workspace, artifacts := settleRig(t)
-			authority := authorityOf(t, manager, access)
-			end.end(t, manager, access)
-			awaitRemoved(t, file)
-			awaitCharged(t, manager, authority, workspace, artifacts)
-		})
 		t.Run(end.name+", left on disk", func(t *testing.T) {
 			manager, access, file, workspace, artifacts := settleRig(t)
 			authority := authorityOf(t, manager, access)

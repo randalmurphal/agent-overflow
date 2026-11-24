@@ -100,9 +100,8 @@ func (d *navigationDriver) readsAfterClick() int {
 // read of the page's navigation before the click refuses the click, and
 // failed reads after it are no navigation, so a page that never moved fails
 // the expectation with the read's error. A read that finds the page moved
-// is one, and so is a document commit its marks do not show (a reload on
-// WebKit, whose mark is the address and the history length), even when no
-// mark after it can be read.
+// is one. A document commit is one too, whatever the marks show
+// (TestAnExpectedNavigationIsDecidedByItsCommitFirst).
 func TestExpectedNavigationCountsOnlyANavigationItRead(t *testing.T) {
 	refused := errors.New("frame tree unreadable")
 	here := navigationMark{URL: "https://example.test/a", Loader: "1"}
@@ -116,8 +115,6 @@ func TestExpectedNavigationCountsOnlyANavigationItRead(t *testing.T) {
 		{"the read before the click fails", &navigationDriver{firstErr: refused}, 0, false, true},
 		{"every read after the click fails", &navigationDriver{first: here, laterErr: refused}, 1, false, true},
 		{"a read after the click finds the page moved", &navigationDriver{first: here, later: navigationMark{URL: "https://example.test/b", Loader: "2"}}, 1, true, false},
-		{"a reload its marks do not show counts by its commit", &navigationDriver{first: here, later: here, commit: true}, 1, true, false},
-		{"a commit counts though no mark after it can be read", &navigationDriver{first: here, laterErr: refused, commit: true}, 1, true, false},
 		{"no commit and the same marks are no navigation", &navigationDriver{first: here, later: here}, 1, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -266,11 +263,13 @@ func TestANavigationIsReportedWhenItsExpectedDownloadNeverSettles(t *testing.T) 
 }
 
 // A commit the Manager counted decides the navigation before any engine
-// mark is read: one made before the wait is never hidden by a mark read,
-// whether that read answers, fails or holds to the deadline, and one made
-// during a read counts once the read returns. A navigation that happened is
-// reported as one even when the load state was not reached, which the
-// error says. With no commit and the marks unmoved there is no navigation.
+// mark is read (a reload on WebKit, whose mark is the address and the
+// history length, shows none): one made before the wait is never hidden by
+// a mark read, whether that read answers, fails or holds to the deadline,
+// and one made during a read counts once the read returns. A navigation
+// that happened is reported as one even when the load state was not
+// reached, which the error says. With no commit and the marks unmoved there
+// is no navigation. Each case clicks once.
 func TestAnExpectedNavigationIsDecidedByItsCommitFirst(t *testing.T) {
 	refused := errors.New("frame tree unreadable")
 	here := navigationMark{URL: "https://example.test/a", Loader: "1"}
@@ -288,6 +287,12 @@ func TestAnExpectedNavigationIsDecidedByItsCommitFirst(t *testing.T) {
 					commit: commit == "before the wait", commitOnRead: commit == "during the wait",
 				}
 				result, err := clickExpectingNavigation(t, driver)
+				driver.mu.Lock()
+				acted := driver.acted
+				driver.mu.Unlock()
+				if acted != 1 {
+					t.Fatalf("the click ran %d times, want 1", acted)
+				}
 				switch {
 				case commit == "before the wait":
 					if err != nil || !result.Navigated {
