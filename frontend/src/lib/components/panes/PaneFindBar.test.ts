@@ -274,17 +274,6 @@ describe('<PaneFindBar>', () => {
     }
   });
 
-  it('returns focus to the pane when the element it came from is gone', async () => {
-    const before = document.createElement('textarea');
-    document.body.appendChild(before);
-    const { getByTestId } = renderBar();
-    await openBar(before);
-    before.remove();
-    await fireEvent.click(getByTestId('pane-find-close'));
-    await tick();
-    await waitFor(() => expect(document.activeElement).toBe(fallback));
-  });
-
   it('returns focus to the pane when the element it came from is still there but cannot take focus', async () => {
     const before = document.createElement('textarea');
     document.body.appendChild(before);

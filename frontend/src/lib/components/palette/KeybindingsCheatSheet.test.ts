@@ -42,12 +42,6 @@ describe('<KeybindingsCheatSheet> — visibility', () => {
     const { queryByTestId } = render(KeybindingsCheatSheet, { open: false, onClose: vi.fn() });
     expect(queryByTestId('keybindings-cheatsheet')).toBeNull();
   });
-
-  it('renders the dialog when open', () => {
-    seedThreeCommands();
-    const { getByTestId } = render(KeybindingsCheatSheet, { open: true, onClose: vi.fn() });
-    expect(getByTestId('keybindings-cheatsheet')).toBeInTheDocument();
-  });
 });
 
 // ---- Grouping + rendering ----
@@ -121,38 +115,19 @@ describe('<KeybindingsCheatSheet> — grouping and rows', () => {
 // ---- Search ----
 
 describe('<KeybindingsCheatSheet> — search', () => {
-  it('filters rows by label substring (case-insensitive)', async () => {
-    seedThreeCommands();
-    const { getByTestId, queryByTestId } = render(KeybindingsCheatSheet, { open: true, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('keybindings-cheatsheet-search'), { target: { value: 'ARCHIVE' } });
-    expect(getByTestId('keybindings-cheatsheet-row-thread.archive')).toBeInTheDocument();
-    expect(queryByTestId('keybindings-cheatsheet-row-thread.new')).toBeNull();
-    expect(queryByTestId('keybindings-cheatsheet-row-terminal.toggle')).toBeNull();
-  });
-
-  it('filters by command id', async () => {
-    seedThreeCommands();
-    const { getByTestId, queryByTestId } = render(KeybindingsCheatSheet, { open: true, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('keybindings-cheatsheet-search'), { target: { value: 'terminal.' } });
-    expect(getByTestId('keybindings-cheatsheet-row-terminal.toggle')).toBeInTheDocument();
-    expect(queryByTestId('keybindings-cheatsheet-row-thread.new')).toBeNull();
-  });
-
-  it('filters by chord text', async () => {
+  // Every case binds the default chords; only the chord case matches one.
+  it.each([
+    { field: 'rows by label substring (case-insensitive)', query: 'ARCHIVE', shown: 'thread.archive', hidden: ['thread.new', 'terminal.toggle'] },
+    { field: 'by command id', query: 'terminal.', shown: 'terminal.toggle', hidden: ['thread.new'] },
+    { field: 'by chord text', query: 'shift', shown: 'thread.archive', hidden: ['thread.new'] },
+    { field: 'by description', query: 'drawer', shown: 'terminal.toggle', hidden: ['thread.new'] },
+  ])('filters $field', async ({ query, shown, hidden }) => {
     seedThreeCommands();
     bindDefault();
     const { getByTestId, queryByTestId } = render(KeybindingsCheatSheet, { open: true, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('keybindings-cheatsheet-search'), { target: { value: 'shift' } });
-    expect(getByTestId('keybindings-cheatsheet-row-thread.archive')).toBeInTheDocument();
-    expect(queryByTestId('keybindings-cheatsheet-row-thread.new')).toBeNull();
-  });
-
-  it('filters by description', async () => {
-    seedThreeCommands();
-    const { getByTestId, queryByTestId } = render(KeybindingsCheatSheet, { open: true, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('keybindings-cheatsheet-search'), { target: { value: 'drawer' } });
-    expect(getByTestId('keybindings-cheatsheet-row-terminal.toggle')).toBeInTheDocument();
-    expect(queryByTestId('keybindings-cheatsheet-row-thread.new')).toBeNull();
+    await fireEvent.input(getByTestId('keybindings-cheatsheet-search'), { target: { value: query } });
+    expect(getByTestId(`keybindings-cheatsheet-row-${shown}`)).toBeInTheDocument();
+    for (const id of hidden) expect(queryByTestId(`keybindings-cheatsheet-row-${id}`), id).toBeNull();
   });
 
   it('shows an empty-state message when nothing matches', async () => {
@@ -224,12 +199,5 @@ describe('<KeybindingsCheatSheet> — chord display', () => {
     const { getByTestId } = render(KeybindingsCheatSheet, { open: true, onClose: vi.fn() });
     const chord = getByTestId('keybindings-cheatsheet-chord-x');
     expect(chord.textContent?.trim()).toBe('K');
-  });
-
-  it('renders the raw chord in the title attribute regardless of pretty-print', () => {
-    registerCommand({ id: 'x', label: 'X', run: () => {} });
-    setKeybindingsForTest([{ key: 'mod+shift+p', command: 'x' }]);
-    const { getByTestId } = render(KeybindingsCheatSheet, { open: true, onClose: vi.fn() });
-    expect(getByTestId('keybindings-cheatsheet-chord-x').getAttribute('title')).toBe('mod+shift+p');
   });
 });

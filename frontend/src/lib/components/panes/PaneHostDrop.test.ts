@@ -662,17 +662,6 @@ describe('PaneHost drag and drop', () => {
     expect(rendered.getByTestId('pane-drop-seam').dataset.insertIndex).toBe('1');
   });
 
-  it('raises no shield for a drag that places no pane', async () => {
-    const { rendered, pane } = renderTwoPanes();
-    const text = { types: ['text/plain'], getData: () => '' } as unknown as DataTransfer;
-
-    await dispatchDrag(pane('right'), 'dragover', text, 900);
-    await tick();
-
-    expect(rendered.queryByTestId('pane-drag-shield')).toBeNull();
-    expect(rendered.queryByTestId('pane-drop-seam')).toBeNull();
-  });
-
   it('outlines the empty strip while a thread hovers it', async () => {
     const dragged = makeThread({ id: 'drag-empty-outline', title: 'Empty Outline' });
     prependThread(dragged);

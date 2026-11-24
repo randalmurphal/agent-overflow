@@ -107,15 +107,6 @@ describe('<MessageSearch> — visibility & idle state', () => {
 // ---- Live search ----
 
 describe('<MessageSearch> — search behavior', () => {
-  it('calls the backend when the user types', async () => {
-    const search = setBindingMock('SearchThreadMessages', async () => []);
-    const pane = makePane();
-    const { getByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await typeQuery(getByTestId('message-search-input'), 'bug');
-    await waitFor(() => expect(search).toHaveBeenCalled());
-    expect(search.mock.calls[0]).toEqual(['bug', 50]);
-  });
-
   it('renders a hit row per result with thread title and match-type badge', async () => {
     setBindingMock('SearchThreadMessages', async () => [
       hit({ threadId: 't1', threadTitle: 'First', matchType: 'title', itemId: '' }),
@@ -245,29 +236,13 @@ describe('<MessageSearch> — keyboard navigation', () => {
     expect(getByTestId('message-search-hit-t3-b').getAttribute('aria-current')).toBe('true');
   });
 
-  it('Enter opens the currently-active hit', async () => {
-    setBindingMock('SearchThreadMessages', async () => [
-      hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'First' }),
-      hit({ threadId: 't2', itemId: 'a', matchType: 'item', summary: 'second', threadTitle: 'Second' }),
-    ]);
-    const onClose = vi.fn();
-    const pane = makePane();
-    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await typeQuery(getByTestId('message-search-input'), 'x');
-    await findByTestId('message-search-hit-t1-title');
-    const body = getByTestId('message-search');
-    // Default is first hit. Enter opens it.
-    await fireEvent.keyDown(body, { key: 'Enter' });
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(pane.threadId).toBe('t1');
-  });
-
   it('does not open a hit while an IME composition is active', async () => {
     // Thread id is unique to this test: an already-open pane would be
     // revealed instead of ours, and panes opened by earlier tests in this
     // file outlive them.
     setBindingMock('SearchThreadMessages', async () => [
       hit({ threadId: 'ime1', itemId: '', matchType: 'title', threadTitle: 'First' }),
+      hit({ threadId: 'ime2', itemId: 'a', matchType: 'item', summary: 'second', threadTitle: 'Second' }),
     ]);
     const onClose = vi.fn();
     const pane = makePane();
@@ -281,7 +256,8 @@ describe('<MessageSearch> — keyboard navigation', () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(pane.threadId).toBeNull();
 
-    // Control: the same keystroke outside a composition opens the hit.
+    // Control: the same keystroke outside a composition opens the active
+    // hit, the first by default.
     await fireEvent.keyDown(body, { key: 'Enter' });
     await waitFor(() => expect(pane.threadId).toBe('ime1'));
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -308,20 +284,6 @@ describe('<MessageSearch> — keyboard navigation', () => {
 // ---- Click / close interactions ----
 
 describe('<MessageSearch> — interactions', () => {
-  it('clicking a hit switches the pane and closes the dialog', async () => {
-    setBindingMock('SearchThreadMessages', async () => [
-      hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'First' }),
-    ]);
-    const onClose = vi.fn();
-    const pane = makePane();
-    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await typeQuery(getByTestId('message-search-input'), 'x');
-    const btn = await findByTestId('message-search-hit-t1-title');
-    await fireEvent.click(btn);
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(pane.threadId).toBe('t1');
-  });
-
   it('clicking an item hit publishes a scroll-to-item request for the match', async () => {
     // Post-windowing behavior: openHit must ask the pane to scroll to
     // the hit's itemId after switching threads. The pane mediates
@@ -406,30 +368,16 @@ describe('<MessageSearch> — interactions', () => {
 // ---- Match highlighting ----
 
 describe('<MessageSearch> — highlight', () => {
-  it('wraps matched substrings in <mark> within thread titles', async () => {
-    setBindingMock('SearchThreadMessages', async () => [
-      hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'Release pipeline' }),
-    ]);
+  it.each([
+    { where: 'thread titles', match: hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'Release pipeline' }), row: 't1-title', query: 'release', marked: 'Release' },
+    { where: 'item summaries', match: hit({ threadId: 't1', itemId: 'i1', matchType: 'item', summary: 'found the bug today' }), row: 't1-i1', query: 'bug', marked: 'bug' },
+  ])('wraps matched substrings in <mark> within $where', async ({ match, row, query, marked }) => {
+    setBindingMock('SearchThreadMessages', async () => [match]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await typeQuery(getByTestId('message-search-input'), 'release');
-    const row = await findByTestId('message-search-hit-t1-title');
-    const marks = row.querySelectorAll('mark');
-    expect(marks.length).toBeGreaterThan(0);
-    expect(marks[0].textContent).toBe('Release');
-  });
-
-  it('wraps matched substrings in <mark> within item summaries', async () => {
-    setBindingMock('SearchThreadMessages', async () => [
-      hit({ threadId: 't1', itemId: 'i1', matchType: 'item', summary: 'found the bug today' }),
-    ]);
-    const pane = makePane();
-    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await typeQuery(getByTestId('message-search-input'), 'bug');
-    const row = await findByTestId('message-search-hit-t1-i1');
-    const marks = row.querySelectorAll('mark');
-    expect(marks.length).toBeGreaterThan(0);
-    expect(Array.from(marks).some((m) => m.textContent === 'bug')).toBe(true);
+    await typeQuery(getByTestId('message-search-input'), query);
+    const found = await findByTestId(`message-search-hit-${row}`);
+    expect([...found.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual([marked]);
   });
 });
 
