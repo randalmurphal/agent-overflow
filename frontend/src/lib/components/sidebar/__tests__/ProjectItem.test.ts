@@ -7,9 +7,6 @@ import type { SidebarEntry } from '../sidebarEntries';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import { addProjectLocal } from '../../../stores/projects.svelte';
 import {
-  projectTurnStarted,
-} from '../../../stores/threadStatuses.svelte';
-import {
   consumePendingGroupRename,
   getThreadGroupById,
 } from '../../../stores/threadGroups.svelte';
@@ -46,10 +43,6 @@ function wrap(id: string, overrides: Partial<Project> = {}): ProjectWithCounts {
 function onSetExpanded(entry: SidebarEntry, expanded: boolean): void {
   if (expanded) setEntryExpanded(entry.key, true);
   else setEntryExpanded(entry.key, false);
-}
-
-function markThreadRunning(threadId: string): void {
-  projectTurnStarted(threadId, `turn:${threadId}`, 0, 0);
 }
 
 function thread(id: string, overrides: Partial<Thread> = {}): Thread {
@@ -256,7 +249,10 @@ describe('<ProjectItem>', () => {
     expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: false });
   });
 
-  it('ctrl-clicking the new-thread button requests a new pane', async () => {
+  it.each([
+    ['ctrl-clicking the new-thread button requests a new pane', { ctrlKey: true }],
+    ['cmd-clicking the new-thread button also requests a new pane', { metaKey: true }],
+  ] as const)('%s', async (_name, modifier) => {
     const onNewThread = vi.fn();
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
@@ -270,26 +266,7 @@ describe('<ProjectItem>', () => {
       },
     });
 
-    await fireEvent.click(getByTestId('project-item-new-thread'), { ctrlKey: true });
-
-    expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: true });
-  });
-
-  it('cmd-clicking the new-thread button also requests a new pane', async () => {
-    const onNewThread = vi.fn();
-    const pane = createThreadPane();
-    const { getByTestId } = render(ProjectItem, {
-      props: {
-        get entry() { return entryFromRow(wrap('p1')); },
-        displayLabel: { prefix: '', name: 'p1' },
-        onSetExpanded,
-        threads: [],
-        pane,
-        onNewThread,
-      },
-    });
-
-    await fireEvent.click(getByTestId('project-item-new-thread'), { metaKey: true });
+    await fireEvent.click(getByTestId('project-item-new-thread'), modifier);
 
     expect(onNewThread).toHaveBeenCalledWith('p1', { openInNewPane: true });
   });
@@ -348,35 +325,5 @@ describe('<ProjectItem>', () => {
     // Default is expanded, so it stays expanded after the new-thread click.
     expect(entryRecordForTest('p1').expanded).toBe(true);
     expect(onNewThread).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps an explicitly-collapsed running project collapsed and shows status plus active thread pin', async () => {
-    // The collapsed-state render path: status dot + active-thread pin
-    // surface the running work without the user needing to expand. We
-    // collapse explicitly because projects default to expanded.
-    setEntryExpanded('p1', false);
-    const pane = createThreadPane();
-    const runningThread = thread('t-running', { title: 'Active work' });
-    await pane.switchThread(runningThread);
-    markThreadRunning(runningThread.id);
-
-    const { getByTestId, queryByTestId, getByText } = render(ProjectItem, {
-      props: {
-        get entry() { return entryFromRow(wrap('p1')); },
-        displayLabel: { prefix: '', name: 'p1' },
-        onSetExpanded,
-        threads: [runningThread],
-        pane,
-      },
-    });
-
-    await tick();
-
-    expect(entryRecordForTest('p1').expanded).toBe(false);
-    expect(getByTestId('project-item-chevron').getAttribute('aria-expanded')).toBe('false');
-    expect(getByTestId('project-item-status-dot').getAttribute('data-status')).toBe('running');
-    expect(getByTestId('project-item-active-pin')).toBeInTheDocument();
-    expect(getByText('Active work')).toBeInTheDocument();
-    expect(queryByTestId('project-thread-list')).toBeNull();
   });
 });

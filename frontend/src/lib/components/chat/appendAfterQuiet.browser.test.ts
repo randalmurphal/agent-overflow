@@ -45,6 +45,7 @@ import {
   getUiRenderTraceRecords,
   setUiRenderTraceEnabled,
 } from '../../utils/uiRenderTrace';
+import { LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Item } from '../../types/models';
 
@@ -59,9 +60,10 @@ afterEach(() => {
 
 const QUIET_BOTTOM: QuietBottomOptions = { epsilonPx: 2, stableFrames: 12, frameBudget: 480 };
 const DRIFT_PX = 1;
-// Past LIVE_CONTENT_ACTIVE_HOLD_MS (500) and the structural one-shot (250)
-// with margin, so every clock has provably lapsed and the sentinel is dead.
-const SILENT_GAP_MS = 800;
+// Past LIVE_CONTENT_ACTIVE_HOLD_MS, the longest of the clocks (the
+// structural one-shot is 250ms), with margin, so every clock has provably
+// lapsed and the sentinel is dead.
+const SILENT_GAP_MS = LIVE_CONTENT_ACTIVE_HOLD_MS + 300;
 
 const PROSE = {
   question: (i: number) => `Question ${i}: does the fixture hold **enough** prose to wrap?`,

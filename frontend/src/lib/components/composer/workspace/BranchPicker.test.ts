@@ -240,6 +240,7 @@ describe('<BranchPicker>', () => {
     const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
     await fireEvent.click(getByTestId('branch-picker-trigger'));
     const row = await findByRole('menuitem', { name: /feat\/abc/ });
+    expect(row).not.toHaveAttribute('aria-disabled', 'true');
     await fireEvent.click(row);
     await Promise.resolve();
     await Promise.resolve();
@@ -605,27 +606,6 @@ describe('<BranchPicker>', () => {
     expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
     expect(worktreeIntentForThread(pane.thread).mode).toBe('new-worktree');
     expect(worktreeIntentForThread(pane.thread).attachBranch).toBe('');
-  });
-
-  it('allows branch checkout while the agent is responding', async () => {
-    const pane = await buildPane('main');
-    const checkout = setBindingMock('GitCheckout', async () => checkoutState('feat/abc'));
-    setBindingMock('GitListBranches', async () => [
-      { name: 'main', isCurrent: true, isDefault: true },
-      { name: 'feat/abc', isCurrent: false, isDefault: false },
-    ]);
-    setBindingMock('GetThread', async () => makeThread('feat/abc'));
-
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
-    await fireEvent.click(getByTestId('branch-picker-trigger'));
-    const row = await findByRole('menuitem', { name: /feat\/abc/ });
-    expect(row).not.toHaveAttribute('aria-disabled', 'true');
-
-    await fireEvent.click(row);
-
-    await waitFor(() => {
-      expect(checkout).toHaveBeenCalled();
-    });
   });
 
   it('+ New branch dropdown entry enters creating-branch mode and closes the menu', async () => {

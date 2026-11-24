@@ -138,7 +138,7 @@ describe('sidebar store', () => {
     // default because the field did not exist before this version.
     it.each([
       ['the frontend keeps its choice when the host has another value', 'createdAt', { projectSortMode: 'manual' }],
-      ['pushes the localStorage sort mode to Go when Go has the default but memory does not (upgrade migration)', 'manual', {}],
+      ['keeps the localStorage sort mode without pushing it to Go when Go has the default (upgrade)', 'manual', {}],
     ] as const)('%s', async (_name, local, host) => {
       setBindingMock('UpdateSettings', async () => null);
       setProjectSortMode(local);

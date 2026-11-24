@@ -118,6 +118,9 @@ describe('mermaid token bridge (real cascade)', () => {
       const vars = config.themeVariables as Record<string, unknown>;
       expect(config.theme).toBe('base');
       expect(config.darkMode).toBe(mode === 'dark');
+      // theme-base reads its own `darkMode` off themeVariables, not off
+      // the top-level config field.
+      expect(vars.darkMode).toBe(mode === 'dark');
       for (const name of COLOR_VARS) {
         expect(vars[name], name).toMatch(RGB);
       }
