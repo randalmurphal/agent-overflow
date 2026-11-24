@@ -83,7 +83,6 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ProviderSendsPending,
 		eventchan.ProviderSessionAccount,
 		eventchan.ProviderSessionDied,
-		eventchan.ProviderSessionLive,
 		eventchan.ProviderStatus,
 		eventchan.ProviderSubagentProgress,
 		eventchan.ProviderTerminalOutput,

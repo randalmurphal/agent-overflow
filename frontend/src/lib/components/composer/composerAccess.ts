@@ -1,7 +1,7 @@
 // What every composer action that calls the thread's computer may do now.
 // The composer has one answer per capability, from one rule: the grant on
 // the thread's computer, masked by `offline` while that computer cannot be
-// reached. Send, Stop, End Session, Run, the approval and question answers,
+// reached. Send, Stop, Run, the approval and question answers,
 // and an attachment's paste, drop or pick each read their entry here and
 // issue no call unless it is `granted`. A draft is never cleared by a
 // refusal here: nothing was sent.
@@ -10,7 +10,7 @@ import type { ControlAccess, EntityScopeGrant, Scope } from '../../transport/sco
 export type ComposerCapability = Extract<Scope, 'threads:operate' | 'approvals:respond' | 'attachments:write' | 'terminal:operate'>;
 
 export interface ComposerAccess {
-  /** Send, queue, Stop, End Session, and implementing a plan (`threads:operate`). */
+  /** Send, queue, Stop, and implementing a plan (`threads:operate`). */
   send: ControlAccess;
   /** Answering an approval or a question (`approvals:respond`). */
   respond: ControlAccess;

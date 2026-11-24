@@ -164,7 +164,6 @@ import {
   applyCompactingState,
   type CompactingStatePayload,
 } from './compactingState.svelte';
-import { applySessionLive, type SessionLivePayload } from './threadSessionLive.svelte';
 import { applySubagentProgress, clearSubagentProgressForThread } from './subagentProgress.svelte';
 import type { BackgroundTaskOutputEvent, BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
 import { applyBackgroundTrayEvent } from './eventsBackgroundTray';
@@ -561,14 +560,6 @@ export function setupEventListeners(): () => void {
     applyCompactingState,
   );
 
-  // provider:session_live: whether the thread has a provider session live
-  // or starting, which End Session reads. The snapshot leg is
-  // ListThreadLiveActivity's sessionLive.
-  const cancelSessionLive = wailsEventOn<SessionLivePayload>(
-    'provider:session_live',
-    applySessionLive,
-  );
-
   // provider:subagent_progress — the latest live counters of one running
   // subagent (tool count, tokens, elapsed, activity line). Triage merges
   // each tick over the previous one, so the newest frame is the whole
@@ -897,7 +888,6 @@ export function setupEventListeners(): () => void {
     cancelCommandLifecycle();
     cancelFastModeState();
     cancelCompactingState();
-    cancelSessionLive();
     cancelSubagentProgress();
     cancelBackgroundTray();
     cancelThreadWakes();

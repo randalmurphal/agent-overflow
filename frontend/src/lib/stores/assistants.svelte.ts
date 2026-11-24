@@ -5,11 +5,8 @@
 // every confirmation of such a delete names the folder, and the delete is
 // always confirmed, whatever the confirmDelete setting says. Any thread's
 // delete confirmation counts the workers that go with it ("Owned workers").
-// End Session is an assistant thread's own action beside Interrupt
-// ("Interrupt and end session").
 
-import { GetDeleteDependents, GetStandingAgent, StopSession } from './bindings';
-import { addErrorToast } from './toast.svelte';
+import { GetDeleteDependents, GetStandingAgent } from './bindings';
 import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
 import { getThreads } from './threads.svelte';
 import { computerHasSetting, getSettings, olderComputerNote } from './settings.svelte';
@@ -74,20 +71,6 @@ export function assistantsOffOn(backend: BackendKey): string {
 /** What a pane showing an assistant's thread says while its computer has assistants off. */
 export function assistantsOffNote(backend: BackendKey): string {
   return `${assistantsOffOn(backend)} Turn them on to continue this thread.`;
-}
-
-/**
- * End Session: end the thread's provider process with its background agents
- * and shells. A thread with no session is left as it is. Routed by the
- * thread id to the computer that owns it.
- */
-export async function endThreadSession(thread: Pick<Thread, 'id' | 'title'>): Promise<void> {
-  try {
-    await StopSession(thread.id);
-  } catch (err) {
-    console.error('Failed to end the session:', err);
-    addErrorToast(`Could not end the session of ${thread.title || 'this thread'}: ${userFacingError(err)}`, err);
-  }
 }
 
 /** A name another assistant on the computer holds; the message names it. */
