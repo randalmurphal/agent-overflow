@@ -225,7 +225,7 @@ func TestABindIsCurrentFromItsActivationToItsEnd(t *testing.T) {
 
 // A bind moves from pending to current once: it activates at most once,
 // never after its end, and never once a newer keep of its issue issued
-// another, whether that one is current or ended. A refused activation
+// another, whether that one is pending, current or ended. A refused activation
 // leaves the current bind as it was, and no bind stays pending once each
 // is activated, ended or replaced.
 func TestABindActivatesOnceWhilePending(t *testing.T) {
@@ -257,6 +257,9 @@ func TestABindActivatesOnceWhilePending(t *testing.T) {
 		t.Fatal("a bind ended while pending activated, or moved the current one")
 	}
 	older, newer := keep(), keep()
+	if s.ActivateMirrorBind(older) || admits(older) || !admits(a) {
+		t.Fatal("an older pending bind activated before a newer one of its issue, or moved the current one")
+	}
 	if !s.ActivateMirrorBind(newer) || s.ActivateMirrorBind(older) || admits(older) || !admits(newer) {
 		t.Fatal("an older pending bind activated after a newer one of its issue")
 	}
