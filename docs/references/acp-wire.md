@@ -42,7 +42,7 @@ Provider-specific extensions live in `acp.Flavor` implementations (such as `inte
 
 Every notification carries `{ sessionId, update: { sessionUpdate, ... } }`:
 
-- `agent_thought_chunk` / `agent_message_chunk`: coalesced into `EventThinking` / `EventTextDelta`.
+- `agent_thought_chunk` / `agent_message_chunk`: one `EventThinking` / `EventTextDelta` per chunk, published by the read loop before it reads the next frame. Text keeps its read order and precedes the prompt's result, tool calls, usage, and terminal events read after it. A chunk read once the session is closing, or after its teardown, is not published, and the teardown waits for a chunk being published. While the thread's app event queue is full, publishing a chunk holds the connection's read loop, as publishing any other event does.
 - `tool_call` / `tool_call_update`: normalized through `Flavor` into `EventToolStart`, `EventToolComplete`, `EventDiff`, `EventCommandOutput`, `EventProposedPlan`, and (when pending) `EventUserInputRequest`.
 - `plan`: projected onto `EventTodoUpdate`.
 - `usage_update`: `{ used, size }` updates the context meter (`EventTokenUsage`) and closes spontaneous post-prompt wake turns when no `session/prompt` RPC is in flight.

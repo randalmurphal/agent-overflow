@@ -247,7 +247,14 @@ shared ACP runtime):
 - Cadence (nano turn, quantified): updates arrive in micro-bursts —
   median inter-chunk gap 0ms, p90 2ms, pauses up to ~3s — with tiny
   payloads (median thought chunk 4 chars; 101 chunks totalled 436
-  chars). Parser-side coalescing is mandatory, not an optimization.
+  chars). The shared ACP parser publishes one event per chunk. On the
+  app's event queue and triage path (`BenchmarkStreamedDeltaCost`, case
+  `acp-thinking-101x436B`), that turn's 101 events cost about 8 more
+  allocations and 1 KiB each than one 436-byte event, no time difference
+  the run could measure, one SQLite append, and 101 live deltas instead of
+  one. If a measured cost ever calls for merging chunks, the merge goes
+  after the single emitter, never in a second goroutine that publishes
+  text.
 - Unreachable edge cases, resolved from spec vocabulary rather than
   observation (t3-code's cursor handling is generic passthrough, so
   only the vocabulary is borrowable): the ACP `StopReason` enum is

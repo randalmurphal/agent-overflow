@@ -18,11 +18,6 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-const (
-	chunkCoalesceWindow = 35 * time.Millisecond
-	chunkCoalesceBytes  = 2048
-)
-
 // SessionConfig holds thread-scoped configuration for opening an ACP Session on
 // a shared or dedicated Conn.
 type SessionConfig struct {
@@ -104,12 +99,6 @@ type pendingPromptConfirm struct {
 	confirmed atomic.Bool
 }
 
-type chunkBuffer struct {
-	kind  provider.EventKind // EventTextDelta or EventThinking
-	buf   strings.Builder
-	timer *time.Timer
-}
-
 // Session represents one ACP conversation multiplexed onto a *Conn.
 // Implements provider.Session.
 type Session struct {
@@ -158,9 +147,13 @@ type Session struct {
 	activeSubagentWatchers int
 	pendingPerms           map[string]pendingPermission
 	pendingToolQuestions   map[string]pendingToolQuestion
-	chunk                  chunkBuffer
-	promptWG               sync.WaitGroup
-	subagentWG             sync.WaitGroup
+	// chunkEmit is held while the reader publishes a chunk, so the
+	// session's teardown waits for that chunk and nothing follows the
+	// teardown. A channel rather than a mutex so a goroutine waiting on it
+	// is durably blocked under testing/synctest. Created on first use.
+	chunkEmit  chan struct{}
+	promptWG   sync.WaitGroup
+	subagentWG sync.WaitGroup
 
 	sessionCtx      context.Context
 	sessionCancel   context.CancelFunc
@@ -808,8 +801,6 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 			s.emitPromptConfirmation(confirm)
 		}
 	}
-	s.flushChunks()
-
 	var res SessionPromptResult
 	if waitErr == nil && len(rawResp) > 0 {
 		_ = json.Unmarshal(rawResp, &res)
@@ -1298,7 +1289,6 @@ func (s *Session) Close() error {
 	if s.sessionCancel != nil {
 		s.sessionCancel()
 	}
-	s.stopChunkTimer()
 
 	var err error
 	if s.ownsConn {
@@ -1351,10 +1341,18 @@ func (s *Session) onConnClosed(exitMeta json.RawMessage, connClosing bool) {
 	if s.sessionCancel != nil {
 		s.sessionCancel()
 	}
-	s.stopChunkTimer()
 	s.drainPendingApprovals("lost", true)
 	s.emitTeardownOnce(exitMeta, connClosing || s.closing.Load())
 	s.finishReadDone()
+}
+
+func (s *Session) chunkEmitFence() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.chunkEmit == nil {
+		s.chunkEmit = make(chan struct{}, 1)
+	}
+	return s.chunkEmit
 }
 
 func (s *Session) releasePoolRef() {
@@ -1373,6 +1371,11 @@ func (s *Session) emitTeardownOnce(exitMeta json.RawMessage, intentional bool) {
 	if !s.teardownEmitted.CompareAndSwap(false, true) {
 		return
 	}
+	// Waits for a chunk the reader is publishing; any later chunk sees
+	// teardownEmitted and is dropped, so the teardown is the last event.
+	fence := s.chunkEmitFence()
+	fence <- struct{}{}
+	<-fence
 	provider.EmitTeardownStatusWithMeta(s.emitEvent, s.threadID, exitMeta, intentional)
 }
 
@@ -1527,7 +1530,10 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		}
 		s.confirmSolePrompt()
 		s.ensureSpontaneousTurnOpen()
-		s.bufferChunk(provider.EventThinking, block.Text)
+		s.mu.Lock()
+		turnID := s.activeTurnID
+		s.mu.Unlock()
+		s.emitChunk(provider.EventThinking, turnID, block.Text)
 
 	case "agent_message_chunk":
 		block, ok := u.decodeContentBlock()
@@ -1540,12 +1546,12 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		if s.turnHasOutputSchema {
 			s.turnLastAssistantText.WriteString(block.Text)
 		}
+		turnID := s.activeTurnID
 		s.mu.Unlock()
-		s.bufferChunk(provider.EventTextDelta, block.Text)
+		s.emitChunk(provider.EventTextDelta, turnID, block.Text)
 
 	case "tool_call":
 		s.confirmSolePrompt()
-		s.flushChunks()
 		s.ensureSpontaneousTurnOpen()
 		s.mu.Lock()
 		if s.turnHasOutputSchema {
@@ -1556,7 +1562,6 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.handleToolCallStart(&tc)
 
 	case "tool_call_update":
-		s.flushChunks()
 		tc := u.toToolCallUpdate()
 		switch tc.Status {
 		case "completed", "failed", "cancelled":
@@ -1570,11 +1575,9 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 
 	case "plan":
 		s.confirmSolePrompt()
-		s.flushChunks()
 		s.handlePlanUpdate(u.Entries)
 
 	case "usage_update":
-		s.flushChunks()
 		s.handleUsageUpdate(u.Used, u.Size)
 
 	case "available_commands_update":
@@ -1644,88 +1647,19 @@ func (s *Session) ensureSpontaneousTurnOpen() {
 	}
 }
 
-func (s *Session) bufferChunk(kind provider.EventKind, text string) {
-	var flushKind provider.EventKind
-	var flushText string
-	var turnID string
-
-	s.mu.Lock()
-	turnID = s.activeTurnID
-	if s.chunk.buf.Len() > 0 && s.chunk.kind != kind {
-		flushKind = s.chunk.kind
-		flushText = s.chunk.buf.String()
-		s.chunk.buf.Reset()
-		if s.chunk.timer != nil {
-			s.chunk.timer.Stop()
-			s.chunk.timer = nil
-		}
-	}
-	s.chunk.kind = kind
-	s.chunk.buf.WriteString(text)
-	if s.chunk.buf.Len() >= chunkCoalesceBytes {
-		if flushText != "" {
-			// Emit the previous kind first, then flush current below.
-			curText := s.chunk.buf.String()
-			s.chunk.buf.Reset()
-			if s.chunk.timer != nil {
-				s.chunk.timer.Stop()
-				s.chunk.timer = nil
-			}
-			s.mu.Unlock()
-			s.emitChunk(flushKind, turnID, flushText)
-			s.emitChunk(kind, turnID, curText)
-			return
-		}
-		flushKind = kind
-		flushText = s.chunk.buf.String()
-		s.chunk.buf.Reset()
-		if s.chunk.timer != nil {
-			s.chunk.timer.Stop()
-			s.chunk.timer = nil
-		}
-	} else if s.chunk.timer == nil {
-		s.chunk.timer = time.AfterFunc(chunkCoalesceWindow, s.flushChunks)
-	}
-	s.mu.Unlock()
-
-	if flushText != "" {
-		s.emitChunk(flushKind, turnID, flushText)
-	}
-}
-
-func (s *Session) flushChunks() {
-	s.mu.Lock()
-	if s.chunk.timer != nil {
-		s.chunk.timer.Stop()
-		s.chunk.timer = nil
-	}
-	if s.chunk.buf.Len() == 0 {
-		s.mu.Unlock()
-		return
-	}
-	kind := s.chunk.kind
-	text := s.chunk.buf.String()
-	turnID := s.activeTurnID
-	s.chunk.buf.Reset()
-	s.mu.Unlock()
-
-	if s.closing.Load() {
-		return
-	}
-	s.emitChunk(kind, turnID, text)
-}
-
-func (s *Session) stopChunkTimer() {
-	s.mu.Lock()
-	if s.chunk.timer != nil {
-		s.chunk.timer.Stop()
-		s.chunk.timer = nil
-	}
-	s.mu.Unlock()
-}
-
+// emitChunk publishes a chunk the reader read, before the reader reads the
+// next frame: reply text is published in the order it was read, and ahead
+// of the prompt's result, tool calls, usage, and terminal events read after
+// it. A chunk read once the session is closing, or after its teardown, is
+// not published.
 func (s *Session) emitChunk(kind provider.EventKind, turnID, text string) {
 	if text == "" {
+		return
+	}
+	fence := s.chunkEmitFence()
+	fence <- struct{}{}
+	defer func() { <-fence }()
+	if s.closing.Load() || s.teardownEmitted.Load() {
 		return
 	}
 	s.emitEvent(provider.ProviderEvent{
@@ -2227,7 +2161,6 @@ func (s *Session) isToolDisabled(name string) bool {
 
 func (s *Session) handlePermissionRequest(rpcID json.RawMessage, req RequestPermissionParams) {
 	s.confirmSolePrompt()
-	s.flushChunks()
 
 	if s.isToolDisabled(req.ToolCall.Name) {
 		outcome := PermissionOutcome{Outcome: "cancelled"}

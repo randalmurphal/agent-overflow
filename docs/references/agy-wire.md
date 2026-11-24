@@ -28,7 +28,7 @@ Antigravity CLI (`agy`) speaks Agent Client Protocol (ACP) v1 over newline-delim
 ## Streaming, tools, approvals, and usage
 
 - `session/update` notifications:
-  - `agent_message_chunk` and `agent_thought_chunk`: coalesced into `EventTextDelta` and `EventThinking`.
+  - `agent_message_chunk` and `agent_thought_chunk`: one `EventTextDelta` / `EventThinking` per chunk, in read order ([acp-wire.md](acp-wire.md)).
   - `tool_call` / `tool_call_update`: normalized by `agy.Flavor` (`read_file`, `edit_file`, `write_file`, `run_command`, `invoke_subagent`, `ask_question`).
   - `write_file` / `edit_file` with `ArtifactMetadata.RequestFeedback == true` emits `EventProposedPlan`.
   - `usage_update` carries `used` and `size` (context window); prompt `result.usage` carries Gemini token totals (`inputTokens`, `outputTokens`, `cachedReadTokens`, `thoughtTokens`).
