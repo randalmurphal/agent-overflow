@@ -13,7 +13,7 @@ import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpe
 import { startTogether } from './launch-helpers.js';
 import { seedForge, expectEveryForgeCallHandled } from './forge-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
-import { expectTransferComplete } from './conversation-transfer-helpers.js';
+import { expectTransferComplete, primeTransferRecipient } from './conversation-transfer-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string }> }
 interface ProjectRow { project: { id: string; name: string; path: string; repositoryID?: string; identityError?: string } }
@@ -54,6 +54,7 @@ for (const renamed of [false, true]) test(`one repository at different paths mer
   page.on('pageerror', (error) => errors.push(error.message));
   try {
     [home, remote] = await startTogether(launchHarness(), launchHarness());
+    await primeTransferRecipient(remote);
     const seeded = await home.rpc<Seed>('HarnessSeed', {
       projects: ['picker-app', 'import-app', 'other-app'].map((name) => ({
         name, repo: { commits: [{ message: `init ${name}`, files: { 'README.md': `${name}\n` } }] },

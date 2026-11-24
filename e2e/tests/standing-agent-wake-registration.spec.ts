@@ -31,7 +31,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { processRuns } from '../src/harness-process.js';
-import { codexTransferScenario } from './conversation-transfer-helpers.js';
+import { codexTransferScenario, primeTransferRecipient } from './conversation-transfer-helpers.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { wakeLoopNow } from './wake-rows-helpers.js';
@@ -797,6 +797,7 @@ test.describe('an assistant copied to another computer', () => {
   for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
     test(`${provider}: the dialog offers only a copy, which keeps the assistant, and a move is refused`, async ({ page }) => {
       test.setTimeout(180_000);
+      await primeTransferRecipient(destination);
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
       const title = `Release agent ${provider}`;
