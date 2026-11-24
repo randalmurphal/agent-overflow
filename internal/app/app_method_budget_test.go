@@ -182,4 +182,9 @@ func TestARunCutAtItsBudgetSaysSo(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("the budget's error drops the run's own")
 	}
+	then, cancelThen := withinMethodBudgetThen(context.Background(), "TrackerProjects", "Listing the tracker's projects", "try again")
+	defer cancelThen()
+	if deadline, ok := then.Deadline(); !ok || time.Until(deadline) > transport.MethodBudget("TrackerProjects") {
+		t.Fatalf("a run that says what to do next: deadline %v, %v; want within the method's budget", deadline, ok)
+	}
 }

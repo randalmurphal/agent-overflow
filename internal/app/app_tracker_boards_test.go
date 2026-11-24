@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
@@ -55,6 +58,65 @@ func TestTrackerBoardMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	}
 }
 
+// A picker's list that takes the tracker more than one page ends, with
+// all its pages, at the method's budget: the walk is cut while its second
+// page is held, and the answer says the tracker was too slow and to try
+// again, leaving the connection without a problem.
+func TestATrackerPickerListEndsAtItsBudget(t *testing.T) {
+	t.Parallel()
+	site := trackerBoardSite()
+	for i := range 120 {
+		site.Projects = append(site.Projects, trackerfake.JiraProject{ID: fmt.Sprint(20000 + i), Key: fmt.Sprintf("K%03d", i), Name: fmt.Sprintf("Project %d", i)})
+	}
+	const route = "GET rest/api/3/project/search"
+	origin := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
+	var e *trackerfake.Engine
+	var armed sync.Once
+	held := make(chan struct{})
+	var heldOnce sync.Once
+	f := newTrackerBoardFixtureOn(t, trackerfake.Options{OnRequest: func(r trackerfake.Request) {
+		switch {
+		case r.Route != route:
+		case r.Held:
+			heldOnce.Do(func() { close(held) })
+		case r.Status == 200:
+			armed.Do(func() {
+				if err := e.AddFault(trackerfake.Fault{Origin: origin, Route: route, Kind: trackerfake.FaultHold, Times: 1}); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+	}}, site)
+	e = f.e
+	t.Cleanup(func() { e.ClearFaults(origin, route) })
+	reqs := e.Requests(0).Requests
+	since := reqs[len(reqs)-1].Seq
+
+	run, end := testutil.DeadlineContext(context.Background())
+	budget := transport.MethodBudget("TrackerProjects")
+	go func() {
+		<-held
+		end(budgetExceeded{doing: "Listing the tracker's projects", budget: budget, then: "the tracker was too slow, so try again"})
+	}()
+	_, err := f.a.TrackerProjects(run, f.conn.ID)
+	if code, message, _ := errorsx.PublicDetails(err); code != methodBudgetExceededCode || !strings.Contains(message, "too slow, so try again") {
+		t.Fatalf("TrackerProjects cut at its budget = %v, want %s saying to try again", err, methodBudgetExceededCode)
+	}
+	var pages int
+	for _, r := range e.Requests(since).Requests {
+		if r.Route == route {
+			pages++
+		}
+	}
+	if pages != 2 {
+		t.Fatalf("the list asked for %d pages before it was cut, want 2", pages)
+	}
+	conns, err := f.a.TrackerConnections(context.Background())
+	if err != nil || len(conns) != 1 || conns[0].Problem != nil {
+		t.Fatalf("the connection after the cut list: %+v, %v", conns, err)
+	}
+}
+
 // trackerBoardSite is the fake Jira site the board tests seed: one scrum
 // board of project WEB with an active sprint and three issues.
 func trackerBoardSite() trackerfake.JiraSite {
@@ -88,9 +150,16 @@ type trackerBoardFixture struct {
 
 func newTrackerBoardFixture(t *testing.T) *trackerBoardFixture {
 	t.Helper()
-	e := trackerfake.New(trackerfake.Options{})
+	return newTrackerBoardFixtureOn(t, trackerfake.Options{}, trackerBoardSite())
+}
+
+// newTrackerBoardFixtureOn is newTrackerBoardFixture whose engine takes
+// opts and serves site, which keeps trackerBoardSite's board 1.
+func newTrackerBoardFixtureOn(t *testing.T, opts trackerfake.Options, site trackerfake.JiraSite) *trackerBoardFixture {
+	t.Helper()
+	e := trackerfake.New(opts)
 	t.Cleanup(e.Close)
-	if err := e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{trackerBoardSite()}}); err != nil {
+	if err := e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}); err != nil {
 		t.Fatal(err)
 	}
 	srv, err := trackerfake.Serve(e, "example.atlassian.net")

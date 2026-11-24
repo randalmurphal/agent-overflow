@@ -1124,6 +1124,12 @@ method wraps (see [Build order](#build-order)).
 | `RefreshTrackerSubscription(subscriptionID)` | `RefreshSubscription` | read | home |
 | `ReleaseTrackerSubscription(subscriptionID)` | `ReleaseSubscription` | read | home |
 
+- **The picker's lists** (`TrackerProjects`, `TrackerBoards`) walk the
+  tracker's pages, each bounded by the tracker client, and the whole walk
+  ends at the method's default budget (`withinMethodBudgetThen`), so the
+  answer arrives before the client stops waiting and says the tracker was
+  too slow and to try again. Their context reaches the network, so they
+  are not caller-bound.
 - **A project's boards** are the boards its picker shows, in order, and
   the one that opens first (store `project_tracker_boards`). The list is
   replaced whole, and the change takes effect before the save answers:

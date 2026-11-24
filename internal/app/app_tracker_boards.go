@@ -21,7 +21,9 @@ import (
 
 // TrackerProjects lists the tracker projects (Linear teams) the
 // connection's user can see, for choosing a project's boards. It asks
-// the tracker.
+// the tracker, a page at a time, and the whole walk ends at the method's
+// budget (trackerCatalogRun). Its context reaches the network, so it is
+// not caller-bound.
 //
 //ao:scope tracker:read
 //ao:route selected
@@ -30,12 +32,15 @@ func (a *App) TrackerProjects(ctx context.Context, connectionID string) ([]track
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := trackerCatalogRun(ctx, "TrackerProjects", "Listing the tracker's projects")
+	defer cancel()
 	out, err := svc.Projects(ctx, connectionID)
-	return out, trackerError(err)
+	return out, trackerCatalogError(ctx, err)
 }
 
 // TrackerBoards lists a tracker project's boards (a Linear team's one),
-// for choosing a project's boards. It asks the tracker.
+// for choosing a project's boards. It asks the tracker, bounded as
+// TrackerProjects is.
 //
 //ao:scope tracker:read
 //ao:route selected
@@ -44,8 +49,27 @@ func (a *App) TrackerBoards(ctx context.Context, connectionID, project string) (
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := trackerCatalogRun(ctx, "TrackerBoards", "Listing the project's boards")
+	defer cancel()
 	out, err := svc.Boards(ctx, connectionID, project)
-	return out, trackerError(err)
+	return out, trackerCatalogError(ctx, err)
+}
+
+// trackerCatalogRun bounds a picker's walk of the tracker's pages, each
+// of which the tracker client bounds alone, by the method's budget, so
+// the server answers before its client stops waiting
+// (transport.ClientWait).
+func trackerCatalogRun(ctx context.Context, method, doing string) (context.Context, context.CancelFunc) {
+	return withinMethodBudgetThen(ctx, method, doing, "the tracker was too slow, so try again")
+}
+
+// trackerCatalogError is the budget's own error once ctx ended at it,
+// and otherwise err with its refusal's sentence (trackerError).
+func trackerCatalogError(ctx context.Context, err error) error {
+	if cut := budgetError(ctx, err); cut != err {
+		return cut
+	}
+	return trackerError(err)
 }
 
 // ProjectTrackerBoards lists the boards a project's board picker shows, in
