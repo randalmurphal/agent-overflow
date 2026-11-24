@@ -807,7 +807,11 @@ func TestWaitProcessExitErr(t *testing.T) {
 	}
 	// The exit itself is the wait: WaitProcessExitErr's 100 ms window is
 	// for callers that cannot block, and is not what this test checks.
-	<-p.Done()
+	select {
+	case <-p.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the process did not exit")
+	}
 
 	if WaitProcessExitErr(p) == nil {
 		t.Fatal("expected non-nil exit error")
