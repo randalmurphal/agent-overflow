@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"agent-overflow/internal/errorsx"
 )
@@ -52,8 +54,10 @@ type TrackerUpload struct {
 	// Size is the byte count the ticket was minted for.
 	Size int64
 	// Body is the request body, capped at Size. A body that ends short of
-	// Size, or that the client stops sending, fails its read.
-	Body io.Reader
+	// Size fails its read. Close ends a read of it in progress and every
+	// later one, which is how the write stops reading a client that
+	// stopped sending (trackerapi.Part).
+	Body io.ReadCloser
 }
 
 // TrackerTransfer is the app-side surface behind the tracker byte routes.
@@ -167,13 +171,22 @@ func (s *Server) handleTrackerUpload(w http.ResponseWriter, r *http.Request) {
 	// anything reaches the tracker. A body that declares none and runs
 	// short or long fails as it is sent, and the write is not applied.
 	if r.ContentLength >= 0 && r.ContentLength != upload.Size {
-		http.Error(w, "size mismatch", http.StatusBadRequest)
+		s.writeTrackerTransferError(w, "attach a file to "+upload.Issue, errorsx.Public("tracker_upload_size_changed",
+			fmt.Sprintf("the file is now %d bytes, not the %d it was when its upload was prepared; select the file again and attach it", r.ContentLength, upload.Size),
+			fmt.Errorf("transport: an upload ticketed for %d bytes declared %d", upload.Size, r.ContentLength)))
 		return
 	}
-	extendTransferDeadline(w, AttachmentTransferWindowFor(upload.Size))
-	upload.Body = http.MaxBytesReader(w, r.Body, upload.Size)
+	extendTransferDeadline(w, s.trackerUploadWindow(upload.Size))
+	rc := http.NewResponseController(w)
+	upload.Body = &trackerUploadBody{Reader: http.MaxBytesReader(w, r.Body, upload.Size), rc: rc}
 	upload.Context = r.Context()
 	view, err := transfer.AttachTrackerFile(upload)
+	// The write is bounded by more than the transfer's window (the
+	// tracker's answer and the refresh), so the answer gets a deadline of
+	// its own from now.
+	if err := rc.SetWriteDeadline(time.Now().Add(trackerAnswerWrite)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		log.Printf("transport: move the attach's answer deadline: %v", err)
+	}
 	if err != nil {
 		s.writeTrackerTransferError(w, "attach a file to "+upload.Issue, err)
 		return
@@ -185,7 +198,31 @@ func (s *Server) handleTrackerUpload(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(view)
 }
 
-// handleTrackerDownload answers TrackerDownloadPath. The status and
+// trackerAnswerWrite bounds the write of an attach's answer, a few KB of
+// JSON.
+const trackerAnswerWrite = time.Minute
+
+// trackerUploadBody is an upload's request body whose Close moves the
+// request's read deadline to now, once: net/http gives a handler no other
+// way to end a read of its body in progress. The answer is still written.
+type trackerUploadBody struct {
+	io.Reader
+	rc   *http.ResponseController
+	once sync.Once
+	err  error
+}
+
+func (b *trackerUploadBody) Close() error {
+	b.once.Do(func() {
+		if err := b.rc.SetReadDeadline(time.Now()); err != nil {
+			b.err = fmt.Errorf("transport: stop reading an upload: %w", err)
+		}
+	})
+	return b.err
+}
+
+// handleTrackerDownload answers TrackerDownloadPath, bounded by its
+// progress (DownloadByProgress), not by a total. The status and
 // headers wait for the attachment's first byte, so a failure before it
 // (a connection turned off, an attachment the tracker no longer has) is
 // answered with its sentence. The length is not declared: nothing this
@@ -208,7 +245,7 @@ func (s *Server) handleTrackerDownload(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	extendTransferDeadline(w, AttachmentTransferWindow)
+	w = DownloadByProgress(w, s.trackerStall)
 	held := &heldResponse{w: w, begin: func(h http.Header) {
 		WriteSecurityHeaders(h, s.csp)
 		h.Set("Cache-Control", "no-store")

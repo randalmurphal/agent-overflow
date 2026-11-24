@@ -375,3 +375,116 @@ func TestUploadReadOnceIsSentOnce(t *testing.T) {
 type errReader struct{ err error }
 
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// stalledContent is a request body's source that sends its first bytes and
+// then blocks, as a client that stops sending does, until it is closed.
+type stalledContent struct {
+	first  []byte
+	closed chan struct{}
+	once   atomic.Bool
+}
+
+func newStalledContent(first string) *stalledContent {
+	return &stalledContent{first: []byte(first), closed: make(chan struct{})}
+}
+
+func (s *stalledContent) Read(p []byte) (int, error) {
+	if len(s.first) > 0 {
+		n := copy(p, s.first)
+		s.first = s.first[n:]
+		return n, nil
+	}
+	<-s.closed
+	return 0, errors.New("the client's body was closed")
+}
+
+func (s *stalledContent) Close() error {
+	if s.once.CompareAndSwap(false, true) {
+		close(s.closed)
+	}
+	return nil
+}
+
+// An upload whose content stops arriving ends when its attempt does, by
+// the call's context or the client's Close, as not applied: its content is
+// closed, which ends the read net/http would otherwise wait on. A content
+// read to its end is never closed.
+func TestUploadOfAStalledContentEndsWithItsAttempt(t *testing.T) {
+	t.Parallel()
+	tr := newTracker(t, route{
+		"POST /upload": func(w http.ResponseWriter, r *http.Request) {
+			if _, err := io.Copy(io.Discard, r.Body); err != nil {
+				return
+			}
+			writeString(w, `{}`)
+		},
+	})
+	upload := func(c *Client, ctx context.Context, content io.Reader, size int64) chan error {
+		body, err := Multipart([]Part{{FieldName: "file", FileName: "a", Content: content, Size: size}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := c.Do(ctx, Request{Method: http.MethodPost, Path: "upload", Body: body, Transfer: true})
+			done <- err
+		}()
+		return done
+	}
+	ended := func(what string, done chan error, content *stalledContent) {
+		t.Helper()
+		select {
+		case err := <-done:
+			if _, ok := errors.AsType[*SourceError](err); !ok || !WriteNotApplied(err) {
+				t.Errorf("%s: %v, want a source failure", what, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: the upload was still blocked on its content 10s after its attempt ended", what)
+		}
+		if !content.once.Load() {
+			t.Errorf("%s: the content was not closed", what)
+		}
+	}
+
+	c, _ := loopbackClient(t, testOptions(tr.url()))
+	ctx, cancel := context.WithCancel(t.Context())
+	content := newStalledContent("abc")
+	done := upload(c, ctx, content, 10)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	ended("the call's context ended", done, content)
+
+	closing, _ := loopbackClient(t, testOptions(tr.url()))
+	content = newStalledContent("abc")
+	done = upload(closing, t.Context(), content, 10)
+	time.Sleep(100 * time.Millisecond)
+	closed := make(chan struct{})
+	go func() {
+		closing.Close()
+		close(closed)
+	}()
+	ended("the client closed", done, content)
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return with an upload of a stalled content in flight")
+	}
+
+	whole := &closeCounter{Reader: strings.NewReader("abc")}
+	if err := <-upload(c, t.Context(), whole, 3); err != nil {
+		t.Fatalf("a whole content: %v", err)
+	}
+	if whole.closes.Load() != 0 {
+		t.Fatal("a content read to its end was closed")
+	}
+}
+
+type closeCounter struct {
+	io.Reader
+	closes atomic.Int32
+}
+
+func (c *closeCounter) Close() error {
+	c.closes.Add(1)
+	return nil
+}

@@ -3382,8 +3382,9 @@ frame.**
   bytes and nothing else). Two ticket books (download/upload, 30 s TTL,
   64 outstanding each); tickets are consumed at the first byte, so the
   transfer itself rides a per-request 5-minute deadline
-  (`AttachmentTransferWindow`, shared with the `--connect` stub's
-  relay). The routes carry no cookie, no Origin requirement, answer 404
+  (`AttachmentTransferWindow`), which the `--connect` stub's relay
+  shares for an upload and replaces for a download with a bound on its
+  progress ([byte route deadlines](../architecture/transport.md#byte-route-deadlines)). The routes carry no cookie, no Origin requirement, answer 404
   for every refusal, and are deliberately not rate-limited (admission
   is already a bounded-issuance token; argued in the transport guide).
   The attachment store streams end to end (declared-length contract,

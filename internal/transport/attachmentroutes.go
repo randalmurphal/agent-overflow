@@ -146,8 +146,12 @@ const maxOutstandingAttachmentTickets = 64
 // This is the FLOOR. A `file` attachment may be five times the image cap,
 // and the same ~35 KB/s is owed to it, so a body whose length is known
 // up front gets AttachmentTransferWindowFor(size) instead: the ticket
-// carries the length on the upload side, and the download side only ever
-// serves images, which the floor already covers.
+// carries the length on the upload side, and this route's download side
+// only ever serves images, which the floor already covers.
+//
+// A relayed download is not bounded by it: the relays and the tracker's
+// download route bound a download by its progress (DownloadByProgress),
+// since a tracker attachment can be 2 GB and no total fits every link.
 const AttachmentTransferWindow = 5 * time.Minute
 
 // attachmentMinTransferRate is the slowest sustained transfer the window
@@ -497,3 +501,68 @@ func extendTransferDeadline(w http.ResponseWriter, window time.Duration) {
 		}
 	}
 }
+
+// TransferStallWindow is how long a download bounded by its progress may
+// go without a byte written before it ends: the tracker client's own
+// stall window toward the tracker, so one number bounds every hop.
+const TransferStallWindow = 90 * time.Second
+
+// deadlineMoveEvery is how often a download's progress moves its write
+// deadline: a move per write would cost a deadline change per 32 KiB.
+const deadlineMoveEvery = time.Second
+
+// DownloadByProgress prepares w for the answer to a request with no body,
+// bounded by its progress and by no total: it clears the read deadline,
+// which with no body to read would only cut the answer (net/http's
+// background read fails at it and ends the request's context), and the
+// writer it returns moves the write deadline to stall past now as bytes
+// are written, at most once every deadlineMoveEvery. A write blocked for
+// stall, a client that stopped reading, fails, so a download that stops
+// moving ends between stall-deadlineMoveEvery and stall after its last
+// byte. A deadline the writer cannot set (http.ErrNotSupported) leaves the
+// server's own in place.
+func DownloadByProgress(w http.ResponseWriter, stall time.Duration) http.ResponseWriter {
+	p := &progressWriter{ResponseWriter: w, rc: http.NewResponseController(w), stall: stall}
+	if err := p.rc.SetReadDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		log.Printf("transport: clear a download's read deadline: %v", err)
+	}
+	p.move(time.Now())
+	return p
+}
+
+// progressWriter is DownloadByProgress's writer.
+type progressWriter struct {
+	http.ResponseWriter
+	rc    *http.ResponseController
+	stall time.Duration
+	moved time.Time
+}
+
+func (p *progressWriter) move(now time.Time) {
+	p.moved = now
+	if err := p.rc.SetWriteDeadline(now.Add(p.stall)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		log.Printf("transport: move a download's write deadline: %v", err)
+	}
+}
+
+// moveIfDue moves the deadline before a write that may be the first in a
+// while, the status line included: the answer's first byte can come long
+// after the request, as a tracker's does.
+func (p *progressWriter) moveIfDue() {
+	if now := time.Now(); now.Sub(p.moved) >= deadlineMoveEvery {
+		p.move(now)
+	}
+}
+
+func (p *progressWriter) WriteHeader(status int) {
+	p.moveIfDue()
+	p.ResponseWriter.WriteHeader(status)
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	p.moveIfDue()
+	return p.ResponseWriter.Write(b)
+}
+
+// Unwrap lets a ResponseController reach the connection's writer.
+func (p *progressWriter) Unwrap() http.ResponseWriter { return p.ResponseWriter }

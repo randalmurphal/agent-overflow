@@ -1,14 +1,17 @@
 package transport
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/errorsx"
 )
@@ -126,10 +129,12 @@ func TestTrackerUploadRefusesAnotherLength(t *testing.T) {
 		}
 		return relative
 	}
-	if resp := put(t, f.srv.Addr(), mint(), strings.NewReader("hell"), 4); resp.StatusCode != http.StatusBadRequest || stub.uploadCount() != 0 {
-		t.Fatalf("a declared short body: status %d, %d uploads", resp.StatusCode, stub.uploadCount())
+	resp := put(t, f.srv.Addr(), mint(), strings.NewReader("hell"), 4)
+	if got := readTransferError(t, resp); resp.StatusCode != http.StatusBadRequest || stub.uploadCount() != 0 || got.Code != "tracker_upload_size_changed" ||
+		got.Message != "the file is now 4 bytes, not the 5 it was when its upload was prepared; select the file again and attach it" {
+		t.Fatalf("a declared short body: status %d, %+v, %d uploads", resp.StatusCode, got, stub.uploadCount())
 	}
-	resp := put(t, f.srv.Addr(), mint(), io.MultiReader(strings.NewReader("hello, world")), -1)
+	resp = put(t, f.srv.Addr(), mint(), io.MultiReader(strings.NewReader("hello, world")), -1)
 	if resp.StatusCode != http.StatusInternalServerError || stub.uploadCount() != 0 {
 		t.Fatalf("a streamed long body: status %d, %d uploads", resp.StatusCode, stub.uploadCount())
 	}
@@ -237,5 +242,155 @@ func TestTrackerTicketsRefuseUnencodableValues(t *testing.T) {
 		if _, err := mint(); err == nil {
 			t.Error("an unencodable value was minted")
 		}
+	}
+}
+
+// funcTracker is a TrackerTransfer whose two sides a test writes.
+type funcTracker struct {
+	attach   func(TrackerUpload) (json.RawMessage, error)
+	download func(ctx context.Context, to io.Writer) error
+}
+
+func (f funcTracker) AttachTrackerFile(upload TrackerUpload) (json.RawMessage, error) {
+	return f.attach(upload)
+}
+
+func (f funcTracker) DownloadTrackerAttachment(ctx context.Context, _, _, _ string, to io.Writer) error {
+	return f.download(ctx, to)
+}
+
+// rawRequest sends head and body over a connection of its own, which the
+// test then holds open without sending more.
+func rawRequest(t *testing.T, addr, head string, body []byte) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.Write(append([]byte(head), body...)); err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+// A body's Close ends a read of it in progress, from a client that sent
+// half its file and stopped, and the answer still reaches that client.
+func TestTrackerUploadCloseEndsAStalledRead(t *testing.T) {
+	read := make(chan error, 1)
+	f := trackerFixture(t, funcTracker{attach: func(upload TrackerUpload) (json.RawMessage, error) {
+		go func() {
+			_, err := io.ReadAll(upload.Body)
+			read <- err
+		}()
+		time.Sleep(200 * time.Millisecond)
+		if err := upload.Body.Close(); err != nil {
+			return nil, err
+		}
+		select {
+		case err := <-read:
+			if err == nil {
+				return nil, errors.New("a stalled body read to its end")
+			}
+		case <-time.After(5 * time.Second):
+			return nil, errors.New("the read of a closed body was still blocked 5s later")
+		}
+		return json.RawMessage(`{"parts":[{"state":"not_sent"}]}`), nil
+	}})
+	relative, err := f.srv.MintTrackerUploadTicket("conn-1", "10101", "notes.txt", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := rawRequest(t, f.srv.Addr(), "PUT "+relative+" HTTP/1.1\r\nHost: "+f.srv.Addr()+"\r\nContent-Length: 10\r\n\r\n", []byte("12345"))
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no answer: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != `{"parts":[{"state":"not_sent"}]}` {
+		t.Fatalf("status %d body %q", resp.StatusCode, body)
+	}
+}
+
+// An attach that answers after its file's transfer window still has its
+// answer written: the window bounds the bytes, not the tracker's answer.
+func TestTrackerUploadAnsweredAfterItsWindow(t *testing.T) {
+	f := newServerFixtureTuned(t, func(cfg *Config) {
+		cfg.TrackerTransfer = funcTracker{attach: func(upload TrackerUpload) (json.RawMessage, error) {
+			if _, err := io.ReadAll(upload.Body); err != nil {
+				return nil, err
+			}
+			time.Sleep(600 * time.Millisecond)
+			return json.RawMessage(`{"parts":[{"state":"applied"}]}`), nil
+		}}
+	}, func(s *Server) { s.trackerUploadWindow = func(int64) time.Duration { return 200 * time.Millisecond } })
+	relative, err := f.srv.MintTrackerUploadTicket("conn-1", "10101", "notes.txt", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := put(t, f.srv.Addr(), relative, strings.NewReader("hello"), 5)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != `{"parts":[{"state":"applied"}]}` {
+		t.Fatalf("status %d body %q %v", resp.StatusCode, body, err)
+	}
+}
+
+// A download is bounded by its progress: one that keeps moving outlives
+// any total, the stall window many times over, and one whose client stops
+// reading ends within the stall window. The window is shortened here, and
+// the moving one moves for 2.5 of it.
+func TestTrackerDownloadIsBoundedByItsProgress(t *testing.T) {
+	// Longer than deadlineMoveEvery, as production's is.
+	const stall = 2 * time.Second
+	ended := make(chan error, 1)
+	moving := true
+	f := newServerFixtureTuned(t, func(cfg *Config) {
+		cfg.TrackerTransfer = funcTracker{download: func(ctx context.Context, to io.Writer) error {
+			if moving {
+				for range 50 {
+					// The tracker's read ends with the request.
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					if _, err := to.Write([]byte("x")); err != nil {
+						return err
+					}
+					time.Sleep(100 * time.Millisecond)
+				}
+				return nil
+			}
+			chunk := make([]byte, 1<<20)
+			for {
+				if _, err := to.Write(chunk); err != nil {
+					ended <- err
+					return err
+				}
+			}
+		}}
+	}, func(s *Server) { s.trackerStall = stall })
+	relative, err := f.srv.MintTrackerDownloadTicket("conn-1", "10101", "501", "a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	resp := get(t, f.srv.Addr(), relative, nil)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || len(body) != 50 {
+		t.Fatalf("a download moving for %s with a %s stall window: %d bytes, %v", time.Since(start), stall, len(body), err)
+	}
+
+	moving = false
+	relative, err = f.srv.MintTrackerDownloadTicket("conn-1", "10101", "501", "a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawRequest(t, f.srv.Addr(), "GET "+relative+" HTTP/1.1\r\nHost: "+f.srv.Addr()+"\r\n\r\n", nil)
+	select {
+	case <-ended:
+	case <-time.After(3 * stall):
+		t.Fatalf("a download whose client stopped reading was still writing %s later, past its %s stall window", 3*stall, stall)
 	}
 }

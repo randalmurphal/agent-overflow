@@ -13,10 +13,15 @@ const (
 	// stallTimeout is how long a transfer may go without a byte moving
 	// while it sends or receives.
 	stallTimeout = 90 * time.Second
-	// headerTimeout is how long the tracker may take to answer once the
-	// request is sent, which covers its processing of a large upload.
-	headerTimeout = 5 * time.Minute
 )
+
+// AnswerTimeout is how long the tracker may take to answer a transfer
+// once its request is sent, which covers its processing of a large
+// upload.
+const AnswerTimeout = 5 * time.Minute
+
+// headerTimeout is AnswerTimeout as the stall uses it.
+const headerTimeout = AnswerTimeout
 
 // errStalled is the cancel cause of a transfer that stopped moving.
 var errStalled = errors.New("transfer stalled")

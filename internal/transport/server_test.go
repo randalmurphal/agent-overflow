@@ -63,6 +63,13 @@ func getBootstrap(t *testing.T, addr string) *http.Response {
 // keepalive timing knobs) before Start.
 func newServerFixtureWith(t *testing.T, mutate func(*Config)) *serverFixture {
 	t.Helper()
+	return newServerFixtureTuned(t, mutate, nil)
+}
+
+// newServerFixtureTuned is newServerFixtureWith that also lets a test set
+// the server's own fields, such as a shortened window, before Start.
+func newServerFixtureTuned(t *testing.T, mutate func(*Config), tune func(*Server)) *serverFixture {
+	t.Helper()
 	d := NewDispatcher()
 	app := &fakeApp{}
 	if _, err := d.Register(app, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
@@ -83,6 +90,9 @@ func newServerFixtureWith(t *testing.T, mutate func(*Config)) *serverFixture {
 	srv, err := New(cfg)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
+	}
+	if tune != nil {
+		tune(srv)
 	}
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start server: %v", err)

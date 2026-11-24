@@ -7,10 +7,18 @@ import (
 	"io"
 	"mime/multipart"
 	"sync"
+	"sync/atomic"
 )
 
 // Part is one part of a multipart upload: a file when FileName is set,
 // else a plain form field. Content holds exactly Size bytes.
+//
+// A Content read once (not an io.Seeker) that is an io.Closer is closed
+// when the attempt sending it ends before reading it to its end: the
+// call's context ended, the transfer stalled, the client closed, or the
+// tracker answered early. Closing must end a read of it in progress,
+// which net/http otherwise waits on before the attempt returns. A Content
+// read to its end, which is its size, is never closed.
 type Part struct {
 	FieldName string
 	FileName  string
@@ -98,7 +106,14 @@ func (u *Upload) open() (*uploadBody, error) {
 				return nil, fmt.Errorf("rewind upload part %d (%s): %w", i, part.FieldName, err)
 			}
 		}
-		readers = append(readers, bytes.NewReader(u.framing[i]), &exactReader{r: part.Content, left: part.Size, part: i, body: b})
+		e := &exactReader{r: part.Content, left: part.Size, part: i, body: b}
+		if _, seeks := part.Content.(io.Seeker); !seeks {
+			if closer, ok := part.Content.(io.Closer); ok {
+				e.closer = closer
+				b.closers = append(b.closers, e)
+			}
+		}
+		readers = append(readers, bytes.NewReader(u.framing[i]), e)
 	}
 	b.r = io.MultiReader(append(readers, bytes.NewReader(u.framing[len(u.parts)]))...)
 	return b, nil
@@ -108,6 +123,8 @@ func (u *Upload) open() (*uploadBody, error) {
 // failure of a part's content, which hop reports as a *SourceError.
 type uploadBody struct {
 	r io.Reader
+	// closers are the parts abort closes: read once, and io.Closers.
+	closers []*exactReader
 
 	mu     sync.Mutex
 	failed error
@@ -123,6 +140,21 @@ func (b *uploadBody) fail(err error) error {
 		b.failed = err
 	}
 	return b.failed
+}
+
+// abort closes each part's content that Part says it may and that was
+// not read to its end, ending a read of it in progress. A close that
+// fails is the source's failure. It runs when the attempt's context ends,
+// on a goroutine of its own, so it may overlap a Read.
+func (b *uploadBody) abort() {
+	for _, e := range b.closers {
+		if e.whole.Load() {
+			continue
+		}
+		if err := e.closer.Close(); err != nil {
+			_ = b.fail(fmt.Errorf("stop reading upload part %d: %w", e.part, err))
+		}
+	}
 }
 
 // sourceFailure is the content's failure, nil while every part read as
@@ -144,6 +176,10 @@ type exactReader struct {
 	left int64
 	part int
 	body *uploadBody
+	// closer is r when abort may close it; whole is set once r ended at
+	// its size, after which abort leaves it open.
+	closer io.Closer
+	whole  atomic.Bool
 }
 
 func (e *exactReader) Read(p []byte) (int, error) {
@@ -154,6 +190,7 @@ func (e *exactReader) Read(p []byte) (int, error) {
 		case n > 0:
 			return 0, e.body.fail(fmt.Errorf("upload part %d holds more than its declared size", e.part))
 		case errors.Is(err, io.EOF):
+			e.whole.Store(true)
 			return 0, io.EOF
 		}
 		return 0, e.body.fail(fmt.Errorf("upload part %d: %w", e.part, err))
@@ -168,6 +205,7 @@ func (e *exactReader) Read(p []byte) (int, error) {
 		return n, nil
 	case errors.Is(err, io.EOF) && e.left == 0:
 		// The content ended at its size; the next read sees the end.
+		e.whole.Store(true)
 		return n, nil
 	case errors.Is(err, io.EOF):
 		return n, e.body.fail(fmt.Errorf("upload part %d ended %d bytes short of its declared size", e.part, e.left))

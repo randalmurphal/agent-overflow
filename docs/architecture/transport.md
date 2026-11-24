@@ -303,6 +303,23 @@ method IDs. Receiver registration exposes all generated methods for that
 receiver, so production registration is an authorization decision. Local
 harness receivers stay local-only.
 
+## Byte route deadlines
+
+The ticketed byte routes under `/attachments/` replace the server's 60 s
+read and write timeouts per request. An upload, and a thread
+attachment's download, get the transfer window for their length
+(`AttachmentTransferWindow`, a 5 minute floor at 35 KiB/s;
+`AttachmentTransferWindowFor`). The tracker's download route and every
+download a relay carries (`backendproxy.CarryTransfer`, a request with
+no body) are bounded by progress instead (`DownloadByProgress`): no read
+deadline, since net/http's background read fails at one and ends the
+request's context while bytes still move, and a write deadline moved
+to 90 s past each write (`TransferStallWindow`), at most once a second.
+Such a download that stops moving ends 89 to 90 s after its last byte,
+and one that keeps moving has no total. A relayed upload keeps the
+window for its length, so an answer that comes after it, such as a
+tracker's to a slow upload, is cut at the relay.
+
 ## Method metadata and routing
 
 `methodgen` scans bound methods and emits the Go `MethodMeta` table and the

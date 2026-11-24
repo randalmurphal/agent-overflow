@@ -665,6 +665,12 @@ type Server struct {
 	// `tracker:read` one.
 	trackerUploadTickets   *ticketBook
 	trackerDownloadTickets *ticketBook
+	// trackerStall is the tracker download's stall window
+	// (TransferStallWindow) and trackerUploadWindow an upload's transfer
+	// window for its size (AttachmentTransferWindowFor); fields so a test
+	// can shorten them.
+	trackerStall        time.Duration
+	trackerUploadWindow func(size int64) time.Duration
 }
 
 // MaxFrontendTimingMs is the longest Config.FrontendTiming value: the page
@@ -757,6 +763,8 @@ func New(cfg Config) (*Server, error) {
 		speechTickets:             newTicketBook(maxOutstandingAttachmentTickets, SpeechTicketTTL),
 		trackerUploadTickets:      newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		trackerDownloadTickets:    newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		trackerStall:              TransferStallWindow,
+		trackerUploadWindow:       AttachmentTransferWindowFor,
 
 		bindTCP: listenTCPSharing,
 	}

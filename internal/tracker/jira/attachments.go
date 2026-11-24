@@ -63,7 +63,7 @@ func (c *Client) Attachments(ctx context.Context, issue string) ([]Attachment, e
 const MaxAttachmentBytes = 2 << 30
 
 // File is one file to attach: Content holds exactly Size bytes, read as
-// the upload is sent (trackerapi.Upload).
+// the upload is sent and closed as trackerapi.Part says.
 type File struct {
 	Name    string
 	Content io.Reader

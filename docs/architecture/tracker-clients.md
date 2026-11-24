@@ -194,7 +194,12 @@ takes a `trackerapi.Request`; the comments on those types, and on the
 - **Uploads.** `Multipart` builds an `Upload` body from parts of known
   size. `mime/multipart` writes its framing once; each part's content is
   read only as the request is sent, so an upload holds none of it, and
-  its length is declared as the `Content-Length`.
+  its length is declared as the `Content-Length`. A content read once
+  that is an `io.Closer` is closed when its attempt ends before reading
+  it to its end (the call's context, a stall, `Close`, or an early
+  answer), because net/http's HTTP/1 transport neither closes a body on
+  a cancel nor returns before its write loop stops reading it; closing
+  must end a read in progress. One read to its end is never closed.
 - **Transfers.** A `Transfer` request has no total timeout. It fails when
   no byte moves for the stall timeout, or when the answer's headers take
   longer than the header timeout after the request is sent. The timers

@@ -112,6 +112,10 @@ type Carrier struct {
 	// query untouched and no credential added. Built once.
 	bytes *httputil.ReverseProxy
 
+	// stall is a carried download's stall window
+	// (transport.TransferStallWindow); a field so a test can shorten it.
+	stall time.Duration
+
 	// session is the upstream backend's local page-channel credential,
 	// forwarded on every carried upgrade so a same-host hop names a
 	// session instead of being trusted for arriving over loopback.
@@ -186,6 +190,7 @@ func New(cfg Config) (*Carrier, error) {
 		client:       client,
 		bootstrapURL: bootstrapURL,
 		remote:       !loopback.EndpointAuthority(parsed.Host),
+		stall:        transport.TransferStallWindow,
 	}
 	if c.ws, err = c.newWSProxy(); err != nil {
 		return nil, fmt.Errorf("backendproxy: build websocket proxy: %w", err)
@@ -314,12 +319,21 @@ func logUpgradeStep(ctx context.Context, outcome string) {
 // mounted these routes under, which is this process's own addressing and
 // means nothing upstream.
 func (c *Carrier) CarryTransfer(w http.ResponseWriter, r *http.Request) {
-	// The same window the backend gives itself. Without this a caller's
-	// own read and write timeouts would cut a transfer the upstream was
-	// willing to finish, and the page would see the hop fail rather than
-	// the backend refuse. Sized from the declared length the same way the
-	// backend sizes it from the ticket; a download declares none and gets
-	// the floor, which is what the backend gives an image too.
+	// A download (a request with no body) is bounded by its progress, as
+	// the backend bounds its own downloads: a total would cut a large file
+	// on a slow link, and a read deadline would cut it at once
+	// (transport.DownloadByProgress).
+	if r.ContentLength == 0 {
+		c.bytes.ServeHTTP(transport.DownloadByProgress(w, c.stall), r)
+		return
+	}
+	// An upload gets the window the backend gives itself. Without this a
+	// caller's own read and write timeouts would cut a transfer the
+	// upstream was willing to finish, and the page would see the hop fail
+	// rather than the backend refuse. Sized from the declared length the
+	// same way the backend sizes it from the ticket. Its answer must
+	// arrive within it: one that comes later, after a slow upload and the
+	// tracker's processing, is cut here (docs/architecture/transport.md).
 	controller := http.NewResponseController(w)
 	deadline := time.Now().Add(transport.AttachmentTransferWindowFor(r.ContentLength))
 	if err := controller.SetReadDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
