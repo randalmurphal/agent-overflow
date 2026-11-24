@@ -163,8 +163,15 @@ func TestQuestionsOfAPromptStoredBeforeThemCarryNoMark(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Imported history lists no question until it is opened explicitly.
+	if rows, err := s.ListAsyncQuestions("q", ""); err != nil || len(rows) != 0 {
+		t.Fatalf("before the open: %+v %v", rows, err)
+	}
 	if err := s.SetAsyncQuestionDismissed("q", "historic-opened", 0, false); err != nil {
 		t.Fatal(err)
+	}
+	if rows, err := s.ListAsyncQuestions("q", ""); err != nil || len(rows) != 1 || rows[0].ItemID != "historic-opened" || rows[0].State != "unanswered" {
+		t.Fatalf("after the open: %+v %v", rows, err)
 	}
 	if _, err := s.RecordAsyncQuestions(Item{ID: "historic-replayed", ThreadID: "q", Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: meta, CreatedAt: 1, UpdatedAt: 1}); err != nil {
 		t.Fatal(err)

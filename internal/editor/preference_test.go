@@ -95,20 +95,6 @@ func TestResolve_PrefersCatalogOverEnvFallback(t *testing.T) {
 	}
 }
 
-func TestResolve_PreferenceWinsOverPriority(t *testing.T) {
-	detected := []Editor{
-		{ID: "code", Available: true, ResolvedPath: "/usr/bin/code"},
-		{ID: "subl", Available: true, ResolvedPath: "/usr/bin/subl"},
-	}
-	got, err := Resolve(detected, "subl")
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if got.ID != "subl" {
-		t.Fatalf("preference should win; got %s", got.ID)
-	}
-}
-
 func TestResolve_NothingAvailableReturnsErrNoEditor(t *testing.T) {
 	detected := []Editor{
 		{ID: "code", Available: false},
@@ -141,36 +127,28 @@ func TestResolveExact_ReturnsNamedEditorWhenAvailable(t *testing.T) {
 	}
 }
 
-func TestResolveExact_UnavailableNamedEditorErrors(t *testing.T) {
-	// The one-shot header pick must NOT fall through to the catalog the
-	// way Resolve does — an explicit choice that isn't available is an
-	// error, never a silent substitution to `code`.
-	detected := []Editor{
-		{ID: "code", Available: true, ResolvedPath: "/usr/bin/code"},
-		{ID: "cursor", Available: false},
-	}
-	_, err := ResolveExact(detected, "cursor")
-	if !errors.Is(err, ErrNoEditor) {
-		t.Fatalf("expected ErrNoEditor for unavailable pick; got %v", err)
-	}
-}
-
-func TestResolveExact_UnknownEditorErrors(t *testing.T) {
-	detected := []Editor{{ID: "code", Available: true, ResolvedPath: "/usr/bin/code"}}
-	_, err := ResolveExact(detected, "not-a-real-editor")
-	if !errors.Is(err, ErrNoEditor) {
-		t.Fatalf("expected ErrNoEditor for unknown id; got %v", err)
-	}
-}
-
-func TestResolveExact_EmptyIDErrors(t *testing.T) {
-	// Empty id is a caller bug — Resolve is the entry point for "no
-	// specific editor in mind". ResolveExact refuses rather than
-	// matching the first zero-ID slice entry.
-	detected := []Editor{{ID: "code", Available: true}}
-	_, err := ResolveExact(detected, "")
-	if !errors.Is(err, ErrNoEditor) {
-		t.Fatalf("expected ErrNoEditor for empty id; got %v", err)
+func TestResolveExact_RefusesAnythingButAnAvailableMatch(t *testing.T) {
+	code := Editor{ID: "code", Available: true, ResolvedPath: "/usr/bin/code"}
+	for _, tc := range []struct {
+		name     string
+		detected []Editor
+		id       string
+	}{
+		// The one-shot header pick must NOT fall through to the catalog the
+		// way Resolve does — an explicit choice that isn't available is an
+		// error, never a silent substitution to `code`.
+		{"unavailable named editor", []Editor{code, {ID: "cursor", Available: false}}, "cursor"},
+		{"unknown editor", []Editor{code}, "not-a-real-editor"},
+		// Empty id is a caller bug — Resolve is the entry point for "no
+		// specific editor in mind". ResolveExact refuses rather than
+		// matching the first zero-ID slice entry.
+		{"empty id", []Editor{{ID: "code", Available: true}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ResolveExact(tc.detected, tc.id); !errors.Is(err, ErrNoEditor) {
+				t.Fatalf("expected ErrNoEditor; got %v", err)
+			}
+		})
 	}
 }
 

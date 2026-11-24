@@ -843,175 +843,98 @@ func TestParseStreamEventSubagentMessageDeltaEndTurnDoesNotEmitParentSoftTurnCom
 // standalone assistant frames.
 
 func TestParseStreamEventMessageDeltaUsesTopLevelOnAdvisorTurn(t *testing.T) {
-	// Numbers lifted verbatim from /tmp/advisor-spike/out.ndjson
-	// (single-advisor capture against Claude 2.1.139):
-	//   iter 0 (parent):  input=6, cache_read=18059, cache_create=9816
-	//   iter 1 (advisor): input=29179, cache_read=0,   cache_create=0
-	//   iter 2 (parent):  input=1, cache_read=27875, cache_create=238
-	//   top-level (sum):  input=7, cache_read=45934, cache_create=10054
-	// The meter must read TOP-LEVEL (55995 tokens — the cumulative
-	// sum across both parent iterations). This matches what the CLI's
-	// auto-compact trigger uses (compactMetadata.preTokens), verified
-	// against production session data.
-	parser := NewParser()
-
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_advisor_call","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_e2e","name":"advisor","input":{}}}}`,
-	)); err != nil {
-		t.Fatalf("content_block_start parse: %v", err)
-	}
-
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":7,"output_tokens":137,"cache_read_input_tokens":45934,"cache_creation_input_tokens":10054,"iterations":[{"type":"message","input_tokens":6,"output_tokens":89,"cache_read_input_tokens":18059,"cache_creation_input_tokens":9816},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":29179,"output_tokens":677,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"message","input_tokens":1,"output_tokens":48,"cache_read_input_tokens":27875,"cache_creation_input_tokens":238}]}}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-
-	var usageEvent *provider.ProviderEvent
-	var sawSoft bool
-	for i, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			usageEvent = &events[i]
-		}
-		if evt.Kind == provider.EventTurnComplete {
-			sawSoft = true
-		}
-	}
-	if usageEvent == nil {
-		t.Fatalf("expected EventTokenUsage from advisor-containing message_delta: %+v", events)
-	}
-	var window provider.ContextWindow
-	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
-		t.Fatalf("unmarshal window: %v", err)
-	}
-	if want := 7 + 45934 + 10054; window.UsedTokens != want {
-		t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative, what compactMetadata.preTokens tracks)", window.UsedTokens, want)
-	}
-	if !sawSoft {
-		t.Fatalf("expected soft EventTurnComplete from message_delta(stop_reason=end_turn): %+v", events)
-	}
-}
-
-func TestParseStreamEventMessageDeltaUsesTopLevelOnDoubleAdvisor(t *testing.T) {
-	// Numbers from /tmp/advisor-spike/double.ndjson (two advisor calls in
-	// one turn → 5 iterations: msg, adv, msg, adv, msg). The meter must
-	// read top-level (100542 tokens, cumulative across all three parent
-	// iterations) — this is what the CLI counts toward compaction.
-	parser := NewParser()
-
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_double","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":8,"output_tokens":185,"cache_read_input_tokens":84960,"cache_creation_input_tokens":15574,"iterations":[{"type":"message","input_tokens":6,"output_tokens":94,"cache_read_input_tokens":18059,"cache_creation_input_tokens":15296},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":34664,"output_tokens":547},{"type":"message","input_tokens":1,"output_tokens":42,"cache_read_input_tokens":33355,"cache_creation_input_tokens":191},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":34779,"output_tokens":172},{"type":"message","input_tokens":1,"output_tokens":49,"cache_read_input_tokens":33546,"cache_creation_input_tokens":87}]}}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-
-	var usageEvent *provider.ProviderEvent
-	for i, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			usageEvent = &events[i]
-		}
-	}
-	if usageEvent == nil {
-		t.Fatalf("expected EventTokenUsage from double-advisor message_delta: %+v", events)
-	}
-	var window provider.ContextWindow
-	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
-		t.Fatalf("unmarshal window: %v", err)
-	}
-	if want := 8 + 84960 + 15574; window.UsedTokens != want {
-		t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative, what compactMetadata.preTokens tracks)", window.UsedTokens, want)
-	}
-}
-
-func TestParseStreamEventMessageDeltaUsesTopLevelOnProductionAdvisorTurn(t *testing.T) {
-	// Production capture from ~/.claude/projects/.../b951a768-*.jsonl
-	// line 125, the last assistant message_delta before
-	// compactMetadata.preTokens=294675 triggered auto-compact at
-	// line 131 (timestamp 2026-05-23T04:58:24Z).
-	//
-	// Real numbers from the wire — there are 3 iterations:
-	//   iter 0 (parent):  input=1,    cache_read=143462, cache_create=287   = 143,750
-	//   iter 1 (advisor): input=146484, (separate context window)
-	//   iter 2 (parent):  input=1,    cache_read=143749, cache_create=2417  = 146,167
-	//   top-level (sum):  input=2,    cache_read=287211, cache_create=2704  = 289,917
-	//
-	// The CLI compacted at preTokens=294,675. Top-level=289,917 is
-	// within 1.6% of that — the remaining gap is the queued user
-	// message ("do not run the dev server") + system overhead.
-	// iter[-1]=146,167 is ~50% off (would have shown ~15% on the
-	// meter while Claude saw ~30% and triggered the user's auto-compact
-	// threshold).
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_prod","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":2997,"cache_read_input_tokens":287211,"cache_creation_input_tokens":2704,"iterations":[{"type":"message","input_tokens":1,"output_tokens":1531,"cache_read_input_tokens":143462,"cache_creation_input_tokens":287},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":146484,"output_tokens":11125,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"message","input_tokens":1,"output_tokens":1466,"cache_read_input_tokens":143749,"cache_creation_input_tokens":2417}]}}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-	var usageEvent *provider.ProviderEvent
-	for i, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			usageEvent = &events[i]
-		}
-	}
-	if usageEvent == nil {
-		t.Fatalf("expected EventTokenUsage: %+v", events)
-	}
-	var window provider.ContextWindow
-	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
-		t.Fatalf("unmarshal window: %v", err)
-	}
-	if want := 2 + 287211 + 2704; window.UsedTokens != want {
-		t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative; compactMetadata.preTokens=294675 is within 1.6%%)", window.UsedTokens, want)
-	}
-}
-
-func TestParseStreamEventMessageDeltaTopLevelWithoutIterations(t *testing.T) {
-	// A plain non-advisor turn often omits the `iterations` array on
-	// `message_delta.usage`. Top-level fields stand alone in that case
-	// (and equal iterations[0] when present), so the parser's direct
-	// top-level read still produces the right meter value.
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_plain","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1,"output_tokens":50,"cache_read_input_tokens":143000}}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-	var usageEvent *provider.ProviderEvent
-	for i, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			usageEvent = &events[i]
-		}
-	}
-	if usageEvent == nil {
-		t.Fatalf("expected EventTokenUsage from plain message_delta: %+v", events)
-	}
-	var window provider.ContextWindow
-	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
-		t.Fatalf("unmarshal window: %v", err)
-	}
-	if want := 1 + 143000; window.UsedTokens != want {
-		t.Fatalf("UsedTokens: got %d, want %d", window.UsedTokens, want)
+	for _, tc := range []struct {
+		name  string
+		setup []string
+		delta string
+		want  int
+	}{
+		{
+			// Numbers lifted verbatim from /tmp/advisor-spike/out.ndjson
+			// (single-advisor capture against Claude 2.1.139):
+			//   iter 0 (parent):  input=6, cache_read=18059, cache_create=9816
+			//   iter 1 (advisor): input=29179, cache_read=0,   cache_create=0
+			//   iter 2 (parent):  input=1, cache_read=27875, cache_create=238
+			//   top-level (sum):  input=7, cache_read=45934, cache_create=10054
+			// The meter must read TOP-LEVEL (55995 tokens — the cumulative
+			// sum across both parent iterations).
+			name: "single advisor",
+			setup: []string{
+				`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_advisor_call","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
+				`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_e2e","name":"advisor","input":{}}}}`,
+			},
+			delta: `{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":7,"output_tokens":137,"cache_read_input_tokens":45934,"cache_creation_input_tokens":10054,"iterations":[{"type":"message","input_tokens":6,"output_tokens":89,"cache_read_input_tokens":18059,"cache_creation_input_tokens":9816},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":29179,"output_tokens":677,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"message","input_tokens":1,"output_tokens":48,"cache_read_input_tokens":27875,"cache_creation_input_tokens":238}]}}}`,
+			want:  7 + 45934 + 10054,
+		},
+		{
+			// Numbers from /tmp/advisor-spike/double.ndjson (two advisor
+			// calls in one turn → 5 iterations: msg, adv, msg, adv, msg).
+			// Top-level is cumulative across all three parent iterations.
+			name: "double advisor",
+			setup: []string{
+				`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_double","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
+			},
+			delta: `{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":8,"output_tokens":185,"cache_read_input_tokens":84960,"cache_creation_input_tokens":15574,"iterations":[{"type":"message","input_tokens":6,"output_tokens":94,"cache_read_input_tokens":18059,"cache_creation_input_tokens":15296},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":34664,"output_tokens":547},{"type":"message","input_tokens":1,"output_tokens":42,"cache_read_input_tokens":33355,"cache_creation_input_tokens":191},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":34779,"output_tokens":172},{"type":"message","input_tokens":1,"output_tokens":49,"cache_read_input_tokens":33546,"cache_creation_input_tokens":87}]}}}`,
+			want:  8 + 84960 + 15574,
+		},
+		{
+			// Production capture from ~/.claude/projects/.../b951a768-*.jsonl
+			// line 125, the last assistant message_delta before
+			// compactMetadata.preTokens=294675 triggered auto-compact at
+			// line 131 (timestamp 2026-05-23T04:58:24Z).
+			//
+			// Real numbers from the wire — there are 3 iterations:
+			//   iter 0 (parent):  input=1,    cache_read=143462, cache_create=287   = 143,750
+			//   iter 1 (advisor): input=146484, (separate context window)
+			//   iter 2 (parent):  input=1,    cache_read=143749, cache_create=2417  = 146,167
+			//   top-level (sum):  input=2,    cache_read=287211, cache_create=2704  = 289,917
+			//
+			// The CLI compacted at preTokens=294,675. Top-level=289,917 is
+			// within 1.6% of that — the remaining gap is the queued user
+			// message plus system overhead. iter[-1]=146,167 is ~50% off.
+			name: "production advisor turn",
+			setup: []string{
+				`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_prod","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
+			},
+			delta: `{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":2997,"cache_read_input_tokens":287211,"cache_creation_input_tokens":2704,"iterations":[{"type":"message","input_tokens":1,"output_tokens":1531,"cache_read_input_tokens":143462,"cache_creation_input_tokens":287},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":146484,"output_tokens":11125,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"message","input_tokens":1,"output_tokens":1466,"cache_read_input_tokens":143749,"cache_creation_input_tokens":2417}]}}}`,
+			want:  2 + 287211 + 2704,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+			for _, line := range tc.setup {
+				if _, err := parser.ParseLine(testThread, []byte(line)); err != nil {
+					t.Fatalf("setup parse %s: %v", line, err)
+				}
+			}
+			events, err := parser.ParseLine(testThread, []byte(tc.delta))
+			if err != nil {
+				t.Fatalf("message_delta parse: %v", err)
+			}
+			var usageEvent *provider.ProviderEvent
+			var sawSoft bool
+			for i, evt := range events {
+				if evt.Kind == provider.EventTokenUsage {
+					usageEvent = &events[i]
+				}
+				if evt.Kind == provider.EventTurnComplete {
+					sawSoft = true
+				}
+			}
+			if usageEvent == nil {
+				t.Fatalf("expected EventTokenUsage from advisor-containing message_delta: %+v", events)
+			}
+			var window provider.ContextWindow
+			if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
+				t.Fatalf("unmarshal window: %v", err)
+			}
+			if window.UsedTokens != tc.want {
+				t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative, what compactMetadata.preTokens tracks)", window.UsedTokens, tc.want)
+			}
+			if !sawSoft {
+				t.Fatalf("expected soft EventTurnComplete from message_delta(stop_reason=end_turn): %+v", events)
+			}
+		})
 	}
 }
 
@@ -1019,7 +942,9 @@ func TestParseStreamEventMessageDeltaEmitsUsageAcrossMessages(t *testing.T) {
 	// Two SSE messages in a row, the first containing an advisor turn,
 	// the second text-only. Both message_delta usage snapshots must
 	// reach the context meter — the parent's window grew across each
-	// round. Meter reads top-level on both.
+	// round. Meter reads top-level on both. The second, a plain turn,
+	// omits the `iterations` array, as a non-advisor turn often does:
+	// its top-level fields stand alone.
 	parser := NewParser()
 
 	if _, err := parser.ParseLine(testThread, []byte(

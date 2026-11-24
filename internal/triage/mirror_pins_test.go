@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/testutil/reporoot"
 )
 
@@ -57,7 +59,7 @@ func goStringConstants(t *testing.T, rel string) map[string]string {
 }
 
 // The permission-notice kind vocabulary is duplicated across the provider
-// boundary on purpose, exactly like the peer-turn origin above it: triage may
+// boundary on purpose, exactly like the turn origins: triage may
 // not reach into a provider package for a term. What it may not do either is
 // let the two drift — the discriminator is what routes the sanitizer and what
 // the frontend branches on, so a rename on one side silently produces rows
@@ -104,57 +106,6 @@ func TestModelFallbackKindsMatchTheParserSubtypes(t *testing.T) {
 	}
 }
 
-func TestCodexLatestToolTrayMetaKeysMatchFrontendMirror(t *testing.T) {
-	const backend = "internal/store/subagent_items.go"
-	const frontend = "frontend/src/lib/utils/codexTrayProjection.ts"
-	backendValues := goStringConstants(t, backend)
-	frontendSource, err := os.ReadFile(reporoot.Path(t, frontend))
-	if err != nil {
-		t.Fatalf("read %s: %v", frontend, err)
-	}
-	for _, name := range []string{
-		"metaKeySubagentLatestToolSummary",
-		"metaKeySubagentLatestToolTurn",
-		"metaKeySubagentLatestToolItem",
-	} {
-		value, ok := backendValues[name]
-		if !ok || value == "" {
-			t.Fatalf("%s no longer declares %s", backend, name)
-		}
-		if !strings.Contains(string(frontendSource), `'`+value+`'`) {
-			t.Errorf("%s does not mirror %s = %q", frontend, name, value)
-		}
-	}
-}
-
-func TestAgentRunStateMetaKeysMatchFrontendMirror(t *testing.T) {
-	const backend = "internal/store/background_tray_run_state.go"
-	const frontend = "frontend/src/lib/utils/subagentRunState.ts"
-	backendValues := goStringConstants(t, backend)
-	frontendSource, err := os.ReadFile(reporoot.Path(t, frontend))
-	if err != nil {
-		t.Fatalf("read %s: %v", frontend, err)
-	}
-	for _, name := range []string{
-		"MetaKeySubagentRunState",
-		"MetaKeySubagentParkedCommands",
-		"MetaKeySubagentParkedReportID",
-		"MetaKeySubagentParkedReportPreview",
-		"AgentRunRunning",
-		"AgentRunParked",
-		"AgentRunDone",
-		"AgentRunEnded",
-	} {
-		value, ok := backendValues[name]
-		if !ok || value == "" {
-			t.Fatalf("%s no longer declares %s", backend, name)
-		}
-		if !strings.Contains(string(frontendSource), `'`+value+`'`) {
-			t.Errorf("%s does not mirror %s = %q", frontend, name, value)
-		}
-	}
-}
-
 // The Codex adapter puts a `userMessage` echo's `clientId` on the event meta
 // under its own unexported constant, and triage reads it back by name to
 // decide which pending send an echo belongs to. Two spellings of one key with
@@ -174,23 +125,81 @@ func TestUserEchoClientIDKeyMatchesTheProviderConstant(t *testing.T) {
 	}
 }
 
-// A parked stop's sibling records its run in stored meta and its status;
-// the timeline reads both back by name.
-func TestParkedStopMetaKeysMatchFrontendMirror(t *testing.T) {
-	const frontend = "frontend/src/lib/utils/parkedStop.ts"
-	frontendSource, err := os.ReadFile(reporoot.Path(t, frontend))
-	if err != nil {
-		t.Fatalf("read %s: %v", frontend, err)
+// Store meta keys the frontend reads back by name, each pinned against the
+// frontend module that spells them. A parked stop's sibling, for one,
+// records its run in stored meta and its status, and the timeline reads both
+// back by these names.
+func TestStoreMetaKeysMatchFrontendMirrors(t *testing.T) {
+	for _, mirror := range []struct {
+		backend  string
+		frontend string
+		names    []string
+	}{
+		{
+			backend:  "internal/store/subagent_items.go",
+			frontend: "frontend/src/lib/utils/codexTrayProjection.ts",
+			names: []string{
+				"metaKeySubagentLatestToolSummary",
+				"metaKeySubagentLatestToolTurn",
+				"metaKeySubagentLatestToolItem",
+			},
+		},
+		{
+			backend:  "internal/store/background_tray_run_state.go",
+			frontend: "frontend/src/lib/utils/subagentRunState.ts",
+			names: []string{
+				"MetaKeySubagentRunState",
+				"MetaKeySubagentParkedCommands",
+				"MetaKeySubagentParkedReportID",
+				"MetaKeySubagentParkedReportPreview",
+				"AgentRunRunning",
+				"AgentRunParked",
+				"AgentRunDone",
+				"AgentRunEnded",
+			},
+		},
+		{
+			backend:  "internal/store/agent_stops.go",
+			frontend: "frontend/src/lib/utils/parkedStop.ts",
+			names:    []string{"MetaKeyParkedCommands", "MetaKeyParkedReportItemID", "MetaKeyRunStartedAt", "MetaKeyRunWoke", "ItemStatusParked"},
+		},
+	} {
+		t.Run(mirror.frontend, func(t *testing.T) {
+			backendValues := goStringConstants(t, mirror.backend)
+			frontendSource, err := os.ReadFile(reporoot.Path(t, mirror.frontend))
+			if err != nil {
+				t.Fatalf("read %s: %v", mirror.frontend, err)
+			}
+			for _, name := range mirror.names {
+				value, ok := backendValues[name]
+				if !ok || value == "" {
+					t.Fatalf("%s no longer declares %s", mirror.backend, name)
+				}
+				if !strings.Contains(string(frontendSource), `'`+value+`'`) {
+					t.Errorf("%s does not mirror %s = %q", mirror.frontend, name, value)
+				}
+			}
+		})
 	}
-	const backend = "internal/store/agent_stops.go"
-	backendValues := goStringConstants(t, backend)
-	for _, name := range []string{"MetaKeyParkedCommands", "MetaKeyParkedReportItemID", "MetaKeyRunStartedAt", "MetaKeyRunWoke", "ItemStatusParked"} {
-		value, ok := backendValues[name]
-		if !ok || value == "" {
-			t.Fatalf("%s no longer declares %s", backend, name)
-		}
-		if !strings.Contains(string(frontendSource), `'`+value+`'`) {
-			t.Errorf("%s does not mirror %s = %q", frontend, name, value)
+}
+
+// The origin vocabulary is duplicated across the provider boundary on
+// purpose (triage is provider-agnostic by contract and may not reach into a
+// provider package for a term), so each triage origin is pinned against the
+// provider constant it mirrors. The frontend branches on and badges rows by
+// these exact strings.
+func TestTurnOriginsMatchTheProviderConstants(t *testing.T) {
+	for _, pin := range []struct {
+		name     string
+		triage   string
+		provider string
+	}{
+		{"claude.PeerTurnOrigin", crossSessionMessageOrigin, claude.PeerTurnOrigin},
+		{"claude.ScheduledTurnOrigin", scheduledTurnOrigin, claude.ScheduledTurnOrigin},
+		{"codex.ExternalTurnOriginQueue", externalQueueOrigin, codex.ExternalTurnOriginQueue},
+	} {
+		if pin.triage != pin.provider {
+			t.Errorf("triage origin %q != %s %q", pin.triage, pin.name, pin.provider)
 		}
 	}
 }
