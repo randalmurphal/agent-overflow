@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/transport"
 )
 
@@ -150,7 +150,7 @@ func TestAForwardedRefusalIsNotThisComputersOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join("frontend", "src", "test", "fixtures", "forwardedRefusalFrames.json")
+	path := reporoot.Path(t, "frontend/src/test/fixtures/forwardedRefusalFrames.json")
 	held, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func (r *forwardingReceiver) ReadThreadRemoteLog() error { return r.err }
 // label is shortened so what to do is never cut.
 func TestARemoteErrorKeepsItsRemedyWithinWhatAPageShows(t *testing.T) {
 	t.Parallel()
-	frames, err := os.ReadFile(filepath.Join("frontend", "src", "lib", "transport", "frames.ts"))
+	frames, err := os.ReadFile(reporoot.Path(t, "frontend/src/lib/transport/frames.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
