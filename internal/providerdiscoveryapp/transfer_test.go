@@ -61,8 +61,10 @@ func TestTransferReadinessChecksOnlySelectedProviderAndFreshAccount(t *testing.T
 
 // TestTransferReadinessRefusesCodexBelowMinimum pins the receiver's refusal
 // at the start of a transfer: the real detection runs the binary, and a
-// Codex below the minimum or with an unreadable version is refused with the
-// detection's message, before the account probe and before any file lands.
+// Codex below the minimum is refused with the detection's message, before
+// the account probe and before any file lands. Output that names no version
+// reads as ready, as on main, so the account probe's handshake is what
+// admits or refuses that build.
 func TestTransferReadinessRefusesCodexBelowMinimum(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell scripts require unix")
@@ -71,7 +73,7 @@ func TestTransferReadinessRefusesCodexBelowMinimum(t *testing.T) {
 		output, want string
 	}{
 		{"codex-cli 0.153.4", "This computer cannot receive the conversation yet. Codex v0.153.4 (%s) is installed; Agent Overflow needs v0.154.0 or newer. Update Codex."},
-		{"codex-cli dev", `This computer cannot receive the conversation yet. Agent Overflow could not read the version of Codex (%s) from "codex-cli dev". Update Codex to v0.154.0 or newer.`},
+		{"codex-cli dev", ""},
 		{"codex-cli 0.154.0", ""},
 	} {
 		t.Run(tc.output, func(t *testing.T) {
