@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -452,9 +453,23 @@ const (
 
 // PairingAccessOf reads whether link id was confirmed and, if it was,
 // whether its device was removed, or else whether it can use its access at
-// now (Session.Usable).
-func (s *Store) PairingAccessOf(id string, now int64) (PairingAccess, error) {
-	return pairingAccessOf(s.reader(), id, now)
+// now (Session.Usable). The reads share one snapshot: a Remove that commits
+// between them would otherwise read as access ended.
+func (s *Store) PairingAccessOf(id string, now int64) (_ PairingAccess, err error) {
+	tx, err := s.reader().BeginTx(context.Background(), nil)
+	if err != nil {
+		return 0, fmt.Errorf("store: read pairing %s: begin: %w", id, err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) && err == nil {
+			err = fmt.Errorf("store: read pairing %s: end the read: %w", id, rollbackErr)
+		}
+	}()
+	var q sqlQueryer = tx
+	if wrap := s.pairingAccessReadForTest; wrap != nil {
+		q = wrap(q)
+	}
+	return pairingAccessOf(q, id, now)
 }
 
 func pairingAccessOf(db sqlQueryer, id string, now int64) (PairingAccess, error) {

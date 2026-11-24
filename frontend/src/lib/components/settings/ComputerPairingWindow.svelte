@@ -11,7 +11,7 @@
   import { backendNow } from '../../transport/backendClock';
   import { settingsComputer } from './settingsComputer';
   import { pairingDecisionSettled, pairingTurns, recordPairingDecision, type PairingTurn } from './pairingTurns';
-  import { accessLostText, approvalAnswer, foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
+  import { accessLostText, approvalAnswer, foldPairing, pairingSettled, refusalShownBy, type PairingAnswer, type PairingHeld } from './pairingProgress';
 
   let { networkChoice, access, ownEnroll, onChanged, onClose }: {
     networkChoice: string;
@@ -206,8 +206,9 @@
         if (at.current ? held?.phase === 'confirmed' : after?.phase === 'confirmed') return;
       }
       const message = `Could not allow this computer: ${errString(err)}`;
-      // A dismissed dialog has nowhere to show it, so the failure is a toast.
-      if (at.current) error = message;
+      // A dismissed dialog has nowhere to show it, and a named refusal shows
+      // only beside its own ending, so otherwise the failure is a toast.
+      if (named ? refusalShownBy(at.current, held, named) : at.current) error = message;
       else addToast('error', message);
     } finally {
       if (at.current) deciding = false;

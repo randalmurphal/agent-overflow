@@ -99,6 +99,17 @@ export function approvalAnswer(err: unknown): PairingAnswer | null {
   }
 }
 
+/**
+ * Whether a dialog shows an approval's named refusal itself, once the
+ * refusal was folded: only while the dialog still follows the link and
+ * holds the refusal's own state. A dismissed dialog shows nothing, and one
+ * that holds another ending of the same tier shows that ending's remedy, so
+ * the caller shows the refusal's message, with its remedy, as a toast.
+ */
+export function refusalShownBy(current: boolean, held: PairingHeld | null, refusal: PairingAnswer): boolean {
+  return current && held?.phase === refusal.phase;
+}
+
 export function pairingTier(phase: PairingPhase): number {
   return PAIRING_TIERS.findIndex((tier) => (tier as readonly PairingPhase[]).includes(phase));
 }

@@ -45,7 +45,7 @@
   import ComputerPairingWindow from './ComputerPairingWindow.svelte';
   import { INPUT_CLASS } from './styles';
   import { pairingTurns, type PairingTurn } from './pairingTurns';
-  import { accessLostText, approvalAnswer, foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
+  import { accessLostText, approvalAnswer, foldPairing, pairingSettled, refusalShownBy, type PairingAnswer, type PairingHeld } from './pairingProgress';
 
   interface Props {
     open: boolean;
@@ -292,19 +292,24 @@
     deciding = true;
     try {
       let answer: PairingAnswer = { phase: 'confirmed' };
+      let refusal: unknown = null;
       try {
         await call(() => ConfirmDevicePairing(linkId));
       } catch (err) {
         // A result that names the link's state (already allowed, or its
-        // access since lost) is folded like any answer, and the modal shows
-        // it; any other refusal is a failure, and the polls answer next.
+        // access since lost) is folded like any answer; any other refusal
+        // is a failure, and the polls answer next.
         const named = approvalAnswer(err);
         if (!named) throw err;
         answer = named;
+        if (named.phase !== 'confirmed') refusal = err;
       }
       // The approval changed what the surfaces behind the modal show,
       // whatever this modal still holds.
       if (!adopt(at, answer)) onChanged();
+      if (refusal !== null && !refusalShownBy(at.current, stage.at === 'link' ? stage.held : null, answer)) {
+        addErrorToast(`Failed to allow the device: ${errString(refusal)}`, refusal);
+      }
     } catch (err) {
       addErrorToast(`Failed to allow the device: ${errString(err)}`, err);
     } finally {

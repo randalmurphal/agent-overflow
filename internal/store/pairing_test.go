@@ -359,6 +359,47 @@ func TestARemovedDeviceReadsRemovedAfterItsSessionIsPruned(t *testing.T) {
 	requirePairingAccess(t, s, 64000, PairingAccessEnded, ErrPairingAccessEnded, "after its device was forgotten")
 }
 
+// queryerBetween calls between before every read after the first.
+type queryerBetween struct {
+	sqlQueryer
+	reads   *int
+	between func()
+}
+
+func (q queryerBetween) QueryRow(query string, args ...any) *sql.Row {
+	if *q.reads++; *q.reads > 1 {
+		q.between()
+	}
+	return q.sqlQueryer.QueryRow(query, args...)
+}
+
+// A Remove that commits after the link's device was read, and before its
+// session is, takes the device straight from usable to removed.
+func TestAPairingRemovedBetweenItsReadsReadsAsOneMoment(t *testing.T) {
+	s, device, _ := seedConfirmedPairing(t, []byte("refresh-1"))
+	reads, removed := 0, false
+	s.pairingAccessReadForTest = func(q sqlQueryer) sqlQueryer {
+		return queryerBetween{sqlQueryer: q, reads: &reads, between: func() {
+			if removed {
+				return
+			}
+			removed = true
+			if _, err := s.RevokeDevice(device.ID, 3000); err != nil {
+				t.Fatal(err)
+			}
+		}}
+	}
+	if access, err := s.PairingAccessOf("link-1", 3100); err != nil || access != PairingUsable {
+		t.Fatalf("the access with a Remove between its reads = %v (%v), want PairingUsable, the moment before it", access, err)
+	}
+	if !removed {
+		t.Fatal("the read made one statement; the test needs the Remove between two")
+	}
+	if access, err := s.PairingAccessOf("link-1", 3200); err != nil || access != PairingDeviceRemoved {
+		t.Fatalf("the access after the Remove = %v (%v), want PairingDeviceRemoved", access, err)
+	}
+}
+
 func TestARepeatConfirmationAnswersFromWhetherTheDeviceCanUseItsAccess(t *testing.T) {
 	// Access until 10000 once confirmed; renewal until 50000.
 	s, _, pending := seedConfirmedPairing(t, []byte("refresh-1"))

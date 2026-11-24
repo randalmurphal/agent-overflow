@@ -497,6 +497,41 @@ describe('computer pairing window decisions', () => {
     expect(view.queryByText('Computer paired')).toBeNull();
   });
 
+  // A refusal that names the link's state shows in the dialog only while the
+  // dialog follows the window and holds that same state; otherwise it is a toast.
+  it.each(['pairing_access_ended', 'pairing_device_removed'])('reports a named refusal that arrives after its dialog was dismissed: %s', async (code) => {
+    setBindingMock('OpenComputerPairing', async () => WINDOW);
+    setBindingMock('ComputerPairingStatus', async () => READY);
+    let refuse!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((_, reject) => {
+      refuse = () => reject(new TransportError(code, 'this device was allowed, and has since lost its access'));
+    }));
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    view.unmount();
+    refuse();
+    await vi.waitFor(() => expect(getToasts().map((toast) => toast.message)).toEqual(['Could not allow this computer: this device was allowed, and has since lost its access']));
+  });
+
+  it('reports a removal as a toast when the dialog already shows the access ended', async () => {
+    setBindingMock('OpenComputerPairing', async () => WINDOW);
+    const poll = setBindingMock('ComputerPairingStatus', async () => READY);
+    let refuse!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((_, reject) => {
+      refuse = () => reject(new TransportError('pairing_device_removed', 'this device was allowed, and its access was removed in Devices'));
+    }));
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    poll.mockResolvedValue({ ...WAITING, state: 'expired', ended: 'accessEnded' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.waitFor(() => expect(view.getByText(/its access has since ended or expired\. Choose Try again/)).toBeTruthy());
+    refuse();
+    await vi.waitFor(() => expect(getToasts().map((toast) => toast.message)).toEqual(['Could not allow this computer: this device was allowed, and its access was removed in Devices']));
+    expect(view.queryByRole('alert')).toBeNull();
+  });
+
   it('shows a computer another owner view already approved as paired', async () => {
     setBindingMock('OpenComputerPairing', async () => WINDOW);
     setBindingMock('ComputerPairingStatus', async () => READY);
