@@ -154,16 +154,12 @@ func TestHarnessSendAtRestOnly(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	type answer struct {
-		got harnessrpc.HarnessSendResult
-		err error
-	}
-	answered := make(chan answer, 1)
+	var got harnessrpc.HarnessSendResult
+	var sendErr error
 	sent := make(chan struct{})
 	go func() {
 		defer close(sent)
-		got, err := host.Send(context.Background(), idle.ID, "at rest", true)
-		answered <- answer{got, err}
+		got, sendErr = host.Send(context.Background(), idle.ID, "at rest", true)
 	}()
 	// Registered after the fixture's cleanups, so it runs before them: the
 	// send is let through and finishes before its sessions, bus and store
@@ -178,10 +174,9 @@ func TestHarnessSendAtRestOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	unlock()
-	result := <-answered
-	got, err := result.got, result.err
-	if err != nil {
-		t.Fatalf("Send at rest only to an idle thread: %v", err)
+	<-sent
+	if sendErr != nil {
+		t.Fatalf("Send at rest only to an idle thread: %v", sendErr)
 	}
 	if afterPlacement.Seq == 0 {
 		t.Fatal("the at-rest send never reached its placed stage")

@@ -460,21 +460,23 @@ func TestTakeOverParkedStartsNoWaitingRun(t *testing.T) {
 	}
 	h.profiles.setCapacity("project", "writer", 2)
 
+	// A scheduler pass starts its runs before the takeover's reply, so each
+	// check reads the runner as soon as the takeover returns.
 	if err := h.engine.TakeOverParked(running.ID); !errors.Is(err, ErrRunActive) {
 		t.Fatalf("TakeOverParked of a running item = %v, want ErrRunActive", err)
 	}
-	if err := h.engine.Sync(); err != nil {
-		t.Fatal(err)
+	if waitingStarted() {
+		t.Fatal("a parked-only takeover refused for a running item started the waiting run")
+	}
+	if err := h.engine.TakeOverParked("no-such-item"); err == nil || errors.Is(err, ErrRunActive) {
+		t.Fatalf("TakeOverParked of an item that is not parked = %v, want its own refusal", err)
 	}
 	if waitingStarted() {
-		t.Fatal("a refused parked-only takeover started the waiting run")
+		t.Fatal("a parked-only takeover refused for an item that is not parked started the waiting run")
 	}
 
 	if err := h.engine.TakeOverParked(parked.ID); err != nil {
 		t.Fatalf("TakeOverParked of a parked item: %v", err)
-	}
-	if err := h.engine.Sync(); err != nil {
-		t.Fatal(err)
 	}
 	requireItemState(t, h.store, parked.ID, StateNeedsHuman, ReasonTakenOver)
 	if waitingStarted() {
