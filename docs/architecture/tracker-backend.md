@@ -390,8 +390,8 @@ one of an earlier update, or of the same update from an earlier read, is
 superseded, and the read shows the record's; the same body again moves
 its read alone and writes no body bytes (its digest, `body_digest`, is
 compared). A body is started only by a person's opening or by a read
-that began after an open ticket of the issue was bound, so any automatic
-read of an open ticket fills a body the record lacks. The cap keeps the
+under the issue's current open-ticket bind, so any automatic read of an
+open ticket fills a body the record lacks. The cap keeps the
 bodies of the issues an open ticket keeps, then the most recently
 opened; one function writes a body and one evicts it, each moving the
 bookkeeping and the bytes in one transaction.
