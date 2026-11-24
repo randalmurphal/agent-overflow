@@ -122,7 +122,7 @@ func TestHarnessSendAtRestOnly(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = sess.Close() })
+		t.Cleanup(func() { closeSessionChecked(t, sess) })
 		app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 	}
 

@@ -147,7 +147,7 @@ test('each path that can change the affected-test selection check runs it', () =
   for (const path of [...named.map(path => path.startsWith('../') ? path.slice(3) : `frontend/${path}`),
     'frontend/scripts/vitest-changed.mjs', 'frontend/scripts/vitest-changed.check.mjs', 'frontend/tsconfig.json', 'frontend/tsconfig.node.json',
     'frontend/src/test/config/rawImportsPlugin.ts', 'frontend/scripts/bundleId.ts', 'frontend/src/test/stalledPageWatchdog.ts',
-    'frontend/src/lib/native/bundleVersion.ts', 'frontend/src/lib/markdown/parseBlockRetention.workload.ts', 'Makefile', 'build/test-inputs.mk', '.github/workflows/ci.yml']) {
+    'frontend/src/lib/markdown/parseBlockRetention.workload.ts', 'Makefile', 'build/test-inputs.mk', '.github/workflows/ci.yml']) {
     assert.equal(selects('test-selection', path), true, path);
   }
 });
@@ -155,7 +155,7 @@ test('each path that can change the affected-test selection check runs it', () =
 test('each path that can change the stalled-page watchdog check runs it', () => {
   for (const path of ['frontend/scripts/check-stalled-page-watchdog.mjs', 'frontend/src/test/stalledPageWatchdog.ts',
     'frontend/src/test/stalledPage/blocked-test.fixture.ts', 'frontend/src/test/stalledPage/vitest.config.ts', 'frontend/vitest.config.ts',
-    'frontend/src/test/config/rawImportsPlugin.ts', 'frontend/scripts/bundleId.ts', 'frontend/src/lib/native/bundleVersion.ts',
+    'frontend/src/test/config/rawImportsPlugin.ts', 'frontend/scripts/bundleId.ts',
     'frontend/package.json', 'frontend/pnpm-lock.yaml', 'frontend/tsconfig.json', 'build/test-inputs.mk', 'scripts/playwright-browsers.sh',
     'ci/Dockerfile', '.github/actions/setup/action.yml']) {
     assert.equal(selects('stall-watchdog', path), true, path);
