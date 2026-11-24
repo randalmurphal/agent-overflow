@@ -200,14 +200,6 @@ describe('updates store', () => {
       expect(hasPendingUpdate()).toBe(false);
     });
 
-    it('surfaces a check failure as the error phase', async () => {
-      mockCheck.mockRejectedValue(new Error('network boom'));
-      await runUpdateCheck();
-      const s = getUpdateState();
-      expect(s.phase).toBe('error');
-      expect(s.error).not.toBe('');
-    });
-
     it('surfaces a backend-reported checkError as the error phase', async () => {
       // The backend carries a failed release check as result state rather than
       // an RPC error, so the network-independent fields still arrive.
@@ -219,13 +211,6 @@ describe('updates store', () => {
       expect(s.phase).toBe('error');
       expect(s.error).not.toBe('');
       expect(s.supported).toBe(true);
-    });
-
-    it('does NOT re-check while a restart handoff is in flight', async () => {
-      getUpdateState().phase = 'restarting';
-      await runUpdateCheck();
-      expect(mockCheck).not.toHaveBeenCalled();
-      expect(getUpdateState().phase).toBe('restarting');
     });
 
     it('clears stale release metadata when a build turns out to be unsupported', async () => {
@@ -244,22 +229,19 @@ describe('updates store', () => {
       expect(s.releaseNotes).toBe('');
     });
 
-    it('does NOT re-check (and clobber) when an update is already staged ready', async () => {
-      // Regression: a re-check from "ready" would re-resolve the same release
-      // and demote the user from "Restart to update" back to "Download" even
-      // though the staged build is still valid.
-      getUpdateState().phase = 'ready';
+    // A re-check from "ready" would re-resolve the same release and demote
+    // the user from "Restart to update" back to "Download" even though the
+    // staged build is still valid.
+    it.each([
+      ['does NOT re-check while a restart handoff is in flight', 'restarting'],
+      ['does NOT re-check (and clobber) when an update is already staged ready', 'ready'],
+      ['does NOT re-check while a download is in flight', 'downloading'],
+    ] as const)('%s', async (_name, phase) => {
+      getUpdateState().phase = phase;
       getUpdateState().latestVersion = '2.0.0';
       await runUpdateCheck();
       expect(mockCheck).not.toHaveBeenCalled();
-      expect(getUpdateState().phase).toBe('ready');
-    });
-
-    it('does NOT re-check while a download is in flight', async () => {
-      getUpdateState().phase = 'downloading';
-      await runUpdateCheck();
-      expect(mockCheck).not.toHaveBeenCalled();
-      expect(getUpdateState().phase).toBe('downloading');
+      expect(getUpdateState().phase).toBe(phase);
     });
   });
 
@@ -290,32 +272,22 @@ describe('updates store', () => {
       expect(hasPendingUpdate()).toBe(false);
     });
 
-    it('keeps a genuine backend error (method_error) in the error phase', async () => {
-      mockCheck.mockRejectedValue(methodError('check for update: github: 503'));
+    // A dead socket rejects with DisconnectedError, with no `code` at all.
+    it.each([
+      ['surfaces a check failure as the error phase', new Error('network boom')],
+      ['keeps a genuine backend error (method_error) in the error phase',
+        methodError('check for update: github: 503')],
+      ['keeps a transport failure (no code) in the error phase',
+        Object.assign(new Error('socket closed'), { name: 'DisconnectedError' })],
+      ['keeps an RPC timeout in the error phase',
+        Object.assign(new Error('RPC timed out'), { name: 'TransportError', code: 'timeout' })],
+    ])('%s', async (_name, failure) => {
+      mockCheck.mockRejectedValue(failure);
       await runUpdateCheck();
       const s = getUpdateState();
       expect(s.phase).toBe('error');
       expect(s.supported).toBe(true);
       expect(s.error).not.toBe('');
-    });
-
-    it('keeps a transport failure (no code) in the error phase', async () => {
-      // A dead socket rejects with DisconnectedError — no `code` at all.
-      mockCheck.mockRejectedValue(
-        Object.assign(new Error('socket closed'), { name: 'DisconnectedError' }),
-      );
-      await runUpdateCheck();
-      expect(getUpdateState().phase).toBe('error');
-      expect(getUpdateState().supported).toBe(true);
-    });
-
-    it('keeps an RPC timeout in the error phase', async () => {
-      mockCheck.mockRejectedValue(
-        Object.assign(new Error('RPC timed out'), { name: 'TransportError', code: 'timeout' }),
-      );
-      await runUpdateCheck();
-      expect(getUpdateState().phase).toBe('error');
-      expect(getUpdateState().supported).toBe(true);
     });
   });
 
@@ -424,17 +396,13 @@ describe('updates store', () => {
       expect(getUpdateState().error).not.toBe('');
     });
 
-    it('installs a specific (older) version from "up-to-date" — the rollback path', async () => {
-      // The by-tag flow must work even with no pending update: a rollback while
-      // already on the latest has phase "up-to-date", not "available".
-      getUpdateState().phase = 'up-to-date';
-      await startUpdateDownload('v0.0.6');
-      expect(mockDownload).toHaveBeenCalledWith('v0.0.6');
-      expect(getUpdateState().phase).toBe('downloading');
-    });
-
-    it('allows a by-tag retry from the "error" phase', async () => {
-      getUpdateState().phase = 'error';
+    // The by-tag flow must work even with no pending update: a rollback while
+    // already on the latest has phase "up-to-date", not "available".
+    it.each([
+      ['installs a specific (older) version from "up-to-date" — the rollback path', 'up-to-date'],
+      ['allows a by-tag retry from the "error" phase', 'error'],
+    ] as const)('%s', async (_name, phase) => {
+      getUpdateState().phase = phase;
       await startUpdateDownload('v0.0.6');
       expect(mockDownload).toHaveBeenCalledWith('v0.0.6');
       expect(getUpdateState().phase).toBe('downloading');
@@ -761,23 +729,19 @@ describe('updates store', () => {
       expect(getUpdateState().phase).toBe('ready');
     });
 
-    it('formats an error event with its stage and message', () => {
-      emitWailsEvent('updater:error', { stage: 'verify', message: 'digest mismatch' });
+    // The rollback path emits stage "check" when a chosen tag can't be
+    // resolved; the store renders it the same way as any other stage.
+    it.each([
+      ['formats an error event with its stage and message', 'verify', 'digest mismatch',
+        'Update verify failed: digest mismatch'],
+      ['formats a by-tag resolve failure (stage "check") emitted by the backend goroutine', 'check',
+        'release v9.9.9 is not installable on this platform',
+        'Update check failed: release v9.9.9 is not installable on this platform'],
+    ])('%s', (_name, stage, message, formatted) => {
+      emitWailsEvent('updater:error', { stage, message });
       const s = getUpdateState();
       expect(s.phase).toBe('error');
-      expect(s.error).toBe('Update verify failed: digest mismatch');
-    });
-
-    it('formats a by-tag resolve failure (stage "check") emitted by the backend goroutine', () => {
-      // The rollback path emits stage "check" when a chosen tag can't be
-      // resolved; the store must render it the same way as any other stage.
-      emitWailsEvent('updater:error', {
-        stage: 'check',
-        message: 'release v9.9.9 is not installable on this platform',
-      });
-      const s = getUpdateState();
-      expect(s.phase).toBe('error');
-      expect(s.error).toBe('Update check failed: release v9.9.9 is not installable on this platform');
+      expect(s.error).toBe(formatted);
     });
 
     it('cleanup unsubscribes every channel', () => {

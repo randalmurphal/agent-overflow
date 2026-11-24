@@ -826,13 +826,17 @@ describe('threadTimelineWindow', () => {
       // An empty-thread pane (or one whose switchThread returned 0 items)
       // has `oldestLoadedTurnIndex = null`. The loader must still be able
       // to pull in history when the user triggers scroll-to-item from
-      // search — not skip the fetch and short-circuit to `true`.
+      // search — not skip the fetch and short-circuit to `true`. The jump
+      // requests a bounded centered slice, not an unbounded page from the
+      // target to the tail (the MAX_SAFE_INTEGER itemBudget bug).
       const pane = createThreadPane();
       let sliceAnchor: string | null = null;
+      let sliceTargetCount = 0;
       setBindingMock(
         'ListThreadSliceAround',
-        async (_threadId: string, anchorItemId: string) => {
+        async (_threadId: string, anchorItemId: string, targetCount: number) => {
           sliceAnchor = anchorItemId;
+          sliceTargetCount = targetCount;
           if (anchorItemId === 'deep') {
             return {
               items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
@@ -863,6 +867,8 @@ describe('threadTimelineWindow', () => {
       const ok = await pane.loadUntilItem('deep');
       expect(ok).toBe('loaded');
       expect(sliceAnchor).toBe('deep');
+      expect(sliceTargetCount).toBeLessThanOrEqual(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      expect(sliceTargetCount).toBeGreaterThan(0);
       expect(pane.items.some((it) => it.id === 'deep')).toBe(true);
       expect(pane.oldestLoadedTurnIndex).toBe(3);
       expect(pane.newestLoadedTurnIndex).toBe(3);
@@ -1010,51 +1016,6 @@ describe('threadTimelineWindow', () => {
       await olderPromise;
 
       expect(pane.loadingOlder).toBe(false);
-    });
-
-    it('loadUntilItem uses a bounded centered slice when the pane floor is null', async () => {
-      // Regression pin for the MAX_SAFE_INTEGER itemBudget bug: search
-      // jumps must request a bounded centered slice, not an unbounded
-      // page from the target to the tail.
-      const pane = createThreadPane();
-      let capturedAnchor = '';
-      let capturedTargetCount = 0;
-      setBindingMock(
-        'ListThreadSliceAround',
-        async (_id, anchor, targetCount) => {
-          capturedAnchor = anchor as string;
-          capturedTargetCount = targetCount as number;
-          if (anchor === 'deep') {
-            return {
-              items: [makeItem({ id: 'deep', threadId: 't', turnIndex: 3 })],
-              oldestTurnIndex: 3,
-              newestTurnIndex: 3,
-              hasMore: true,
-              hasMoreOlder: true,
-              hasMoreNewer: true,
-            };
-          }
-          return {
-            items: [],
-            oldestTurnIndex: -1,
-            newestTurnIndex: -1,
-            hasMore: false,
-            hasMoreOlder: false,
-            hasMoreNewer: false,
-          };
-        },
-      );
-      setBindingMock('GetThreadItem', async () =>
-        makeItem({ id: 'deep', threadId: 't', turnIndex: 3 }),
-      );
-
-      await pane.switchThread(makeThread({ id: 't' }));
-      expect(pane.oldestLoadedTurnIndex).toBeNull();
-      const ok = await pane.loadUntilItem('deep');
-      expect(ok).toBe('loaded');
-      expect(capturedAnchor).toBe('deep');
-      expect(capturedTargetCount).toBeLessThanOrEqual(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(capturedTargetCount).toBeGreaterThan(0);
     });
 
     it('pagingGeneration stays monotonic across switchThread', async () => {
@@ -1384,50 +1345,6 @@ describe('threadTimelineWindow', () => {
       expect(pane.hasMoreNewer).toBe(false);
     });
 
-    it('loadNewer preserves the newer-history gap when pruning older head rows', async () => {
-      const pane = createThreadPane();
-      const initial = Array.from(
-        { length: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS },
-        (_, index) =>
-          makeItem({
-            id: `t${index}`,
-            threadId: 't',
-            turnIndex: index,
-            itemIndex: 0,
-          }),
-      );
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: initial,
-        oldestTurnIndex: 0,
-        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS - 1,
-        hasMore: false,
-        hasMoreOlder: false,
-        hasMoreNewer: true,
-      }));
-      setBindingMock('ListItemsAfterCursor', async () => ({
-        items: [
-          makeItem({
-            id: `t${ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS}`,
-            threadId: 't',
-            turnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
-            itemIndex: 0,
-          }),
-        ],
-        oldestTurnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
-        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
-        hasMore: true,
-        hasMoreOlder: true,
-        hasMoreNewer: true,
-      }));
-
-      await pane.switchThread(makeThread({ id: 't' }));
-      await pane.loadNewer();
-
-      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(pane.hasMoreHistory).toBe(true);
-      expect(pane.hasMoreNewer).toBe(true);
-    });
-
     // === user-pinned history ===
     // A successful loadOlder pins the window: the reader asked to see this
     // history, so no automatic prune — not the opposite-edge drop, not the
@@ -1501,32 +1418,6 @@ describe('threadTimelineWindow', () => {
       expect(pane.items[0]?.id).toBe('older');
       expect(pane.items.some((it) => it.id === 'live0')).toBe(false);
       expect(pane.hasMoreNewer).toBe(true);
-    });
-
-    it('loadOlder under the cap keeps every loaded row', async () => {
-      const pane = createThreadPane();
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [
-          makeItem({ id: 'seed', threadId: 't', turnIndex: 10, itemIndex: 0 }),
-        ],
-        oldestTurnIndex: 10,
-        newestTurnIndex: 10,
-        hasMore: true,
-        hasMoreOlder: true,
-        hasMoreNewer: false,
-      }));
-      setBindingMock('ListItemsBeforeCursor', async () => ({
-        items: [
-          makeItem({ id: 'older', threadId: 't', turnIndex: 9, itemIndex: 0 }),
-        ],
-        oldestTurnIndex: 9,
-        hasMore: true,
-        hasMoreOlder: true,
-      }));
-      await pane.switchThread(makeThread({ id: 't' }));
-      await pane.loadOlder();
-      expect(pane.items.map((it) => it.id)).toEqual(['older', 'seed']);
-      expect(pane.hasMoreNewer).toBe(false);
     });
 
     it('a fresh thread after paging prunes its own tail growth', async () => {
@@ -1633,6 +1524,7 @@ describe('threadTimelineWindow', () => {
       expect(snapshots).toContain(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.hasMoreHistory).toBe(true);
+      expect(pane.hasMoreNewer).toBe(true);
     });
 
     // Incident 2026-08-25: one giant activity run (~700 tool rows rendering

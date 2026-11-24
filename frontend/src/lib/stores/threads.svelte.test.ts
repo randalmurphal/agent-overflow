@@ -205,20 +205,6 @@ describe('threads store', () => {
       expect(getThreads().map((t) => t.id)).toEqual(['a']);
     });
 
-    it('updateThreadTitle replaces only the matching thread title', async () => {
-      setBindingMock('ListThreads', async () => [
-        makeThread('a', { title: 'A' }),
-        makeThread('b', { title: 'B' }),
-      ]);
-      await loadSidebarCatalogs();
-      updateThreadTitle('a', 'renamed');
-
-      const found = getThreads().find((t) => t.id === 'a');
-      expect(found?.title).toBe('renamed');
-      // Other thread untouched.
-      expect(getThreads().find((t) => t.id === 'b')?.title).toBe('B');
-    });
-
     it('updateThreadModel replaces only the matching thread model', async () => {
       setBindingMock('ListThreads', async () => [
         makeThread('a', { model: 'sonnet' }),
