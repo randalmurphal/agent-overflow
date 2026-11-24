@@ -112,8 +112,8 @@ type transcriptStep struct {
 }
 
 type transcriptToolCall struct {
-	Name string            `json:"name"`
-	Args map[string]string `json:"args"`
+	Name string                     `json:"name"`
+	Args map[string]json.RawMessage `json:"args"`
 }
 
 type pendingChildTool struct {
@@ -742,20 +742,33 @@ func (f *Flavor) emitSubagentSettlement(launch acp.SubagentLaunchContext, taskID
 	})
 }
 
-// decodeTranscriptToolArgs unwraps agy's JSON-encoded string argument map
-// (e.g. `{"Path":"\"/a/b.go\"","StartLine":"1"}`) into a standard JSON object.
-func decodeTranscriptToolArgs(args map[string]string) json.RawMessage {
+// decodeTranscriptToolArgs decodes agy's transcript tool_calls[*].args map into
+// a standard JSON object. transcript_full.jsonl writes native JSON values
+// (numbers, booleans, strings, arrays, objects), whereas compact
+// transcript.jsonl string-encodes each value (e.g. `{"Path":"\"/a/b.go\"","StartLine":"1"}`).
+func decodeTranscriptToolArgs(args map[string]json.RawMessage) json.RawMessage {
 	if len(args) == 0 {
 		return nil
 	}
 	out := make(map[string]any, len(args))
 	for k, rawVal := range args {
-		var parsed any
-		if json.Unmarshal([]byte(rawVal), &parsed) == nil {
-			out[k] = parsed
-		} else {
-			out[k] = rawVal
+		trimmed := bytes.TrimSpace(rawVal)
+		if len(trimmed) == 0 {
+			continue
 		}
+		var parsed any
+		if json.Unmarshal(trimmed, &parsed) != nil {
+			out[k] = string(trimmed)
+			continue
+		}
+		if s, ok := parsed.(string); ok {
+			var unwrapped any
+			if json.Unmarshal([]byte(s), &unwrapped) == nil {
+				out[k] = unwrapped
+				continue
+			}
+		}
+		out[k] = parsed
 	}
 	encoded, err := json.Marshal(out)
 	if err != nil {

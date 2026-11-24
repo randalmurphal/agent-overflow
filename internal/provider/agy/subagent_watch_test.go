@@ -695,13 +695,23 @@ func TestWatchSubagentTailsFullTranscriptAndStampsResolvedModelEffort(t *testing
 		"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE",
 		"created_at": "2026-11-24T19:54:26Z",
 		"model":      "gemini-4-hydrogen-tiered-high", "input_tokens": 5781, "output_tokens": 88,
-		"thinking":   "Checking capabilities.go for MaxMCPWaitSeconds.",
-		"tool_calls": []map[string]any{{"name": "read_file", "args": map[string]string{"Path": `"/repo/capabilities.go"`, "StartLine": "1", "EndLine": "30"}}},
+		"thinking": "Checking capabilities.go for MaxMCPWaitSeconds.",
+		// Real transcript_full.jsonl writes native typed JSON values (numbers,
+		// booleans, plain strings) rather than string-encoded values.
+		"tool_calls": []map[string]any{
+			{"name": "read_file", "args": map[string]any{"Path": "/repo/capabilities.go", "StartLine": 1, "EndLine": 30}},
+			{"name": "run_command", "args": map[string]any{"CommandLine": "echo ok", "WaitMsBeforeAsync": 5000, "IsDaemon": false}},
+		},
 	})
 	appendJSONLLine(t, fullPath, map[string]any{
 		"step_index": 2, "type": "GENERIC", "status": "DONE",
 		"created_at": "2026-11-24T19:54:28Z",
 		"content":    "FULL_UNTRUNCATED_FILE_OUTPUT_LINE_206_MAX_150",
+	})
+	appendJSONLLine(t, fullPath, map[string]any{
+		"step_index": 3, "type": "GENERIC", "status": "DONE",
+		"created_at": "2026-11-24T19:54:29Z",
+		"content":    "Command exited with code 0.\n\nCommand output:\nok\n",
 	})
 
 	flavor := NewFlavor(appDataDir)
@@ -771,7 +781,7 @@ func TestWatchSubagentTailsFullTranscriptAndStampsResolvedModelEffort(t *testing
 
 	// Append final PLANNER_RESPONSE and deliver parent inbox report to settle.
 	appendJSONLLine(t, fullPath, map[string]any{
-		"step_index": 3, "type": "PLANNER_RESPONSE", "status": "DONE",
+		"step_index": 4, "type": "PLANNER_RESPONSE", "status": "DONE",
 		"created_at": "2026-11-24T19:54:30Z",
 		"model":      "gemini-4-hydrogen-tiered-high", "input_tokens": 1200, "output_tokens": 30,
 		"content": "Reported MaxMCPWaitSeconds = 150.",
@@ -789,7 +799,7 @@ func TestWatchSubagentTailsFullTranscriptAndStampsResolvedModelEffort(t *testing
 
 	mu.Lock()
 	defer mu.Unlock()
-	var sawResolvedModel, sawThinking, sawFullRead, sawChildText, sawProgress, sawSettled bool
+	var sawResolvedModel, sawThinking, sawFullRead, sawBashStart, sawChildText, sawProgress, sawSettled bool
 	for _, ev := range events {
 		if ev.Kind == provider.EventToolStart && ev.ItemID == "call_full_1" {
 			var m map[string]any
@@ -800,6 +810,9 @@ func TestWatchSubagentTailsFullTranscriptAndStampsResolvedModelEffort(t *testing
 			if m["subagent_model"] == "gemini-4-hydrogen" && m["run_effort"] == "high" && m["agent_id"] == childID {
 				sawResolvedModel = true
 			}
+		}
+		if ev.Kind == provider.EventToolStart && ev.ParentToolUseID == "call_full_1" && ev.ItemType == "command_execution" {
+			sawBashStart = true
 		}
 		if ev.Kind == provider.EventThinking && ev.ParentToolUseID == "call_full_1" && strings.Contains(ev.Content, "MaxMCPWaitSeconds") {
 			sawThinking = true
@@ -812,7 +825,7 @@ func TestWatchSubagentTailsFullTranscriptAndStampsResolvedModelEffort(t *testing
 		}
 		if ev.Kind == provider.EventSubagentProgress && ev.ItemID == "call_full_1" {
 			var p provider.SubagentProgressMeta
-			if json.Unmarshal(ev.Meta, &p) == nil && p.ToolUses == 1 && p.TotalTokens == 5781+88+1200+30 {
+			if json.Unmarshal(ev.Meta, &p) == nil && p.ToolUses == 2 && p.TotalTokens == 5781+88+1200+30 {
 				sawProgress = true
 			}
 		}
@@ -820,9 +833,9 @@ func TestWatchSubagentTailsFullTranscriptAndStampsResolvedModelEffort(t *testing
 			sawSettled = true
 		}
 	}
-	if !sawResolvedModel || !sawThinking || !sawFullRead || !sawChildText || !sawProgress || !sawSettled {
-		t.Fatalf("missing expected events: resolvedModel=%v thinking=%v fullRead=%v childText=%v progress=%v settled=%v",
-			sawResolvedModel, sawThinking, sawFullRead, sawChildText, sawProgress, sawSettled)
+	if !sawResolvedModel || !sawThinking || !sawFullRead || !sawBashStart || !sawChildText || !sawProgress || !sawSettled {
+		t.Fatalf("missing expected events: resolvedModel=%v thinking=%v fullRead=%v bashStart=%v childText=%v progress=%v settled=%v",
+			sawResolvedModel, sawThinking, sawFullRead, sawBashStart, sawChildText, sawProgress, sawSettled)
 	}
 }
 
