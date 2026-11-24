@@ -258,6 +258,19 @@ func TestAWriteRefusedForItsCredentialSaysWhatToDo(t *testing.T) {
 	if r := v.Parts[0].Refusal; r == nil || r.Message != "Jira refused the token in the key file; put a valid token in it" {
 		t.Fatalf("a credential refused: %+v", r)
 	}
+	// A Jira connection's time goes to its linked Tempo connection: Jira
+	// answered who logs it, then Tempo refused its own token
+	// (jiraprovider's TestATempoRefusalAfterJiraNamesTempo).
+	f.answer(tracker.Result{Parts: []tracker.Part{{Issue: "10001", Step: tracker.StepWorklog, Outcome: tracker.Refused(tracker.Refusal{
+		Reason: tracker.ReasonTracker, Message: "the tracker refused the credential (HTTP 401)", Err: &trackerapi.AuthError{Tracker: "tempo", Status: http.StatusUnauthorized}})}}})
+	v, err = f.svc.AddWorklog(t.Context(), f.conn.ID, WorklogRequest{Issue: "10001", Day: "2026-11-02", SpentSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const tempo = "Tempo refused the token in the key file of the linked Tempo connection; put a valid token in it, and check that the region is the one the site's Tempo data is in"
+	if r := v.Parts[0].Refusal; r == nil || r.Message != tempo {
+		t.Fatalf("a Tempo credential refused: %+v", r)
+	}
 }
 
 // A read that fails after an applied write is reported beside the

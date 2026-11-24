@@ -21,6 +21,7 @@ import (
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 )
@@ -269,6 +270,16 @@ func TestATrackerUploadCutShortAttachesNothing(t *testing.T) {
 	}
 }
 
+// Every hop gives an upload's answer transport.UploadAnswerAllowance after
+// its last byte, and the attach is bounded by it: it covers what the
+// attach does then, the tracker's answer and the refresh.
+func TestTheUploadAnswerAllowanceCoversTheAttach(t *testing.T) {
+	t.Parallel()
+	if need := trackerapi.AnswerTimeout + trackerWriteBudget; transport.UploadAnswerAllowance < need {
+		t.Fatalf("UploadAnswerAllowance %s is shorter than the tracker's answer and the refresh, %s", transport.UploadAnswerAllowance, need)
+	}
+}
+
 // stallUpload PUTs the first half of a size-byte file to the upload path
 // over a raw connection that then sends nothing more, as a client whose
 // network went away mid-upload does, and answers the connection to read
@@ -429,8 +440,8 @@ func TestTrackerTicketRefusalsSayWhatToDo(t *testing.T) {
 		{"a file name with a NUL", "tracker_request_invalid", tracker.ErrInvalidInput, func() error {
 			return ignoreResult(f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", "a\x00b", 1))
 		}},
-		{"a file name over 255 bytes", "tracker_request_invalid", tracker.ErrInvalidInput, func() error {
-			return ignoreResult(f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", strings.Repeat("n", 256), 1))
+		{"a file name over 1,024 bytes", "tracker_request_invalid", tracker.ErrInvalidInput, func() error {
+			return ignoreResult(f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", strings.Repeat("n", 1025), 1))
 		}},
 		{"an upload to an issue ID over 64 bytes", "tracker_request_invalid", tracker.ErrInvalidInput, func() error {
 			return ignoreResult(f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, strings.Repeat("1", 65), "a.txt", 1))
@@ -457,9 +468,14 @@ func TestTrackerTicketRefusalsSayWhatToDo(t *testing.T) {
 			t.Errorf("%s = %v (code %q), want %s with cause %v", tc.name, err, code, tc.code, tc.cause)
 		}
 	}
-	_, err = f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", strings.Repeat("n", 256), 1)
-	if _, message, _ := errorsx.PublicDetails(err); message != "nothing was sent: a file name is at most 255 bytes, and this one is 256; rename the file" {
+	_, err = f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", strings.Repeat("n", 1025), 1)
+	if _, message, _ := errorsx.PublicDetails(err); message != "nothing was sent: a file name is at most 1024 bytes, and this one is 1025; rename the file" {
 		t.Errorf("a long file name says %q", message)
+	}
+	// A name Windows holds: 90 CJK characters and .txt, 94 UTF-16 units
+	// and 274 bytes.
+	if _, err := f.a.MintTrackerAttachmentUploadTicket(ctx, f.conn.ID, "10101", strings.Repeat("文", 90)+".txt", 1); err != nil {
+		t.Errorf("a 274-byte name Windows holds: %v", err)
 	}
 	if _, err := f.a.SubscribeTrackerTicket(ctx, f.conn.ID, strings.Repeat("1", 65)); err == nil ||
 		!strings.Contains(err.Error(), "an issue ID is at most 64 bytes, and this one is 65") {

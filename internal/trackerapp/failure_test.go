@@ -40,6 +40,8 @@ func TestClassifyFailureSortsEveryKind(t *testing.T) {
 			FailureSetup, "there is no Jira API token file"},
 		"a refused Tempo token": {"tempo", &trackerapi.AuthError{Tracker: "tempo", Status: 401},
 			FailureSetup, "check that the region"},
+		"a Tempo token refused on a Jira connection's time": {"jira", &trackerapi.AuthError{Tracker: "tempo", Status: 401},
+			FailureSetup, "Tempo refused the token in the key file of the linked Tempo connection; put a valid token in it, and check that the region"},
 		"another workspace": {"linear", &trackerapi.NotSentError{Err: &linear.WrongWorkspaceError{Want: "example", Got: "Other"}},
 			FailureSetup, "belongs to the workspace other, not example; make a key in example"},
 		"another workspace that is no URL key": {"linear", &linear.WrongWorkspaceError{Want: "example", Got: secret},

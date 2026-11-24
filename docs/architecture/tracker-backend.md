@@ -1199,7 +1199,7 @@ selected computer.
   its tracker stores (`tracker_attachment_too_large`; Jira Cloud's per-file
   ceiling, `jira.MaxAttachmentBytes`, 2 GB), before any byte crosses the
   network. An issue ID over 64 bytes (`tracker.CheckIssueID`; Jira's
-  are numbers, Linear's 36-byte UUIDs) and a file name over 255 bytes
+  are numbers, Linear's 36-byte UUIDs) and a file name over 1,024 bytes
   (`tracker.CheckFileName`) are refused there too, and a ticket
   subscribe refuses the same issue IDs. The ticket names the connection,
   the issue, the file name and its exact size; the route refuses a
@@ -1217,11 +1217,14 @@ selected computer.
   now. The write runs with the request's values and not its end, so a
   client that leaves after its last byte still has the file attached,
   and its whole run is bounded by the transfer window for the file's
-  size, the 5 minutes Jira has to answer (`trackerapi.AnswerTimeout`)
-  and a write's 3 minute budget for the refresh (`trackerAttachBound`):
-  13 minutes up to 10 MiB, about 17 hours for 2 GB. The answer is the
-  write's `WriteView` as JSON, given a deadline of its own once the
-  write ends.
+  size plus the answer's allowance (`transport.UploadAnswerAllowance`:
+  the 5 minutes Jira has to answer, `trackerapi.AnswerTimeout`, and a
+  write's 3 minute budget for the refresh; `trackerAttachBound`): 13
+  minutes up to 10 MiB, about 17 hours for 2 GB. The answer is the
+  write's `WriteView` as JSON, written within `transport.UploadWindow`,
+  which every relay gives the upload it carries too, so an answer that
+  comes late still reaches the page. A download that declares a body is
+  refused (`tracker_download_has_body`) and its connection closed.
 - **An attachment is saved** through `GET /attachments/tracker/{attachmentID}`.
   The mint asks the tracker nothing: the attachment must be on the
   ticket as the subscription last showed it (`tracker_attachment_unknown`
@@ -1234,12 +1237,9 @@ selected computer.
   byte, so a failure before it answers the refusal's code and sentence
   as JSON; one after it ends the response short, which the relays carry
   as a cut transfer.
-- **Limits of these routes:** an upload carried by a relay
-  (`backendproxy.CarryTransfer`) keeps the relay's window for its size,
-  so its answer is lost when the upload and Jira's answer together
-  outlast that window, at least 5 minutes; the file is attached all the
-  same. The Android shell refuses an upload over 50 MiB and a download
-  over 128 MiB, and says the file is over its limit.
+- **Limits of these routes:** the Android shell refuses an upload over
+  50 MiB and a download over 128 MiB, and says the file is over its
+  limit.
 - **A project's boards** are the boards its picker shows, in order, and
   the one that opens first (store `project_tracker_boards`). The list is
   replaced whole, and the change takes effect before the save answers,

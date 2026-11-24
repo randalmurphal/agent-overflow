@@ -405,9 +405,13 @@ func (in AttachInput) Check() error {
 // Linear's are UUIDs (36 bytes).
 const MaxIssueIDBytes = 64
 
-// MaxFileNameBytes is the longest file name an attachment may have: the
-// longest one name most file systems hold.
-const MaxFileNameBytes = 255
+// MaxFileNameBytes is the longest file name an attachment may have, in
+// UTF-8 bytes. A platform bounds a name by its own units (255 UTF-16
+// units on Windows, 255 bytes on most Linux file systems), so a name
+// another platform holds, 255 CJK characters say, can take up to 765
+// bytes here; 1,024 holds every one, as the Windows download name cap
+// does (webview2host's maxDownloadNameBytes).
+const MaxFileNameBytes = 1024
 
 // CheckIssueID refuses an issue ID a client sent that is empty or longer
 // than MaxIssueIDBytes.
