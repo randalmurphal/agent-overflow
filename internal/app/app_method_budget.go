@@ -44,18 +44,11 @@ func withinMethodBudget(ctx context.Context, method, doing string) (context.Cont
 // that step and what follows it take, so the run still answers within
 // its budget.
 func withinMethodBudgetFinishing(ctx context.Context, method, doing string, finish time.Duration) (context.Context, context.CancelFunc) {
-	return withinBudget(ctx, method, budgetExceeded{doing: doing}, finish)
+	return withinBudget(ctx, budgetExceeded{doing: doing, budget: transport.MethodBudget(method) - finish})
 }
 
-// withinMethodBudgetThen is withinMethodBudget whose answer at the budget
-// also says what the person does next (then).
-func withinMethodBudgetThen(ctx context.Context, method, doing, then string) (context.Context, context.CancelFunc) {
-	return withinBudget(ctx, method, budgetExceeded{doing: doing, then: then}, 0)
-}
-
-// withinBudget ends ctx finish before the method's budget, with cause.
-func withinBudget(ctx context.Context, method string, cause budgetExceeded, finish time.Duration) (context.Context, context.CancelFunc) {
-	cause.budget = transport.MethodBudget(method) - finish
+// withinBudget ends ctx at cause's budget, with cause.
+func withinBudget(ctx context.Context, cause budgetExceeded) (context.Context, context.CancelFunc) {
 	return context.WithTimeoutCause(ctx, cause.budget, cause)
 }
 

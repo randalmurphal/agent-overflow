@@ -1127,7 +1127,7 @@ method wraps (see [Build order](#build-order)).
 
 - **The picker's lists** (`TrackerProjects`, `TrackerBoards`) walk the
   tracker's pages, each bounded by the tracker client, and the whole walk
-  ends at the method's default budget (`withinMethodBudgetThen`), so the
+  ends at the method's default budget (`trackerCatalogRun`), so the
   answer arrives before the client stops waiting and says the tracker was
   too slow and to try again. Their context reaches the network, so they
   are not caller-bound.

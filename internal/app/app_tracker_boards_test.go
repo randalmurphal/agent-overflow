@@ -58,62 +58,103 @@ func TestTrackerBoardMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	}
 }
 
-// A picker's list that takes the tracker more than one page ends, with
-// all its pages, at the method's budget: the walk is cut while its second
-// page is held, and the answer says the tracker was too slow and to try
-// again, leaving the connection without a problem.
-func TestATrackerPickerListEndsAtItsBudget(t *testing.T) {
+// Each of the picker's lists that takes the tracker more than one page
+// ends at its method's own deadline, the caller setting none: the walk
+// is cut while its second page is held, and the answer says the tracker
+// was too slow and to try again, leaving the connection without a
+// problem. The deadline is shortened here (trackerPickerBudget); without
+// one the call stays held and the test's own bound fails it.
+func TestTrackerPickerListsEndAtTheirOwnDeadline(t *testing.T) {
 	t.Parallel()
-	site := trackerBoardSite()
-	for i := range 120 {
-		site.Projects = append(site.Projects, trackerfake.JiraProject{ID: fmt.Sprint(20000 + i), Key: fmt.Sprintf("K%03d", i), Name: fmt.Sprintf("Project %d", i)})
-	}
-	const route = "GET rest/api/3/project/search"
-	origin := trackerBoardOrigin
-	var e *trackerfake.Engine
-	var armed sync.Once
-	held := make(chan struct{})
-	var heldOnce sync.Once
-	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, engine: trackerfake.Options{OnRequest: func(r trackerfake.Request) {
-		switch {
-		case r.Route != route:
-		case r.Held:
-			heldOnce.Do(func() { close(held) })
-		case r.Status == 200:
-			armed.Do(func() {
-				if err := e.AddFault(trackerfake.Fault{Origin: origin, Route: route, Kind: trackerfake.FaultHold, Times: 1}); err != nil {
-					t.Error(err)
+	for _, tc := range []struct {
+		method, route string
+		call          func(a *App, ctx context.Context, conn string) error
+	}{
+		{"TrackerProjects", "GET rest/api/3/project/search", func(a *App, ctx context.Context, conn string) error {
+			return ignoreResult(a.TrackerProjects(ctx, conn))
+		}},
+		{"TrackerBoards", "GET rest/agile/1.0/board", func(a *App, ctx context.Context, conn string) error {
+			return ignoreResult(a.TrackerBoards(ctx, conn, "10001"))
+		}},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			t.Parallel()
+			// 121 projects and 60 boards of project BIG: two pages each.
+			site := trackerBoardSite()
+			site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "BIG", Name: "Big"})
+			for i := range 119 {
+				site.Projects = append(site.Projects, trackerfake.JiraProject{ID: fmt.Sprint(20000 + i), Key: fmt.Sprintf("K%03d", i), Name: fmt.Sprintf("Project %d", i)})
+			}
+			for i := range 60 {
+				site.Boards = append(site.Boards, trackerfake.JiraBoard{ID: int64(100 + i), Name: fmt.Sprintf("Big board %d", i), Type: "kanban", Project: "BIG",
+					Columns: site.Boards[0].Columns})
+			}
+			var e *trackerfake.Engine
+			var armed, heldOnce sync.Once
+			held := make(chan struct{})
+			f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, pickerBudget: 2 * time.Second, engine: trackerfake.Options{OnRequest: func(r trackerfake.Request) {
+				switch {
+				case r.Route != tc.route:
+				case r.Held:
+					heldOnce.Do(func() { close(held) })
+				case r.Status == 200:
+					armed.Do(func() {
+						if err := e.AddFault(trackerfake.Fault{Origin: trackerBoardOrigin, Route: tc.route, Kind: trackerfake.FaultHold, Times: 1}); err != nil {
+							t.Error(err)
+						}
+					})
 				}
-			})
-		}
-	}}})
-	e = f.e
-	t.Cleanup(func() { e.ClearFaults(origin, route) })
-	reqs := e.Requests(0).Requests
-	since := reqs[len(reqs)-1].Seq
+			}}})
+			e = f.e
+			t.Cleanup(func() { e.ClearFaults(trackerBoardOrigin, tc.route) })
+			reqs := e.Requests(0).Requests
+			since := reqs[len(reqs)-1].Seq
 
-	run, end := testutil.DeadlineContext(context.Background())
-	budget := transport.MethodBudget("TrackerProjects")
-	go func() {
-		<-held
-		end(budgetExceeded{doing: "Listing the tracker's projects", budget: budget, then: "the tracker was too slow, so try again"})
-	}()
-	_, err := f.a.TrackerProjects(run, f.conn.ID)
-	if code, message, _ := errorsx.PublicDetails(err); code != methodBudgetExceededCode || !strings.Contains(message, "too slow, so try again") {
-		t.Fatalf("TrackerProjects cut at its budget = %v, want %s saying to try again", err, methodBudgetExceededCode)
+			answer := make(chan error, 1)
+			go func() { answer <- tc.call(f.a, context.Background(), f.conn.ID) }()
+			var err error
+			select {
+			case err = <-answer:
+			case <-time.After(20 * time.Second):
+				t.Fatalf("%s did not end at its own deadline", tc.method)
+			}
+			select {
+			case <-held:
+			default:
+				t.Fatalf("%s answered %v before its second page was held", tc.method, err)
+			}
+			if code, message, _ := errorsx.PublicDetails(err); code != methodBudgetExceededCode || !strings.Contains(message, "too slow, so try again") {
+				t.Fatalf("%s cut at its deadline = %v, want %s saying to try again", tc.method, err, methodBudgetExceededCode)
+			}
+			pages := 0
+			for _, r := range e.Requests(since).Requests {
+				if r.Route == tc.route {
+					pages++
+				}
+			}
+			if pages != 2 {
+				t.Fatalf("%s asked for %d pages before it was cut, want 2", tc.method, pages)
+			}
+			conns, err := f.a.TrackerConnections(context.Background())
+			if err != nil || len(conns) != 1 || conns[0].Problem != nil {
+				t.Fatalf("the connection after the cut list: %+v, %v", conns, err)
+			}
+		})
 	}
-	var pages int
-	for _, r := range e.Requests(since).Requests {
-		if r.Route == route {
-			pages++
+}
+
+// The picker's lists end at their methods' budgets unless a test
+// shortens them.
+func TestTrackerPickerListsEndAtTheirMethodsBudgets(t *testing.T) {
+	t.Parallel()
+	a := &App{}
+	for _, method := range []string{"TrackerProjects", "TrackerBoards"} {
+		ctx, cancel := a.trackerCatalogRun(context.Background(), method, "Listing")
+		deadline, ok := ctx.Deadline()
+		cancel()
+		if budget := transport.MethodBudget(method); !ok || time.Until(deadline) > budget || time.Until(deadline) < budget-time.Second {
+			t.Errorf("%s's deadline is %v away, %v; want its budget %s", method, time.Until(deadline), ok, budget)
 		}
-	}
-	if pages != 2 {
-		t.Fatalf("the list asked for %d pages before it was cut, want 2", pages)
-	}
-	conns, err := f.a.TrackerConnections(context.Background())
-	if err != nil || len(conns) != 1 || conns[0].Problem != nil {
-		t.Fatalf("the connection after the cut list: %+v, %v", conns, err)
 	}
 }
 
@@ -157,12 +198,14 @@ func newTrackerBoardFixture(t *testing.T) *trackerBoardFixture {
 }
 
 // trackerBoardSetup is what a board test changes of the fixture: the
-// engine's options, the site, whose every board the project lists, board
-// 1 first and opening first, and the service's sync intervals.
+// engine's options, the site, whose every board of project WEB the
+// project lists, board 1 first and opening first, the service's sync
+// intervals, and the picker lists' deadline.
 type trackerBoardSetup struct {
-	engine  trackerfake.Options
-	site    trackerfake.JiraSite
-	cadence trackerapp.Cadence
+	engine       trackerfake.Options
+	site         trackerfake.JiraSite
+	cadence      trackerapp.Cadence
+	pickerBudget time.Duration
 }
 
 func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoardFixture {
@@ -188,6 +231,7 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 			return srv.JiraURL(strings.TrimPrefix(site, "https://")), nil
 		}})
 		a.trackerCadence = setup.cadence
+		a.trackerPickerBudget = setup.pickerBudget
 	})
 	bus := transport.NewEventBus(64)
 	t.Cleanup(bus.Close)
@@ -210,8 +254,10 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 		t.Fatal(err)
 	}
 	var listed []trackerapp.ProjectBoard
-	for i, b := range site.Boards {
-		listed = append(listed, trackerapp.ProjectBoard{Connection: conn.ID, Board: fmt.Sprint(b.ID), OpensFirst: i == 0})
+	for _, b := range site.Boards {
+		if b.Project == "WEB" {
+			listed = append(listed, trackerapp.ProjectBoard{Connection: conn.ID, Board: fmt.Sprint(b.ID), OpensFirst: len(listed) == 0})
+		}
 	}
 	if got, err := a.SetProjectTrackerBoards(ctx, project.ID, listed); err != nil || !slices.Equal(got, listed) {
 		t.Fatalf("SetProjectTrackerBoards = %+v, %v", got, err)
@@ -458,19 +504,34 @@ func TestARefreshCutAtItsBudgetSaysWhetherItRan(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	await := func(what string, ready <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-ready:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("waited 10s for %s", what)
+		}
+	}
 	refresh := func(id string, beforeCut func()) error {
+		t.Helper()
 		run, end := testutil.DeadlineContext(ctx)
 		answer := make(chan error, 1)
 		go func() { answer <- f.a.RefreshTrackerSubscription(run, id) }()
 		beforeCut()
 		end(errTrackerRefreshWait)
-		return <-answer
+		select {
+		case err := <-answer:
+			return err
+		case <-time.After(10 * time.Second):
+			t.Fatal("the refresh did not answer within 10s of its cut")
+			return nil
+		}
 	}
 
 	// The pump's first read is held, so the refresh waits to be taken.
 	hold()
 	sub := f.subscribe(t, ctx)
-	<-held
+	await("the pump's first read to be held", held)
 	err := refresh(sub.ID, func() {})
 	if !hasCode(err, "tracker_refresh_not_run") {
 		t.Fatalf("a refresh the busy pump never took = %v, want tracker_refresh_not_run", err)
@@ -483,7 +544,7 @@ func TestARefreshCutAtItsBudgetSaysWhetherItRan(t *testing.T) {
 		<-held
 	}
 	hold()
-	err = refresh(sub.ID, func() { <-held })
+	err = refresh(sub.ID, func() { await("the refresh's read to be held", held) })
 	if !hasCode(err, "tracker_refresh_waiting") {
 		t.Fatalf("a refresh the pump took and is still reading = %v, want tracker_refresh_waiting", err)
 	}

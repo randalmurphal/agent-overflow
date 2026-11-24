@@ -33,7 +33,7 @@ func (a *App) TrackerProjects(ctx context.Context, connectionID string) ([]track
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := trackerCatalogRun(ctx, "TrackerProjects", "Listing the tracker's projects")
+	ctx, cancel := a.trackerCatalogRun(ctx, "TrackerProjects", "Listing the tracker's projects")
 	defer cancel()
 	out, err := svc.Projects(ctx, connectionID)
 	return out, trackerCatalogError(ctx, err)
@@ -50,7 +50,7 @@ func (a *App) TrackerBoards(ctx context.Context, connectionID, project string) (
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := trackerCatalogRun(ctx, "TrackerBoards", "Listing the project's boards")
+	ctx, cancel := a.trackerCatalogRun(ctx, "TrackerBoards", "Listing the project's boards")
 	defer cancel()
 	out, err := svc.Boards(ctx, connectionID, project)
 	return out, trackerCatalogError(ctx, err)
@@ -60,8 +60,12 @@ func (a *App) TrackerBoards(ctx context.Context, connectionID, project string) (
 // of which the tracker client bounds alone, by the method's budget, so
 // the server answers before its client stops waiting
 // (transport.ClientWait).
-func trackerCatalogRun(ctx context.Context, method, doing string) (context.Context, context.CancelFunc) {
-	return withinMethodBudgetThen(ctx, method, doing, "the tracker was too slow, so try again")
+func (a *App) trackerCatalogRun(ctx context.Context, method, doing string) (context.Context, context.CancelFunc) {
+	budget := transport.MethodBudget(method)
+	if a.trackerPickerBudget > 0 {
+		budget = a.trackerPickerBudget
+	}
+	return withinBudget(ctx, budgetExceeded{doing: doing, budget: budget, then: "the tracker was too slow, so try again"})
 }
 
 // trackerCatalogError is the budget's own error once ctx ended at it,
