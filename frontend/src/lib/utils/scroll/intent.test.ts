@@ -511,6 +511,11 @@ describe('pointer', () => {
 
     expect(h.state.escaped).toBe(true);
     expect(h.intent.debugState().scrollbarDragSessionActive).toBe(true);
+
+    // A document pointerup ends the drag session.
+    document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+
+    expect(h.intent.debugState().scrollbarDragSessionActive).toBe(false);
   });
 
   it('press in the content area does nothing', () => {
@@ -529,16 +534,6 @@ describe('pointer', () => {
     pointerDown(h.scrollEl, { clientX: 105 });
 
     expect(h.state.escaped).toBe(false);
-  });
-
-  it('a document pointerup ends the drag session', () => {
-    const h = build();
-    withScrollbarGutter(h);
-    pointerDown(h.scrollEl, { clientX: 105 });
-
-    document.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
-
-    expect(h.intent.debugState().scrollbarDragSessionActive).toBe(false);
   });
 });
 
@@ -625,6 +620,8 @@ describe('programmatic write tagging', () => {
     // The tagged path bails before the near-bottom refresh — that skip is the
     // observable proof the event was attributed to our own write.
     expect(h.refreshIsNearBottom).not.toHaveBeenCalled();
+    // The provenance ledger does not record it: the write already explained it.
+    expect(h.noteUserScroll).not.toHaveBeenCalled();
   });
 
   it('an untagged scroll is interpreted', () => {
@@ -634,6 +631,8 @@ describe('programmatic write tagging', () => {
     h.scrollEl.dispatchEvent(new Event('scroll'));
 
     expect(h.refreshIsNearBottom).toHaveBeenCalled();
+    // The provenance ledger records the user-classified position.
+    expect(h.noteUserScroll).toHaveBeenCalledWith(600);
   });
 
   // One write carries a duplicate budget (PROGRAMMATIC_SCROLL_EVENT_DUPLICATE_
@@ -685,15 +684,6 @@ describe('provenance ledger classification (noteUserScroll)', () => {
   // "already explained" (tagged) and "this IS the clamp shape"
   // (resize-correlated) events must not.
 
-  it('records a user-classified scroll position', () => {
-    const h = build();
-    h.scrollEl.scrollTop = 600;
-
-    h.scrollEl.dispatchEvent(new Event('scroll'));
-
-    expect(h.noteUserScroll).toHaveBeenCalledWith(600);
-  });
-
   it('ignores a descendant scroller\'s event that the capture-phase listener receives', () => {
     const h = build();
     h.scrollEl.scrollTop = 600;
@@ -705,16 +695,6 @@ describe('provenance ledger classification (noteUserScroll)', () => {
 
     expect(h.noteUserScroll).not.toHaveBeenCalled();
     expect(h.refreshIsNearBottom).not.toHaveBeenCalled();
-  });
-
-  it('does not record a tagged programmatic scroll (the write already explained it)', () => {
-    const h = build();
-    h.intent.noteProgrammaticWrite(600);
-    h.scrollEl.scrollTop = 600;
-
-    h.scrollEl.dispatchEvent(new Event('scroll'));
-
-    expect(h.noteUserScroll).not.toHaveBeenCalled();
   });
 
   it('does not record a resize-correlated scroll — recording it would launder clamp evidence', () => {
@@ -947,26 +927,19 @@ describe('deferred scroll pass', () => {
         return el;
       };
 
-      it.each(['End', 'PageDown', 'ArrowDown'])('%s in a textarea arms no landing, so a later scroll with no input to the end stays escaped', async (k) => {
-        const { h, field } = escapedWith(textarea());
+      it.each([
+        ['End in a textarea', textarea(), 'End'],
+        ['PageDown in a textarea', textarea(), 'PageDown'],
+        ['ArrowDown in a textarea', textarea(), 'ArrowDown'],
+        ['End in a text input', input('text'), 'End'],
+        ['End in a number input', input('number'), 'End'],
+        ['End in a select', () => document.createElement('select'), 'End'],
+        ['End in a line inside a contenteditable', editableLine, 'End'],
+      ])('%s arms no landing, so a later scroll with no input to the end stays escaped', async (_name, make, k) => {
+        const { h, field } = escapedWith(make);
         key(field, k);
         await pastWindow();
         // A find-in-page or caret scroll reaches the end.
-        landAt(h, 0, 500);
-        await settleDeferredPass();
-
-        expect(h.state.escaped).toBe(true);
-      });
-
-      it.each([
-        ['a text input', input('text')],
-        ['a number input', input('number')],
-        ['a select', () => document.createElement('select')],
-        ['a line inside a contenteditable', editableLine],
-      ])('End in %s arms no landing', async (_name, make) => {
-        const { h, field } = escapedWith(make);
-        key(field, 'End');
-        await pastWindow();
         landAt(h, 0, 500);
         await settleDeferredPass();
 

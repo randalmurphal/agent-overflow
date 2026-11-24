@@ -31,6 +31,14 @@ describe('write-refusal guard', () => {
     // pre-latch ramp plus ~4 retries (one per 250ms).
     expect(h.writes.length).toBeLessThan(20);
     expect(h.writes.length).toBeGreaterThan(5);
+
+    // A long wedge stays latched once and bounded.
+    for (let i = 60; i < 600; i++) frame(); // 10s wedged
+    expect(h.refusalEvents.filter((e) => e.phase === 'latched')).toHaveLength(1);
+    expect(h.refusalEvents.filter((e) => e.phase === 'healed')).toHaveLength(0);
+    // Pre-latch ramp (5) + ~40 retries over 10s — nowhere near the 600
+    // writes the incident's busy-loop produced.
+    expect(h.writes.length).toBeLessThan(60);
   });
 
   it('re-anchors the model: no write ever coasts toward the far target', () => {
@@ -250,16 +258,5 @@ describe('write-refusal guard', () => {
     expect(retries).toBeLessThanOrEqual(
       Math.ceil(1000 / SPRING_WRITE_REFUSAL_RETRY_INTERVAL_MS) + 1,
     );
-  });
-
-  it('a long wedge stays latched once and bounded: 600 frames, one latch, retry-rate writes', () => {
-    const h = makeHarness({ refuse: true, clientHeight: 288 });
-    startWedgedChase(h, 900);
-    for (let i = 0; i < 600; i++) frame(); // 10s wedged
-    expect(h.refusalEvents.filter((e) => e.phase === 'latched')).toHaveLength(1);
-    expect(h.refusalEvents.filter((e) => e.phase === 'healed')).toHaveLength(0);
-    // Pre-latch ramp (5) + ~40 retries over 10s — nowhere near the 600
-    // writes the incident's busy-loop produced.
-    expect(h.writes.length).toBeLessThan(60);
   });
 });

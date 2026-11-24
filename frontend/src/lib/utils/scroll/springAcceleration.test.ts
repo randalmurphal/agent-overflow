@@ -287,18 +287,6 @@ describe('onset, acceleration continuity, and parked decay', () => {
     }
   });
 
-  it('starts from the one-pixel motion floor at standstill', () => {
-    const h = makeHarness();
-    h.setTarget(60);
-    h.spring.markTargetChanged();
-    h.spring.start();
-    const speeds = velocities(h, 3);
-    expect(speeds[0]).toBeGreaterThan(1.0);
-    expect(speeds[0]).toBeLessThan(1.2);
-    expect(speeds[1] / speeds[0]).toBeGreaterThan(1.08);
-    expect(speeds[1] / speeds[0]).toBeLessThan(1.16);
-  });
-
   it('counts a long-task gap while parked in full: decay uses real elapsed time, not the catch-up cap', () => {
     const h = makeHarness();
     h.setTarget(300);

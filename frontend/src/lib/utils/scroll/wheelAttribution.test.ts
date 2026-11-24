@@ -44,32 +44,18 @@ const UP = -10;
 const DOWN = 10;
 
 describe('scrollDeltaConsumedBelow', () => {
-  it('attributes an upward gesture to a registered box that can still scroll up', () => {
-    const { boundary, box, leaf } = tree({ scrollTop: 200 });
+  it.each([
+    ['attributes an upward gesture to a registered box that can still scroll up', 200, UP, true],
+    ['chains outward when the registered box is already at its top', 0, UP, false],
+    ['attributes a downward gesture to a box with room below', 0, DOWN, true],
+    ['chains outward when the registered box is already at its bottom', 400, DOWN, false],
+    ['treats a sub-pixel resting offset as pinned, not scrollable', 0.4, UP, false],
+    ['returns false for a zero delta', 200, 0, false],
+  ])('%s', (_name, scrollTop, delta, consumed) => {
+    const { boundary, box, leaf } = tree({ scrollTop });
     registerNestedScroller(box);
 
-    expect(scrollDeltaConsumedBelow(leaf, boundary, UP)).toBe(true);
-  });
-
-  it('chains outward when the registered box is already at its top', () => {
-    const { boundary, box, leaf } = tree({ scrollTop: 0 });
-    registerNestedScroller(box);
-
-    expect(scrollDeltaConsumedBelow(leaf, boundary, UP)).toBe(false);
-  });
-
-  it('attributes a downward gesture to a box with room below', () => {
-    const { boundary, box, leaf } = tree({ scrollTop: 0, clientHeight: 100, scrollHeight: 500 });
-    registerNestedScroller(box);
-
-    expect(scrollDeltaConsumedBelow(leaf, boundary, DOWN)).toBe(true);
-  });
-
-  it('chains outward when the registered box is already at its bottom', () => {
-    const { boundary, box, leaf } = tree({ scrollTop: 400, clientHeight: 100, scrollHeight: 500 });
-    registerNestedScroller(box);
-
-    expect(scrollDeltaConsumedBelow(leaf, boundary, DOWN)).toBe(false);
+    expect(scrollDeltaConsumedBelow(leaf, boundary, delta)).toBe(consumed);
   });
 
   it('ignores unregistered scrollable ancestors', () => {
@@ -122,20 +108,6 @@ describe('scrollDeltaConsumedBelow', () => {
     innerBox.appendChild(leaf);
 
     expect(scrollDeltaConsumedBelow(leaf, boundary, UP)).toBe(true);
-  });
-
-  it('treats a sub-pixel resting offset as pinned, not scrollable', () => {
-    const { boundary, box, leaf } = tree({ scrollTop: 0.4 });
-    registerNestedScroller(box);
-
-    expect(scrollDeltaConsumedBelow(leaf, boundary, UP)).toBe(false);
-  });
-
-  it('returns false for a zero delta', () => {
-    const { boundary, box, leaf } = tree({ scrollTop: 200 });
-    registerNestedScroller(box);
-
-    expect(scrollDeltaConsumedBelow(leaf, boundary, 0)).toBe(false);
   });
 
   it('returns false for a target outside the boundary subtree', () => {
@@ -196,28 +168,14 @@ describe('wheelConsumedBelow', () => {
 describe('touchDragConsumedBelow', () => {
   // A finger moving DOWN (positive dy) pulls earlier content into view —
   // the same direction as a negative wheel delta.
-  it('maps a downward finger drag to an upward scroll', () => {
-    const { boundary, box, leaf } = tree({ scrollTop: 200 });
+  it.each([
+    ['maps a downward finger drag to an upward scroll', 200, 40, true],
+    ['maps an upward finger drag to a downward scroll', 0, -40, true],
+    ['chains out when the box cannot move that way', 0, 40, false],
+  ])('%s', (_name, scrollTop, dy, consumed) => {
+    const { boundary, box, leaf } = tree({ scrollTop });
     registerNestedScroller(box);
 
-    expect(touchDragConsumedBelow(leaf, boundary, 40)).toBe(true);
-  });
-
-  it('maps an upward finger drag to a downward scroll', () => {
-    const { boundary, box, leaf } = tree({
-      scrollTop: 0,
-      clientHeight: 100,
-      scrollHeight: 500,
-    });
-    registerNestedScroller(box);
-
-    expect(touchDragConsumedBelow(leaf, boundary, -40)).toBe(true);
-  });
-
-  it('chains out when the box cannot move that way', () => {
-    const { boundary, box, leaf } = tree({ scrollTop: 0 });
-    registerNestedScroller(box);
-
-    expect(touchDragConsumedBelow(leaf, boundary, 40)).toBe(false);
+    expect(touchDragConsumedBelow(leaf, boundary, dy)).toBe(consumed);
   });
 });
