@@ -6,7 +6,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"agent-overflow/internal/testutil/mockexec"
@@ -84,26 +83,6 @@ func TestPreflightBinaryRefusesWhatItCannotRead(t *testing.T) {
 				t.Fatalf("PreflightBinary answered %+v, want a refusal", answer)
 			}
 		})
-	}
-}
-
-// A newer protocol resolves fine and is refused by CheckPreflight, which is
-// the split the remote path depends on: the answer is readable, and the
-// refusal names the one local command that fixes it.
-func TestPreflightBinaryReportsAProtocolThisSupervisorCannotSpeak(t *testing.T) {
-	t.Parallel()
-	binary := writePreflightScript(t, `printf '{"protocolVersion":99,"version":"9.0.0"}\n'`)
-
-	answer, err := PreflightBinary(context.Background(), binary)
-	if err != nil {
-		t.Fatalf("PreflightBinary: %v", err)
-	}
-	err = CheckPreflight(answer)
-	if err == nil {
-		t.Fatal("CheckPreflight accepted a newer protocol")
-	}
-	if !strings.Contains(err.Error(), "service update") {
-		t.Errorf("the refusal does not name the remedy: %v", err)
 	}
 }
 

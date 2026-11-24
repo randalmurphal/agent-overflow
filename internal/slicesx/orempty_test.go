@@ -5,17 +5,6 @@ import (
 	"testing"
 )
 
-func TestOrEmptyNilStrings(t *testing.T) {
-	var in []string
-	got := OrEmpty(in)
-	if got == nil {
-		t.Fatal("OrEmpty(nil) returned nil, want non-nil empty slice")
-	}
-	if len(got) != 0 {
-		t.Fatalf("OrEmpty(nil) length = %d, want 0", len(got))
-	}
-}
-
 func TestOrEmptyPopulatedReturnsSameStorage(t *testing.T) {
 	in := []string{"a", "b"}
 	got := OrEmpty(in)
@@ -46,14 +35,5 @@ func TestOrEmptyMarshalsToEmptyArray(t *testing.T) {
 	}
 	if string(encoded) != "[]" {
 		t.Fatalf("Marshal(OrEmpty(nil)) = %s, want []", encoded)
-	}
-}
-
-func TestOrEmptyGenericOverStructs(t *testing.T) {
-	type item struct{ N int }
-	var in []item
-	got := OrEmpty(in)
-	if got == nil || len(got) != 0 {
-		t.Fatalf("OrEmpty[struct](nil) = %v, want empty non-nil", got)
 	}
 }

@@ -255,47 +255,32 @@ func TestFormatThreadContextPinsWhenMarkerBudgetDropsTheFirstUserMessage(t *test
 	}
 }
 
-// TestCollectRecentContextDropsASectionItsHeaderCannotFit: when the
-// remaining room is no bigger than the section's `ROLE:\n` header, the
-// section contributes nothing at all — a bare label with no text is
-// worse than an omission.
-func TestCollectRecentContextDropsASectionItsHeaderCannotFit(t *testing.T) {
-	messages := []Message{
-		{Role: "assistant", Text: strings.Repeat("x", 500)},
-		{Role: "user", Text: "hi"},
-	}
-	// "USER:\nhi" (8) + separator (2) leaves exactly len("ASSISTANT:\n")
-	// (11) — room for the header and nothing else.
-	text, truncated, _ := collectRecentContext(messages, 8+2+11)
-
-	if text != "USER:\nhi" {
-		t.Fatalf("collected %q, want the newest section alone", text)
-	}
-	if !truncated {
-		t.Fatal("dropped section not reported as truncation")
-	}
-}
-
-// TestCollectRecentContextDropsASectionWhoseTailCutsToNothing: room can
-// be positive yet smaller than one rune of the section's text, in which
-// case TailRunes yields "" and the section must still contribute
-// nothing rather than a bare `ROLE:` label.
-func TestCollectRecentContextDropsASectionWhoseTailCutsToNothing(t *testing.T) {
-	messages := []Message{
-		{Role: "assistant", Text: strings.Repeat("\U0001D11E", 200)}, // 4 bytes per rune
-		{Role: "user", Text: "hi"},
-	}
-	// Room after the header is 2 bytes — inside the final 4-byte rune.
-	text, truncated, _ := collectRecentContext(messages, 8+2+11+2)
-
-	if text != "USER:\nhi" {
-		t.Fatalf("collected %q, want the newest section alone", text)
-	}
-	if strings.Contains(text, "ASSISTANT") {
-		t.Fatal("bare role label leaked into the collected context")
-	}
-	if !truncated {
-		t.Fatal("dropped section not reported as truncation")
+// A section with no room for any of its text contributes nothing at all: a
+// bare `ROLE:` label with no text is worse than an omission. "USER:\nhi" (8)
+// plus the separator (2) leaves len("ASSISTANT:\n") (11) for the older
+// section. With exactly that, only the header fits. With 2 bytes more, the
+// room is positive yet inside one 4-byte rune, so TailRunes yields "".
+func TestCollectRecentContextDropsASectionWithNoRoomForItsText(t *testing.T) {
+	for _, tc := range []struct {
+		name, older string
+		room        int
+	}{
+		{"room for the header alone", strings.Repeat("x", 500), 8 + 2 + 11},
+		{"tail cuts to nothing", strings.Repeat("\U0001D11E", 200), 8 + 2 + 11 + 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			messages := []Message{
+				{Role: "assistant", Text: tc.older},
+				{Role: "user", Text: "hi"},
+			}
+			text, truncated, _ := collectRecentContext(messages, tc.room)
+			if text != "USER:\nhi" {
+				t.Fatalf("collected %q, want the newest section alone", text)
+			}
+			if !truncated {
+				t.Fatal("dropped section not reported as truncation")
+			}
+		})
 	}
 }
 

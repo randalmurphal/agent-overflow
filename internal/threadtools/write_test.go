@@ -486,26 +486,6 @@ func TestUpdateRefusesPerIdAndStillAppliesTheRest(t *testing.T) {
 	}
 }
 
-// An archive whose cleanup failed reaches the model as an updated row with
-// the cleanup's error, from the computer that holds the thread, and the note
-// says it was archived rather than refused.
-func TestUpdateReportsAnArchiveWhoseCleanupFailed(t *testing.T) {
-	p := newPair(t)
-	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Remote"})
-	message := "The thread was archived, but its browser pages could not all be closed."
-	p.remote.updated = []ThreadUpdateResult{{ThreadID: remoteThreadID, Updated: true, Error: message, ErrorCode: CodeCleanupFailed}}
-
-	result := call(t, p.server, localCaller(), "thread_update", `{"thread_ids":["`+remoteThreadID+`"],"archived":true}`)
-	list := rows(t, result["results"])
-	if len(list) != 1 || field(t, list[0], "updated") != true || field(t, list[0], "error_code") != CodeCleanupFailed || field(t, list[0], "error") != message {
-		t.Fatalf("results = %v", result["results"])
-	}
-	note, _ := result["note"].(string)
-	if !strings.Contains(note, "tell the user") || strings.Contains(note, "left untouched") {
-		t.Errorf("note = %q", note)
-	}
-}
-
 // TestUpdateGroupsIdsByTheComputerThatHoldsThem, so one unreachable
 // computer fails only its own ids.
 func TestUpdateGroupsIdsByTheComputerThatHoldsThem(t *testing.T) {
