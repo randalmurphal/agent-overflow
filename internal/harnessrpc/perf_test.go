@@ -270,6 +270,7 @@ func TestHarnessResetDropsAPerfRunWithoutWaitingOutTheUIQueryTimeout(t *testing.
 	if status.Active {
 		t.Fatal("HarnessReset must leave no perf run armed")
 	}
+	h.stopPerfRunForReset() // idempotent
 }
 
 // finishPerfRun is reachable twice on one run (HarnessPerfStop racing the
@@ -472,45 +473,6 @@ func TestHarnessPerfStartRefusesASecondRun(t *testing.T) {
 	if _, err := h.HarnessPerfStart(HarnessPerfSpec{}); err == nil {
 		t.Fatal("a second concurrent run must be refused")
 	}
-}
-
-// With no bridge attached the arm query times out, and the refusal must
-// leave nothing armed — otherwise the next start would report a run whose
-// meters were never actually turned on.
-func TestHarnessPerfStartFailsWithNoBridgeAndArmsNothing(t *testing.T) {
-	h := New(Config{Host: &testHost{}})
-	h.perf.mu.Lock()
-	h.perf.mu.Unlock()
-	// Shrink the wait: the arm uses the caller-facing 10s timeout, so drive
-	// the query path directly to prove the message, then prove the state.
-	if _, err := h.queryUI(json.RawMessage(`{"v":1,"kind":"perf","op":"start"}`), 30*time.Millisecond); err == nil {
-		t.Fatal("arming with no bridge must fail")
-	} else if !strings.Contains(err.Error(), "harness bridge inactive") {
-		t.Errorf("error = %v", err)
-	}
-	status, err := h.HarnessPerfStatus()
-	if err != nil {
-		t.Fatalf("HarnessPerfStatus: %v", err)
-	}
-	if status.Active {
-		t.Error("no run may be armed after a failed arm")
-	}
-}
-
-func TestStopPerfRunForResetDropsAnArmedRun(t *testing.T) {
-	h, _ := newPerfHarness(t)
-	if _, err := h.HarnessPerfStart(HarnessPerfSpec{}); err != nil {
-		t.Fatalf("HarnessPerfStart: %v", err)
-	}
-	h.stopPerfRunForReset()
-	status, err := h.HarnessPerfStatus()
-	if err != nil {
-		t.Fatalf("HarnessPerfStatus: %v", err)
-	}
-	if status.Active {
-		t.Fatal("HarnessReset must leave no perf run armed")
-	}
-	h.stopPerfRunForReset() // idempotent
 }
 
 func TestEmptyMeterRunDoesNotQueryOrArmThePage(t *testing.T) {

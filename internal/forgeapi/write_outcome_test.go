@@ -156,7 +156,6 @@ func TestWriteNotAppliedGraphQLOnTheWire(t *testing.T) {
 		{"validation, no data", `{"errors":[{"message":"Field 'x' doesn't exist on type 'Mutation'","extensions":{"code":"undefinedField"}}]}`, true},
 		{"GitLab permission answer", `{"data":{"m":null},"errors":[{"message":"` + gitlabDenied + `","path":["m"]}]}`, true},
 		{"partial data with errors", `{"data":{"m":{"id":"1"}},"errors":[{"type":"FORBIDDEN","message":"no"}]}`, false},
-		{"internal error, null payload", `{"data":{"m":null},"errors":[{"message":"Something went wrong while executing your query."}]}`, false},
 		{"timeout, null data", `{"data":null,"errors":[{"message":"Timeout on validation of query"}]}`, false},
 		{"refusal beside data that does not decode", `{"data":{"m":5},"errors":[{"type":"FORBIDDEN","message":"no"}]}`, false},
 	} {

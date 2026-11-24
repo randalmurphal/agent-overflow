@@ -353,20 +353,6 @@ func TestSameLifecycleRejectsRestartNonce(t *testing.T) {
 	}
 }
 
-func TestCurrentLauncherIdentityRequiresAllFields(t *testing.T) {
-	identity := Identity{IdentityVersion: IdentityVersion, BootNonce: "boot", LauncherPid: 42}
-	if err := identity.Validate("/tmp/root", "/tmp/root/agent-overflow"); err == nil {
-		t.Fatal("accepted current identity with incomplete launcher identity")
-	}
-}
-
-func TestCurrentLauncherIdentityRejectsFieldsWithoutPID(t *testing.T) {
-	identity := Identity{IdentityVersion: IdentityVersion, BootNonce: "boot", LauncherProfile: string(ModePerf)}
-	if err := identity.Validate("/tmp/root", "/tmp/root/agent-overflow"); err == nil {
-		t.Fatal("accepted launcher identity fields without a launcher pid")
-	}
-}
-
 func TestCurrentLauncherIdentityValidatesCrossBoundaryFields(t *testing.T) {
 	root := t.TempDir()
 	identity := Identity{
@@ -388,12 +374,20 @@ func TestCurrentLauncherIdentityValidatesCrossBoundaryFields(t *testing.T) {
 		"namespace":    func(i *Identity) { i.LauncherPIDNamespace = "linux" },
 		"profile":      func(i *Identity) { i.LauncherProfile = "prod" },
 		"data root":    func(i *Identity) { i.LauncherDataRoot = filepath.Join(root, "other") },
+		"pid without the other fields": func(i *Identity) {
+			*i = Identity{IdentityVersion: IdentityVersion, BootNonce: "boot", LauncherPid: 42}
+		},
+		"fields without a pid": func(i *Identity) {
+			*i = Identity{IdentityVersion: IdentityVersion, BootNonce: "boot", LauncherProfile: string(ModePerf)}
+		},
 	} {
-		copy := identity
-		mutate(&copy)
-		if err := copy.Validate(root, filepath.Join(root, "agent-overflow")); err == nil {
-			t.Errorf("accepted launcher identity with changed %s", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			copy := identity
+			mutate(&copy)
+			if err := copy.Validate(root, filepath.Join(root, "agent-overflow")); err == nil {
+				t.Errorf("accepted launcher identity with changed %s", name)
+			}
+		})
 	}
 }
 

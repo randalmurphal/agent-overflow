@@ -184,66 +184,58 @@ func TestTheRetiredStartupDelayNamesItsReplacement(t *testing.T) {
 	}
 }
 
-// TestExitDelayValidation: the delay must stay below the app's stdin-close
-// grace, or the scenario tests the kill instead of the shutdown window.
-func TestExitDelayValidation(t *testing.T) {
-	doc := func(ms string) string {
-		return `{"version":1,"name":"x","provider":"claude","exitDelayMs":` + ms +
-			`,"turns":[{"steps":[{"delayMs":1}]}]}`
-	}
-	for _, ms := range []string{"0", "1", "2500"} {
-		if _, err := Parse([]byte(doc(ms))); err != nil {
-			t.Errorf("exitDelayMs %s was rejected: %v", ms, err)
-		}
-	}
-	for _, ms := range []string{"-1", "2501", "30000"} {
-		if _, err := Parse([]byte(doc(ms))); err == nil {
-			t.Errorf("exitDelayMs %s was accepted; the cap is %d", ms, MaxExitDelayMs)
-		}
-	}
-}
-
-// TestCoalesceIsExclusiveWithPacing: coalesce says "one write", the
-// pacing knobs say "several writes, spread out". A scenario asking for
-// both has no meaning, and silently honouring one of them is how a test
-// ends up asserting against delivery it never actually got.
-func TestCoalesceIsExclusiveWithPacing(t *testing.T) {
-	step := func(extra string) string {
-		return `{"version":1,"name":"x","provider":"claude","turns":[{"steps":[{"emit":{"lines":["a","b"],"coalesce":true` +
-			extra + `}}]}]}`
-	}
-	if _, err := Parse([]byte(step(""))); err != nil {
-		t.Fatalf("plain coalesce was rejected: %v", err)
-	}
-	for label, extra := range map[string]string{
-		"delayBetweenMs":  `,"delayBetweenMs":5`,
-		"chunkBytes":      `,"chunkBytes":8`,
-		"chunkIntervalMs": `,"chunkIntervalMs":5`,
+// TestFieldValuesAcceptedAndRefused: each field below parses its valid values and
+// refuses the rest. The document is the row's value between before and
+// after.
+func TestFieldValuesAcceptedAndRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name, before, after string
+		accept, refuse      []string
+	}{
+		// The delay must stay below the app's stdin-close grace, or the
+		// scenario tests the kill instead of the shutdown window.
+		{
+			name:   "exitDelayMs",
+			before: `{"version":1,"name":"x","provider":"claude","exitDelayMs":`,
+			after:  `,"turns":[{"steps":[{"delayMs":1}]}]}`,
+			accept: []string{"0", "1", "2500"},
+			refuse: []string{"-1", "2501", "30000"},
+		},
+		// Coalesce says "one write", the pacing knobs say "several writes,
+		// spread out". A scenario asking for both has no meaning, and
+		// silently honouring one of them is how a test ends up asserting
+		// against delivery it never actually got.
+		{
+			name:   "coalesce with pacing",
+			before: `{"version":1,"name":"x","provider":"claude","turns":[{"steps":[{"emit":{"lines":["a","b"],"coalesce":true`,
+			after:  `}}]}]}`,
+			accept: []string{""},
+			refuse: []string{`,"delayBetweenMs":5`, `,"chunkBytes":8`, `,"chunkIntervalMs":5`},
+		},
+		// The value is pasted into a userAgent string and into Claude's
+		// system/init, both of which are PARSED on the other side. Anything
+		// that is not a dotted number would read as an unparseable version
+		// rather than as the downgrade the author meant.
+		{
+			name:   "providerVersion",
+			before: `{"version":1,"name":"x","provider":"codex","providerVersion":`,
+			after:  `,"turns":[{"steps":[{"delayMs":1}]}]}`,
+			accept: []string{`""`, `"0.147.0"`, `"99"`, `"1.2.3.4"`},
+			refuse: []string{`"v0.147.0"`, `" 0.147.0"`, `"0.147.0-beta"`, `"latest"`},
+		},
 	} {
-		if _, err := Parse([]byte(step(extra))); err == nil {
-			t.Errorf("coalesce + %s was accepted; they contradict each other", label)
-		}
-	}
-}
-
-// TestProviderVersionValidation: the value is pasted into a userAgent
-// string and into Claude's system/init, both of which are PARSED on the
-// other side. Anything that is not a dotted number would read as an
-// unparseable version rather than as the downgrade the author meant.
-func TestProviderVersionValidation(t *testing.T) {
-	doc := func(v string) string {
-		return `{"version":1,"name":"x","provider":"codex","providerVersion":` + v +
-			`,"turns":[{"steps":[{"delayMs":1}]}]}`
-	}
-	for _, v := range []string{`""`, `"0.147.0"`, `"99"`, `"1.2.3.4"`} {
-		if _, err := Parse([]byte(doc(v))); err != nil {
-			t.Errorf("providerVersion %s was rejected: %v", v, err)
-		}
-	}
-	for _, v := range []string{`"v0.147.0"`, `" 0.147.0"`, `"0.147.0-beta"`, `"latest"`} {
-		if _, err := Parse([]byte(doc(v))); err == nil {
-			t.Errorf("providerVersion %s was accepted; it is not a dotted version", v)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			for _, v := range tc.accept {
+				if _, err := Parse([]byte(tc.before + v + tc.after)); err != nil {
+					t.Errorf("%s %s was rejected: %v", tc.name, v, err)
+				}
+			}
+			for _, v := range tc.refuse {
+				if _, err := Parse([]byte(tc.before + v + tc.after)); err == nil {
+					t.Errorf("%s %s was accepted", tc.name, v)
+				}
+			}
+		})
 	}
 }
 
