@@ -41,6 +41,11 @@ type versionedCodex struct {
 	laterVersion      string
 	unsubscribeFails  bool
 	providerThreadIDs string
+	// selectVar, when set, makes the fake a launcher that runs
+	// selectedVersion whenever that variable is "1" in its environment, as
+	// a version manager picks a build from its environment.
+	selectVar       string
+	selectedVersion string
 }
 
 func (c versionedCodex) write(t *testing.T) {
@@ -62,6 +67,7 @@ fi
 launches=$(/usr/bin/wc -l < '` + c.launchLog + `')
 version='` + c.laterVersion + `'
 if [ "$launches" -le 1 ]; then version='` + c.firstVersion + `'; fi
+` + c.selectScript() + `
 while IFS= read -r line; do
   id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
   if [ -z "$id" ]; then continue; fi
@@ -85,6 +91,14 @@ while IFS= read -r line; do
 done
 `
 	mockexec.WriteFile(t, c.path, []byte(script), 0o755)
+}
+
+// selectScript is the line that lets the environment pick the build.
+func (c versionedCodex) selectScript() string {
+	if c.selectVar == "" {
+		return ""
+	}
+	return `if [ "${` + c.selectVar + `}" = 1 ]; then version='` + c.selectedVersion + `'; fi`
 }
 
 func newVersionedCodex(t *testing.T, version string) versionedCodex {
@@ -410,6 +424,40 @@ func TestCodexVersionRefusalAnswersAColdCatalogSpawn(t *testing.T) {
 	}
 	if len(after) != len(before) {
 		t.Fatalf("threads = %d after a refused spawn, want %d", len(after), len(before))
+	}
+}
+
+// A launcher that picks the supported build only under the environment AO
+// gives Codex: the catalog starts it the way a session would, so a cold
+// catalog lists the build a session runs and the spawn is not refused.
+func TestCodexCatalogStartsTheBuildASessionRuns(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	useCodexCatalog(f)
+	fake := newVersionedCodex(t, "0.153.4")
+	fake.selectVar = "CODEX_TEST_SELECT"
+	fake.selectedVersion = provider.MinimumCodexCLIVersion
+	fake.write(t)
+	if _, err := f.app.settings.Update(map[string]any{"codexBinaryPath": fake.path}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.providerDiscoveryService().SetProviderCustomEnvVar(
+		string(provider.Codex), fake.selectVar, "1", false,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	answer, err := f.app.threadToolsServer().Call(t.Context(), f.callerIdentity(), "thread_spawn",
+		json.RawMessage(`{"prompt":"work","provider":"codex"}`))
+	if err != nil {
+		t.Fatalf("thread_spawn on a launcher that runs %s under AO's environment was refused: %v",
+			provider.MinimumCodexCLIVersion, err)
+	}
+	if encoded, _ := json.Marshal(answer); !strings.Contains(string(encoded), `"thread_id"`) {
+		t.Fatalf("thread_spawn answered %s, want the created thread", encoded)
+	}
+	if n := len(fake.launches(t)); n < 1 {
+		t.Fatalf("app-server launches = %d, want the catalog's", n)
 	}
 }
 

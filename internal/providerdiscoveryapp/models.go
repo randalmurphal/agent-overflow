@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 )
@@ -41,12 +42,23 @@ func (s *Service) ModelsForProvider(ctx context.Context, providerName string) (p
 
 // CodexModelsForBinary returns the TTL-cached live Codex model catalog.
 func (s *Service) CodexModelsForBinary(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
-	return s.caches.CodexModels.Get(ctx, normalizedCodexBinary(binary), s.deps.Reaper)
+	return s.caches.CodexModels.Get(ctx, s.codexLaunch(binary), s.deps.Reaper)
 }
 
 // CachedCodexModelsForBinary performs a nonblocking catalog read.
 func (s *Service) CachedCodexModelsForBinary(binary string) ([]provider.ModelInfo, error, bool) {
-	return s.caches.CodexModels.Peek(normalizedCodexBinary(binary))
+	return s.caches.CodexModels.Peek(s.codexLaunch(binary))
+}
+
+// codexLaunch is how the catalog starts binary: as a session would.
+func (s *Service) codexLaunch(binary string) codexmodels.Launch {
+	binary = normalizedCodexBinary(binary)
+	if s.deps.CodexLaunch == nil {
+		return codexmodels.Launch{Binary: binary}
+	}
+	launch := s.deps.CodexLaunch(binary)
+	launch.Binary = binary
+	return launch
 }
 
 // RefreshCodexModelCatalog invalidates all binary-scoped Codex model rows.
@@ -61,7 +73,7 @@ func normalizedCodexBinary(binary string) string {
 
 // KnownCodexModel returns capability evidence without starting or joining a probe.
 func (s *Service) KnownCodexModel(binary, model string) (provider.ModelInfo, bool) {
-	return s.caches.CodexModels.KnownModel(normalizedCodexBinary(binary), model)
+	return s.caches.CodexModels.KnownModel(s.codexLaunch(binary), model)
 }
 
 // AgyModelsForBinary returns cached or live-probed Antigravity models.

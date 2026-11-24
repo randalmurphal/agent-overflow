@@ -17,19 +17,19 @@ func TestKnownModelSurvivesExpiryRefreshAndFailure(t *testing.T) {
 	next := []provider.ModelInfo{{Slug: "m", Provider: "codex", Capabilities: []string{provider.ModelCapabilityFastMode}, FastModeTier: &provider.FastModeTier{ID: "turbo"}, ReasoningEfforts: []provider.ReasoningEffortOption{{Slug: "high", Default: true}}}}
 	var failure error
 	calls := 0
-	cache := NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+	cache := NewWith(time.Minute, func(context.Context, Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 		calls++
 		return next, failure
 	}, func() time.Time { return now })
-	if _, ok := cache.KnownModel("codex", "m"); ok || calls != 0 {
+	if _, ok := cache.KnownModel(Launch{Binary: "codex"}, "m"); ok || calls != 0 {
 		t.Fatal("cold evidence started a lookup")
 	}
-	if _, err := cache.Get(context.Background(), "codex", procutiltest.Reaper()); err != nil {
+	if _, err := cache.Get(context.Background(), Launch{Binary: "codex"}, procutiltest.Reaper()); err != nil {
 		t.Fatal(err)
 	}
 	assertKnown := func() {
 		t.Helper()
-		model, ok := cache.KnownModel("codex", "m")
+		model, ok := cache.KnownModel(Launch{Binary: "codex"}, "m")
 		if !ok || model.FastModeTier == nil || model.FastModeTier.ID != "turbo" || !provider.ModelInfoSupportsReasoningEffort(model, "high") {
 			t.Fatalf("lost evidence: %+v", model)
 		}
@@ -41,7 +41,7 @@ func TestKnownModelSurvivesExpiryRefreshAndFailure(t *testing.T) {
 		t.Fatal("expired evidence started a lookup")
 	}
 	next = []provider.ModelInfo{{Slug: "m", Provider: "codex", ReasoningEfforts: []provider.ReasoningEffortOption{{Slug: "low", Default: true}}}}
-	current, err := cache.Get(context.Background(), "codex", procutiltest.Reaper())
+	current, err := cache.Get(context.Background(), Launch{Binary: "codex"}, procutiltest.Reaper())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,15 +52,15 @@ func TestKnownModelSurvivesExpiryRefreshAndFailure(t *testing.T) {
 	now = now.Add(2 * time.Minute)
 	next = nil
 	failure = errors.New("offline")
-	if _, err := cache.Get(context.Background(), "codex", procutiltest.Reaper()); err == nil {
+	if _, err := cache.Get(context.Background(), Launch{Binary: "codex"}, procutiltest.Reaper()); err == nil {
 		t.Fatal("expected refresh error")
 	}
 	assertKnown()
-	if _, ok := cache.KnownModel("other-binary", "m"); ok {
+	if _, ok := cache.KnownModel(Launch{Binary: "other-binary"}, "m"); ok {
 		t.Fatal("evidence crossed binary identity")
 	}
 	cache.Reset()
-	if _, ok := cache.KnownModel("codex", "m"); ok {
+	if _, ok := cache.KnownModel(Launch{Binary: "codex"}, "m"); ok {
 		t.Fatal("reset retained prior identity")
 	}
 }

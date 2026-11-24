@@ -77,11 +77,16 @@ type Deps struct {
 	// ProbeAgyModels performs a live zero-token model catalog probe against
 	// the given Antigravity binary (borrowing a pooled *acp.Conn when live).
 	ProbeAgyModels func(ctx context.Context, binary string) ([]provider.ModelInfo, error)
+	// CodexLaunch is how a session's app-server would start binary: its
+	// working directory and environment. The model catalog starts Codex the
+	// same way, so it lists the build a session runs. Nil starts the binary
+	// in the inherited environment.
+	CodexLaunch func(binary string) codexmodels.Launch
 }
 
 // Caches is the bounded process-wide discovery cache set. Probe answers are
-// keyed by every environment dimension and expire; Codex and Agy model rows are
-// TTL'd by binary. Sharing them avoids duplicate subprocesses when tests or
+// keyed by every environment dimension and expire; Codex model rows are TTL'd
+// by launch and Agy model rows by binary. Sharing them avoids duplicate subprocesses when tests or
 // startup glue briefly construct more than one App in one process.
 type Caches struct {
 	Claude      *provider.ProbeCache

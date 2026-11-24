@@ -16,7 +16,7 @@ import (
 
 func TestModelCapabilitiesUseKnownCodexCatalog(t *testing.T) {
 	t.Parallel()
-	app := appWithCodexModelCatalog(t, func(_ context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
+	app := appWithCodexModelCatalog(t, func(_ context.Context, _ codexmodels.Launch, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		return []provider.ModelInfo{{
 			Slug:     "gpt-5.5",
 			Provider: string(provider.Codex),
@@ -59,7 +59,7 @@ func TestModelCapabilitiesUseKnownCodexCatalog(t *testing.T) {
 
 func TestModelCapabilitiesFallBackWhenCodexCatalogFails(t *testing.T) {
 	t.Parallel()
-	app := appWithCodexModelCatalog(t, func(_ context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
+	app := appWithCodexModelCatalog(t, func(_ context.Context, _ codexmodels.Launch, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		return nil, errors.New("codex unavailable")
 	})
 
@@ -77,7 +77,7 @@ func TestModelCapabilitiesFallBackWhenCodexCatalogFails(t *testing.T) {
 // into the legacy `priority` id rather than dropping fast mode.
 func TestFastModeTierIDForModelReadsTheCatalogTier(t *testing.T) {
 	t.Parallel()
-	app := appWithCodexModelCatalog(t, func(_ context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
+	app := appWithCodexModelCatalog(t, func(_ context.Context, _ codexmodels.Launch, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		return []provider.ModelInfo{
 			{
 				Slug:         "gpt-fast",
@@ -115,7 +115,7 @@ func TestBuildSessionOptionsStampsTheFastModeTier(t *testing.T) {
 	app := newTestAppWithStore(t)
 	// newTestAppWithStore installs a deliberately-failing model lister; replace
 	// that test-only cache with the catalog this test asserts against.
-	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 		return []provider.ModelInfo{{
 			Slug:         "gpt-fast",
 			Provider:     string(provider.Codex),

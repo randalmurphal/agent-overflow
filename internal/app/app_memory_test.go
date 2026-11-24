@@ -280,7 +280,7 @@ func TestThreadToolForksDecideOwnMemoryFromTheirCaller(t *testing.T) {
 	binary := mockexec.Write(t, filepath.Join(t.TempDir(), "codex.sh"),
 		"#!/bin/bash\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.160.0'; exit 0; fi\ntee -a '"+requests+"' | '"+inner+"'\n")
 	// The Codex catalog the app ships, in place of the live one tests turn off.
-	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 		return provider.CodexModels, nil
 	}, time.Now)
 	if _, err := f.app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {

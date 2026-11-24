@@ -1,13 +1,15 @@
 // Package codexmodels caches Codex's live `model/list` response per
-// binary path. The lookup spawns a Codex CLI subprocess, so settings
-// pages and model menus would otherwise fan out one Codex process per
-// render. The Cache TTLs the result and single-flights concurrent
-// lookups against the same binary so a flurry of UI calls collapses
-// into one CLI spawn.
+// launch: the binary and the working directory and environment it starts
+// with, because a launcher can pick a different build from either. The
+// lookup spawns a Codex CLI subprocess, so settings pages and model menus
+// would otherwise fan out one Codex process per render. The Cache TTLs the
+// result and single-flights concurrent lookups of one launch so a flurry
+// of UI calls collapses into one CLI spawn.
 package codexmodels
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -28,11 +30,28 @@ const (
 	DefaultErrorTTL = 15 * time.Second
 )
 
+// Launch is how a lookup starts Codex. A session's app-server starts with the
+// same working directory and environment, so the catalog lists the build a
+// session would run: a version manager's shim can pick the build from its
+// environment or directory, not only from the binary path.
+type Launch struct {
+	Binary  string
+	WorkDir string
+	Env     map[string]string
+}
+
+// key is the cache key of a launch. The environment is a digest: it may
+// hold a credential and the key is a long-lived map key. NUL separates the
+// fields because no path contains one.
+func (l Launch) key() string {
+	return strings.TrimSpace(l.Binary) + "\x00" + l.WorkDir + "\x00" + provider.EnvFingerprint(l.Env)
+}
+
 // Lister is the seam tests use to stub out the CLI shell-out. Production
 // wires it to codexprovider.ListModels.
-type Lister func(ctx context.Context, binary string, reaper procutil.Reaper) ([]provider.ModelInfo, error)
+type Lister func(ctx context.Context, launch Launch, reaper procutil.Reaper) ([]provider.ModelInfo, error)
 
-// Cache TTLs Codex model lookups per binary path and single-flights
+// Cache TTLs Codex model lookups per launch and single-flights
 // concurrent calls. Construct with New; the zero value is unusable.
 type Cache struct {
 	mu       sync.Mutex
@@ -84,9 +103,9 @@ func NewWith(ttl time.Duration, list Lister, now func() time.Time) *Cache {
 	}
 }
 
-// Get returns the cached model list for the binary, calling the lister
-// at most once per binary across concurrent callers. Concurrent calls
-// to Get for the same binary block on a single in-flight lookup and
+// Get returns the cached model list for the launch, calling the lister
+// at most once per launch across concurrent callers. Concurrent calls
+// to Get for the same launch block on a single in-flight lookup and
 // share its result. Failed lookups are cached briefly to prevent sequential
 // effort and Fast-mode checks from repeating the same bounded subprocess.
 //
@@ -94,19 +113,21 @@ func NewWith(ttl time.Duration, list Lister, now func() time.Time) *Cache {
 // CodexBinaryPath default that codex.ListModels resolves internally.
 // The returned slice is a defensive clone — callers may mutate it. reaper
 // ends a lookup's process if the backend dies first.
-func (c *Cache) Get(ctx context.Context, binary string, reaper procutil.Reaper) ([]provider.ModelInfo, error) {
-	binary = strings.TrimSpace(binary)
+func (c *Cache) Get(ctx context.Context, launch Launch, reaper procutil.Reaper) ([]provider.ModelInfo, error) {
+	launch.Binary = strings.TrimSpace(launch.Binary)
+	launch.Env = maps.Clone(launch.Env)
+	key := launch.key()
 	c.mu.Lock()
-	if e, ok := c.entries[binary]; ok && c.now().Before(e.expiresAt) {
+	if e, ok := c.entries[key]; ok && c.now().Before(e.expiresAt) {
 		models := provider.CloneModels(e.models)
 		c.mu.Unlock()
 		return models, e.err
 	}
-	l, joined := c.inflight[binary]
+	l, joined := c.inflight[key]
 	if !joined {
 		l = &load{done: make(chan struct{})}
-		c.inflight[binary] = l
-		go c.run(context.WithoutCancel(ctx), binary, reaper, l)
+		c.inflight[key] = l
+		go c.run(context.WithoutCancel(ctx), key, launch, reaper, l)
 	}
 	c.mu.Unlock()
 	select {
@@ -120,8 +141,8 @@ func (c *Cache) Get(ctx context.Context, binary string, reaper procutil.Reaper) 
 // run is one shared lookup. It belongs to no caller: it keeps the first
 // caller's values but not its cancellation, ends at the lister's own
 // bound, and each caller waits on its own context.
-func (c *Cache) run(ctx context.Context, binary string, reaper procutil.Reaper, l *load) {
-	models, err := c.list(ctx, binary, reaper)
+func (c *Cache) run(ctx context.Context, key string, launch Launch, reaper procutil.Reaper, l *load) {
+	models, err := c.list(ctx, launch, reaper)
 	cloned := provider.CloneModels(models)
 
 	c.mu.Lock()
@@ -130,9 +151,9 @@ func (c *Cache) run(ctx context.Context, binary string, reaper procutil.Reaper, 
 	// Reset detaches in-flight loads. A detached load still completes for
 	// the callers already waiting on it, but it must not overwrite a newer
 	// lookup that started after the reset.
-	if c.inflight[binary] == l {
-		delete(c.inflight, binary)
-		known := c.entries[binary].known
+	if c.inflight[key] == l {
+		delete(c.inflight, key)
+		known := c.entries[key].known
 		if err == nil {
 			known = rememberModels(known, models)
 		}
@@ -140,7 +161,7 @@ func (c *Cache) run(ctx context.Context, binary string, reaper procutil.Reaper, 
 		if err != nil {
 			entryTTL = DefaultErrorTTL
 		}
-		c.entries[binary] = entry{
+		c.entries[key] = entry{
 			models:    provider.CloneModels(models),
 			known:     known,
 			err:       err,
@@ -154,10 +175,10 @@ func (c *Cache) run(ctx context.Context, binary string, reaper procutil.Reaper, 
 // KnownModel returns previously observed capabilities without waiting for a refresh.
 // Expiry and refresh failures do not revoke that evidence. Reset clears it when
 // the provider identity changes. The latest catalog returned by Get stays separate.
-func (c *Cache) KnownModel(binary, slug string) (provider.ModelInfo, bool) {
+func (c *Cache) KnownModel(launch Launch, slug string) (provider.ModelInfo, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, model := range c.entries[strings.TrimSpace(binary)].known {
+	for _, model := range c.entries[launch.key()].known {
 		if model.Slug == slug {
 			return provider.CloneModelInfo(model), true
 		}
@@ -215,12 +236,11 @@ func rememberModels(previous, current []provider.ModelInfo) []provider.ModelInfo
 // lookup. The final return value is false for a miss, an expired entry, or a
 // lookup that is still in flight. Cached errors are returned as hits so callers
 // can use the same fallback they would use after Get without retrying the CLI.
-func (c *Cache) Peek(binary string) ([]provider.ModelInfo, error, bool) {
-	binary = strings.TrimSpace(binary)
+func (c *Cache) Peek(launch Launch) ([]provider.ModelInfo, error, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	e, ok := c.entries[binary]
+	e, ok := c.entries[launch.key()]
 	if !ok || !c.now().Before(e.expiresAt) {
 		return nil, nil, false
 	}
@@ -237,6 +257,11 @@ func (c *Cache) Reset() {
 	c.mu.Unlock()
 }
 
-func defaultLister(ctx context.Context, binary string, reaper procutil.Reaper) ([]provider.ModelInfo, error) {
-	return codexprovider.ListModels(ctx, codexprovider.ModelListConfig{Binary: binary, Reaper: reaper})
+func defaultLister(ctx context.Context, launch Launch, reaper procutil.Reaper) ([]provider.ModelInfo, error) {
+	return codexprovider.ListModels(ctx, codexprovider.ModelListConfig{
+		Binary:  launch.Binary,
+		WorkDir: launch.WorkDir,
+		Env:     launch.Env,
+		Reaper:  reaper,
+	})
 }

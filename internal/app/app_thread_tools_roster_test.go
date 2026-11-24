@@ -344,7 +344,7 @@ func TestTheSpawnShapeNamesProfilesByOfferedProviderAndReadsNoModels(t *testing.
 	var askOnce sync.Once
 	ask := func() { askOnce.Do(func() { close(asked) }) }
 	t.Cleanup(ask)
-	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(ctx context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
+	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(ctx context.Context, _ codexmodels.Launch, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		by, _ := ctx.Value(lookupBy{}).(string)
 		entered <- by
 		<-asked
@@ -481,7 +481,7 @@ func TestEveryListedProfileSpawnsWithWhatItLists(t *testing.T) {
 	f := newRequestFixture(t)
 	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
 	// The Codex catalog the app ships, in place of the live one tests turn off.
-	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 		return provider.CodexModels, nil
 	}, time.Now)
 	claudeBinary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{mockClaudeInitLine}})

@@ -17,7 +17,7 @@ func TestModelControlsTrustExpiredCatalogAndRememberedSelection(t *testing.T) {
 	now := time.Now()
 	calls := 0
 	catalog := provider.ModelsForProvider("codex")
-	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 		calls++
 		return catalog, nil
 	}, func() time.Time { return now })

@@ -21,7 +21,7 @@ func TestGetThreadDefaultsDoesNotLoadColdCodexCatalog(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	calls := 0
-	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 		calls++
 		return provider.ModelsForProvider(string(provider.Codex)), nil
 	}, time.Now)
@@ -52,7 +52,7 @@ func TestGetThreadDefaultsUsesWarmCodexCatalogWithoutReloading(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	calls := 0
-	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 		calls++
 		return []provider.ModelInfo{{
 			Slug: "gpt-5.5", Provider: string(provider.Codex),

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
@@ -66,6 +67,13 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 				return a.ensureProviderAccountManager().CheckAgyTransferAccount(ctx, binary)
 			},
 			RememberClaudeCatalog: a.rememberClaudeCatalog,
+			CodexLaunch: func(binary string) codexmodels.Launch {
+				return codexmodels.Launch{
+					Binary:  binary,
+					WorkDir: providerProbeWorkDir(),
+					Env:     a.sessionProcessEnv(string(provider.Codex), nil),
+				}
+			},
 			ProbeAgyModels: func(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
 				// One decision for both: a warm server on this home, or a
 				// temporary one started on it.

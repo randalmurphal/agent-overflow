@@ -31,7 +31,7 @@ const shippedNewestLuna = "gpt-5.6-luna"
 // listCodexModels answers app's live Codex catalog with models, in place of
 // the one App tests turn off. Call it before the app first reads a catalog.
 func listCodexModels(app *App, models []provider.ModelInfo) {
-	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 		return provider.CloneModels(models), nil
 	}, time.Now)
 }

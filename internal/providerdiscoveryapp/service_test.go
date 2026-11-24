@@ -375,7 +375,7 @@ func TestModelsForProviderStampsProvenance(t *testing.T) {
 // stays an error rather than degrading into a shipped-looking catalog.
 func TestModelsForProviderReportsCodexLive(t *testing.T) {
 	caches := testCaches()
-	caches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+	caches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 		return []provider.ModelInfo{{Slug: "gpt-5.5", Name: "GPT-5.5", Provider: "codex"}}, nil
 	}, time.Now)
 	service := New(Deps{
@@ -397,7 +397,7 @@ func TestModelsForProviderReportsCodexLive(t *testing.T) {
 	// A failed `model/list` is a failure, not a shipped-looking catalog: the
 	// picker must show the error rather than a list nobody vouched for.
 	failing := testCaches()
-	failing.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+	failing.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 		return nil, errors.New("app-server refused")
 	}, time.Now)
 	broken := New(Deps{Reaper: procutiltest.Reaper(), ProviderBinary: func(string) string { return "/mock/codex" }}, failing)

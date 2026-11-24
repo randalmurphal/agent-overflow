@@ -284,7 +284,7 @@ func DisabledAgyModelCatalog() *agy.CatalogCache {
 func DisabledCodexModelCatalog() *codexmodels.Cache {
 	return codexmodels.NewWith(
 		time.Minute,
-		func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+		func(context.Context, codexmodels.Launch, procutil.Reaper) ([]provider.ModelInfo, error) {
 			return nil, errors.New("live Codex catalog disabled in App tests")
 		},
 		time.Now,
