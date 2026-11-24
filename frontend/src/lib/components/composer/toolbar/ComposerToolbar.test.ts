@@ -132,29 +132,19 @@ describe('<ComposerToolbar>', () => {
     restoreAnimationFrame = undefined;
   });
 
-  it('compacts collapsible toolbar labels when full contents overflow', async () => {
-    restoreDimensions = installToolbarDimensions(640);
+  it.each([
+    { name: 'compacts collapsible toolbar labels when full contents overflow', width: 640, density: 'compact' },
+    { name: 'keeps full toolbar labels when full contents fit', width: 500, density: 'full' },
+  ])('$name', async ({ width, density }) => {
+    restoreDimensions = installToolbarDimensions(width);
     const { getByTestId, getAllByText } = renderToolbar();
 
     await waitFor(() => {
-      expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'compact');
+      expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', density);
     });
     expect(getAllByText('Plan').some((el) =>
       el.getAttribute('data-composer-toolbar-label') === 'collapsible',
     )).toBe(true);
-    const collapsiblePlan = getAllByText('Plan').find((el) =>
-      el.getAttribute('data-composer-toolbar-label') === 'collapsible',
-    );
-    expect(collapsiblePlan).toBeTruthy();
-  });
-
-  it('drops to the minimal rung when even icon-only contents overflow', async () => {
-    restoreDimensions = installToolbarDimensions(800);
-    const { getByTestId } = renderToolbar();
-
-    await waitFor(() => {
-      expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'minimal');
-    });
   });
 
   it('the minimal rung keeps the model and the meters and rolls the other pickers up', async () => {
@@ -222,19 +212,6 @@ describe('<ComposerToolbar>', () => {
       expect(getByRole('menuitem', { name: /^Agent mode/ })).toHaveTextContent('Build');
     });
     expect(getByRole('menuitem', { name: /^Plan sidebar/ })).toHaveTextContent('Hidden');
-  });
-
-  it('keeps full toolbar labels when full contents fit', async () => {
-    restoreDimensions = installToolbarDimensions(500);
-    const { getByTestId, getAllByText } = renderToolbar();
-
-    await waitFor(() => {
-      expect(getByTestId('composer-toolbar')).toHaveAttribute('data-density', 'full');
-    });
-    const collapsiblePlan = getAllByText('Plan').find((el) =>
-      el.getAttribute('data-composer-toolbar-label') === 'collapsible',
-    );
-    expect(collapsiblePlan).toBeTruthy();
   });
 
   it('renders the runtime-access, MCP, and plan toggles for a claude thread', () => {
@@ -415,10 +392,38 @@ describe('<ComposerToolbar> usage rings', () => {
     return render(ComposerToolbar, { props: toolbarProps(pane) });
   }
 
-  it('shows only the 7d ring before the account has any reading', () => {
-    const { queryByTestId } = renderLockedToolbar();
-    expect(queryByTestId('composer-rate-limit-7d')).not.toBeNull();
-    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
+  function mountedRings(): (string | null)[] {
+    return [...document.querySelectorAll('[data-testid^="composer-rate-limit-"]')]
+      .map((el) => el.getAttribute('data-testid'));
+  }
+
+  it.each([
+    {
+      name: 'omits the 5h ring for an account whose reading has no 5h limit',
+      reading: { provider: 'claude', accountId: 'acct', complete: true, limits: [weekly], updatedAt: 1 },
+      rings: ['composer-rate-limit-7d'],
+    },
+    {
+      name: 'shows only the 5h ring for an account that reports only a 5h limit',
+      reading: { provider: 'claude', accountId: 'acct', complete: true, limits: [session], updatedAt: 1 },
+      rings: ['composer-rate-limit-5h'],
+    },
+    // A scoped 5h limit alone has no account-wide ring to draw, so it must
+    // not mount an empty 5h meter.
+    {
+      name: 'mounts no 5h ring for a scoped-only 5h limit',
+      reading: { provider: 'claude', accountId: 'acct', limits: [{ ...session, limitId: 'session_scoped:fable', limitName: 'Fable' }, weekly], updatedAt: 1 },
+      rings: ['composer-rate-limit-7d'],
+    },
+    {
+      name: 'reads the 5h limit of the account serving the thread, not another saved account',
+      reading: { provider: 'claude', accountId: 'other', limits: [session, weekly], updatedAt: 1 },
+      rings: ['composer-rate-limit-7d'],
+    },
+  ])('$name', ({ reading, rings }) => {
+    setProviderRateLimits(reading);
+    renderLockedToolbar();
+    expect(mountedRings()).toEqual(rings);
   });
 
   it('shows no usage rings before the thread is locked', () => {
@@ -429,23 +434,15 @@ describe('<ComposerToolbar> usage rings', () => {
     expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
   });
 
-  it('omits the 5h ring for an account whose reading has no 5h limit', () => {
-    setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [weekly], updatedAt: 1 });
-    const { queryByTestId } = renderLockedToolbar();
-    expect(queryByTestId('composer-rate-limit-7d')).not.toBeNull();
-    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
-  });
-
   it('mounts the 5h ring when a 5h limit arrives and removes it when a complete reading drops it', async () => {
     const { queryByTestId } = renderLockedToolbar();
-    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
+    // Before the account has any reading, only the 7d ring shows.
+    expect(mountedRings()).toEqual(['composer-rate-limit-7d']);
 
     setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [session, weekly], updatedAt: 1 });
     await waitFor(() => expect(queryByTestId('composer-rate-limit-5h')).not.toBeNull());
     // 5h sits before 7d.
-    const meters = [...document.querySelectorAll('[data-testid^="composer-rate-limit-"]')]
-      .map((el) => el.getAttribute('data-testid'));
-    expect(meters).toEqual(['composer-rate-limit-5h', 'composer-rate-limit-7d']);
+    expect(mountedRings()).toEqual(['composer-rate-limit-5h', 'composer-rate-limit-7d']);
 
     setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [weekly], updatedAt: 2 });
     await waitFor(() => expect(queryByTestId('composer-rate-limit-5h')).toBeNull());
@@ -464,23 +461,6 @@ describe('<ComposerToolbar> usage rings', () => {
     await waitFor(() => expect(queryByTestId('composer-rate-limit-5h')).not.toBeNull());
   });
 
-  it('shows only the 5h ring for an account that reports only a 5h limit', () => {
-    setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [session], updatedAt: 1 });
-    const { queryByTestId } = renderLockedToolbar();
-    expect(queryByTestId('composer-rate-limit-5h')).not.toBeNull();
-    expect(queryByTestId('composer-rate-limit-7d')).toBeNull();
-  });
-
-  // A scoped 5h limit alone has no account-wide ring to draw, so it must not
-  // mount an empty 5h meter.
-  it('mounts no 5h ring for a scoped-only 5h limit', () => {
-    const scoped = { ...session, limitId: 'session_scoped:fable', limitName: 'Fable' };
-    setProviderRateLimits({ provider: 'claude', accountId: 'acct', limits: [scoped, weekly], updatedAt: 1 });
-    const { queryByTestId } = renderLockedToolbar();
-    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
-    expect(queryByTestId('composer-rate-limit-7d')).not.toBeNull();
-  });
-
   it('keeps the mounted 7d meter when the 5h meter appears beside it', async () => {
     setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [weekly], updatedAt: 1 });
     const { getByTestId, queryByTestId } = renderLockedToolbar();
@@ -488,12 +468,6 @@ describe('<ComposerToolbar> usage rings', () => {
     setProviderRateLimits({ provider: 'claude', accountId: 'acct', complete: true, limits: [session, weekly], updatedAt: 2 });
     await waitFor(() => expect(queryByTestId('composer-rate-limit-5h')).not.toBeNull());
     expect(getByTestId('composer-rate-limit-7d').querySelector('button')).toBe(weeklyButton);
-  });
-
-  it('reads the 5h limit of the account serving the thread, not another saved account', () => {
-    setProviderRateLimits({ provider: 'claude', accountId: 'other', limits: [session, weekly], updatedAt: 1 });
-    const { queryByTestId } = renderLockedToolbar();
-    expect(queryByTestId('composer-rate-limit-5h')).toBeNull();
   });
 });
 

@@ -3,7 +3,8 @@ import { fireEvent, render, waitFor } from "@testing-library/svelte";
 
 import EffortMenu from "./EffortMenu.svelte";
 import type { Thread } from "../../../types/models";
-import type { ModelCatalog } from "../../../types/settings";
+import type { ModelCatalog, ModelInfo } from "../../../types/settings";
+import type { ProviderID } from "../../../types/providers";
 import {
   getBindingMock,
   setBindingMock,
@@ -104,13 +105,8 @@ describe("<EffortMenu>", () => {
       );
     });
 
-    // Silence from an older CLI must not read as a denial.
-    it("says nothing when the provider has not reported", async () => {
-      const pane = await buildFastClaudePane();
-      const { getByTestId } = render(EffortMenu, { props: { pane } });
-      expect(triggerText(getByTestId)).toBe("High · Fast");
-    });
-
+    // Silence from an older CLI ("falls back to the Fast literals when the
+    // model declares no tier" below) must not read as a denial either.
     it("says nothing when the provider confirms fast mode is on", async () => {
       const pane = await buildFastClaudePane();
       applyFastModeState({ threadId: pane.threadId!, state: "on" });
@@ -309,102 +305,65 @@ describe("<EffortMenu>", () => {
     expect(triggerText(getByTestId)).toBe("High · Fast");
   });
 
-  // The catalog names the tier; the UI stops hardcoding it. A model whose
-  // provider renamed the fast tier upstream must relabel — trigger, section
-  // header, and the On row's tooltip — without a code change, and must still
-  // toggle the same boolean.
-  it("labels fast mode from the model's declared service tier", async () => {
-    setBindingMock("GetModelsForProvider", async () => modelCatalog([
-      {
-        slug: "gpt-5.5",
-        name: "GPT-5.5",
-        provider: "codex",
-        capabilities: ["fast_mode"],
+  it.each<{ name: string; model: ModelInfo & { provider: ProviderID }; trigger: string; header: string; onTitle: string | null }>([
+    // The catalog names the tier; the UI stops hardcoding it. A model whose
+    // provider renamed the fast tier upstream must relabel — trigger, section
+    // header, and the On row's tooltip — without a code change, and must
+    // still toggle the same boolean.
+    {
+      name: "labels fast mode from the model's declared service tier",
+      model: {
+        slug: "gpt-5.5", name: "GPT-5.5", provider: "codex",
         fastModeTier: { id: "turbo", name: "Turbo", description: "2x speed, increased usage" },
         contextWindows: [{ tokens: 272000, label: "272k", tier: "standard" }],
-        reasoningEfforts: [{ slug: "high", label: "High", default: true }],
       },
-    ]));
-    await ensureProviderModels("codex");
-    const pane = await buildPane(
-      makeThread({
-        provider: "codex",
-        model: "gpt-5.5",
-        contextWindow: 272000,
-        fastMode: true,
-      }),
-    );
-    const { getByTestId, findByRole, findByText } = render(EffortMenu, { props: { pane } });
-
-    expect(triggerText(getByTestId)).toBe("High · Turbo");
-
-    await fireEvent.click(getByTestId("composer-effort-trigger"));
-    expect(await findByText("Turbo Mode")).toBeInTheDocument();
-    const on = await findByRole("menuitem", { name: /^On$/ });
-    expect(on).toHaveAttribute("title", "2x speed, increased usage");
-  });
-
-  // Everything above has to degrade to today's wording when the field is
-  // absent: Claude declares no tier at all, and a catalog cached before the
-  // field existed deserializes without it.
-  it("falls back to the Fast literals when the model declares no tier", async () => {
-    setBindingMock("GetModelsForProvider", async () => modelCatalog([
-      {
-        slug: "claude-opus-4-6",
-        name: "Claude Opus 4.6",
-        provider: "claude",
-        capabilities: ["fast_mode"],
+      trigger: "High · Turbo", header: "Turbo Mode", onTitle: "2x speed, increased usage",
+    },
+    // Everything above has to degrade to today's wording when the field is
+    // absent: Claude declares no tier at all, and a catalog cached before the
+    // field existed deserializes without it.
+    {
+      name: "falls back to the Fast literals when the model declares no tier",
+      model: {
+        slug: "claude-opus-4-6", name: "Claude Opus 4.6", provider: "claude",
         contextWindows: [{ tokens: 200000, label: "200k", tier: "standard" }],
-        reasoningEfforts: [{ slug: "high", label: "High", default: true }],
       },
-    ]));
-    await ensureProviderModels("claude");
-    const pane = await buildPane(
-      makeThread({
-        provider: "claude",
-        model: "claude-opus-4-6",
-        contextWindow: 200000,
-        fastMode: true,
-      }),
-    );
-    const { getByTestId, findByRole, findByText } = render(EffortMenu, { props: { pane } });
-
-    expect(triggerText(getByTestId)).toBe("High · Fast");
-
-    await fireEvent.click(getByTestId("composer-effort-trigger"));
-    expect(await findByText("Fast Mode")).toBeInTheDocument();
-    const on = await findByRole("menuitem", { name: /^On$/ });
-    expect(on).not.toHaveAttribute("title");
-  });
-
-  // A tier that still calls itself "Fast" — the shape of every catalog today —
-  // must not render "Fast Mode Mode".
-  it("keeps the section header as Fast Mode when the tier is named Fast", async () => {
-    setBindingMock("GetModelsForProvider", async () => modelCatalog([
-      {
-        slug: "gpt-5.5",
-        name: "GPT-5.5",
-        provider: "codex",
-        capabilities: ["fast_mode"],
+      trigger: "High · Fast", header: "Fast Mode", onTitle: null,
+    },
+    // A tier that still calls itself "Fast" — the shape of every catalog
+    // today — must not render "Fast Mode Mode".
+    {
+      name: "keeps the section header as Fast Mode when the tier is named Fast",
+      model: {
+        slug: "gpt-5.5", name: "GPT-5.5", provider: "codex",
         fastModeTier: { id: "priority", name: "Fast", description: "1.5x speed, increased usage" },
         contextWindows: [{ tokens: 272000, label: "272k", tier: "standard" }],
-        reasoningEfforts: [{ slug: "high", label: "High", default: true }],
       },
-    ]));
-    await ensureProviderModels("codex");
+      trigger: "High · Fast", header: "Fast Mode", onTitle: "1.5x speed, increased usage",
+    },
+  ])("$name", async ({ model, trigger, header, onTitle }) => {
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([{
+      capabilities: ["fast_mode"],
+      reasoningEfforts: [{ slug: "high", label: "High", default: true }],
+      ...model,
+    }]));
+    await ensureProviderModels(model.provider);
     const pane = await buildPane(
       makeThread({
-        provider: "codex",
-        model: "gpt-5.5",
-        contextWindow: 272000,
+        provider: model.provider,
+        model: model.slug,
+        contextWindow: model.contextWindows![0].tokens,
         fastMode: true,
       }),
     );
-    const { getByTestId, findByText } = render(EffortMenu, { props: { pane } });
+    const { getByTestId, findByRole, findByText } = render(EffortMenu, { props: { pane } });
 
-    expect(triggerText(getByTestId)).toBe("High · Fast");
+    expect(triggerText(getByTestId)).toBe(trigger);
+
     await fireEvent.click(getByTestId("composer-effort-trigger"));
-    expect(await findByText("Fast Mode")).toBeInTheDocument();
+    expect(await findByText(header)).toBeInTheDocument();
+    const on = await findByRole("menuitem", { name: /^On$/ });
+    expect(on.getAttribute("title")).toBe(onTitle);
   });
 
   it("renders xhigh as xHigh in the trigger", async () => {
@@ -413,31 +372,15 @@ describe("<EffortMenu>", () => {
     expect(triggerText(getByTestId)).toBe("xHigh");
   });
 
-  it("opens the menu and calls UpdateThreadReasoningEffort on row click", async () => {
-    const pane = await buildPane(makeThread({ reasoningEffort: "medium" }));
-    const updated = makeThread({ reasoningEffort: "low" });
-    setBindingMock("UpdateThreadReasoningEffort", async () => updated);
-    const { getByTestId, findByRole } = render(EffortMenu, { props: { pane } });
-
-    await fireEvent.click(getByTestId("composer-effort-trigger"));
-    const lowRow = await findByRole("menuitem", { name: /Low/ });
-    await fireEvent.click(lowRow);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(
-      getBindingMock("UpdateThreadReasoningEffort")!.mock.calls[0],
-    ).toEqual(["thread-1", "low"]);
-  });
-
   it("closes immediately while an effort write is pending", async () => {
     const pane = await buildPane(makeThread({ reasoningEffort: "medium" }));
     let finish!: (thread: Thread) => void;
     const pending = new Promise<Thread>((resolve) => { finish = resolve; });
-    setBindingMock("UpdateThreadReasoningEffort", () => pending);
+    const update = setBindingMock("UpdateThreadReasoningEffort", () => pending);
     const { getByTestId, findByRole, queryByRole } = render(EffortMenu, { props: { pane } });
     await fireEvent.click(getByTestId("composer-effort-trigger"));
     await fireEvent.click(await findByRole("menuitem", { name: /Low/ }));
+    expect(update.mock.calls).toEqual([["thread-1", "low"]]);
     expect(queryByRole("menu")).toBeNull();
     finish(makeThread({ reasoningEffort: "low" }));
     await pending;
