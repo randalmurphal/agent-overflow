@@ -24,6 +24,9 @@ import (
 // handshake, and opens a thread on it. Closing the returned Session closes
 // that dedicated Conn. For multiplexed production sessions, use Dial + Conn.Open.
 func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(provider.ProviderEvent)) (*Session, error) {
+	if err := checkApprovalPolicy(cfg.ApprovalPolicy); err != nil {
+		return nil, err
+	}
 	if _, err := provider.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartForget); err != nil {
 		return nil, fmt.Errorf("codex: %w", err)
 	}

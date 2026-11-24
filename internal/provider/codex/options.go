@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"fmt"
 	"strings"
 
 	"agent-overflow/internal/provider"
@@ -105,6 +106,20 @@ func codexApprovalPolicy(mode provider.RuntimeMode) string {
 // and Codex's reviewer subagent in auto, because `approvalsReviewer` and the
 // read-only sandbox are unchanged.
 const codexApprovalPolicyOnRequest = "on-request"
+
+// checkApprovalPolicy refuses an approval policy this adapter does not send:
+// the runtime modes produce only "never" and "on-request"
+// (codexApprovalPolicy), and "" lets the sandbox pick its pairing
+// (defaultApprovalPolicy). A session's Config and a live update both pass
+// it, so a retired spelling such as "untrusted" never reaches the wire.
+func checkApprovalPolicy(policy string) error {
+	switch policy {
+	case "", "never", codexApprovalPolicyOnRequest:
+		return nil
+	}
+	return fmt.Errorf("codex: approval policy %q is not one Agent Overflow sends; use %q or %q",
+		policy, codexApprovalPolicyOnRequest, "never")
+}
 
 func codexSandbox(mode provider.RuntimeMode) string {
 	switch mode {

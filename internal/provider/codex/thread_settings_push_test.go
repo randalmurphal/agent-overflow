@@ -103,7 +103,7 @@ func TestPushThreadSettingsWireShape(t *testing.T) {
 		Binary:         "",
 		Model:          "gpt-5.5",
 		WorkDir:        "/tmp",
-		ApprovalPolicy: "untrusted",
+		ApprovalPolicy: "on-request",
 		Sandbox:        "read-only",
 	})
 
@@ -119,7 +119,9 @@ func TestPushThreadSettingsWireShape(t *testing.T) {
 		if !ok {
 			t.Fatalf("PlanLiveUpdate needs a restart")
 		}
-		s.ApplyLiveUpdate(update)
+		if err := s.ApplyLiveUpdate(update); err != nil {
+			t.Fatal(err)
+		}
 		if err := s.PushThreadSettings(context.Background(), PlanThreadSettingsPush(prev, next)); err != nil {
 			t.Fatalf("PushThreadSettings: %v", err)
 		}

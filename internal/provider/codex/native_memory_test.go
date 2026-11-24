@@ -148,7 +148,9 @@ func TestTurnStartCarriesTheSessionWritableRoots(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	s.ApplyLiveUpdate(LiveUpdate{Sandbox: "workspace-write"})
+	if err := s.ApplyLiveUpdate(LiveUpdate{Sandbox: "workspace-write"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}

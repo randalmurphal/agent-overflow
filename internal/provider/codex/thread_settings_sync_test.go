@@ -59,11 +59,15 @@ func awaitSettingsRequest(t *testing.T, s *Session) {
 func TestQueuedSettingsCoalesceAndPreserveLatestTurn(t *testing.T) {
 	t.Parallel()
 	s, capture, release := blockedSettingsSession(t)
-	s.ApplyLiveUpdate(LiveUpdate{Model: "first", ReasoningEffort: "high", ServiceTier: "priority"})
+	if err := s.ApplyLiveUpdate(LiveUpdate{Model: "first", ReasoningEffort: "high", ServiceTier: "priority"}); err != nil {
+		t.Fatal(err)
+	}
 	s.QueueThreadSettings(ThreadSettingsPush{Model: true, Effort: true, ServiceTier: true})
 	awaitSettingsRequest(t, s)
 	// These calls finish while the provider is deliberately unable to acknowledge.
-	s.ApplyLiveUpdate(LiveUpdate{Model: "second", ReasoningEffort: "low"})
+	if err := s.ApplyLiveUpdate(LiveUpdate{Model: "second", ReasoningEffort: "low"}); err != nil {
+		t.Fatal(err)
+	}
 	for range 20 {
 		s.QueueThreadSettings(ThreadSettingsPush{Model: true, Effort: true, ServiceTier: true})
 	}
@@ -97,10 +101,14 @@ func TestTimedOutSettingsOnStillClearsOnNextTurn(t *testing.T) {
 	t.Parallel()
 	s, capture, release := blockedSettingsSession(t)
 	SetRequestTimeoutForTest(s, 50*time.Millisecond)
-	s.ApplyLiveUpdate(LiveUpdate{Model: "gpt-5.5", ServiceTier: "priority"})
+	if err := s.ApplyLiveUpdate(LiveUpdate{Model: "gpt-5.5", ServiceTier: "priority"}); err != nil {
+		t.Fatal(err)
+	}
 	s.QueueThreadSettings(ThreadSettingsPush{ServiceTier: true})
 	s.settingsSync.wg.Wait()
-	s.ApplyLiveUpdate(LiveUpdate{Model: "gpt-5.5"})
+	if err := s.ApplyLiveUpdate(LiveUpdate{Model: "gpt-5.5"}); err != nil {
+		t.Fatal(err)
+	}
 	release()
 	SetRequestTimeoutForTest(s, 3*time.Second)
 	if err := s.Send(context.Background(), "test", provider.SendOptions{}); err != nil {
@@ -150,10 +158,14 @@ func TestSendDoesNotWaitForSettingsAckAndIgnoresItsLateTierReceipt(t *testing.T)
 		`    if [[ "$line" == *'"method":"thread/settings/update"'* ]]; then continue; fi
     id=$(`, 1)
 	s := newSessionWithScriptCfg(t, script, Config{Reaper: procutiltest.Reaper(), Model: "gpt-5.5", WorkDir: "/tmp"})
-	s.ApplyLiveUpdate(LiveUpdate{Model: "first", ServiceTier: "priority"})
+	if err := s.ApplyLiveUpdate(LiveUpdate{Model: "first", ServiceTier: "priority"}); err != nil {
+		t.Fatal(err)
+	}
 	s.QueueThreadSettings(ThreadSettingsPush{Model: true, ServiceTier: true})
 	awaitSettingsRequest(t, s)
-	s.ApplyLiveUpdate(LiveUpdate{Model: "latest", ReasoningEffort: "low"})
+	if err := s.ApplyLiveUpdate(LiveUpdate{Model: "latest", ReasoningEffort: "low"}); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan error, 1)
 	go func() { done <- s.Send(context.Background(), "test", provider.SendOptions{}) }()
 	select {

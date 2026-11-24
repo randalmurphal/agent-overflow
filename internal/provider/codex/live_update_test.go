@@ -194,7 +194,9 @@ func TestCodexPlanLiveUpdateFastModeTransitions(t *testing.T) {
 			if update.ServiceTier != tt.want {
 				t.Fatalf("update.ServiceTier = %q, want %q", update.ServiceTier, tt.want)
 			}
-			s.ApplyLiveUpdate(update)
+			if err := s.ApplyLiveUpdate(update); err != nil {
+				t.Fatal(err)
+			}
 			if got := s.snapshotTurnConfig().ServiceTier; got != tt.want {
 				t.Fatalf("snapshotTurnConfig().ServiceTier = %q, want %q", got, tt.want)
 			}
@@ -231,7 +233,7 @@ func TestApplyLiveUpdateFastModeToggleReachesTurnStart(t *testing.T) {
 		Binary:         scriptPath,
 		Model:          "gpt-5.5",
 		WorkDir:        "/tmp",
-		ApprovalPolicy: "untrusted",
+		ApprovalPolicy: "on-request",
 		Sandbox:        "read-only",
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
@@ -250,7 +252,9 @@ func TestApplyLiveUpdateFastModeToggleReachesTurnStart(t *testing.T) {
 		if !ok {
 			t.Fatalf("PlanLiveUpdate needs a restart")
 		}
-		s.ApplyLiveUpdate(update)
+		if err := s.ApplyLiveUpdate(update); err != nil {
+			t.Fatal(err)
+		}
 		if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
 			t.Fatalf("Send: %v", err)
 		}
@@ -290,7 +294,7 @@ func TestServiceTierClearIsScopedToWhatAOAsserted(t *testing.T) {
 		Binary:         scriptPath,
 		Model:          "gpt-5.5",
 		WorkDir:        "/tmp",
-		ApprovalPolicy: "untrusted",
+		ApprovalPolicy: "on-request",
 		Sandbox:        "read-only",
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
@@ -309,7 +313,9 @@ func TestServiceTierClearIsScopedToWhatAOAsserted(t *testing.T) {
 		if !ok {
 			t.Fatalf("PlanLiveUpdate needs a restart")
 		}
-		s.ApplyLiveUpdate(update)
+		if err := s.ApplyLiveUpdate(update); err != nil {
+			t.Fatal(err)
+		}
 		if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
 			t.Fatalf("Send: %v", err)
 		}
@@ -418,7 +424,7 @@ func TestApplyLiveUpdateAppliesOnNextTurnStart(t *testing.T) {
 		Model:           "gpt-5.5-codex",
 		WorkDir:         "/tmp",
 		ReasoningEffort: "high",
-		ApprovalPolicy:  "untrusted",
+		ApprovalPolicy:  "on-request",
 		Sandbox:         "read-only",
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
@@ -426,13 +432,15 @@ func TestApplyLiveUpdateAppliesOnNextTurnStart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	s.ApplyLiveUpdate(LiveUpdate{
+	if err := s.ApplyLiveUpdate(LiveUpdate{
 		Model:           "gpt-5.6-codex",
 		ReasoningEffort: "low",
 		ServiceTier:     fastServiceTier,
 		ApprovalPolicy:  "never",
 		Sandbox:         "danger-full-access",
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -532,7 +540,9 @@ func TestApplyLiveUpdateSwapsReviewerOnTurnConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("PlanLiveUpdate into auto needs a restart")
 	}
-	s.ApplyLiveUpdate(update)
+	if err := s.ApplyLiveUpdate(update); err != nil {
+		t.Fatal(err)
+	}
 	if got := s.snapshotTurnConfig().ApprovalsReviewer; got != approvalsReviewerAuto {
 		t.Fatalf("turnConfig reviewer after switching into auto = %q, want %q", got, approvalsReviewerAuto)
 	}
@@ -541,7 +551,9 @@ func TestApplyLiveUpdateSwapsReviewerOnTurnConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("PlanLiveUpdate out of auto needs a restart")
 	}
-	s.ApplyLiveUpdate(back)
+	if err := s.ApplyLiveUpdate(back); err != nil {
+		t.Fatal(err)
+	}
 	if got := s.snapshotTurnConfig().ApprovalsReviewer; got != approvalsReviewerUser {
 		t.Fatalf("turnConfig reviewer after switching out of auto = %q, want %q", got, approvalsReviewerUser)
 	}

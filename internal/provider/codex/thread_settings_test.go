@@ -155,7 +155,9 @@ func TestReconcileThreadSettings_IgnoresUndecodableParams(t *testing.T) {
 func TestCurrentModelPrefersObservedOverRequested(t *testing.T) {
 	t.Parallel()
 	s := settingsSession("th")
-	s.ApplyLiveUpdate(LiveUpdate{Model: "model-a"})
+	if err := s.ApplyLiveUpdate(LiveUpdate{Model: "model-a"}); err != nil {
+		t.Fatal(err)
+	}
 	if got := s.currentModel(); got != "model-a" {
 		t.Fatalf("with nothing observed, currentModel = %q, want the requested model-a", got)
 	}
@@ -165,7 +167,9 @@ func TestCurrentModelPrefersObservedOverRequested(t *testing.T) {
 		t.Fatalf("after Codex confirmed model-a, currentModel = %q", got)
 	}
 
-	s.ApplyLiveUpdate(LiveUpdate{Model: "model-b"})
+	if err := s.ApplyLiveUpdate(LiveUpdate{Model: "model-b"}); err != nil {
+		t.Fatal(err)
+	}
 	if got := s.currentModel(); got != "model-a" {
 		t.Errorf("a pending selection changed attribution before the turn ran: currentModel = %q, want model-a", got)
 	}
@@ -181,7 +185,9 @@ func TestCurrentModelPrefersObservedOverRequested(t *testing.T) {
 func TestCurrentModelFallsBackWhenCodexReportsNoModel(t *testing.T) {
 	t.Parallel()
 	s := settingsSession("th")
-	s.ApplyLiveUpdate(LiveUpdate{Model: "model-a"})
+	if err := s.ApplyLiveUpdate(LiveUpdate{Model: "model-a"}); err != nil {
+		t.Fatal(err)
+	}
 	s.reconcileThreadSettings(json.RawMessage(`{"threadId":"th","threadSettings":{"approvalPolicy":"never"}}`))
 	if got := s.currentModel(); got != "model-a" {
 		t.Errorf("currentModel = %q, want the requested model-a as fallback", got)

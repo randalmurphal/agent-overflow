@@ -301,6 +301,12 @@ func (c *Conn) open(
 	ownsConn bool,
 	releaseConn func(),
 ) (*Session, error) {
+	if err := checkApprovalPolicy(cfg.ApprovalPolicy); err != nil {
+		if releaseConn != nil {
+			releaseConn()
+		}
+		return nil, err
+	}
 	sessionStart, err := provider.NewSessionStartDelivery(cfg.SessionStartHook, cfg.SessionStartForget)
 	if err != nil {
 		if releaseConn != nil {

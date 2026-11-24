@@ -69,9 +69,14 @@ func PlanLiveUpdate(prev, next provider.SessionOptions) (LiveUpdate, bool) {
 }
 
 // ApplyLiveUpdate swaps the session's turn config; the next Send picks it
-// up. Never fails: the values only reach the wire on the following
-// turn/start, where a rejection surfaces through the normal send path.
-func (s *Session) ApplyLiveUpdate(update LiveUpdate) {
+// up. It refuses an approval policy the adapter does not send
+// (checkApprovalPolicy) and leaves the turn config unchanged; any other
+// value only reaches the wire on the following turn/start, where a
+// rejection surfaces through the normal send path.
+func (s *Session) ApplyLiveUpdate(update LiveUpdate) error {
+	if err := checkApprovalPolicy(update.ApprovalPolicy); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.turnConfig.model = update.Model
@@ -80,6 +85,7 @@ func (s *Session) ApplyLiveUpdate(update LiveUpdate) {
 	s.turnConfig.approvalPolicy = update.ApprovalPolicy
 	s.turnConfig.sandbox = update.Sandbox
 	s.turnConfig.approvalsReviewer = update.ApprovalsReviewer
+	return nil
 }
 
 // snapshotTurnConfig snapshots the mutable turn-scoped config under the session

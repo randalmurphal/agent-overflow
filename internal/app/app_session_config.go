@@ -203,7 +203,11 @@ func (a *App) liveApplySessionConfig(threadID string, reassertModel bool) bool {
 		}
 		push := codex.PlanThreadSettingsPush(sess.LaunchOptions, opts)
 		push.Model = push.Model || reassertModel
-		sess.Codex.ApplyLiveUpdate(update)
+		if err := sess.Codex.ApplyLiveUpdate(update); err != nil {
+			log.Printf("thread %s: codex live config update refused: %v", threadID, err)
+			a.emitErrorToThread(threadID, "live config change failed, restarting session to apply: "+err.Error())
+			return false
+		}
 		a.pushCodexThreadSettings(threadID, sess.Codex, push)
 		if push.Model {
 			a.clearAppliedModelFallback(threadID, sess.Token, fallbackRevision)
