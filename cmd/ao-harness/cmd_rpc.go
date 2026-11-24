@@ -370,9 +370,6 @@ func runItems(e *env, args []string) error {
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
-		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{listItemsMethod}}); err != nil {
-			return err
-		}
 		// Resolve FIRST. A garbage selector used to reach HarnessListItems, come
 		// back empty, and print "no items" — which reads as "that thread is
 		// empty" rather than "that thread does not exist".
@@ -465,7 +462,7 @@ func runSend(e *env, args []string) error {
 		ctx = waitCtx
 	}
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
-		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: sendMethods(*wait, *items)}); err != nil {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: sendMethods(*items)}); err != nil {
 			return err
 		}
 		row, err := resolveThreadSelector(ctx, client, *thread)
@@ -490,11 +487,8 @@ func runSend(e *env, args []string) error {
 // before the send: an instance that lacks the read a command ends with
 // would otherwise take the message and then fail, and a retry would send
 // it again under a fresh send id.
-func sendMethods(wait, items bool) []string {
+func sendMethods(items bool) []string {
 	methods := []string{harnessclient.SendMethod}
-	if wait {
-		methods = append(methods, harnessclient.ThreadWorkMethod)
-	}
 	if items {
 		methods = append(methods, listItemsMethod)
 	}
@@ -503,11 +497,7 @@ func sendMethods(wait, items bool) []string {
 
 // sendAndWait is the single-command observe-a-turn path.
 func (e *env) sendAndWait(ctx context.Context, client *harnessclient.Client, row threadRow, text string, withItems bool) error {
-	resting, err := client.ThreadAtRest(ctx, row.ID)
-	if err != nil {
-		return err
-	}
-	event, err := resting.SendAndAwaitTurn(ctx, text)
+	event, err := client.SendAndAwaitTurn(ctx, row.ID, text)
 	if err != nil {
 		return err
 	}

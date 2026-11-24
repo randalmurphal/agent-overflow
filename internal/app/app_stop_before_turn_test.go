@@ -13,6 +13,8 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 // How the Claude CLI resolves an interrupt that reaches it before the turn of
@@ -127,7 +129,7 @@ func TestStopBeforeAClaudeTurnOpensEndsInOneOutcome(t *testing.T) {
 			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
 
 			const message = "stop me before I start"
-			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, message, SendMessageOptions{}); err != nil {
+			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, message, pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			turnIndex := -1

@@ -22,7 +22,7 @@ func TestClientSendsRefuseTheAppsSendIDs(t *testing.T) {
 	ctx := context.Background()
 	entries := map[string]func(sendID string) error{
 		"SendMessageWithOptions": func(id string) error {
-			_, err := app.SendMessageWithOptions(ctx, thread.ID, "hello", SendMessageOptions{SendID: id})
+			_, err := app.SendMessageWithOptions(ctx, thread.ID, "hello", SendMessageOptions{ReconcileBySendID: true, SendID: id})
 			return err
 		},
 		"RegisterQueueItem": func(id string) error {

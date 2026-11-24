@@ -16,6 +16,8 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 func TestSendMessageHappyPath(t *testing.T) {
@@ -37,7 +39,7 @@ func TestSendMessageHappyPath(t *testing.T) {
 	// sendMessageFn shortcut is exercised.
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex)})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Hello", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Hello", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	if sentThread != thread.ID {
@@ -77,14 +79,14 @@ func TestSendMessageLazyStartsSession(t *testing.T) {
 
 	// Don't use sendMessageFn: it short-circuits before the lazy-start
 	// check, so we'd never hit the code under test.
-	_, _ = app.SendMessageWithOptions(context.Background(), thread.ID, "Hello", SendMessageOptions{})
+	_, _ = app.SendMessageWithOptions(context.Background(), thread.ID, "Hello", pageSendOptions(uuid.NewString()))
 	if startCalls != 1 {
 		t.Fatalf("startSessionFn calls = %d, want 1 (lazy-start must fire for session-less thread)", startCalls)
 	}
 
 	// A second send on the now-populated session must not re-trigger
 	// lazy-start — the session is already live.
-	_, _ = app.SendMessageWithOptions(context.Background(), thread.ID, "Second", SendMessageOptions{})
+	_, _ = app.SendMessageWithOptions(context.Background(), thread.ID, "Second", pageSendOptions(uuid.NewString()))
 	if startCalls != 1 {
 		t.Fatalf("startSessionFn calls = %d after second send, want 1 (no double-start)", startCalls)
 	}
@@ -137,7 +139,7 @@ func TestSendMessagePersistsUserItemBeforeLazyStartCompletes(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "visible now", SendMessageOptions{})
+		_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "visible now", pageSendOptions(uuid.NewString()))
 		errCh <- err
 	}()
 
@@ -178,7 +180,7 @@ func TestSendMessagePersistsUserItemAndErrorWhenLazyStartFails(t *testing.T) {
 		return errors.New("provider boot exploded")
 	}
 
-	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "still visible", SendMessageOptions{})
+	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "still visible", pageSendOptions(uuid.NewString()))
 	if err == nil || !strings.Contains(err.Error(), "start session") || !strings.Contains(err.Error(), "provider boot exploded") {
 		t.Fatalf("SendMessage() error = %v, want the wrapped start-session failure", err)
 	}
@@ -229,7 +231,9 @@ func TestSendMessageWithOptionsAppliesRuntimeModeBeforeLazyStart(t *testing.T) {
 	}
 
 	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Hello", SendMessageOptions{
-		RuntimeMode: string(provider.RuntimeFullAccess),
+		SendID:            uuid.NewString(),
+		ReconcileBySendID: true,
+		RuntimeMode:       string(provider.RuntimeFullAccess),
 	})
 	if err == nil {
 		t.Fatal("SendMessageWithOptions() error = nil, want fake provider send failure")
@@ -304,6 +308,8 @@ func TestSendMessageWithOptionsImplementSendFailureKeepsPlanAccepted(t *testing.
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "no-provider"})
 
 	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
+		SendID:             "implement-plan",
+		ReconcileBySendID:  true,
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	})
 	if err == nil {
@@ -327,10 +333,12 @@ func TestSendMessageWithOptionsImplementSendFailureKeepsPlanAccepted(t *testing.
 	if state.ImplementedAt == 0 {
 		t.Error("ImplementedAt = 0, want > 0 (mark is sticky once SendMessageWithOptions persists the user_text — provider failure must not revert)")
 	}
-	// The seeded plan row sits at turnIndex 0, so the implement send
-	// is turnIndex 1 — the persisted user_text row is `user:1`.
-	if state.ImplementedByItemID != "user:1" {
-		t.Errorf("ImplementedByItemID = %q, want %q (the persisted user_text row id)", state.ImplementedByItemID, "user:1")
+	row, found, err := app.store.FindUserTextItemBySendID(thread.ID, "implement-plan")
+	if err != nil || !found {
+		t.Fatalf("the implement send's row: found=%v err=%v", found, err)
+	}
+	if state.ImplementedByItemID != row.ID {
+		t.Errorf("ImplementedByItemID = %q, want %q (the persisted user_text row id)", state.ImplementedByItemID, row.ID)
 	}
 }
 
@@ -571,6 +579,8 @@ func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.
 	app.sessionManager().put(targetThread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
 	_, err = app.SendMessageWithOptions(context.Background(), targetThread.ID, "Implement the plan.", SendMessageOptions{
+		SendID:             "implement-plan",
+		ReconcileBySendID:  true,
 		SourceProposedPlan: &SourceProposedPlan{ThreadID: sourceThread.ID, ItemID: "plan-item"},
 	})
 	if err != nil {
@@ -581,8 +591,12 @@ func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.
 	if err != nil {
 		t.Fatalf("GetProposedPlanState() error = %v", err)
 	}
-	if !found || state.ImplementedByThreadID != targetThread.ID || state.ImplementedByItemID != "user:0" {
-		t.Fatalf("state = %+v, want implemented by target user turn", state)
+	row, sent, err := app.store.FindUserTextItemBySendID(targetThread.ID, "implement-plan")
+	if err != nil || !sent {
+		t.Fatalf("the implement send's row: found=%v err=%v", sent, err)
+	}
+	if !found || state.ImplementedByThreadID != targetThread.ID || state.ImplementedByItemID != row.ID {
+		t.Fatalf("state = %+v, want implemented by the target's user row %s", state, row.ID)
 	}
 }
 
@@ -633,7 +647,7 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 		Claude:   sess,
 	})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Next message", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Next message", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
@@ -694,7 +708,7 @@ func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 		Claude:   sess,
 	})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first turn", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first turn", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
@@ -738,10 +752,14 @@ func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 	}
 
 	acknowledgeMockClaudeSend(t, app, thread.ID)
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second turn", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second turn", pageSendOptions("second-turn")); err != nil {
 		t.Fatalf("SendMessage(second) error = %v", err)
 	}
-	if _, ok, err := app.store.GetMessageAnchor(thread.ID, "user:1"); err != nil || !ok {
+	second, found, err := app.store.FindUserTextItemBySendID(thread.ID, "second-turn")
+	if err != nil || !found || second.TurnIndex != 1 {
+		t.Fatalf("second user row = %+v, found=%v err=%v, want turn 1", second, found, err)
+	}
+	if _, ok, err := app.store.GetMessageAnchor(thread.ID, second.ID); err != nil || !ok {
 		t.Fatalf("anchor for second user item missing after second send: ok=%v err=%v", ok, err)
 	}
 }
@@ -762,7 +780,7 @@ func TestSendMessageDoesNotPreStampProviderItemIDForCodex(t *testing.T) {
 	}
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "no-provider"})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello codex", SendMessageOptions{}); err == nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello codex", pageSendOptions(uuid.NewString())); err == nil {
 		t.Fatal("SendMessageWithOptions on no-provider Codex session returned nil, want failure")
 	}
 
@@ -842,7 +860,7 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 		Claude:   sess,
 	})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Fix reconnect spinner on resume", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Fix reconnect spinner on resume", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
@@ -931,7 +949,7 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 		Claude:   sess,
 	})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Fix reconnect spinner on resume", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Fix reconnect spinner on resume", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	if err := app.RenameThread(thread.ID, "Keep this custom title"); err != nil {
@@ -1024,7 +1042,7 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 		Claude:   sess,
 	})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Fix reconnect spinner on resume", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Fix reconnect spinner on resume", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 
@@ -1562,10 +1580,10 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 	app.sessionManager().put(threadA.ID, session{Provider: string(provider.Claude), Token: "a", Claude: sessA})
 	app.sessionManager().put(threadB.ID, session{Provider: string(provider.Claude), Token: "b", Claude: sessB})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), threadA.ID, "a", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadA.ID, "a", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("send A: %v", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), threadB.ID, "b", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadB.ID, "b", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("send B: %v", err)
 	}
 
@@ -1634,7 +1652,7 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 		Claude:   sess,
 	})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "doomed content", SendMessageOptions{}); err == nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "doomed content", pageSendOptions(uuid.NewString())); err == nil {
 		t.Fatal("expected Send to fail with a closed session, got nil")
 	}
 
@@ -1643,9 +1661,11 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 		t.Fatalf("ListItems: %v", err)
 	}
 	var userFound, errorFound bool
+	var userID string
 	for _, item := range items {
 		if item.Role == "user" && item.Kind == "user_text" {
 			userFound = true
+			userID = item.ID
 		}
 		if item.Kind == "error" {
 			errorFound = true
@@ -1655,14 +1675,14 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 		t.Fatalf("expected user_text + error after provider send failure, got %+v", items)
 	}
 
-	// The user item is user:0, and the send-failure error id uses the
-	// router's sequence counter: first error on turn 0 → seq 0 → error:0:0.
+	// The send-failure error id uses the router's sequence counter: first
+	// error on turn 0 → seq 0 → error:0:0.
 	mu.Lock()
 	ids := append([]string(nil), upsertedIDs...)
 	mu.Unlock()
 	sawUser, sendFailureID := false, ""
 	for _, id := range ids {
-		if id == "user:0" {
+		if id == userID {
 			sawUser = true
 		}
 		if sendFailureID == "" && strings.HasPrefix(id, "error:") {
@@ -1732,7 +1752,7 @@ func TestSendMessagePersistsUserItemOnSuccess(t *testing.T) {
 	if app.triage.HasPendingSendForThread(thread.ID) {
 		t.Fatal("setup: thread should have no pending sends before SendMessage")
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello world", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello world", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -1817,7 +1837,7 @@ func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
 		Claude:   sess,
 	})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	mu.Lock()
@@ -1863,7 +1883,7 @@ func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
 		Token:    "test-token",
 		Claude:   seededSess,
 	})
-	if _, err := app.SendMessageWithOptions(context.Background(), seeded.ID, "later", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), seeded.ID, "later", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	mu.Lock()

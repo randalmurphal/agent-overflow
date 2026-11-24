@@ -24,6 +24,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
+
+	"github.com/google/uuid"
 )
 
 // A standing agent's sessions (docs/specs/standing-agents.md, "Agent home
@@ -278,7 +280,7 @@ func codexStarted(app *App, threadID, logPath string) startSession {
 			}
 		}
 		// A turn carries the folders it may write.
-		if _, err := app.SendMessageWithOptions(context.Background(), threadID, "hello", SendMessageOptions{}); err != nil {
+		if _, err := app.SendMessageWithOptions(context.Background(), threadID, "hello", pageSendOptions(uuid.NewString())); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 		started.dirs = codexTurnWritableRoots(t, logPath)

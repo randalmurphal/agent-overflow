@@ -21,6 +21,8 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+
+	"github.com/google/uuid"
 )
 
 // remoteNudgedWorker is a worker the pair's caller spawned on the
@@ -69,7 +71,7 @@ func nudgeThere(t *testing.T, pair *reachPair, by, child string) {
 	t.Helper()
 	switch by {
 	case "the person there":
-		if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "also check the docs", SendMessageOptions{}); err != nil {
+		if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "also check the docs", pageSendOptions(uuid.NewString())); err != nil {
 			t.Fatalf("SendMessage there: %v", err)
 		}
 	case "a thread there":

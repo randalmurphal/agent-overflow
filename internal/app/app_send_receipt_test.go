@@ -78,7 +78,7 @@ func TestSendReceiptDeduplicatesDeferredQueueBeforeProviderEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 	requests := installReceiptCaptureSession(t, app, thread)
-	opts := SendMessageOptions{SendID: "deferred-send"}
+	opts := SendMessageOptions{SendID: "deferred-send", ReconcileBySendID: true}
 	first, err := app.RegisterQueueItem(context.Background(), thread.ID, "only once", opts)
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestSendReceiptWorkflowRetryDoesNotPrepareTakeover(t *testing.T) {
 	// No workflow engine or provider exists in this fixture. Preparing a
 	// takeover before recognizing the accepted receipt would fail here; in a
 	// running app the same mistake could interrupt a different workflow phase.
-	result, err := app.SendMessageWithOptions(context.Background(), thread.ID, "already accepted", SendMessageOptions{SendID: "workflow-retry"})
+	result, err := app.SendMessageWithOptions(context.Background(), thread.ID, "already accepted", SendMessageOptions{ReconcileBySendID: true, SendID: "workflow-retry"})
 	if err != nil {
 		t.Fatalf("accepted retry attempted workflow takeover: %v", err)
 	}

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // A tool phase's command is a real subprocess: these tests bind the project
@@ -479,7 +481,7 @@ func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
 	if items, itemsErr := app.store.ListItems(units["beta"].ThreadID); itemsErr != nil || len(items) == 0 {
 		t.Fatalf("failed unit thread is not inspectable: %d items, %v", len(items), itemsErr)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), units["beta"].ThreadID, "let me fix this myself", SendMessageOptions{}); err == nil ||
+	if _, err := app.SendMessageWithOptions(context.Background(), units["beta"].ThreadID, "let me fix this myself", pageSendOptions(uuid.NewString())); err == nil ||
 		!strings.Contains(err.Error(), "only a running unit can be taken over") {
 		t.Fatalf("send into a failed unit thread = %v, want a takeover refusal", err)
 	}
@@ -723,7 +725,7 @@ reliability:
 			}
 		}
 	})
-	if _, err := app.SendMessageWithOptions(context.Background(), threadID, "I unblocked the beta slice by hand.", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadID, "I unblocked the beta slice by hand.", pageSendOptions(uuid.NewString())); err != nil {
 		unsubscribe()
 		t.Fatal(err)
 	}

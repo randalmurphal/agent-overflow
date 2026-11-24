@@ -1014,7 +1014,7 @@ func TestCancellingARequestCaughtInItsFlushLeavesTheRunningTurnAlone(t *testing.
 			// Queued and flushed with no dispatch mark: the receipt stays
 			// `accepted` while the message is with the provider.
 			if _, err := f.app.sendMessageWithOptions(t.Context(), h.thread.ID, "check the changelog", sendMessageOptions{
-				SendID: threadRequestSendID(token), ReconcileBySendID: true, QueueIfActive: true, PreserveDraft: true,
+				SendID: threadRequestSendID(token), Admission: admitQueueing, PreserveDraft: true,
 			}); err != nil {
 				t.Fatalf("queue the request message: %v", err)
 			}

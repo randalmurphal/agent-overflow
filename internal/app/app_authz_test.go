@@ -15,6 +15,8 @@ import (
 	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+
+	"github.com/google/uuid"
 )
 
 // The argument-dependent rechecks (docs/specs/remote-access.md §16 phase 3).
@@ -237,7 +239,7 @@ func TestCreateThreadJudgesTheResolvedMode(t *testing.T) {
 func threadDrivingCalls(app *App) map[string]func(t *testing.T, ctx context.Context, threadID string) error {
 	return map[string]func(t *testing.T, ctx context.Context, threadID string) error{
 		"SendMessageWithOptions": func(_ *testing.T, ctx context.Context, id string) error {
-			_, err := app.SendMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
+			_, err := app.SendMessageWithOptions(ctx, id, "hi", pageSendOptions(uuid.NewString()))
 			return err
 		},
 		"RegisterQueueItem": func(_ *testing.T, ctx context.Context, id string) error {
@@ -505,7 +507,7 @@ func TestSelectingAnAutonomousModeStillNeedsAutonomy(t *testing.T) {
 		call func() error
 	}{
 		{"SendMessageWithOptions", func() error {
-			_, err := app.SendMessageWithOptions(ctx, gated.ID, "hi", SendMessageOptions{RuntimeMode: auto})
+			_, err := app.SendMessageWithOptions(ctx, gated.ID, "hi", SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, RuntimeMode: auto})
 			return err
 		}},
 		{"RegisterQueueItem", func() error {

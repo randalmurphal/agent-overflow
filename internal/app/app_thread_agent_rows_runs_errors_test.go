@@ -15,6 +15,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // runBoundaryFaults are the store failures a message's run boundary can
@@ -95,7 +97,7 @@ func TestASendFailsWhenItsRunBoundaryFails(t *testing.T) {
 			sent := recordDispatches(f.app)
 			execOnStore(t, f.dbPath, fault.statement)
 
-			_, err := f.app.SendMessageWithOptions(context.Background(), worker.ID, "go on", SendMessageOptions{})
+			_, err := f.app.SendMessageWithOptions(context.Background(), worker.ID, "go on", pageSendOptions(uuid.NewString()))
 			if want := fault.expect("read whether a run is open on"); err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("SendMessage = %v; want the store's failure %q", err, want)
 			}

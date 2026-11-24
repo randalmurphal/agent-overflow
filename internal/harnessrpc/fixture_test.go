@@ -269,9 +269,9 @@ func (h *testHost) ReleaseWorkflowStarts() error                     { return ni
 func (h *testHost) CancelWorkflowItem(context.Context, string) error { return nil }
 func (h *testHost) SyncWorkflowEngine() error                        { return nil }
 func (h *testHost) PublishStoreIdentity(identity store.Identity)     { h.published = &identity }
-func (h *testHost) SendMessage(threadID, message string) error {
-	h.sent = append(h.sent, threadID+":"+message)
-	return nil
+func (h *testHost) Send(_ context.Context, threadID, text string, _ bool) (HarnessSendResult, error) {
+	h.sent = append(h.sent, threadID+":"+text)
+	return HarnessSendResult{}, nil
 }
 
 func seedHarnessThread(t *testing.T, database *store.Store, threadID string) {

@@ -113,7 +113,7 @@ func TestAPausedAssistantsThreadRefusesAPersonsConversationDoors(t *testing.T) {
 			return err
 		}},
 		{"send", func() error {
-			_, err := a.SendMessageWithOptions(ctx, thread.ID, "hello", SendMessageOptions{SendID: uuid.NewString()})
+			_, err := a.SendMessageWithOptions(ctx, thread.ID, "hello", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString()})
 			return err
 		}},
 		{"fork", func() error { _, err := a.ForkThread(ctx, thread.ID, &one); return err }},

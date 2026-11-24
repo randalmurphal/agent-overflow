@@ -318,10 +318,9 @@ func (a *App) finishShellCommand(ctx context.Context, result shellrun.Result) er
 	unlockAdmission, err := a.lockSendAdmission(ctx, result.ThreadID, result.RunID)
 	if err == nil {
 		_, err = a.sendMessageWithOptions(ctx, result.ThreadID, usermessage.ShellInvocation(result.Command), sendMessageOptions{
-			AttachmentIDs:     []string{record.ID},
-			SendID:            result.RunID,
-			ReconcileBySendID: true,
-			QueueIfActive:     true,
+			AttachmentIDs: []string{record.ID},
+			SendID:        result.RunID,
+			Admission:     admitQueueing,
 			// The command did not come from the draft the composer holds now.
 			PreserveDraft: true,
 		})

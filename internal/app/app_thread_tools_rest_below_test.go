@@ -18,6 +18,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // holdAgentRowsDrain makes the Agents rows' drain wait before its next
@@ -109,7 +111,7 @@ func TestAHeldRequestReadsTheThreadsBelowItFresh(t *testing.T) {
 		{"a message typed there", func(t *testing.T, f *requestFixture, worker, child string) func(*testing.T) {
 			gate := filepath.Join(t.TempDir(), "child-turn")
 			installMockClaudeTurns(t, f.app, [][]string{gatedTurn(gate, "Looking.")})
-			if _, err := f.app.SendMessageWithOptions(t.Context(), child, "how is it going?", SendMessageOptions{}); err != nil {
+			if _, err := f.app.SendMessageWithOptions(t.Context(), child, "how is it going?", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			return func(t *testing.T) { release(t, gate) }

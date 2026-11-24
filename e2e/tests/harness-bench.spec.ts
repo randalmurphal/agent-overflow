@@ -7,8 +7,8 @@
 // join: that a CLI outside the app can reset an instance, reload the page
 // it is holding, seed a fixture, arm the meters, drive a scenario to turn
 // completion, and land a report with numbers a real browser produced; and
-// that `send --wait` names the turn its own message opened from the rows
-// and completions the backend really publishes.
+// that `send --wait` names the turn its own message opened from the
+// completions the backend really publishes.
 import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -155,60 +155,41 @@ test('health rolls up the same instance and exits ok', async ({ harness, page })
   expect(stdout).not.toMatch(/red\s+frontend-errors/);
 });
 
-test('send --wait reports the turn its own message opened and refuses a working thread', async ({ harness }) => {
-  test.setTimeout(90_000);
-  const gate = 'cli-send-wait-held';
-  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-    projects: [{ name: 'CLI send', repo: {}, threads: [{ title: 'CLI send thread', provider: 'claude' }] }],
+for (const provider of ['claude', 'codex'] as const) {
+  test(`send --wait reports the turn its own message opened and refuses a working thread (${provider})`, async ({ harness }) => {
+    test.setTimeout(90_000);
+    const gate = `cli-send-wait-held-${provider}`;
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [{ name: 'CLI send', repo: {}, threads: [{ title: 'CLI send thread', provider }] }],
+    });
+    const cwd = seed.projects[0].path;
+    const threadId = seed.projects[0].threadIds[0];
+    await setScenario(harness, cwd, threadToolsScenario({
+      name: `cli-send-wait-${provider}`,
+      provider,
+      turns: [{ text: 'The first answer.' }, { text: 'The second answer.' }, { steps: [{ gate }], text: 'The held answer.' }],
+    }));
+    const cli = (...args: string[]) =>
+      execProduct(productBinary('ao-harness'), ['--instance', harness.bootstrap.dataRoot, '-o', 'json', ...args], { timeout: 60_000 });
+    const completedTurn = async (text: string) =>
+      (JSON.parse((await cli('send', '--thread', threadId, '--wait', text)).stdout) as { completed: { threadId: string; turnIndex: number } }).completed;
+
+    // At rest: each completion reported is the one for the turn the CLI's
+    // own message opened, after an earlier turn's is already published.
+    expect(await completedTurn('first message')).toMatchObject({ threadId, turnIndex: 0 });
+    expect(await completedTurn('second message')).toMatchObject({ threadId, turnIndex: 1 });
+
+    // Working: the backend refuses the send. Were it taken, it would queue
+    // behind the held turn, and the turn it runs in could not be named.
+    const parked = awaitGate(harness, gate, cwd);
+    await harness.send(threadId, 'held message');
+    const { mockId } = await parked;
+    const refused = await cli('send', '--thread', threadId, '--wait', 'refused message').then(
+      () => ({ code: 0, stderr: '' }),
+      (error: { code?: number; stderr?: string }) => ({ code: error.code ?? -1, stderr: error.stderr ?? '' }),
+    );
+    expect(refused.code, 'send --wait to a working thread must fail').toBe(1);
+    expect(refused.stderr).toContain('thread is working: a message sent now would queue behind that work');
+    await advanceGate(harness, mockId, gate);
   });
-  const cwd = seed.projects[0].path;
-  const threadId = seed.projects[0].threadIds[0];
-  await setScenario(harness, cwd, threadToolsScenario({
-    name: 'cli-send-wait',
-    provider: 'claude',
-    turns: [{ text: 'The first answer.' }, { steps: [{ gate }], text: 'The held answer.' }],
-  }));
-  const cli = (...args: string[]) =>
-    execProduct(productBinary('ao-harness'), ['--instance', harness.bootstrap.dataRoot, '-o', 'json', ...args], { timeout: 60_000 });
-  const userRows = async (text: string) =>
-    (await harness.items<{ kind: string; summary: string; turnIndex: number }>(threadId, false))
-      .filter((item) => item.kind === 'user_text' && item.summary === text);
-
-  // At rest: the completion reported is the one for the turn of the row
-  // the CLI's message wrote.
-  const { stdout } = await cli('send', '--thread', threadId, '--wait', 'first message');
-  const reported = JSON.parse(stdout) as { completed: { threadId: string; turnIndex: number } };
-  const [first] = await userRows('first message');
-  expect(first, 'the first message has its row').toBeTruthy();
-  expect(reported.completed).toMatchObject({ threadId, turnIndex: first!.turnIndex });
-
-  // Working: a second `send --wait` is refused before it sends. Were it
-  // sent, it would queue behind the held turn and report that turn's end.
-  const parked = awaitGate(harness, gate, cwd);
-  await harness.send(threadId, 'held message');
-  const { mockId } = await parked;
-  let settled = false;
-  const second = cli('send', '--thread', threadId, '--wait', 'second message').then(
-    () => ({ code: 0, stderr: '' }),
-    (error: { code?: number; stderr?: string }) => ({ code: error.code ?? -1, stderr: error.stderr ?? '' }),
-  ).finally(() => {
-    settled = true;
-  });
-  await expect
-    .poll(() => settled || harness.countEvents<{ threadId: string; items: unknown[] }>(
-      'provider:queue_state_changed',
-      (event) => event.threadId === threadId && event.items.length > 0,
-    ) > 0, { timeout: 30_000 })
-    .toBe(true);
-  await advanceGate(harness, mockId, gate);
-  const outcome = await second;
-  expect(outcome.code, 'send --wait to a working thread must fail').toBe(1);
-  expect(outcome.stderr).toContain('is working (a turn is open');
-
-  // The barrier for the absence: once the thread rests, a message the CLI
-  // had sent would have run, and has its row.
-  await expect
-    .poll(async () => (await harness.rpc<unknown[]>('HarnessThreadsWorking', [threadId])).length, { timeout: 30_000 })
-    .toBe(0);
-  expect(await userRows('second message')).toEqual([]);
-});
+}

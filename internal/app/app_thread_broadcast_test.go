@@ -12,6 +12,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 // threadBroadcasts captures the `thread:updated` frames one mutation
@@ -517,6 +519,8 @@ func TestProposedPlanStateChangesBroadcastTheThreadRow(t *testing.T) {
 		broadcasts := captureThreadBroadcasts(t, app)
 
 		if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
+			SendID:             uuid.NewString(),
+			ReconcileBySendID:  true,
 			SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 		}); err == nil {
 			t.Fatal("SendMessageWithOptions() error = nil, want session-has-no-provider failure")

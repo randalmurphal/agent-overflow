@@ -17,6 +17,7 @@ import (
 
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessclient"
+	"agent-overflow/internal/transport"
 )
 
 // deadPID returns a pid that is not running. High pids are handed out
@@ -114,7 +115,8 @@ func (b *scriptedBackend) called() []string {
 // startScriptedBackend serves the attach endpoint and answers every RPC
 // with answer(method), or, for a nil answer, with a capabilities document
 // that names no capability, so attach's handshake settles instead of
-// waiting out its dial timeout.
+// waiting out its dial timeout. An answer that is a *transport.FrameError
+// is sent as the call's error.
 func startScriptedBackend(t *testing.T, token string, answer func(method string) any) (int, *scriptedBackend) {
 	t.Helper()
 	if answer == nil {
@@ -148,7 +150,12 @@ func startScriptedBackend(t *testing.T, token string, answer func(method string)
 			backend.mu.Lock()
 			backend.methods = append(backend.methods, frame.Method)
 			backend.mu.Unlock()
-			reply, err := json.Marshal(map[string]any{"type": "rpc", "id": frame.ID, "result": answer(frame.Method)})
+			result := answer(frame.Method)
+			envelope := map[string]any{"type": "rpc", "id": frame.ID, "result": result}
+			if refusal, ok := result.(*transport.FrameError); ok {
+				envelope = map[string]any{"type": "rpc", "id": frame.ID, "error": refusal}
+			}
+			reply, err := json.Marshal(envelope)
 			if err != nil {
 				return
 			}

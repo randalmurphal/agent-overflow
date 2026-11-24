@@ -53,11 +53,9 @@ type sendMessageOptions struct {
 	// SendID is the client-minted idempotency id of one composer send. Empty
 	// for every app-internal caller, which is what keeps them out of each
 	// other's way. See app_send_idempotency.go.
-	SendID            string
-	ReconcileBySendID bool
-	// QueueIfActive is set by composer entry points. The frontend's last
-	// observed turn state cannot decide whether this is a new provider turn.
-	QueueIfActive bool
+	SendID string
+	// Admission is what the send does when the thread is working.
+	Admission sendAdmission
 	// PreserveDraft keeps the thread's durable composer draft. Set by the
 	// app-internal injectors (the workflow wake) whose text did not come from
 	// the composer: a user send consumes the draft, but a system-injected
@@ -101,6 +99,25 @@ type sendMessageOptions struct {
 	// sent the turn; reading the session after Send returns is already too late.
 	onProviderDispatch func(workflowhost.DispatchIdentity)
 }
+
+// sendAdmission is what a send does when its thread is working: a turn is
+// open, a message waits for its turn to start, or a queued message has not
+// reached the provider. The thread's live state decides it under the
+// thread action lock (resolveUserMessagePlacement); a client's last observed
+// turn state cannot.
+type sendAdmission uint8
+
+const (
+	// admitDirect opens a turn of its own. Every app-internal send that
+	// does not come from a person or an agent uses it.
+	admitDirect sendAdmission = iota
+	// admitQueueing queues behind the work: a composer, an agent's request
+	// and a shell command's output.
+	admitQueueing
+	// admitAtRest refuses, recording nothing, so the turn the message opens
+	// is known when it is accepted: the harness's awaited send.
+	admitAtRest
+)
 
 // userMessageInputs is the projection of fields shared by every
 // user-message entry point (send, steer, flush). The shape is
@@ -580,11 +597,12 @@ func (a *App) sendMessageLocked(
 	}()
 
 	intent := messageDirect
-	if opts.QueueIfActive {
+	switch opts.Admission {
+	case admitQueueing:
 		intent = messageComposer
-		if !opts.ReconcileBySendID {
-			intent = messageLegacyComposer
-		}
+	case admitAtRest:
+		intent = messageAtRest
+	case admitDirect:
 	}
 	placement, err := a.resolveUserMessagePlacement(thread, intent)
 	if err != nil {

@@ -9,6 +9,8 @@ import (
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
+
+	"github.com/google/uuid"
 )
 
 func TestTransferFenceRefusesSendAndProviderStartWithoutWritingHistory(t *testing.T) {
@@ -35,7 +37,7 @@ func TestTransferFenceRefusesSendAndProviderStartWithoutWritingHistory(t *testin
 				}
 			}
 			for name, call := range map[string]func() error{"send": func() error {
-				_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "must remain unsent", SendMessageOptions{})
+				_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "must remain unsent", pageSendOptions(uuid.NewString()))
 				return err
 			}, "start": func() error { return app.startSessionTakingLock(context.Background(), thread.ID) }} {
 				var blocked *store.ThreadTransferError
@@ -88,7 +90,7 @@ func TestTransferFenceRejectsNativeAliasBeforeSendSideEffects(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, call := range []func() error{func() error {
-				_, err := app.SendMessageWithOptions(context.Background(), alias.ID, "must not send", SendMessageOptions{})
+				_, err := app.SendMessageWithOptions(context.Background(), alias.ID, "must not send", pageSendOptions(uuid.NewString()))
 				return err
 			}, func() error { return app.startSessionTakingLock(context.Background(), alias.ID) }} {
 				var moved *store.ThreadTransferError

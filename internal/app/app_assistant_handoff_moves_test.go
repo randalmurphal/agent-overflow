@@ -302,7 +302,7 @@ func TestSendsDuringAFailedReturnEndInTheNextSuccessor(t *testing.T) {
 		return f.app.threadApplication().MutationRefs(threadID) == 2
 	})
 	// The client sends what its composer held, and consumes only that.
-	_, third := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
+	_, third := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
 	unlock()
 	<-ended
 	if code, _, _ := errorsx.PublicDetails(third); code != transport.ErrCodeAssistantSessionGone {

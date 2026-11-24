@@ -12,6 +12,8 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // sendThere sends message from the pair's caller to thread on the
@@ -54,7 +56,7 @@ func TestARemoteWorkerContinuedThereIsANudgeRowOfItsSpawner(t *testing.T) {
 	pair.source.threadAgentPeers.mu.Unlock()
 
 	startReconciledOwner(t, pair)
-	if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "now also update the changelog", SendMessageOptions{}); err != nil {
+	if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "now also update the changelog", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {

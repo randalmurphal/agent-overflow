@@ -10,6 +10,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 // A turn the CLI starts on its own between a send's placement and its
@@ -19,7 +21,7 @@ import (
 func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -36,7 +38,7 @@ func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 			t.Errorf("insert wake turn: %v", err)
 		}
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -61,7 +63,7 @@ func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -78,7 +80,7 @@ func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 			t.Errorf("wake opened turn %d, want the send's turn 1", got)
 		}
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -95,7 +97,7 @@ func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -113,7 +115,7 @@ func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 		app.triage.CleanupThread(threadID)
 		app.triage.MarkThreadActive(threadID, sess.Token)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)

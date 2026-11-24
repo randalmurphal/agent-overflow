@@ -24,6 +24,8 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	workflowwake "agent-overflow/internal/workflow/wake"
+
+	"github.com/google/uuid"
 )
 
 // The phases of a family delete (app_thread_delete_family.go): a claimed thread is
@@ -48,7 +50,7 @@ func TestEveryDoorRefusesAClaimedThread(t *testing.T) {
 	plain := func(t *testing.T, f *requestFixture) string { return f.plainThread(t).ID }
 	doors := map[string]door{
 		"send": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
-			_, err := f.app.SendMessageWithOptions(context.Background(), id, "hello", SendMessageOptions{})
+			_, err := f.app.SendMessageWithOptions(context.Background(), id, "hello", pageSendOptions(uuid.NewString()))
 			return err
 		}},
 		"session start": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {

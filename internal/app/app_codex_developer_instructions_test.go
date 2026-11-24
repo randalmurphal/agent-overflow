@@ -14,6 +14,8 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/mockexec"
+
+	"github.com/google/uuid"
 )
 
 // writeCodexInstructionsAppServer is a mock app-server that logs every
@@ -392,7 +394,7 @@ func TestCodexInjectPrecedesASendRacingTheResume(t *testing.T) {
 	go func() { defer wg.Done(); errs <- app.startSessionTakingLock(context.Background(), thread.ID) }()
 	go func() {
 		defer wg.Done()
-		_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", SendMessageOptions{})
+		_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString()))
 		errs <- err
 	}()
 	wg.Wait()

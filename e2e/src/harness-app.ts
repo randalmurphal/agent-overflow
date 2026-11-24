@@ -1,5 +1,4 @@
 import { type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -11,7 +10,6 @@ import {
   type ProcessGroupMemberProof,
   type ProcessTreeProof,
 } from './harness-process.ts';
-import pageDefaultSend from '../../frontend/src/test/fixtures/pageDefaultSend.json' with { type: 'json' };
 import { HarnessWatchdog } from './harness-watchdog.ts';
 import { boundedCleanup } from './harness-cleanup.ts';
 import { BackendConsoleLog } from './harness-console-log.ts';
@@ -525,16 +523,12 @@ export class HarnessApp {
   }
 
   /**
-   * Send `text` to a thread as the page's default send does: through
-   * `SendMessageWithOptions`, the page's entry, with the options its
-   * `buildSendOptions` builds for a send that consumes no composer draft
-   * (frontend/src/test/fixtures/pageDefaultSend.json, which a frontend
-   * test holds to the builder), under a fresh send id. A send to a working
-   * thread queues behind its turn, and its user row's id derives from the
-   * send id. Its Go twin is `harnessclient.Client.Send`.
+   * Send `text` to a thread as the page's default send does
+   * (`HarnessSend`). A send to a working thread queues behind its work. Its
+   * Go twin is `harnessclient.Client.Send`.
    */
   async send(threadId: string, text: string): Promise<void> {
-    await this.rpc('SendMessageWithOptions', threadId, text, { ...pageDefaultSend, sendId: randomUUID() });
+    await this.rpc('HarnessSend', threadId, text, false);
   }
 
   /**

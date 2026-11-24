@@ -21,6 +21,8 @@ import (
 	"agent-overflow/internal/providerupdate/updatefake"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
+
+	"github.com/google/uuid"
 )
 
 // providerUpdateFrames records provider:updates frames and wakes waiters.
@@ -372,7 +374,7 @@ func TestProviderUpdateRunReconcilesStaleSessions(t *testing.T) {
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatal(err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)

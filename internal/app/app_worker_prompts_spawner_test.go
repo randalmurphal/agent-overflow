@@ -17,6 +17,8 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+
+	"github.com/google/uuid"
 )
 
 // workerPromptTokens is the token of each worker prompt wake threadID's
@@ -85,7 +87,7 @@ func TestAnOrdinarySpawnersWorkerPromptsWakeItAndItsReplyAnswersThem(t *testing.
 	if err := app.startSessionTakingLock(context.Background(), worker.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, "go", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, "go", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	// A prompt's wake is queued before its start is launched, so both are
@@ -343,7 +345,7 @@ func TestAnOldPromptTokenCannotAnswerAReplacementSessionsPrompt(t *testing.T) {
 		if err := app.startSessionTakingLock(context.Background(), worker.ID); err != nil {
 			t.Fatalf("StartSession: %v", err)
 		}
-		if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, message, SendMessageOptions{}); err != nil {
+		if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, message, pageSendOptions(uuid.NewString())); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 	}

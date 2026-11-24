@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -35,18 +36,36 @@ func (a *App) StopSession(threadID string) error {
 //
 //ao:scope threads:operate
 func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
+	if _, err := a.sendClientMessage(ctx, threadID, content, opts, admitQueueing); err != nil {
+		return store.Thread{}, err
+	}
+	return a.store.GetThread(threadID)
+}
+
+// sendClientMessage is the send of a message a client typed or wrote:
+// the page's composer through SendMessageWithOptions, and the harness's
+// HarnessSend. It answers the user row, or the zero item when the message
+// was queued.
+//
+// A client finds its row by send id. A window older than v0.0.15 does not
+// say so, and predicts its row as user:<nextTurn>: it is refused before
+// anything else, a repeat of a send it made before an upgrade included.
+func (a *App) sendClientMessage(ctx context.Context, threadID string, content string, opts SendMessageOptions, admission sendAdmission) (store.Item, error) {
+	if !opts.ReconcileBySendID {
+		return store.Item{}, errors.New(dispatchrefusal.Unreadable)
+	}
 	if a.shuttingDown.Load() {
-		return store.Thread{}, ErrShuttingDown
+		return store.Item{}, ErrShuttingDown
 	}
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
-		return store.Thread{}, err
+		return store.Item{}, err
 	}
 	if err := refusePRDraftSource(opts); err != nil {
-		return store.Thread{}, err
+		return store.Item{}, err
 	}
 	unlockAdmission, err := a.lockClientSendAdmission(ctx, threadID, opts.SendID)
 	if err != nil {
-		return store.Thread{}, err
+		return store.Item{}, err
 	}
 	defer unlockAdmission()
 
@@ -56,7 +75,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 	// client identity has to reach the draft delete inside, or the sending
 	// screen's own draft:updated frame comes back anonymous and it re-reads
 	// a row it just consumed.
-	if _, err := a.sendMessageWithOptions(context.WithoutCancel(ctx), threadID, content, sendMessageOptions{
+	return a.sendMessageWithOptions(context.WithoutCancel(ctx), threadID, content, sendMessageOptions{
 		AttachmentIDs:                opts.AttachmentIDs,
 		RuntimeMode:                  opts.RuntimeMode,
 		SourceProposedPlan:           opts.SourceProposedPlan,
@@ -65,15 +84,11 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		SendID:                       opts.SendID,
-		ReconcileBySendID:            opts.ReconcileBySendID,
 		ConsumeDraft:                 opts.ConsumeDraft,
-		QueueIfActive:                true,
+		Admission:                    admission,
 		// Wire entry: this text was typed into a composer (D31).
 		ExpandComposerCommands: true,
-	}); err != nil {
-		return store.Thread{}, err
-	}
-	return a.store.GetThread(threadID)
+	})
 }
 
 // InterruptTurn fires a provider-level interrupt on the thread's active

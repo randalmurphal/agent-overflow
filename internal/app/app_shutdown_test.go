@@ -23,6 +23,8 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/engine"
+
+	"github.com/google/uuid"
 )
 
 // TestRunParallelClosersRunsEveryCloserConcurrently pins that shutdown
@@ -469,7 +471,7 @@ func TestShutdownBlocksNewWork(t *testing.T) {
 	if err := app.startSessionTakingLock(context.Background(), "thread-x"); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("StartSession after shutdown = %v, want ErrShuttingDown", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), "thread-x", "hi", SendMessageOptions{}); !errors.Is(err, ErrShuttingDown) {
+	if _, err := app.SendMessageWithOptions(context.Background(), "thread-x", "hi", pageSendOptions(uuid.NewString())); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("SendMessage after shutdown = %v, want ErrShuttingDown", err)
 	}
 	if err := app.ReconnectSession("thread-x"); !errors.Is(err, ErrShuttingDown) {

@@ -985,9 +985,24 @@ type SendMessageOptions struct {
 	// older than the field.
 	SendID string `json:"sendId,omitempty"`
 	// ReconcileBySendID declares that the caller finds its message's row by
-	// SendID, rather than predicting user:<turn>. Older callers still send
-	// SendID for idempotency, so its presence alone cannot negotiate this.
+	// SendID, rather than predicting user:<turn>. Windows older than v0.0.15
+	// send SendID without it, so its presence alone cannot say this; a
+	// client send without it is refused (sendClientMessage).
 	ReconcileBySendID bool `json:"reconcileBySendId,omitempty"`
+}
+
+// pageSendOptions are the options of the page's default send under sendID
+// (frontend/src/lib/utils/sendOptions.ts buildSendOptions): rows found by
+// that id, and an empty draft snapshot, which consumes no composer draft.
+// frontend/src/test/fixtures/pageDefaultSend.json is the reference they are
+// checked against.
+func pageSendOptions(sendID string) SendMessageOptions {
+	return SendMessageOptions{
+		AttachmentIDs:     []string{},
+		ConsumeDraft:      &DraftSnapshot{AttachmentIDs: []string{}, TerminalChips: []TerminalChip{}},
+		SendID:            sendID,
+		ReconcileBySendID: true,
+	}
 }
 
 // interruptTurnCtx is InterruptTurn with a bounded entry: ctx limits ONLY the

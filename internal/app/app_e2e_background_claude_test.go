@@ -10,6 +10,8 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+
+	"github.com/google/uuid"
 )
 
 // --- Claude scenario 1: spawn → stop per-row → killed ---
@@ -47,7 +49,7 @@ func TestE2E_Claude_SpawnBackground_StopPerRow_KilledStatus(t *testing.T) {
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "run long job in background", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "run long job in background", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -164,7 +166,7 @@ func TestE2E_Claude_SpawnMultiple_StopAll(t *testing.T) {
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "run two background jobs", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "run two background jobs", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
