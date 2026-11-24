@@ -140,39 +140,14 @@ describe('shadowedModels', () => {
 });
 
 describe('entryInertness', () => {
-  it('reports an enabled entry with no models', () => {
-    expect(entryInertness(ENTRY({ models: [] }))).toEqual({
-      noModels: true,
-      blankFile: false,
-    });
-  });
-
-  it('reports an enabled entry whose file is blank', () => {
-    expect(entryInertness(ENTRY({ models: ['m'], blank: true }))).toEqual({
-      noModels: false,
-      blankFile: true,
-    });
-  });
-
-  it('reports both causes independently', () => {
-    expect(entryInertness(ENTRY({ models: [], blank: true }))).toEqual({
-      noModels: true,
-      blankFile: true,
-    });
-  });
-
-  it('stays silent about a disabled entry, however empty', () => {
-    expect(entryInertness(ENTRY({ enabled: false, models: [], blank: true }))).toEqual({
-      noModels: false,
-      blankFile: false,
-    });
-  });
-
-  it('says nothing about a usable entry', () => {
-    expect(entryInertness(ENTRY({ models: ['m'] }))).toEqual({
-      noModels: false,
-      blankFile: false,
-    });
+  it.each<[string, Partial<PromptOverride>, { noModels: boolean; blankFile: boolean }]>([
+    ['reports an enabled entry with no models', { models: [] }, { noModels: true, blankFile: false }],
+    ['reports an enabled entry whose file is blank', { models: ['m'], blank: true }, { noModels: false, blankFile: true }],
+    ['reports both causes independently', { models: [], blank: true }, { noModels: true, blankFile: true }],
+    ['stays silent about a disabled entry, however empty', { enabled: false, models: [], blank: true }, { noModels: false, blankFile: false }],
+    ['says nothing about a usable entry', { models: ['m'] }, { noModels: false, blankFile: false }],
+  ])('%s', (_name, over, want) => {
+    expect(entryInertness(ENTRY(over))).toEqual(want);
   });
 });
 
@@ -234,18 +209,17 @@ describe('disabledToolNameError', () => {
     expect(disabledToolNameError('   ')).toBeNull();
   });
 
-  it('refuses a leading dash the CLI would read as a flag', () => {
-    expect(disabledToolNameError('-Workflow')).toContain('start with');
+  it.each([
+    ['refuses a leading dash the CLI would read as a flag', '-Workflow', 'start with'],
     // Trimmed first, so a padded one is refused for the same reason.
-    expect(disabledToolNameError('  -Workflow')).toContain('start with');
-  });
-
-  it('refuses inner whitespace, including what JS `\\s` alone would miss', () => {
-    expect(disabledToolNameError('Web Search')).toContain('whitespace');
-    expect(disabledToolNameError('Web\tSearch')).toContain('whitespace');
+    ['refuses a padded leading dash', '  -Workflow', 'start with'],
+    ['refuses inner whitespace', 'Web Search', 'whitespace'],
+    ['refuses an inner tab', 'Web\tSearch', 'whitespace'],
     // U+0085 (NEL) is whitespace to Go's unicode.IsSpace but not to `\s`;
     // letting it through would fail the save with a generic toast.
-    expect(disabledToolNameError('Web\u0085Search')).toContain('whitespace');
+    ['refuses inner whitespace that JS `\\s` alone would miss', 'Web\u0085Search', 'whitespace'],
+  ])('%s', (_name, input, want) => {
+    expect(disabledToolNameError(input)).toContain(want);
   });
 
   it('refuses a name past the byte cap the backend enforces', () => {

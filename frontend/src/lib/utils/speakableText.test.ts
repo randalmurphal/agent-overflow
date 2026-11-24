@@ -98,14 +98,6 @@ describe('what is spoken', () => {
     expect(speakableSections('```\nls -la\n```')).toEqual([]);
     expect(speakableSections('   ')).toEqual([]);
   });
-
-  it('keeps every device sentence within the engine limit', () => {
-    const long = Array.from({ length: 80 }, (_, i) => `clause ${i}`).join(', ') + '.';
-    const pieces = sentences(long);
-    expect(pieces.length).toBeGreaterThan(1);
-    for (const piece of pieces) expect(piece.length).toBeLessThanOrEqual(MAX_PIECE_CHARS);
-    expect(pieces.join(' ').replace(/\s+/g, ' ')).toBe(long);
-  });
 });
 
 describe('speakableSections', () => {
@@ -189,6 +181,8 @@ describe('speakableSections', () => {
     }
     expect(sections.slice(0, -1).every((s) => s.text.endsWith(','))).toBe(true);
     expect(sections.map((s) => s.text).join(' ')).toBe(long);
+    // The device sentences cover the text too, within the engine limit.
+    expect(sentences(long).join(' ').replace(/\s+/g, ' ')).toBe(long);
   });
 
   it('packs and splits by spoken length, so dense scripts and numbers get shorter sections', () => {

@@ -1,29 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { pullGroupLabel, pullStateRank, pullStateText, pullStateTone } from './pullsAttention';
+import { pullGroupLabel, pullStateRank, pullStateText, pullStateTone, type PullReason } from './pullsAttention';
 
 describe('pullStateText', () => {
-  it('words a turn by what happened', () => {
-    expect(pullStateText('your_turn', { kind: 'review_requested', commits: 0, replies: 0 })).toBe('Review requested');
-    expect(pullStateText('your_turn', { kind: '', commits: 0, replies: 0 })).toBe('Review requested');
-    expect(pullStateText('your_turn', null)).toBe('Review requested');
-    expect(pullStateText('your_turn', { kind: 'pushed', commits: 3, replies: 0 })).toBe('+3 commits since your review');
-    expect(pullStateText('your_turn', { kind: 'pushed', commits: 1, replies: 0 })).toBe('+1 commit since your review');
-    expect(pullStateText('your_turn', { kind: 'pushed', commits: 0, replies: 0 })).toBe('Pushed since your review');
-    expect(pullStateText('your_turn', { kind: 'replied', commits: 0, replies: 2 })).toBe('2 replies since your review');
-    expect(pullStateText('your_turn', { kind: 'replied', commits: 0, replies: 1 })).toBe('1 reply since your review');
-    expect(pullStateText('your_turn', { kind: 'replied', commits: 0, replies: 0 })).toBe('Author replied');
-  });
-
-  it('names every other state, approved by whether the viewer approved or only reviewed', () => {
-    expect(pullStateText('pipeline_failed', null)).toBe('Pipeline failed');
-    expect(pullStateText('ready', null)).toBe('Ready to merge');
-    expect(pullStateText('changes_requested', null)).toBe('Changes requested');
-    expect(pullStateText('waiting_on_author', null)).toBe('Waiting on author');
-    expect(pullStateText('approved', { kind: 'approved', commits: 0, replies: 0 })).toBe('Approved by you');
-    expect(pullStateText('approved', { kind: 'reviewed', commits: 0, replies: 0 })).toBe('Reviewed by you');
-    expect(pullStateText('draft', null)).toBe('Draft');
-    expect(pullStateText('open', null)).toBe('Open');
-    expect(pullStateText('mystery', null)).toBe('Open');
+  // A turn words what happened; every other state is named, approved by
+  // whether the viewer approved or only reviewed.
+  it.each<[string, PullReason | null, string]>([
+    ['your_turn', { kind: 'review_requested', commits: 0, replies: 0 }, 'Review requested'],
+    ['your_turn', { kind: '', commits: 0, replies: 0 }, 'Review requested'],
+    ['your_turn', null, 'Review requested'],
+    ['your_turn', { kind: 'pushed', commits: 3, replies: 0 }, '+3 commits since your review'],
+    ['your_turn', { kind: 'pushed', commits: 1, replies: 0 }, '+1 commit since your review'],
+    ['your_turn', { kind: 'pushed', commits: 0, replies: 0 }, 'Pushed since your review'],
+    ['your_turn', { kind: 'replied', commits: 0, replies: 2 }, '2 replies since your review'],
+    ['your_turn', { kind: 'replied', commits: 0, replies: 1 }, '1 reply since your review'],
+    ['your_turn', { kind: 'replied', commits: 0, replies: 0 }, 'Author replied'],
+    ['pipeline_failed', null, 'Pipeline failed'],
+    ['ready', null, 'Ready to merge'],
+    ['changes_requested', null, 'Changes requested'],
+    ['waiting_on_author', null, 'Waiting on author'],
+    ['approved', { kind: 'approved', commits: 0, replies: 0 }, 'Approved by you'],
+    ['approved', { kind: 'reviewed', commits: 0, replies: 0 }, 'Reviewed by you'],
+    ['draft', null, 'Draft'],
+    ['open', null, 'Open'],
+    ['mystery', null, 'Open'],
+  ])('%s with %j reads %s', (state, reason, want) => {
+    expect(pullStateText(state, reason)).toBe(want);
   });
 });
 

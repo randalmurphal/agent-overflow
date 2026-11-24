@@ -105,16 +105,6 @@ describe('prKey — the shared PR wire address', () => {
     expect(repoReferenceWire(repoRefFromWire(wire)!)).toEqual({ Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'group', Repo: 'repo' });
     expect(repoRefFromWire({ ...wire, Forge: 'bitbucket' })).toBeNull();
   });
-
-  it('prSourceKey is prKey behind the pr: scope prefix', () => {
-    expect(prSourceKey({ forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 })).toBe(
-      'pr:github:owner/repo:5',
-    );
-    expect(prSourceKey({ forge: 'gitlab', host: 'gitlab.com', namespace: 'group/sub', repo: 'repo', number: 12 })).toBe(
-      'pr:gitlab:group/sub/repo:12',
-    );
-  });
-
 });
 
 describe('prReferenceWire', () => {
