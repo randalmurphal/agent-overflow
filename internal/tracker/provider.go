@@ -156,8 +156,9 @@ type Provider interface {
 	// Download streams one of an issue's attachments, after in.Check. An
 	// attachment that is not the issue's fails wrapping ErrInvalidInput,
 	// a tracker without Capabilities.MaxAttachmentBytes fails wrapping
-	// ErrUnsupported before any request, and a file over the limit fails
-	// with the transport's error once the limit has been written.
+	// ErrUnsupported before any request, and a file over that size, which
+	// the tracker does not store, fails with the transport's error once
+	// that much has been written.
 	Download(ctx context.Context, in DownloadInput) error
 
 	// Create makes an issue. Its StepCreate part names the new issue when

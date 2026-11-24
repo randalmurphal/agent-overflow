@@ -114,7 +114,7 @@ func TestRedeliveredRowsTellNothing(t *testing.T) {
 	})
 	m.subscribe(t, testBoard)
 	m.events.boardEvents(t, 1)
-	if _, err := m.svc.SubscribeTicket(m.conn.ID, rows[0].Card.ID); err != nil {
+	if _, err := m.svc.SubscribeTicket(m.conn.ID, rows[0].Card.ID, untied); err != nil {
 		t.Fatal(err)
 	}
 	m.events.issueEvents(t, 1)

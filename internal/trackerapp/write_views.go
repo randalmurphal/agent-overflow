@@ -120,15 +120,36 @@ func partViews(kind string, res tracker.Result, at int64) []PartView {
 	for i, p := range res.Parts {
 		state := p.Outcome.State()
 		v := PartView{Issue: string(p.Issue), Step: nameOf(stepNames[:], p.Step), State: nameOf(stateNames[:], state)}
-		if r, ok := p.Outcome.Refusal(); ok {
+		r, refused := p.Outcome.Refusal()
+		err := p.Outcome.Err()
+		switch {
+		case refused:
 			v.Refusal = refusalView(r)
-		} else if err := p.Outcome.Err(); err != nil && state != tracker.StateApplied {
+		case state == tracker.StateUnknown:
+			// What failed matters less than that it may have happened: a
+			// second try could make the change twice.
+			f := Failure{Kind: FailureTracker}
+			if err != nil {
+				f = ClassifyFailure(kind, err)
+			}
+			v.Failure = &FailureView{Kind: string(f.Kind), Message: unknownOutcome(kind, p.Step), At: at}
+		case err != nil && state != tracker.StateApplied:
 			f := ClassifyFailure(kind, err)
 			v.Failure = &FailureView{Kind: string(f.Kind), Message: f.Message, At: at}
 		}
 		out[i] = v
 	}
 	return out
+}
+
+// unknownOutcome is the sentence of a step that was sent and not answered
+// in full, on a connection of kind: what to look at before trying again.
+func unknownOutcome(kind string, step tracker.Step) string {
+	lost := trackerName(kind) + "'s answer did not arrive in full, so "
+	if step == tracker.StepCreate {
+		return lost + "the issue may or may not have been created; look for it on the board before you try again"
+	}
+	return lost + "this change may or may not have been made; look at the ticket before you try again"
 }
 
 func refusalView(r tracker.Refusal) *RefusalView {

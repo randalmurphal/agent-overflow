@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/tracker"
@@ -63,6 +64,12 @@ func TestWriteOutcomes(t *testing.T) {
 			if !slices.Equal(states(v), c.states) || len(v.Stale) > 0 || v.Ended {
 				t.Fatalf("view %+v", v)
 			}
+			for i, o := range c.outcomes {
+				if f := v.Parts[i].Failure; o.State() == tracker.StateUnknown &&
+					(f == nil || !strings.HasSuffix(f.Message, "may or may not have been made; look at the ticket before you try again")) {
+					t.Errorf("an unknown part's failure %+v", f)
+				}
+			}
 			if got := reads(); !slices.Equal(got, c.reads) {
 				t.Fatalf("rows read %v, want %v", got, c.reads)
 			}
@@ -113,6 +120,9 @@ func TestCreateOfUnknownOutcome(t *testing.T) {
 	}
 	if !v.CreateUnknown || v.Created != "" || !slices.Equal(states(v), []string{" create unknown"}) || len(v.Stale) > 0 {
 		t.Fatalf("view %+v", v)
+	}
+	if f := v.Parts[0].Failure; f == nil || f.Kind != string(FailureTransient) || !strings.HasSuffix(f.Message, "look for it on the board before you try again") {
+		t.Fatalf("the lost create's failure %+v", f)
 	}
 	if got := f.callsSince(before); !slices.Equal(got, []string{"Create", "ChangedRows"}) {
 		t.Fatalf("calls %v", got)

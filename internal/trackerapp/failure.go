@@ -40,6 +40,10 @@ const (
 	// FailureNotFound is an open ticket the tracker did not return: deleted,
 	// moved out of reach, or not visible to the token's user.
 	FailureNotFound FailureKind = "not_found"
+	// FailureUpload is a file that stopped arriving from the client
+	// uploading it before its end, so the tracker got nothing complete:
+	// nothing the tracker or the connection did.
+	FailureUpload FailureKind = "upload"
 	// FailureInternal is a read or write of this computer's copy of the
 	// tracker that failed: nothing the tracker or the person did.
 	FailureInternal FailureKind = "internal"
@@ -120,7 +124,10 @@ func ClassifyFailure(kind string, err error) Failure {
 	var tooLarge *trackerapi.BodyTooLargeError
 	var transient *trackerapi.TransientError
 	var notSent *trackerapi.NotSentError
+	var source *trackerapi.SourceError
 	switch {
+	case errors.As(err, &source):
+		return Failure{Kind: FailureUpload, Message: "the file stopped arriving before its end, so " + name + " stored none of it; attach it again"}
 	case errors.As(err, &keyErr):
 		return Failure{Kind: FailureSetup, Message: keyErr.Error()}
 	case errors.As(err, &wrong):

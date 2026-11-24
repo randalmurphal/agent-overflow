@@ -185,7 +185,7 @@ func (p *Provider) Download(ctx context.Context, in tracker.DownloadInput) error
 	if !slices.ContainsFunc(atts, func(a jira.Attachment) bool { return a.ID == string(in.Attachment) }) {
 		return invalidf("attachment %s is not issue %s's", in.Attachment, in.Issue)
 	}
-	if err := p.jira.DownloadAttachment(ctx, string(in.Attachment), in.To, in.Limit); err != nil {
+	if err := p.jira.DownloadAttachment(ctx, string(in.Attachment), in.To, jira.MaxAttachmentBytes); err != nil {
 		return fmt.Errorf("jiraprovider: download attachment %s: %w", in.Attachment, err)
 	}
 	return nil

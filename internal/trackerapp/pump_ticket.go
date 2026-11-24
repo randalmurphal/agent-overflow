@@ -113,16 +113,16 @@ type TicketSubscription struct {
 // the subscribers were last told), then the pump made on the issue's first
 // handle reads it as the tracker says it is now, interactive, and the
 // connection's round reads it every Cadence.Ticket while shown. It is
-// refused as SubscribeBoard is.
-func (s *Service) SubscribeTicket(id string, issue tracker.IssueID) (TicketSubscription, error) {
-	if id == "" || issue == "" {
-		return TicketSubscription{}, fmt.Errorf("%w: a ticket subscribe names its connection and issue", ErrInvalidRequest)
+// refused, and tied by tie, as SubscribeBoard is.
+func (s *Service) SubscribeTicket(id string, issue tracker.IssueID, tie Tie) (TicketSubscription, error) {
+	if id == "" || issue == "" || tie == nil {
+		return TicketSubscription{}, fmt.Errorf("%w: a ticket subscribe names its connection and issue and ties its handle to its client", ErrInvalidRequest)
 	}
 	if err := s.enter(); err != nil {
 		return TicketSubscription{}, err
 	}
 	defer s.leave()
-	hid, tp, start, seq, told, err := s.takeTicketHandle(ticketKey{connection: id, issue: issue})
+	hid, tp, start, seq, told, err := s.takeTicketHandle(ticketKey{connection: id, issue: issue}, tie)
 	if err != nil {
 		return TicketSubscription{}, err
 	}
@@ -162,10 +162,10 @@ func (s *Service) launchTicketLocked(tp *ticketPump) {
 	s.followRoundLocked(tp.key.connection)
 }
 
-// takeTicketHandle takes a handle on key's pump, making the pump when
-// there is none; told is the ticket as its subscribers were last told of
+// takeTicketHandle takes a handle on key's pump, tied by tie, making the
+// pump when there is none; told is the ticket as its subscribers were last told of
 // it, as of seq.
-func (s *Service) takeTicketHandle(key ticketKey) (id string, tp *ticketPump, start bool, seq uint64, told TicketView, err error) {
+func (s *Service) takeTicketHandle(key ticketKey, tie Tie) (id string, tp *ticketPump, start bool, seq uint64, told TicketView, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	kind, err := s.subscribableLocked(key.connection)
@@ -180,6 +180,11 @@ func (s *Service) takeTicketHandle(key ticketKey) (id string, tp *ticketPump, st
 	case s.subs.ticketHandles >= maxTicketSubscriptions:
 		return "", nil, false, 0, TicketView{}, fmt.Errorf("%w: %d ticket subscriptions", ErrTooManySubscriptions, maxTicketSubscriptions)
 	}
+	id = newHandleID()
+	untie, err := tie(id)
+	if err != nil {
+		return "", nil, false, 0, TicketView{}, err
+	}
 	tp = s.subs.tickets[key]
 	if tp == nil {
 		if s.subs.tickets == nil {
@@ -193,8 +198,7 @@ func (s *Service) takeTicketHandle(key ticketKey) (id string, tp *ticketPump, st
 		s.subs.tickets[key] = tp
 		start = true
 	}
-	id = newHandleID()
-	s.takeHandleLocked(id, &handle{ticket: tp}, &tp.core)
+	s.takeHandleLocked(id, &handle{ticket: tp, untie: untie}, &tp.core)
 	if !start {
 		// A shown handle on a hidden pump shows it: its connection's round
 		// follows.

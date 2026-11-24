@@ -119,7 +119,7 @@ func TestUnsupportedWrites(t *testing.T) {
 			t.Errorf("%s: %s", name, describe(r))
 		}
 	}
-	err := p.Download(ctx, tracker.DownloadInput{Issue: id, Attachment: "a", To: io.Discard, Limit: 1})
+	err := p.Download(ctx, tracker.DownloadInput{Issue: id, Attachment: "a", To: io.Discard})
 	if !errors.Is(err, tracker.ErrUnsupported) {
 		t.Errorf("download: %v", err)
 	}

@@ -237,9 +237,10 @@ func writeProblem(kind string, res tracker.Result) error {
 		switch ClassifyFailure(kind, err).Kind {
 		case FailureSetup, FailureTransient, FailureRateLimited:
 			return err
-		case FailureForbidden, FailureTracker, FailureNotFound, FailureInternal:
-			// Forbidden and tracker are the tracker judging the write.
-			// ClassifyFailure gives neither not found nor internal.
+		case FailureForbidden, FailureTracker, FailureNotFound, FailureInternal, FailureUpload:
+			// Forbidden and tracker are the tracker judging the write, and
+			// upload the client that sent the file. ClassifyFailure gives
+			// neither not found nor internal.
 		}
 	}
 	return nil

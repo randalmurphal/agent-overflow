@@ -319,13 +319,13 @@ func (s *Service) Comments(ctx context.Context, id, issue, page string) (Comment
 	})
 }
 
-// Download streams one of issue's attachments to to, at most limit bytes.
-// to may hold part of the file after a failure, which the caller
-// discards.
-func (s *Service) Download(ctx context.Context, id, issue, attachment string, to io.Writer, limit int64) error {
+// Download streams one of issue's attachments to to, at most the largest
+// file the tracker stores (tracker.Provider.Download). to may hold part
+// of the file after a failure, which the caller discards.
+func (s *Service) Download(ctx context.Context, id, issue, attachment string, to io.Writer) error {
 	_, err := ask(s, ctx, id, func(r *run) (struct{}, error) {
 		return struct{}{}, call(r.p.Download(r.ctx, tracker.DownloadInput{Issue: tracker.IssueID(issue),
-			Attachment: tracker.AttachmentID(attachment), To: to, Limit: limit}))
+			Attachment: tracker.AttachmentID(attachment), To: to}))
 	})
 	return err
 }

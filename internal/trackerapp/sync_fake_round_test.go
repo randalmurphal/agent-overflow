@@ -77,7 +77,7 @@ func TestFakeRoundRequests(t *testing.T) {
 			open := 0
 			for _, n := range []int{1, 3, 10, fakeRoundIssues} {
 				for ; open < n; open++ {
-					if _, err := s.svc.SubscribeTicket(conn.ID, issues[open]); err != nil {
+					if _, err := s.svc.SubscribeTicket(conn.ID, issues[open], untied); err != nil {
 						t.Fatal(err)
 					}
 				}

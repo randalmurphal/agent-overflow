@@ -221,7 +221,7 @@ func TestRequestCost(t *testing.T) {
 	}
 	r.measure("Download", func() error {
 		var got bytes.Buffer
-		return p.Download(ctx, tracker.DownloadInput{Issue: first, Attachment: d.Attachments[0].ID, To: &got, Limit: 1 << 20})
+		return p.Download(ctx, tracker.DownloadInput{Issue: first, Attachment: d.Attachments[0].ID, To: &got})
 	})
 	r.result("CreateSprint", func() tracker.Result {
 		return p.CreateSprint(ctx, tracker.SprintInput{Board: costBoard, Name: "Sprint new"})

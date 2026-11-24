@@ -77,6 +77,8 @@ func TestClassifyFailureSortsEveryKind(t *testing.T) {
 			FailureTransient, "Linear could not be reached"},
 		"the verification's bound": {"jira", fmt.Errorf("%w", context.DeadlineExceeded),
 			FailureTransient, "Jira could not be reached"},
+		"a file that stopped arriving": {"jira", wrap(&trackerapi.SourceError{Err: errors.New(secret)}),
+			FailureUpload, "the file stopped arriving before its end, so Jira stored none of it; attach it again"},
 		"a refused input": {"jira", trackerapi.InvalidInput(errors.New(secret)),
 			FailureTracker, "Jira answered in a way"},
 		"anything else": {"linear", errors.New(secret),

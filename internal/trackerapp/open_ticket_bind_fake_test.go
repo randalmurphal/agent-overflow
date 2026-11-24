@@ -393,7 +393,7 @@ func TestACheckByCardOfAClosedTicketRecordsNoOpeningForTheReopenedOne(t *testing
 	waitClosed(t, "the round's check by card", check.arrived)
 	s.closeTicket(t, conn, old, "10101")
 	opening := gate.hold(t, "(*run).verifiedDetails(")
-	reopened := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10101"))
+	reopened := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10101", untied))
 	waitClosed(t, "the reopened ticket's first read", opening.arrived)
 	before := must[store.MirrorBody](t)(bodyOrFail(t, s, root))
 	check.open()
@@ -427,7 +427,7 @@ func TestASecondHandleSharesItsTicketsBind(t *testing.T) {
 	t.Parallel()
 	s, conn, gate, tp, first := bindScenario(t)
 	bind := s.svc.bindOf(tp)
-	second := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10101"))
+	second := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10101", untied))
 	if v := must[TicketView](t)(s.svc.TicketDetail(second.ID)); !v.Loaded || v.Detail.Card.ID != "10101" {
 		t.Fatalf("the second handle's first paint %+v", v)
 	}
@@ -460,7 +460,7 @@ func TestAReadOfAClosedTicketLandingBeforeTheReopenedReadStoresNoBody(t *testing
 	h, title := heldRoundRead(t, s, conn, gate, oldPump)
 	s.closeTicket(t, conn, old, "10101")
 	opening := gate.hold(t, "(*run).verifiedDetails(")
-	reopened := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10101"))
+	reopened := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10101", untied))
 	waitClosed(t, "the reopened ticket's first read", opening.arrived)
 	newPump := s.svc.ticketPumpOf(conn.ID, "10101")
 	newBind := s.svc.bindOf(newPump)

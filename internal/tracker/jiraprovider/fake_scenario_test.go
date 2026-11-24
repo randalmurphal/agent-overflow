@@ -70,7 +70,7 @@ func TestFakeScenario(t *testing.T) {
 	if l := scenarioMust[tracker.KeyLookup](t)(s.p.Lookup(s.ctx, []string{"WEB-2", "WEB-99"})); len(l.Found) != 1 || !slices.Equal(l.Unmatched, []string{"WEB-99"}) {
 		t.Fatalf("lookup %+v", l)
 	}
-	if sp := scenarioMust[tracker.SearchPage](t)(s.p.Search(s.ctx, tracker.SearchQuery{Text: "task", Project: "10000", Limit: 10})); len(sp.Cards) != 2 {
+	if sp := scenarioMust[tracker.SearchPage](t)(s.p.Search(s.ctx, tracker.SearchQuery{Text: "task", Project: "10000"})); len(sp.Cards) != 2 {
 		t.Fatalf("search %+v", sp)
 	}
 	if fs := scenarioMust[[]tracker.Field](t)(s.p.CreateFields(s.ctx, "10000", "10001")); len(fs) == 0 {
@@ -167,7 +167,7 @@ func TestFakeScenario(t *testing.T) {
 		t.Fatalf("attachments %+v", atts)
 	}
 	var got bytes.Buffer
-	if err := s.p.Download(s.ctx, tracker.DownloadInput{Issue: "10102", Attachment: atts[0].ID, To: &got, Limit: 1 << 20}); err != nil || got.String() != "hello" {
+	if err := s.p.Download(s.ctx, tracker.DownloadInput{Issue: "10102", Attachment: atts[0].ID, To: &got}); err != nil || got.String() != "hello" {
 		t.Fatalf("download %q, %v", got.String(), err)
 	}
 
