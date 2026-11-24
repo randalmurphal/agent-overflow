@@ -3,8 +3,7 @@
 // cancel), the workflow run and memory tools, the browser tools on a local
 // page, and the remote tools on a paired computer. The target answers the
 // lead's send with thread_reply, so its own timeline holds a reply row.
-// Shared by ao-tool-rows-more.spec.ts (desktop) and
-// compact-ao-tool-rows-more.spec.ts (compact).
+// ao-tool-rows-more.spec.ts reads it on a desktop page and a phone page.
 
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
