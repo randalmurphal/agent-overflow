@@ -139,7 +139,7 @@ func TestAnOrdinarySpawnersWorkerPromptsWakeItAndItsReplyAnswersThem(t *testing.
 		left := app.triage.PendingInteractiveRequests(worker.ID)
 		return len(left.Approvals) == 0 && len(left.UserInputs) == 0
 	})
-	_ = app.StopSession(worker.ID)
+	stopSessionChecked(t, app, worker.ID)
 }
 
 // The user answering in an ordinary spawner's worker first settles the
@@ -381,7 +381,7 @@ func TestAnOldPromptTokenCannotAnswerAReplacementSessionsPrompt(t *testing.T) {
 	release := make(chan struct{})
 	app.workerPrompts.queue.Go(func() { <-release })
 	start("go again")
-	t.Cleanup(func() { _ = app.StopSession(worker.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, worker.ID) })
 	waitUntil(t, 10*time.Second, func() bool {
 		return len(app.triage.PendingInteractiveRequests(worker.ID).Approvals) == 1
 	})

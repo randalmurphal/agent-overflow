@@ -237,7 +237,7 @@ done
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	deadline := time.Now().Add(time.Second)
 	for sess.MCPStartupStates()["github"].State == "" && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)

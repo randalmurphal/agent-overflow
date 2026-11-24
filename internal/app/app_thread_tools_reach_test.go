@@ -2237,7 +2237,7 @@ func TestARemoteSpawnsFooterSaysItsSpawnerTakesTheWorkersPrompts(t *testing.T) {
 		}
 		ack := pair.spawnThere(t, "work over there", extra)
 		worker := pair.receipt(t, ack.Token).TargetThreadID
-		t.Cleanup(func() { _ = pair.dest.StopSession(worker) })
+		t.Cleanup(func() { stopSessionChecked(t, pair.dest, worker) })
 		var first string
 		waitUntil(t, 15*time.Second, func() bool {
 			items, err := pair.dest.store.ListItems(worker)

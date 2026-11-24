@@ -419,7 +419,7 @@ func newCodexMcpStatusSession(t *testing.T, app *App, threadID, binary, workspac
 	if err != nil {
 		t.Fatalf("codex.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(threadID, session{
 		Provider: string(provider.Codex),
 		Token:    token,

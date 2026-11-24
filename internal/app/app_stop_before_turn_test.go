@@ -126,7 +126,7 @@ func TestStopBeforeAClaudeTurnOpensEndsInOneOutcome(t *testing.T) {
 			if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 			const message = "stop me before I start"
 			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, message, pageSendOptions(uuid.NewString())); err != nil {

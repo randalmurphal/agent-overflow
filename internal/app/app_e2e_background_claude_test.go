@@ -132,7 +132,7 @@ func TestE2E_Claude_SpawnBackground_StopPerRow_KilledStatus(t *testing.T) {
 		t.Fatalf("tray query missing launch+killed pair; sawLaunch=%v sawKilled=%v items=%+v", sawLaunch, sawKilled, liveAfter)
 	}
 
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // --- Claude scenario 2: spawn multiple → stop-all ---
@@ -246,5 +246,5 @@ func TestE2E_Claude_SpawnMultiple_StopAll(t *testing.T) {
 		return killed == 2
 	})
 
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }

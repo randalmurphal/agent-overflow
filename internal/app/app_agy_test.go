@@ -417,7 +417,7 @@ func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testi
 	if turns[0].TurnID == turns[1].TurnID || turns[1].TurnID == turns[2].TurnID {
 		t.Fatalf("reconnected turn overwrote prior turn ID: %q / %q / %q", turns[0].TurnID, turns[1].TurnID, turns[2].TurnID)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 
 	// 3. isAgyNativePromptItem counts both visible user_text and AskUserQuestion with prompt_dispatched:true.
 	if !isAgyNativePromptItem(store.Item{Kind: "tool_call", ToolName: "AskUserQuestion", Meta: `{"prompt_dispatched":true}`}) {

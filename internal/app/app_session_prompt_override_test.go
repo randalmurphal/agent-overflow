@@ -664,7 +664,7 @@ func startOverrideSessionIn(t *testing.T, app *App, id string, providerName prov
 	if err := app.startSessionTakingLock(context.Background(), id); err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(id) })
+	t.Cleanup(func() { stopSessionChecked(t, app, id) })
 	return id
 }
 
@@ -806,7 +806,7 @@ func registerLiveCodexSession(t *testing.T, app *App, threadID string, launchOpt
 	if err != nil {
 		t.Fatalf("codex.NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 
 	app.sessionManager().put(threadID, session{
 		Provider:      string(provider.Codex),

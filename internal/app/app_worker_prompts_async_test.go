@@ -759,7 +759,7 @@ func (f asyncQuestionFixture) workerRecordingSession(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	f.app.sessionManager().put(f.worker.ID, session{Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now())})
 	return stdinLog
 }

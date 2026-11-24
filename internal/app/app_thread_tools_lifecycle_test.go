@@ -591,7 +591,7 @@ func TestSettlementReturnsAResponderToItsSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Token: token, Provider: string(provider.Claude), Claude: sess})
 
 	requestToken := "peer-request-token"

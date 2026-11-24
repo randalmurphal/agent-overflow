@@ -36,7 +36,7 @@ func TestEnsureProvenSessionIgnoresAStalledEventWorker(t *testing.T) {
 	t.Cleanup(func() {
 		close(release)
 		unsubscribe()
-		_ = app.StopSession(thread.ID)
+		stopSessionChecked(t, app, thread.ID)
 	})
 
 	type proof struct {

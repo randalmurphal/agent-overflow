@@ -116,7 +116,7 @@ func installCodexReviewSession(t *testing.T, app *App, thread store.Thread, revi
 	if err != nil {
 		t.Fatalf("codex.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "codex-review-token",
@@ -258,7 +258,7 @@ func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T
 	if err != nil {
 		t.Fatalf("codex.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex), Token: "codex-projected-review", Codex: sess,
 	})
@@ -446,7 +446,7 @@ func TestCompactCodexThreadRefusesANonCodexThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "t", Claude: sess})
 
 	if err := app.CompactCodexThread(context.Background(), thread.ID); err == nil ||

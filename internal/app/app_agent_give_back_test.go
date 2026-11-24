@@ -131,7 +131,7 @@ func claudeRecordingSession(t *testing.T, f *requestFixture) string {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	f.app.sessionManager().put(f.caller.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",

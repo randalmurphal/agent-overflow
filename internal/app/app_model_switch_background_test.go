@@ -227,7 +227,7 @@ func TestDeferredConfigReconnectRechecksWorkAfterLiveApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: "claude", Token: "busy-token", Claude: sess, LaunchOptions: opts, Liveness: live})
 	restarted := false
 	app.startSessionFn = func(string) error { restarted = true; return nil }

@@ -241,7 +241,7 @@ func TestClaudeTUISessionStartsAndWatchesARunThroughTheWorkflowTools(t *testing.
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 	// What the terminal binary was launched with: the workflow tools alone,
 	// with their call ceiling, and their allowlist entry.

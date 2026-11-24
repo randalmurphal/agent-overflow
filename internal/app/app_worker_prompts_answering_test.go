@@ -414,7 +414,7 @@ func TestASiblingsSendNamesTheSpawnerItsPromptWentTo(t *testing.T) {
 			})
 			ack := pair.spawnThere(t, "work over there", map[string]any{"runtime_mode": string(provider.RuntimeApprovalRequired)})
 			worker := pair.receipt(t, ack.Token).TargetThreadID
-			t.Cleanup(func() { _ = pair.dest.StopSession(worker) })
+			t.Cleanup(func() { stopSessionChecked(t, pair.dest, worker) })
 			waitUntil(t, 15*time.Second, func() bool { return pair.dest.restHeld(worker, ack.Token) })
 			pair.source.retireThreadRequestPoll(ack.Token)
 			startReconciledOwner(t, pair)

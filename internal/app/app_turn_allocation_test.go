@@ -54,7 +54,7 @@ func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 			}
 		}
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // A wake that lands after a direct send's row is persisted, before its
@@ -87,7 +87,7 @@ func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 	if _, found, err := app.store.GetTurnByThreadIndex(thread.ID, 2); err != nil || found {
 		t.Fatalf("turn 2 row: found=%v err=%v, want none", found, err)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // A session torn down and replaced after a send registered with its row
@@ -126,7 +126,7 @@ func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 	if turn.CompletedAt == nil {
 		t.Fatal("the send's turn 1 never completed")
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // startTwoTurnClaudeThread starts a Claude session whose mock answers two

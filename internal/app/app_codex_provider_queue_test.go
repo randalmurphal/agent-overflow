@@ -318,7 +318,7 @@ func newProviderQueueSessionWith(
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	codex.SetActiveTurnIDForTest(sess, "active-turn")
 	return sess
 }
@@ -352,7 +352,7 @@ func newProviderQueueResumeSession(
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	return sess
 }
 
@@ -916,7 +916,7 @@ func TestConversationRollbackPurgesTheProviderQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer sess.Close()
+	defer closeSessionChecked(t, sess)
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "queue-purge-token",

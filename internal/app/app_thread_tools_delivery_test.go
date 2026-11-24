@@ -81,7 +81,7 @@ func newHeldRequestTarget(t *testing.T, f *requestFixture) *heldRequestTarget {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	f.app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude), Token: "held-tok", Claude: sess,
 		Liveness: newSessionLiveness(time.Now()),
@@ -835,7 +835,7 @@ func TestARequestTheSessionDiedHoldingIsDeliveredAtTheNextStart(t *testing.T) {
 	if err := f.app.startSessionTakingLock(context.Background(), h.thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = f.app.StopSession(h.thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, f.app, h.thread.ID) })
 	waitUntil(t, 10*time.Second, func() bool {
 		sent, _ := os.ReadFile(stdin)
 		return strings.Contains(string(sent), "check the changelog")

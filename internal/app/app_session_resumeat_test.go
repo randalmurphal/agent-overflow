@@ -59,7 +59,7 @@ func TestColdClaudeResumePassesNoResumeCursor(t *testing.T) {
 			if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 			argv := spawnedClaudeArgv(t, argvPath)
 			if !hasArgPair(argv, "--resume", sessionID) {
@@ -96,7 +96,7 @@ func TestPinnedClaudeForkStartPassesItsResumeCursor(t *testing.T) {
 	if err := app.startSessionTakingLock(context.Background(), fork.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(fork.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, fork.ID) })
 
 	argv := spawnedClaudeArgv(t, argvPath)
 	if !hasArgPair(argv, "--resume", sourceID) || !hasArgPair(argv, "--resume-session-at", "a1") || !slices.Contains(argv, "--fork-session") {
@@ -122,7 +122,7 @@ func coldResumedMidTurnSource(t *testing.T, binary string) (*App, store.Thread, 
 	if err := app.startSessionTakingLock(context.Background(), source.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(source.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, source.ID) })
 	sess, ok := app.activeClaudeSession(source.ID)
 	if !ok {
 		t.Fatal("no live Claude session after StartSession")

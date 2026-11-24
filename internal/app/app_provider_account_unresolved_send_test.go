@@ -252,7 +252,7 @@ func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 			}
 			capture := filepath.Join(t.TempDir(), "turns")
 			setBinary(tc.turns(t, capture))
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("send after the switch = %v, want it sent", err)
 			}
@@ -352,7 +352,7 @@ func TestASendWithNoSavedAccountGoesOutOnALoginThatNamesNobody(t *testing.T) {
 			if err := app.store.CreateThread(thread); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("send = %v, want it sent", err)
@@ -424,7 +424,7 @@ func TestASendOnAnAgyLoginWhoseLookupFailedIsRefusedWithTheFailure(t *testing.T)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString()))
 	if code, _, _ := errorsx.PublicDetails(err); code == "account_login_unresolved" || err == nil ||

@@ -364,7 +364,7 @@ done
 	if err := app.startSessionTakingLock(context.Background(), id); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(id) })
+	t.Cleanup(func() { stopSessionChecked(t, app, id) })
 	live, ok := app.sessionManager().get(id)
 	if !ok || live.LaunchOptions.SystemPromptOverrideSource != "v1" {
 		t.Fatalf("launch source = %q (live %v), want the prompt the spawn read", live.LaunchOptions.SystemPromptOverrideSource, ok)

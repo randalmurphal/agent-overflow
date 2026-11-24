@@ -397,7 +397,7 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
 	updated, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
@@ -575,7 +575,7 @@ func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(targetThread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
 	_, err = app.SendMessageWithOptions(context.Background(), targetThread.ID, "Implement the plan.", SendMessageOptions{
@@ -640,7 +640,7 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "test-token",
@@ -701,7 +701,7 @@ func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "test-token",
@@ -853,7 +853,7 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "test-token",
@@ -942,7 +942,7 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "test-token",
@@ -1035,7 +1035,7 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "test-token",
@@ -1103,7 +1103,7 @@ func TestRespondToApprovalRejectsUntrackedClaudeRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "test-token",
@@ -1220,7 +1220,7 @@ func TestInterruptCreatesStoppedSystemError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
@@ -1366,7 +1366,7 @@ func TestInterrupt_LeavesBackgroundTasksRunning(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
-			t.Cleanup(func() { _ = sess.Close() })
+			t.Cleanup(func() { closeSessionChecked(t, sess) })
 			app.sessionManager().put(thread.ID, session{
 				Provider: string(provider.Claude),
 				Token:    "interrupt-bg-token",
@@ -1474,7 +1474,7 @@ func TestInternalSendMessageSerialPerThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
@@ -1561,7 +1561,7 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession A: %v", err)
 	}
-	t.Cleanup(func() { _ = sessA.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sessA) })
 	sessB, err := claude.NewSession(
 		context.Background(),
 		threadB.ID,
@@ -1576,7 +1576,7 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession B: %v", err)
 	}
-	t.Cleanup(func() { _ = sessB.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sessB) })
 	app.sessionManager().put(threadA.ID, session{Provider: string(provider.Claude), Token: "a", Claude: sessA})
 	app.sessionManager().put(threadB.ID, session{Provider: string(provider.Claude), Token: "b", Claude: sessB})
 
@@ -1742,7 +1742,7 @@ func TestSendMessagePersistsUserItemOnSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "test-token",
@@ -1830,7 +1830,7 @@ func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "test-token",
@@ -1877,7 +1877,7 @@ func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = seededSess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, seededSess) })
 	app.sessionManager().put(seeded.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "test-token",

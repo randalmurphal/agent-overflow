@@ -258,7 +258,7 @@ func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t 
 					t.Fatal(err)
 				}
 			}
-			defer source.StopSession(thread.ID)
+			defer stopSessionChecked(t, source, thread.ID)
 			id := uuid.NewString()
 			caller := transport.WithCallerScope(ctx, transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: thread.ID, ProjectID: thread.ProjectID})
 			request := AgentRemoteRequest{ComputerID: peer.ID, Workspace: gitapp.WorkspaceRef{ProjectID: project.ID}, Request: remotejobs.Request{ID: id, Argv: []string{"test-helper", id}, TimeoutSeconds: 60}}

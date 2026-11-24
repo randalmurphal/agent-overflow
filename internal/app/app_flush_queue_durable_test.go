@@ -101,7 +101,7 @@ func TestDispatchedQueueItemDropsItsDurableRow(t *testing.T) {
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 	// The start funnel hands the batch to the dispatch worker, which
 	// serializes behind the thread action lock StartSession holds.
@@ -509,7 +509,7 @@ func TestSendMessageAnswersARepeatedSendFromItsItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "idempotent-tok",

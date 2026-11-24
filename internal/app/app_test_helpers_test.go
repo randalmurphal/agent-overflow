@@ -27,6 +27,26 @@ func waitOutOtherParties(t *testing.T, app *App) {
 	app.providerEvents.drainStall = budget
 }
 
+// stopSessionChecked stops threadID's session and fails t with the stop's
+// error. A test stops a session through it, in a cleanup or inline, so a
+// stop that fails or waits out a provider timeout (a fake app-server that
+// never answers thread/unsubscribe) fails the test that caused it.
+func stopSessionChecked(t testing.TB, a *App, threadID string) {
+	t.Helper()
+	if err := a.StopSession(threadID); err != nil {
+		t.Errorf("StopSession(%s): %v", threadID, err)
+	}
+}
+
+// closeSessionChecked is stopSessionChecked for a provider session the test
+// opened itself.
+func closeSessionChecked(t testing.TB, sess interface{ Close() error }) {
+	t.Helper()
+	if err := sess.Close(); err != nil {
+		t.Errorf("close provider session: %v", err)
+	}
+}
+
 // defaultTestProjectID is the stable project id that test-only helpers
 // seed into every test store so inline `store.Thread{}` literals satisfy
 // the v13 project_id FK without each test having to call CreateProject.

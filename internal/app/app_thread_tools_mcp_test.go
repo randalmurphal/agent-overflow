@@ -373,7 +373,7 @@ func TestThreadToolsSwitchReachesLiveSessions(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(func() { _ = sess.Close() })
+				t.Cleanup(func() { closeSessionChecked(t, sess) })
 				app.sessionManager().put(thread.ID, session{Token: token, Provider: name, Claude: sess})
 			} else {
 				sess, err := newCodexSessionForThreadTools(t, ctx, thread, capture)
@@ -502,7 +502,7 @@ func newCodexSessionForThreadTools(t *testing.T, ctx context.Context, thread sto
 	if err != nil {
 		return nil, err
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	return sess, nil
 }
 

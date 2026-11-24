@@ -109,7 +109,7 @@ func TestAUsersAnswerIsWrittenOnlyToTheSessionThatAsked(t *testing.T) {
 					t.Fatalf("SendMessage: %v", err)
 				}
 			}
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 			openOther := func(not provider.PromptOccurrence) provider.PromptOccurrence {
 				t.Helper()
 				var open provider.PromptOccurrence

@@ -117,7 +117,7 @@ func TestASpawnFromBeforeRunsStaysClosedWhenThePersonContinuesItsWorker(t *testi
 		mockClaudeInitLine,
 		`{"type":"control_request","request_id":"req-approve","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"make deploy"}}}`,
 	}})
-	t.Cleanup(func() { _ = f.app.StopSession(worker.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, f.app, worker.ID) })
 	if _, err := f.app.SendMessageWithOptions(context.Background(), worker.ID, "now deploy it", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}

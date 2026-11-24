@@ -131,7 +131,7 @@ func TestStopBeforeACodexTurnOpensEndsInOneOutcome(t *testing.T) {
 			if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 			const message = "stop me before I start"
 			// A queued message's row is the one the flush allocated; its

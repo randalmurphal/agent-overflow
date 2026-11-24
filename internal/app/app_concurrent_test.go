@@ -251,7 +251,7 @@ func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 	if got.ClaudeBinaryPath == "" {
 		t.Fatalf("claudeBinaryPath lost: %+v", got)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestConcurrent_ThreadArchiveAndListRace: flip archive state while listers

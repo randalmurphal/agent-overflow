@@ -118,7 +118,7 @@ func installCodexTestSessionWithEvents(t *testing.T, app *App, thread store.Thre
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 
 	// Pre-seed an active turn id so Steer doesn't trip the
 	// no-active-turn-yet guard. The triage / store layers are

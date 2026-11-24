@@ -84,7 +84,7 @@ func TestComposerAdmissionConsumesOnlyCapturedDraft(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					t.Cleanup(func() { _ = sess.Close() })
+					t.Cleanup(func() { closeSessionChecked(t, sess) })
 					app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test", Claude: sess})
 				} else if path == "busy-direct" {
 					if err := app.store.InsertTurn(store.Turn{TurnID: "active", ThreadID: thread.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli()}); err != nil {

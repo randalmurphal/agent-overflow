@@ -713,7 +713,7 @@ func TestE2E_InterruptDoesNotKillBackground(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
-			t.Cleanup(func() { _ = sess.Close() })
+			t.Cleanup(func() { closeSessionChecked(t, sess) })
 			app.sessionManager().put(thread.ID, session{
 				Provider: string(provider.Claude),
 				Token:    "interrupt-bg-" + pc.name,
@@ -740,7 +740,7 @@ func TestE2E_InterruptDoesNotKillBackground(t *testing.T) {
 				t.Errorf("%s: bg row decision stamped: %q", pc.name, after.Decision)
 			}
 
-			_ = app.StopSession(thread.ID)
+			stopSessionChecked(t, app, thread.ID)
 		})
 	}
 }
