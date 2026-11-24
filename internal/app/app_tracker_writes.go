@@ -11,10 +11,9 @@ import (
 // write's outcome (trackerapp.WriteView): a part the tracker refused, or
 // whose answer was lost, is in the view and not an error. Its 3 minute
 // budget is four tracker requests at the 45 second bound the tracker
-// client gives each; a write and the refresh after it make 2 to 9 on Jira
-// (docs/architecture/tracker-backend.md, Methods and events), so only a
-// failing tracker reaches it, and the run cut there answers each part as
-// applied, unknown or not sent.
+// client gives each; what a write and its refresh send is counted in
+// docs/architecture/tracker-backend.md (Methods and events). A run cut
+// there answers each part as applied, unknown or not sent.
 
 // trackerWrite runs write on connectionID with in, its whole run bounded
 // by method's budget.

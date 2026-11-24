@@ -1,6 +1,8 @@
 package backendproxy
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,6 +60,38 @@ func TestCarryTransfer_StripsThePerBackendPrefix(t *testing.T) {
 	}
 	if gotAuth != "" {
 		t.Errorf("a credential crossed the byte relay: %q", gotAuth)
+	}
+}
+
+// TestCarryTransfer_ACutDownloadStaysCut — a download the backend ends
+// after its first byte (the tracker attachment route does, since it
+// declares no length) reaches the page as a failed transfer, never as a
+// file that looks whole.
+func TestCarryTransfer_ACutDownloadStaysCut(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 64<<10))
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler)
+	}))
+	defer upstream.Close()
+	carrier, err := New(Config{
+		WSURL:          "ws://" + strings.TrimPrefix(upstream.URL, "http://") + "/ws",
+		Token:          "upstream-launch-token",
+		TransferPrefix: "/backend/mini",
+	})
+	if err != nil {
+		t.Fatalf("new carrier: %v", err)
+	}
+	relay := httptest.NewServer(http.HandlerFunc(carrier.CarryTransfer))
+	defer relay.Close()
+	resp, err := http.Get(relay.URL + "/backend/mini/attachments/tracker/501?ticket=single-use")
+	if err != nil {
+		return // cut before the headers: a failed transfer too
+	}
+	defer resp.Body.Close()
+	if body, err := io.ReadAll(resp.Body); err == nil {
+		t.Fatalf("a cut download read as a whole file of %d bytes", len(body))
 	}
 }
 
