@@ -61,6 +61,7 @@ import {
 import { threadItemCache } from './threadItemCache';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { holdBackendRecovery, isBackendRecovering } from './transportRecovery';
+import { resyncTrackerBoardsAfterGap } from './trackerBoard.svelte';
 import { reconcileTerminalSurfaces } from './eventsTerminal';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { applyBackendSetChange } from './systems.svelte';
@@ -361,6 +362,14 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
     case 'ci:pipeline_updated': {
       const backend = backendKeyForOrigin(origin?.backendId ?? '');
       const resync = resyncPipelinesAfterGap(backend);
+      if (resync) holdBackendRecovery(backend, resync);
+      return;
+    }
+    // One frame per change of a board: a lost one is not restated, so each
+    // held board of the computer reads whole again under the recovery.
+    case 'tracker:board_updated': {
+      const backend = backendKeyForOrigin(origin?.backendId ?? '');
+      const resync = resyncTrackerBoardsAfterGap(backend);
       if (resync) holdBackendRecovery(backend, resync);
       return;
     }

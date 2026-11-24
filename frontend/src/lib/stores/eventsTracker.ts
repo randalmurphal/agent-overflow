@@ -1,0 +1,11 @@
+import type { EventOrigin } from '../transport/handle';
+import { backendKeyForOrigin } from '../transport/backends';
+import { applyTrackerBoardEvent, type TrackerBoardEvent } from './trackerBoard.svelte';
+
+// Routed by the board's scope on the computer that sent it: the channel
+// reaches every client holding tracker:read, and the store applies a frame
+// only to a board this client holds.
+export function applyTrackerBoardUpdated(event: TrackerBoardEvent | null | undefined, origin?: EventOrigin): void {
+  if (!event) return;
+  applyTrackerBoardEvent(event, backendKeyForOrigin(origin?.backendId ?? ''));
+}
