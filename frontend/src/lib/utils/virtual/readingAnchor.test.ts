@@ -129,15 +129,13 @@ describe('measureReadingAnchorShift', () => {
     expect(measureReadingAnchorShift({ rowEl: row, anchorEl: inner, intraRowOffset: 260 })).toBe(-50);
   });
 
-  it('returns null once the anchor element leaves the DOM', () => {
-    const { row, inner } = makeScroller();
-    inner.remove();
-    expect(measureReadingAnchorShift({ rowEl: row, anchorEl: inner, intraRowOffset: 260 })).toBeNull();
-  });
-
-  it('returns null once the row element leaves the DOM', () => {
-    const { row, inner } = makeScroller();
-    row.remove();
+  it.each([
+    ['returns null once the anchor element leaves the DOM', 'inner'],
+    ['returns null once the row element leaves the DOM', 'row'],
+  ] as const)('%s', (_, removed) => {
+    const elements = makeScroller();
+    elements[removed].remove();
+    const { row, inner } = elements;
     expect(measureReadingAnchorShift({ rowEl: row, anchorEl: inner, intraRowOffset: 260 })).toBeNull();
   });
 });
