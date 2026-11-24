@@ -83,26 +83,18 @@ describe('<ClaudeSessionAxesEditor>', () => {
     expect(input.value).toBe('512');
   });
 
-  it('accepts a size for the tool memory limit', async () => {
+  it.each([
+    ['a size for the tool memory limit', ' 4G ', '4G'],
+    ['"none" as the lift-the-limit word', 'none', 'none'],
+  ])('accepts %s', async (_name, typed, stored) => {
     await seed();
     const { getByTestId } = render(ClaudeSessionAxesEditor);
     const input = getByTestId('settings-claude-tool-memory-limit') as HTMLInputElement;
 
-    await fireEvent.input(input, { target: { value: ' 4G ' } });
+    await fireEvent.input(input, { target: { value: typed } });
     await fireEvent.change(input);
 
-    await waitFor(() => expect(lastPatch()).toEqual({ claudeToolMemoryLimit: '4G' }));
-  });
-
-  it('accepts "none" as the lift-the-limit word', async () => {
-    await seed();
-    const { getByTestId } = render(ClaudeSessionAxesEditor);
-    const input = getByTestId('settings-claude-tool-memory-limit') as HTMLInputElement;
-
-    await fireEvent.input(input, { target: { value: 'none' } });
-    await fireEvent.change(input);
-
-    await waitFor(() => expect(lastPatch()).toEqual({ claudeToolMemoryLimit: 'none' }));
+    await waitFor(() => expect(lastPatch()).toEqual({ claudeToolMemoryLimit: stored }));
   });
 
   it('explains a malformed memory limit and never sends it', async () => {

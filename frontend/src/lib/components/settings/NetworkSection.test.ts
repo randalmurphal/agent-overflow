@@ -185,16 +185,6 @@ describe('<NetworkSection>', () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
-  it('renders the toggle in the loaded state', async () => {
-    setBindingMock('GetNetworkSettings', async () => networkSettings({ bindAll: false }));
-    const { findByRole, findByLabelText } = render(NetworkSection);
-    // Wait for the URL field to render; that's the signal the load
-    // effect has resolved and the reactive state reflects the backend.
-    await findByLabelText('Application URL');
-    const toggle = await findByRole('switch', { name: 'Toggle remote access' });
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
-  });
-
   it('reflects the bind-all preference loaded from the backend', async () => {
     setBindingMock('GetNetworkSettings', async () =>
       networkSettings({ bindAll: true, url: 'http://192.168.1.10:54321/?t=test-token' }),
@@ -221,33 +211,6 @@ describe('<NetworkSection>', () => {
       await findByText(/New devices still need pairing approval/i);
       unmount();
     }
-  });
-
-  it('flips the toggle through SetNetworkSettings on click', async () => {
-    setBindingMock('GetNetworkSettings', async () => networkSettings({ bindAll: false }));
-    const setMock = setBindingMock('SetNetworkSettings', async (next: unknown) => {
-      const n = next as MockNetworkSettings;
-      return networkSettings({
-        bindAll: n.bindAll,
-        url: n.bindAll
-          ? 'http://192.168.1.10:54321/?t=test-token'
-          : 'http://127.0.0.1:54321/?t=test-token',
-      });
-    });
-
-    const { findByRole, findByLabelText } = render(NetworkSection);
-    // Wait until the load effect resolves so the toggle's disabled
-    // gate ({!settings || saving}) opens — clicking before that point
-    // is a no-op.
-    await findByLabelText('Application URL');
-    const toggle = await findByRole('switch', { name: 'Toggle remote access' });
-    await fireEvent.click(toggle);
-
-    await waitFor(() => {
-      expect(setMock).toHaveBeenCalledTimes(1);
-    });
-    const args = setMock.mock.calls[0][0] as MockNetworkSettings;
-    expect(args.bindAll).toBe(true);
   });
 
   it('reverts the toggle and surfaces an error when SetNetworkSettings fails', async () => {

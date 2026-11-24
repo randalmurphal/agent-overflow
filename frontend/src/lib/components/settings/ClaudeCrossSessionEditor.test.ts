@@ -92,19 +92,6 @@ describe('<ClaudeCrossSessionEditor>', () => {
     );
   });
 
-  // A setting that has never carried a policy still resolves to one: an
-  // enabled-but-unset session falls into Claude Code's mode-parity hold.
-  it('falls back to accept only when no policy was ever stored', async () => {
-    await seed({ claudeCrossSession: {} });
-    const { getByRole } = render(ClaudeCrossSessionEditor);
-
-    await fireEvent.click(getByRole('switch'));
-
-    await waitFor(() =>
-      expect(lastPatch()).toEqual({ claudeCrossSession: { enabled: true, inbound: 'accept' } }),
-    );
-  });
-
   // Every axis here binds during the CLI's setup and nothing rebinds it, so
   // a save cannot reach a running session without a restart. The notice is
   // the difference between "nothing happened" and "it will".

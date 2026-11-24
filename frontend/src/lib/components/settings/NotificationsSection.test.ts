@@ -149,8 +149,10 @@ describe('<NotificationsSection>', () => {
     expect(mock!.mock.calls[0][0]).toEqual({ notifyQuietWhen: 'focusedAndThreadVisible' });
   });
 
+  // The threads-not-in-the-sidebar row is seeded on, so it is hidden by the
+  // master switch and not by its own value.
   it('hides every row beneath the master switch when it is off', async () => {
-    await seed({ notificationsEnabled: false });
+    await seed({ notificationsEnabled: false, notifyHiddenThreads: true });
     const { getByRole, queryByRole } = render(NotificationsSection);
     expect(getByRole('switch', { name: 'Toggle notifications' }).getAttribute('aria-checked'))
       .toBe('false');
@@ -158,6 +160,8 @@ describe('<NotificationsSection>', () => {
       expect(queryByRole('switch', { name })).toBeNull();
     }
     expect(queryByRole('radiogroup', { name: 'Quiet when' })).toBeNull();
+    expect(queryByRole('switch', { name: 'Toggle notifications for threads not in the sidebar' })).toBeNull();
+    expect(queryByRole('switch', { name: 'Toggle notification sounds' })).toBeNull();
   });
 
   // Not a kind: the one narrowing of the kinds above, and the one row that
@@ -172,12 +176,6 @@ describe('<NotificationsSection>', () => {
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
     expect(mock!.mock.calls[0][0]).toEqual({ notifyHiddenThreads: true });
-  });
-
-  it('hides the threads-not-in-the-sidebar row beneath the master switch too', async () => {
-    await seed({ notificationsEnabled: false, notifyHiddenThreads: true });
-    const { queryByRole } = render(NotificationsSection);
-    expect(queryByRole('switch', { name: 'Toggle notifications for threads not in the sidebar' })).toBeNull();
   });
 
   it('reflects a single kind turned off without touching the others', async () => {
@@ -314,12 +312,6 @@ describe('<NotificationsSection>', () => {
         .toBe(false);
       expect((getByTestId('settings-sound-preview-input-needed') as HTMLButtonElement).disabled)
         .toBe(true);
-    });
-
-    it('hides the whole sound stack beneath the notifications master switch', async () => {
-      await seed({ notificationsEnabled: false });
-      const { queryByRole } = render(NotificationsSection);
-      expect(queryByRole('switch', { name: 'Toggle notification sounds' })).toBeNull();
     });
   });
 

@@ -46,6 +46,7 @@ describe('<EditorSection>', () => {
     expect(getByTestId('editor-option-code').getAttribute('data-available')).toBe('true');
     expect(getByTestId('editor-option-zed').getAttribute('data-available')).toBe('false');
     expect(getByTestId('editor-option-zed').textContent).toContain('not installed');
+    expect(getByTestId('editor-option-zed').querySelector('input')!.disabled).toBe(true);
   });
 
   it('reflects the current preference as the checked radio', async () => {
@@ -97,16 +98,6 @@ describe('<EditorSection>', () => {
       expect(autoRadio.checked).toBe(true);
       expect(cursorRadio.checked).toBe(false);
     });
-  });
-
-  it('keeps the unavailable editor radio disabled', async () => {
-    setBindingMock('ListAvailableEditors', vi.fn(async () => FIXTURE_EDITORS));
-    setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
-
-    const { findByTestId } = render(EditorSection);
-    await findByTestId('editor-section-radiogroup');
-    const zedRadio = (await findByTestId('editor-option-zed')).querySelector('input') as HTMLInputElement;
-    expect(zedRadio.disabled).toBe(true);
   });
 
   it('allows the selected computer’s editor preference in client mode', async () => {

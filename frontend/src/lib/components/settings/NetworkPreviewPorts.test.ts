@@ -82,28 +82,19 @@ describe('<NetworkPreviewPorts>', () => {
     ]);
   });
 
-  it('names what is running an attributed port, and offers no control for it', async () => {
+  it.each([
+    ['names what is running an attributed port, and offers no control for it', 'vite', 'Shared while vite runs it'],
+    ['falls back to naming the thread when the machine sent no process', undefined, 'Shared while a thread runs it'],
+  ])('%s', async (_name, process, text) => {
     initDevServers();
     const { getByTestId, queryByTestId } = render(NetworkPreviewPorts);
-    emitWailsEvent('devserver:list', attributedFrame([{ port: 5173, process: 'vite' }]));
+    emitWailsEvent('devserver:list', attributedFrame([{ port: 5173, process }]));
 
     const row = await waitFor(() => getByTestId('preview-port-attributed'));
     expect(row.dataset.port).toBe('5173');
-    expect(row.textContent).toContain('Shared while vite runs it');
+    expect(row.textContent).toContain(text);
     expect(queryByTestId('preview-port-remove')).toBeNull();
     expect(queryByTestId('preview-port-row')).toBeNull();
-  });
-
-  it('falls back to naming the thread when the machine sent no process', async () => {
-    initDevServers();
-    const { getByTestId } = render(NetworkPreviewPorts);
-    emitWailsEvent('devserver:list', attributedFrame([{ port: 5173 }]));
-
-    await waitFor(() =>
-      expect(getByTestId('preview-port-attributed').textContent).toContain(
-        'Shared while a thread runs it',
-      ),
-    );
   });
 
   it('keeps the persisted rows above the attributed ones', async () => {
@@ -122,10 +113,15 @@ describe('<NetworkPreviewPorts>', () => {
     expect(getByTestId('preview-port-attributed').dataset.port).toBe('3000');
   });
 
-  it('refuses a port that a thread is already sharing', async () => {
+  // Both sources count: a persisted row and an attributed one are equally
+  // reachable, so sharing either again would be a call to no effect.
+  it.each([
+    ['a thread is already sharing', attributedFrame([{ port: 5173, process: 'vite' }])],
+    ['is already shared, rather than calling to no effect', frame([5173])],
+  ])('refuses a port that %s', async (_name, list) => {
     initDevServers();
     const { getByTestId } = render(NetworkPreviewPorts);
-    emitWailsEvent('devserver:list', attributedFrame([{ port: 5173, process: 'vite' }]));
+    emitWailsEvent('devserver:list', list);
 
     await fireEvent.input(getByTestId('preview-port-input'), { target: { value: '5173' } });
     await waitFor(() =>
@@ -176,20 +172,6 @@ describe('<NetworkPreviewPorts>', () => {
     await waitFor(() => expect(getByTestId('preview-port-error').textContent?.trim()).toBe(message));
     expect(getByTestId('preview-port-add')).toBeDisabled();
     expect(allow).not.toHaveBeenCalled();
-  });
-
-  it('refuses a port that is already shared, rather than calling to no effect', async () => {
-    initDevServers();
-    const { getByTestId } = render(NetworkPreviewPorts);
-    emitWailsEvent('devserver:list', frame([5173]));
-
-    await fireEvent.input(getByTestId('preview-port-input'), { target: { value: '5173' } });
-    await waitFor(() =>
-      expect(getByTestId('preview-port-error').textContent?.trim()).toBe(
-        'That port is already shared.',
-      ),
-    );
-    expect(getByTestId('preview-port-add')).toBeDisabled();
   });
 
   it('says when the machine has no address to serve any of them on', async () => {

@@ -29,25 +29,17 @@ describe('<GitSettings> — Repository sync', () => {
     expect(toggle.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('dispatches backgroundGitFetch:false when switched off', async () => {
-    const { getByLabelText } = render(GitSettings);
-    await fireEvent.click(getByLabelText('Toggle Background Git Fetch'));
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ backgroundGitFetch: false });
-  });
-
-  it('dispatches backgroundGitFetch:true when switched back on', async () => {
-    await seed({ backgroundGitFetch: false });
+  it.each([
+    ['false when switched off', true],
+    ['true when switched back on', false],
+  ])('dispatches backgroundGitFetch:%s', async (_name, fetching) => {
+    await seed({ backgroundGitFetch: fetching });
     const { getByLabelText } = render(GitSettings);
     const toggle = getByLabelText('Toggle Background Git Fetch') as HTMLElement;
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(toggle.getAttribute('aria-checked')).toBe(String(fetching));
 
     await fireEvent.click(toggle);
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ backgroundGitFetch: true });
+    expect(getBindingMock('UpdateSettings')!.mock.calls[0][0]).toEqual({ backgroundGitFetch: !fetching });
   });
 
   it('swaps the hint when the toggle is off', async () => {
@@ -86,32 +78,18 @@ describe('<GitSettings> — Self-hosted GitLab hosts', () => {
     expect(getByTestId('settings-gitlab-hosts-empty')).toBeTruthy();
   });
 
-  it('adds a valid host through the Add button', async () => {
+  it.each([
+    ['adds a valid host through the Add button', 'gitlab.mycompany.com', 'gitlab.mycompany.com'],
+    ['lowercases and trims a host before saving', '  Gitlab.Example.Test  ', 'gitlab.example.test'],
+  ])('%s', async (_name, typed, saved) => {
     const { getByTestId } = render(GitSettings);
     const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
-    input.value = 'gitlab.mycompany.com';
+    input.value = typed;
     await fireEvent.input(input);
-    await fireEvent.click(add);
+    await fireEvent.click(getByTestId('settings-gitlab-host-add'));
 
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({
-      gitlabSelfHostedHosts: ['gitlab.mycompany.com'],
-    });
-  });
-
-  it('lowercases and trims a host before saving', async () => {
-    const { getByTestId } = render(GitSettings);
-    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
-    input.value = '  Gitlab.Example.Test  ';
-    await fireEvent.input(input);
-    await fireEvent.click(add);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock!.mock.calls[0][0]).toEqual({
-      gitlabSelfHostedHosts: ['gitlab.example.test'],
+    expect(getBindingMock('UpdateSettings')!.mock.calls[0][0]).toEqual({
+      gitlabSelfHostedHosts: [saved],
     });
   });
 
@@ -127,44 +105,19 @@ describe('<GitSettings> — Self-hosted GitLab hosts', () => {
     });
   });
 
-  it('rejects scheme-prefixed input with an inline error', async () => {
+  it.each([
+    ['rejects scheme-prefixed input with an inline error', [], 'https://gitlab.example.test'],
+    ['rejects a duplicate host with an inline error', ['gitlab.example.test'], 'gitlab.example.test'],
+    ['rejects github.com / gitlab.com as redundant', [], 'gitlab.com'],
+    ['rejects single-label hostnames', [], 'localhost'],
+  ])('%s', async (_name, saved, typed) => {
+    await seed({ gitlabSelfHostedHosts: saved });
     const { getByTestId, queryByTestId } = render(GitSettings);
     const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    input.value = 'https://gitlab.example.test';
+    input.value = typed;
     await fireEvent.input(input);
 
     expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
-    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
-    expect(add.disabled).toBe(true);
-  });
-
-  it('rejects a duplicate host with an inline error', async () => {
-    await seed({ gitlabSelfHostedHosts: ['gitlab.example.test'] });
-    const { getByTestId, queryByTestId } = render(GitSettings);
-    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    input.value = 'gitlab.example.test';
-    await fireEvent.input(input);
-
-    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
-    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
-    expect(add.disabled).toBe(true);
-  });
-
-  it('rejects github.com / gitlab.com as redundant', async () => {
-    const { getByTestId, queryByTestId } = render(GitSettings);
-    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    input.value = 'gitlab.com';
-    await fireEvent.input(input);
-
-    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
-  });
-
-  it('rejects single-label hostnames', async () => {
-    const { getByTestId, queryByTestId } = render(GitSettings);
-    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    input.value = 'localhost';
-    await fireEvent.input(input);
-
-    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
+    expect((getByTestId('settings-gitlab-host-add') as HTMLButtonElement).disabled).toBe(true);
   });
 });

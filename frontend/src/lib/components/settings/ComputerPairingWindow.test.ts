@@ -23,28 +23,22 @@ describe('computer pairing window', () => {
   });
   afterEach(() => { __setTransportHelloForTest(null); cleanup(); vi.useRealTimers(); });
 
-  it('opens personal pairing where the modal established this caller may enroll', async () => {
+  // The capability alone is not the verdict: a passkey-signed browser sees it
+  // advertised and is still refused by `ownPairingAdmin`, so both rows have it.
+  it.each([
+    ['personal pairing where the modal established this caller may enroll', true, 'own', 'ordinary', ['lan']],
+    ['ordinary full-access pairing where the backend refuses this caller a personal join', false, 'ordinary', 'own', ['lan', 'full']],
+  ] as const)('opens %s', async (_name, ownEnroll, opened, untouched, args) => {
     __setTransportHelloForTest({ backendId: '', backendName: 'My computers', capabilities: ['own-devices.v1'], protocolVersion: 1,
       serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
-    const own = setBindingMock('OpenOwnComputerPairing', async () => WINDOW);
-    const ordinary = setBindingMock('OpenComputerPairing', async () => WINDOW);
+    const opens = {
+      own: setBindingMock('OpenOwnComputerPairing', async () => WINDOW),
+      ordinary: setBindingMock('OpenComputerPairing', async () => WINDOW),
+    };
     setBindingMock('ComputerPairingStatus', async () => WAITING);
-    render(ComputerPairingWindow, { networkChoice: 'lan', access: 'full', ownEnroll: true, onClose: vi.fn(), onChanged: vi.fn() });
-    await vi.waitFor(() => expect(own).toHaveBeenCalledExactlyOnceWith('lan'));
-    expect(ordinary).not.toHaveBeenCalled();
-  });
-
-  it('opens ordinary full-access pairing where the backend refuses this caller a personal join', async () => {
-    // The capability alone is not the verdict: a passkey-signed browser
-    // sees it advertised and is still refused by `ownPairingAdmin`.
-    __setTransportHelloForTest({ backendId: '', backendName: 'My computers', capabilities: ['own-devices.v1'], protocolVersion: 1,
-      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
-    const own = setBindingMock('OpenOwnComputerPairing', async () => WINDOW);
-    const ordinary = setBindingMock('OpenComputerPairing', async () => WINDOW);
-    setBindingMock('ComputerPairingStatus', async () => WAITING);
-    render(ComputerPairingWindow, { networkChoice: 'lan', access: 'full', ownEnroll: false, onClose: vi.fn(), onChanged: vi.fn() });
-    await vi.waitFor(() => expect(ordinary).toHaveBeenCalledExactlyOnceWith('lan', 'full'));
-    expect(own).not.toHaveBeenCalled();
+    render(ComputerPairingWindow, { networkChoice: 'lan', access: 'full', ownEnroll, onClose: vi.fn(), onChanged: vi.fn() });
+    await vi.waitFor(() => expect(opens[opened]).toHaveBeenCalledExactlyOnceWith(...args));
+    expect(opens[untouched]).not.toHaveBeenCalled();
   });
 
   it('shows the independently derived number but permits approval only once the credential is ready', async () => {
