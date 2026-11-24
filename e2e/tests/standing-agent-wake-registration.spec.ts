@@ -1128,6 +1128,73 @@ test(`claude: a failed tick notifies, and a tick that flags attention notifies b
   }
 });
 
+// Codex opens a turn before it echoes what the turn took in, so at a tick's
+// start nothing has named the turn's intake yet and only the dispatch's mark
+// says it is a tick (noteAgentWakeDispatch). Claude's `started` comes before
+// its turn opens, so the Claude test above never reaches this order.
+test('codex: a tick whose turn opens before its wake is echoed takes back no notification', async () => {
+  test.setTimeout(120_000);
+  const harness = await launchHarness();
+  try {
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        { name: 'tick-start-codex', repo: {}, threads: [{ title: 'Ticker', provider: 'codex' }] },
+        { name: 'tick-start-barrier', repo: {}, threads: [{ title: 'Barrier', provider: 'codex' }] },
+      ],
+    });
+    const [tickerP, barrierP] = seed.projects;
+    const ticker = tickerP.threadIds[0];
+    const barrier = barrierP.threadIds[0];
+    const { home } = await harness.rpc<{ home: string }>('HarnessMakeAssistant', ticker);
+    await setScenario(
+      harness,
+      home,
+      threadToolsScenario({
+        name: 'tick-start-codex',
+        provider: 'codex',
+        echoUserMessage: true,
+        turns: [
+          {
+            steps: [{ call: { tool: 'thread_loop', args: { label: 'tick', note: 'look at the board', every_seconds: 3600 } } }],
+            text: 'Ticking.',
+          },
+          { text: 'Nothing new on the board.' },
+        ],
+        afterTurns: 'silent',
+      }),
+    );
+    await setScenario(harness, barrierP.path, threadToolsScenario({ name: 'tick-start-barrier', provider: 'codex', echoUserMessage: true, turns: [{ text: 'Here.' }] }));
+    const retractions = (data: NotificationSend) => Boolean(data.retract) && data.id === `thread:${ticker}`;
+    const settle = async () => {
+      const rest = harness.waitForEvent<NotificationSend>(
+        'notification:send',
+        (data) => !data.retract && data.kind === 'turn-complete' && data.target.threadId === barrier,
+        60_000,
+      );
+      await harness.send(barrier, 'still there?');
+      await rest;
+    };
+    await harness.startSession(barrier);
+    await harness.startSession(ticker);
+    const personRest = harness.waitForEvent<NotificationSend>(
+      'notification:send',
+      (data) => !data.retract && data.kind === 'turn-complete' && data.target.threadId === ticker,
+      60_000,
+    );
+    await harness.send(ticker, 'watch the board');
+    await personRest;
+    const retractionsBefore = harness.countEvents<NotificationSend>('notification:send', retractions);
+    await wakeLoopNow(harness, ticker, 'tick');
+    await expect.poll(() => countInputs(harness, home, 'Loop "tick" fired.'), { timeout: 30_000 }).toBe(1);
+    await harness.waitForEvent('provider:turn_completed', (data: { threadId?: string; quiet?: boolean }) =>
+      data.threadId === ticker && data.quiet === true, 60_000);
+    await settle();
+    expect(harness.countEvents<NotificationSend>('notification:send', retractions)).toBe(retractionsBefore);
+  } finally {
+    await harness.close();
+  }
+});
+
 // A skipped fire's news outlives the runs after it that wake nothing: a
 // quiet run records its own `no output` and leaves the skip's outcome and
 // missed count on the row, so the next wake that reaches the thread still
