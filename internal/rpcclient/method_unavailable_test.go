@@ -24,7 +24,8 @@ func answerOnce(t *testing.T, ctx context.Context, refusal *transport.FrameError
 			t.Error(err)
 			return
 		}
-		defer conn.CloseNow()
+		// The client may have closed first; the test reads the call's answer.
+		defer func() { _ = conn.CloseNow() }()
 		var request transport.ClientFrame
 		if err := wsjson.Read(ctx, conn, &request); err != nil {
 			t.Error(err)
