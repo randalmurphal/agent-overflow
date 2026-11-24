@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,7 +11,6 @@ import (
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/jira"
-	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // The page sizes of the board issue list (docs/references/tracker-api-
@@ -46,7 +44,7 @@ func (p *Provider) BoardIssues(ctx context.Context, id tracker.BoardID, window t
 		return tracker.Listing{}, err
 	}
 	res, rule, err := p.listBoard(ctx, b, window)
-	if isStatus(err, http.StatusBadRequest) && b.cfg.Type == jira.BoardScrum {
+	if queryRefused(err) && b.cfg.Type == jira.BoardScrum {
 		p.jira.ForgetBoard(b.cfg.BoardID)
 		if b, err = p.board(ctx, id); err == nil {
 			res, rule, err = p.listBoard(ctx, b, window)
@@ -136,16 +134,25 @@ func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []t
 	return out, nil
 }
 
-// refusedRule is err, a failed request that carried rule, as
-// tracker.ErrRuleRefused when Jira refused it with a 400 and rule names
-// sprints: measured, a sprint ID that names nothing answers 400 on the
-// board issue list, so the listing that captured rule may be what no
-// longer holds. The refusal's cause is not judged.
+// refusedRule is err, the failure of a call whose query carried rule, as
+// tracker.ErrRuleRefused when Jira refused that query (queryRefused) and
+// rule names sprints: measured, a sprint ID that names nothing answers
+// 400 on the board issue list, so the listing that captured rule may be
+// what no longer holds. The refusal's cause is not judged. A failure of
+// any other request the call made, such as the sign-in check that proves
+// an answer, is not a refusal of the rule.
 func refusedRule(err error, rule tracker.Eligibility) error {
-	if len(rule.Sprints) == 0 || !isStatus(err, http.StatusBadRequest) {
+	if len(rule.Sprints) == 0 || !queryRefused(err) {
 		return err
 	}
 	return fmt.Errorf("%w: %w", tracker.ErrRuleRefused, err)
+}
+
+// queryRefused reports err as Jira's 400 to the request that carried the
+// call's JQL (jira.QueryRefusedError).
+func queryRefused(err error) bool {
+	_, ok := errors.AsType[*jira.QueryRefusedError](err)
+	return ok
 }
 
 // boardRows is BoardRows under the board configuration the client holds.
@@ -205,7 +212,7 @@ func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID,
 	if err == nil {
 		return list, nil, nil
 	}
-	if !errors.Is(err, errIncomplete) && !isStatus(err, http.StatusBadRequest) {
+	if !errors.Is(err, errIncomplete) && !queryRefused(err) {
 		return nil, nil, err
 	}
 	// The bulk read's failure is the cause, the listing's its context: it
@@ -309,10 +316,4 @@ func missing(ids []tracker.IssueID, found map[tracker.IssueID]bool) []tracker.Is
 		}
 	}
 	return out
-}
-
-// isStatus reports an error that is the tracker's answer with status.
-func isStatus(err error, status int) bool {
-	se, ok := errors.AsType[*trackerapi.StatusError](err)
-	return ok && se.Status == status
 }

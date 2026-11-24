@@ -95,3 +95,30 @@ func TestMatchJQLProvesAnEmptyAnswer(t *testing.T) {
 		t.Fatalf("an anonymous empty match: %v, want an AuthError", err)
 	}
 }
+
+// TestMatchJQLRefusedIsTheMatchsOwn400: a 400 to the match is a
+// *QueryRefusedError holding that answer; an anonymous empty match whose
+// sign-in check answers 400 is an *UnprovenError and no refusal of the
+// query, though the check's 400 is in its chain.
+func TestMatchJQLRefusedIsTheMatchsOwn400(t *testing.T) {
+	f := jiratest.NewServer(t)
+	c := newTestClient(t, f)
+	f.On("POST", matchURL, jiratest.Reply(400, `{"errorMessages":["Bad request"],"errors":{}}`))
+	_, err := c.MatchJQL(t.Context(), []string{"10001"}, []string{"a = 1"})
+	if refused, ok := errors.AsType[*QueryRefusedError](err); !ok || refused.Err.Status != http.StatusBadRequest {
+		t.Fatalf("a refused match: %v, want a QueryRefusedError of the 400", err)
+	}
+	f.On("POST", matchURL, jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`))
+	f.SetAccount("")
+	f.On("GET", "/rest/api/3/myself", jiratest.Reply(400, `{"errorMessages":["Bad request"],"errors":{}}`))
+	_, err = c.MatchJQL(t.Context(), []string{"10001"}, []string{"a = 1"})
+	_, unproven := errors.AsType[*UnprovenError](err)
+	_, refused := errors.AsType[*QueryRefusedError](err)
+	status, ok := errors.AsType[*trackerapi.StatusError](err)
+	if !unproven || refused || !ok || status.Status != http.StatusBadRequest {
+		t.Fatalf("a match whose sign-in check answered 400: %v; want an UnprovenError holding the check's 400 and no QueryRefusedError", err)
+	}
+	if n := f.Count("GET", "/rest/api/3/myself"); n != 1 {
+		t.Fatalf("%d sign-in checks; want 1", n)
+	}
+}

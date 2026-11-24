@@ -169,8 +169,9 @@ const badRequest = `{"errorMessages":["Bad request"],"errors":{}}`
 
 // A sprint the listing's rule names is deleted between the listing and
 // the reads by ID, which Jira refuses: the reconcile lists the board
-// again at once, with no sprint read to judge why, and the pass completes
-// in the tick, removing the completed issue's row.
+// again at once, reading no sprint to judge why the rows read was
+// refused, and the pass completes in the tick, removing the completed
+// issue's row.
 func TestADeletedSprintListsTheBoardAgainAndThePassCompletes(t *testing.T) {
 	t.Parallel()
 	s := newRuleScenario(t)
@@ -191,8 +192,12 @@ func TestADeletedSprintListsTheBoardAgainAndThePassCompletes(t *testing.T) {
 	if out.Failure != nil || out.More() || fmt.Sprint(out.Changes().Removed) != "["+done+"]" {
 		t.Fatalf("the tick %+v; want the completed issue removed and the pass done", out)
 	}
-	if n := s.count(reqListing); n < 2 {
-		t.Fatalf("%d listings; want the board listed again", n)
+	// The listing, the rows read Jira refuses, the listing again, which
+	// Jira refuses for the sprint the client still holds, so the provider
+	// reads the sprints and lists once more (BoardIssues), and the rows
+	// read under that listing's rule.
+	if n, rows := s.count(reqListing), s.count(reqRowRead); n != 3 || rows != 2 {
+		t.Fatalf("%d listings and %d rows reads; want 3 and 2", n, rows)
 	}
 	if s.pump.pass.openIn(s.lifetime(t)) || s.failed(t) || s.pump.relisted != (ruleRelist{}) {
 		t.Fatalf("the pass %+v, the board failed %v, the relist %+v; want all clear", s.pump.pass, s.failed(t), s.pump.relisted)
@@ -226,8 +231,40 @@ func TestAMatchNotJudgedForADeletedSprintRecoversByTheList(t *testing.T) {
 	if out.Failure != nil || out.More() || fmt.Sprint(out.Changes().Removed) != "["+done+"]" {
 		t.Fatalf("the tick %+v; want the completed issue removed and the pass done", out)
 	}
-	if !deleted.Load() || s.count(reqListing) < 2 || s.count(reqMatch) < 2 {
-		t.Fatalf("deleted %v after %d listings and %d matches; want the board listed again and matched again", deleted.Load(), s.count(reqListing), s.count(reqMatch))
+	if !deleted.Load() || s.count(reqListing) != 2 || s.count(reqMatch) != 2 || s.count(reqRowRead) != 3 {
+		t.Fatalf("deleted %v after %d listings, %d matches and %d rows reads; want 2, 2 and 3", deleted.Load(), s.count(reqListing), s.count(reqMatch), s.count(reqRowRead))
+	}
+}
+
+// The match that judges an issue the list left out answers 200 with no
+// issue and no account, and the sign-in check that proves that answer
+// answers 400: no request that carried the rule was refused, so the
+// failure keeps the exact pass, the board is not listed again, and nothing
+// is held as a refusal.
+func TestASignInCheckRefusedAfterAMatchKeepsThePass(t *testing.T) {
+	t.Parallel()
+	s := newRuleScenario(t)
+	s.answering(func(kind string, w http.ResponseWriter, r *http.Request, _ *httputil.ReverseProxy) bool {
+		switch {
+		case kind == reqMatch:
+			return reply(w, http.StatusOK, `{"matches":[{"matchedIssues":[],"errors":[]}]}`)
+		case kind == http.MethodGet+" /rest/api/3/myself":
+			return reply(w, http.StatusBadRequest, badRequest)
+		}
+		return false
+	})
+	out := s.tick(t)
+	if out.Failure == nil || out.Failure.Kind != FailureTracker || len(out.Changes().Removed) != 0 {
+		t.Fatalf("the tick %+v; want the sign-in check's failure and nothing removed", out)
+	}
+	if n, m, checks := s.count(reqListing), s.count(reqMatch), s.count(http.MethodGet+" /rest/api/3/myself"); n != 1 || m != 1 || checks != 1 {
+		t.Fatalf("%d listings, %d matches, %d sign-in checks; want 1, 1 and 1", n, m, checks)
+	}
+	if !slices.Contains(s.pump.pass.left, done) || !s.pump.pass.openIn(s.lifetime(t)) || s.pump.relisted != (ruleRelist{}) {
+		t.Fatalf("the pass %+v, the relist %+v; want the pass open holding %s and no refusal", s.pump.pass, s.pump.relisted, done)
+	}
+	if !s.rowStored(t, s.conn.ID, done) {
+		t.Fatalf("the failed match removed the row of %s", done)
 	}
 }
 

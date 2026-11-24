@@ -36,6 +36,12 @@ func lastSeq(e *trackerfake.Engine) int {
 	return rs[len(rs)-1].Seq
 }
 
+// isStatus reports an error that is the tracker's answer with status.
+func isStatus(err error, status int) bool {
+	se, ok := errors.AsType[*trackerapi.StatusError](err)
+	return ok && se.Status == status
+}
+
 // isRefusal reports err as a rows read the tracker refused for its rule,
 // wrapping the 400 that refused it.
 func isRefusal(err error) bool {

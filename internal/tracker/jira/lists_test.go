@@ -174,3 +174,44 @@ func TestCountListIssues(t *testing.T) {
 		}
 	}
 }
+
+// TestListRefusedIsAQueryRefusalWithJQL: a 400 to a list page narrowed by
+// JQL, on its first page or a later one, is a *QueryRefusedError; a 400
+// to a list with no JQL, and a 403 to one with JQL, are not.
+func TestListRefusedIsAQueryRefusalWithJQL(t *testing.T) {
+	f := jiratest.NewServer(t)
+	c := newTestClient(t, f)
+	refuse := jiratest.Reply(400, `{"errorMessages":["Bad request"],"errors":{}}`)
+	list := func(jql string) error {
+		_, err := c.ListAllIssues(t.Context(), ListQuery{List: BacklogIssues(3), JQL: jql}, 0)
+		return err
+	}
+	f.On("GET", backlogURL, refuse)
+	if refused, ok := errors.AsType[*QueryRefusedError](list("id in (1)")); !ok || refused.Err.Status != http.StatusBadRequest {
+		t.Fatalf("a refused list with JQL: %v, want a QueryRefusedError of the 400", refused)
+	}
+	if err := list(""); err == nil || isQueryRefused(err) {
+		t.Fatalf("a refused list with no JQL: %v, want the 400 alone", err)
+	}
+	f.On("GET", backlogURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		if r.URL.Query().Get("nextPageToken") == "t1" {
+			refuse(w, r, b)
+			return
+		}
+		jiratest.Reply(200, `{"issues":[{"id":"1","key":"WEB-1","fields":{}}],"nextPageToken":"t1","isLast":false}`)(w, r, b)
+	})
+	if err := list("id in (1)"); !isQueryRefused(err) {
+		t.Fatalf("a list refused on its second page: %v, want a QueryRefusedError", err)
+	}
+	f.On("GET", backlogURL, jiratest.Reply(403, `{"errorMessages":["Forbidden"],"errors":{}}`))
+	if err := list("id in (1)"); err == nil || isQueryRefused(err) {
+		t.Fatalf("a list answered 403: %v, want no QueryRefusedError", err)
+	}
+}
+
+// isQueryRefused reports err as a *QueryRefusedError, whatever status
+// it holds.
+func isQueryRefused(err error) bool {
+	_, ok := errors.AsType[*QueryRefusedError](err)
+	return ok
+}

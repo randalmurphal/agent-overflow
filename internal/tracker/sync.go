@@ -87,10 +87,11 @@ type Eligibility struct {
 	Sprints []SprintID
 }
 
-// ErrRuleRefused is a read by ID that the tracker refused because of the
-// Eligibility it was given (Provider.BoardRows): it names a sprint the
-// tracker no longer has. The error wraps the tracker's answer. The rule
-// is spent: a caller lists the board again for a rule the tracker holds.
+// ErrRuleRefused is a read by ID (Provider.BoardRows) whose query, which
+// carried the Eligibility it was given, the tracker refused. Why is not
+// known: a sprint the rule names may be gone, or the tracker may refuse
+// the query for another reason. The error wraps the tracker's answer. A
+// caller lists the board again for a rule the tracker holds now.
 var ErrRuleRefused = errors.New("tracker: the tracker refused the listing's rule")
 
 // Rows are a board's rows for a set of issues. Missing are the issues

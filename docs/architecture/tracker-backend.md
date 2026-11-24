@@ -689,8 +689,10 @@ and writes share:
   checked bulk fetch, and an answer holding an issue with no ID, one not
   asked or one twice fails the read. Jira's rows read returns
   `tracker.ErrRuleRefused` when Jira answers 400 to the list or the
-  match that carries a rule naming sprints, the cause not judged (a
-  sprint deleted since the listing answers 400 on the board issue list).
+  match that carries a rule naming sprints (`jira.QueryRefusedError`,
+  set at that request; a failed sign-in check that proves the answer is
+  not one), the cause not judged (a sprint deleted since the listing
+  answers 400 on the board issue list).
   On it the pass ends, the rows stored before it standing, and the board
   lists again in the same tick unless the pump listed again for a
   refusal within the last reconcile interval; then the pump holds the

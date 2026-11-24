@@ -36,7 +36,9 @@ type JQLMatch struct {
 // tracker-api-measurements.md). An ID that names no issue is matched by
 // no query, with no error (measured). An answer that matches fewer than
 // every issue asked and names no account is checked as an empty search
-// is (prove), so an anonymous answer never passes for "not matched".
+// is (prove), so an anonymous answer never passes for "not matched". A
+// 400 to the match is a *QueryRefusedError; a failed sign-in check is
+// not.
 func (c *Client) MatchJQL(ctx context.Context, issues, jqls []string) ([]JQLMatch, error) {
 	if err := c.admit(ctx); err != nil {
 		return nil, err
@@ -71,7 +73,7 @@ func (c *Client) MatchJQL(ctx context.Context, issues, jqls []string) ([]JQLMatc
 		Body: map[string]any{"issueIds": ids, "jqls": jqls},
 	}, &v)
 	if err != nil {
-		return nil, fmt.Errorf("jira: match %d issues against %d queries: %w", len(issues), len(jqls), err)
+		return nil, fmt.Errorf("jira: match %d issues against %d queries: %w", len(issues), len(jqls), refusedQuery(err))
 	}
 	if len(v.Matches) != len(jqls) {
 		return nil, fmt.Errorf("jira: match against %d queries answered %d", len(jqls), len(v.Matches))
