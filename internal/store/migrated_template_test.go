@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -481,32 +480,19 @@ func TestPrimeCancelledBuildIsReleasedAndRetried(t *testing.T) {
 	}
 }
 
-// primeHelperEnv marks the child process TestPrimeMigratedTemplateBuildsTheProcessImage
-// starts, so the exported function runs against a template no earlier test built.
-const primeHelperEnv = "AO_STORE_PRIME_HELPER"
-
 // PrimeMigratedTemplate builds the process image through the exported entry
-// point: in a fresh process the build runs once, keeps the image, leaves no
-// file in the parent, and a second call builds nothing.
+// point. The test is serial, so every parallel test is paused while it swaps
+// the process template for a fresh one with a counting builder; it restores
+// the original in cleanup. The build reuses the original template's image, so
+// no second migration runs.
 func TestPrimeMigratedTemplateBuildsTheProcessImage(t *testing.T) {
-	if os.Getenv(primeHelperEnv) == "1" {
-		primeProcessImageInThisProcess(t)
-		return
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestPrimeMigratedTemplateBuildsTheProcessImage$", "-test.count=1")
-	cmd.Env = append(os.Environ(), primeHelperEnv+"=1")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("priming a fresh process: %v\n%s", err, output)
-	}
-}
-
-func primeProcessImageInThisProcess(t *testing.T) {
+	original := processTemplate
 	var builds atomic.Int32
-	templateBuildOpened = func(*Store) { builds.Add(1) }
-	t.Cleanup(func() { templateBuildOpened = nil })
-	if processTemplate.image != nil {
-		t.Fatal("the helper process already holds a built image")
-	}
+	processTemplate = newMigratedTemplate(func(ctx context.Context, dir string) ([]byte, error) {
+		builds.Add(1)
+		return original.load(ctx, dir)
+	})
+	t.Cleanup(func() { processTemplate = original })
 	dir := t.TempDir()
 	if err := PrimeMigratedTemplate(context.Background(), dir); err != nil {
 		t.Fatal(err)
@@ -521,6 +507,6 @@ func primeProcessImageInThisProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := builds.Load(); got != 1 {
-		t.Fatalf("a primed process built again: %d builds", got)
+		t.Fatalf("a primed template built again: %d builds", got)
 	}
 }
