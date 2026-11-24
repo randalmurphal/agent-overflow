@@ -101,28 +101,19 @@ func withEntry(m map[ReservedEnv]string, env ReservedEnv, value string) map[Rese
 func BuildEnvironment(in EnvInput) []string {
 	base := appimage.Scrub(os.Environ())
 	values := make(map[string]string, len(in.Defaults)+len(in.Custom)+len(in.Pins)+1)
-	order := make([]string, 0, len(in.Defaults)+len(in.Custom)+len(in.Pins)+1)
-	set := func(name, value string) {
-		if _, exists := values[name]; !exists {
-			order = append(order, name)
-		}
-		values[name] = value
-	}
 	for env, value := range in.Defaults {
-		set(env.Name(), value)
+		values[env.Name()] = value
 	}
-	for name, value := range in.Custom {
-		set(name, value)
-	}
+	maps.Copy(values, in.Custom)
 	for env, value := range in.Pins {
-		set(env.Name(), value)
+		values[env.Name()] = value
 	}
 	if in.PathPrepend != "" {
 		value := in.PathPrepend
 		if existing := envValue(base, pathName); existing != "" {
 			value += string(os.PathListSeparator) + existing
 		}
-		set(pathName, value)
+		values[pathName] = value
 	}
 
 	removed := make(map[string]struct{}, len(in.Clears)+len(values))
@@ -132,14 +123,14 @@ func BuildEnvironment(in EnvInput) []string {
 	for name := range values {
 		removed[name] = struct{}{}
 	}
-	out := make([]string, 0, len(base)+len(order))
+	out := make([]string, 0, len(base)+len(values))
 	for _, entry := range base {
 		name, _, _ := strings.Cut(entry, "=")
 		if _, drop := removed[name]; !drop {
 			out = append(out, entry)
 		}
 	}
-	for _, name := range order {
+	for _, name := range slices.Sorted(maps.Keys(values)) {
 		out = append(out, name+"="+values[name])
 	}
 	return out

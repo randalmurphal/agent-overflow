@@ -291,7 +291,9 @@ func TestBuildEnvironmentAppliesEachKindInPrecedenceOrder(t *testing.T) {
 	values := envValues(BuildEnvironment(EnvInput{
 		Custom: map[string]string{
 			ClaudeTodoReminderModeEnv.Name(): "user",
-			// Another spelling is another variable, which the pin leaves alone.
+			// The pin outranks the user's value for its own name; another
+			// spelling is another variable, which the pin leaves alone.
+			ClaudeBaseURLEnv.Name():            "user",
 			"anthropic_base_url":               "user",
 			AgyAmbientCredentialEnvs[1].Name(): "user-key",
 		},
