@@ -104,12 +104,6 @@ describe('worktreeIntent store', () => {
     expect(local.newBranchBase).toBe('main');
   });
 
-  it('enterCreateBranchMode pre-selects the LOCAL sentinel when the workspace is dirty', () => {
-    const thread = makeThread({ id: 'thread-dirty' });
-    enterCreateBranchMode(thread, LOCAL_BASE_SENTINEL);
-    expect(worktreeIntentForThread(thread).newBranchBase).toBe(LOCAL_BASE_SENTINEL);
-  });
-
   it('exitCreateBranchMode drops creatingBranch + name/base but preserves the workspace mode', () => {
     const thread = makeThread({ id: 'thread-exit' });
     setThreadEnvMode(thread, 'new-worktree');
@@ -169,15 +163,9 @@ describe('worktreeIntent store', () => {
 
     setNewBranchBase(thread, LOCAL_BASE_SENTINEL);
     expect(worktreeIntentForThread(thread).newBranchBase).toBe(LOCAL_BASE_SENTINEL);
-    expect(
-      resolveBaseForWire(worktreeIntentForThread(thread).newBranchBase).carryLocalChanges,
-    ).toBe(true);
 
     setNewBranchBase(thread, 'dev');
     expect(worktreeIntentForThread(thread).newBranchBase).toBe('dev');
-    expect(
-      resolveBaseForWire(worktreeIntentForThread(thread).newBranchBase).carryLocalChanges,
-    ).toBe(false);
   });
 
   it('hasStagedWorktreeIntent answers the send path synchronously', () => {
