@@ -116,9 +116,11 @@ func andRule(jql string, rule tracker.Eligibility) string {
 // board under the configuration held (a board given another filter
 // since), the configuration is read again and the rows once more; a board
 // still unjudged fails the read, so that no issue reads as Missing on
-// the list's word alone. A rule naming a sprint the board issue list
-// refuses (a sprint deleted since the listing) fails it with
-// tracker.ErrRuleRefused.
+// the list's word alone. An issue the bulk fetch shows does not exist is
+// Missing and is not sent to the match. A refused query while rule names
+// sprints fails it with tracker.ErrRuleRefused only when the board's
+// sprints, read again, lack one of them (ruleRefused); any other 400 is
+// the tracker's answer.
 func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []tracker.IssueID, rule tracker.Eligibility) (tracker.Rows, error) {
 	if err := checkIssues(issues); err != nil {
 		return tracker.Rows{}, err
@@ -128,7 +130,38 @@ func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []t
 		p.jira.ForgetBoard(n)
 		out, err = p.boardRows(ctx, id, issues, rule)
 	}
-	return out, err
+	if err != nil {
+		return tracker.Rows{}, p.ruleRefused(ctx, id, rule, err)
+	}
+	return out, nil
+}
+
+// ruleRefused is err, a failed rows read of board under rule, as
+// tracker.ErrRuleRefused when Jira refused a query (a 400, or a match that
+// could not judge) and the board's sprints, read again (one listing), lack
+// a sprint rule names: measured, a sprint ID that names nothing answers
+// 400 on the board issue list. Otherwise it is err, the refusal the
+// tracker's own; a failed read of the sprints is added to it.
+func (p *Provider) ruleRefused(ctx context.Context, id tracker.BoardID, rule tracker.Eligibility, err error) error {
+	if _, unjudged := isUnjudged(err); len(rule.Sprints) == 0 || !isStatus(err, http.StatusBadRequest) && !unjudged {
+		return err
+	}
+	b, berr := p.board(ctx, id)
+	if berr != nil {
+		return fmt.Errorf("%w (board %s, read to judge its sprints, failed: %v)", err, id, berr)
+	}
+	list, lerr := p.jira.Sprints(ctx, jira.SprintQuery{Board: b.cfg.BoardID})
+	if lerr != nil {
+		return fmt.Errorf("%w (the sprints of board %s, read to judge it, failed: %v)", err, id, lerr)
+	}
+	for _, sp := range rule.Sprints {
+		if !slices.ContainsFunc(list.Sprints, func(s jira.Sprint) bool { return decimal(s.ID) == string(sp) }) {
+			// The next listing reads the board's sprints again.
+			p.jira.ForgetBoard(b.cfg.BoardID)
+			return fmt.Errorf("%w: board %s no longer has sprint %s: %w", tracker.ErrRuleRefused, id, sp, err)
+		}
+	}
+	return err
 }
 
 // boardRows is BoardRows under the board configuration the client holds.
@@ -143,11 +176,16 @@ func (p *Provider) boardRows(ctx context.Context, id tracker.BoardID, issues []t
 	}
 	cat := newCatalog()
 	var out tracker.Rows
-	found := map[tracker.IssueID]bool{}
+	// found are the issues read; absent, those the bulk fetch showed do not
+	// exist, which no match is asked about.
+	found, absent := map[tracker.IssueID]bool{}, map[tracker.IssueID]bool{}
 	for chunk := range slices.Chunk(distinct(issues), idChunk) {
-		list, err := p.listByID(ctx, b, chunk, b.rowFields(s), rule)
+		list, gone, err := p.listByID(ctx, b, chunk, b.rowFields(s), rule)
 		if err != nil {
 			return tracker.Rows{}, fmt.Errorf("jiraprovider: rows of board %s: %w", id, err)
+		}
+		for _, g := range gone {
+			absent[g] = true
 		}
 		for _, is := range list {
 			row, err := b.rowOf(s, is, cat)
@@ -160,7 +198,7 @@ func (p *Provider) boardRows(ctx context.Context, id tracker.BoardID, issues []t
 			}
 		}
 	}
-	if gone := missing(issues, found); len(gone) > 0 {
+	if gone := slices.DeleteFunc(missing(issues, found), func(id tracker.IssueID) bool { return absent[id] }); len(gone) > 0 {
 		held, err := p.confirmMissing(ctx, b, s, gone, rule, cat)
 		if err != nil {
 			return tracker.Rows{}, fmt.Errorf("jiraprovider: rows of board %s: %w", id, err)
@@ -176,14 +214,15 @@ func (p *Provider) boardRows(ctx context.Context, id tracker.BoardID, issues []t
 }
 
 // listByID lists the issues of ids that b lists under rule, with fields,
-// in full or not at all.
-func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID, fields []string, rule tracker.Eligibility) ([]*jira.Issue, error) {
-	list, err := p.listIDs(ctx, b, ids, fields, rule)
+// in full or not at all, and absent, the issues of ids that a bulk fetch
+// made after a refused or warned listing shows do not exist.
+func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID, fields []string, rule tracker.Eligibility) (list []*jira.Issue, absent []tracker.IssueID, err error) {
+	list, err = p.listIDs(ctx, b, ids, fields, rule)
 	if err == nil {
-		return list, nil
+		return list, nil, nil
 	}
 	if !errors.Is(err, errIncomplete) && !isStatus(err, http.StatusBadRequest) {
-		return nil, err
+		return nil, nil, err
 	}
 	refs := make([]string, len(ids))
 	for i, id := range ids {
@@ -191,10 +230,10 @@ func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID,
 	}
 	bulk, berr := p.jira.BulkFetch(ctx, refs, "status")
 	if berr != nil {
-		return nil, fmt.Errorf("find which of %d issues exist after %w: %w", len(ids), err, berr)
+		return nil, nil, fmt.Errorf("find which of %d issues exist after %w: %w", len(ids), err, berr)
 	}
 	if len(bulk.Failed) > 0 {
-		return nil, fmt.Errorf("find which of %d issues exist after %w: Jira could not read %s: %s", len(ids), err, bulk.Failed[0].ID, bulk.Failed[0].Message)
+		return nil, nil, fmt.Errorf("find which of %d issues exist after %w: Jira could not read %s: %s", len(ids), err, bulk.Failed[0].ID, bulk.Failed[0].Message)
 	}
 	var exist []tracker.IssueID
 	for _, is := range bulk.Issues {
@@ -202,26 +241,18 @@ func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID,
 			exist = append(exist, tracker.IssueID(is.ID))
 		}
 	}
+	absent = slices.DeleteFunc(slices.Clone(ids), func(id tracker.IssueID) bool { return slices.Contains(exist, id) })
 	switch len(exist) {
 	case 0:
-		return nil, nil
+		return nil, absent, nil
 	case len(ids):
 		// Every issue exists, so the failure is not about a missing one.
-		return nil, ruleRefused(err, rule)
+		return nil, nil, err
 	}
-	list, err = p.listIDs(ctx, b, exist, fields, rule)
-	return list, ruleRefused(err, rule)
-}
-
-// ruleRefused is err, a listing by IDs that exist, as tracker.ErrRuleRefused
-// when it is a 400 while rule names sprints: the JQL is this package's and
-// the IDs exist, so what the board issue list refuses is a sprint that
-// names nothing (measured, see BoardIssues).
-func ruleRefused(err error, rule tracker.Eligibility) error {
-	if len(rule.Sprints) > 0 && isStatus(err, http.StatusBadRequest) {
-		return fmt.Errorf("%w: %w", tracker.ErrRuleRefused, err)
+	if list, err = p.listIDs(ctx, b, exist, fields, rule); err != nil {
+		return nil, nil, err
 	}
-	return err
+	return list, absent, nil
 }
 
 // errIncomplete is a listing Jira attached a warning to.

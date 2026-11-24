@@ -298,7 +298,8 @@ func TestBoardRowsReadThroughTheBoard(t *testing.T) {
 
 // TestBoardRowsWithDeletedIssues proves an id clause Jira refuses or
 // warns about, because it names an issue that no longer exists, is
-// listed again without it, and the deleted issue is Missing. The warned
+// listed again without it, and the deleted issue is Missing with no match
+// asked about it. The warned
 // listing also leaves out an issue that exists, which only the listing
 // made again returns.
 func TestBoardRowsWithDeletedIssues(t *testing.T) {
@@ -321,17 +322,33 @@ func TestBoardRowsWithDeletedIssues(t *testing.T) {
 				jiratest.WantJSON(t, b, `{"issueIdsOrKeys":["10001","10002","10009"],"fields":["status"]}`)
 				jiratest.Reply(200, page("", one, two))(w, r, b)
 			})
-			// The deleted issue is matched by no query, with no error
-			// (measured).
-			f.On("POST", matchPath, jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`))
+			// The bulk fetch proved the deleted issue absent: no match is
+			// asked about it.
+			matches := 0
+			f.On("POST", matchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+				matches++
+				jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`)(w, r, b)
+			})
 			rows, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002", "10009"}, tracker.Eligibility{})
-			if err != nil || len(rows.Rows) != 2 || !slices.Equal(rows.Missing, []tracker.IssueID{"10009"}) {
-				t.Fatalf("got %+v %v", rows, err)
+			if err != nil || len(rows.Rows) != 2 || !slices.Equal(rows.Missing, []tracker.IssueID{"10009"}) || matches != 0 {
+				t.Fatalf("got %+v %v after %d matches; want 10009 missing with no match", rows, err, matches)
 			}
 		})
 	}
-	// When every issue exists, the failure is the listing's own.
+	// Every issue asked is deleted: each is Missing, and no match is asked.
 	f, p := newSite(t)
+	f.On("GET", board3Issues, jiratest.Reply(400, `{"errorMessages":["An issue with key '10009' does not exist for field 'id'."]}`))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("")))
+	f.On("POST", matchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		t.Error("a match asked about issues the bulk fetch proved absent")
+		jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`)(w, r, b)
+	})
+	if rows, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10008", "10009"}, tracker.Eligibility{}); err != nil ||
+		len(rows.Rows) != 0 || !slices.Equal(rows.Missing, []tracker.IssueID{"10008", "10009"}) {
+		t.Fatalf("every issue deleted: %+v %v", rows, err)
+	}
+	// When every issue exists, the failure is the listing's own.
+	f, p = newSite(t)
 	f.On("GET", board3Issues, jiratest.Reply(400, `{"errorMessages":["bad"]}`))
 	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", nil))))
 	if _, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001"}, tracker.Eligibility{}); err == nil {
