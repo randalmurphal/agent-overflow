@@ -50,6 +50,39 @@ func redeemOwn(t *testing.T, s *Sessions, link PairingLink, d *signingDevice) Re
 	}
 	return r
 }
+
+// An introduction whose member or sponsor cannot be read before the link is
+// spent is this computer's to retry: the link stays unspent, and the same
+// link presented again is admitted.
+func TestAnIntroductionThatCannotReadItsMembersSaysToTryTheSameLinkAgain(t *testing.T) {
+	s, st, raw, owner, _ := stragglerFixture(t)
+	sponsor := newSigningDevice(t)
+	personalPair(t, s, owner, sponsor)
+	target := newSigningDevice(t)
+	if _, e := s.MergeOwnDevices([]owndevices.Member{{KeyThumbprint: target.thumbprint(), Generation: 1}}); e != nil {
+		t.Fatal(e)
+	}
+	link := ownIntro(t, s, owner, sponsor, target)
+	if _, e := raw.Exec(`ALTER TABLE own_devices RENAME COLUMN member TO member_moved`); e != nil {
+		t.Fatalf("install the failure: %v", e)
+	}
+	_, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: target.proof(t, "POST", "/auth/pair", link.Token+target.thumbprint(), s.now())})
+	if reason != ReasonTemporarilyUnavailable {
+		t.Fatalf("an introduction whose members could not be read = %s, want %s", reason, ReasonTemporarilyUnavailable)
+	}
+	if _, e := raw.Exec(`ALTER TABLE own_devices RENAME COLUMN member_moved TO member`); e != nil {
+		t.Fatalf("remove the failure: %v", e)
+	}
+	if stored, e := st.GetPairingLink(link.Link.ID); e != nil || stored.RedeemedAt != 0 {
+		t.Fatalf("the link after the failure = %+v (%v), want unspent", stored, e)
+	}
+	// A second presentation signs a fresh proof; the first one is spent.
+	proof := target.proof(t, "POST", "/auth/pair", link.Token+target.thumbprint()+"-again", s.now())
+	if _, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: proof}); reason.Refused() {
+		t.Fatalf("the same link presented again = %s", reason)
+	}
+}
+
 func TestOwnDeviceAdmissionSeparatesLegacyAndBindsIntroductions(t *testing.T) {
 	s, st, _, owner, _ := newFixture(t)
 	member := newSigningDevice(t)

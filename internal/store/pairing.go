@@ -460,7 +460,12 @@ func (s *Store) PairingAccessOf(id string, now int64) (PairingAccess, error) {
 func pairingAccessOf(db sqlQueryer, id string, now int64) (PairingAccess, error) {
 	var sessionID string
 	var confirmedAt sql.NullInt64
-	err := db.QueryRow(`SELECT session_id, confirmed_at FROM pairing_links WHERE id = ?`, id).Scan(&sessionID, &confirmedAt)
+	var removed bool
+	// The removal is read from the device the link names, which outlives
+	// its sessions: the prune of an expired session leaves a removed
+	// device removed. A forgotten device has no row and pairs again.
+	err := db.QueryRow(`SELECT l.session_id, l.confirmed_at, COALESCE(d.revoked_at IS NOT NULL, 0)
+		  FROM pairing_links l LEFT JOIN devices d ON d.id = l.device_id WHERE l.id = ?`, id).Scan(&sessionID, &confirmedAt, &removed)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return PairingNotConfirmed, nil
@@ -468,6 +473,8 @@ func pairingAccessOf(db sqlQueryer, id string, now int64) (PairingAccess, error)
 		return 0, fmt.Errorf("store: read pairing %s: %w", id, err)
 	case !confirmedAt.Valid:
 		return PairingNotConfirmed, nil
+	case removed:
+		return PairingDeviceRemoved, nil
 	}
 	session, err := scanSession(db.QueryRow(sessionSelect+` WHERE s.id = ?`, sessionID))
 	switch {
@@ -475,9 +482,6 @@ func pairingAccessOf(db sqlQueryer, id string, now int64) (PairingAccess, error)
 		return PairingAccessEnded, nil
 	case err != nil:
 		return 0, fmt.Errorf("store: read the session of pairing %s: %w", id, err)
-	}
-	if session.DeviceRevokedAt != 0 {
-		return PairingDeviceRemoved, nil
 	}
 	// Any unspent, unexpired secret renews, whatever order the secrets were
 	// written in: a clock set back writes a successor older than its

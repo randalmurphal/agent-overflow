@@ -332,6 +332,33 @@ func TestAConfirmedPairingRenewsWhateverOrderItsSecretsWereWrittenIn(t *testing.
 	requirePairingAccess(t, s, 23000, PairingAccessEnded, ErrPairingAccessEnded, "after its device was restored")
 }
 
+// A removed device stays removed once the prune of expired sessions has
+// deleted its session; Restore then reads as ended, and so does Forget.
+func TestARemovedDeviceReadsRemovedAfterItsSessionIsPruned(t *testing.T) {
+	s, device, session := seedConfirmedPairing(t, []byte("refresh-1"))
+	if _, err := s.RevokeDevice(device.ID, 3000); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, _, err := s.DeleteSessionsExpiredBefore(60000); err != nil || deleted != 1 {
+		t.Fatalf("the prune deleted %d sessions (%v), want the removed device's one", deleted, err)
+	}
+	if _, err := s.GetSession(session.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("the pruned session reads %v, want it gone", err)
+	}
+	requirePairingAccess(t, s, 61000, PairingDeviceRemoved, ErrPairingDeviceRemoved, "after its session was pruned")
+	if _, err := s.RestoreDevice(device.ID); err != nil {
+		t.Fatal(err)
+	}
+	requirePairingAccess(t, s, 62000, PairingAccessEnded, ErrPairingAccessEnded, "after its device was restored")
+	if _, err := s.RevokeDevice(device.ID, 63000); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, _, err := s.DeleteDevice(device.ID); err != nil || !deleted {
+		t.Fatalf("forget = %v (%v), want the device deleted", deleted, err)
+	}
+	requirePairingAccess(t, s, 64000, PairingAccessEnded, ErrPairingAccessEnded, "after its device was forgotten")
+}
+
 func TestARepeatConfirmationAnswersFromWhetherTheDeviceCanUseItsAccess(t *testing.T) {
 	// Access until 10000 once confirmed; renewal until 50000.
 	s, _, pending := seedConfirmedPairing(t, []byte("refresh-1"))

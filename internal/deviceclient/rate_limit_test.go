@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"agent-overflow/internal/authlimit"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/servercert"
 )
@@ -32,7 +33,7 @@ func TestPairTellsAPersonToWaitWhenTheBackendLimitsPairing(t *testing.T) {
 		link := Link{BackendID: "backend-a", Endpoint: server.URL, CertFingerprint: servercert.Fingerprint(server.Certificate().Raw), Token: "test-token"}
 		_, _, err := Pair(context.Background(), t.TempDir(), link, "test", "test")
 		server.Close()
-		var limited *RateLimited
+		var limited *authlimit.RateLimited
 		if !errors.As(err, &limited) {
 			t.Fatalf("Retry-After %q: Pair = %v, want a RateLimited answer", retryAfter, err)
 		}

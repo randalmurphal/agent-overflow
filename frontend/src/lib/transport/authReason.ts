@@ -236,8 +236,8 @@ export type RefusedOperation = 'pairing' | 'passkey';
  * passkey sign-in. The answers whose meaning depends on the exchange are
  * worded for it: the auth rate limit's 429 (plain text, no reason, its wait
  * in `retryAfter`, the Retry-After header's seconds), a save that failed on
- * the computer (`temporarily_unavailable`), and an answer that named no
- * reason. Every other reason reads as presentAuthReason has it.
+ * the computer (`temporarily_unavailable`), a removed device's passkey
+ * sign-in (`revoked_device`), and an answer that named no reason. Every other reason reads as presentAuthReason has it.
  */
 export function presentRefusal(operation: RefusedOperation, status: number, reason: string, retryAfter: string | null): AuthReasonPresentation {
   const pairing = operation === 'pairing';
@@ -252,6 +252,16 @@ export function presentRefusal(operation: RefusedOperation, status: number, reas
     return pairing
       ? { title: 'This computer could not process this pairing link.', hint: 'Try the same link again in a moment.', retryable: true }
       : { title: 'This computer could not save your sign-in.', hint: 'Try signing in again in a moment.', retryable: true };
+  }
+  // A passkey belongs to the person, not to this device: once the device
+  // is restored, or forgotten so this browser signs in as a new one, the
+  // same passkey signs in. No link is involved.
+  if (!pairing && reason === 'revoked_device') {
+    return {
+      title: "This device's access was removed.",
+      hint: 'Under Settings → Remote access → Devices on the computer, either restore this device or forget it, then sign in with your passkey again.',
+      retryable: false,
+    };
   }
   if (reason) return presentAuthReason(reason);
   return pairing

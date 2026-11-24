@@ -37,6 +37,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/authlimit"
 	"agent-overflow/internal/backendproxy"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/keyedlock"
@@ -452,6 +453,13 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	}
 	attachment, _, err := m.enroll(ctx, link, pairingByPerson, addressPairing)
 	if err != nil && attachment.ID == "" {
+		// The exchange's invitation is not kept, and the window that sealed
+		// it admits no other requester, so a limited redemption of it pairs
+		// again only through a new window.
+		var limited *authlimit.RateLimited
+		if addressPairing && errors.As(err, &limited) {
+			limited.Then = pairbootstrap.RestartHint
+		}
 		return Attachment{}, err
 	}
 	if err != nil {

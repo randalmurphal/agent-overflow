@@ -370,9 +370,16 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		s.auditPairingRefusal(ReasonKeyMismatch, req.Peer, checked.ID)
 		return Redemption{}, ReasonKeyMismatch
 	}
-	if checked.Purpose == "own-introduction" && !s.ownIntroductionLive(checked) {
-		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, checked.ID)
-		return Redemption{}, ReasonUnknownCredential
+	if checked.Purpose == "own-introduction" {
+		live, err := s.ownIntroductionLive(checked)
+		if err != nil {
+			log.Printf("identity: read the members of own introduction %s: %v", checked.ID, err)
+			return Redemption{}, ReasonTemporarilyUnavailable
+		}
+		if !live {
+			s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, checked.ID)
+			return Redemption{}, ReasonUnknownCredential
+		}
 	}
 	// The number depends only on the link and the key, so it is derived
 	// before anything is written: a redemption that commits is never then

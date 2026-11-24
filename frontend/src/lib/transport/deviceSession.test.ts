@@ -499,6 +499,18 @@ describe('signInWithPasskey', () => {
     expect(hasPairedSession()).toBe(false);
   });
 
+  // The passkey belongs to the person: once the device is restored or
+  // forgotten it signs in again, with no link to pair.
+  it('tells a removed device to restore or forget it and sign in again, not to pair', async () => {
+    installAuthenticator();
+    const begun = new Response(JSON.stringify({ ceremonyId: 'cer-1', options: { challenge: 'AQID' } }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+    const removed = vi.fn().mockResolvedValueOnce(begun).mockResolvedValueOnce(refusal('revoked_device'));
+    await expect(signInWithPasskey('Phone', removed as unknown as typeof fetch)).rejects.toThrow(
+      /^This device's access was removed\. Under Settings → Remote access → Devices on the computer, either restore this device or forget it, then sign in with your passkey again\.$/);
+  });
+
   it('carries a refused begin through as the typed refusal it is', async () => {
     installAuthenticator();
     const fetcher = vi.fn().mockResolvedValueOnce(refusal('passkey_unavailable'));

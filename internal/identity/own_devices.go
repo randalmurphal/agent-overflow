@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"reflect"
@@ -68,17 +69,34 @@ func (s *Sessions) RegisterOwnDeviceAs(sponsor, member owndevices.Member) (bool,
 	return err == nil, err
 }
 
-func (s *Sessions) ownIntroductionLive(link store.PairingLink) bool {
+// ownIntroductionLive reports whether the introduction's member is still at
+// the generation it was minted for and its sponsor still a member. A member
+// that is not in the group is an answer; any other failure to read one is
+// returned.
+func (s *Sessions) ownIntroductionLive(link store.PairingLink) (bool, error) {
 	m, e := s.store.OwnDevice(link.ExpectedKey)
-	if e != nil || m.Removed || m.Generation != link.MemberGeneration {
-		return false
+	if errors.Is(e, sql.ErrNoRows) {
+		return false, nil
+	}
+	if e != nil {
+		return false, e
+	}
+	if m.Removed || m.Generation != link.MemberGeneration {
+		return false, nil
 	}
 	sponsor, e := s.store.OwnDevice(link.SponsorKey)
-	return e == nil && !sponsor.Removed
+	if errors.Is(e, sql.ErrNoRows) {
+		return false, nil
+	}
+	return e == nil && !sponsor.Removed, e
 }
 func (s *Sessions) MintOwnIntroduction(req PairingRequest) (PairingLink, error) {
 	s.ownMu.Lock()
-	if s.checkOwnSponsor(owndevices.Member{KeyThumbprint: req.SponsorKey, Generation: req.SponsorGeneration}) != nil || req.Purpose != "own-introduction" || !owndevices.ValidKey(req.ExpectedKey) || !s.ownIntroductionLive(store.PairingLink{ExpectedKey: req.ExpectedKey, MemberGeneration: req.MemberGeneration, SponsorKey: req.SponsorKey}) {
+	if s.checkOwnSponsor(owndevices.Member{KeyThumbprint: req.SponsorKey, Generation: req.SponsorGeneration}) != nil || req.Purpose != "own-introduction" || !owndevices.ValidKey(req.ExpectedKey) {
+		s.ownMu.Unlock()
+		return PairingLink{}, errors.New("own-device introduction is not authorized")
+	}
+	if live, err := s.ownIntroductionLive(store.PairingLink{ExpectedKey: req.ExpectedKey, MemberGeneration: req.MemberGeneration, SponsorKey: req.SponsorKey}); err != nil || !live {
 		s.ownMu.Unlock()
 		return PairingLink{}, errors.New("own-device introduction is not authorized")
 	}
