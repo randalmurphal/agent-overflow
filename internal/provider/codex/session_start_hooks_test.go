@@ -141,6 +141,23 @@ func TestTheSpillIsOff(t *testing.T) {
 	if got := handler.trustHash("user_prompt_submit", ""); got != hash(prompt) {
 		t.Errorf("UserPromptSubmit hash %s, want the hash of %s", got, prompt)
 	}
+
+	// serde_json writes <, >, & and U+2028 as they are, where encoding/json
+	// escapes them, so these identities are written out literally and hashed
+	// through the production trustHash: an encoder that escapes them would
+	// give Codex a hash it never trusts.
+	const special = "'/opt/a o/x' <in >out &  "
+	const (
+		specialStart  = "{\"event_name\":\"session_start\",\"hooks\":[{\"additionalContextLimit\":0,\"async\":false,\"command\":\"'/opt/a o/x' <in >out &  \",\"timeout\":60,\"type\":\"command\"}],\"matcher\":\"startup|compact|clear\"}"
+		specialPrompt = "{\"event_name\":\"user_prompt_submit\",\"hooks\":[{\"additionalContextLimit\":0,\"async\":false,\"command\":\"'/opt/a o/x' <in >out &  \",\"timeout\":60,\"type\":\"command\"}]}"
+	)
+	specialHandler := newSessionStartHandler(special)
+	if got := specialHandler.trustHash("session_start", provider.SessionStartHookSources); got != hash(specialStart) {
+		t.Errorf("SessionStart hash of %q = %s, want the hash of %s", special, got, specialStart)
+	}
+	if got := specialHandler.trustHash("user_prompt_submit", ""); got != hash(specialPrompt) {
+		t.Errorf("UserPromptSubmit hash of %q = %s, want the hash of %s", special, got, specialPrompt)
+	}
 }
 
 func TestWriteSerdeJSONString(t *testing.T) {
