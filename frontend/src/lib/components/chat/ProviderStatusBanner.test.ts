@@ -11,6 +11,9 @@ import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
+import { TransportError, transportErrorFromFrame } from '../../transport/wsClient';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import forwardedFrames from '../../../test/fixtures/forwardedRefusalFrames.json';
 
 beforeAll(installAnimateShim);
 
@@ -571,6 +574,47 @@ describe('<ProviderStatusBanner>', () => {
 
     await fireEvent.click(generalRow.querySelector('[aria-label="Dismiss Banner"]')!);
     await waitFor(() => expect(queryByTestId('error-details')).toBeNull());
+  });
+
+  // The caller's headline cannot say which computer to update; the
+  // refusal's reason can, so the row shows it without opening anything.
+  it('shows a computer\'s refusal of the call beside the headline, whole', async () => {
+    const pane = await buildPane();
+    const refusal = new TransportError('method_not_found', 'method not registered');
+    pane.setGeneralError('Could not fork the thread', refusal);
+    const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+    const shown = getByTestId('pane-error-refusal');
+    expect(shown.textContent).toBe(refusal.message);
+    expect(shown.className).not.toContain('line-clamp');
+  });
+
+  it('shows a refusal passed as its own headline once, whole', async () => {
+    const pane = await buildPane();
+    const refusal = new TransportError('method_not_found', 'method not registered');
+    pane.setGeneralError(refusal.message, refusal);
+    const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+    const row = getByTestId('pane-error-banner');
+    expect(row.textContent).toContain(refusal.message);
+    expect(row.querySelector('.line-clamp-2')).toBeNull();
+    expect(queryByTestId('pane-error-refusal')).toBeNull();
+  });
+
+  it.each(forwardedFrames.map((frame) => [frame.name, frame] as const))(
+    'shows a refusal forwarded by a current computer (%s) beside the headline',
+    async (_name, frame) => {
+      const pane = await buildPane();
+      pane.setGeneralError('Could not read remote log', transportErrorFromFrame({ ...frame, detail: { ref: 'ref-1', at: 1, ...frame.detail } }, HOME_BACKEND));
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      expect(getByTestId('pane-error-refusal').textContent).toBe(frame.message);
+    },
+  );
+
+  it('shows nothing beside the headline for any other failure', async () => {
+    const pane = await buildPane();
+    pane.setGeneralError('Could not fork the thread', new TransportError('bad_params', 'Choose at least one project for the assistant, or all projects.'));
+    const { queryByTestId, getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+    expect(getByTestId('pane-error-banner')).toBeTruthy();
+    expect(queryByTestId('pane-error-refusal')).toBeNull();
   });
 });
 

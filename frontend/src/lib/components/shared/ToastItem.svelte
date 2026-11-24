@@ -6,6 +6,7 @@
   import ErrorReportActions from './ErrorReportActions.svelte';
   import ErrorReportDetails from './ErrorReportDetails.svelte';
   import { holdToast, releaseToast, removeToast, getToasts } from '../../stores/toast.svelte';
+  import { shownBesideHeadline } from '../../utils/errorReport';
 
   type ToastEntry = ReturnType<typeof getToasts>[number];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -17,6 +18,10 @@
   // pointer or focus is on it and resumes its delay after.
   let expanded = $state(false);
   let engaged = $state(false);
+  // A computer's refusal of the call: shown whole, beside the headline
+  // when the headline does not already say it (utils/errorReport.ts).
+  const refusal = $derived(toast.captured?.report.refusal);
+  const beside = $derived(toast.captured ? shownBesideHeadline(toast.captured.report, toast.message) : undefined);
 
   function engage(): void {
     engaged = true;
@@ -54,7 +59,10 @@
       <Icon {icon} size={14} strokeWidth={2} class="opacity-90" />
     </span>
     <div class="min-w-0 flex-1 leading-snug">
-      <span class="break-words {expanded || toast.text !== undefined ? '' : 'line-clamp-3'}" data-testid="toast-message">{toast.message}</span>
+      <span class="break-words {expanded || toast.text !== undefined || refusal !== undefined ? '' : 'line-clamp-3'}" data-testid="toast-message">{toast.message}</span>
+      {#if beside !== undefined}
+        <span class="mt-1 block break-words" data-testid="toast-refusal">{beside}</span>
+      {/if}
       {#if toast.text !== undefined}
         <pre class="mt-1.5 max-h-48 overflow-auto rounded-md bg-fg/5 px-2 py-1.5 font-sans text-[0.75rem] leading-snug whitespace-pre-wrap break-words select-text text-text-primary" data-testid="toast-text">{toast.text}</pre>
       {/if}

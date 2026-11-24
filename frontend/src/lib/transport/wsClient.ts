@@ -1,5 +1,17 @@
 import { presentAuthReason } from './authReason';
 import { parseErrorDetail, type ErrorDetail } from './errorDetail';
+import {
+  captureRefusingComputer,
+  dispatchDiagnostic,
+  dispatchRefusalKind,
+  dispatchRefusalMessage,
+  FORWARDED_ADVICE,
+  forwardedRefusal,
+  parseDispatchMark,
+  UNREADABLE_SENTENCE,
+  UNSUPPORTED_SENTENCE,
+  type DispatchRefusalKind,
+} from './dispatchRefusal';
 import { createNetworkSocket } from './networkSocket';
 import { networkFetch } from './networkFetch';
 import { DamagedTrustError } from '../native/networkTrust';
@@ -54,6 +66,7 @@ import {
   type WatchScope,
   type ServerEventFrame,
   type ServerHelloFrame,
+  type ServerRPCFrame,
   type ServerFrame,
   clampString,
   extractRpcIdFromOversizedFrame,
@@ -503,9 +516,53 @@ export class TransportError extends Error {
   // detail is the backend's diagnostic record of a failure: its log
   // reference, method and, for a same-machine caller, the wrap chain.
   detail?: ErrorDetail;
+  // dispatchRefusal is set when the computer's dispatcher refused the call
+  // before any method ran (./dispatchRefusal.ts): the one place a surface
+  // reads that from.
+  dispatchRefusal?: DispatchRefusalKind;
+  // forwardedRefusal is true when a computer passed on another computer's
+  // refusal of the call (./dispatchRefusal.ts's forwardedRefusal): its
+  // message names that computer and says what to do, so a surface shows it
+  // whole, the one place a surface reads that from.
+  forwardedRefusal = false;
   constructor(code: string, message: string, fields: TransportErrorFields = {}) {
-    const { reason, scope, transfer, backgroundAgents, reserve, resumeAt, detail, backend = HOME_BACKEND } = fields;
-    super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
+    const { reason, scope, transfer, backgroundAgents, reserve, resumeAt, detail, dispatch, backend = HOME_BACKEND } = fields;
+    const parsedDetail = parseErrorDetail(detail, backend);
+    const mark = parseDispatchMark(dispatch);
+    const refusal = dispatchRefusalKind(code, message, mark);
+    // The dispatcher's own refusal is worded once here for every surface
+    // (./dispatchRefusal.ts). What did not fit, or an older release's own
+    // text, is the cause, which Details and a copied report list. The
+    // sentence is built when the message is first read: a caller that
+    // recovers from the refusal never reads it, and nothing the wording
+    // does can stop the call settling.
+    if (refusal !== null) {
+      const diagnostic = mark === undefined ? '' : dispatchDiagnostic(mark);
+      super(refusal === 'unsupported' ? UNSUPPORTED_SENTENCE : UNREADABLE_SENTENCE, { cause: mark === undefined ? message : diagnostic || undefined });
+      // Facts about the computer as it was when it refused: a reconnect on
+      // another release, or a detach, before the message is read does not
+      // change what it says about that refusal.
+      const computer = captureRefusingComputer(backend);
+      let worded: string | undefined;
+      Object.defineProperty(this, 'message', {
+        configurable: true,
+        enumerable: false,
+        get: () => (worded ??= dispatchRefusalMessage(refusal, computer)),
+        set: (value: string) => { worded = value; },
+      });
+      this.dispatchRefusal = refusal;
+    } else {
+      // A computer passing on another computer's refusal keeps its message,
+      // which names that computer. An older one's gains the advice its
+      // release could not give, and its wire text stays as the cause.
+      const forwarded = forwardedRefusal(code, message, mark);
+      if (forwarded === 'legacy') {
+        super(`${message} ${FORWARDED_ADVICE}`, { cause: message });
+      } else {
+        super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
+      }
+      this.forwardedRefusal = forwarded !== null;
+    }
     this.name = 'TransportError';
     this.code = code;
     this.reason = reason;
@@ -522,8 +579,23 @@ export class TransportError extends Error {
       this.reserve = reserve === true;
       if (typeof resumeAt === 'string' && resumeAt.length <= 64 && Number.isFinite(Date.parse(resumeAt))) this.resumeAt = resumeAt;
     }
-    this.detail = parseErrorDetail(detail, backend);
+    this.detail = parsedDetail;
   }
+}
+
+/** The rejection for an RPC frame's `error` from `backend`. */
+export function transportErrorFromFrame(error: NonNullable<ServerRPCFrame['error']>, backend: BackendKey): TransportError {
+  return new TransportError(error.code, clampString(error.message ?? ''), {
+    reason: error.reason,
+    scope: error.scope,
+    transfer: error.transfer,
+    backgroundAgents: error.backgroundAgents,
+    reserve: error.reserve,
+    resumeAt: error.resumeAt,
+    detail: error.detail,
+    dispatch: error.dispatch,
+    backend,
+  });
 }
 
 /** The optional fields a FrameError carries beside its code and message. */
@@ -535,6 +607,8 @@ export interface TransportErrorFields {
   reserve?: unknown;
   resumeAt?: unknown;
   detail?: unknown;
+  /** The dispatcher's mark of its own refusal (./dispatchRefusal.ts). */
+  dispatch?: unknown;
   /** The backend that answered, stamped onto detail. Defaults to HOME. */
   backend?: BackendKey;
 }
@@ -791,8 +865,9 @@ export interface TransportHello {
    *  running (lib/native/bundleSync.ts); every other client ignores it.
    *  '' is "no bundle here", never a wildcard. */
   bundleId: string;
-  /** That bundle's app version, or ''. Compared only to pick the newest
-   *  among several attached backends — nothing gates on it. */
+  /** That bundle's app version, or ''. Compared to pick the newest among
+   *  several attached backends, and to word a version mismatch
+   *  (stores/versionMismatch.ts); nothing gates on it. */
   bundleVersion: string;
   /** The lowest Android `versionCode` the bundle's native seams can run
    *  on, or 0 for "no floor stated". */
@@ -3095,22 +3170,7 @@ export class WSClient {
       this.pending.delete(frame.id);
       clearTimeout(pending.timer);
       if (frame.error) {
-        pending.reject(
-          new TransportError(
-            frame.error.code,
-            clampString(frame.error.message ?? ''),
-            {
-              reason: frame.error.reason,
-              scope: frame.error.scope,
-              transfer: frame.error.transfer,
-              backgroundAgents: frame.error.backgroundAgents,
-              reserve: frame.error.reserve,
-              resumeAt: frame.error.resumeAt,
-              detail: frame.error.detail,
-              backend: this.backend,
-            },
-          ),
-        );
+        pending.reject(transportErrorFromFrame(frame.error, this.backend));
         return;
       }
       pending.resolve(frame.result);

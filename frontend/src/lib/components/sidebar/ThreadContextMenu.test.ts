@@ -9,7 +9,7 @@ import ThreadContextMenu from './ThreadContextMenu.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { answerAsV0019 } from '../../../test/helpers/olderComputer';
+import { answerAsV0019, methodNotFound } from '../../../test/helpers/olderComputer';
 import { clearThreadSelection, getSelectedThreadIds, setThreadSelection } from '../../stores/threadFilter.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
@@ -487,7 +487,7 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     for (const read of [
       async () => ({ pastThreads: 0, helpers: 0, workers: 0 }),
       // v0.0.19 has no GetDeleteDependents: its delete takes no workers.
-      async () => { throw Object.assign(new Error('method not found'), { code: 'method_not_found' }); },
+      async () => { throw methodNotFound(); },
     ]) {
       const counted = setBindingMock('GetDeleteDependents', read);
       const remove = setBindingMock('DeleteThreads', vi.fn(async () => ({})));

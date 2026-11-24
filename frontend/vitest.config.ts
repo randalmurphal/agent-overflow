@@ -7,11 +7,18 @@ import { resolve } from 'node:path';
 import type { Plugin } from 'vite';
 import { OPEN_THREAD_PANES_KEY } from './src/test/openThreadPanes.ts';
 import { StalledPageWatchdog } from './src/test/stalledPageWatchdog.ts';
+import { PAGE_VERSION_GLOBAL } from './scripts/bundleId.ts';
 
 // There is no `svelte.config.js` (see vite.config.ts for why). Saying so
 // keeps the plugin from logging "no Svelte config found" once per project
 // on every run.
 const svelteOptions = { configFile: false } as const;
+
+// The page's own release (src/lib/pageVersion.ts). Tests read the package
+// version as it is, so a test's expected sentence does not move per run.
+const pageVersionDefine = {
+  [PAGE_VERSION_GLOBAL]: JSON.stringify(JSON.parse(readFileSync(resolve(import.meta.dirname, 'package.json'), 'utf8')).version),
+};
 
 // Shared resolve config for the happy-dom suite. Use the browser entry for
 // Svelte so `mount()` is available in tests (without this Vitest resolves
@@ -149,6 +156,7 @@ export default defineConfig({
       {
         plugins: [svelte(svelteOptions), threadPaneTracker()],
         resolve: happyDomResolve,
+        define: pageVersionDefine,
         test: {
           ...unitTestOptions,
           name: 'unit',
@@ -164,6 +172,7 @@ export default defineConfig({
       {
         plugins: [svelte(svelteOptions), threadPaneTracker()],
         resolve: happyDomResolve,
+        define: pageVersionDefine,
         test: {
           ...unitTestOptions,
           name: 'unit-isolated',
@@ -185,6 +194,7 @@ export default defineConfig({
         // post-processes the emitted CSS.
         plugins: [svelte(svelteOptions), tailwindcss()],
         resolve: happyDomResolve,
+        define: pageVersionDefine,
         // Scan the browser test files (and their component imports) up front
         // so Vite's dep optimizer pre-bundles everything they reach. Without
         // this, deps discovered mid-run (@testing-library/svelte from the
@@ -247,6 +257,7 @@ export default defineConfig({
         // mid-corpus.
         plugins: [svelte(svelteOptions), threadPaneTracker()],
         resolve: happyDomResolve,
+        define: pageVersionDefine,
         test: {
           name: 'manual',
           environment: 'happy-dom',

@@ -10,6 +10,7 @@
   } from '../../stores/bindings';
   import type { SessionBannerKind } from '../../types/events';
   import { userFacingError } from '../../utils/userFacingError';
+  import { shownBesideHeadline } from '../../utils/errorReport';
   import ErrorReportActions from '../shared/ErrorReportActions.svelte';
   import ErrorReportDetails from '../shared/ErrorReportDetails.svelte';
   import type { PaneErrorKind } from '../../stores/threadPaneShared';
@@ -479,9 +480,15 @@
         class="border-b {rowBusy(err.kind) ? BUSY_ROW_CLASSES : ERROR_ROW_CLASSES} px-4 py-2"
       >
         <div class="flex items-center gap-2">
-          <p class="text-xs flex-1 {expandedRows[err.kind] ? 'break-words' : 'line-clamp-2'}" title={rowMessage(err.kind, err.message)}>
-            {rowMessage(err.kind, err.message)}
-          </p>
+          <div class="flex-1 min-w-0">
+            <p class="text-xs {expandedRows[err.kind] || err.captured?.report.refusal !== undefined ? 'break-words' : 'line-clamp-2'}" title={rowMessage(err.kind, err.message)}>
+              {rowMessage(err.kind, err.message)}
+            </p>
+            <!-- A computer's refusal of the call says what to do: shown whole (utils/errorReport.ts). -->
+            {#if err.captured && shownBesideHeadline(err.captured.report, err.message) !== undefined}
+              <p class="mt-0.5 text-xs break-words" data-testid="pane-error-refusal">{shownBesideHeadline(err.captured.report, err.message)}</p>
+            {/if}
+          </div>
           {#if err.kind === 'session'}
             <button
               onclick={handleReconnect}

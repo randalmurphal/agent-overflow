@@ -202,6 +202,33 @@ func TestHarnessSeedMakesAnAssistant(t *testing.T) {
 	}
 }
 
+// A spawned thread placed standalone keeps its spawner and has a sidebar
+// row; a placement on a thread nothing spawned is refused.
+func TestHarnessSeedPlacesASpawnedThreadStandalone(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name:    "placed-seed",
+		Repo:    &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{Title: "Lead"}, {Title: "Worker", SpawnedBy: "Lead", Placement: store.PlacementStandalone}},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ids := result.Projects[0].ThreadIDs
+	worker, err := host.store.GetThread(ids[1])
+	if err != nil || worker.SpawnedByThreadID != ids[0] || worker.Placement != store.PlacementStandalone {
+		t.Fatalf("worker = spawnedBy %q placement %s (%v)", worker.SpawnedByThreadID, worker.Placement, err)
+	}
+	for i, thread := range []HarnessSeedThread{{Title: "Alone", Placement: store.PlacementStandalone}, {Title: "Odd", SpawnedBy: "Lead", Placement: store.PlacementOwned}} {
+		_, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+			Name: fmt.Sprintf("placed-refused-%d", i), Repo: &harness.RepoSpec{}, Threads: []HarnessSeedThread{{Title: "Lead"}, thread},
+		}}})
+		if err == nil || !strings.Contains(err.Error(), "only a spawned thread may be placed") {
+			t.Fatalf("seed %+v = %v, want the placement refused", thread, err)
+		}
+	}
+}
+
 // A seeded assistant lives outside every project, so the project cascade
 // leaves it; the reset deletes it and every other thread outside a
 // project, archived ones included.

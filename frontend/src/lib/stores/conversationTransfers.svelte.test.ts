@@ -16,6 +16,7 @@ import {
   recoverConversationTransfer, refreshComputerTransfers, resetConversationTransfersForTest,
   submitConversationTransfer, type ConversationTransfer,
 } from './conversationTransfers.svelte';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 
 vi.mock('./eventsThreadRows', () => ({ refreshSidebarProjections: vi.fn() }));
 const SOURCE = '11111111-2222-4333-8444-555555555555';
@@ -220,7 +221,7 @@ it('reports a failed recurring-job check and stays quiet for a source without th
   await tick();
   expect(pendingConversationTransfer()?.recurringJobsError).toContain('Database is locked');
 
-  setBindingMock('ListThreadRecurringJobs', async () => { throw new TransportError('method_not_found', 'unknown method'); });
+  setBindingMock('ListThreadRecurringJobs', async () => { throw methodNotFound(); });
   openConversationTransfer(thread);
   await tick();
   expect(pendingConversationTransfer()?.recurringJobs).toEqual([]);
@@ -249,7 +250,7 @@ it('reports a failed standing-agent check and stays quiet for a source without t
   await tick();
   expect(pendingConversationTransfer()?.standingAgentError).toContain('Database is locked');
 
-  setBindingMock('GetStandingAgent', async () => { throw new TransportError('method_not_found', 'unknown method'); });
+  setBindingMock('GetStandingAgent', async () => { throw methodNotFound(); });
   openConversationTransfer(thread);
   await tick();
   expect(pendingConversationTransfer()?.standingAgent).toBe(false);

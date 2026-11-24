@@ -1,0 +1,122 @@
+[
+  {
+    "name": "this release, a missing method",
+    "code": "method_not_found",
+    "message": "The computer this reached does not support this action. It may run a different version of Agent Overflow. If so, update the older one, or reload a page left open during an update.",
+    "dispatch": {
+      "refusal": "unsupported"
+    },
+    "kind": "unsupported"
+  },
+  {
+    "name": "this release, the argument count",
+    "code": "bad_params",
+    "message": "The computer this reached could not read this request. It may run a different version of Agent Overflow. If so, update the older one, or reload a page left open during an update.",
+    "dispatch": {
+      "refusal": "unreadable",
+      "method": "GitPush",
+      "problem": "expected 1 arguments, got 2"
+    },
+    "kind": "unreadable"
+  },
+  {
+    "name": "this release, an argument that did not decode",
+    "code": "bad_params",
+    "message": "The computer this reached could not read this request. It may run a different version of Agent Overflow. If so, update the older one, or reload a page left open during an update.",
+    "dispatch": {
+      "refusal": "unreadable",
+      "method": "ListPRCommits",
+      "param": 2
+    },
+    "kind": "unreadable"
+  },
+  {
+    "name": "a later release's kind, with its own sentence",
+    "code": "bad_params",
+    "message": "A later release says this.",
+    "dispatch": {
+      "refusal": "unforeseen"
+    },
+    "kind": null
+  },
+  {
+    "name": "a later release's kind under method_not_found",
+    "code": "method_not_found",
+    "message": "A later release says this.",
+    "dispatch": {
+      "refusal": "unforeseen",
+      "method": "GitPush"
+    },
+    "kind": null
+  },
+  {
+    "name": "a field without a kind",
+    "code": "method_not_found",
+    "message": "A later release says this.",
+    "dispatch": {},
+    "kind": null
+  },
+  {
+    "name": "a later release's kind over an older release's text",
+    "code": "method_not_found",
+    "message": "method not registered",
+    "dispatch": {
+      "refusal": "unforeseen"
+    },
+    "kind": "unsupported"
+  },
+  {
+    "name": "v0.0.14 to v0.0.19, a missing method",
+    "code": "method_not_found",
+    "message": "method not registered",
+    "kind": "unsupported"
+  },
+  {
+    "name": "v0.0.14 to v0.0.19, too many arguments",
+    "code": "bad_params",
+    "message": "too many parameters",
+    "kind": "unreadable"
+  },
+  {
+    "name": "v0.0.14 to v0.0.19, the argument count",
+    "code": "bad_params",
+    "message": "main.App.GitPush: expected 1 params, got 2",
+    "kind": "unreadable"
+  },
+  {
+    "name": "v0.0.14 to v0.0.19, a variadic count",
+    "code": "bad_params",
+    "message": "main.App.Remove: variadic expects at least 1 params, got 0",
+    "kind": "unreadable"
+  },
+  {
+    "name": "v0.0.14 to v0.0.19, an argument that did not decode",
+    "code": "bad_params",
+    "message": "bad parameter 2",
+    "kind": "unreadable"
+  },
+  {
+    "name": "a method's own validation",
+    "code": "bad_params",
+    "message": "Choose at least one project for the assistant, or all projects.",
+    "kind": null
+  },
+  {
+    "name": "an older release's text under another code",
+    "code": "bad_params",
+    "message": "method not registered",
+    "kind": null
+  },
+  {
+    "name": "an older release's text inside a longer message",
+    "code": "bad_params",
+    "message": "bad parameter 2 was empty",
+    "kind": null
+  },
+  {
+    "name": "a current forwarder",
+    "code": "remote_unsupported",
+    "message": "Could not read the log of \"build\" on Nexus: That computer does not support this action. It may run a different version of Agent Overflow than this one. If so, update the older one.",
+    "kind": null
+  }
+]

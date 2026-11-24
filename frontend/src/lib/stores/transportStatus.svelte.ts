@@ -28,6 +28,7 @@ import {
   onBackendsChanged,
 } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { dispatchRefusalKind, parseDispatchMark } from '../transport/dispatchRefusal';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   DisconnectedError,
@@ -376,17 +377,25 @@ export function isTemporarilyUnavailableError(err: unknown): boolean {
  * harness's, registered `RegisterOptions{LocalOnly: true}`) refused to a
  * non-loopback peer. `internal/transport/dispatcher.go` returns the
  * identical `method_not_found` envelope for both so a scanner cannot
- * fingerprint which receivers exist. Callers therefore read it as "this
- * capability isn't available on this session", never as a failure to
- * report.
+ * fingerprint which receivers exist. Only the harness bridge calls that
+ * receiver, and only from a loopback page, so in the product the code
+ * means the computer runs a different release. The error's message
+ * already says so (transport/dispatchRefusal.ts): a caller with a
+ * fallback (`orOlder`) or a passive read that goes quiet branches on this,
+ * and any other caller shows the error as it is.
+ *
+ * Only the connected computer's own refusal counts: the frame's dispatch
+ * mark, or an older release's exact text (transport/dispatchRefusal.ts). A
+ * method that forwarded another computer's refusal under the same code ran
+ * here and failed.
  *
  * It is NOT how an ordinary App method is refused for want of a grant:
  * that is `scope_required`, which names the missing capability and is
  * presented by ./transport/scopeRefusal.ts. A surface that wants to
  * degrade quietly on either reads both.
  *
- * The discriminator is the wire error CODE (`ErrCodeMethodNotFound` in
- * `internal/transport/frame.go`), never message prose. Every other
+ * The discriminator is the dispatch mark, or for a release before it the
+ * whole of its dispatcher's text, never the code alone. Every other
  * failure carries a different code — a method that returned an error is
  * `method_error`, a decode failure is `bad_params`, an RPC timeout is
  * `timeout`, and a dead socket rejects with `DisconnectedError` (no code
@@ -400,9 +409,10 @@ export function isTemporarilyUnavailableError(err: unknown): boolean {
  * `frontend/AGENTS.md`.
  */
 export function isMethodUnavailableError(err: unknown): boolean {
-  return typeof err === 'object'
-    && err !== null
-    && (err as { code?: unknown }).code === 'method_not_found';
+  if (err instanceof TransportError) return err.dispatchRefusal === 'unsupported';
+  if (typeof err !== 'object' || err === null) return false;
+  const { code, message, dispatch } = err as { code?: unknown; message?: unknown; dispatch?: unknown };
+  return dispatchRefusalKind(code, typeof message === 'string' ? message : '', parseDispatchMark(dispatch)) === 'unsupported';
 }
 
 /**
