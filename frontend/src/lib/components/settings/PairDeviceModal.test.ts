@@ -362,6 +362,54 @@ describe('<PairDeviceModal> across a reopen', () => {
     expect(view.getByRole('button', { name: 'New link' })).toBeEnabled();
   });
 
+  // Answers can arrive out of the host's order; what the modal shows never
+  // moves backward. A confirmation that lost its access stays ended.
+  it('keeps the ended access when a late poll or a late approval reply says confirmed', async () => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    const REDEEMED = { state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs };
+    const poll = setBindingMock('DevicePairingStatus', async () => REDEEMED);
+    let approve!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { approve = done; }));
+    const view = renderModal();
+    await verifyStage(view);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    // A poll that read the link while it was confirmed is still in flight
+    // when a later one finds its access removed.
+    let late!: (value: unknown) => void;
+    poll.mockImplementationOnce(() => new Promise((done) => { late = done; }));
+    await vi.advanceTimersByTimeAsync(2_000);
+    poll.mockResolvedValue({ state: 'accessEnded', expiresAtMs: INVITE.expiresAtMs });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const ended = 'This device was allowed, and its access has since been removed or expired. Choose New link to pair it again.';
+    await view.findByText(ended);
+    late({ state: 'confirmed', expiresAtMs: INVITE.expiresAtMs });
+    approve();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(view.getByText(ended)).toBeTruthy();
+    expect(view.queryByText('Device paired')).toBeNull();
+  });
+
+  // The share stage follows every answer, not only a redemption.
+  it.each([
+    ['confirmed', 'Device paired'],
+    ['accessEnded', 'This device was allowed, and its access has since been removed or expired. Choose New link to pair it again.'],
+  ])('leaves the shared link when the poll says %s', async (state, text) => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    const view = renderModal();
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    poll.mockResolvedValue({ state, expiresAtMs: INVITE.expiresAtMs });
+    await vi.advanceTimersByTimeAsync(2_100);
+    await view.findByText(text);
+    expect(view.queryByLabelText('Pairing link')).toBeNull();
+    const calls = poll.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(poll.mock.calls).toHaveLength(calls);
+  });
+
   it('does not complete a reopened modal with an approval sent before it closed', async () => {
     vi.useFakeTimers();
     setBindingMock('MintDevicePairing', async () => INVITE);

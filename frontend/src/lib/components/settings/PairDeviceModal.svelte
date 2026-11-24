@@ -9,10 +9,12 @@
   // number the device shows. The other half is PairingScreen, which the
   // link opens on the device itself.
   //
-  // Stages: choose (which kind of device) → share (QR + link + countdown,
-  // polling the link) → verify (the number comparison) → done. A link
-  // that runs out or gets canceled lands on `ended`, which offers a fresh
-  // mint. Closing the modal mid-flow deliberately leaves the link alone:
+  // Stages: choose (which kind of device) → link. A minted link is
+  // followed by polling it, and what the host says is folded into the
+  // stage's `held` (pairingProgress.ts); the screen is derived from it:
+  // share (QR + link + countdown) → verify (the number comparison) → done.
+  // A link that runs out, gets canceled or loses its access shows `ended`,
+  // which offers a fresh mint. Closing the modal mid-flow deliberately leaves the link alone:
   // it stays actionable from the pending row in DevicesSection, and only
   // the explicit Cancel button spends it.
   import { onDestroy, untrack } from 'svelte';
@@ -43,6 +45,7 @@
   import ComputerPairingWindow from './ComputerPairingWindow.svelte';
   import { INPUT_CLASS } from './styles';
   import { pairingAlreadyAllowed, pairingTurns, type PairingTurn } from './pairingTurns';
+  import { foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
 
   interface Props {
     open: boolean;
@@ -67,10 +70,43 @@
     | { at: 'choose' }
     | { at: 'computer' }
     | { at: 'legacy-computer' }
-    | { at: 'share'; invite: PairingInvite }
-    | { at: 'verify'; linkId: string; number: string; deviceLabel: string }
-    | { at: 'done' }
-    | { at: 'ended'; note: string };
+    | { at: 'link'; invite: PairingInvite; held: PairingHeld };
+
+  // The screen a followed link shows, from what the host has said.
+  type LinkScreen = 'share' | 'verify' | 'done' | 'ended';
+  function screenOf(held: PairingHeld): LinkScreen {
+    switch (held.phase) {
+      case 'waiting':
+      case 'verifying': return 'share';
+      case 'ready': return 'verify';
+      case 'confirmed': return 'done';
+      case 'lapsed':
+      case 'ended':
+      case 'accessEnded': return 'ended';
+    }
+  }
+
+  // Why a followed link ended.
+  function endedNote(held: PairingHeld): string {
+    if (held.phase === 'accessEnded') return 'This device was allowed, and its access has since been removed or expired. Choose New link to pair it again.';
+    if (held.redeemed) return 'The pairing did not complete.';
+    if (held.ending === 'canceled') return 'The link was canceled.';
+    return 'The link ran out before a device opened it.';
+  }
+
+  // One host answer about the followed link, in the fold's terms.
+  function answerOf(status: PairingStatusView): PairingAnswer {
+    const seen = { linkId: status.linkId, number: status.verificationNumber ?? '', label: status.deviceLabel ?? '' };
+    switch (status.state) {
+      case 'pending': return { phase: 'waiting', ...seen };
+      case 'redeemed': return { phase: 'ready', ...seen };
+      case 'confirmed': return { phase: 'confirmed', ...seen };
+      case 'accessEnded': return { phase: 'accessEnded' };
+      case 'canceled': return { phase: 'ended', ending: 'canceled' };
+      case 'expired': return { phase: 'ended', ending: 'deadline' };
+      default: return { phase: 'ended', ending: '' };
+    }
+  }
 
   // What the paired device may do, chosen before the link is minted
   // because the grant set is fixed at mint. Full is what this surface
@@ -83,6 +119,8 @@
   ];
 
   let stage = $state<Stage>({ at: 'choose' });
+  const link = $derived(stage.at === 'link' ? stage : null);
+  const screen = $derived(link ? screenOf(link.held) : null);
   let access = $state<Access>('full');
   let minting = $state<'phone' | 'browser' | null>(null);
   type NetworkChoice = 'lan' | 'tailnet';
@@ -120,11 +158,11 @@
   // The QR carries the same URL the copy row shows. uqr paints its own
   // full-bleed white rect plus this quiet-zone border, which is what keeps
   // the code scannable on dark themes — no themed surface behind it.
-  let qrSVG = $derived(stage.at === 'share' ? renderSVG(stage.invite.url, { border: 3 }) : '');
+  let qrSVG = $derived(link && screen === 'share' ? renderSVG(link.invite.url, { border: 3 }) : '');
 
   let countdown = $derived.by(() => {
-    if (stage.at !== 'share') return '';
-    const left = Math.max(0, Math.floor((stage.invite.expiresAtMs - nowMs) / 1000));
+    if (!link || screen !== 'share') return '';
+    const left = Math.max(0, Math.floor((link.invite.expiresAtMs - nowMs) / 1000));
     return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
   });
 
@@ -198,7 +236,7 @@
       if (!at.current) return;
       minting = null;
       turn = turns.begin();
-      stage = { at: 'share', invite };
+      stage = { at: 'link', invite, held: { phase: 'waiting', linkId: invite.linkId, redeemed: false } };
       nowMs = Date.now();
       startWatching(turn, invite.linkId);
     } catch (err) {
@@ -226,55 +264,29 @@
       // A failed poll is a hiccup, not a verdict; the next tick answers.
       return;
     }
-    // The flow may have moved on (canceled, closed, re-minted) while the
-    // read was in flight; only the turn still watching this link acts.
-    if (!at.current) return;
-    if (stage.at === 'share') {
-      if (status.state === 'redeemed') {
-        stage = {
-          at: 'verify',
-          linkId,
-          number: status.verificationNumber ?? '',
-          deviceLabel: status.deviceLabel ?? '',
-        };
-        return;
-      }
-      if (status.state === 'expired') {
-        stopTimers();
-        stage = { at: 'ended', note: 'The link ran out before a device opened it.' };
-        onChanged();
-      } else if (status.state === 'canceled') {
-        stopTimers();
-        stage = { at: 'ended', note: 'The link was canceled.' };
-        onChanged();
-      }
-      return;
-    }
-    if (stage.at === 'verify') {
-      // Confirmed or canceled from the pending row while this modal sat
-      // on the comparison — follow it rather than offering a stale choice.
-      // A confirmation whose access has since ended is never shown as
-      // paired.
-      if (status.state === 'confirmed') {
-        stopTimers();
-        stage = { at: 'done' };
-        onChanged();
-      } else if (status.state === 'accessEnded') {
-        stopTimers();
-        stage = { at: 'ended', note: 'This device was allowed, and its access has since been removed or expired. Choose New link to pair it again.' };
-        onChanged();
-      } else if (status.state === 'canceled' || status.state === 'expired') {
-        stopTimers();
-        stage = { at: 'ended', note: 'The pairing did not complete.' };
-        onChanged();
-      }
-    }
+    adopt(at, answerOf(status));
+  }
+
+  // The one writer of what the modal holds for the followed link, for the
+  // poll and the approval's own result. The flow may have moved on
+  // (canceled, closed, re-minted) while an answer was in flight; only the
+  // turn still following this link takes it. Every end stops the polls and
+  // tells the surfaces behind the modal; answers whether it did.
+  function adopt(at: PairingTurn, answer: PairingAnswer): boolean {
+    if (!at.current || stage.at !== 'link') return false;
+    const held = foldPairing(stage.held, answer);
+    if (held === stage.held) return false;
+    stage = { ...stage, held };
+    if (!pairingSettled(held)) return false;
+    stopTimers();
+    onChanged();
+    return true;
   }
 
   async function confirm(): Promise<void> {
-    if (stage.at !== 'verify' || deciding) return;
+    if (!link || screen !== 'verify' || deciding) return;
     const at = turn;
-    const linkId = stage.linkId;
+    const linkId = link.invite.linkId;
     deciding = true;
     try {
       try {
@@ -283,10 +295,9 @@
         // Another owner view approved it first: the device is allowed.
         if (!pairingAlreadyAllowed(err)) throw err;
       }
-      onChanged();
-      if (!at.current) return;
-      stopTimers();
-      stage = { at: 'done' };
+      // The approval changed what the surfaces behind the modal show,
+      // whatever this modal still holds.
+      if (!adopt(at, { phase: 'confirmed' })) onChanged();
     } catch (err) {
       addErrorToast(`Failed to allow the device: ${errString(err)}`, err);
     } finally {
@@ -295,7 +306,7 @@
   }
 
   async function cancel(): Promise<void> {
-    const linkId = stage.at === 'share' ? stage.invite.linkId : stage.at === 'verify' ? stage.linkId : null;
+    const linkId = link && (screen === 'share' || screen === 'verify') ? link.invite.linkId : null;
     if (linkId === null || deciding) return;
     const at = turn;
     deciding = true;
@@ -313,9 +324,9 @@
   }
 
   async function copyLink(): Promise<void> {
-    if (stage.at !== 'share') return;
+    if (!link || screen !== 'share') return;
     try {
-      await navigator.clipboard.writeText(stage.invite.url);
+      await navigator.clipboard.writeText(link.invite.url);
       copyState = 'copied';
     } catch {
       copyState = 'failed';
@@ -425,7 +436,7 @@
         </button>
       </div>
     </div>
-  {:else if stage.at === 'share'}
+  {:else if link && screen === 'share'}
     <div class="flex flex-col items-center gap-3">
       <div class="w-[200px] overflow-hidden rounded-md" aria-label="Pairing QR code">
         <!-- eslint-disable-next-line svelte/no-at-html-tags — uqr output over our own URL -->
@@ -435,7 +446,7 @@
         <input
           type="text"
           readonly
-          value={stage.invite.url}
+          value={link.invite.url}
           aria-label="Pairing link"
           class="{INPUT_CLASS} min-w-0 flex-1 font-mono text-[0.6875rem]"
           onfocus={(e) => (e.currentTarget as HTMLInputElement).select()}
@@ -449,15 +460,15 @@
         <span class="tabular-nums">{countdown}</span>
       </p>
     </div>
-  {:else if stage.at === 'verify'}
+  {:else if link && screen === 'verify'}
     <div class="flex flex-col items-center gap-3 py-1 text-center">
       <MicroLabel>Verification number</MicroLabel>
       <p class="text-4xl font-semibold tracking-[0.25em] tabular-nums text-fg" aria-label="Verification number">
-        {stage.number}
+        {link.held.number}
       </p>
       <p class="max-w-[34ch] text-[0.75rem] leading-snug text-fg-muted">
-        {#if stage.deviceLabel}
-          <span class="font-medium text-fg">{stage.deviceLabel}</span> shows the
+        {#if link.held.label}
+          <span class="font-medium text-fg">{link.held.label}</span> shows the
           same number if it is the device that opened your link.
         {:else}
           The new device shows the same number if it is the one that opened
@@ -466,7 +477,7 @@
         Allow it only when the two match.
       </p>
     </div>
-  {:else if stage.at === 'done'}
+  {:else if screen === 'done'}
     <div class="flex flex-col items-center gap-2 py-2 text-center">
       <span class="flex h-9 w-9 items-center justify-center rounded-full bg-success/15 text-success">
         <Check size={20} strokeWidth={2} />
@@ -477,30 +488,32 @@
         device any time from the list behind this dialog.
       </p>
     </div>
-  {:else}
+  {:else if link}
     <div class="flex flex-col items-center gap-2 py-2 text-center">
-      <p class="text-[0.8125rem] font-medium text-fg">{stage.note}</p>
-      <p class="text-[0.75rem] leading-snug text-fg-muted">
-        Nothing was enrolled. Mint a fresh link to try again.
-      </p>
+      <p class="text-[0.8125rem] font-medium text-fg">{endedNote(link.held)}</p>
+      {#if link.held.phase !== 'accessEnded'}
+        <p class="text-[0.75rem] leading-snug text-fg-muted">
+          Nothing was enrolled. Mint a fresh link to try again.
+        </p>
+      {/if}
     </div>
   {/if}
 
   {#snippet footer()}
-    {#if stage.at === 'share'}
+    {#if screen === 'share'}
       <Button variant="danger-outline" disabled={deciding} onclick={() => void cancel()}>
         Cancel link
       </Button>
-    {:else if stage.at === 'verify'}
+    {:else if screen === 'verify'}
       <Button variant="danger-outline" disabled={deciding} onclick={() => void cancel()}>
         It doesn't match
       </Button>
       <Button variant="primary" disabled={deciding} autofocus onclick={() => void confirm()}>
         It matches — allow
       </Button>
-    {:else if stage.at === 'done'}
+    {:else if screen === 'done'}
       <Button variant="primary" autofocus onclick={onClose}>Done</Button>
-    {:else if stage.at === 'ended'}
+    {:else if screen === 'ended'}
       <Button onclick={onClose}>Close</Button>
       <Button variant="primary" onclick={() => (stage = { at: 'choose' })}>New link</Button>
     {/if}

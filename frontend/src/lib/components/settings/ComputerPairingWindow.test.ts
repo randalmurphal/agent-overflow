@@ -397,6 +397,79 @@ describe('computer pairing window decisions', () => {
     expect(view.queryByLabelText('Verification number')).toBeNull();
   });
 
+  // A confirmation whose access was then removed never reads as paired
+  // again, whether the late `confirmed` comes from a poll or from the
+  // approval's own reply.
+  it('keeps the ended access when a late poll says confirmed', async () => {
+    setBindingMock('OpenComputerPairing', async () => WINDOW);
+    const ACCESS_ENDED = { ...WAITING, state: 'expired', ended: 'accessEnded' };
+    let late!: (value: unknown) => void;
+    const answers: Array<() => Promise<unknown>> = [async () => READY, () => new Promise((done) => { late = done; })];
+    const status = setBindingMock('ComputerPairingStatus', () => (answers.shift() ?? (async () => ACCESS_ENDED))());
+    setBindingMock('ConfirmDevicePairing', async () => { throw new TransportError('pairing_access_ended', 'this device was allowed, and its access has since been removed or expired; pair it again'); });
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(status).toHaveBeenCalledTimes(2);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    await vi.waitFor(() => expect(view.getByText(/its access has since been removed or expired\. Choose Try again/)).toBeTruthy());
+    late({ ...READY, state: 'confirmed' });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(view.queryByText('Computer paired')).toBeNull();
+    expect(view.getByText(/its access has since been removed or expired\. Choose Try again/)).toBeTruthy();
+  });
+
+  it('shows the access ended when a read in flight finds it after the approval was confirmed', async () => {
+    setBindingMock('OpenComputerPairing', async () => WINDOW);
+    let late!: (value: unknown) => void;
+    const answers: Array<() => Promise<unknown>> = [async () => READY, () => new Promise((done) => { late = done; })];
+    setBindingMock('ComputerPairingStatus', () => (answers.shift() ?? (async () => READY))());
+    let approve!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { approve = done; }));
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await vi.advanceTimersByTimeAsync(2_000);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    approve();
+    await vi.waitFor(() => expect(view.getByText('Computer paired')).toBeTruthy());
+    late({ ...WAITING, state: 'expired', ended: 'accessEnded' });
+    await vi.waitFor(() => expect(view.getByText(/its access has since been removed or expired\. Choose Try again/)).toBeTruthy());
+    expect(view.queryByText('Computer paired')).toBeNull();
+  });
+
+  // An approval admitted before the deadline can land after the host
+  // already said the window ended at its deadline.
+  it('shows an approval that lands after the host said the window reached its deadline as paired', async () => {
+    setBindingMock('OpenComputerPairing', async () => WINDOW);
+    const poll = setBindingMock('ComputerPairingStatus', async () => READY);
+    let approve!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { approve = done; }));
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    poll.mockResolvedValue({ ...WAITING, state: 'expired', ended: 'deadline' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.waitFor(() => expect(view.getByText('Pairing expired.')).toBeTruthy());
+    approve();
+    await vi.waitFor(() => expect(view.getByText('Computer paired')).toBeTruthy());
+  });
+
+  it('keeps the ended access when the approval reply arrives after it', async () => {
+    setBindingMock('OpenComputerPairing', async () => WINDOW);
+    const poll = setBindingMock('ComputerPairingStatus', async () => READY);
+    let approve!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { approve = done; }));
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    poll.mockResolvedValue({ ...WAITING, state: 'expired', ended: 'accessEnded' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.waitFor(() => expect(view.getByText(/its access has since been removed or expired\. Choose Try again/)).toBeTruthy());
+    approve();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(view.queryByText('Computer paired')).toBeNull();
+  });
+
   it('shows a computer another owner view already approved as paired', async () => {
     setBindingMock('OpenComputerPairing', async () => WINDOW);
     setBindingMock('ComputerPairingStatus', async () => READY);
