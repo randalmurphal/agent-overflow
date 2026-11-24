@@ -32,19 +32,6 @@ describe('SettingsFooter view-only indicator', () => {
     resetToLocalPage();
   });
 
-  it('has no execution-host sleep control in a standalone frontend', () => {
-    mode.frontend = true;
-    const view = render(SettingsFooter, { onOpenSettings: () => {} });
-    expect(view.queryByTestId('sidebar-keep-awake-toggle')).toBeNull();
-    expect(view.getByTestId('sidebar-settings-button')).toBeVisible();
-  });
-
-  it('shows for a session holding the observe set alone', async () => {
-    await pairViewOnly();
-    const view = render(SettingsFooter, { onOpenSettings: () => {} });
-    expect(view.getByTestId('view-only-indicator')).toHaveTextContent('View only');
-  });
-
   it('stays hidden on the local page', () => {
     const view = render(SettingsFooter, { onOpenSettings: () => {} });
     expect(view.queryByTestId('view-only-indicator')).toBeNull();
@@ -134,13 +121,14 @@ describe('SettingsFooter notification-sound toggle', () => {
     mode.frontend = true;
     const view = render(SettingsFooter, { onOpenSettings: () => {} });
     expect(view.queryByTestId('sidebar-keep-awake-toggle')).toBeNull();
+    expect(view.getByTestId('sidebar-settings-button')).toBeVisible();
     expect(view.getByTestId('sidebar-sound-toggle')).toBeVisible();
   });
 
   it('renders for a view-only session', async () => {
     await pairViewOnly();
     const view = render(SettingsFooter, { onOpenSettings: () => {} });
-    expect(view.getByTestId('view-only-indicator')).toBeTruthy();
+    expect(view.getByTestId('view-only-indicator')).toHaveTextContent('View only');
     expect(view.getByTestId('sidebar-sound-toggle')).toBeVisible();
   });
 });
