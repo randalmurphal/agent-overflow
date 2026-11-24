@@ -899,6 +899,22 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 			for _, unattempted := range groups[i+1:] {
 				back = append(back, unattempted...)
 			}
+			if _, hasSession := a.sessionManager().get(threadID); !hasSession {
+				// No live session remains (for example, pre-send account switch
+				// reconnect stopped the old session and failed to start the new
+				// one). Restore the batch to the composer with a visible error
+				// instead of silently stranding it in Zone 1.
+				a.emitErrorToThread(threadID, err.Error())
+				a.finishFlushGroup(threadID, generation, back)
+				a.noteFlushDispatchGroupSettled(threadID, back)
+				drained := make([]triage.UnconfirmedFlushItem, 0, len(back))
+				for _, item := range back {
+					drained = append(drained, unconfirmedFromQueued(item))
+				}
+				a.restoreFlushItemsToDraftLocked(threadID, drained, queueRestoredReasonSessionDied)
+				a.emitQueueStateChanged(threadID)
+				return
+			}
 			a.finishFlushGroup(threadID, generation, back)
 			a.requeueWantedFlushItems(threadID, back)
 			a.noteFlushDispatchGroupSettled(threadID, back)

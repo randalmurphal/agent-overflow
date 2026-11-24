@@ -21,6 +21,11 @@ const (
 	cortexStepTypePlannerResponse = 15
 	cortexStepTypeErrorMessage    = 17
 	cortexStepTypeCheckpoint      = 23
+	cortexStepStatusPending       = 1
+	cortexStepStatusRunning       = 2
+	cortexStepStatusCanceled      = 6
+	cortexStepStatusError         = 7
+	cortexStepStatusWaiting       = 9
 	maxErrorPayloadScanBytes      = 64 * 1024
 )
 
@@ -64,7 +69,7 @@ func openConversationDBReadOnly(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
-	return sql.Open("sqlite", sqliteFileDSN(path, "mode=ro&_pragma=busy_timeout(100)"))
+	return sql.Open("sqlite", sqliteFileDSN(path, "mode=ro&_pragma=busy_timeout(2000)"))
 }
 
 // readMaxStepIndex returns the highest `idx` in `steps` before a prompt starts.
@@ -242,6 +247,75 @@ func classifyErrorStepPayload(raw []byte) *acp.PromptOutcomeOverride {
 	}
 }
 
+// isProtobufMetadataToken reports whether s looks like an internal protobuf
+// type URL or package identifier (for example "google.rpc.ErrorInfo" or
+// "type.googleapis.com/google.rpc.ErrorInfo") rather than a human-readable
+// error message.
+func isProtobufMetadataToken(s string) bool {
+	if strings.ContainsAny(s, " \t\r\n") {
+		return false
+	}
+	if strings.HasPrefix(s, "type.googleapis.com/") || strings.HasPrefix(s, "google.rpc.") {
+		return true
+	}
+	return strings.Contains(s, ".") && (strings.Contains(s, "/") || strings.Count(s, ".") >= 2)
+}
+
+// childDBTerminalState reports whether a subagent's own conversation DB ended
+// in a terminal error or cancellation with no active steps remaining.
+type childDBTerminalState struct {
+	stepIdx int
+	status  string // "failed" or "killed"
+	summary string
+}
+
+// inspectChildTerminalState checks conversations/<childID>.db for an error or
+// canceled final step when no PENDING/RUNNING/WAITING steps exist. Callers gate
+// invocations on DB/WAL stat changes so steady-state polling does zero SQLite I/O.
+func inspectChildTerminalState(appDataDir, childID string) (childDBTerminalState, bool) {
+	dbPath, err := conversationDBPath(appDataDir, childID)
+	if err != nil {
+		return childDBTerminalState{}, false
+	}
+	db, err := openConversationDBReadOnly(dbPath)
+	if err != nil {
+		return childDBTerminalState{}, false
+	}
+	defer func() { _ = db.Close() }()
+
+	var hasActive int
+	if err := db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM steps WHERE status IN (?, ?, ?))`,
+		cortexStepStatusPending, cortexStepStatusRunning, cortexStepStatusWaiting,
+	).Scan(&hasActive); err != nil || hasActive != 0 {
+		return childDBTerminalState{}, false
+	}
+
+	var idx, stepType, stepStatus int
+	var errDetails, stepPayload []byte
+	if err := db.QueryRow(
+		`SELECT idx, step_type, status, COALESCE(error_details, X''), COALESCE(step_payload, X'') FROM steps ORDER BY idx DESC LIMIT 1`,
+	).Scan(&idx, &stepType, &stepStatus, &errDetails, &stepPayload); err != nil {
+		return childDBTerminalState{}, false
+	}
+
+	if stepType == cortexStepTypeErrorMessage || stepStatus == cortexStepStatusError {
+		raw := errDetails
+		if len(raw) == 0 {
+			raw = stepPayload
+		}
+		summary := extractReadableErrorText(raw)
+		if summary == "" {
+			summary = "Subagent failed with an upstream error"
+		}
+		return childDBTerminalState{stepIdx: idx, status: "failed", summary: summary}, true
+	}
+	if stepStatus == cortexStepStatusCanceled {
+		return childDBTerminalState{stepIdx: idx, status: "killed"}, true
+	}
+	return childDBTerminalState{}, false
+}
+
 // extractReadableErrorText pulls printable UTF-8/ASCII segments from either
 // protobuf-encoded or JSON/text step payloads, returning a bounded summary.
 func extractReadableErrorText(raw []byte) string {
@@ -255,22 +329,36 @@ func extractReadableErrorText(raw []byte) string {
 	if len(matches) == 0 {
 		return ""
 	}
-	// Prefer a segment mentioning a known error code or sentence.
-	var best string
+	// Prefer the most descriptive segment mentioning a known error code or
+	// sentence, skipping bare protobuf type URLs like google.rpc.ErrorInfo.
+	var bestCode, bestSentence, bestFallback string
 	for _, m := range matches {
 		m = strings.TrimSpace(m)
-		if m == "" {
+		if m == "" || isProtobufMetadataToken(m) {
 			continue
 		}
 		if reQuotaExhausted.MatchString(m) || reResourceExhausted.MatchString(m) ||
 			reInvalidThinkingSig.MatchString(m) || reUpstreamServerErr.MatchString(m) ||
-			strings.Contains(strings.ToLower(m), "error") {
-			best = m
-			break
+			reMidTurnNotFound.MatchString(m) {
+			if len(m) > len(bestCode) {
+				bestCode = m
+			}
+			continue
 		}
-		if len(m) > len(best) {
-			best = m
+		if strings.Contains(strings.ToLower(m), "error") && len(m) > len(bestSentence) {
+			bestSentence = m
+			continue
 		}
+		if len(m) > len(bestFallback) {
+			bestFallback = m
+		}
+	}
+	best := bestCode
+	if best == "" {
+		best = bestSentence
+	}
+	if best == "" {
+		best = bestFallback
 	}
 	if len(best) > 320 {
 		best = best[:317] + "..."

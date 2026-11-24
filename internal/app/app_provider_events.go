@@ -87,7 +87,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			case string(provider.Claude):
 				a.followClaudePermissionMode(threadID, sessionToken)
 			case string(provider.Agy):
-				a.followAgyPermissionMode(threadID, sessionToken, evt.Meta)
+				a.followAgyPermissionMode(threadID, sessionToken)
 			}
 		}
 

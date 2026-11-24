@@ -267,3 +267,195 @@ func TestWatchSubagentDiscoveryTimeoutDoesNotEmitFakeFailure(t *testing.T) {
 		t.Fatalf("discovery timeout must not emit fake failed agent notification, got %+v", events)
 	}
 }
+
+func TestWatchSubagentWorksPast256InboxFiles(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "9d5f2b49-97b2-49e7-a214-7aff00575499"
+
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall": map[string]any{
+					"id":   "call_past_256",
+					"name": "invoke_subagent",
+				},
+			},
+		},
+	})
+	msgDir := filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages")
+	for i := 0; i < 270; i++ {
+		name := "0" + string(rune('a'+(i/26)%26)) + string(rune('a'+i%26)) + "_" + time.Now().Format("150405") + "_" + string(rune('0'+(i/100)%10)) + string(rune('0'+(i/10)%10)) + string(rune('0'+i%10)) + ".json"
+		writeJSONFile(t, filepath.Join(msgDir, name), map[string]any{
+			"sender":  "other-sender",
+			"content": "filler",
+		})
+	}
+	writeJSONFile(t, filepath.Join(msgDir, "zzz_report.json"), map[string]any{
+		"sender":  childID,
+		"content": "Final report past 256 messages",
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var events []provider.ProviderEvent
+	flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+		SessionID:  parentID,
+		ThreadID:   "t1",
+		TurnID:     "turn-1",
+		ToolCallID: "call_past_256",
+		Started:    acp.NormalizedToolStart{SubagentType: "research"},
+		Emit: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	})
+	for _, ev := range events {
+		if ev.Kind == provider.EventBackgroundTaskNotification && ev.Content == "Final report past 256 messages" {
+			return
+		}
+	}
+	t.Fatalf("expected settlement past 256 inbox files, got %+v", events)
+}
+
+func TestWatchSubagentSettlesOnChildDBError(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "33333333-3333-3333-3333-333333333333"
+
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_crash", "name": "invoke_subagent"},
+			},
+		},
+	})
+	db := createTestConvDB(t, appDataDir, childID)
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`ALTER TABLE steps ADD COLUMN status INTEGER NOT NULL DEFAULT 3`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO steps (idx, step_type, status, error_details, step_payload) VALUES (1, ?, ?, ?, X'')`,
+		cortexStepTypeErrorMessage, cortexStepStatusError, []byte("RESOURCE_EXHAUSTED: subagent quota hit"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var events []provider.ProviderEvent
+	flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+		SessionID:  parentID,
+		ThreadID:   "t1",
+		TurnID:     "turn-1",
+		ToolCallID: "call_crash",
+		Started:    acp.NormalizedToolStart{SubagentType: "research"},
+		Emit: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	})
+	for _, ev := range events {
+		if ev.Kind == provider.EventBackgroundTaskNotification {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["status"] == "failed" && ev.Content == "RESOURCE_EXHAUSTED: subagent quota hit" {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected failed settlement from child DB error step, got %+v", events)
+}
+
+func TestWatchSubagentSettlesOnParentSystemStopNoticeAfterLaunch(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "44444444-4444-4444-4444-444444444444"
+
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_sys_stop", "name": "invoke_subagent"},
+			},
+		},
+	})
+	msgDir := filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages")
+	// An older system stop notice from 10 minutes ago must NOT prematurely kill this subagent.
+	writeJSONFile(t, filepath.Join(msgDir, "0001_old_stop.json"), map[string]any{
+		"sender":    "system",
+		"timestamp": time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339Nano),
+		"content":   "[Notice] All your subagents and background tasks have been stopped due to server restart.",
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+			SessionID:  parentID,
+			ThreadID:   "t1",
+			TurnID:     "turn-1",
+			ToolCallID: "call_sys_stop",
+			Started:    acp.NormalizedToolStart{SubagentType: "research"},
+			Emit: func(evt provider.ProviderEvent) {
+				mu.Lock()
+				events = append(events, evt)
+				mu.Unlock()
+			},
+		})
+	}()
+
+	time.Sleep(35 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("stale system stop notice from before launch prematurely settled subagent")
+	default:
+	}
+
+	writeJSONFile(t, filepath.Join(msgDir, "0002_new_stop.json"), map[string]any{
+		"sender":    "system",
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"content":   "[Notice] All your subagents and background tasks have been stopped due to user force cancellation.",
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchSubagent did not settle on post-launch system stop notice")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == provider.EventBackgroundTaskNotification {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["status"] == "killed" {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected killed settlement on post-launch system stop notice, got %+v", events)
+}

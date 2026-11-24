@@ -86,9 +86,25 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 	cutIdx := agy.CutKeepAll
 	if preCutMaxIdx != nil {
 		if *preCutMaxIdx < 0 {
+			// Verify no completed native prompts exist before returning an
+			// empty SessionRef: if the thread already has history, a missing
+			// conversation DB on disk must fail rather than silently wiping
+			// conversation context on the fork.
+			checkThreadID := source.ID
+			if strings.TrimSpace(forkID) != "" {
+				checkThreadID = forkID
+			}
+			items, listErr := a.store.ListItems(checkThreadID)
+			if listErr != nil {
+				return forkResumeState{}, fmt.Errorf("fork agy thread: list items: %w", listErr)
+			}
+			for _, item := range items {
+				if isAgyNativePromptItem(item) {
+					return forkResumeState{}, fmt.Errorf("fork agy thread: source thread %q has conversation history but no Antigravity steps on disk", source.ID)
+				}
+			}
 			// Source session has no committed steps on disk yet (e.g. forked
-			// before Turn 1 wrote to SQLite); start the fork fresh rather than
-			// failing with ENOENT on a non-existent conversation DB.
+			// before Turn 1 wrote to SQLite); start the fork fresh.
 			return forkResumeState{}, nil
 		}
 		cutIdx = *preCutMaxIdx
@@ -105,16 +121,17 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 				committedPrompts++
 			}
 		}
-		if committedPrompts > 0 {
-			newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, source.SessionRef, committedPrompts)
-			if err != nil {
-				return forkResumeState{}, fmt.Errorf("fork agy thread: %w", err)
-			}
-			return forkResumeState{
-				SessionRef: newSessionID,
-				Cleanup:    cleanup,
-			}, nil
+		if committedPrompts == 0 {
+			return forkResumeState{}, nil
 		}
+		newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, source.SessionRef, committedPrompts)
+		if err != nil {
+			return forkResumeState{}, fmt.Errorf("fork agy thread: %w", err)
+		}
+		return forkResumeState{
+			SessionRef: newSessionID,
+			Cleanup:    cleanup,
+		}, nil
 	}
 	newSessionID, cleanup, err := agy.ForkConversation(appDataDir, source.SessionRef, cutIdx)
 	if err != nil {
@@ -130,15 +147,15 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 // before the anchored user message item (resolving the cut inside the cloned
 // snapshot in a single transaction).
 func (a *App) forkAgyThreadBeforeMessage(source store.Thread, _ store.MessageAnchor, anchorItem store.Item) (forkResumeState, error) {
-	if source.SessionRef == "" {
-		return forkResumeState{}, nil
-	}
 	userOrdinal, err := a.agyUserOrdinalBeforeItem(source.ID, anchorItem.ID)
 	if err != nil {
 		return forkResumeState{}, fmt.Errorf("fork agy thread from message: %w", err)
 	}
 	if userOrdinal == 0 {
 		return forkResumeState{}, nil
+	}
+	if source.SessionRef == "" {
+		return forkResumeState{}, fmt.Errorf("fork agy thread from message: source thread %q has prior history but no Antigravity session ref", source.ID)
 	}
 	appDataDir := a.agyAppDataDir()
 	newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, source.SessionRef, userOrdinal)
@@ -155,9 +172,11 @@ func (a *App) forkAgyThreadBeforeMessage(source store.Thread, _ store.MessageAnc
 // userItem by cloning and slicing the conversation DB and repointing SessionRef.
 func (a *App) rollbackAgyThreadToMessage(thread store.Thread, _ store.MessageAnchor, userItem store.Item) error {
 	a.dropFlushQueue(thread.ID)
-	if latest, err := a.store.GetThread(thread.ID); err == nil {
-		thread = latest
+	latest, err := a.store.GetThread(thread.ID)
+	if err != nil {
+		return fmt.Errorf("agy rollback: reload thread %s: %w", thread.ID, err)
 	}
+	thread = latest
 	userOrdinal, err := a.agyUserOrdinalBeforeItem(thread.ID, userItem.ID)
 	if err != nil {
 		return fmt.Errorf("agy rollback: %w", err)

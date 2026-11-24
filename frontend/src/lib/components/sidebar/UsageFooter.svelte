@@ -123,12 +123,16 @@
       {#if rows.length === 0 && stats.unavailable.length === 0}
         <span class="text-fg-subtle" data-testid="usage-footer-empty">{waiting ? 'Loading usage…' : 'No usage in this selection'}</span>
       {/if}
-      {#each rows as row (row.provider)}
-        <span class="grid grid-cols-[minmax(5.75rem,auto)_1fr] items-center gap-2" data-testid="usage-footer-row">
-          <span class="text-fg-subtle uppercase tracking-[0.12em] truncate">{providerLabel(row.provider)}</span>
-          <span class="text-center tabular-nums whitespace-pre truncate">{row.valueLabel}</span>
+      {#if rows.length > 0}
+        <span class="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1.5">
+          {#each rows as row (row.provider)}
+            <span class="contents" data-testid="usage-footer-row">
+              <span class="text-fg-subtle uppercase tracking-[0.12em] truncate">{providerLabel(row.provider)}</span>
+              <span class="text-center tabular-nums whitespace-pre truncate">{row.valueLabel}</span>
+            </span>
+          {/each}
         </span>
-      {/each}
+      {/if}
       {#each { length: placeholders }, i (i)}<span data-testid="usage-footer-placeholder-row">&nbsp;</span>{/each}
     </span>
     <button

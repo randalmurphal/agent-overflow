@@ -184,11 +184,11 @@ func (a *App) resolveAgyTaskOutputPath(path string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			// Verify the non-existent path would sit inside the agy tasks
-			// directory before returning os.ErrNotExist so unrelated missing
-			// paths do not mask Claude's root check while valid agy logs keep
-			// polling until flushed to disk.
-			if layoutErr := checkLayout(filepath.Clean(path)); layoutErr != nil {
+			// Resolve the deepest existing ancestor so symlinks like macOS
+			// /var -> /private/var align with resolvedRoot even before the
+			// task log file is created on disk.
+			candidate := resolvePathViaDeepestExistingAncestor(path)
+			if layoutErr := checkLayout(candidate); layoutErr != nil {
 				return "", layoutErr
 			}
 			return "", err
@@ -206,6 +206,30 @@ func (a *App) resolveAgyTaskOutputPath(path string) (string, error) {
 		return "", err
 	}
 	return resolved, nil
+}
+
+// resolvePathViaDeepestExistingAncestor resolves symlinks on the deepest
+// existing directory prefix of path and re-joins the remaining non-existent
+// tail segments. Used when checking containment of a task log file that has
+// not been created on disk yet (e.g. macOS /var -> /private/var).
+func resolvePathViaDeepestExistingAncestor(path string) string {
+	clean := filepath.Clean(path)
+	cur := clean
+	var tail []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, tail[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return clean
+		}
+		tail = append(tail, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 // closeBackgroundTaskTailer stops the follows and joins the poll loop. A

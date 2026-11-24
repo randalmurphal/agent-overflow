@@ -555,10 +555,19 @@ func (m *Manager) commitProviderUsageRefreshLocked(
 	}
 	// The probed credential is the account's: an inactive account's came from
 	// its own slot, and a selected account's is the canonical credential only
-	// while it is the one AO recorded for the selected account. Anything else
-	// is another login that reached the canonical store since, and none of
-	// it (slot, fingerprint, snapshot, reset list) is the account's.
-	if refresh.isSelected && !m.canonicalRecordedLocked(refresh.providerName, refresh.probed.Bytes()) {
+	// while it is the one AO recorded for the selected account. For Antigravity,
+	// a concurrent in-process OAuth access-token refresh preserves the same
+	// refresh token and generation while advancing the canonical record to
+	// refresh.refreshed, so accept either the probed or refreshed credential
+	// when recorded for the active account. Anything else is another login that
+	// reached the canonical store since, and none of it (slot, fingerprint,
+	// snapshot, reset list) is the account's.
+	refreshedRecorded := refresh.providerName == string(provider.Agy) &&
+		len(refresh.refreshed.Bytes()) > 0 &&
+		m.canonicalRecordedLocked(refresh.providerName, refresh.refreshed.Bytes())
+	if refresh.isSelected &&
+		!m.canonicalRecordedLocked(refresh.providerName, refresh.probed.Bytes()) &&
+		!refreshedRecorded {
 		return commit, credentialsChangedWhileRefreshing(refresh.providerName)
 	}
 	// Past here the credential is the account's. The reading is the

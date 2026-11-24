@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -25,16 +26,29 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 		if textBuf.Len() == 0 {
 			return
 		}
+		kind := textKind
 		role := "assistant"
-		if textKind == provider.EventUserText {
+		if kind == provider.EventUserText {
 			role = "user"
 		}
 		events = append(events, provider.ProviderEvent{
-			Kind:      textKind,
+			Kind:      kind,
 			Role:      role,
 			Content:   textBuf.String(),
 			Timestamp: zeroTime,
 		})
+		if kind == provider.EventThinking || kind == provider.EventTextDelta {
+			blockType := "text"
+			if kind == provider.EventThinking {
+				blockType = "thinking"
+			}
+			stopMeta, _ := json.Marshal(map[string]any{"blockType": blockType})
+			events = append(events, provider.ProviderEvent{
+				Kind:      provider.EventContentBlockStop,
+				Meta:      stopMeta,
+				Timestamp: zeroTime,
+			})
+		}
 		textBuf.Reset()
 		textKind = ""
 	}

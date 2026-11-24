@@ -157,17 +157,25 @@ func (c catalog) rateOn(model, day string) (Rate, bool) {
 		}
 	}
 	// Strip Antigravity thought_level / tier suffixes (e.g. "gemini-4-neon-high",
-	// "gemini-4-hydrogen-tiered-high") to match the published base Gemini model.
+	// "gemini-4-hydrogen-tiered-high", "claude-sonnet-4-6-medium") to match the
+	// published base model or alias.
 	if stripped := stripAgyEffortSuffix(model); stripped != model {
 		if entries, ok := c.Rates[stripped]; ok {
 			return effectiveRate(entries, day)
+		}
+		if entries, ok := c.Aliases[stripped]; ok {
+			target, found := effectiveAlias(entries, day)
+			if !found {
+				return Rate{}, false
+			}
+			return effectiveRate(c.Rates[target], day)
 		}
 	}
 	return Rate{}, false
 }
 
 func stripAgyEffortSuffix(model string) string {
-	if !strings.HasPrefix(model, "gemini-") {
+	if !strings.HasPrefix(model, "gemini-") && !strings.HasPrefix(model, "claude-") {
 		return model
 	}
 	s := strings.ReplaceAll(model, "-tiered", "")

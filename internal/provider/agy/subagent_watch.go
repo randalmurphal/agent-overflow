@@ -18,7 +18,6 @@ const (
 	defaultSubagentPollInterval     = 200 * time.Millisecond
 	defaultSubagentDiscoveryTimeout = 10 * time.Second
 	maxSubagentMetaFileBytes        = 1 << 20 // 1 MiB cap per JSON metadata/message file
-	maxSubagentDirEntries           = 256
 )
 
 // isSafeConversationID ensures a conversation ID is a single safe path token
@@ -77,6 +76,7 @@ type subagentRecord struct {
 
 type inboxMessageRecord struct {
 	Sender         string `json:"sender"`
+	Timestamp      string `json:"timestamp"`
 	Content        string `json:"content"`
 	SourceMetadata *struct {
 		Tool *struct {
@@ -156,11 +156,16 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 		childID = wireID
 	}
 
+	matchCallID := strings.TrimSpace(launch.RawLaunchToolCallID)
+	if matchCallID == "" {
+		matchCallID = launch.ToolCallID
+	}
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for childID == "" {
-		if id, ok := f.findChildIDForLaunch(launch.SessionID, launch.ToolCallID); ok {
+		if id, ok := f.findChildIDForLaunch(launch.SessionID, matchCallID); ok {
 			childID = id
 			break
 		}
@@ -176,16 +181,49 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 		}
 	}
 
-	f.rememberChildLaunch(launch.SessionID, childID, launch.ToolCallID)
+	f.rememberChildLaunch(launch.SessionID, childID, matchCallID)
 	if launch.OnChildDiscovered != nil {
 		launch.OnChildDiscovered(childID)
 	}
 	f.emitSubagentIdentityMeta(launch, childID, baseModel, effort)
 
+	type fileSig struct {
+		dbMod  int64
+		dbSize int64
+		walMod int64
+		walSz  int64
+		valid  bool
+	}
+	readChildDBSig := func() fileSig {
+		dbPath, err := conversationDBPath(f.AppDataDir, childID)
+		if err != nil {
+			return fileSig{}
+		}
+		var sig fileSig
+		if info, err := os.Stat(dbPath); err == nil {
+			sig.dbMod = info.ModTime().UnixNano()
+			sig.dbSize = info.Size()
+			sig.valid = true
+		}
+		if info, err := os.Stat(dbPath + "-wal"); err == nil {
+			sig.walMod = info.ModTime().UnixNano()
+			sig.walSz = info.Size()
+			sig.valid = true
+		}
+		return sig
+	}
+
+	var lastSig fileSig
+	var pendingTerminal *childDBTerminalState
 	idleTicks := 0
 	for {
-		if report, ok := f.readParentInboxReport(launch.SessionID, childID); ok {
-			f.emitSubagentSettlement(launch, childID, "completed", report, provider.SubagentProgressMeta{
+		if report, systemStopped, ok := f.scanParentInbox(launch.SessionID, childID, launchTime); ok {
+			status := "completed"
+			if systemStopped {
+				status = "killed"
+				report = ""
+			}
+			f.emitSubagentSettlement(launch, childID, status, report, provider.SubagentProgressMeta{
 				TaskID:     childID,
 				DurationMs: max(time.Since(launchTime).Milliseconds(), 1),
 				AgentType:  launch.Started.SubagentType,
@@ -199,6 +237,26 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 				AgentType:  launch.Started.SubagentType,
 			})
 			return
+		}
+		// Stat-gated check of the child's own conversation DB: only opens SQLite
+		// when the DB/WAL changed or we are confirming a previously observed
+		// terminal error/cancel step on a second consecutive tick.
+		if curSig := readChildDBSig(); curSig.valid && (curSig != lastSig || pendingTerminal != nil) {
+			lastSig = curSig
+			if term, ok := inspectChildTerminalState(f.AppDataDir, childID); ok {
+				if pendingTerminal != nil && pendingTerminal.stepIdx == term.stepIdx && pendingTerminal.status == term.status {
+					f.emitSubagentSettlement(launch, childID, term.status, term.summary, provider.SubagentProgressMeta{
+						TaskID:     childID,
+						DurationMs: max(time.Since(launchTime).Milliseconds(), 1),
+						AgentType:  launch.Started.SubagentType,
+					})
+					return
+				}
+				copied := term
+				pendingTerminal = &copied
+			} else {
+				pendingTerminal = nil
+			}
 		}
 
 		idleTicks++
@@ -247,7 +305,7 @@ func (f *Flavor) findChildIDForLaunch(parentSessionID, launchToolCallID string) 
 	brainDir := filepath.Join(f.AppDataDir, "brain")
 	subDir := filepath.Join(brainDir, parentSessionID, ".system_generated", "subagents")
 	entries, err := os.ReadDir(subDir)
-	if err != nil || len(entries) == 0 || len(entries) > maxSubagentDirEntries {
+	if err != nil || len(entries) == 0 {
 		return "", false
 	}
 	for _, entry := range entries {
@@ -273,10 +331,12 @@ func (f *Flavor) findLaunchToolCallIDForChild(parentSessionID, childID string) (
 	brainDir := filepath.Join(f.AppDataDir, "brain")
 	msgDir := filepath.Join(brainDir, childID, ".system_generated", "messages")
 	entries, err := os.ReadDir(msgDir)
-	if err != nil || len(entries) == 0 || len(entries) > maxSubagentDirEntries {
+	if err != nil || len(entries) == 0 {
 		return "", false
 	}
-	for _, entry := range entries {
+	// Scan in reverse so newly written messages are inspected first in long sessions.
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
 		name := entry.Name()
 		if entry.IsDir() || name == "read.json" || !strings.HasSuffix(name, ".json") {
 			continue
@@ -317,14 +377,20 @@ func (f *Flavor) readSubagentRecord(parentSessionID, childID string) (subagentRe
 	return rec, true
 }
 
-func (f *Flavor) readParentInboxReport(parentSessionID, childID string) (string, bool) {
+// scanParentInbox inspects `<parent>/.system_generated/messages/` in a single
+// pass for either a report from childID (preferred) or a system notice after
+// since reporting that all subagents were stopped (e.g. server restart / force
+// cancellation).
+func (f *Flavor) scanParentInbox(parentSessionID, childID string, since time.Time) (report string, systemStopped bool, found bool) {
 	brainDir := filepath.Join(f.AppDataDir, "brain")
 	msgDir := filepath.Join(brainDir, parentSessionID, ".system_generated", "messages")
 	entries, err := os.ReadDir(msgDir)
-	if err != nil || len(entries) == 0 || len(entries) > maxSubagentDirEntries {
-		return "", false
+	if err != nil || len(entries) == 0 {
+		return "", false, false
 	}
-	for _, entry := range entries {
+	// Scan in reverse so newly written messages are inspected first in long sessions.
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
 		name := entry.Name()
 		if entry.IsDir() || name == "read.json" || !strings.HasSuffix(name, ".json") {
 			continue
@@ -338,10 +404,20 @@ func (f *Flavor) readParentInboxReport(parentSessionID, childID string) (string,
 			continue
 		}
 		if msg.Sender == childID {
-			return strings.TrimSpace(msg.Content), true
+			return strings.TrimSpace(msg.Content), false, true
+		}
+		if !systemStopped && msg.Sender == "system" && strings.Contains(msg.Content, "All your subagents and background tasks have been stopped") {
+			if ts, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(msg.Timestamp)); err == nil {
+				if !ts.Before(since.Add(-1 * time.Second)) {
+					systemStopped = true
+				}
+			}
 		}
 	}
-	return "", false
+	if systemStopped {
+		return "", true, true
+	}
+	return "", false, false
 }
 
 func (f *Flavor) emitSubagentIdentityMeta(launch acp.SubagentLaunchContext, childID, baseModel, effort string) {
@@ -360,34 +436,40 @@ func (f *Flavor) emitSubagentIdentityMeta(launch acp.SubagentLaunchContext, chil
 		return
 	}
 	launch.Emit(provider.ProviderEvent{
-		Kind:      provider.EventToolStart,
-		ThreadID:  launch.ThreadID,
-		TurnID:    launch.TurnID,
-		ItemID:    launch.ToolCallID,
-		Meta:      meta,
-		Timestamp: time.Now(),
+		Kind:            provider.EventToolStart,
+		ThreadID:        launch.ThreadID,
+		TurnID:          launch.TurnID,
+		ItemID:          launch.ToolCallID,
+		ParentToolUseID: launch.ParentToolUseID,
+		Meta:            meta,
+		Timestamp:       time.Now(),
 	})
 }
 
 func (f *Flavor) emitSubagentSettlement(launch acp.SubagentLaunchContext, taskID, status, report string, usage provider.SubagentProgressMeta) {
-	meta, err := json.Marshal(map[string]any{
+	metaFields := map[string]any{
 		"task_id":     taskID,
 		"tool_use_id": launch.ToolCallID,
 		"status":      status,
 		"source":      "agy_inbox",
 		"usage":       usage,
-	})
+	}
+	if launch.ParentToolUseID != "" {
+		metaFields["parent_tool_use_id"] = launch.ParentToolUseID
+	}
+	meta, err := json.Marshal(metaFields)
 	if err != nil {
 		return
 	}
 	launch.Emit(provider.ProviderEvent{
-		Kind:      provider.EventBackgroundTaskNotification,
-		ThreadID:  launch.ThreadID,
-		TurnID:    launch.TurnID,
-		ItemID:    launch.ToolCallID,
-		Content:   report,
-		Meta:      meta,
-		Timestamp: time.Now(),
+		Kind:            provider.EventBackgroundTaskNotification,
+		ThreadID:        launch.ThreadID,
+		TurnID:          launch.TurnID,
+		ItemID:          launch.ToolCallID,
+		ParentToolUseID: launch.ParentToolUseID,
+		Content:         report,
+		Meta:            meta,
+		Timestamp:       time.Now(),
 	})
 }
 

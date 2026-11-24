@@ -3,12 +3,15 @@ package agy
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/provider/acp"
 )
 
 func createTestConvDB(t *testing.T, appDataDir, sessionID string) *sql.DB {
@@ -149,5 +152,78 @@ func TestCollectBrainTransferFilesSkipsSystemGenerated(t *testing.T) {
 	}
 	if len(files) != 1 || filepath.Base(files[0].Path) != "plan.md" {
 		t.Fatalf("expected only plan.md in transfer files, got %+v", files)
+	}
+}
+
+func TestExtractReadableErrorTextSkipsProtobufMetadataAndMatchesNotFound(t *testing.T) {
+	t.Parallel()
+	raw := []byte("\x0a\x1etype.googleapis.com/google.rpc.ErrorInfo\x00google.rpc.ErrorInfo\x00HTTP 404 NOT_FOUND: model endpoint missing")
+	got := extractReadableErrorText(raw)
+	if got != "HTTP 404 NOT_FOUND: model endpoint missing" {
+		t.Fatalf("extractReadableErrorText = %q, want human error sentence", got)
+	}
+	override := classifyErrorStepPayload(raw)
+	if override == nil || override.Failure == nil || override.Failure.Code != "not_found" {
+		t.Fatalf("classifyErrorStepPayload = %+v, want failure code not_found", override)
+	}
+}
+
+func TestNormalizeToolCompleteCompletedDoesNotMarkBackgroundZombie(t *testing.T) {
+	t.Parallel()
+	fl := NewFlavor("")
+	started := acp.NormalizedToolStart{ToolName: "Bash", ItemType: "command_execution"}
+	norm := fl.NormalizeToolComplete(&acp.ToolCallUpdate{
+		ToolCallID: "cmd-1",
+		Name:       "run_command",
+		Status:     "completed",
+		RawOutput:  json.RawMessage(`"Tool is running as a background task with task id: s/task-1\nTask logs are available at: file:///tmp/t.log"`),
+	}, started)
+	if norm.IsBackground {
+		t.Fatal("completed run_command must not set IsBackground=true (would create a permanent tray zombie)")
+	}
+}
+
+func TestExtractPendingQuestionAcceptsNormalizedAskUserQuestion(t *testing.T) {
+	t.Parallel()
+	fl := NewFlavor("")
+	questions, ok := fl.ExtractPendingQuestion(&acp.ToolCallUpdate{
+		ToolCallID: "q-1",
+		Name:       "AskUserQuestion",
+		RawInput: json.RawMessage(`{
+			"questions": [{
+				"id": "q1",
+				"header": "Choice",
+				"question": "Pick one",
+				"options": [{"label": "Alpha"}, {"label": "Beta"}],
+				"multiSelect": true
+			}]
+		}`),
+	})
+	if !ok || len(questions) != 1 || len(questions[0].Options) != 2 || !questions[0].MultiSelect {
+		t.Fatalf("ExtractPendingQuestion normalized = ok:%v questions:%+v", ok, questions)
+	}
+}
+
+func TestClassifyPermissionAutoAcceptEditsPromptsOnSecurityWarning(t *testing.T) {
+	t.Parallel()
+	fl := NewFlavor("")
+	cls := fl.ClassifyPermission("t1", "turn-1", "req-1", acp.RequestPermissionParams{
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallID: "edit-outside",
+			Name:       "write_file",
+			Kind:       "edit",
+		},
+		Options: []acp.PermissionOption{
+			{
+				OptionID: "allow_once",
+				Name:     "Allow once",
+				Kind:     "allow_once",
+				Meta:     json.RawMessage(`{"agy.security.warning":{"title":"Outside workspace","message":"Path escapes workspace"}}`),
+			},
+			{OptionID: "reject_once", Name: "Deny", Kind: "reject_once"},
+		},
+	}, acp.PolicyAutoAcceptEdits)
+	if cls.Action != acp.PermissionAskUser {
+		t.Fatalf("Action = %v, want PermissionAskUser when agy.security.warning is present", cls.Action)
 	}
 }

@@ -621,4 +621,33 @@ describe('<BackgroundTaskTrayRow> agent run state', () => {
     expect(getByTestId('agent-row-error').textContent).toContain(error);
     expect(getByTestId('background-task-tray-row-status')).not.toHaveAttribute('data-run-state');
   });
+
+  it('does not expose agent-row-open-pane for agy agent rows when onOpenPane and stopTarget are absent', () => {
+    const launch = makeItem({
+      ...agentLaunch(),
+      meta: JSON.stringify({
+        toolName: 'Agent',
+        provider: 'agy',
+        subagent_launch: true,
+        input: { subagent_type: 'research', description: 'Audit code', run_in_background: true },
+      }),
+    });
+    const fakePane = {
+      thread: { id: 'thread-1', provider: 'agy', projectId: 'proj-1' },
+      getItemById: () => undefined,
+      openAgentPane: vi.fn(),
+    } as unknown as ThreadPane;
+    const { queryByTestId } = render(BackgroundTaskTrayRow, {
+      props: {
+        task: taskFor(launch),
+        stopTarget: null,
+        isStopping: false,
+        provider: 'agy',
+        onStop: vi.fn(),
+        pane: fakePane,
+      },
+    });
+    expect(queryByTestId('agent-row-open-pane')).toBeNull();
+    expect(queryByTestId('background-task-tray-row-open')).toBeNull();
+  });
 });

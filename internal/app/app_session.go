@@ -1221,6 +1221,15 @@ func (a *App) interruptTurnHoldingLock(threadID string, expectTurnIndex int, sto
 			log.Printf("app: interrupt turn: mark interrupt: %v", err)
 			a.emitErrorToThread(threadID, fmt.Sprintf("The turn stopped, but recording the stop failed: %v", err))
 		}
+		if sess.ACP != nil {
+			// Drain queued provider events (confirmations + EventTurnComplete)
+			// emitted during sess.ACP.Interrupt before clearing cancelled
+			// unconfirmed sends or eagerly persisting/resending steered items.
+			if drainErr := a.providerEvents.drain(threadID); drainErr != nil {
+				log.Printf("app: interrupt turn: drain provider events for %s: %v", threadID, drainErr)
+			}
+			a.triage.ClearCancelledACPDirectSends(threadID, stampToken)
+		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)
 	}
 	if discardsMessage {
@@ -1266,10 +1275,19 @@ func (a *App) eagerPersistFlushSendsOnInterrupt(threadID string, sess session, i
 		return
 	}
 	var persisted []triage.EagerPersistedFlush
+	var clearTurnInputIDs []string
 	for _, flush := range a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken) {
 		if !flush.TurnInput {
 			persisted = append(persisted, flush)
+		} else if sess.ACP != nil {
+			// On ACP, session/cancel cancels the idle-queued prompt itself
+			// without sending a confirmation echo; clear its now-orphaned
+			// pending entry after eager persistence places the row in timeline.
+			clearTurnInputIDs = append(clearTurnInputIDs, flush.UserItemID)
 		}
+	}
+	if len(clearTurnInputIDs) > 0 {
+		a.triage.ClearPendingSendsByItemIDs(threadID, clearTurnInputIDs)
 	}
 	if len(persisted) == 0 {
 		return

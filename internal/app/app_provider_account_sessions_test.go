@@ -349,10 +349,10 @@ func TestFlushDispatchBatchSurvivesAccountSwitchReconnect(t *testing.T) {
 
 	// Start a real session first, then roll its stored CredentialGeneration
 	// back to simulate an account switch that landed while the session lived.
-	if err := app.StartSession(thread.ID); err != nil {
-		t.Fatalf("StartSession: %v", err)
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
+		t.Fatalf("startSessionTakingLock: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 	oldSess, ok := app.sessionManager().get(thread.ID)
 	if !ok {
 		t.Fatal("expected live session after StartSession")

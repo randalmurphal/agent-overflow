@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -582,8 +583,8 @@ for raw in sys.stdin:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "run background test", nil); err != nil {
-		t.Fatalf("SendMessage: %v", err)
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "run background test", pageSendOptions(uuid.NewString())); err != nil {
+		t.Fatalf("SendMessageWithOptions: %v", err)
 	}
 
 	// 1. Wait until the backgrounded run_command enters ListLiveBackgroundTasks.
@@ -626,22 +627,34 @@ for raw in sys.stdin:
 		t.Fatal("expected resolveAgyTaskOutputPath to reject path outside agy brain tasks dir")
 	}
 
-	// 3. Release the command and verify it settles and leaves the live tray.
+	// 3. Release the command and verify it settles via a Claude-style
+	// tool_completion sibling (complete:<launchID>) while keeping the launch
+	// row immutable and dropping the live running count to 0.
 	if err := os.WriteFile(releaseFile, []byte("go"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	completionID := "complete:" + liveTask.ID
+	var comp store.Item
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		rows, listErr := app.store.ListLiveBackgroundTasks(thread.ID, 0)
-		if listErr == nil && len(rows) == 0 {
+		item, found, getErr := app.store.GetThreadItem(thread.ID, completionID)
+		if getErr == nil && found {
+			comp = item
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	if rows, _ := app.store.ListLiveBackgroundTasks(thread.ID, 0); len(rows) != 0 {
-		t.Fatalf("expected 0 live background tasks after completion, got %d", len(rows))
+	if comp.ID != completionID || comp.Kind != "tool_completion" || comp.CompletionOf != liveTask.ID || comp.Status != "completed" {
+		t.Fatalf("expected completed tool_completion sibling %q, got %+v", completionID, comp)
 	}
-	_ = app.StopSession(thread.ID)
+	runningCount, err := app.store.CountLiveRunningBackgroundToolCalls(thread.ID)
+	if err != nil {
+		t.Fatalf("CountLiveRunningBackgroundToolCalls: %v", err)
+	}
+	if runningCount != 0 {
+		t.Fatalf("CountLiveRunningBackgroundToolCalls = %d, want 0 after completion sibling lands", runningCount)
+	}
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 }
 
 func TestAgyMidTurnFlushPlacementDefersUntilEcho(t *testing.T) {
@@ -665,5 +678,98 @@ func TestAgyMidTurnFlushPlacementDefersUntilEcho(t *testing.T) {
 	}
 	if placement.persistence != messageDeferUntilEcho || placement.displayTurn != 2 || placement.responseTurn != 2 || !placement.joinsActiveTurn {
 		t.Fatalf("unexpected agy mid-turn flush placement: %+v", placement)
+	}
+}
+
+func TestStopBackgroundTasksAgy(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	thread, err := createTestThread(t, app, string(provider.Agy), t.TempDir(), "gemini-3.1-pro-high", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID:           "bg-run-1",
+		ThreadID:     thread.ID,
+		TurnIndex:    1,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		ToolName:     "Bash",
+		Status:       "running",
+		IsBackground: true,
+		Summary:      "sleep 30",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := app.StopBackgroundTasks(thread.ID, []string{"bg-run-1", "already-done"})
+	if err != nil {
+		t.Fatalf("StopBackgroundTasks(agy): %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results len = %d, want 2", len(results))
+	}
+	if results[0].Outcome != BackgroundStopFailed || results[0].Error == "" {
+		t.Fatalf("results[0] = %+v, want BackgroundStopFailed with explanation", results[0])
+	}
+	if results[1].Outcome != BackgroundStopEnded {
+		t.Fatalf("results[1] = %+v, want BackgroundStopEnded", results[1])
+	}
+}
+
+func TestResolveAgyTaskOutputPathHandlesSymlinkedNonExistentLog(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	appDataDir := app.agyAppDataDir()
+	realBrain := filepath.Join(t.TempDir(), "real-brain")
+	tasksDir := filepath.Join(realBrain, "sess-1", ".system_generated", "tasks")
+	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(appDataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	brainLink := filepath.Join(appDataDir, "brain")
+	if err := os.Symlink(realBrain, brainLink); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	missingLog := filepath.Join(brainLink, "sess-1", ".system_generated", "tasks", "task-1.log")
+	_, err := app.resolveAgyTaskOutputPath(missingLog)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resolveAgyTaskOutputPath(missing under symlink) = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestForkAgyThreadBeforeMessageErrorsWithoutSessionRefWhenHistoryExists(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	thread, err := createTestThread(t, app, string(provider.Agy), t.TempDir(), "gemini-3.1-pro-high", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	for i, id := range []string{"u1", "u2"} {
+		if err := app.store.InsertItem(store.Item{
+			ID:        id,
+			ThreadID:  thread.ID,
+			TurnIndex: i + 1,
+			Kind:      "user_text",
+			Role:      "user",
+			Status:    "completed",
+			Summary:   id,
+			CreatedAt: now + int64(i),
+			UpdatedAt: now + int64(i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	anchorItem, _, err := app.store.GetThreadItem(thread.ID, "u2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.forkAgyThreadBeforeMessage(thread, store.MessageAnchor{}, anchorItem); err == nil {
+		t.Fatal("expected error when forking before Turn 2 with empty SessionRef")
 	}
 }

@@ -1,10 +1,10 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -41,15 +41,11 @@ func (a *App) followClaudePermissionMode(threadID, sessionToken string) {
 	a.permissionModeFollowWG.Go(func() { a.applyClaudePermissionMode(threadID, sessionToken) })
 }
 
-func (a *App) followAgyPermissionMode(threadID, sessionToken string, meta json.RawMessage) {
-	var parsed provider.PermissionModeChangeMeta
-	if len(meta) == 0 || json.Unmarshal(meta, &parsed) != nil || parsed.Mode == "" {
-		return
-	}
-	a.permissionModeFollowWG.Go(func() { a.applyAgyPermissionMode(threadID, sessionToken, parsed.Mode) })
+func (a *App) followAgyPermissionMode(threadID, sessionToken string) {
+	a.permissionModeFollowWG.Go(func() { a.applyAgyPermissionMode(threadID, sessionToken) })
 }
 
-func (a *App) applyAgyPermissionMode(threadID, sessionToken, modeID string) {
+func (a *App) applyAgyPermissionMode(threadID, sessionToken string) {
 	unlockThread, err := a.threadApplication().LockMutable(a.lifeCtx(), threadID)
 	if err != nil {
 		log.Printf("thread %s: follow agy permission mode: %v", threadID, err)
@@ -65,33 +61,41 @@ func (a *App) applyAgyPermissionMode(threadID, sessionToken, modeID string) {
 	if !ok || sess.Token != sessionToken || sess.ACP == nil {
 		return
 	}
-	var nextRT provider.RuntimeMode
-	var hasRT bool
-	switch modeID {
-	case "accept-edits":
-		nextRT, hasRT = provider.RuntimeAutoAcceptEdits, true
-	case "auto":
-		nextRT, hasRT = provider.RuntimeAuto, true
-	case "default", "ask":
-		nextRT, hasRT = provider.RuntimeApprovalRequired, true
+	// Read the authoritative runtime and interaction modes from the ACP session
+	// under lock rather than trusting event payload ordering across goroutines.
+	nextRT, nextIM := sess.ACP.Modes()
+	prevRT := provider.NormalizeRuntimeMode(string(sess.LaunchOptions.RuntimeMode))
+	prevIM := provider.NormalizeInteractionMode(string(sess.LaunchOptions.Mode))
+	if nextRT == "" {
+		nextRT = prevRT
 	}
-	if !hasRT {
-		return
+	if nextIM == "" {
+		nextIM = prevIM
 	}
-	prev := provider.NormalizeRuntimeMode(string(sess.LaunchOptions.RuntimeMode))
-	if nextRT == prev {
+	if nextRT == prevRT && nextIM == prevIM {
 		return
 	}
 	opts := sess.LaunchOptions
 	opts.RuntimeMode = nextRT
+	opts.Mode = nextIM
 	a.sessionManager().updateLaunchOpts(threadID, sessionToken, opts)
-	changed, err := a.store.SwapRuntimeMode(threadID, string(prev), string(nextRT))
-	if err != nil {
-		log.Printf("thread %s: follow agy permission mode %q: %v", threadID, modeID, err)
-		return
+	if nextRT != prevRT {
+		changed, err := a.store.SwapRuntimeMode(threadID, string(prevRT), string(nextRT))
+		if err != nil {
+			log.Printf("thread %s: follow agy runtime mode %q: %v", threadID, nextRT, err)
+		} else if changed {
+			a.emitRuntimeModeChanged(threadID, nextRT)
+		}
 	}
-	if changed {
-		a.emitRuntimeModeChanged(threadID, nextRT)
+	if nextIM != prevIM {
+		update, err := a.threadApplication().UpdateMode(threadID, string(nextIM))
+		if err != nil {
+			log.Printf("thread %s: follow agy interaction mode %q: %v", threadID, nextIM, err)
+		} else {
+			a.emitEvent(eventchan.ThreadModeChanged, ThreadModeChangedEvent{
+				ThreadID: threadID, Mode: update.Mode, NeedsReconnect: false,
+			})
+		}
 	}
 }
 

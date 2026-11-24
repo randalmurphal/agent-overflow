@@ -390,3 +390,430 @@ func TestACPOnResponseMultiSteerArmsNextConfirmAndSkipsCancelled(t *testing.T) {
 	}
 	_ = time.Now()
 }
+
+type slowAfterPromptFlavor struct {
+	DefaultFlavor
+	delay    time.Duration
+	override *PromptOutcomeOverride
+}
+
+func (f *slowAfterPromptFlavor) AfterPrompt(_ context.Context, _, _ string, _ any) *PromptOutcomeOverride {
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
+	return f.override
+}
+
+func TestACPInterruptWaitsForAfterPromptAndTurnComplete(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	fl := &slowAfterPromptFlavor{
+		DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+		delay:         60 * time.Millisecond,
+	}
+	s := newUnitSession(fl, &events, &mu)
+	s.sessionID = "sess-1"
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+	s.inFlightPrompts = 1
+	s.activeFinishers = 1
+	s.cancelling = true
+	s.inFlightZeroCh = make(chan struct{})
+	waitCh := s.inFlightZeroCh
+
+	go func() {
+		s.finishPrompt(json.RawMessage(`{"stopReason":"cancelled"}`), nil, nil, nil)
+	}()
+
+	select {
+	case <-waitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("inFlightZeroCh did not close after finishPrompt")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawComplete bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventTurnComplete {
+			sawComplete = true
+		}
+	}
+	if !sawComplete {
+		t.Fatalf("inFlightZeroCh closed BEFORE EventTurnComplete was emitted; events=%+v", events)
+	}
+}
+
+func TestACPSteerFlushesPromptOneBeforeConfirmingPromptTwo(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(nil, &events, &mu)
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+
+	c0 := &pendingPromptConfirm{uuid: "u0", content: "first"}
+	c0.confirmed.Store(true)
+	c1 := &pendingPromptConfirm{uuid: "u1", content: "second"}
+	s.wireInFlightPrompts = 2
+	s.inFlightConfirms = []*pendingPromptConfirm{c0, c1}
+
+	settle0 := s.makeWirePromptSettler(c0)
+	// Buffer a chunk for Prompt #1 within the 35ms coalesce window.
+	s.bufferChunk(provider.EventTextDelta, "tail of prompt 1")
+	// Prompt #1 resolves on wire -> must flush & close block BEFORE arming c1.
+	settle0([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`))
+	// First chunk of Prompt #2 confirms c1 and buffers Prompt #2 text.
+	s.confirmArmedPrompt()
+	s.bufferChunk(provider.EventTextDelta, "reply to prompt 2")
+	s.closeActiveContentBlock()
+
+	mu.Lock()
+	defer mu.Unlock()
+	var idxTail, idxStop, idxUser2, idxReply2 = -1, -1, -1, -1
+	for i, ev := range events {
+		switch {
+		case ev.Kind == provider.EventTextDelta && ev.Content == "tail of prompt 1":
+			idxTail = i
+		case ev.Kind == provider.EventContentBlockStop && idxStop < 0:
+			idxStop = i
+		case ev.Kind == provider.EventUserText && ev.Content == "second":
+			idxUser2 = i
+		case ev.Kind == provider.EventTextDelta && ev.Content == "reply to prompt 2":
+			idxReply2 = i
+		}
+	}
+	if idxTail < 0 || idxStop <= idxTail || idxUser2 <= idxStop || idxReply2 <= idxUser2 {
+		t.Fatalf("unexpected ordering tail=%d stop=%d user2=%d reply2=%d events=%+v", idxTail, idxStop, idxUser2, idxReply2, events)
+	}
+}
+
+func TestACPPermissionCancelEmitsCommandCancelledForUnconfirmedSteer(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(nil, &events, &mu)
+	s.sessionID = "sess-1"
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+	s.inFlightPrompts = 1
+	s.activeFinishers = 1
+	s.cancelling = false // Not from Interrupt() — simulates RespondToApproval("cancel").
+	confirm := &pendingPromptConfirm{uuid: "uuid-steer-perm-cancel", content: "queued steer"}
+
+	s.finishPrompt(json.RawMessage(`{"stopReason":"cancelled"}`), nil, nil, confirm)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == provider.EventCommandLifecycle {
+			var meta provider.CommandLifecycleMeta
+			_ = json.Unmarshal(ev.Meta, &meta)
+			if meta.CommandUUID == "uuid-steer-perm-cancel" && meta.State == provider.CommandCancelled {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected EventCommandLifecycle(cancelled) for unconfirmed steer, got %+v", events)
+}
+
+func TestACPSpontaneousWakeClosesWithBackgroundToolOpen(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(nil, &events, &mu)
+	s.sessionID = "sess-1"
+	s.turnOpen = true
+	s.spontaneousTurnOpen = true
+	s.activeTurnID = "wake-1"
+	s.startedTools["bg-cmd-1"] = NormalizedToolStart{ToolName: "Bash", ItemType: "command_execution", IsBackground: true}
+
+	s.handleUsageUpdate(1200, 100000)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == provider.EventTurnComplete {
+			return
+		}
+	}
+	t.Fatalf("expected spontaneous wake turn to close while only background tool is in startedTools, got %+v", events)
+}
+
+func TestACPAPIErrorEmitsAPIErrorEnumAndExpectTurnComplete(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	fl := &slowAfterPromptFlavor{
+		DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+		override: &PromptOutcomeOverride{
+			ErrorMessage: "RESOURCE_EXHAUSTED: quota exceeded",
+			Failure: &provider.FailureMeta{
+				Class:    provider.FailureTransient,
+				Boundary: provider.FailureBoundaryTurn,
+				Reason:   provider.FailureReasonUsageLimit,
+				Code:     "rate_limit",
+			},
+		},
+	}
+	s := newUnitSession(fl, &events, &mu)
+	s.sessionID = "sess-1"
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+	s.inFlightPrompts = 1
+	s.activeFinishers = 1
+
+	s.finishPrompt(json.RawMessage(`{"stopReason":"end_turn"}`), nil, 1, nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == provider.EventError {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["api_error_enum"] != "rate_limit" || m["expect_turn_complete"] != true {
+				t.Fatalf("EventError meta = %v, want api_error_enum=rate_limit and expect_turn_complete=true", m)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected EventError with api_error_enum, got %+v", events)
+}
+
+func TestACPChildInteractionQuestionNotAutoApprovedAndCarriesParentID(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(nil, &events, &mu)
+	s.sessionID = "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	s.permissionPolicy = PolicyAutoAllowNonQuestion
+	childUUID := "8d1d87ec-d2f0-472e-8626-2c83eefc2bc1"
+	s.registerChildLaunch(childUUID, "launch-sub-1")
+
+	req := RequestPermissionParams{
+		SessionID: s.sessionID,
+		ToolCall: ToolCallUpdate{
+			ToolCallID: childUUID + ":interaction_42",
+			Title:      "Choose an approach",
+		},
+		Options: []PermissionOption{
+			{OptionID: "opt_a", Name: "Option A", Kind: "allow_once"},
+			{OptionID: "opt_b", Name: "Option B", Kind: "allow_once"},
+		},
+	}
+	s.handlePermissionRequest(json.RawMessage(`99`), req)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == provider.EventUserInputRequest {
+			if ev.ParentToolUseID != "launch-sub-1" {
+				t.Fatalf("ParentToolUseID = %q, want launch-sub-1", ev.ParentToolUseID)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected EventUserInputRequest (not auto-approved) for child interaction_*, got %+v", events)
+}
+
+type compactionStubFlavor struct {
+	DefaultFlavor
+	checkpointIdx int
+}
+
+func (f *compactionStubFlavor) DetectCompaction(_ context.Context, _ string, afterIdx int) (int, *CompactionEvent) {
+	if f.checkpointIdx > afterIdx {
+		return f.checkpointIdx, &CompactionEvent{ItemID: "agy-compact-stub"}
+	}
+	return afterIdx, nil
+}
+
+func TestACPCompactionEmitsBeforePostCompactionTextOnColdResume(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	fl := &compactionStubFlavor{
+		DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+		checkpointIdx: 12,
+	}
+	s := newUnitSession(fl, &events, &mu)
+	s.sessionID = "sess-cold"
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+	s.lastUsedTokens = 0 // cold resume
+	s.compactionCheckPending = true
+
+	s.handleUpdate(SessionUpdate{
+		SessionUpdate: "agent_message_chunk",
+		Content:       json.RawMessage(`{"type":"text","text":"After compaction"}`),
+	})
+	s.closeActiveContentBlock()
+
+	mu.Lock()
+	defer mu.Unlock()
+	idxCompact, idxText := -1, -1
+	for i, ev := range events {
+		if ev.Kind == provider.EventCompactBoundary && idxCompact < 0 {
+			idxCompact = i
+		}
+		if ev.Kind == provider.EventTextDelta && ev.Content == "After compaction" && idxText < 0 {
+			idxText = i
+		}
+	}
+	if idxCompact < 0 || idxText < 0 || idxCompact > idxText {
+		t.Fatalf("expected EventCompactBoundary before post-compaction text; compact=%d text=%d events=%+v", idxCompact, idxText, events)
+	}
+}
+
+func TestACPReplayEmitsContentBlockStop(t *testing.T) {
+	t.Parallel()
+	updates := []SessionUpdate{
+		{SessionUpdate: "agent_thought_chunk", Content: json.RawMessage(`{"type":"text","text":"think"}`)},
+		{SessionUpdate: "agent_message_chunk", Content: json.RawMessage(`{"type":"text","text":"answer"}`)},
+		{SessionUpdate: "usage_update", Used: 100, Size: 1000},
+	}
+	events := ReplayUpdatesToEvents(updates, DefaultFlavor{Kind: provider.Agy})
+	var stops int
+	for _, ev := range events {
+		if ev.Kind == provider.EventContentBlockStop {
+			stops++
+		}
+	}
+	if stops != 2 {
+		t.Fatalf("expected 2 EventContentBlockStop events in replay (thinking + text), got %d: %+v", stops, events)
+	}
+}
+
+type bgCommandStubFlavor struct {
+	DefaultFlavor
+	resolved map[string]string
+}
+
+func (f *bgCommandStubFlavor) NormalizeToolStart(u *ToolCallUpdate) NormalizedToolStart {
+	if u.Name == "invoke_subagent" {
+		return NormalizedToolStart{ToolName: "Agent", ItemType: "Agent", SubagentLaunch: true, SubagentType: "research"}
+	}
+	return NormalizedToolStart{ToolName: "Bash", ItemType: "command_execution"}
+}
+
+func (f *bgCommandStubFlavor) NormalizeToolComplete(u *ToolCallUpdate, started NormalizedToolStart) NormalizedToolComplete {
+	if u.Status == "in_progress" {
+		return NormalizedToolComplete{
+			ToolName:         "Bash",
+			ItemType:         "command_execution",
+			IsBackground:     true,
+			BackgroundTaskID: "sess/task-bg-1",
+			OutputFile:       "/tmp/task-bg-1.log",
+			CommandOut:       "Tool is running as a background task",
+		}
+	}
+	zero := 0
+	return NormalizedToolComplete{
+		ToolName:   "Bash",
+		ItemType:   "command_execution",
+		ItemStatus: "completed",
+		ExitCode:   &zero,
+		CommandOut: "all tests passed",
+	}
+}
+
+func (f *bgCommandStubFlavor) CanTrackSubagent(sessionID string) bool { return sessionID != "" }
+
+func (f *bgCommandStubFlavor) ResolveSubagentLaunch(_ context.Context, sessionID, childID string) (string, bool) {
+	if id, ok := f.resolved[sessionID+":"+childID]; ok {
+		return id, true
+	}
+	return "", false
+}
+
+func TestACPBackgroundCommandEmitsTerminalSiblingInsteadOfInPlaceComplete(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(&bgCommandStubFlavor{DefaultFlavor: DefaultFlavor{Kind: provider.Agy}}, &events, &mu)
+	s.sessionID = "sess-1"
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+
+	s.handleToolCallStart(&ToolCallUpdate{ToolCallID: "cmd-bg-1", Name: "run_command", Kind: "execute", Status: "in_progress"}, "")
+	s.handleToolCallInProgress(&ToolCallUpdate{ToolCallID: "cmd-bg-1", Name: "run_command", Kind: "execute", Status: "in_progress"}, "")
+	s.handleToolCallComplete(&ToolCallUpdate{ToolCallID: "cmd-bg-1", Name: "run_command", Kind: "execute", Status: "completed"}, "")
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawTerm bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventToolComplete {
+			t.Fatalf("backgrounded command must emit EventBackgroundTaskTerminal, not in-place EventToolComplete: %+v", events)
+		}
+		if ev.Kind == provider.EventCommandOutput {
+			t.Fatalf("backgrounded command with output_file must not pollute launch row with handoff EventCommandOutput: %+v", events)
+		}
+		if ev.Kind == provider.EventBackgroundTaskTerminal {
+			sawTerm = true
+			if ev.ItemID != "cmd-bg-1" || ev.Content != "all tests passed" {
+				t.Fatalf("unexpected EventBackgroundTaskTerminal: %+v", ev)
+			}
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["source"] != "agy_command_complete" || m["task_id"] != "sess/task-bg-1" || m["status"] != "completed" {
+				t.Fatalf("unexpected terminal meta: %v", m)
+			}
+		}
+	}
+	if !sawTerm {
+		t.Fatalf("expected EventBackgroundTaskTerminal for backgrounded command, got %+v", events)
+	}
+}
+
+func TestACPNestedSubagentRoutesGrandchildToChildLaunch(t *testing.T) {
+	t.Parallel()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childA := "11111111-1111-1111-1111-111111111111"
+	childB := "22222222-2222-2222-2222-222222222222"
+
+	fl := &bgCommandStubFlavor{
+		DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+		resolved: map[string]string{
+			parentID + ":" + childA: "launch-A",
+			childA + ":" + childB:   "call-launch-B",
+		},
+	}
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(fl, &events, &mu)
+	s.sessionID = parentID
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+
+	// childA launches childB via invoke_subagent; trackedSubagents records it under childA.
+	s.handleUpdate(SessionUpdate{
+		SessionUpdate: "tool_call",
+		ToolCallID:    childA + ":call-launch-B",
+		Name:          "invoke_subagent",
+		Status:        "in_progress",
+	})
+	// Grandchild childB runs a tool call -> must resolve parentToolUseID = childA:call-launch-B.
+	s.handleUpdate(SessionUpdate{
+		SessionUpdate: "tool_call",
+		ToolCallID:    childB + ":call-read-1",
+		Name:          "read_file",
+		Status:        "in_progress",
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawGrandchild bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventToolStart && ev.ItemID == childB+":call-read-1" {
+			if ev.ParentToolUseID != childA+":call-launch-B" {
+				t.Fatalf("grandchild ParentToolUseID = %q, want %q", ev.ParentToolUseID, childA+":call-launch-B")
+			}
+			sawGrandchild = true
+		}
+	}
+	if !sawGrandchild {
+		t.Fatalf("expected grandchild tool_call routed to childA:call-launch-B, got %+v", events)
+	}
+}

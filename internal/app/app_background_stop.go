@@ -92,7 +92,7 @@ func (a *App) StopBackgroundTasks(threadID string, launchIDs []string) ([]Backgr
 			}
 		}
 		for _, r := range rows {
-			if r.Status == statusRunningBackgroundWork && !settled[r.ID] {
+			if r.CompletionOf == "" && r.Kind == "tool_call" && r.IsBackground && r.Status == "running" && !settled[r.ID] {
 				liveByID[r.ID] = true
 			}
 		}

@@ -108,16 +108,18 @@ type CompactionEvent struct {
 // SubagentLaunchContext carries the parent session context for a flavor that
 // tracks an asynchronous subagent out of band.
 type SubagentLaunchContext struct {
-	SessionID         string
-	ThreadID          string
-	TurnID            string
-	ToolCallID        string
-	RawInput          json.RawMessage
-	Started           NormalizedToolStart
-	ParentModel       string
-	ParentEffort      string
-	Emit              func(provider.ProviderEvent)
-	OnChildDiscovered func(childConversationID string)
+	SessionID           string
+	ThreadID            string
+	TurnID              string
+	ToolCallID          string
+	RawLaunchToolCallID string
+	ParentToolUseID     string
+	RawInput            json.RawMessage
+	Started             NormalizedToolStart
+	ParentModel         string
+	ParentEffort        string
+	Emit                func(provider.ProviderEvent)
+	OnChildDiscovered   func(childConversationID string)
 }
 
 // Flavor isolates provider-specific ACP conventions (metadata extensions,
@@ -367,7 +369,13 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 	denyOpt := findPermissionOption(req.Options, "reject_once", "reject_always")
 
 	// interaction_* requests are structured user questions, never silently auto-approved.
-	if strings.HasPrefix(req.ToolCall.ToolCallID, "interaction_") && len(req.Options) > 0 {
+	// Strip any "<childConversationUuid>:" prefix so forwarded subagent questions
+	// are classified as user input rather than auto-approved under Full Access.
+	baseToolCallID := req.ToolCall.ToolCallID
+	if colon := strings.IndexByte(baseToolCallID, ':'); colon > 0 && looksLikeUUID(baseToolCallID[:colon]) {
+		baseToolCallID = baseToolCallID[colon+1:]
+	}
+	if strings.HasPrefix(baseToolCallID, "interaction_") && len(req.Options) > 0 {
 		opts := make([]provider.UserInputQuestionOption, 0, len(req.Options))
 		byKey := make(map[string]string, len(req.Options)*2)
 		for _, opt := range req.Options {

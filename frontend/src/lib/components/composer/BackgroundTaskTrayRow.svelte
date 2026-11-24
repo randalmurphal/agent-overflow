@@ -264,6 +264,7 @@
       <AgentRow
         {pane}
         agentLayout
+        showOpenPane={opensAgentPane}
         headerMetrics={toolCountLabel || tokensLabel ? metrics : undefined}
         headerDetails={activityLine ? activity : undefined}
         {disclosure}

@@ -186,3 +186,15 @@ func TestLoadCatalogRejectsMisorderedOrMalformedEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestPriceStripsClaudeOnAgyEffortSuffix(t *testing.T) {
+	now := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+	base, baseOK := Price("claude-sonnet-4-6", now, 1_000_000, 1_000_000, 0, 0)
+	if !baseOK {
+		t.Fatal("expected claude-sonnet-4-6 to be priced")
+	}
+	got, ok := Price("claude-sonnet-4-6-medium", now, 1_000_000, 1_000_000, 0, 0)
+	if !ok || got != base {
+		t.Fatalf("Price(claude-sonnet-4-6-medium) = (%v, %v), want (%v, true)", got, ok, base)
+	}
+}

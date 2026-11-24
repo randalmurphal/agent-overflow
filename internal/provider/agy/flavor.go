@@ -674,8 +674,11 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 
 	// Detect run_command transitioning to an asynchronous background task after
 	// WaitMsBeforeAsync expires (or IsDaemon: true) so AO adds it to the
-	// background tray and tails its task log file while it runs.
-	if (u.Status == "in_progress" || u.Status == "completed") && (rawName == "run_command" || started.ItemType == "command_execution") {
+	// background tray and tails its task log file while it runs. Only mark
+	// in_progress frames as backgrounded; marking a completed frame would leave
+	// the launch row permanently running because run_command settles via
+	// tool_call_update(completed) rather than a separate terminal event.
+	if u.Status == "in_progress" && (rawName == "run_command" || started.ItemType == "command_execution") {
 		if taskID, logPath, ok := parseAgyBackgroundTaskOutput(firstNonEmpty(norm.CommandOut, norm.Content)); ok {
 			norm.IsBackground = true
 			norm.BackgroundTaskID = taskID
@@ -830,7 +833,13 @@ func (f *Flavor) ClassifyPermission(threadID, turnID, requestID string, req acp.
 			}
 		}
 	}
-	cls := f.DefaultFlavor.ClassifyPermission(threadID, turnID, requestID, req, policy)
+	effectivePolicy := policy
+	if effectivePolicy == acp.PolicyAutoAcceptEdits && hasAgySecurityWarning(req.Options) {
+		// Security-warned edits (e.g. paths outside the workspace) must never
+		// be silently auto-approved in Auto-accept edits mode.
+		effectivePolicy = acp.PolicyPrompt
+	}
+	cls := f.DefaultFlavor.ClassifyPermission(threadID, turnID, requestID, req, effectivePolicy)
 	if cls.Action == acp.PermissionAskUser {
 		// Normalize tool name and input into AO's canonical shapes (Bash/Edit/Write/MCP)
 		// so approval cards display command previews and file paths cleanly.
@@ -871,10 +880,31 @@ func (f *Flavor) ClassifyPermission(threadID, turnID, requestID string, req acp.
 	return cls
 }
 
+// hasAgySecurityWarning reports whether any permission option carries
+// `_meta["agy.security.warning"]`.
+func hasAgySecurityWarning(options []acp.PermissionOption) bool {
+	for _, opt := range options {
+		if len(opt.Meta) == 0 {
+			continue
+		}
+		var meta map[string]json.RawMessage
+		if json.Unmarshal(opt.Meta, &meta) != nil {
+			continue
+		}
+		if warnRaw, ok := meta["agy.security.warning"]; ok && len(warnRaw) > 0 && string(warnRaw) != "null" {
+			return true
+		}
+	}
+	return false
+}
+
 // ExtractPendingQuestion extracts structured ask_question prompts when the tool
-// transitions to status="pending".
+// transitions to status="pending". Accepts both raw ACP `ask_question` payloads
+// (options: []string) and already-normalized `AskUserQuestion` payloads
+// (options: [{"label": ...}]) from two-step tool_call -> tool_call_update flows.
 func (f *Flavor) ExtractPendingQuestion(u *acp.ToolCallUpdate) ([]provider.UserInputQuestion, bool) {
-	if !strings.EqualFold(strings.TrimSpace(u.Name), "ask_question") {
+	name := strings.TrimSpace(u.Name)
+	if !strings.EqualFold(name, "ask_question") && !strings.EqualFold(name, "AskUserQuestion") {
 		return nil, false
 	}
 	raw := u.EffectiveInput()
@@ -883,9 +913,12 @@ func (f *Flavor) ExtractPendingQuestion(u *acp.ToolCallUpdate) ([]provider.UserI
 	}
 	var payload struct {
 		Questions []struct {
-			Question      string   `json:"question"`
-			Options       []string `json:"options"`
-			IsMultiSelect bool     `json:"is_multi_select"`
+			ID            string            `json:"id"`
+			Header        string            `json:"header"`
+			Question      string            `json:"question"`
+			Options       []json.RawMessage `json:"options"`
+			IsMultiSelect bool              `json:"is_multi_select"`
+			MultiSelect   bool              `json:"multiSelect"`
 		} `json:"questions"`
 	}
 	if json.Unmarshal(raw, &payload) != nil || len(payload.Questions) == 0 {
@@ -897,13 +930,31 @@ func (f *Flavor) ExtractPendingQuestion(u *acp.ToolCallUpdate) ([]provider.UserI
 			continue
 		}
 		opts := make([]provider.UserInputQuestionOption, 0, len(q.Options))
-		for _, opt := range q.Options {
-			opts = append(opts, provider.UserInputQuestionOption{Label: opt})
+		for _, rawOpt := range q.Options {
+			var label string
+			if json.Unmarshal(rawOpt, &label) == nil {
+				if strings.TrimSpace(label) != "" {
+					opts = append(opts, provider.UserInputQuestionOption{Label: label})
+				}
+				continue
+			}
+			var obj struct {
+				Label       string `json:"label"`
+				Description string `json:"description"`
+			}
+			if json.Unmarshal(rawOpt, &obj) == nil && strings.TrimSpace(obj.Label) != "" {
+				opts = append(opts, provider.UserInputQuestionOption{
+					Label:       obj.Label,
+					Description: obj.Description,
+				})
+			}
 		}
 		questions = append(questions, provider.UserInputQuestion{
+			ID:          q.ID,
+			Header:      q.Header,
 			Question:    q.Question,
 			Options:     opts,
-			MultiSelect: q.IsMultiSelect,
+			MultiSelect: q.IsMultiSelect || q.MultiSelect,
 		})
 	}
 	if len(questions) == 0 {

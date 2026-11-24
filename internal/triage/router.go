@@ -673,7 +673,11 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		r.maybeFlushQueueAtBoundary(evt.ThreadID, evt.SessionToken)
 		return nil
 	case provider.EventBackgroundTaskNotification:
-		return r.handleBackgroundTaskNotification(evt)
+		if err := r.handleBackgroundTaskNotification(evt); err != nil {
+			return err
+		}
+		r.maybeFlushQueueAtBoundary(evt.ThreadID, evt.SessionToken)
+		return nil
 	case provider.EventAgentWakeDropped:
 		return r.handleAgentWakeDropped(evt)
 	case provider.EventBackgroundTaskStopAcked:
@@ -1125,7 +1129,9 @@ func (r *Router) handleRateLimits(evt provider.ProviderEvent) error {
 
 func (r *Router) handleError(evt provider.ProviderEvent) error {
 	if failedID := failedProviderItemID(evt.Meta); failedID != "" {
-		r.ClearPendingSendByProviderItemID(evt.ThreadID, failedID)
+		if err := r.RetireFailedPendingSendByProviderItemID(evt.ThreadID, failedID); err != nil {
+			log.Printf("triage: retire failed pending send %s/%s: %v", evt.ThreadID, failedID, err)
+		}
 	}
 	now := eventTimestampMillis(evt)
 	// A subagent's error lands on its LAUNCH's turn (invariant 10), which
