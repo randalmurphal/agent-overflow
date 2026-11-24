@@ -14,7 +14,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Page } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
-import { screenshot } from '../src/screenshot.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 interface ClaudeThinking {
   mode?: string;
@@ -71,7 +71,7 @@ test('the thinking picker has no off, and a stored off loads as the default', as
     await expect(page.getByTestId('settings-claude-thinking-display')).toHaveValue('');
     await expect(page.getByTestId('settings-claude-thinking-budget')).toHaveCount(0);
 
-    for (const scheme of ['dark', 'light'] as const) {
+    for (const scheme of screenshotsOn ? ['dark', 'light'] as const : []) {
       await page.emulateMedia({ colorScheme: scheme });
       await page.getByTestId('settings-claude-thinking-mode').scrollIntoViewIfNeeded();
       await screenshot(page, { path: test.info().outputPath(`claude-thinking-settings-${scheme}.png`) });

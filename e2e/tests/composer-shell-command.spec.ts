@@ -25,7 +25,7 @@ import {
   textLines,
   waitForGate,
 } from './agent-visibility-helpers.js';
-import { attachScreenshot } from '../src/screenshot.js';
+import { attachScreenshot, screenshotsOn } from '../src/screenshot.js';
 
 function nextUserInput(harness: HarnessApp, containing: string): Promise<HarnessMockEventData> {
   return harness.waitForEvent<HarnessMockEventData>(
@@ -42,6 +42,7 @@ async function openThread(harness: HarnessApp, page: Page, title: string): Promi
 
 /** A viewport capture per theme, attached to the report for the design pass. */
 async function shoot(page: Page, testInfo: TestInfo, state: string): Promise<void> {
+  if (!screenshotsOn) return;
   for (const theme of ['dark', 'light'] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await expect(page.locator('html')).toHaveClass(new RegExp(`\\b${theme}\\b`));

@@ -43,7 +43,7 @@ import {
   type ForgeRepo,
 } from './forge-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
-import { screenshot } from '../src/screenshot.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 export interface PullsSurface {
   compact: boolean;
@@ -159,6 +159,7 @@ export async function pickFilter(page: Page, pane: Locator, value: 'needs_you' |
 }
 
 async function useDarkTheme(page: Page): Promise<void> {
+  if (!screenshotsOn) return;
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveClass(/\bdark\b/);
 }

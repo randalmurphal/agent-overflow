@@ -16,7 +16,7 @@ import {
   startWorkflow,
   waitForWorkflowState,
 } from './workflows-helpers.js';
-import { screenshot } from '../src/screenshot.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 function sections(page: Page): Locator {
   return page.locator('[data-testid="pane-host"] > section[data-pane-id]');
@@ -57,6 +57,7 @@ async function dragSidebarTo(page: Page, width: number): Promise<void> {
 }
 
 async function useDarkTheme(page: Page): Promise<void> {
+  if (!screenshotsOn) return;
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveClass(/\bdark\b/);
   await page.evaluate(() => Promise.all(

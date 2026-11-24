@@ -29,7 +29,7 @@ import {
   waitForGate,
   type ScenarioStep,
 } from './agent-visibility-helpers.js';
-import { attachScreenshot } from '../src/screenshot.js';
+import { attachScreenshot, screenshotsOn } from '../src/screenshot.js';
 
 const TASK = { task_id: 'task-bg', task_type: 'local_bash', description: 'Build in the background' };
 const COMMAND = 'make -j8 build 2>&1 | tee build.log';
@@ -113,6 +113,7 @@ async function useTheme(page: Page, theme: 'dark' | 'light'): Promise<void> {
 
 /** One viewport screenshot per theme, named for the design pass. */
 async function shoot(page: Page, testInfo: TestInfo, state: string): Promise<void> {
+  if (!screenshotsOn) return;
   for (const theme of ['dark', 'light'] as const) {
     await useTheme(page, theme);
     await attachScreenshot(testInfo, `tail-${state}-${theme}`, page);
@@ -135,7 +136,6 @@ test('an expanded running command shows its live tail, follows the bottom, and y
     ]),
   });
   const { threadId, mockId, row } = await openThreadAndStart(harness, page, 'Live tail');
-  await useTheme(page, 'dark');
 
   // Collapsed: the row's chevron is live because the launch names its file.
   const toggle = row.getByTestId('command-output-toggle');

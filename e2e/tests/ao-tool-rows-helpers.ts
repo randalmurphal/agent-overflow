@@ -25,7 +25,7 @@ import {
   doneFlowYaml,
   otherProvider,
 } from './workflows-agent-tools-helpers.js';
-import { screenshot } from '../src/screenshot.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 export const LEAD_TITLE = 'Lead thread';
 export const TARGET_TITLE = 'Target thread';
@@ -301,6 +301,14 @@ export async function atOverlayEdge(row: Locator, overlay: Locator, press: () =>
 export async function shootRow(row: Locator, path: string): Promise<void> {
   await placeRow(row);
   await screenshot(row, { path, animations: 'disabled' });
+}
+
+/**
+ * shootRow for a row that expandRow or atOverlayEdge opens next. Both
+ * place the row themselves, so with screenshots off this places nothing.
+ */
+export async function shootRowBeforeOpening(row: Locator, path: string): Promise<void> {
+  if (screenshotsOn) await shootRow(row, path);
 }
 
 /**

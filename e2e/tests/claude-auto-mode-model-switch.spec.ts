@@ -28,7 +28,7 @@ import { mockSessions } from './workflows-helpers.js';
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
-import { screenshot } from '../src/screenshot.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 const SONNET_46 = 'claude-sonnet-4-6';
 const DROP_NOTICE = `Claude Code turned off Auto on ${SONNET_46}. This thread's access is now Supervised.`;
@@ -99,6 +99,7 @@ async function runtimeMode(harness: HarnessApp, threadId: string): Promise<strin
 }
 
 async function screenshots(page: Page, name: string) {
+  if (!screenshotsOn) return;
   for (const scheme of ['dark', 'light'] as const) {
     await page.emulateMedia({ colorScheme: scheme });
     // The scheme change fades colors in; capture after it settles.

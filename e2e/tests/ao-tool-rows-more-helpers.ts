@@ -28,7 +28,7 @@ import {
   doneFlowYaml,
   otherProvider,
 } from './workflows-agent-tools-helpers.js';
-import { expandRow, expectRowTextWhole, shootRow } from './ao-tool-rows-helpers.js';
+import { expandRow, expectRowTextWhole, shootRow, shootRowBeforeOpening } from './ao-tool-rows-helpers.js';
 import { timelineOf } from './timeline-follow-helpers.js';
 
 export const MORE_LEAD_TITLE = 'Lead thread';
@@ -257,9 +257,9 @@ export async function readRow(page: Page, tool: string, shot: (name: string) => 
     }
     await expect(row).toHaveCount(1, { timeout: 500 });
   }).toPass({ timeout: 30_000 });
-  await shootRow(row, shot(`${tool}-collapsed`));
+  await shootRowBeforeOpening(row, shot(`${tool}-collapsed`));
   // Where the row sits on screen, net of its activity run's own clip: with
-  // the reader above the bottom (shootRow left the follow), the timeline must
+  // the reader above the bottom (expandRow left the follow), the timeline must
   // not move a row they open. A run's clip that follows its own end is the
   // run's.
   const placed = () => row.evaluate((el) => {
