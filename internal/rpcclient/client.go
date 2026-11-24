@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"agent-overflow/internal/computerroute"
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/transport"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -133,9 +134,33 @@ func (c *Client) Advertises(capability string) bool {
 	return slices.Contains(c.capabilities, capability)
 }
 
-type Error struct{ Code, Message string }
+// Error is a refusal the far side answered: its wire code and message, and
+// the frame's mark of its dispatcher refusing before any method ran, when
+// it sent one.
+type Error struct {
+	Code, Message string
+	Dispatch      *dispatchrefusal.Refusal
+}
 
-func (e *Error) Error() string { return e.Message }
+// Error is what a person reads: the far side's message, except for a
+// refusal its dispatcher gave before any method ran, which reads as
+// dispatchrefusal words it whatever release that computer runs. Message
+// keeps the wire text for logs and diagnosis.
+func (e *Error) Error() string { return dispatchrefusal.Message(e.Code, e.Message, e.Dispatch) }
+
+// DispatchRefusal is the far side's dispatcher refusing the call before
+// any method ran (it does not have the method, or could not read its
+// arguments), or nil for any other answer. Such a call did not run there.
+func (e *Error) DispatchRefusal() *dispatchrefusal.Refusal {
+	return dispatchrefusal.Read(e.Code, e.Message, e.Dispatch)
+}
+
+// Unsupported reports whether the far side does not have the method: the
+// answer an older release gives for a call it predates.
+func (e *Error) Unsupported() bool {
+	refusal := e.DispatchRefusal()
+	return refusal != nil && refusal.Kind == dispatchrefusal.KindUnsupported
+}
 
 // NotSentError marks a failed call whose request frame never reached the
 // socket, so the far side cannot have acted on it. Every other failure of
@@ -231,7 +256,7 @@ func (c *Client) await(ctx context.Context, id string, result any) error {
 			continue
 		}
 		if frame.Error != nil {
-			return &Error{Code: frame.Error.Code, Message: frame.Error.Message}
+			return &Error{Code: frame.Error.Code, Message: frame.Error.Message, Dispatch: frame.Error.Dispatch}
 		}
 		if result == nil {
 			return nil

@@ -23,7 +23,7 @@ import { buildLocalImageHref } from './pathLinkExtension';
 import { getPinnedBackend } from '../transport/backends';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { mockAttachmentDownload, mockGitBlobImage, mockLocalImage } from '../../test/mocks/attachmentTransfer';
-import { answerAsV0019 } from '../../test/helpers/olderComputer';
+import { answerAsV0019, methodNotFound } from '../../test/helpers/olderComputer';
 import { buildRepositoryImageHref, type RepositoryImageClaim } from './repositoryImageHref';
 import { acquireRepositoryImage, repositoryImageCacheKey } from './repositoryImages';
 import { __resetForgeFactsForTest, noteForgeFactsWorkspace } from '../stores/forgeFacts.svelte';
@@ -915,7 +915,7 @@ describe('repository images', () => {
       expect(toasts).toEqual([
         ['error', 'save git blob image: a Git LFS pointer'],
         ['error', 'read git blob image: no such blob in this repository'],
-        ['error', 'That computer runs an older version, which cannot save images from its repository.'],
+        ['error', methodNotFound().message],
       ]);
       expect(toastErrors).toHaveLength(3);
     });

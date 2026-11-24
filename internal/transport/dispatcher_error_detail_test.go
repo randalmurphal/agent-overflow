@@ -123,19 +123,23 @@ func TestPanicDetailNamesItsLoggedStack(t *testing.T) {
 
 func TestDecodeAndMarshalFailuresNameTheirLogLine(t *testing.T) {
 	captureLog(t)
+	// A decode failure's chain is the decoder's text, which can repeat the
+	// value the caller sent: the log keeps it, and the frame carries only
+	// the reference and the dispatch mark (internal/dispatchrefusal).
 	for _, tc := range []struct {
 		name, method string
 		code         string
 		params       []json.RawMessage
 		logged       string
+		chained      bool
 	}{
-		{"bad parameter", "TakesCount", ErrCodeBadParams, []json.RawMessage{json.RawMessage(`"seven"`)}, "TakesCount param 0"},
-		{"unmarshalable result", "Unmarshalable", ErrCodeInternal, nil, "marshal result"},
+		{"bad parameter", "TakesCount", ErrCodeBadParams, []json.RawMessage{json.RawMessage(`"seven"`)}, "TakesCount param 0", false},
+		{"unmarshalable result", "Unmarshalable", ErrCodeInternal, nil, "marshal result", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fe := invokeDetail(t, tc.method, tc.params...)
-			if fe.Code != tc.code || fe.Detail == nil || len(fe.Detail.Chain) == 0 {
-				t.Fatalf("frame = %s %+v, want %s with a chain", fe.Code, fe.Detail, tc.code)
+			if fe.Code != tc.code || fe.Detail == nil || (len(fe.Detail.Chain) > 0) != tc.chained {
+				t.Fatalf("frame = %s %+v, want %s with a chain %v", fe.Code, fe.Detail, tc.code, tc.chained)
 			}
 			lines, found := logging.RecentLogLinesBefore("(id: "+fe.Detail.Ref+")", 1)
 			if !found || !strings.Contains(lines[0], tc.logged) {

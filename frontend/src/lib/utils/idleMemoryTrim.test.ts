@@ -7,6 +7,7 @@ import {
   IDLE_TRIM_REATTEMPT_MS,
   IDLE_TRIM_CHECK_MS,
 } from './idleMemoryTrim';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 
 // The drain gate reads the pane registry through revealDrainProbe; tests
 // drive it with a knob instead of mounting panes.
@@ -117,7 +118,7 @@ describe('idleMemoryTrim', () => {
     async (outcome) => {
       setBindingMock('RequestWebviewMemoryTrim', () => outcome === 'unsupported'
         ? Promise.resolve(outcome)
-        : Promise.reject(Object.assign(new Error('no such method'), { code: outcome })),
+        : Promise.reject(methodNotFound()),
       );
       const remove = vi.spyOn(window, 'removeEventListener');
       stop = startIdleMemoryTrim();

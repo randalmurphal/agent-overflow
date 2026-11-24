@@ -358,7 +358,7 @@ func (c *Client) completeCall(frame serverFrame) {
 		return
 	}
 	if frame.Error != nil {
-		call.fail <- &RPCError{Method: call.method, Code: frame.Error.Code, Message: frame.Error.Message}
+		call.fail <- &RPCError{Method: call.method, Code: frame.Error.Code, Message: frame.Error.Message, Dispatch: frame.Error.Dispatch}
 		return
 	}
 	call.result <- frame.Result

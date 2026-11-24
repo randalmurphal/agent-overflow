@@ -39,6 +39,9 @@ export interface ServerRPCFrame {
     reserve?: unknown;
     resumeAt?: unknown;
     detail?: unknown;
+    // `dispatch` is the dispatcher's mark of its own refusal before any
+    // method ran, validated by ./dispatchRefusal.ts.
+    dispatch?: unknown;
   };
 }
 

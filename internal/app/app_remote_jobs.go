@@ -303,7 +303,7 @@ func (a *App) probeAgentComputers(ctx context.Context, rows []AgentComputer) []A
 				out[i].Environment = &environment
 			} else {
 				var remote *rpcclient.Error
-				if !errors.As(err, &remote) || remote.Code != transport.ErrCodeMethodNotFound {
+				if !errors.As(err, &remote) || !remote.Unsupported() {
 					out[i].EnvironmentError = remoteErrorText(a.remoteOperationError("inspect environment", out[i].ID, "", err))
 				}
 			}
@@ -428,7 +428,7 @@ func remoteStartNeverRan(err error) bool {
 	code, _, _ := errorsx.PublicDetails(err)
 	switch code {
 	case "remote_invalid_request", "remote_invalid_project", "remote_project_not_found", "workspace_not_registered", "remote_capacity", "remote_request_conflict", "remote_log_unavailable",
-		"remote_not_ready", "remote_shutting_down", "remote_not_accepted", transport.ErrCodeScopeRequired, transport.ErrCodeAuthFailed, transport.ErrCodeMethodNotFound:
+		"remote_not_ready", "remote_shutting_down", "remote_not_accepted", "remote_unsupported", transport.ErrCodeScopeRequired, transport.ErrCodeAuthFailed:
 		return true
 	}
 	return false
