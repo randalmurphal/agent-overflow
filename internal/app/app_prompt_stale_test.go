@@ -261,8 +261,8 @@ func TestAModelChangeCanFlagTheLiveThread(t *testing.T) {
 	registerLiveClaudeCaptureSession(t, app, id, workspace, promptOverrideOptions(t, app, id))
 	take := recordProviderStatuses(app)
 
-	if _, err := app.UpdateThreadModel(id, "claude-fable-5"); err != nil {
-		t.Fatalf("UpdateThreadModel: %v", err)
+	if _, err := app.UpdateThreadModelSelection(id, claude, "claude-fable-5"); err != nil {
+		t.Fatalf("UpdateThreadModelSelection: %v", err)
 	}
 	expectOnePromptStale(t, take(), id, claude)
 }

@@ -72,7 +72,7 @@ func TestConcurrent_CreateThreadsUnderLoad(t *testing.T) {
 	}
 }
 
-// TestConcurrent_SameThreadUpdates: 10 goroutines racing UpdateThreadModel on
+// TestConcurrent_SameThreadUpdates: 10 goroutines racing UpdateThreadModelSelection on
 // the same inactive thread. All writes must succeed; the final stored value
 // must be one of the requested models (no garbled state, no torn writes).
 func TestConcurrent_SameThreadUpdates(t *testing.T) {
@@ -97,8 +97,8 @@ func TestConcurrent_SameThreadUpdates(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			if _, err := app.UpdateThreadModel(thread.ID, models[i%len(models)]); err != nil {
-				t.Errorf("UpdateThreadModel[%d]: %v", i, err)
+			if _, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, models[i%len(models)]); err != nil {
+				t.Errorf("UpdateThreadModelSelection[%d]: %v", i, err)
 				return
 			}
 			successes.Add(1)

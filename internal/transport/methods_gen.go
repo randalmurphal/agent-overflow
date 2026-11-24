@@ -580,7 +580,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UpdateThreadContextWindow", ID: 2456875639, Scope: "threads:operate", Route: "thread"},                                           // main.App.UpdateThreadContextWindow
 	{Name: "UpdateThreadFastMode", ID: 4175109385, Scope: "threads:operate", Route: "thread"},                                                // main.App.UpdateThreadFastMode
 	{Name: "UpdateThreadMode", ID: 3609479719, Scope: "threads:autonomy", Route: "thread"},                                                   // main.App.UpdateThreadMode
-	{Name: "UpdateThreadModel", ID: 4179686417, Scope: "threads:operate", Route: "thread"},                                                   // main.App.UpdateThreadModel
 	{Name: "UpdateThreadModelSelection", ID: 3140398729, Scope: "threads:operate", Route: "thread"},                                          // main.App.UpdateThreadModelSelection
 	{Name: "UpdateThreadReasoningEffort", ID: 892204206, Scope: "threads:operate", Route: "thread"},                                          // main.App.UpdateThreadReasoningEffort
 	{Name: "UpdateThreadRuntimeMode", ID: 325190827, Scope: "threads:operate", Route: "thread"},                                              // main.App.UpdateThreadRuntimeMode

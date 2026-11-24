@@ -516,24 +516,6 @@ func (a *App) UnpinThread(id string) (store.Thread, error) {
 	return row, nil
 }
 
-// UpdateThreadModel changes a thread's model through live provider controls.
-// Launch-only profile changes wait for the session to be quiet before restart.
-// Threads without an active session use the new model on their next start.
-//
-//ao:scope threads:operate
-func (a *App) UpdateThreadModel(threadID string, model string) (store.Thread, error) {
-	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	defer unlock()
-	update, err := a.threadApplication().UpdateModel(threadID, model)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	return a.finishThreadModelUpdate(update)
-}
-
 // UpdateThreadModelSelection changes provider + model as one atomic model-menu
 // selection. The selected provider/model's remembered profile is applied before
 // the thread row is persisted, so SQLite never sees an invalid intermediate

@@ -414,9 +414,9 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		thread := mustCreateBroadcastThread(t, app)
 		broadcasts := captureThreadBroadcasts(t, app)
 
-		updated, err := app.UpdateThreadModel(thread.ID, "claude-opus-4-1")
+		updated, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "claude-opus-4-1")
 		if err != nil {
-			t.Fatalf("UpdateThreadModel: %v", err)
+			t.Fatalf("UpdateThreadModelSelection: %v", err)
 		}
 		row := broadcasts.expectRow(triage.ThreadActionFull, thread.ID)
 		if row.Model != updated.Model {
@@ -424,8 +424,8 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		}
 
 		broadcasts.reset()
-		if _, err := app.UpdateThreadModel(thread.ID, updated.Model); err != nil {
-			t.Fatalf("UpdateThreadModel(repeat): %v", err)
+		if _, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, updated.Model); err != nil {
+			t.Fatalf("UpdateThreadModelSelection(repeat): %v", err)
 		}
 		broadcasts.expectSilence("re-selecting the model a thread already carries")
 	})

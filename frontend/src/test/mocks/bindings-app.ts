@@ -423,7 +423,6 @@ export const GetThreadContextUsage = dispatch('GetThreadContextUsage');
 // Thread-scoped model / workspace / message-search / commit-message bindings
 // (previously hand-wrapped with Call.ByName; now re-exported through the
 // generated app.js). Tests stub these through setBindingMock by method name.
-export const UpdateThreadModel = dispatch('UpdateThreadModel');
 export const UpdateThreadModelSelection = dispatch('UpdateThreadModelSelection');
 export const UpdateThreadMode = dispatch('UpdateThreadMode');
 export const UpdateThreadReasoningEffort = dispatch('UpdateThreadReasoningEffort');
