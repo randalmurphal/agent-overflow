@@ -106,13 +106,6 @@ func TestManagerDropsWhenQueueFullAndInvokesHook(t *testing.T) {
 	dir := t.TempDir()
 	drops := atomic.Int64{}
 
-	// Build a writer that blocks forever on the first write. We do that by
-	// pre-creating the file as a directory so os.OpenFile fails — Enqueue
-	// still fills the queue, then subsequent Enqueue calls drop.
-	// Easier: use a tiny queue with a slow producer so the queue fills fast.
-	slow := make(chan struct{})
-	t.Cleanup(func() { close(slow) })
-
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    2,
@@ -123,11 +116,8 @@ func TestManagerDropsWhenQueueFullAndInvokesHook(t *testing.T) {
 	})
 	defer m.Shutdown(context.Background())
 
-	// Block the drain loop by holding the writer mutex on the only active
-	// file. We do this indirectly: start one legitimate write, then flood
-	// the queue.
-	// Strategy: write many records fast enough that the bounded queue
-	// overflows. We rely on the reaper/drainer being sequential.
+	// A tight loop of records outruns the single drainer, so the size-2
+	// queue overflows.
 	const flood = 500
 	accepted := int64(0)
 	first, _ := NewRecord(time.Unix(0, 0), "t-1", "k", nil)
@@ -142,9 +132,6 @@ func TestManagerDropsWhenQueueFullAndInvokesHook(t *testing.T) {
 			accepted++
 		}
 	}
-
-	// Give the drainer a moment to process.
-	time.Sleep(100 * time.Millisecond)
 
 	if drops.Load() == 0 {
 		t.Errorf("expected at least one drop (queue size 2 vs %d records)", flood)

@@ -376,10 +376,15 @@ func TestWaitReturnsWhenTheRunRests(t *testing.T) {
 	if len(app.watchInputs) != 3 || app.watchInputs[0].Cursor != 0 || app.watchInputs[1].Cursor != 4 || app.watchInputs[2].Cursor != 6 {
 		t.Fatalf("watch inputs = %+v", app.watchInputs)
 	}
-	// The rest it hands back is the one the status read shows, at its cursor.
+	// The run's wake is held before the wait begins and released once, with
+	// the rest the status read shows, at its cursor.
 	want := Rest{Cursor: 7, State: "needs-human", Reason: "gate", PhaseID: "review"}
-	if len(app.holds) != 1 || app.holds[0].returned == nil || *app.holds[0].returned != want {
-		t.Fatalf("holds = %+v, want released with %+v", app.holds, want)
+	if len(app.holds) != 1 || app.holds[0].runID != "run-1" || app.holds[0].releases != 1 ||
+		app.holds[0].returned == nil || *app.holds[0].returned != want {
+		t.Fatalf("holds = %+v, want one on run-1 released once with %+v", app.holds, want)
+	}
+	if app.calls[0] != "HoldWake" {
+		t.Fatalf("the hold was taken after the wait began: %v", app.calls)
 	}
 }
 
@@ -638,18 +643,6 @@ func TestWaitingCallsHoldTheWake(t *testing.T) {
 		}
 		if len(app.holds) != 1 || app.holds[0].releases != 1 || app.holds[0].delivered() {
 			t.Fatalf("holds = %+v, want one released as not delivered", app.holds)
-		}
-	})
-	t.Run("status that returns the rest", func(t *testing.T) {
-		app := &fakeApp{watches: []Watched{{Cursor: 1, Resting: true}}, status: Observed{Cursor: 1, Resting: true}}
-		if _, err := New(app).Call(ctx, interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":60}`)); err != nil {
-			t.Fatal(err)
-		}
-		if len(app.holds) != 1 || app.holds[0].runID != "run-1" || app.holds[0].releases != 1 || !app.holds[0].delivered() {
-			t.Fatalf("holds = %+v", app.holds)
-		}
-		if app.calls[0] != "HoldWake" {
-			t.Fatalf("the hold was taken after the wait began: %v", app.calls)
 		}
 	})
 	t.Run("status whose wait fails", func(t *testing.T) {

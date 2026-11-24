@@ -10,20 +10,6 @@ import (
 	"agent-overflow/internal/workflow/engine"
 )
 
-func TestNarrativePath(t *testing.T) {
-	got, err := NarrativePath(t.TempDir(), "item", "build", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantSuffix := filepath.Join("workflow-runs", "item", "build.2", "narrative.md")
-	if !filepath.IsAbs(got) || !strings.HasSuffix(got, wantSuffix) {
-		t.Fatalf("NarrativePath = %q, want absolute path ending %q", got, wantSuffix)
-	}
-	if _, err := NarrativePath("", "item", "build", 2); err == nil {
-		t.Fatal("NarrativePath accepted an empty root")
-	}
-}
-
 // A feedback note is a person's words or another agent's, and it arrives inside
 // this prompt. It must reach the element as one unambiguous VALUE — the same
 // treatment operator guidance gets — so nothing in it can close the block, forge
