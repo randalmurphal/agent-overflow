@@ -202,10 +202,9 @@ func TestCancellingADispatchedRequestStopsItsTurn(t *testing.T) {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
 	if _, err := f.app.sendMessageWithOptions(t.Context(), target.ID, "look at the crash report", sendMessageOptions{
-		SendID:            threadRequestSendID(token),
-		ReconcileBySendID: true,
-		Admission:         admitQueueing,
-		PreserveDraft:     true,
+		SendID:        threadRequestSendID(token),
+		Admission:     admitQueueing,
+		PreserveDraft: true,
 	}); err != nil {
 		t.Fatalf("dispatch the request message: %v", err)
 	}

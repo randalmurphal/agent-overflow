@@ -53,8 +53,7 @@ type sendMessageOptions struct {
 	// SendID is the client-minted idempotency id of one composer send. Empty
 	// for every app-internal caller, which is what keeps them out of each
 	// other's way. See app_send_idempotency.go.
-	SendID            string
-	ReconcileBySendID bool
+	SendID string
 	// Admission is what the send does when the thread is working.
 	Admission sendAdmission
 	// PreserveDraft keeps the thread's durable composer draft. Set by the
@@ -601,9 +600,6 @@ func (a *App) sendMessageLocked(
 	switch opts.Admission {
 	case admitQueueing:
 		intent = messageComposer
-		if !opts.ReconcileBySendID {
-			intent = messageLegacyComposer
-		}
 	case admitAtRest:
 		intent = messageAtRest
 	case admitDirect:

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -42,11 +43,11 @@ func TestUserMessagePlacement(t *testing.T) {
 						a.triage.RegisterPendingSendWithExpectation(thread.ID, "user:7", 7, triage.PendingSendExpectation{})
 					}
 				}
-				for _, intent := range []userMessageIntent{messageDirect, messageComposer, messageLegacyComposer, messageFlush, messageFlushFallback} {
+				for _, intent := range []userMessageIntent{messageDirect, messageComposer, messageAtRest, messageFlush, messageFlushFallback} {
 					got, err := a.resolveUserMessagePlacement(thread, intent)
-					if intent == messageLegacyComposer && (state == "active" || state == "starting") {
-						if err == nil || !strings.Contains(err.Error(), "already working") {
-							t.Fatalf("legacy admission: %+v, %v", got, err)
+					if intent == messageAtRest && (state == "active" || state == "starting") {
+						if !errors.Is(err, errThreadWorking) {
+							t.Fatalf("at-rest admission: %+v, %v", got, err)
 						}
 						continue
 					}
@@ -70,7 +71,7 @@ func TestUserMessagePlacement(t *testing.T) {
 								want.persistence = messagePersistQuiet
 							}
 						}
-					case messageDirect, messageLegacyComposer:
+					case messageDirect, messageAtRest:
 					}
 					if got != want {
 						t.Errorf("intent %d: got %+v, want %+v", intent, got, want)
@@ -106,17 +107,6 @@ func TestUserMessageIdentityIndependentOfPlacement(t *testing.T) {
 					t.Fatalf("fallback changed correlation: %q -> %q", first, fallback)
 				}
 			}
-		}
-	}
-}
-
-func TestLegacyComposerIdentityRetainsPredictedID(t *testing.T) {
-	t.Parallel()
-	a := &App{}
-	for _, sendID := range []string{"", "already-supported-idempotency-id"} {
-		id, err := a.userMessageItemID("thread", sendID, 7, messageLegacyComposer)
-		if err != nil || id != "user:7" {
-			t.Fatalf("legacy identity = %q, %v", id, err)
 		}
 	}
 }

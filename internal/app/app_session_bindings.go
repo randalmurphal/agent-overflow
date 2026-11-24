@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -45,7 +46,14 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 // the page's composer through SendMessageWithOptions, and the harness's
 // HarnessSend. It answers the user row, or the zero item when the message
 // was queued.
+//
+// A client finds its row by send id. A window older than v0.0.15 does not
+// say so, and predicts its row as user:<nextTurn>: it is refused before
+// anything else, a repeat of a send it made before an upgrade included.
 func (a *App) sendClientMessage(ctx context.Context, threadID string, content string, opts SendMessageOptions, admission sendAdmission) (store.Item, error) {
+	if !opts.ReconcileBySendID {
+		return store.Item{}, errors.New(dispatchrefusal.Unreadable)
+	}
 	if a.shuttingDown.Load() {
 		return store.Item{}, ErrShuttingDown
 	}
@@ -76,7 +84,6 @@ func (a *App) sendClientMessage(ctx context.Context, threadID string, content st
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		SendID:                       opts.SendID,
-		ReconcileBySendID:            opts.ReconcileBySendID,
 		ConsumeDraft:                 opts.ConsumeDraft,
 		Admission:                    admission,
 		// Wire entry: this text was typed into a composer (D31).

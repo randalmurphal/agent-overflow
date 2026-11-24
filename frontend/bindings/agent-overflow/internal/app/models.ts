@@ -7413,8 +7413,9 @@ export class SendMessageOptions {
 
     /**
      * ReconcileBySendID declares that the caller finds its message's row by
-     * SendID, rather than predicting user:<turn>. Older callers still send
-     * SendID for idempotency, so its presence alone cannot negotiate this.
+     * SendID, rather than predicting user:<turn>. Windows older than v0.0.15
+     * send SendID without it, so its presence alone cannot say this; a
+     * client send without it is refused (sendClientMessage).
      */
     "reconcileBySendId"?: boolean;
 
