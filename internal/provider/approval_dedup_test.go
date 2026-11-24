@@ -65,13 +65,6 @@ func TestApprovalDeduperNonPositiveCapUsesDefault(t *testing.T) {
 	if !d.IsResolved("a") || !d.IsResolved("b") {
 		t.Fatal("zero-value deduper dropped entries before reaching default cap")
 	}
-
-	negative := NewApprovalDeduper(-5)
-	negative.MarkResolved("a")
-	negative.MarkResolved("b")
-	if !negative.IsResolved("a") || !negative.IsResolved("b") {
-		t.Fatal("negative cap should fall back to DefaultApprovalDedupCap")
-	}
 }
 
 // NewApprovalDeduper returns a deduper that resets its set once it

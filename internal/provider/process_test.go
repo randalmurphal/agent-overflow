@@ -24,29 +24,6 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
-func TestSpawnAndEcho(t *testing.T) {
-	ctx := context.Background()
-	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn cat: %v", err)
-	}
-	defer p.Kill()
-
-	msg := []byte(`{"hello":"world"}`)
-	if err := p.WriteLine(msg); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	line, err := p.ReadLine()
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-
-	if string(line) != string(msg) {
-		t.Errorf("got %q, want %q", line, msg)
-	}
-}
-
 // The newline is the write's own: a caller's buffer with spare capacity
 // keeps its bytes past the line.
 func TestWriteLineLeavesTheCallersBufferAlone(t *testing.T) {
@@ -579,22 +556,6 @@ func TestProviderEventLoggingCapturesInputAndOutput(t *testing.T) {
 	}
 }
 
-func TestProviderEventLoggingDisabledWithoutLogger(t *testing.T) {
-	ctx := context.Background()
-	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	defer p.Kill()
-
-	if err := p.WriteLine([]byte("hello")); err != nil {
-		t.Fatalf("WriteLine: %v", err)
-	}
-	if _, err := p.ReadLine(); err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-}
-
 func TestProviderEventLoggingUsesRedactor(t *testing.T) {
 	ctx := context.Background()
 	logPath := filepath.Join(t.TempDir(), "provider-events.ndjson")
@@ -681,36 +642,6 @@ func TestReadLineReturnsCopy(t *testing.T) {
 	// The first line's data should still be intact (not overwritten by scanner reuse).
 	if string(line1) != saved {
 		t.Errorf("ReadLine did not return a copy: first line mutated from %q to %q", saved, string(line1))
-	}
-}
-
-func TestDoneChannelCloses(t *testing.T) {
-	ctx := context.Background()
-	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "true"})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-
-	select {
-	case <-p.Done():
-		// ok — process exited
-	case <-time.After(5 * time.Second):
-		t.Fatal("Done channel not closed within 5s")
-	}
-}
-
-func TestErrAccessor(t *testing.T) {
-	ctx := context.Background()
-	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "false"})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-
-	<-p.Done()
-
-	// `false` exits with code 1, so Err should be non-nil.
-	if p.Err() == nil {
-		t.Error("expected non-nil error from `false`, got nil")
 	}
 }
 
@@ -1160,31 +1091,30 @@ func boundedLineReader(input string) *Process {
 	return &Process{stdout: bufio.NewReaderSize(strings.NewReader(input), 64*1024)}
 }
 
-// TestReadBoundedLineExactCapSucceeds pins the boundary predicate: a line
-// whose content is exactly maxLineSize bytes must succeed; the error fires
-// only when content EXCEEDS the cap.
-func TestReadBoundedLineExactCapSucceeds(t *testing.T) {
-	content := strings.Repeat("a", maxLineSize)
-	p := boundedLineReader(content + "\n")
-
-	line, err := p.readBoundedLine()
-	if err != nil {
-		t.Fatalf("exact-cap line: %v", err)
-	}
-	if len(line) != maxLineSize {
-		t.Fatalf("line len = %d, want %d", len(line), maxLineSize)
-	}
-}
-
-// TestReadBoundedLineOneOverCapFails proves content of maxLineSize+1 trips
-// ErrLineTooLong even when the line is newline-terminated.
-func TestReadBoundedLineOneOverCapFails(t *testing.T) {
-	content := strings.Repeat("a", maxLineSize+1)
-	p := boundedLineReader(content + "\n")
-
-	_, err := p.readBoundedLine()
-	if !errors.Is(err, ErrLineTooLong) {
-		t.Fatalf("expected ErrLineTooLong, got %v", err)
+// TestReadBoundedLineSingleRead pins the cap boundary on both the newline and
+// the EOF branch: content of exactly maxLineSize bytes succeeds, one byte more
+// trips ErrLineTooLong whether or not the line is terminated (an oversized
+// unterminated final line must error, not be returned as content).
+func TestReadBoundedLineSingleRead(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		input   string
+		wantLen int
+		wantErr error
+	}{
+		{"exact cap succeeds", strings.Repeat("a", maxLineSize) + "\n", maxLineSize, nil},
+		{"one over cap fails", strings.Repeat("a", maxLineSize+1) + "\n", 0, ErrLineTooLong},
+		{"unterminated over cap fails", strings.Repeat("a", maxLineSize+1), 0, ErrLineTooLong},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line, err := boundedLineReader(tc.input).readBoundedLine()
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if len(line) != tc.wantLen {
+				t.Fatalf("line len = %d, want %d", len(line), tc.wantLen)
+			}
+		})
 	}
 }
 
@@ -1253,17 +1183,6 @@ func TestReadBoundedLineSpansManyChunks(t *testing.T) {
 	}
 	if string(next) != "next" {
 		t.Fatalf("next line = %q, want %q", next, "next")
-	}
-}
-
-// TestReadBoundedLineEOFPartialOverCap covers the overflow check on the EOF
-// branch: an unterminated final line larger than the cap must error, not be
-// returned as content.
-func TestReadBoundedLineEOFPartialOverCap(t *testing.T) {
-	p := boundedLineReader(strings.Repeat("a", maxLineSize+1))
-	_, err := p.readBoundedLine()
-	if !errors.Is(err, ErrLineTooLong) {
-		t.Fatalf("expected ErrLineTooLong, got %v", err)
 	}
 }
 

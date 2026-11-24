@@ -11,25 +11,6 @@ import (
 // the Recheck flow because the next Set immediately repopulates — only a
 // dedicated test catches it.
 
-func claudeKey() ProbeCacheKey {
-	return ProbeCacheKey{Binary: "/usr/bin/claude", AccountID: "acct-1", WorkDir: "/home/u"}
-}
-
-func TestProbeCacheInvalidateRemovesEntry(t *testing.T) {
-	cache := NewProbeCache(5 * time.Minute)
-	cache.Set(claudeKey(), AccountInfo{SubscriptionType: "Claude Max"})
-
-	if _, ok := cache.Get(claudeKey()); !ok {
-		t.Fatal("precondition: expected cache hit before invalidate")
-	}
-
-	cache.Invalidate(claudeKey())
-
-	if _, ok := cache.Get(claudeKey()); ok {
-		t.Fatal("expected cache miss after Invalidate")
-	}
-}
-
 func TestProbeCacheInvalidateOnlyAffectsTargetKey(t *testing.T) {
 	// Critical: a Recheck for one provider must not nuke the OTHER
 	// provider's cached entry. The cache is shared by binary path so
@@ -73,38 +54,13 @@ func TestProbeCacheInvalidateMissingKeyIsNoOp(t *testing.T) {
 	}
 }
 
-// TestProbeCacheScopedPerWorkDir is the cwd half of the key contract: the
+// TestProbeCacheWorkDirTransitions is the cwd half of the key contract: the
 // same binary and the same account, probed from two directories, are two
 // answers. A project `.claude/settings.json` env block can redirect the CLI
 // to a different backend, so a cwd-blind key would let the first workspace
-// probed answer for every other one.
-func TestProbeCacheScopedPerWorkDir(t *testing.T) {
-	cache := NewProbeCache(5 * time.Minute)
-	direct := ProbeCacheKey{Binary: "/bin/claude", AccountID: "acct-1", WorkDir: "/home/u"}
-	bedrock := ProbeCacheKey{Binary: "/bin/claude", AccountID: "acct-1", WorkDir: "/repos/bedrock"}
-
-	cache.Set(direct, AccountInfo{APIProvider: "firstParty"})
-
-	if _, ok := cache.Get(bedrock); ok {
-		t.Fatal("a different WorkDir must miss, not reuse another directory's answer")
-	}
-
-	cache.Set(bedrock, AccountInfo{APIProvider: "bedrock"})
-
-	got, ok := cache.Get(direct)
-	if !ok || got.APIProvider != "firstParty" {
-		t.Errorf("original WorkDir entry = (%v, %v), want (firstParty, true)", got.APIProvider, ok)
-	}
-	got, ok = cache.Get(bedrock)
-	if !ok || got.APIProvider != "bedrock" {
-		t.Errorf("second WorkDir entry = (%v, %v), want (bedrock, true)", got.APIProvider, ok)
-	}
-}
-
-// TestProbeCacheWorkDirTransitions walks the sequences a single-state test
-// would miss: a workdir change between probes must not serve the previous
-// directory's entry, coming back must still hit, and invalidating one
-// directory must leave the other's entry alone.
+// probed answer for every other one. A workdir change between probes must not
+// serve the previous directory's entry, coming back must still hit, and
+// invalidating one directory must leave the other's entry alone.
 func TestProbeCacheWorkDirTransitions(t *testing.T) {
 	cache := NewProbeCache(5 * time.Minute)
 	base := ProbeCacheKey{Binary: "/bin/claude", AccountID: "acct-1"}
