@@ -656,8 +656,13 @@ func TestWorkflowTakeoverInterruptsLiveTurnBeforeSteering(t *testing.T) {
 
 	// An awaited harness send is refused and leaves the live phase running,
 	// with no intervention recorded; the composer send below takes it over.
+	// The refusal is also the answer while the phase runner is still
+	// starting, when a send without waiting is refused too, so it promises no
+	// takeover before the run has started.
 	if _, err := (&harnessHost{app: app}).Send(context.Background(), threadID, "probe", true); !errors.Is(err, errWorkflowRunning) {
 		t.Fatalf("at-rest send to a live phase = %v, want the running-workflow refusal", err)
+	} else if text := err.Error(); !strings.Contains(text, "starting or running") || !strings.Contains(text, "once it has started") {
+		t.Fatalf("at-rest send to a live phase = %q, want a refusal true while the run is starting", text)
 	}
 	requireWorkflowItemState(t, app.store, item.ID, engine.StateRunning, "")
 	if phases, err := app.store.ListWorkItemPhases(item.ID); err != nil {

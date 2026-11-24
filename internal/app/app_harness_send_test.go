@@ -144,7 +144,6 @@ func TestHarnessSendAtRestOnly(t *testing.T) {
 	// lock and the send waits is at or below it; one published after
 	// placement, at the send's "placed" stage, is above it.
 	unlock := sync.OnceFunc(app.threadLocks().Lock(idle.ID))
-	t.Cleanup(unlock)
 	var afterPlacement transport.Event
 	app.sendStageFn = func(threadID, stage string) {
 		if threadID != idle.ID || stage != "placed" {
@@ -160,10 +159,19 @@ func TestHarnessSendAtRestOnly(t *testing.T) {
 		err error
 	}
 	answered := make(chan answer, 1)
+	sent := make(chan struct{})
 	go func() {
+		defer close(sent)
 		got, err := host.Send(context.Background(), idle.ID, "at rest", true)
 		answered <- answer{got, err}
 	}()
+	// Registered after the fixture's cleanups, so it runs before them: the
+	// send is let through and finishes before its sessions, bus and store
+	// are torn down, whichever assertion ends the test.
+	t.Cleanup(func() {
+		unlock()
+		<-sent
+	})
 	waitForThreadLockRefs(t, app.threadLocks(), idle.ID, 2)
 	whileWaiting, err := bus.Emit(eventchan.ProviderTurnCompleted, map[string]any{"threadId": idle.ID, "turnIndex": 0})
 	if err != nil {
