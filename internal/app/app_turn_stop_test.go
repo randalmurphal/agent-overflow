@@ -428,7 +428,7 @@ func (q *queuedRequests) liveTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	q.f.app.sessionManager().put(q.target.ID, session{Provider: string(provider.Claude), Token: q.session, Claude: sess})
 }
 

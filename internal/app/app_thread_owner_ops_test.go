@@ -334,6 +334,16 @@ func TestThreadUpdateNamesAPendingWorkerAndTheSweepDeliversIt(t *testing.T) {
 		t.Fatalf("note = %q", result.Note)
 	}
 	p.peer.asleep.Store(false)
+	// The refused attempt put the archive on the retry ladder; it comes due
+	// now, so the sweep's first pass is the one that delivers it. That the
+	// sweep wakes for one due later is TestTheSweepWakesForAnOwedOperation.
+	owed := p.owed(t)
+	if len(owed) != 1 || !owed[0].Sent || owed[0].NextAt <= time.Now().UnixMilli() {
+		t.Fatalf("owed = %+v, want the archive rescheduled after its refused attempt", owed)
+	}
+	if _, err := p.source.store.RescheduleOwnerOp(owed[0].Token, owed[0].Seq, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
 	// The running sweep, not a test's pass, delivers it.
 	p.source.startThreadRequestSweeps()
 	waitUntil(t, 30*time.Second, func() bool { return archivedThere(t, p, p.worker) })

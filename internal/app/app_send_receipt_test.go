@@ -37,7 +37,7 @@ func installReceiptCaptureSession(t *testing.T, app *App, thread store.Thread) f
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	codex.SetActiveTurnIDForTest(sess, "receipt-turn")
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "receipt-test", Codex: sess})
 	// Registered last: workers finish before the fixture closes the session

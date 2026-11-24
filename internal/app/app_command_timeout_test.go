@@ -76,7 +76,7 @@ func startClaudeTUIRecordingTimeout(t *testing.T, app *App, id string) string {
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		data, err := os.ReadFile(record)

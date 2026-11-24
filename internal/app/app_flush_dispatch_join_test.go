@@ -145,7 +145,7 @@ func TestDispatchFlush_Claude_JoinsDrainIntoOneMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
@@ -378,7 +378,7 @@ func TestDispatchFlush_Claude_JoinFailureBeforeWriteRequeuesEveryMember(t *testi
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
@@ -468,7 +468,7 @@ func TestDispatchFlush_Claude_RedispatchKeepsInheritedSendIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
@@ -807,7 +807,7 @@ func startReviewDispatchOf(t *testing.T, name string, messages ...reviewMessage)
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(d.thread.ID, session{Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now())})
 	dispatchThroughWorker(app, d.thread.ID, items)
 	d.row = d.messageRow(t)

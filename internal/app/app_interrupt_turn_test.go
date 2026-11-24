@@ -197,7 +197,7 @@ func newClaudeTUIInterruptThread(t *testing.T, closed bool) (*App, store.Thread)
 	if err != nil {
 		t.Fatalf("claudetui.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	if closed {
 		if err := sess.Close(); err != nil {
 			t.Fatalf("close TUI session: %v", err)
@@ -453,7 +453,7 @@ func TestInterruptTurnDropsIntentThatWaitedAcrossCodexRevert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "codex-stale-interrupt-token",

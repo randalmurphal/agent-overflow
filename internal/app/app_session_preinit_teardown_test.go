@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -95,16 +96,26 @@ func TestEnsureProvenSessionOwnsTheTeardownTheReaperRaces(t *testing.T) {
 		f.queueForTheStart()
 		f.letTheReaperRunFirst()
 		injected := errors.New("injected provider close failure")
+		var failing atomic.Bool
+		failing.Store(true)
 		f.app.closeProviderSessionFn = func(string) error {
-			// The process is ended here, since the injected close leaves it.
+			// The hook stands in for the provider close, so the process is
+			// ended here.
 			_ = syscall.Kill(f.mockPID(), syscall.SIGKILL)
-			return injected
+			if failing.Load() {
+				return injected
+			}
+			return nil
 		}
 
 		_, err := f.app.ensureProvenSession(t.Context(), f.thread.ID, func() error { return nil })
 		if !errors.Is(err, injected) || !strings.Contains(err.Error(), "No conversation found") {
 			t.Fatalf("proof = %v, want the close failure with the start's outcome", err)
 		}
+		// The injection ends with the proof, so the fixture's stop at cleanup
+		// ends whatever session the queued start opened and reports no
+		// failure.
+		failing.Store(false)
 	})
 }
 

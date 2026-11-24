@@ -86,7 +86,7 @@ func newWorkflowResumeFixture(t *testing.T) *workflowResumeFixture {
 	}
 	t.Cleanup(func() {
 		_, _ = f.runner.Stop(context.Background(), f.key())
-		_ = app.StopSession(f.thread.ID)
+		stopSessionChecked(t, app, f.thread.ID)
 	})
 	return f
 }

@@ -125,7 +125,7 @@ func TestAutoSwitchRefusedClaudeTurnSwitchesAndContinues(t *testing.T) {
 				t.Fatal(err)
 			}
 			rig.start(t)
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "go", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("SendMessage: %v", err)

@@ -61,7 +61,7 @@ func TestAJoinedDispatchMarksOnlyTheAppsMember(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now()),
 	})
@@ -120,7 +120,7 @@ func TestARequeuedJoinedRowIsMarkedByItsParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now()),
 	})
@@ -227,7 +227,7 @@ func TestCodexResendAfterInterruptRebuildsTheWireText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("codex.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	appSess := session{Provider: string(provider.Codex), Token: "tok", Codex: sess, Liveness: newSessionLiveness(time.Now())}
 	app.sessionManager().put(thread.ID, appSess)
 

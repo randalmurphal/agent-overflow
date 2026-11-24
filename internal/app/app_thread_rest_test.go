@@ -316,5 +316,5 @@ func TestAStopRestsWhatTheThreadSpawnedAndOnlyCancelsWhatItSent(t *testing.T) {
 	if _, live := f.app.sessionManager().get(other.ID); !live {
 		t.Fatal("the thread the child only sent to lost its session")
 	}
-	_ = f.app.StopSession(other.ID)
+	stopSessionChecked(t, f.app, other.ID)
 }

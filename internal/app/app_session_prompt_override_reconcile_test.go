@@ -210,7 +210,7 @@ func registerLiveClaudeCaptureSession(t *testing.T, app *App, threadID, workspac
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	select {
 	case <-initSeen:
 	case <-time.After(10 * time.Second):

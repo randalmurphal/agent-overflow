@@ -81,7 +81,7 @@ func TestSendPlanRevisionCommentsSendsDraftsAndMarksSent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
 	updated, err := app.SendPlanRevisionComments(context.Background(), thread.ID, "plan-item", []string{comment.ID})
@@ -183,7 +183,7 @@ func TestSendMessageWithOptionsAppendsDraftPlanComments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
 	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "Please revise.", SendMessageOptions{
@@ -335,7 +335,7 @@ func diffReviewSendThread(t *testing.T, app *App, id string) store.Thread {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 	return thread
 }

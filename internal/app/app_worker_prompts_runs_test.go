@@ -166,7 +166,7 @@ func testWorkerPromptsByRun(t *testing.T, placement string) {
 			if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = app.StopSession(worker.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, worker.ID) })
 			if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, "go", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}

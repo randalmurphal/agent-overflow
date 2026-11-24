@@ -287,14 +287,15 @@ func TestThreadAgentPeerCallsRefuseOtherThreads(t *testing.T) {
 	}
 }
 
-// stalledAgentsPeer is a destination whose agent_rows answer comes after
-// delay, or not at all when delay is zero. calls counts the agent_rows
-// calls it was sent.
+// stalledAgentsPeer is a destination whose agent_rows answer comes once
+// gate closes when it has one, else after delay, or not at all when delay
+// is zero. calls counts the agent_rows calls it was sent.
 type stalledAgentsPeer struct {
 	*App
 	calls    atomic.Int32
 	answered atomic.Int32
 	delay    time.Duration
+	gate     <-chan struct{}
 }
 
 // serveStalledAgentsPeer serves app as a stalledAgentsPeer that never
@@ -306,20 +307,22 @@ func serveStalledAgentsPeer(peer **stalledAgentsPeer) func(*testing.T, *App) *pa
 // serveSlowAgentsPeer serves app as a stalledAgentsPeer answering after
 // delay.
 func serveSlowAgentsPeer(peer **stalledAgentsPeer, delay time.Duration) func(*testing.T, *App) *pairedBackend {
+	return serveHeldAgentsPeer(peer, &stalledAgentsPeer{delay: delay})
+}
+
+// serveGatedAgentsPeer serves app as a stalledAgentsPeer answering once
+// gate closes.
+func serveGatedAgentsPeer(peer **stalledAgentsPeer, gate <-chan struct{}) func(*testing.T, *App) *pairedBackend {
+	return serveHeldAgentsPeer(peer, &stalledAgentsPeer{gate: gate})
+}
+
+func serveHeldAgentsPeer(peer **stalledAgentsPeer, stalled *stalledAgentsPeer) func(*testing.T, *App) *pairedBackend {
 	return func(t *testing.T, app *App) *pairedBackend {
-		stalled := &stalledAgentsPeer{App: app, delay: delay}
+		stalled.App = app
 		if peer != nil {
 			*peer = stalled
 		}
-		return servePairedApp(t, app, func(cfg *transport.Config) {
-			dispatcher := transport.NewDispatcher()
-			if _, err := dispatcher.Register(stalled, transport.RegisterOptions{
-				Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList(),
-			}); err != nil {
-				t.Fatal(err)
-			}
-			cfg.Dispatcher = dispatcher
-		})
+		return serveAppAs(t, app, stalled)
 	}
 }
 
@@ -330,8 +333,14 @@ func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeer
 		if wait == 0 {
 			wait = 20 * time.Second
 		}
+		var elapsed <-chan time.Time
+		if p.gate == nil {
+			elapsed = time.After(wait)
+		}
 		select {
-		case <-time.After(wait):
+		case <-p.gate:
+			defer p.answered.Add(1)
+		case <-elapsed:
 			defer p.answered.Add(1)
 		case <-ctx.Done():
 		}
@@ -756,7 +765,9 @@ func TestThreadAgentPeerBackoffDoublesAndAnAnswerClearsIt(t *testing.T) {
 // the read that follows gets its answer.
 func TestThreadAgentPeerRefreshesStayBounded(t *testing.T) {
 	t.Parallel()
-	pair := newAgentPeerPair(t, serveSlowAgentsPeer(new(*stalledAgentsPeer), 30*time.Millisecond))
+	// The destination holds every answer until all the spawns are queued.
+	queued := make(chan struct{})
+	pair := newAgentPeerPair(t, serveGatedAgentsPeer(nil, queued))
 	a := pair.source
 	frames := recordAgentRowFrames(a)
 	check := func(when string) {
@@ -782,6 +793,7 @@ func TestThreadAgentPeerRefreshesStayBounded(t *testing.T) {
 		a.refreshPairedPeerAgentRows(spawns[i], 0)
 		check(fmt.Sprintf("after %d spawns", i+1))
 	}
+	close(queued)
 	// The first spawns run at once; the oldest still waiting is dropped.
 	dropped := spawns[threadAgentPeerListsPerComputer+1]
 	waitForPeerAnswer(t, a, spawns[0], 10*time.Second)

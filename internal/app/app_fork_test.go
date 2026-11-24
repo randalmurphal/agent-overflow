@@ -231,7 +231,7 @@ func TestForkThreadCodexCutsOutsideTheLiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	defer session.Close()
+	defer closeSessionChecked(t, session)
 	app.sessionManager().put(source.ID, sessionStateForCodex(session))
 
 	forked, err := app.ForkThread(t.Context(), source.ID, nil)

@@ -41,7 +41,7 @@ func newTakeControlFixture(t *testing.T) (*App, string) {
 	if err != nil {
 		t.Fatalf("claudetui.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 
 	app := &App{}
 	app.sessionManager().put(threadID, session{ClaudeTUI: sess})

@@ -773,7 +773,7 @@ func TestE2E_MultiTurnClaude(t *testing.T) {
 		t.Fatalf("turn 1 missing expected summaries: %v", turn1Summaries)
 	}
 
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_InterruptMidTurn: send a message that the mock is going to respond to
@@ -853,7 +853,7 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
 
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_ProviderExitsMidTurn: the mock exits after emitting one line,
@@ -893,7 +893,7 @@ func TestE2E_ProviderExitsMidTurn(t *testing.T) {
 	// one iteration, then the while-read exits on next EOF.
 	// Close stdin by telling StopSession to clean up — that triggers a
 	// session_status disconnected event.
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 
 	// After StopSession the session is gone from the map; but the disconnected
 	// event may be in flight. Drain to verify eventually.
@@ -927,7 +927,7 @@ func TestE2E_ProviderExitsMidTurn(t *testing.T) {
 	if txt.Content != "back" {
 		t.Fatalf("reconnect text = %q", txt.Content)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_ReconnectToExistingSession: Start → Stop → StartSession (resume
@@ -1038,7 +1038,7 @@ func TestE2E_ParseErrorRecovery(t *testing.T) {
 		t.Fatalf("text after garbage = %q", txt.Content)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_SendMessageBeforeSessionStart: a thread created without an
@@ -1085,7 +1085,7 @@ func TestE2E_SendMessageBeforeSessionStart(t *testing.T) {
 	if !sessionExists {
 		t.Fatal("SendMessage should have lazy-started a session")
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_ClaudeSendsAfterOrphanedAdvisorStayOnLiveProcess is the
@@ -1183,7 +1183,7 @@ done
 	if spawns := strings.Count(string(args), "\n"); spawns != 1 {
 		t.Fatalf("claude spawned %d times, want 1 (no restart after the orphaned advisor call):\n%s", spawns, args)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_ToolCallFullCycle: mock emits a tool_use event (via assistant) and
@@ -1246,7 +1246,7 @@ func TestE2E_ToolCallFullCycle(t *testing.T) {
 	if !assistantText {
 		t.Fatalf("assistant text not persisted: %+v", items)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_DiffItemPersistsWithPayload verifies that a diff event persists both
@@ -1363,7 +1363,7 @@ func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
 		t.Fatal("model switch scheduled a restart")
 	}
 
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_ClaudeApprovalRoundTrip: mock emits can_use_tool → backend surfaces
@@ -1422,7 +1422,7 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 		t.Fatalf("resolved approval = %+v, want requestId=req-1 decision=approved", resolved)
 	}
 
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_InterruptCancelsPendingApproval: the CLI abandons an unanswered
@@ -1488,7 +1488,7 @@ func TestE2E_InterruptCancelsPendingApproval(t *testing.T) {
 		t.Fatalf("live state still lists %d approvals after the interrupt", len(live.Interactive.Approvals))
 	}
 
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_StopSessionWithoutStartIsClean: calling StopSession on a thread
@@ -1546,7 +1546,7 @@ func TestE2E_TokenUsagePersists(t *testing.T) {
 	if usage.UsedTokens != 100 {
 		t.Fatalf("usage = %+v, want usedTokens=100", usage)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_ThinkingBlockPersistsAsItem: a thinking block should end up in the
@@ -1625,7 +1625,7 @@ func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
 		t.Fatalf("no text item persisted; items = %+v", items)
 	}
 
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_CommandOutputPersistsToPayload: a command_output heavy event is
@@ -1747,7 +1747,7 @@ func TestE2E_SendMessageTouchesThreadUpdatedAt(t *testing.T) {
 	if after.UpdatedAt <= before.UpdatedAt {
 		t.Fatalf("updated_at not bumped: before=%d after=%d", before.UpdatedAt, after.UpdatedAt)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestE2E_StartSessionUnknownThread: StartSession against a non-existent
@@ -1859,7 +1859,7 @@ func TestE2E_StartSessionTwiceReplacesOldSession(t *testing.T) {
 	if first.Token == second.Token {
 		t.Fatalf("session token should change on restart (both=%q)", first.Token)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // --- Utilities private to this file ---

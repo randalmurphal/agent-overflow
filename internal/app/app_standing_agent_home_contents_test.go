@@ -624,7 +624,7 @@ func TestStandingAgentCompactionReportsAnUnreadableHomeFile(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 	spawnedClaudeArgv(t, argvPath)
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 	live, ok := app.sessionManager().get(thread.ID)
 	if !ok || live.MemoryPlan == nil {
 		t.Fatalf("the live session holds no memory plan: %+v", live)

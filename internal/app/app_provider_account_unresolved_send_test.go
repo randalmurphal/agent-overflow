@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 
 	"github.com/google/uuid"
@@ -63,9 +64,9 @@ while IFS= read -r line; do
     printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-%%s","status":"completed"}}}\n' "$turn"
     continue
   fi
-  printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+%s  printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, accountJSON, providerThread, capture, providerThread, providerThread, providerThread)
+`, accountJSON, providerThread, capture, providerThread, providerThread, providerThread, testutil.MockCodexUnsubscribeShell)
 	path := filepath.Join(t.TempDir(), "codex-turns")
 	mockexec.Write(t, path, script)
 	return path
@@ -251,7 +252,7 @@ func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 			}
 			capture := filepath.Join(t.TempDir(), "turns")
 			setBinary(tc.turns(t, capture))
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("send after the switch = %v, want it sent", err)
 			}
@@ -351,7 +352,7 @@ func TestASendWithNoSavedAccountGoesOutOnALoginThatNamesNobody(t *testing.T) {
 			if err := app.store.CreateThread(thread); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("send = %v, want it sent", err)
@@ -423,7 +424,7 @@ func TestASendOnAnAgyLoginWhoseLookupFailedIsRefusedWithTheFailure(t *testing.T)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString()))
 	if code, _, _ := errorsx.PublicDetails(err); code == "account_login_unresolved" || err == nil ||

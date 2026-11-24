@@ -40,7 +40,7 @@ func TestBootReturnsAnUnconfirmedQueuedMessageToTheComposer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now())})
 
 	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "written, never read", SendMessageOptions{SendID: "send-unread"}); err != nil {

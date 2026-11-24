@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/triage"
 
@@ -80,9 +81,9 @@ while IFS= read -r line; do
         fi
         continue
     fi
-    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+%[5]s    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, codexStopBeforeTurnThread, capturePath, stops, fmt.Sprintf(resolve, codexStopBeforeTurnThread))
+`, codexStopBeforeTurnThread, capturePath, stops, fmt.Sprintf(resolve, codexStopBeforeTurnThread), testutil.MockCodexUnsubscribeShell)
 	path := filepath.Join(t.TempDir(), "codex-stop-before-turn.sh")
 	mockexec.Write(t, path, script)
 	return path
@@ -130,7 +131,7 @@ func TestStopBeforeACodexTurnOpensEndsInOneOutcome(t *testing.T) {
 			if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 			const message = "stop me before I start"
 			// A queued message's row is the one the flush allocated; its

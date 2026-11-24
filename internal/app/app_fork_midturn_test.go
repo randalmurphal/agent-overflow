@@ -88,7 +88,7 @@ func attachLiveClaudeSession(t *testing.T, app *App, threadID, workspace, sessio
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	if got := sess.CanonicalLeafUUID(); got != leaf {
 		t.Fatalf("live session leaf = %q, want %q", got, leaf)
 	}

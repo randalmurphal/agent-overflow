@@ -68,7 +68,7 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					t.Cleanup(func() { _ = entry.Claude.Close() })
+					t.Cleanup(func() { closeSessionChecked(t, entry.Claude) })
 				} else {
 					cfg := codex.ConfigFromOptions(opts)
 					cfg.Reaper = procutiltest.Reaper()
@@ -77,7 +77,7 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					t.Cleanup(func() { _ = entry.Codex.Close() })
+					t.Cleanup(func() { closeSessionChecked(t, entry.Codex) })
 				}
 				app.sessionManager().put(thread.ID, entry)
 				seedBackgroundLaunchRowE2E(t, app.store, thread.ID, "running-job", "Bash", "long job")
@@ -227,7 +227,7 @@ func TestDeferredConfigReconnectRechecksWorkAfterLiveApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: "claude", Token: "busy-token", Claude: sess, LaunchOptions: opts, Liveness: live})
 	restarted := false
 	app.startSessionFn = func(string) error { restarted = true; return nil }

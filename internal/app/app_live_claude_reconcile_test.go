@@ -381,7 +381,7 @@ func TestSettingsSaveReachesTheWireOfASessionThatWasStillStarting(t *testing.T) 
 	if err != nil {
 		t.Fatalf("claude.NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	// Register only once the handshake has landed: the thinking apply is
 	// version-gated, and a session that has not read its own init line yet
 	// would take the restart path for a reason this test is not about.

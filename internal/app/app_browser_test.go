@@ -104,7 +104,7 @@ func TestRefreshLiveBrowserMCPUsesClaudeToggle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put("browser-claude", session{Provider: string(provider.Claude), Token: "browser-toggle", Claude: sess})
 	app.refreshLiveBrowserMCP(false)
 	envelope := readClaudeMcpToggleCapture(t, captureDir, 3*time.Second)
@@ -128,7 +128,7 @@ func TestRefreshLiveBrowserMCPPreservesThreadDisable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put("browser-claude-disabled", session{Provider: string(provider.Claude), Token: "browser-toggle-disabled", Claude: sess})
 
 	app.refreshLiveBrowserMCP(true)
@@ -151,7 +151,7 @@ func TestBrowserSettingsCoalescingKeepsSkippedEnableTransition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put("browser-coalesced", session{Provider: string(provider.Claude), Token: "browser-coalesced", Claude: sess})
 	app.browser.liveEnabled.Store(true)
 
@@ -183,7 +183,7 @@ func TestRefreshLiveBrowserMCPUsesCodexReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put("browser-codex", session{Provider: string(provider.Codex), Token: "browser-reload", Codex: sess})
 	app.refreshLiveBrowserMCP(false)
 	if method := readCodexReloadCapture(t, captureDir, 3*time.Second); method != "config/mcpServer/reload" {

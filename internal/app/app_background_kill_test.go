@@ -55,7 +55,7 @@ func newAgentKillFixture(t *testing.T, providerName, model string) *agentKillFix
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "agent-kill", Claude: sess})
 	return f
 }

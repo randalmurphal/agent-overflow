@@ -159,7 +159,7 @@ func TestConversationRollbackCodexForksAtAnchorAndStopsSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer sess.Close()
+	defer closeSessionChecked(t, sess)
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "active-revert-token",
@@ -428,7 +428,7 @@ func TestConversationRollbackCodexTurnZeroClearsSessionRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer sess.Close()
+	defer closeSessionChecked(t, sess)
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "turn-zero-token",
@@ -905,7 +905,7 @@ func TestConversationRollbackCodexLiveRevertForgetsToolCallLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer sess.Close()
+	defer closeSessionChecked(t, sess)
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "codex-live-cut-token",

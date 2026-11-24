@@ -441,7 +441,7 @@ func TestStartSessionSettlesTranscriptUnderWorkspace(t *testing.T) {
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 	want := filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, workspace), sessionID+".jsonl")
 	if _, err := os.Stat(want); err != nil {
