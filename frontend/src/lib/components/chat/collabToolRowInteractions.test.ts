@@ -49,7 +49,14 @@ describe('<CollabToolRow> immutable spawn and standalone activity', () => {
     });
 
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
-    expect(getByTestId('collab-tool-row').textContent).toContain('Spawned reviewer');
+    const text = getByTestId('collab-tool-row').textContent ?? '';
+    expect(text).toContain('Spawned reviewer');
+    // The legacy meta is carried, not shown: neither its raw values nor the
+    // labels the removed spawn-card renderer made of them ("message sent" for
+    // the interaction, "delivered" for the card state).
+    for (const legacy of ['completed', 'delivered', '1700', 'interacted', 'send_message', 'message sent']) {
+      expect(text, legacy).not.toContain(legacy);
+    }
   });
 
   it('renders a spawn row the same, with no indicator, whatever its stored liveness bit says', async () => {
