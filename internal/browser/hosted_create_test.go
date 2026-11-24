@@ -57,66 +57,37 @@ func TestHostedEngineCreateRespectsCallerCancellation(t *testing.T) {
 	sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
 }
 
-func TestHostedEngineSurfacesACreateFailedReport(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("unused")}, engineEvents{})
-	profile := testProfile(t, engine)
-	answerCreate(t, engine, sink, webview2host.ReportCreateFailed, "WebView2 runtime missing")
-
-	_, err := profile.NewPage(context.Background(), pageHooks{})
-	if err == nil {
-		t.Fatal("a failed create succeeded")
+// A create the launcher answered with anything but a usable page fails
+// with an error naming why, and closes the controller exactly when one may
+// exist on the far side.
+func TestHostedEngineCreateFailureNamesItsCause(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		relayErr string
+		kind     webview2host.ReportKind
+		detail   string
+		want     string
+		ops      []webview2host.Op
+	}{
+		// Nothing was created, so nothing is closed.
+		{"a create-failed report", "unused", webview2host.ReportCreateFailed, "WebView2 runtime missing", "WebView2 runtime missing", []webview2host.Op{webview2host.OpCreate}},
+		{"a close racing the create", "unused", webview2host.ReportClosed, "window closed", string(webview2host.ReportClosed), []webview2host.Op{webview2host.OpCreate}},
+		{"a created report with no target", "unused", webview2host.ReportCreated, "   ", "no CDP target", []webview2host.Op{webview2host.OpCreate, webview2host.OpClose}},
+		// A real controller exists on the far side; leaving it would be a
+		// window the user cannot close.
+		{"an attach that fails", "no browser host tunnel is connected", webview2host.ReportCreated, "TARGET-1", "reach the pane CDP endpoint", []webview2host.Op{webview2host.OpCreate, webview2host.OpClose}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New(tc.relayErr)}, engineEvents{})
+			profile := testProfile(t, engine)
+			answerCreate(t, engine, sink, tc.kind, tc.detail)
+			_, err := profile.NewPage(context.Background(), pageHooks{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("NewPage = %v, want an error naming %q", err, tc.want)
+			}
+			sink.expectOps(t, tc.ops...)
+		})
 	}
-	if !strings.Contains(err.Error(), "WebView2 runtime missing") {
-		t.Fatalf("error %v drops the launcher's reason", err)
-	}
-	// Nothing was created, so nothing is closed.
-	sink.expectOps(t, webview2host.OpCreate)
-}
-
-func TestHostedEngineSurfacesACloseRacingTheCreate(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("unused")}, engineEvents{})
-	profile := testProfile(t, engine)
-	answerCreate(t, engine, sink, webview2host.ReportClosed, "window closed")
-
-	_, err := profile.NewPage(context.Background(), pageHooks{})
-	if err == nil {
-		t.Fatal("a create closed under us succeeded")
-	}
-	if !strings.Contains(err.Error(), string(webview2host.ReportClosed)) {
-		t.Fatalf("error %v does not name the report", err)
-	}
-}
-
-func TestHostedEngineRefusesACreatedReportWithNoTarget(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("unused")}, engineEvents{})
-	profile := testProfile(t, engine)
-	answerCreate(t, engine, sink, webview2host.ReportCreated, "   ")
-
-	_, err := profile.NewPage(context.Background(), pageHooks{})
-	if err == nil {
-		t.Fatal("a created report with no CDP target was accepted")
-	}
-	if !strings.Contains(err.Error(), "no CDP target") {
-		t.Fatalf("error %v does not name the missing target", err)
-	}
-	sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
-}
-
-func TestHostedEngineClosesTheControllerWhenTheAttachFails(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("no browser host tunnel is connected")}, engineEvents{})
-	profile := testProfile(t, engine)
-	answerCreate(t, engine, sink, webview2host.ReportCreated, "TARGET-1")
-
-	_, err := profile.NewPage(context.Background(), pageHooks{})
-	if err == nil {
-		t.Fatal("a create with an unreachable CDP endpoint succeeded")
-	}
-	if !strings.Contains(err.Error(), "reach the pane CDP endpoint") {
-		t.Fatalf("error %v does not name the relay failure", err)
-	}
-	// A real controller exists on the far side; leaving it would be a
-	// window the user cannot close.
-	sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
 }
 
 // A created report naming a target another page has, bound or a popup's,

@@ -159,36 +159,6 @@ func TestFindEndsWhenThePageNavigates(t *testing.T) {
 	f.wantCall(t, "stop")
 }
 
-func TestFindEndsWhenThePageIsHiddenOrReplaced(t *testing.T) {
-	f := newFindFixture(t, "https://example.test/alpha")
-	started := f.find(t, "start", "alpha")
-	f.wantCall(t, "start alpha")
-	other, err := f.manager.NewCompanionPage(t.Context(), f.access, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(other.ID)); err != nil {
-		t.Fatal(err)
-	}
-	ended := f.wantEnded(t, started.Session)
-	f.wantCall(t, "stop")
-
-	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, PageID(f.pageID)); err != nil {
-		t.Fatal(err)
-	}
-	restarted := f.find(t, "start", "alpha")
-	f.wantCall(t, "start alpha")
-	if restarted.Session <= ended.Session {
-		t.Fatalf("restart session %d is not newer than the end %d", restarted.Session, ended.Session)
-	}
-	hide := false
-	if _, err := f.manager.Visibility(t.Context(), f.access, &hide, ""); err != nil {
-		t.Fatal(err)
-	}
-	f.wantEnded(t, restarted.Session)
-	f.wantCall(t, "stop")
-}
-
 func TestFindEndsWhenThePageClosesOrSuspends(t *testing.T) {
 	f := newFindFixture(t, "https://example.test/alpha")
 	started := f.find(t, "start", "alpha")
@@ -339,11 +309,15 @@ func TestFindEndsOnEachTransitionTwice(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFindFixture(t, "https://example.test/alpha")
+			var ended FindState
 			for round := range 2 {
 				started := f.find(t, "start", "alpha")
 				f.wantCall(t, "start alpha")
+				if started.Session <= ended.Session {
+					t.Fatalf("round %d: start session %d is not newer than the end %d", round, started.Session, ended.Session)
+				}
 				tc.away(t, f)
-				f.wantEnded(t, started.Session)
+				ended = f.wantEnded(t, started.Session)
 				if tc.stops {
 					f.wantCall(t, "stop")
 				}

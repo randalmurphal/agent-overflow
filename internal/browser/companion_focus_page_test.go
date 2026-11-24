@@ -94,12 +94,8 @@ func TestADelayedFocusIsWithdrawnByTheUsersNextFocusChoice(t *testing.T) {
 		name   string
 		choose func(t *testing.T, w *focusWorld)
 	}{
-		{"the composer focused", func(t *testing.T, w *focusWorld) {
-			if err := w.m.WithdrawCompanionPageFocus(w.a, w.aMount, 1); err != nil {
-				t.Fatalf("withdraw: %v", err)
-			}
-		}},
-		{"the address bar refocused", func(t *testing.T, w *focusWorld) {
+		// The composer and the address bar both withdraw the same way.
+		{"the composer or address bar focused", func(t *testing.T, w *focusWorld) {
 			if err := w.m.WithdrawCompanionPageFocus(w.a, w.aMount, 1); err != nil {
 				t.Fatalf("withdraw: %v", err)
 			}

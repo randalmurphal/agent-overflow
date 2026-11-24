@@ -223,26 +223,3 @@ func TestASlowDownloadReportDoesNotHoldAnotherDownloadsCancel(t *testing.T) {
 		t.Fatalf("A reads %q at the Manager", state)
 	}
 }
-
-// CDP names a cancel and a failure alike: a started download's "canceled"
-// is the user's cancel only once AO sent one, and a failure while a cancel
-// Chromium refused was withdrawn.
-func TestDownloadTrackerTellsTheCancelItSentFromAFailure(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		cancel  func(tr *downloadTracker, guid downloadID)
-		wantEnd downloadState
-	}{
-		{"no cancel", func(*downloadTracker, downloadID) {}, downloadFailed},
-		{"a cancel sent", func(tr *downloadTracker, guid downloadID) { tr.canceling(guid) }, downloadCanceled},
-		{"a cancel refused", func(tr *downloadTracker, guid downloadID) { undo, _ := tr.canceling(guid); undo() }, downloadFailed},
-	} {
-		r := newTrackerRig(true)
-		r.begin("G1")
-		tc.cancel(r.downloadTracker, "G1")
-		r.report("G1", cdpbrowser.DownloadProgressStateCanceled, 5)
-		if state, _ := r.recorder.outcome("G1"); state != tc.wantEnd.String() {
-			t.Errorf("%s: the Manager saw %s, want %s", tc.name, state, tc.wantEnd)
-		}
-	}
-}

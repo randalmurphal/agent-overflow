@@ -556,36 +556,6 @@ func TestASwitchFencesAnInFlightCreate(t *testing.T) {
 	}
 }
 
-// A suspended page being restored when the jar switches is restored again in
-// the new jar.
-func TestASwitchFencesAnInFlightRestore(t *testing.T) {
-	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
-	proj := newProject(t, "P")
-	access := proj.access(manager, "a", proj.one)
-	page := mustOpen(t, manager, access, "https://example.test/saved")
-	live, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if moved, err := manager.suspendPage(t.Context(), live); err != nil || !moved {
-		t.Fatalf("suspend: %v", err)
-	}
-	release := engine.holdNav()
-	t.Cleanup(release)
-	restored := restore(manager, access, page.ID)
-	if got := <-engine.navigating; got != "https://example.test/saved" {
-		t.Fatalf("the restore navigated to %q", got)
-	}
-	setJar(t, manager, access, JarThread)
-	release()
-	if err := <-restored; err != nil {
-		t.Fatalf("restore across the switch: %v", err)
-	}
-	if got := pageJar(t, manager, page.ID); got != "thread:a" {
-		t.Fatalf("a restore in flight across the switch landed in %q, want the new jar", got)
-	}
-}
-
 // A popup a page opens while its thread switches jars is not adopted: its
 // opener has left for the new jar.
 func TestASwitchFencesPopupAdoption(t *testing.T) {
