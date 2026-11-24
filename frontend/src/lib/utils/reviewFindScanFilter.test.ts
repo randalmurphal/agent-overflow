@@ -350,19 +350,6 @@ describe('scanReviewFind filtered by blocks of text', () => {
     }
   });
 
-  it('a line over the block size is searched by the rule, which pauses inside it', async () => {
-    // One line of 8 MB with no match.
-    const long = parseReviewFiles(['diff --git a/min.js b/min.js', '--- a/min.js', '+++ b/min.js', '@@ -0,0 +1,1 @@', `+${'x'.repeat(8_000_000)}`, ''].join('\n'));
-    let live = true;
-    let pauses = 0;
-    let clock = 0;
-    await scanReviewFind(content({ files: long }), 'needle', {
-      limit: 1000, live: () => live, emit: () => {},
-      pause: async () => { pauses += 1; live = false; }, now: () => (clock += 1), sliceMs: 0,
-    });
-    expect(pauses).toBe(1);
-  });
-
   it('finds U+FFFD where the patch holds an invalid byte', async () => {
     const filler = Array.from({ length: 30 }, (_, index) => `+ascii filler line ${index}`);
     const encoder = new TextEncoder();

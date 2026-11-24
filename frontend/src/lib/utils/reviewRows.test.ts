@@ -695,37 +695,29 @@ describe('buildReviewRows overview row', () => {
     });
   }
 
-  it('leads the list with the overview row, owned by no file', () => {
-    const result = build('overview');
-    expect(result.rows[0]).toEqual({ kind: 'overview', fileIndex: -1, lead: 'overview' });
-    expect(result.rowKeys[0]).toBe(REVIEW_OVERVIEW_ROW_KEY);
-    expect(REVIEW_OVERVIEW_ROW_KEY).toBe('overview');
+  it.each<[ReviewLeadRow, string, number]>([
+    ['overview', REVIEW_OVERVIEW_ROW_KEY, REVIEW_OVERVIEW_ESTIMATE_PX],
+    ['commit', REVIEW_COMMIT_CARD_ROW_KEY, REVIEW_COMMIT_CARD_ESTIMATE_PX],
+  ])('leads the list with the %s row, owned by no file', (lead, key, estimatePx) => {
+    const result = build(lead);
+    expect(result.rows[0]).toEqual({ kind: 'overview', fileIndex: -1, lead });
+    expect(result.rowKeys[0]).toBe(key);
     expect(result.fileOfRow[0]).toBe(-1);
     // Every file's rows shift down by one; the first header follows it.
     expect(result.rows[1]).toEqual({ kind: 'file-header', fileIndex: 0, path: 'src/one.ts' });
     expect(result.firstRowOfFile[0]).toBe(1);
     expect(new Set(result.rowKeys).size).toBe(result.rowKeys.length);
-  });
-
-  it('estimates the overview row as a measured guess, not an exact height', () => {
-    const result = build('overview');
     const estimate = reviewRowEstimate(result, false);
-    expect(estimate.at(0)).toBe(REVIEW_OVERVIEW_ESTIMATE_PX);
+    expect(estimate.at(0)).toBe(estimatePx);
     // Its content (description, conversation) varies, so it is measured.
     expect(estimate.isExact?.(0)).toBe(false);
     expect(estimate.at(1)).toBe(REVIEW_FILE_HEADER_PX);
   });
 
-  it('leads with a commit card under its own key, estimated smaller than the overview', () => {
-    const result = build('commit');
-    expect(result.rows[0]).toEqual({ kind: 'overview', fileIndex: -1, lead: 'commit' });
-    expect(result.rowKeys[0]).toBe(REVIEW_COMMIT_CARD_ROW_KEY);
+  it('gives the commit card its own key, estimated smaller than the overview', () => {
+    expect(REVIEW_OVERVIEW_ROW_KEY).toBe('overview');
     expect(REVIEW_COMMIT_CARD_ROW_KEY).not.toBe(REVIEW_OVERVIEW_ROW_KEY);
-    expect(result.firstRowOfFile[0]).toBe(1);
-    const estimate = reviewRowEstimate(result, false);
-    expect(estimate.at(0)).toBe(REVIEW_COMMIT_CARD_ESTIMATE_PX);
     expect(REVIEW_COMMIT_CARD_ESTIMATE_PX).toBeLessThan(REVIEW_OVERVIEW_ESTIMATE_PX);
-    expect(estimate.isExact?.(0)).toBe(false);
   });
 
   it('starts with the first file header without a lead row', () => {

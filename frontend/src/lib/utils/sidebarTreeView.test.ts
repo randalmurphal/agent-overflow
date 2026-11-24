@@ -147,44 +147,20 @@ describe('previewSidebarThreads', () => {
     expect(result.hiddenNodes).toHaveLength(0);
   });
 
-  it('truncates to the default limit of 8 with the rest hidden', () => {
-    const tree = buildAt(
-      Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
-    );
-    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set() });
-    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
-    expect(result.hiddenNodes).toHaveLength(4);
-  });
-
-  it('floats the active thread back into view when it would otherwise be hidden', () => {
-    const tree = buildAt(
-      Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
-    );
-    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['t11']) });
-    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT + 1);
-    expect(nodeIds(result.visibleNodes).at(-1)).toBe('t11');
-    expect(result.hiddenNodes.map(nodeId)).not.toContain('t11');
-  });
-
-  it('does not double-include the active thread when it is already in head', () => {
-    const tree = buildAt(
-      Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
-    );
-    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['t1']) });
-    expect(result.visibleNodes).toHaveLength(THREAD_PREVIEW_LIMIT);
-    expect(result.visibleNodes.filter((n) => nodeId(n) === 't1')).toHaveLength(1);
-  });
-
-  it('floats every open thread from the tail, in tail order, below the head', () => {
-    const tree = buildAt(
-      Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })),
-    );
+  // Twelve threads, t0 newest; the default limit of 8 shows t0..t7.
+  const head = ['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7'];
+  it.each<[string, string[], string[], string[]]>([
+    ['truncates to the default limit of 8 with the rest hidden', [], head, ['t8', 't9', 't10', 't11']],
+    ['floats the active thread back into view when it would otherwise be hidden', ['t11'], [...head, 't11'], ['t8', 't9', 't10']],
+    ['does not double-include the active thread when it is already in head', ['t1'], head, ['t8', 't9', 't10', 't11']],
     // Set insertion order is deliberately NOT tail order.
-    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['t11', 't2', 't8']) });
-    expect(result.visibleNodes.map(nodeId)).toEqual([
-      't0', 't1', 't2', 't3', 't4', 't5', 't6', 't7', 't8', 't11',
-    ]);
-    expect(result.hiddenNodes.map(nodeId)).toEqual(['t9', 't10']);
+    ['floats every open thread from the tail, in tail order, below the head', ['t11', 't2', 't8'], [...head, 't8', 't11'], ['t9', 't10']],
+  ])('%s', (_name, open, visible, hidden) => {
+    const tree = buildAt(Array.from({ length: 12 }, (_, i) => mkThread(`t${i}`, { updatedAt: 100 - i })));
+    const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(open) });
+    expect(head).toHaveLength(THREAD_PREVIEW_LIMIT);
+    expect(nodeIds(result.visibleNodes)).toEqual(visible);
+    expect(nodeIds(result.hiddenNodes)).toEqual(hidden);
   });
 
   it('counts pinned threads toward the preview limit', () => {

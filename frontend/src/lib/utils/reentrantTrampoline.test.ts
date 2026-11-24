@@ -59,14 +59,15 @@ describe('createReentrantTrampoline', () => {
     expect(await diagnostics.messages()).toEqual([]);
   });
 
-  it('abandons a pass that re-enters on every lap, and reports', async () => {
+  it('abandons a pass that re-enters on every lap, reports, and gives the next entry a full budget', async () => {
     // Unbounded, this is the renderer-freeze signature: one core pegged, no
     // paint, no error, nothing in any log. (Without the cap this test hangs.)
     let runs = 0;
+    let looping = true;
     let loop: (() => void) | null = null;
     const enter = createReentrantTrampoline('probe.loop', () => {
       runs += 1;
-      loop?.();
+      if (looping) loop?.();
     });
     loop = enter;
 
@@ -83,25 +84,11 @@ describe('createReentrantTrampoline', () => {
     expect(records[0].detail).toContain('probe.loop');
     // Console fallback: a remote session cannot persist the record at all.
     expect(diagnostics.warnings().join('\n')).toContain('probe.loop');
-  });
 
-  it('gives the next entry a full budget after an abandoned one', async () => {
     // Per-ENTRY, deliberately: the driver is external (wire events), so a
     // sticky stand-down would disable the pass for the session on the strength
     // of one bad input. Contrast `timelineQuietWork`, whose own timer drives it
     // and whose stand-down therefore must be sticky.
-    let runs = 0;
-    let looping = true;
-    let loop: (() => void) | null = null;
-    const enter = createReentrantTrampoline('probe.loop', () => {
-      runs += 1;
-      if (looping) loop?.();
-    });
-    loop = enter;
-
-    enter();
-    expect(runs).toBe(MAX_TRAMPOLINE_LAPS);
-
     looping = false;
     enter();
 
