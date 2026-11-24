@@ -1,0 +1,220 @@
+package trackerapp
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker"
+)
+
+// heldLookup is a mirror store that holds each read of the mirror's cards
+// naming issue, after it read them, until the test releases it: one at a
+// time in any order (release), or every one held and every later one
+// (releaseAll).
+type heldLookup struct {
+	Store
+	issue   string
+	arrived chan struct{}
+	mu      sync.Mutex
+	free    bool
+	held    []chan struct{}
+}
+
+func newHeldLookup(s Store, issue string) *heldLookup {
+	return &heldLookup{Store: s, issue: issue, arrived: make(chan struct{}, 64)}
+}
+
+func (h *heldLookup) ListMirrorCards(root int64, ids []string) ([]store.MirrorCard, error) {
+	out, err := h.Store.ListMirrorCards(root, ids)
+	if !slices.Contains(ids, h.issue) {
+		return out, err
+	}
+	h.mu.Lock()
+	if h.free {
+		h.mu.Unlock()
+		return out, err
+	}
+	rel := make(chan struct{})
+	h.held = append(h.held, rel)
+	h.mu.Unlock()
+	h.arrived <- struct{}{}
+	<-rel
+	return out, err
+}
+
+// next waits for the next read held.
+func (h *heldLookup) next(t *testing.T, what string) {
+	t.Helper()
+	select {
+	case <-h.arrived:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("%s did not read the mirror", what)
+	}
+}
+
+// release lets the i-th read held, from zero, go on.
+func (h *heldLookup) release(i int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	close(h.held[i])
+	h.held[i] = nil
+}
+
+// releaseAll lets every read held go on, and every later one pass.
+func (h *heldLookup) releaseAll() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.free = true
+	for i, rel := range h.held {
+		if rel != nil {
+			close(rel)
+			h.held[i] = nil
+		}
+	}
+}
+
+// parentFixture is an open ticket of 10001 whose board also holds 10002,
+// with the mirror's reads of 10002's card held (lookups) and the ticket's
+// reads waiting for reads to close.
+type parentFixture struct {
+	*mirrorFixture
+	st      *trackerState
+	sub     TicketSubscription
+	lookups *heldLookup
+	// reads closes when letReads lets the ticket's reads go on.
+	reads    chan struct{}
+	letReads func()
+}
+
+func newParentFixture(t *testing.T) *parentFixture {
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
+	st := &trackerState{cards: map[tracker.IssueID]tracker.Card{}, comments: map[tracker.IssueID]string{},
+		links: map[tracker.IssueID]tracker.IssueID{}, gone: map[tracker.IssueID]bool{}}
+	for i, id := range []string{"10001", "10002"} {
+		r := row(id, 1_799_000_000_000, fmt.Sprintf("a%03d", i))
+		st.cards[r.Card.ID], st.comments[r.Card.ID] = r.Card, "First"
+	}
+	f := &parentFixture{mirrorFixture: m, st: st}
+	f.tick(t)
+	m.p.set(func(p *scripted) { p.detail, p.cards = st.detail, st.cardsRead })
+	f.sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
+	m.events.issueEvents(t, 1)
+	m.settledTickets(t)
+
+	f.lookups = newHeldLookup(m.svc.store, "10002")
+	t.Cleanup(f.lookups.releaseAll)
+	m.svc.store = f.lookups
+	f.reads = make(chan struct{})
+	var once sync.Once
+	f.letReads = func() { once.Do(func() { close(f.reads) }) }
+	t.Cleanup(f.letReads)
+	m.p.set(func(p *scripted) {
+		p.block = func(ctx context.Context, name string) error {
+			if name == "Details" {
+				select {
+				case <-f.reads:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			return nil
+		}
+	})
+	return f
+}
+
+// tick has a board read store the tracker's state.
+func (f *parentFixture) tick(t *testing.T) {
+	t.Helper()
+	f.st.mu.Lock()
+	rows := []tracker.Row{{Card: f.st.cards["10001"], Order: "a000"}, {Card: f.st.cards["10002"], Order: "a001"}}
+	f.st.mu.Unlock()
+	f.tracks(rows)
+	must[Outcome](t)(f.svc.tickDelta(t.Context(), f.scope(), Background))
+}
+
+// titleGoesBackIsTold waits for the ticket's view to catch up with its
+// inputs, then sets the parent's title back to original: the ticket,
+// which shows the parent now, is told, and its subscribers too, unless
+// the view it installed was built from the parent's card before the
+// rename (the same view again).
+func (f *parentFixture) titleGoesBackIsTold(t *testing.T, original string) {
+	t.Helper()
+	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		f.svc.subMu.Lock()
+		behind := tp.behindLocked()
+		f.svc.subMu.Unlock()
+		if !behind {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the ticket's view stayed behind its inputs")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	_, issues, _ := f.events.snapshot()
+	told := len(issues)
+	f.st.edit("10002", func(c *tracker.Card) { c.Title = original })
+	f.tick(t)
+	f.events.waitFor(t, "the ticket told its parent's title went back", func(_ []BoardEvent, is []IssueEvent, _ []error) bool {
+		return slices.ContainsFunc(is[told:], func(e IssueEvent) bool { return e.Issue == "10001" && e.Changed })
+	})
+	if v := f.ticketView(t, f.sub.ID); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Title != original {
+		t.Fatalf("the ticket shows its parent as %+v; want %q", v.Detail, original)
+	}
+}
+
+// An open ticket whose issue was given a parent builds a view that shows
+// the parent's card, read from the mirror; the parent's title changes
+// after that read and before the view and its dependencies are installed,
+// when the funnel judged the change by the ticket's old dependencies. The
+// ticket still comes to show the parent's new title.
+func TestAParentChangedBeforeTheTicketWatchesItShows(t *testing.T) {
+	t.Parallel()
+	f := newParentFixture(t)
+	// The read the reparent makes due waits to the end: only rebuilds,
+	// which read the mirror, build the ticket's view meanwhile.
+	original := f.st.cards["10002"].Title
+	f.st.edit("10001", func(c *tracker.Card) { c.Parent = "10002" })
+	f.tick(t)
+	f.lookups.next(t, "the ticket's rebuild")
+	f.st.edit("10002", func(c *tracker.Card) { c.Title = "Parent renamed" })
+	f.tick(t)
+	_, before, _ := f.events.snapshot()
+	f.lookups.releaseAll()
+	f.events.waitFor(t, "the ticket told of its new parent", func(_ []BoardEvent, is []IssueEvent, _ []error) bool {
+		return slices.ContainsFunc(is[len(before):], func(e IssueEvent) bool { return e.Issue == "10001" && e.Changed })
+	})
+	f.titleGoesBackIsTold(t, original)
+}
+
+// The same, when the view installed is a read's: the rebuild the reparent
+// made due reads the mirror first and is held, the ticket's read then
+// builds its view from the parent's card, the parent's title changes, and
+// the read installs its view before the rebuild ends (which, a read having
+// installed since, installs nothing).
+func TestAParentChangedBeforeATicketsReadInstallsShows(t *testing.T) {
+	t.Parallel()
+	f := newParentFixture(t)
+	original := f.st.cards["10002"].Title
+	f.st.edit("10001", func(c *tracker.Card) { c.Parent = "10002" })
+	f.tick(t)
+	f.lookups.next(t, "the ticket's rebuild")
+	f.letReads()
+	f.lookups.next(t, "the ticket's read")
+	f.st.edit("10002", func(c *tracker.Card) { c.Title = "Parent renamed" })
+	f.tick(t)
+	_, before, _ := f.events.snapshot()
+	f.lookups.release(1)
+	f.events.waitFor(t, "the ticket's read installing its view", func(_ []BoardEvent, is []IssueEvent, _ []error) bool {
+		return slices.ContainsFunc(is[len(before):], func(e IssueEvent) bool { return e.Issue == "10001" && e.Changed })
+	})
+	f.lookups.releaseAll()
+	f.titleGoesBackIsTold(t, original)
+}

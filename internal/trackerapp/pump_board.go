@@ -204,13 +204,8 @@ func (p *boardPump) toldLocked() SyncView {
 // when it is turned off, removed or a Tempo connection. A connection a tick holds is
 // on: any change to it drops the hold. The caller holds opMu.
 func (s *Service) subscribableLocked(id string) (kind string, err error) {
-	if h := s.holds[id]; h != nil {
-		s.mu.Lock()
-		inUse := s.clients[id] == h.c
-		s.mu.Unlock()
-		if inUse {
-			return h.row.Kind, nil
-		}
+	if h := s.heldLocked(id); h != nil {
+		return h.row.Kind, nil
 	}
 	row, err := s.get(id)
 	switch {
@@ -403,26 +398,48 @@ func (s *Service) boardTick(p *boardPump, refresh bool, u Urgency) tickResult {
 }
 
 // boardDue is what a pump's tick runs, from the sync state the tick read:
-// every unit for a board never read; otherwise the delta, the reconcile
-// and the structure when their interval passed since they last ran (the
-// reconcile also while the pump's pass is open in the board's lifetime,
-// the structure also when the store says it is due), and history when an
-// issue is due one. Each unit that reported More is so run again: the
-// delta always, the reconcile by its pass, the history by the issues the
-// store holds due.
+// every unit for a board never read; otherwise the delta, the structure
+// when its interval passed since it last ran or the store says it is due,
+// the reconcile when its interval passed or a reconcile failure is stored,
+// and history when an issue is due one. The reconcile is never due while
+// it waits for a refusal (refusalWaits), except to go on with the pump's
+// pass open in the board's lifetime: a refusal empties the pass and only
+// a reconcile that runs opens one, so an open pass is one a reconcile
+// admitted (at the interval, a refresh, after another failure) began.
+// Each unit that reported More is so run again: the delta always, the
+// reconcile by its pass, the history by the issues the store holds due.
 func (s *Service) boardDue(r *run) BoardDue {
 	st := r.state
 	if !r.stored || st.ReadAt == 0 {
+		// No refusal is stored here: a reconcile runs after the tick's delta
+		// read succeeded and the board's structure is held.
 		return BoardDue{Structure: true, Delta: true, Reconcile: true, History: true}
 	}
-	now := s.now()
-	passed := func(at int64, every time.Duration) bool { return now.Sub(time.UnixMilli(at)) >= every }
+	open, waits := r.pass.openIn(st.Lifetime), s.refusalWaits(st.ReconcileFailure)
+	passed := func(wall int64, every time.Duration) bool {
+		since, known := s.sinceWall(wall)
+		return !known || since >= every
+	}
 	return BoardDue{
-		Structure: r.structureDue || st.StructureReadAt == 0 || passed(st.StructureReadAt, s.cadence.Structure),
+		Structure: r.structureDue || passed(st.StructureWall, s.cadence.Structure),
 		Delta:     true,
-		Reconcile: passed(st.ReconciledAt, s.cadence.Reconcile) || r.pass.openIn(st.Lifetime),
+		Reconcile: open || !waits && (passed(st.ReconciledWall, s.cadence.Reconcile) || st.ReconcileFailure.Kind != ""),
 		History:   st.HistoryDue,
 	}
+}
+
+// refusalWaits reports that the reconcile waits for f, the board's stored
+// reconcile failure: the tracker refused the listing's rule less than a
+// reconcile interval ago by the wall clock, measured from when the
+// refused call returned. A clock behind it ends the wait, as every
+// interval whose start is unknown is due (sinceWall), so a step back lists
+// once and measures from that listing's outcome.
+func (s *Service) refusalWaits(f store.MirrorReconcileFailure) bool {
+	if !f.Refused {
+		return false
+	}
+	since, known := s.sinceWall(f.Wall)
+	return known && since < s.cadence.Reconcile
 }
 
 // sameFailure reports whether a and b are the same failure as a

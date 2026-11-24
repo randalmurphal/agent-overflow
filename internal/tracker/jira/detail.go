@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -19,6 +20,10 @@ type IssueDetail struct {
 	Transitions []Transition
 	// Changelog is every change, oldest first.
 	Changelog Changelog
+	// Date is Jira's clock when it answered the issue read, whose
+	// embedded changelog holds the newest changes; zero when Jira sent
+	// none.
+	Date time.Time
 }
 
 // The issue read IssueDetail makes. The comments are left out (a caller
@@ -77,11 +82,12 @@ func (c *Client) IssueDetail(ctx context.Context, ref string) (IssueDetail, erro
 func (c *Client) issueDetail(ctx context.Context, ref, path string) (IssueDetail, error) {
 	var v detailJSON
 	q := url.Values{"fields": {detailFields}, "expand": {detailExpand}}
-	if err := c.get(ctx, path, q, &v); err != nil {
+	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + path, Query: q}, &v)
+	if err != nil {
 		return IssueDetail{}, fmt.Errorf("jira: detail of %s: %w", ref, err)
 	}
 	is := issueJSON{ID: v.ID, Key: v.Key, Fields: v.Fields}.decode()
-	out := IssueDetail{Issue: is, Edit: screenOf(v.EditMeta.Fields), Transitions: v.Transitions.transitions()}
+	out := IssueDetail{Issue: is, Edit: screenOf(v.EditMeta.Fields), Transitions: v.Transitions.transitions(), Date: answerDate(resp)}
 	log := v.Changelog
 	if log.StartAt != 0 || len(log.Histories) > log.Total {
 		return IssueDetail{}, fmt.Errorf("jira: detail of %s: %w", ref, &AnswerError{

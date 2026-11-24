@@ -48,7 +48,7 @@ func TestFakeScenario(t *testing.T) {
 	if !listing.Complete || !slices.Equal(listing.IDs, []tracker.IssueID{"10101", "10102", "10103"}) {
 		t.Fatalf("listing %+v", listing)
 	}
-	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", listing.IDs))
+	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", listing.IDs, listing.Rule))
 	if len(rows.Rows) != 3 || len(rows.Missing) != 0 {
 		t.Fatalf("rows %+v", rows)
 	}
@@ -61,7 +61,7 @@ func TestFakeScenario(t *testing.T) {
 	}
 	d := s.detail(t, "10101")
 	if d.Card.Key != "WEB-1" || strings.TrimSpace(d.Description) != "first" || len(d.Comments.Comments) != 1 || len(d.History) == 0 || len(d.Moves) == 0 ||
-		d.URL != "https://"+scenarioSite+"/browse/WEB-1" {
+		IssueURL("https://"+scenarioSite, d.Card.Key) != "https://"+scenarioSite+"/browse/WEB-1" {
 		t.Fatalf("detail %+v", d)
 	}
 	if cs := scenarioMust[tracker.CommentPage](t)(s.p.Comments(s.ctx, "10101", "")); len(cs.Comments) != 1 {

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -81,7 +82,12 @@ func heldView(t *testing.T, s *Service, tp *ticketPump) (bool, uint64) {
 	if !ok {
 		return false, 0
 	}
-	return modelView(s, TicketView{Loaded: true, Detail: new(must[DetailView](t)(s.detailView(root, d)))})
+	row := must[store.TrackerConnection](t)(s.viewRow(tp.key.connection))
+	v, _, err := s.detailView(root, row, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return modelView(s, TicketView{Loaded: true, Detail: &v})
 }
 
 func subscriptionModel(t *testing.T, r *rand.Rand) {

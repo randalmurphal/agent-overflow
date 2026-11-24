@@ -227,6 +227,12 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 			t.Fatalf("fetched %+v", r)
 		}
 	},
+	"BulkFetchByID": func(t *testing.T, f *fakeEnv) {
+		r := got(f.c.BulkFetchByID(f.ctx, []string{"10101", "10102", "99999"}, "summary")).must(t)
+		if len(r.Issues) != 2 || r.Complete {
+			t.Fatalf("fetched %+v", r)
+		}
+	},
 	"MatchJQL": func(t *testing.T, f *fakeEnv) {
 		// The board's filter is its project's; the epic and the other
 		// project's request are not on the scrum board's terms, an ID that
@@ -389,11 +395,6 @@ var boardCases = map[string]func(t *testing.T, f *fakeEnv){
 	"Sprints": func(t *testing.T, f *fakeEnv) {
 		if l := got(f.c.Sprints(f.ctx, SprintQuery{Board: 1, States: []SprintState{SprintActive}})).must(t); len(l.Sprints) != 1 {
 			t.Fatalf("sprints %+v", l)
-		}
-	},
-	"Sprint": func(t *testing.T, f *fakeEnv) {
-		if s := got(f.c.Sprint(f.ctx, 1)).must(t); s.Name != "Sprint 1" {
-			t.Fatalf("sprint %+v", s)
 		}
 	},
 	"CreateSprint": func(t *testing.T, f *fakeEnv) {

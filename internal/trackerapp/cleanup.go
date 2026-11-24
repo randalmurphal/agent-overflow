@@ -1,6 +1,9 @@
 package trackerapp
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // A mirror ends in two steps. Turning a connection off or removing it
 // detaches the mirror's root under opMu, one statement: from then on no
@@ -18,6 +21,8 @@ import "fmt"
 // runs after a turn off or a removal (cleanupAfter) and from the linked
 // loop once StartLinkedSync armed it; the app calls neither at start yet.
 // With nothing pending it is one statement. The store serializes calls.
+// Stop ends a cleanup in flight before its next transaction, which then
+// returns ErrStopped; the next cleanup finishes what it left.
 func (s *Service) FinishMirrorCleanup() error {
 	if err := s.enter(); err != nil {
 		return err
@@ -27,7 +32,11 @@ func (s *Service) FinishMirrorCleanup() error {
 }
 
 func (s *Service) clean() error {
-	if err := s.store.FinishMirrorCleanup(nil); err != nil {
+	err := s.store.FinishMirrorCleanup(s.halting, nil)
+	if err != nil && s.halting.Err() != nil {
+		return errors.Join(ErrStopped, err)
+	}
+	if err != nil {
 		return fmt.Errorf("trackerapp: finish the tracker mirror cleanup: %w", err)
 	}
 	return nil
@@ -40,7 +49,7 @@ func (s *Service) cleanupAfter(what string) {
 		return
 	}
 	defer s.leave()
-	if err := s.clean(); err != nil {
+	if err := s.clean(); err != nil && !errors.Is(err, ErrStopped) {
 		s.logf("trackerapp: after %s: %v; the next cleanup retries", what, err)
 	}
 }

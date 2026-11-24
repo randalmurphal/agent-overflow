@@ -123,11 +123,13 @@ func worklogOf(m store.MirrorWorklog) (tracker.Worklog, error) {
 	}, nil
 }
 
-// detailBlob is an issue's whole detail. The detail is encoded as the
-// neutral type is, so TestDetailBlobShape pins that type's shape: a
-// change to it bumps detailBlobVersion, which makes every stored detail a
-// miss.
-type detailBlob struct {
+// bodyBlob is a ticket's body: its detail without what the issue record
+// holds (the card, which every read of the issue shares) and without what
+// a read derives (HistoryTo and StatusChanged, which the status evidence
+// took: statusEvidence). The detail is encoded as the neutral type is, so
+// TestBodyBlobShape pins that type's shape: a change to it bumps
+// bodyBlobVersion, which makes every stored body a miss.
+type bodyBlob struct {
 	V      int            `json:"v"`
 	Detail tracker.Detail `json:"detail"`
 }
@@ -157,16 +159,39 @@ func boundHistory(d *tracker.Detail) {
 	}
 }
 
-// mirrorDetail is d's blob as the store holds it.
-func mirrorDetail(d tracker.Detail) ([]byte, error) {
-	return encodeBlob("detail", detailBlob{V: detailBlobVersion, Detail: d})
+// mirrorBody is d's body as the store holds it (bodyBlob). A body read
+// again with nothing changed is the same bytes, whenever it was read and
+// whatever its card says.
+func mirrorBody(d tracker.Detail) ([]byte, error) {
+	d.Card, d.HistoryTo, d.StatusChanged = tracker.Card{}, time.Time{}, tracker.StatusChange{}
+	return encodeBlob("body", bodyBlob{V: bodyBlobVersion, Detail: d})
 }
 
-// detailOf is the detail m holds; ok is false when its blob is a miss.
-func detailOf(m store.MirrorDetail) (tracker.Detail, bool) {
-	var blob detailBlob
-	if !decodeBlob(m.Data, detailBlobVersion, &blob, &blob.V) || string(blob.Detail.Card.ID) != m.IssueID {
-		return tracker.Detail{}, false
+// bodyOf is the ticket b holds, shown with the record's card it was read
+// with; ok is false when its blob is a miss.
+func bodyOf(b store.MirrorBody) (ticketDoc, bool) {
+	var blob bodyBlob
+	if !decodeBlob(b.Data, bodyBlobVersion, &blob, &blob.V) || b.Card.IssueID != b.IssueID {
+		return ticketDoc{}, false
 	}
-	return blob.Detail, true
+	blob.Detail.Card, _ = cardOf(b.Card)
+	return ticketDoc{d: blob.Detail, version: b.UpdatedAt}, true
+}
+
+// statusEvidence is what d, read from a tracker whose history may lack a
+// change for settle after it, tells of when its status began
+// (store.MirrorStatusSince), taken before boundHistory moves HistoryFrom:
+// final when its history is final through the card's update (HistoryTo,
+// the tracker's clock less its settle margin, at or after Card.Updated),
+// complete when it starts at the creation (HistoryFrom zero; Linear folds
+// its opening interval, so it never is), with the latest status change it
+// holds.
+func statusEvidence(d tracker.Detail, settle time.Duration) store.MirrorStatusEvidence {
+	c := d.Card
+	return store.MirrorStatusEvidence{
+		Status: string(c.Status), CreatedAt: millis(c.Created), UpdatedAt: millis(c.Updated),
+		LatestTo: string(d.StatusChanged.To), LatestAt: millis(d.StatusChanged.At),
+		Complete: d.HistoryFrom.IsZero(), Final: !d.HistoryTo.IsZero() && !d.HistoryTo.Before(c.Updated),
+		Settle: settle.Milliseconds(),
+	}
 }

@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -43,7 +44,7 @@ func (m *mirrorFixture) sweep(t *testing.T, threadID string) {
 	if _, err := m.st.ClearThreadTicket(threadID); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.st.FinishMirrorCleanup(nil); err != nil {
+	if err := m.st.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if after := m.sync("").Sweep; after == before {
@@ -108,15 +109,16 @@ func TestDetailReadsAgainAfterASweep(t *testing.T) {
 	if err != nil || reads != 2 || v.Card.ID != "10005" {
 		t.Fatalf("detail %+v after %d reads, %v", v.Card, reads, err)
 	}
-	if d, ok, err := m.st.GetMirrorDetail(m.root(), "10005"); err != nil || !ok || len(d.Data) == 0 {
+	if d, ok, err := m.st.GetMirrorBody(m.root(), "10005"); err != nil || !ok || len(d.Data) == 0 {
 		t.Fatalf("stored detail %+v, %v, %v", d, ok, err)
 	}
 }
 
 // A detail check whose card write a sweep overtook reads the card again
-// once; the stored detail, read from the mirror before the sweep, is not
-// the document of the issue's lifetime now (store.ConfirmMirrorDetail),
-// so the detail is read again and stored.
+// once. The sweep removed another issue: the ticket write's receipt finds
+// the body the check names still held (a sweep of this issue would have
+// cleared its record), so the body is confirmed with no detail read and
+// records the opening.
 func TestADetailCheckReadsItsCardAgainAfterASweep(t *testing.T) {
 	t.Parallel()
 	m, _ := sweepFixture(t)
@@ -133,11 +135,11 @@ func TestADetailCheckReadsItsCardAgainAfterASweep(t *testing.T) {
 	})
 	before, _, _ := m.storedDetail(t, "10005")
 	v, _ := m.openDetail(t, "10005")
-	if reads != 2 || v.Card.ID != "10005" || m.p.count("Details") != 2 {
+	if reads != 2 || v.Card.ID != "10005" || m.p.count("Details") != 1 {
 		t.Fatalf("detail %+v after %d card reads, %d detail reads", v.Card, reads, m.p.count("Details"))
 	}
-	if after, _, ok := m.storedDetail(t, "10005"); !ok || after.ReadAt < before.ReadAt || after.OpenedAt < after.ReadAt {
-		t.Fatalf("the detail read again: stored %v, read %d (was %d), opened %d", ok, after.ReadAt, before.ReadAt, after.OpenedAt)
+	if after, _, ok := m.storedDetail(t, "10005"); !ok || after.ReadAt != before.ReadAt || after.OpenedAt <= before.OpenedAt {
+		t.Fatalf("the confirmed body: stored %v, read %d (was %d), opened %d (was %d)", ok, after.ReadAt, before.ReadAt, after.OpenedAt, before.OpenedAt)
 	}
 }
 

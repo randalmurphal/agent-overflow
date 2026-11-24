@@ -85,7 +85,7 @@ func tickOK(t *testing.T, s *Service, scope Scope, due BoardDue) Outcome {
 	return out
 }
 
-func (s *fakeScenario) costs(t *testing.T, conn Connection, scope Scope, edit func(), one tracker.IssueID, pins map[string]int) {
+func (s *fakeScenario) costs(t *testing.T, conn Connection, scope Scope, edit func(), one tracker.IssueID, gone func(), pins map[string]int) {
 	t.Helper()
 	pin := func(name string) int {
 		n, ok := pins[name]
@@ -127,6 +127,37 @@ func (s *fakeScenario) costs(t *testing.T, conn Connection, scope Scope, edit fu
 			must[SectionPage](t)(s.svc.SectionRows(scope, Section{Kind: SectionColumn, Column: 1}, nil))
 		}},
 	})
+	// An issue leaves the board: the listing leaves it out, and the
+	// reconcile reads it by ID, whose answer removes its row. The listing
+	// removes no row on its own word, so this costs the listing and one
+	// read by ID per batch of the rows it leaves out (Jira's adds the
+	// jql/match that confirms an issue the read did not return).
+	gone()
+	s.measure(t, []unitCost{
+		{"reconcile, one row gone", pin("reconcile gone"), func(t *testing.T) {
+			if out := tickOK(t, s.svc, scope, BoardDue{Reconcile: true}); len(out.Changes().Removed) != 1 {
+				t.Fatalf("the reconcile removed %v; want the one row gone", out.Changes().Removed)
+			}
+		}},
+	})
+}
+
+// deleteIssue deletes issue from the fake trackers, the tokens and keys
+// the scenario wrote put back.
+func (s *fakeScenario) deleteIssue(t *testing.T, issue string) {
+	t.Helper()
+	world := s.e.Snapshot()
+	for i := range world.Jira {
+		world.Jira[i].Token = "fake-jira-token-1"
+		world.Jira[i].Issues = slices.DeleteFunc(world.Jira[i].Issues, func(is trackerfake.JiraIssue) bool { return is.ID == issue })
+	}
+	for i := range world.Linear {
+		world.Linear[i].APIKey = "lin_api_fake00001"
+		world.Linear[i].Issues = slices.DeleteFunc(world.Linear[i].Issues, func(is trackerfake.LinearIssue) bool { return is.ID == issue })
+	}
+	if err := s.e.Seed(world); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // detailCosts measures the opens of one issue's detail on scope's board,
@@ -226,9 +257,9 @@ func TestFakeJiraRequestCosts(t *testing.T) {
 	edit := func() {
 		applied(t, "edit", s.provider(conn.ID).Edit(t.Context(), tracker.EditInput{Issue: "10102", Fields: []tracker.FieldEdit{{Field: tracker.FieldTitle, Value: tracker.TypedValues("Second task, renamed")}}}))
 	}
-	s.costs(t, conn, scope, edit, "10102", map[string]int{
+	s.costs(t, conn, scope, edit, "10102", func() { s.deleteIssue(t, "10103") }, map[string]int{
 		"structure": 3, "structure again": 3, "reconcile missing": 3, "delta first": 1, "history batch": 2,
-		"delta none": 1, "reconcile held": 1, "delta one": 1, "history one": 2,
+		"delta none": 1, "reconcile held": 1, "delta one": 1, "history one": 2, "reconcile gone": 3,
 	})
 	// Jira's update time moves with its detail: a check is one card read
 	// (an issue bulk fetch, the linked issues' cards in it), and a moved
@@ -236,8 +267,8 @@ func TestFakeJiraRequestCosts(t *testing.T) {
 	// mirror card already newer, the age bound and a refresh read the
 	// detail with no check.
 	s.detailCosts(t, conn, scope, "10102", "10000", "10002", "10000", map[string][2]int{
-		"detail, none stored": {2, 5}, "detail, verified unchanged": {1, 6},
-		"detail, the mirror's copy": {0, 5}, "detail, verified unchanged with 3 links": {1, 6},
+		"detail, none stored": {2, 5}, "detail, verified unchanged": {1, 5},
+		"detail, the mirror's copy": {0, 5}, "detail, verified unchanged with 3 links": {1, 5},
 		"detail, after a comment": {3, 6}, "detail, the mirror already newer": {2, 5},
 		"detail, older than the age bound": {2, 5}, "detail, forced refresh": {2, 4},
 	})
@@ -255,9 +286,9 @@ func TestFakeLinearRequestCosts(t *testing.T) {
 	edit := func() {
 		applied(t, "edit", s.provider(conn.ID).Edit(t.Context(), tracker.EditInput{Issue: tracker.IssueID(lid(61)), Fields: []tracker.FieldEdit{{Field: tracker.FieldTitle, Value: tracker.TypedValues("Add search, renamed")}}}))
 	}
-	s.costs(t, conn, scope, edit, tracker.IssueID(lid(61)), map[string]int{
+	s.costs(t, conn, scope, edit, tracker.IssueID(lid(61)), func() { s.deleteIssue(t, lid(62)) }, map[string]int{
 		"structure": 2, "structure again": 1, "reconcile missing": 3, "delta first": 1, "history batch": 1,
-		"delta none": 1, "reconcile held": 2, "delta one": 1, "history one": 1,
+		"delta none": 1, "reconcile held": 2, "delta one": 1, "history one": 1, "reconcile gone": 3,
 	})
 	// Linear's update time does not move with a comment: every open reads
 	// the detail, in one request, and reads no stored detail first.

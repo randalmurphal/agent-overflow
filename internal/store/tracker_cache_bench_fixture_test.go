@@ -62,7 +62,7 @@ func benchRow(board, i int, updated int64) MirrorRow {
 
 func benchStructure(board int) MirrorStructure {
 	st := MirrorStructure{Board: MirrorBoard{ID: benchBoardID(board), ProjectID: "100", Name: "WEB board " + benchBoardID(board),
-		PlansSprints: true, EstimateUnit: MirrorEstimatePoints, Data: []byte(`{"choices":[1,2,3,5,8]}`)}, ReadAt: 1}
+		PlansSprints: true, EstimateUnit: MirrorEstimatePoints, Data: []byte(`{"choices":[1,2,3,5,8]}`)}, ReadAt: mirrorReadAt(1)}
 	for c := range 5 {
 		st.Columns = append(st.Columns, MirrorColumn{Name: fmt.Sprint("Column ", c), Statuses: []string{strconv.Itoa(1 + c)}})
 		st.Catalog.Statuses = append(st.Catalog.Statuses, MirrorStatus{ID: strconv.Itoa(1 + c), Name: fmt.Sprint("Status ", c), Group: 1 + c})
@@ -135,7 +135,7 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 			rows = append(rows, benchRow(board, i, 1000))
 		}
 		for page := range slices.Chunk(rows, 100) {
-			if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: benchBoardID(board), Rows: page, ReadAt: 1}), []byte("cursor")); err != nil {
+			if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: benchBoardID(board), Rows: page, ReadAt: mirrorReadAt(1)}), []byte("cursor")); err != nil {
 				return err
 			}
 		}
@@ -144,7 +144,7 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 			for i := first; i < min(first+mirrorHistoryBatch, size.issues); i++ {
 				batch = append(batch, benchHistory(benchIssueID(board, i), 100, benchChanges))
 			}
-			if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch), MirrorCatalog{}, 0); err != nil {
+			if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch), MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 				return err
 			}
 		}
@@ -158,7 +158,7 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 			IssueKey: "WEB-" + id, Origin: TicketOriginManual, LinkedAt: 10}); err != nil {
 			return err
 		}
-		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{benchCard(id, 1000, 0, i)}, MirrorCatalog{}, 1); err != nil {
+		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{benchCard(id, 1000, 0, i)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {
 			return err
 		}
 	}
@@ -169,7 +169,7 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 			logs = append(logs, MirrorWorklog{ID: fmt.Sprintf("w%02d%03d", d, w), IssueID: benchIssueID(0, w), AuthorID: "acc-user1", Day: day,
 				SpentSeconds: 1800, Description: "Review and fix the login flow", UpdatedAt: 5})
 		}
-		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", day, day, 1, logs); err != nil {
+		if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", day, day, mirrorReadAt(1), logs); err != nil {
 			return err
 		}
 	}
@@ -271,5 +271,5 @@ func benchApplied(got MirrorChanges, err error, cards, rows int) error {
 }
 
 func benchPage(board int, rows []MirrorRow) MirrorRowPage {
-	return MirrorRowPage{BoardID: benchBoardID(board), Rows: rows, ReadAt: 1}
+	return MirrorRowPage{BoardID: benchBoardID(board), Rows: rows, ReadAt: mirrorReadAt(1)}
 }

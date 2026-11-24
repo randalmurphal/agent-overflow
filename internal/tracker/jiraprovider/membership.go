@@ -202,7 +202,7 @@ func (e *unjudgedError) Error() string {
 // *unjudgedError, never reading as no issue held: the caller would take
 // the list's miss for an issue gone from the board. A failed match or
 // read fails the call.
-func (p *Provider) confirmMissing(ctx context.Context, b board, s site, ids []tracker.IssueID, cat *catalog) ([]tracker.Row, error) {
+func (p *Provider) confirmMissing(ctx context.Context, b board, s site, ids []tracker.IssueID, rule tracker.Eligibility, cat *catalog) ([]tracker.Row, error) {
 	jql, err := membershipJQL(b.cfg)
 	switch {
 	case err != nil:
@@ -216,9 +216,9 @@ func (p *Provider) confirmMissing(ctx context.Context, b board, s site, ids []tr
 		for i, id := range chunk {
 			refs[i] = string(id)
 		}
-		m, err := p.jira.MatchJQL(ctx, refs, []string{jql})
+		m, err := p.jira.MatchJQL(ctx, refs, []string{andRule(jql, rule)})
 		if err != nil {
-			return nil, fmt.Errorf("confirm %d issues the list left out: %w", len(chunk), err)
+			return nil, fmt.Errorf("confirm %d issues the list left out: %w", len(chunk), refusedRule(err, rule))
 		}
 		if len(m[0].Errors) > 0 {
 			return nil, &unjudgedError{board: b.cfg.BoardID, why: "Jira refused its membership query: " + m[0].Errors[0]}
@@ -255,20 +255,23 @@ func isUnjudged(err error) (board int64, ok bool) {
 	return e.board, true
 }
 
-// issuesByID bulk-fetches ids with fields: the issues Jira returned of
-// those asked. One Jira says it could not read fails the call, since it
-// may exist.
+// issuesByID bulk-fetches ids with fields (jira.BulkFetchByID): the
+// issues Jira returned, each one asked, once. An answer holding an issue
+// with no ID, one not asked or one twice is malformed and fails the call,
+// so no caller reads an issue asked as absent from it; one Jira says it
+// could not read fails the call, since it may exist. It is the bulk read
+// of every caller that asks by ID.
 func (p *Provider) issuesByID(ctx context.Context, ids []tracker.IssueID, fields []string) ([]*jira.Issue, error) {
 	refs := make([]string, len(ids))
 	for i, id := range ids {
 		refs[i] = string(id)
 	}
-	res, err := p.jira.BulkFetch(ctx, refs, fields...)
+	res, err := p.jira.BulkFetchByID(ctx, refs, fields...)
 	if err != nil {
 		return nil, err
 	}
 	if len(res.Failed) > 0 {
 		return nil, fmt.Errorf("jiraprovider: Jira could not read issue %s: %s", res.Failed[0].ID, res.Failed[0].Message)
 	}
-	return slices.DeleteFunc(res.Issues, func(is *jira.Issue) bool { return !slices.Contains(ids, tracker.IssueID(is.ID)) }), nil
+	return res.Issues, nil
 }

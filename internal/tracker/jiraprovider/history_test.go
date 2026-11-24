@@ -79,7 +79,7 @@ func TestHistory(t *testing.T) {
 	// 10002 has no changes; 10003 is not visible.
 	f.On("POST", bulkFetchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		jiratest.WantJSON(t, b, `{"issueIdsOrKeys":["10002","10003"],"fields":["status"]}`)
-		jiratest.Reply(200, page("", issue("10002", "WEB-2", "2026-11-01T09:00:00.000+0000", nil)))(w, r, b)
+		jiratest.Reply(200, bulk(issue("10002", "WEB-2", "2026-11-01T09:00:00.000+0000", nil)))(w, r, b)
 	})
 	h, err := p.History(t.Context(), tracker.HistoryQuery{Issues: []tracker.IssueID{"10001", "10002", "10003", "10001"}, Boards: []tracker.BoardID{"3", "4"}})
 	if err != nil {

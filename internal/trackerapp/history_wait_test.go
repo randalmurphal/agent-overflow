@@ -265,6 +265,22 @@ func TestFakeHistoryIsReadTwicePerChange(t *testing.T) {
 // in front of the fakes, so the clients learn no tracker time.
 func (s *fakeScenario) withoutDates(t *testing.T) {
 	t.Helper()
+	s.proxied(t, func(rp *httputil.ReverseProxy) http.Handler {
+		rp.ModifyResponse = func(r *http.Response) error {
+			r.Header.Del("Date")
+			return nil
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header()["Date"] = nil // keeps net/http from adding the wall clock's
+			rp.ServeHTTP(w, r)
+		})
+	})
+}
+
+// proxied puts a proxy in front of each fake origin, serving what handler
+// makes of the reverse proxy to that origin.
+func (s *fakeScenario) proxied(t *testing.T, handler func(*httputil.ReverseProxy) http.Handler) {
+	t.Helper()
 	origin := s.origin
 	proxies := map[string]string{}
 	s.origin = func(kind, site string) (string, error) {
@@ -279,15 +295,7 @@ func (s *fakeScenario) withoutDates(t *testing.T) {
 		if err != nil {
 			return "", err
 		}
-		rp := httputil.NewSingleHostReverseProxy(u)
-		rp.ModifyResponse = func(r *http.Response) error {
-			r.Header.Del("Date")
-			return nil
-		}
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header()["Date"] = nil // keeps net/http from adding the wall clock's
-			rp.ServeHTTP(w, r)
-		}))
+		srv := httptest.NewServer(handler(httputil.NewSingleHostReverseProxy(u)))
 		t.Cleanup(srv.Close)
 		proxies[target] = srv.URL
 		return srv.URL, nil

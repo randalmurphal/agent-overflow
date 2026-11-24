@@ -28,7 +28,7 @@ func (c *boardCounts) GetMirrorSync(root int64, board string, now int64) (store.
 	return c.Store.GetMirrorSync(root, board, now)
 }
 
-func (c *boardCounts) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (bool, error) {
+func (c *boardCounts) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (store.MirrorSyncOutcome, bool, error) {
 	defer func() {
 		c.mu.Lock()
 		c.records[board]++
@@ -275,22 +275,31 @@ func TestAChangedCardWakesTheOpenTicket(t *testing.T) {
 
 // On a tracker whose update time does not move with a comment, an open
 // ticket picks a new comment up at its next round with no card change:
-// the mirror's copy for an issue it keeps, the view the pump holds for one
-// it does not. The test runs each round itself.
+// the mirror's copy for an issue it keeps, by its board or for the ticket
+// alone, and the view the pump holds for one the mirror does not keep. The test
+// runs each round itself.
 func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 	t.Parallel()
-	for _, kept := range []bool{true, false} {
-		t.Run(map[bool]string{true: "kept", false: "not kept"}[kept], func(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		issue         tracker.IssueID
+		kept, onBoard bool
+	}{
+		{"kept by its board", "10001", true, true},
+		{"kept for the ticket", "20001", true, false},
+		{"not kept", "20001", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
-			issue := tracker.IssueID("10001")
-			if !kept {
-				issue = "20001"
-			}
+			issue, kept := tc.issue, tc.kept
 			m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
-			if kept {
+			if tc.onBoard {
 				m.subscribe(t, testBoard)
 				m.events.boardEvents(t, 1)
+			}
+			if !kept {
+				m.loseKeeps()
 			}
 			var mu sync.Mutex
 			comments := []tracker.Comment{{ID: "1", Author: "acc-user1", Body: "First", Created: time.UnixMilli(1_799_000_000_000)}}
@@ -450,6 +459,7 @@ func TestStopJoinsPumpsAndLoop(t *testing.T) {
 			return tracker.Detail{Card: card(string(id), 1)}, nil
 		}
 	})
+	answerCardsFromDetails(m.p)
 	m.subscribe(t, testBoard)
 	m.subscribe(t, "2")
 	if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001"); err != nil {

@@ -35,11 +35,10 @@ type loopState struct {
 // unattended-work boot step, which does not call it yet. The loop starts
 // now when a Jira or Linear connection is on, and from then on with the
 // first one turned on or added, and it stops with the last one turned off
-// or removed. Each call
-// reads the connections and starts or stops the loop to match. Its cost
-// with no connection on is that one read. When the read fails, the loop
-// runs (followLoopLocked) and the error is returned. A loop it stops has
-// exited when it returns.
+// or removed. Each call reads the connections and starts or stops the
+// loop to match. Its cost with no connection on is that one read. When
+// the read fails, the loop runs (followLoopLocked) and the error is
+// returned. A loop it stops has exited when it returns.
 func (s *Service) StartLinkedSync() error {
 	if err := s.enter(); err != nil {
 		return err

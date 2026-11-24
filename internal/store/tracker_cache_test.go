@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -41,7 +42,7 @@ func TestGetOrCreateMirrorRoot(t *testing.T) {
 	if detached, err := s.DetachMirror(jira.ID); err != nil || !detached {
 		t.Fatalf("detach = %v, %v", detached, err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if again, _, err := s.GetOrCreateMirrorRoot(jira.ID); err != nil || again <= root {
@@ -96,7 +97,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 	}
 
 	pauses := 0
-	if err := s.FinishMirrorCleanup(func() { pauses++ }); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), func() { pauses++ }); err != nil {
 		t.Fatal(err)
 	}
 	if most, total := recorder.mostDeletedInATransaction(); most > clearMirrorChunk || total != mirrorRowTotal(before) {
@@ -119,7 +120,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 // board.
 func TestMirrorDrainCoversEveryTable(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerMigrationVersion)
+	db := migrateThrough(t, trackerMirrorMigrationVersion)
 	tables, err := queryIDs(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'tracker\_cache\_%' ESCAPE '\'
 		AND name <> 'tracker_cache_roots' ORDER BY name`)
 	if err != nil {
@@ -173,63 +174,71 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"UpsertMirrorCards": func(root int64) error {
-			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 6)}, MirrorCatalog{}, 1)
+			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 6)}, MirrorCatalog{}, mirrorReadOf(root, 1))
 			return err
 		},
 		"ReconcileMirrorBoard": func(root int64) error {
-			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, 1, 1)
+			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, mirrorReadOf(root, 1))
 			return err
 		},
 		"ReplaceMirrorHistories": func(root int64) error {
-			_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10009"}}), MirrorCatalog{}, 0)
+			_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10009"}}), MirrorCatalog{}, nextMirrorRead(s, root))
 			return err
 		},
 		"ReplaceMirrorHistories staged": func(root int64) error {
-			_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", clearMirrorChunk+100)}), MirrorCatalog{}, 0)
+			_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", clearMirrorChunk+100)}), MirrorCatalog{}, nextMirrorRead(s, root))
 			return err
 		},
 		"UpsertMirrorCards regroup": func(root int64) error {
-			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{{ID: "1", Name: "To Do", Group: MirrorGroupDone}}}, 2)
+			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{{ID: "1", Name: "To Do", Group: MirrorGroupDone}}}, mirrorReadOf(root, 2))
 			return err
 		},
-		"StoreMirrorDetails": func(root int64) error {
-			_, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{{IssueID: "10001", Data: []byte(`{"v":2}`)}, {IssueID: "10002", Data: []byte(`{}`)}}, 9, 9)
+		"StoreMirrorTickets": func(root int64) error {
+			_, err := s.StoreMirrorTickets(root, currentSweep(s, root), []MirrorTicket{
+				{Card: webCard("10001", 5), Body: []byte(`{"v":2}`)}, {Card: webCard("10002", 5), Body: []byte(`{}`)}}, MirrorCatalog{},
+				mirrorReadOf(root, 9), mirrorReadOf(root, 9))
 			return err
 		},
-		"ConfirmMirrorDetail": func(root int64) error {
-			d, ok, err := s.GetMirrorDetail(root, "10001")
+		"StoreMirrorTickets check": func(root int64) error {
+			_, err := s.StoreMirrorTickets(root, currentSweep(s, root), []MirrorTicket{{Card: webCard("10001", 5)}}, MirrorCatalog{},
+				mirrorReadOf(root, 0), mirrorReadOf(root, 9))
+			return err
+		},
+		"ConfirmMirrorBody": func(root int64) error {
+			b, ok, err := s.GetMirrorBody(root, "10001")
 			if err != nil {
 				return err
 			}
 			if !ok {
-				// A gone root holds none: the detail as a live root read it.
-				d = MirrorDetail{IssueID: "10001", ReadAt: 7, row: 1, sweep: 1}
+				// A gone root holds none: the body as a live root read it.
+				b = MirrorBody{IssueID: "10001", ReadAt: 7, root: root, sweep: 1}
 			}
-			_, err = s.ConfirmMirrorDetail(root, d, 9)
-			return err
-		},
-		"StoreMirrorDetail": func(root int64) error {
-			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 9, []byte(`{}`))
-			return err
-		},
-		"StoreMirrorDetail opened": func(root int64) error {
-			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 20, 7, []byte(`{}`))
+			_, err = s.ConfirmMirrorBody(root, b, mirrorReadOf(root, 9))
 			return err
 		},
 		"ReplaceMirrorWorklogs": func(root int64) error {
-			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", 1, nil)
+			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadOf(root, 1), nil)
 			return err
 		},
 		"RecordMirrorSyncAttempt": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: 9}))
+			_, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 9)}))
 			return err
 		},
 		"RecordMirrorSyncAttempt reconcile": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReconciledAt: 9}))
+			_, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReconciledAt: mirrorReadOf(root, 9)}))
+			return err
+		},
+		"RecordMirrorSyncAttempt reconcile failure": func(root int64) error {
+			_, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReconcileFailure: MirrorReconcileAttempt{
+				At: mirrorReadOf(root, 9), Returned: 9, Kind: MirrorFailureTracker, Message: "refused", Refused: true}}))
 			return err
 		},
 		"RecordMirrorSyncAttempt failure": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: 8, Failure: MirrorSyncFailure{At: 9, Kind: MirrorFailureTransient, Message: "timed out"}}))
+			_, _, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 8), Failure: MirrorAttemptFailure{At: mirrorReadOf(root, 9), Kind: MirrorFailureTransient, Message: "timed out"}}))
+			return err
+		},
+		"KeepMirrorTicket": func(root int64) error {
+			_, _, err := s.KeepMirrorTicket(root, "10001", 2, 1, mirrorReadOf(root, 9))
 			return err
 		},
 	}
@@ -239,10 +248,18 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "ListMirrorHistoryDue", "GetMirrorDetail", "ListMirrorDetailStates", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
+	"GetMirrorSync", "ListMirrorHistoryDue", "GetMirrorBody", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorSection", "CountMirrorSections",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards",
 	"ReadMirrorRefreshTargets",
+	// An open ticket's row goes by its pump, whatever became of its root.
+	"DropMirrorTicket", "DropMirrorTicketsOfOtherSessions",
+	// A read's clock, which stores its lease only when a read passes it
+	// (TestAReadClockStoresALeaseOnlyOnALiveRoot).
+	"BeginMirrorRead",
+	// An open ticket's bind, which is memory: a write naming an ended root
+	// fails whatever bind it carries (TestARestoreNeverReusesARootID).
+	"ActivateMirrorBind", "EndMirrorBind",
 }
 
 // Every writer refuses a detached root, and a root that never existed,
@@ -277,7 +294,7 @@ func TestMirrorWritesAfterADetachFailWithGone(t *testing.T) {
 	if _, err := s.DetachMirror(jira.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	for name, write := range writers {
@@ -366,7 +383,7 @@ func mirrorCascadeViolations(t *testing.T, db *sql.DB) []string {
 // table.
 func TestTrackerCacheTablesCascadeFromTheRoot(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerMigrationVersion)
+	db := migrateThrough(t, trackerMirrorMigrationVersion)
 	if violations := mirrorCascadeViolations(t, db); len(violations) > 0 {
 		t.Fatalf("schema violations:\n%s", strings.Join(violations, "\n"))
 	}

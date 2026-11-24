@@ -20,14 +20,21 @@ type heldCall struct {
 }
 
 // holdNext holds p's next call of name.
-func holdNext(p *scripted, name string) *heldCall {
+func holdNext(p *scripted, name string) *heldCall { return holdNth(p, name, 1) }
+
+// holdNth holds p's n-th call of name from now.
+func holdNth(p *scripted, name string, n int) *heldCall {
 	h := &heldCall{arrived: make(chan struct{}), release: make(chan struct{})}
-	var once sync.Once
+	var mu sync.Mutex
+	calls := 0
 	p.set(func(p *scripted) {
 		p.block = func(ctx context.Context, called string) error {
 			held := false
 			if called == name {
-				once.Do(func() { held = true })
+				mu.Lock()
+				calls++
+				held = calls == n
+				mu.Unlock()
 			}
 			if !held {
 				return nil
@@ -70,6 +77,7 @@ func TestCrossingTicketReadsKeepTheLater(t *testing.T) {
 						return d, nil
 					}
 				})
+				answerCardsFromDetails(m.p)
 				sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, issue))
 				m.events.issueEvents(t, 1)
 				m.settledTickets(t)
@@ -181,6 +189,25 @@ func TestARoundReadsADetailPastTheAgeBound(t *testing.T) {
 	}
 }
 
+// After the wall clock steps back past a stored detail's read, a round
+// reads the ticket in full once, and checks it again after.
+func TestARoundReadsADetailOnceAfterTheClockStepsBack(t *testing.T) {
+	t.Parallel()
+	m, _, issues, _ := newRoundFixture(t, 1, true)
+	m.round(t)
+	m.pass(-2 * time.Hour)
+	calls := len(m.p.callsInOrder())
+	m.round(t)
+	if got := countsOf(m.p.callsInOrder()[calls:]); describeCounts(got) != "Details:1" || !slices.Equal(m.lastDetailsRead(), issues) {
+		t.Fatalf("after the step back the round called %s", describeCounts(got))
+	}
+	calls = len(m.p.callsInOrder())
+	m.round(t)
+	if got := countsOf(m.p.callsInOrder()[calls:]); describeCounts(got) != "Cards:1" {
+		t.Fatalf("after the read the round called %s", describeCounts(got))
+	}
+}
+
 // A shown ticket whose stored detail the cap dropped is told it is not
 // loaded, read in full at once by its round and held by its pump (a
 // background read opens nothing), told loaded again, then checked against
@@ -283,6 +310,7 @@ func TestAnEndIsToldBeforeTheCoreStops(t *testing.T) {
 			m.p.set(func(p *scripted) {
 				p.detail = func(id tracker.IssueID) (tracker.Detail, error) { return detailOfCard(card(string(id), 1)), nil }
 			})
+			answerCardsFromDetails(m.p)
 			var done <-chan struct{}
 			var handle string
 			ended := make(chan struct{})

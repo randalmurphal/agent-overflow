@@ -107,8 +107,8 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	}
 	f := r.refresh(resources, created)
 	// The mirror ended with the connection: what the refresh stored before
-	// is still published below, as a tick's is, and the outcome answers
-	// for every resource (Ended).
+	// was told as it was stored (run.told), as a tick's is, and the
+	// outcome answers for every resource (Ended).
 	ended := f.ended || !r.inUse()
 	if !ended && r.ctx.Err() == nil {
 		callErr := f.lastCallError()
@@ -122,9 +122,8 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 		// Only an open ticket shows a view. One that cannot be built leaves
 		// the stored detail as read: its ticket is told a failure outside
 		// the tracker, and its next read builds it.
-		s.ticketViews(r.root, f.reads[:len(f.pumps)])
+		s.ticketViews(r.root, r.row, f.reads[:len(f.pumps)])
 	}
-	s.publish(r.root, r.gen, id, f.ch, f.own, &tickOrigin{tickets: f.pumps})
 	if len(f.pumps) > 0 {
 		// The open tickets settle with everything the write's refresh stored;
 		// one it could not read is due on the connection's retry schedule.

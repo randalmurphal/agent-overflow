@@ -414,7 +414,7 @@ func TestBoardRows(t *testing.T) {
 		issuesX(byIDVars(first, []string{web}, false), found...),
 		issuesX(byIDVars([]string{issueID(251)}, []string{web}, false), moved),
 	)
-	rows, err := p.BoardRows(context.Background(), web, asked)
+	rows, err := p.BoardRows(context.Background(), web, asked, tracker.Eligibility{})
 	if err != nil {
 		t.Fatal(err)
 	}

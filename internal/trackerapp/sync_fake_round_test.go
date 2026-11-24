@@ -11,14 +11,17 @@ import (
 )
 
 // fakeRoundIssues is how many issues the round scenarios seed: more open
-// tickets than one Linear details read takes.
-const fakeRoundIssues = 12
+// tickets than one Linear details read takes, as many as the cost table
+// in tracker-backend.md names.
+const fakeRoundIssues = 50
 
 // The shown tickets of a connection cost one request a round through the
 // real providers and clients, whatever their number: on Jira one cards
 // read (an issue bulk fetch) while none changed, on Linear one details
 // read of up to linear.MaxIssueDetails issues, a further one past it. A
-// ticket that changed adds its own full read only.
+// ticket that changed adds its own full read on Jira (the issue and its
+// comments), and on Linear the read of the card its new document is
+// owed, one for all the changed tickets.
 func TestFakeRoundRequests(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"jira", "linear"} {
@@ -98,13 +101,27 @@ func TestFakeRoundRequests(t *testing.T) {
 			routes := s.requestsOf(t, func() { s.svc.roundTick(rd) })
 			t.Logf("one changed: %d requests: %s", total(routes), describe(routes))
 			// Jira: the cards read, then the issue and its comments. Linear:
-			// the details reads, which read the changed one in full.
+			// the details reads alone, which read the changed one in full and
+			// store its card with its body.
 			wantChanged := want[fakeRoundIssues] + 2
 			if kind == "linear" {
 				wantChanged = want[fakeRoundIssues]
 			}
 			if total(routes) != wantChanged {
 				t.Errorf("one changed: %d requests, pinned at %d: %s", total(routes), wantChanged, describe(routes))
+			}
+			// Ten of them change: Jira reads each in full; Linear's details
+			// reads read them already.
+			s.clock.advance(time.Minute)
+			s.editTitles(t, conn.ID, issues[2:12])
+			routes = s.requestsOf(t, func() { s.svc.roundTick(rd) })
+			t.Logf("ten changed: %d requests: %s", total(routes), describe(routes))
+			wantTen := want[fakeRoundIssues] + 2*10
+			if kind == "linear" {
+				wantTen = want[fakeRoundIssues]
+			}
+			if total(routes) != wantTen {
+				t.Errorf("ten changed: %d requests, pinned at %d: %s", total(routes), wantTen, describe(routes))
 			}
 		})
 	}

@@ -45,14 +45,41 @@ type run struct {
 	// walking reports that the tick's delta stopped with more of its walk
 	// to read, which the tick's reconcile waits for (run.reconcile).
 	walking bool
-	// pass is the reconcile pass the tick goes on with, its pump's; nil
-	// for a run no pump makes, which does not reconcile (syncBoard).
+	// pass is the reconcile pass the tick goes on with, its pump's; nil for
+	// a run no pump makes, which does not reconcile (syncBoard).
 	pass *reconcilePass
+	// reconciled is how the tick's reconcile ended (run.reconcile), which
+	// the tick records (run.record); lastRead is the read the run began
+	// last (beginRead), the failing call's when a call failed.
+	reconciled reconcileOutcome
+	lastRead   store.MirrorRead
 	// lifetimes are the lifetimes of the boards a write's refresh reads
 	// through, captured before its reads (refreshTargets); a tick names its
 	// own board's from state.
 	lifetimes map[tracker.BoardID]int64
-	stop      func()
+	// origin is the pump the run's changes are for (tickOrigin): a tick's
+	// pump, or the open tickets a read or a write's refresh settles; nil
+	// for none. tell, when set, collects what each write stored, which
+	// told has published already.
+	origin *tickOrigin
+	tell   func(Changes)
+	stop   func()
+}
+
+// told passes ch, what one store write of the run committed, through
+// the change funnel as the write returns, before any later call of the
+// run can fail or wait: the one rule of every path's publication (a
+// tick's units, a write's refresh, a read of tickets). board is the board
+// the write's read went through, none for a read of cards or tickets;
+// every write of a board's tick is its board's (ownOf).
+func (r *run) told(board tracker.BoardID, ch Changes) {
+	if r.scope.Board != "" {
+		board = r.scope.Board
+	}
+	r.s.publish(r.root, r.gen, r.row.ID, ch, ownOf(Scope{Connection: r.row.ID, Board: board}, ch), r.origin)
+	if r.tell != nil {
+		r.tell(ch)
+	}
 }
 
 // connHold is what ticks of a connection reuse until a change to it made
@@ -92,8 +119,11 @@ var errEnded = errors.New("trackerapp: the connection's mirror ended")
 
 // start takes a hold on connection id for one tick or read, or fails:
 // with errEnded for a connection turned off or removed, ErrNoProvider for
-// a Tempo connection, ErrStopped after Stop, and the context's error when
-// ctx has ended. The caller ends the run with finish.
+// a Tempo connection, ErrStopped after Stop, the context's error when ctx
+// has ended, and the error of the delete of an earlier process's open
+// tickets when that failed (dropEarlierTickets). It first tries again the
+// drops of closed tickets that failed (payOwedDrops). The caller ends the
+// run with finish.
 func (s *Service) start(ctx context.Context, id string, u Urgency) (*run, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -101,6 +131,11 @@ func (s *Service) start(ctx context.Context, id string, u Urgency) (*run, error)
 	if err := s.enter(); err != nil {
 		return nil, err
 	}
+	if err := s.dropEarlierTickets(); err != nil {
+		s.leave()
+		return nil, err
+	}
+	s.payOwedDrops("the next run tries it again")
 	r, err := s.hold(id)
 	if err != nil {
 		s.leave()
@@ -129,15 +164,10 @@ func (s *Service) start(ctx context.Context, id string, u Urgency) (*run, error)
 func (s *Service) hold(id string) (*run, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
-	if h := s.holds[id]; h != nil {
-		s.mu.Lock()
-		inUse := s.clients[id] == h.c
-		s.mu.Unlock()
-		if inUse {
-			return &run{s: s, row: h.row, root: h.root, gen: h.gen, p: h.p, at: s.begin(h.c)}, nil
-		}
-		delete(s.holds, id)
+	if h := s.heldLocked(id); h != nil {
+		return &run{s: s, row: h.row, root: h.root, gen: h.gen, p: h.p, at: s.begin(h.c)}, nil
 	}
+	delete(s.holds, id)
 	row, err := s.get(id)
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -149,14 +179,15 @@ func (s *Service) hold(id string) (*run, error) {
 	case !row.Enabled:
 		return nil, fmt.Errorf("%w: %w: %s", errEnded, ErrDisabled, id)
 	}
-	root, _, err := s.store.GetOrCreateMirrorRoot(id)
+	gen := s.gen(id)
+	root, err := s.mirrorRootLocked(id, gen)
 	switch {
 	case errors.Is(err, store.ErrTrackerCacheGone), errors.Is(err, sql.ErrNoRows):
 		return nil, fmt.Errorf("%w: %w", errEnded, err)
 	case err != nil:
 		return nil, fmt.Errorf("trackerapp: the mirror of connection %s: %w", id, err)
 	}
-	r := &run{s: s, row: row, root: root, gen: s.gen(id)}
+	r := &run{s: s, row: row, root: root, gen: gen}
 	p, c, err := s.providerLocked(row)
 	if _, ok := errors.AsType[*ClientError](err); ok {
 		// No client means no call: the connection's problem is why.
@@ -171,6 +202,43 @@ func (s *Service) hold(id string) (*run, error) {
 	return r, nil
 }
 
+// dropEarlierTickets deletes the open-ticket rows an earlier process left
+// (store DropMirrorTicketsOfOtherSessions), once per process: every run
+// passes it as it starts, and every bind of an open ticket is made in a
+// run (bindTickets), so the delete has completed before any row of this
+// process is written and never removes one. Every read of a view passes
+// it too (readRoot), so no view shows an issue that only an earlier
+// process's row keeps. Concurrent first runs wait for one delete. A delete
+// that fails fails the run or the read that tried it, which is retried as
+// a failure outside the tracker is, and the next one tries it again.
+func (s *Service) dropEarlierTickets() error {
+	s.earlier.Lock()
+	defer s.earlier.Unlock()
+	if s.earlier.done {
+		return nil
+	}
+	if _, err := s.store.DropMirrorTicketsOfOtherSessions(s.session); err != nil {
+		return fmt.Errorf("trackerapp: drop the open tickets an earlier process left: %w", err)
+	}
+	s.earlier.done = true
+	return nil
+}
+
+// heldLocked is connection id's hold while the client it was built over
+// is still the connection's, nil otherwise. The caller holds opMu.
+func (s *Service) heldLocked(id string) *connHold {
+	h := s.holds[id]
+	if h == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clients[id] != h.c {
+		return nil
+	}
+	return h
+}
+
 // rehold looks connection id's mirror root up again after the store
 // reported gone, the error, the root stale a run of generation gen held,
 // and keeps the new one. A run belongs to the mirror generation it began
@@ -178,15 +246,16 @@ func (s *Service) hold(id string) (*run, error) {
 // or off and on again), the root is the old connection's mirror and so
 // are the run's provider and settlement stamp, and the run ends
 // (errEnded). Only a root gone within the generation (a restore emptied
-// the mirror) is replaced. A connection turned off meanwhile ends the run
-// the same way.
+// the mirror) is replaced, and the open tickets are kept again under the
+// new one (mirrorRootLocked). A connection turned off meanwhile ends the
+// run the same way.
 func (s *Service) rehold(id string, stale int64, gen uint64, gone error) (int64, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	if s.gen(id) != gen {
 		return 0, fmt.Errorf("%w: the connection's mirror ended since the run began: %w", errEnded, gone)
 	}
-	root, _, err := s.store.GetOrCreateMirrorRoot(id)
+	root, err := s.mirrorRootLocked(id, gen)
 	switch {
 	case errors.Is(err, store.ErrTrackerCacheGone), errors.Is(err, sql.ErrNoRows):
 		delete(s.holds, id)
@@ -198,6 +267,20 @@ func (s *Service) rehold(id string, stale int64, gen uint64, gone error) (int64,
 		h.root = root
 	}
 	return root, nil
+}
+
+// mirrorRootLocked is connection id's mirror root, made when it has none
+// (store GetOrCreateMirrorRoot), for a run of generation gen. A root made
+// while open tickets of gen are kept replaces one a restore emptied, with
+// their rows: they are kept again under it (keepTicketsAgainLocked). The
+// first root of a connection, or one made after it was turned on again,
+// has no kept ticket of its generation. The caller holds opMu.
+func (s *Service) mirrorRootLocked(id string, gen uint64) (int64, error) {
+	root, created, err := s.store.GetOrCreateMirrorRoot(id)
+	if err == nil && created {
+		s.keepTicketsAgainLocked(id, gen, root)
+	}
+	return root, err
 }
 
 // gen is connection id's mirror generation (genLocked). Read under opMu
@@ -252,12 +335,57 @@ func (r *run) lifetime(board tracker.BoardID) (int64, error) {
 
 func (r *run) finish() { r.stop() }
 
-// window is the start of the history window now.
-func (r *run) window() time.Time { return r.s.now().Add(-HistoryWindow) }
+// window is the start of the history window now (Service.window).
+func (r *run) window() time.Time { return r.s.window() }
 
-// readAt is now as the store orders reads: the time a read begins, taken
-// before its request.
-func (r *run) readAt() int64 { return r.s.now().UnixMilli() }
+// beginRead begins a read of the tracker, before its request, on the
+// root's read clock (store BeginMirrorRead): every write of what a read
+// returned takes the read it began, so the store orders reads made
+// through every path, and every process, on one clock.
+func (r *run) beginRead() (store.MirrorRead, error) {
+	read, err := r.s.store.BeginMirrorRead(r.root, millis(r.s.now()))
+	if err != nil {
+		return store.MirrorRead{}, fmt.Errorf("trackerapp: begin a read of %s: %w", r.row.ID, err)
+	}
+	r.lastRead = read
+	return read, nil
+}
+
+// The service's elapsed-time decisions, and the clock each reads:
+//
+//   - Since a read the root stored began (Service.sinceWall): the board's
+//     structure and reconcile intervals (boardDue) and a document's age
+//     (checkDetails, detailMaxAge). The wall clock against the wall time
+//     the stored read began at (store MirrorRead.Wall, stored beside its
+//     order time). An interval is due when no wall time is stored (none
+//     read, or read before the column existed), when the clock is behind
+//     it (it stepped back), or when the interval passed: after a step
+//     either way the scope is read once and measured from that read. The
+//     order times stay ordered across the step and a restart
+//     (BeginMirrorRead), and a reconcile removes no row on its
+//     listing's word (store ReconcileMirrorBoard), so a step back removes
+//     no row.
+//   - The history wait (store MirrorHistory.AnsweredAt and Wait, the now
+//     of GetMirrorSync and ListMirrorHistoryDue, historyFinal): the steady
+//     clock (Service.steady), monotonic within the process. A wait an
+//     earlier process answered is not counted (steadyFrom): it starts
+//     over.
+//   - A ticket round's due, hold and retry times, a rate limit's, and the
+//     pumps' and the linked loop's timers: times held in memory, compared
+//     with Deps.Now's; with time.Now they compare its monotonic reading,
+//     so a wall step moves none.
+//   - Whether a status time is trusted and a history complete (HistoryTo
+//     and CompleteTo against the card's update time): the tracker's own
+//     clock on both sides.
+//
+// sinceWall is how long ago wall, the wall time a read the root stored
+// began at, was by the wall clock, and false when the clock is behind it.
+// An interval is due when it is unknown. None stored is zero, decades ago,
+// so it is due.
+func (s *Service) sinceWall(wall int64) (time.Duration, bool) {
+	since := s.now().Sub(time.UnixMilli(wall))
+	return since, since >= 0
+}
 
 // steadyAt is now by the clock the history wait is measured on
 // (Service.steady), in Unix ms.

@@ -33,17 +33,20 @@ const (
 // listing gives the unit its issues, a page the size of historyBatches
 // reads; each read either clears its issues' due state or is superseded
 // by a write that did, so the next tick's listing reaches the issues
-// behind them.
-func (r *run) history() (UnitResult, error) {
+// behind them. The issues of first that are due are listed before the
+// others (the shown tickets' issues whose status times no final read
+// decided, roundHistory).
+func (r *run) history(first ...string) (UnitResult, error) {
 	var log changeLog
-	more, err := r.historyReads(&log)
+	more, err := r.historyReads(&log, first)
 	return UnitResult{Changes: log.changes(), More: more}, err
 }
 
-// historyReads makes the reads of the history unit, adding what each
-// stored to log, and reports whether due issues are left.
-func (r *run) historyReads(log *changeLog) (more bool, _ error) {
-	due, more, err := r.s.store.ListMirrorHistoryDue(r.root, r.steadyAt())
+// historyReads makes the reads of the history unit, first's due issues
+// first, adding what each stored to log, and reports whether due issues
+// are left.
+func (r *run) historyReads(log *changeLog, first []string) (more bool, _ error) {
+	due, more, err := r.s.store.ListMirrorHistoryDue(r.root, r.steadyAt(), first...)
 	if err != nil {
 		return false, fmt.Errorf("trackerapp: list the issues whose history is due: %w", err)
 	}
@@ -77,7 +80,11 @@ func (r *run) historyOf(due []store.MirrorHistoryDue) (Changes, error) {
 	}
 	slices.Sort(boards)
 	boards = slices.Compact(boards)
-	read, began := r.readAt(), r.steadyAt()
+	read, err := r.beginRead()
+	if err != nil {
+		return Changes{}, err
+	}
+	began := r.steadyAt()
 	r.calls++
 	h, err := r.p.History(r.ctx, tracker.HistoryQuery{Issues: issues, Boards: boards})
 	if err != nil {
@@ -152,7 +159,7 @@ func (r *run) historyFinal(d store.MirrorHistoryDue, completeTo time.Time, began
 // finds superseded (a later read stored one) or of an issue it no longer
 // keeps changes nothing and is no failure. A store call that failed part
 // way changed what it reports, which is returned with its error.
-func (r *run) storeHistories(hs []store.MirrorHistory, catalog store.MirrorCatalog, read int64) ([]tracker.IssueID, bool, error) {
+func (r *run) storeHistories(hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]tracker.IssueID, bool, error) {
 	results, catalogChanged, err := r.s.store.ReplaceMirrorHistories(r.root, r.state.Sweep, hs, catalog, read)
 	var changed []tracker.IssueID
 	for _, res := range results {
@@ -161,6 +168,7 @@ func (r *run) storeHistories(hs []store.MirrorHistory, catalog store.MirrorCatal
 		}
 	}
 	slices.Sort(changed)
+	r.told("", Changes{History: changed, Catalog: catalogChanged})
 	if err != nil {
 		return changed, catalogChanged, fmt.Errorf("trackerapp: store the history of %d issues: %w", len(hs), err)
 	}

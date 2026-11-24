@@ -30,14 +30,14 @@ const (
 // mirrorCardColumns are a card's columns, of tracker_cache_issues aliased
 // i, in the order scanMirrorCard reads them.
 const mirrorCardColumns = `i.issue_id, i.issue_key, i.project_id, i.type_id, i.type_level, i.status_id, i.assignee_id,
-	i.priority_id, i.parent_id, i.created_at, i.updated_at, i.resolved_at, i.status_since, i.data,
+	i.priority_id, i.parent_id, i.created_at, i.updated_at, i.resolved_at, i.status_since, i.status_final_for >= i.updated_at, i.data,
 	(SELECT json_group_array(m.sprint_id) FROM tracker_cache_issue_sprints m WHERE m.root_id = i.root_id AND m.issue_id = i.issue_id)`
 
 func scanMirrorCard(row rowScanner, extra ...any) (MirrorCard, error) {
 	var c MirrorCard
 	var sprints []byte
 	dest := append([]any{&c.IssueID, &c.Key, &c.ProjectID, &c.TypeID, &c.TypeLevel, &c.StatusID, &c.AssigneeID,
-		&c.PriorityID, &c.ParentID, &c.CreatedAt, &c.UpdatedAt, &c.ResolvedAt, &c.StatusSince, &c.Data, &sprints}, extra...)
+		&c.PriorityID, &c.ParentID, &c.CreatedAt, &c.UpdatedAt, &c.ResolvedAt, &c.StatusSince, &c.StatusFinal, &c.Data, &sprints}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return MirrorCard{}, err
 	}

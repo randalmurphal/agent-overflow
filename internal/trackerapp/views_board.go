@@ -110,7 +110,9 @@ type SprintView struct {
 }
 
 // SyncView is a scope's sync state: when it was last read and
-// reconciled (Unix milliseconds, 0 for never) and its last failure.
+// reconciled (Unix milliseconds by this computer's wall clock as each
+// began, 0 for never or for one stored before the mirror kept wall times)
+// and its last failure.
 type SyncView struct {
 	ReadAt       int64        `json:"read_at,omitempty"`
 	ReconciledAt int64        `json:"reconciled_at,omitempty"`
@@ -118,7 +120,8 @@ type SyncView struct {
 }
 
 // FailureView is a scope's last failure: its kind (FailureKind), the
-// sentence a person reads and when it happened.
+// sentence a person reads and when it happened, by this computer's wall
+// clock.
 type FailureView struct {
 	Kind    string `json:"kind"`
 	Message string `json:"message"`
@@ -218,10 +221,7 @@ func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 	if err != nil {
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)
 	}
-	v.Sync = SyncView{ReadAt: sync.ReadAt, ReconciledAt: sync.ReconciledAt}
-	if sync.Failure.Kind != "" {
-		v.Sync.Failure = &FailureView{Kind: sync.Failure.Kind, Message: sync.Failure.Message, At: sync.Failure.At}
-	}
+	v.Sync = syncViewOf(sync.MirrorSyncOutcome)
 	v.Sections = pages
 	return v, nil
 }

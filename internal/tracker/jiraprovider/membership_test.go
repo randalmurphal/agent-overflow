@@ -62,8 +62,8 @@ func TestARowReadsNoURL(t *testing.T) {
 	f, p := newSite(t)
 	f.On("GET", board3Issues, jiratest.Reply(200, page("", listedIssue("agile/1.0"))))
 	f.On("POST", matchPath, jiratest.Reply(200, `{"matches":[{"matchedIssues":[10005],"errors":[]}]}`))
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", listedIssue("api/3"))))
-	listed, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"})
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(listedIssue("api/3"))))
+	listed, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"}, tracker.Eligibility{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestNewRows(t *testing.T) {
 		if !strings.Contains(string(b), `"customfield_10019","customfield_10016"]`) || strings.Contains(string(b), "timeoriginalestimate") {
 			t.Errorf("bulk fetch %s", b)
 		}
-		jiratest.Reply(200, page("", listedIssue("api/3")))(w, r, b)
+		jiratest.Reply(200, bulk(listedIssue("api/3")))(w, r, b)
 	})
 	got, err := p.NewRows(t.Context(), "10005", []tracker.BoardID{"3", "4", "5", "6", "7"})
 	if err != nil {
@@ -167,7 +167,7 @@ func TestBoardRowsConfirmsAMiss(t *testing.T) {
 		if !strings.Contains(string(b), `"issueIdsOrKeys":["10005"]`) {
 			t.Errorf("bulk fetch %s", b)
 		}
-		jiratest.Reply(200, page("", listedIssue("api/3")))(w, r, b)
+		jiratest.Reply(200, bulk(listedIssue("api/3")))(w, r, b)
 	})
 	answers := map[string]string{
 		"placed":     `{"matches":[{"matchedIssues":[10005],"errors":[]}]}`,
@@ -175,19 +175,19 @@ func TestBoardRowsConfirmsAMiss(t *testing.T) {
 	}
 	for _, name := range []string{"placed", "not placed"} {
 		f.On("POST", matchPath, jiratest.Reply(200, answers[name]))
-		got, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005", "10006"})
+		got, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005", "10006"}, tracker.Eligibility{})
 		if err != nil || !slices.Contains(got.Missing, "10006") || (len(got.Rows) == 1) != (name == "placed") ||
 			slices.Contains(got.Missing, "10005") == (name == "placed") {
 			t.Errorf("%s: %+v, %v", name, got, err)
 		}
 	}
 	f.On("POST", matchPath, jiratest.Reply(400, `{"errorMessages":["bad"]}`))
-	if _, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"}); err == nil {
+	if _, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"}, tracker.Eligibility{}); err == nil {
 		t.Error("a failed confirmation read as Missing")
 	}
 	f.On("POST", matchPath, jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":["The value '13' does not exist for the field 'filter'."]}]}`))
 	configs, matches := f.Count("GET", board3Config), f.Count("POST", matchPath)
-	got, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"})
+	got, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"}, tracker.Eligibility{})
 	if err == nil || !strings.Contains(err.Error(), "The value '13' does not exist") || len(got.Missing) != 0 {
 		t.Errorf("a query Jira refused: %+v, %v; want the read to fail with Jira's reason", got, err)
 	}
@@ -215,8 +215,8 @@ func TestBoardRowsReadsAChangedBoardAgain(t *testing.T) {
 		}
 		jiratest.Reply(200, answer)(w, r, b)
 	})
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", listedIssue("api/3"))))
-	got, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"})
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(listedIssue("api/3"))))
+	got, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"}, tracker.Eligibility{})
 	if err != nil {
 		t.Fatal(err)
 	}

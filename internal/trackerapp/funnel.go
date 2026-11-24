@@ -28,8 +28,9 @@ func ownOf(scope Scope, ch Changes) []boardChanges {
 	return []boardChanges{{board: scope.Board, ch: ch}}
 }
 
-// publish is the change funnel: every tick's changes (tick.go) and every
-// read of open tickets pass through it, and it turns them into what each
+// publish is the change funnel: every write of a tick, a write's refresh
+// and a read of open tickets passes through it as it returns (run.told),
+// and it turns what each stored into what each
 // subscription of the connection needs, under subMu:
 //
 //   - the board of the change's own scope gets its changed rows, cards and
@@ -39,9 +40,10 @@ func ownOf(scope Scope, ch Changes) []boardChanges {
 //     and its rows whose parent's card changed or whose parent may have
 //     started or stopped being kept (a row shows its parent's key and title
 //     while the mirror keeps the parent, so a parent's row added to or
-//     removed from any board moves it; a changed order or estimate of a
-//     row the board held does not), from one indexed read of the issues'
-//     boards made only when a board of the connection is subscribed;
+//     removed from any board, or its last open ticket closed, moves it; a
+//     changed order or estimate of a row the board held does not), from
+//     one indexed read of the issues' boards made only when a board of the
+//     connection is subscribed;
 //   - a change of the board's structure, or of the connection's users and
 //     statuses (a name, a status's group, Changes.Catalog), moves rows no
 //     ID names: the board is to be read again, as every board is when the
@@ -67,7 +69,7 @@ func (s *Service) publish(root int64, gen uint64, conn string, ch Changes, own [
 		return
 	}
 	cards := unite(slices.Clone(ch.Cards), ch.History)
-	parents := unite(unite(slices.Clone(ch.Cards), ch.Added), ch.Removed)
+	parents := unite(unite(unite(slices.Clone(ch.Cards), ch.Added), ch.Removed), ch.Visibility)
 	s.subMu.Lock()
 	var boards []*boardPump
 	var tickets []*ticketPump
@@ -120,16 +122,62 @@ func (s *Service) publish(root int64, gen uint64, conn string, ch Changes, own [
 		}
 	}
 	for _, tp := range tickets {
-		if tp.over || tp.core.DeadLocked() || origin != nil && slices.Contains(origin.tickets, tp) {
-			continue
+		if origin == nil || !slices.Contains(origin.tickets, tp) {
+			s.tellTicketLocked(tp, ch)
 		}
-		switch read, rebuild := ticketInputs(tp, ch, false); {
-		case read:
-			s.readNowLocked(tp)
-			fallthrough
-		case rebuild:
-			tp.inputs = s.nextStampLocked()
-			nudge(tp.viewChanged)
+	}
+}
+
+// tellTicketLocked tells tp what moved an input of its view in ch
+// (ticketInputs): it is due a read at once, or rebuilds its view with no
+// tracker call, or, judged by its installed dependencies, neither
+// (ticketPump.judged). The caller holds subMu.
+func (s *Service) tellTicketLocked(tp *ticketPump, ch Changes) {
+	if tp.over || tp.core.DeadLocked() {
+		return
+	}
+	switch read, rebuild := ticketInputs(tp, ch, false); {
+	case read:
+		s.readNowLocked(tp)
+		fallthrough
+	case rebuild:
+		s.rebuildAgainLocked(tp)
+	default:
+		tp.judged = s.nextStampLocked()
+	}
+}
+
+// unwatchedLocked reports that shows, the dependencies of a view of tp
+// whose build began at stamp b, name an issue tp's installed ones do not
+// while the funnel let a change pass tp since b: it judged that change by
+// the installed ones, so it may have moved the new one after the build
+// read it. The caller installs the view and has it built again
+// (rebuildAgainLocked). The caller holds subMu.
+func (s *Service) unwatchedLocked(tp *ticketPump, shows []tracker.IssueID, b uint64) bool {
+	return tp.judged > b &&
+		slices.ContainsFunc(shows, func(id tracker.IssueID) bool { return !slices.Contains(tp.shows, id) })
+}
+
+// rebuildAgainLocked has tp's view built again from the mirror, with no
+// tracker call. The caller holds subMu.
+func (s *Service) rebuildAgainLocked(tp *ticketPump) {
+	tp.inputs = s.nextStampLocked()
+	nudge(tp.viewChanged)
+}
+
+// tellTickets tells pumps of mirror generation gen what ch stored, as
+// publish tells a ticket: the open tickets a write's refresh left out of
+// its publications (tickOrigin.tickets) and stopped before the read that
+// settles them.
+func (s *Service) tellTickets(gen uint64, pumps []*ticketPump, ch Changes) {
+	if ch.Empty() {
+		return
+	}
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for _, tp := range pumps {
+		if tp.gen == gen {
+			s.tellTicketLocked(tp, ch)
 		}
 	}
 }

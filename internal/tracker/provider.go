@@ -106,8 +106,11 @@ type Provider interface {
 	ChangedRows(ctx context.Context, q DeltaQuery) (RowPage, error)
 	// BoardIssues lists the IDs on board within the window.
 	BoardIssues(ctx context.Context, board BoardID, window time.Time) (Listing, error)
-	// BoardRows are board's rows of issues.
-	BoardRows(ctx context.Context, board BoardID, issues []IssueID) (Rows, error)
+	// BoardRows are board's rows of issues that rule lists (Listing.Rule):
+	// an issue the board holds that rule leaves out is Missing, as the
+	// listing left it out. A rule the tracker refuses fails it with
+	// ErrRuleRefused.
+	BoardRows(ctx context.Context, board BoardID, issues []IssueID, rule Eligibility) (Rows, error)
 	// NewRows places issue, which a create just made, on boards, after
 	// CheckNewRows: its row on each board that holds it, as that board's
 	// own list will deliver it, read without waiting for a list that

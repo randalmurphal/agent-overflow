@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strconv"
 
@@ -103,7 +102,7 @@ func (p *Provider) detailOf(s site, issue tracker.IssueID, read issueRead) (trac
 	full, comments := read.full, read.comments
 	is := full.Issue
 	cat := newCatalog()
-	d := tracker.Detail{URL: p.origin + "/browse/" + url.PathEscape(is.Key)}
+	var d tracker.Detail
 	var err error
 	if d.Card, err = s.cardOf(is, cat); err != nil {
 		return tracker.Detail{}, err
@@ -125,6 +124,10 @@ func (p *Provider) detailOf(s site, issue tracker.IssueID, read issueRead) (trac
 	d.Comments = comments
 	cat.merge(d.Comments.Catalog)
 	d.History = events(full.Changelog, cat)
+	d.StatusChanged = latestStatusChange(full.Changelog)
+	if !full.Date.IsZero() {
+		d.HistoryTo = full.Date.Add(-historySettle)
+	}
 	d.Moves = movesOf(full.Transitions, cat)
 	d.Catalog = cat.out
 	return d, nil
@@ -292,6 +295,23 @@ func events(log jira.Changelog, cat *catalog) []tracker.Event {
 		}
 		for _, it := range e.Items {
 			out = append(out, tracker.Event{At: e.Created, Author: author, Field: it.Field, From: it.FromText, To: it.ToText})
+		}
+	}
+	return out
+}
+
+// latestStatusChange is the latest change of the status field in log,
+// oldest first, with the raw status IDs; zero for none.
+func latestStatusChange(log jira.Changelog) tracker.StatusChange {
+	var out tracker.StatusChange
+	for _, e := range log.Entries {
+		for _, it := range e.Items {
+			if it.FieldID == "status" {
+				out = tracker.StatusChange{Change: tracker.Change{At: e.Created}, From: tracker.StatusID(it.From), To: tracker.StatusID(it.To)}
+				if e.Author != nil {
+					out.Author = tracker.UserID(e.Author.AccountID)
+				}
+			}
 		}
 	}
 	return out

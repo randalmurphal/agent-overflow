@@ -125,7 +125,7 @@ func TestAHistoryChangeReachesTheOpenTicket(t *testing.T) {
 // cleanup, which deletes the issue and its detail, telling no one.
 func (m *mirrorFixture) sweepUntold(t *testing.T, issue string) {
 	t.Helper()
-	page := store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime, Missing: []string{issue}, ReadAt: m.now().UnixMilli()}
+	page := store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime, Missing: []string{issue}, ReadAt: m.read()}
 	if _, err := m.st.WriteMirrorRows(m.root(), page); err != nil {
 		t.Error(err)
 	}

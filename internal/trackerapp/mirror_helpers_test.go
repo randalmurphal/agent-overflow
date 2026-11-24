@@ -169,7 +169,7 @@ func (p *scripted) BoardIssues(ctx context.Context, b tracker.BoardID, window ti
 	return h(b, window)
 }
 
-func (p *scripted) BoardRows(ctx context.Context, b tracker.BoardID, ids []tracker.IssueID) (tracker.Rows, error) {
+func (p *scripted) BoardRows(ctx context.Context, b tracker.BoardID, ids []tracker.IssueID, _ tracker.Eligibility) (tracker.Rows, error) {
 	p.mu.Lock()
 	h := p.boardRows
 	p.mu.Unlock()
@@ -348,8 +348,88 @@ func newMirrorFixtureOn(t *testing.T, f *fixture) *mirrorFixture {
 	m := &mirrorFixture{fixture: f, conn: f.addJira(), p: p}
 	f.listBoards(m.conn.ID, testBoards...)
 	p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) { return webStructure(b), nil }
+	// A ticket round whose ticket shows no time in its status reads the
+	// due histories (roundHistory); by default the tracker holds none.
+	p.history = func(tracker.HistoryQuery) (tracker.History, error) { return tracker.History{}, nil }
 	return m
 }
+
+// refuseKeeps makes the store refuse every keep of an open ticket from
+// now on (keepRefused).
+func (m *mirrorFixture) refuseKeeps() {
+	m.svc.store = keepRefused{m.st}
+}
+
+// keepRefused is a store whose bind of an open ticket fails, as a failing
+// write does: the ticket shows a failure outside the tracker, which its
+// next read retries (bindTickets).
+type keepRefused struct{ *store.Store }
+
+func (keepRefused) KeepMirrorTicket(int64, string, int64, int64, store.MirrorRead) (store.MirrorBind, bool, error) {
+	return store.MirrorBind{}, false, errors.New("test: the store refused the keep")
+}
+
+// keepsMade records the issues of the open tickets the store kept, and
+// refuses the first keep of the open ticket of issue refuse.
+type keepsMade struct {
+	*store.Store
+	refuse  string
+	mu      sync.Mutex
+	refused bool
+	issues  []string
+}
+
+func (k *keepsMade) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (store.MirrorBind, bool, error) {
+	k.mu.Lock()
+	refuse := issue == k.refuse && !k.refused
+	k.refused = k.refused || refuse
+	k.mu.Unlock()
+	if refuse {
+		return store.MirrorBind{}, false, errors.New("test: the store refused the keep")
+	}
+	bind, shown, err := k.Store.KeepMirrorTicket(root, issue, session, pump, opened)
+	if err != nil {
+		return store.MirrorBind{}, false, err
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.issues = append(k.issues, issue)
+	return bind, shown, nil
+}
+
+// since is the issues kept since the last call, sorted.
+func (k *keepsMade) since() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	issues := slices.Sorted(slices.Values(k.issues))
+	k.issues = nil
+	return issues
+}
+
+// loseKeeps makes the store keep no issue for an open ticket from now on
+// (keepsLost).
+func (m *mirrorFixture) loseKeeps() {
+	m.svc.store = keepsLost{m.st}
+}
+
+// keepsLost is a store whose keep of an open ticket succeeds and leaves no
+// row, and whose bind never becomes the issue's current one though its
+// activation reports it did: the ticket's reads store no body, and its
+// pump holds the content it shows.
+type keepsLost struct{ *store.Store }
+
+func (k keepsLost) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (store.MirrorBind, bool, error) {
+	bind, _, err := k.Store.KeepMirrorTicket(root, issue, session, pump, opened)
+	if err != nil {
+		return store.MirrorBind{}, false, err
+	}
+	if _, err := k.DropMirrorTicket(session, pump); err != nil {
+		return store.MirrorBind{}, false, err
+	}
+	return bind, false, nil
+}
+
+func (keepsLost) ActivateMirrorBind(store.MirrorBind) bool { return true }
 
 // testBoards are the boards a mirror fixture's connection lists.
 var testBoards = []tracker.BoardID{testBoard, "2", "7", "9"}
@@ -358,6 +438,23 @@ func (m *mirrorFixture) scope() Scope { return Scope{Connection: m.conn.ID, Boar
 
 // now is the fixture's clock.
 func (m *mirrorFixture) now() time.Time { return m.svc.now() }
+
+// read begins a read of the connection's root now, as a run does.
+func (m *mirrorFixture) read() store.MirrorRead {
+	m.t.Helper()
+	return beginReadAt(m.t, m.st, m.root(), millis(m.now()))
+}
+
+// beginReadAt begins a read of root at now (Unix ms), as a run does
+// (store BeginMirrorRead), for a test's own write of the mirror.
+func beginReadAt(t testing.TB, st *store.Store, root, now int64) store.MirrorRead {
+	t.Helper()
+	read, err := st.BeginMirrorRead(root, now)
+	if err != nil {
+		t.Fatalf("begin a read of root %d: %v", root, err)
+	}
+	return read
+}
 
 // root is the connection's mirror root; 0 for none.
 func (m *mirrorFixture) root() int64 {

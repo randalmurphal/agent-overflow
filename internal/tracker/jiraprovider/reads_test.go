@@ -16,14 +16,14 @@ func TestNewChecksOptions(t *testing.T) {
 	f := jiratest.NewServer(t)
 	c := newJira(t, f)
 	for _, site := range []string{"", "example.atlassian.net", "ftp://example.atlassian.net", "https://example.atlassian.net/jira", "https://u@example.atlassian.net", "https://example.atlassian.net?x=1"} {
-		if _, err := New(Options{Jira: c, Site: site}); err == nil {
+		if _, err := New(Options{Jira: c, Site: site, SprintsFrom: allSprints}); err == nil {
 			t.Errorf("site %q was taken", site)
 		}
 	}
 	if _, err := New(Options{Site: "https://example.atlassian.net"}); err == nil {
 		t.Error("a Provider without a Jira client")
 	}
-	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net/"})
+	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net/", SprintsFrom: allSprints})
 	if err != nil || p.origin != "https://example.atlassian.net" {
 		t.Fatalf("got %v %v", p, err)
 	}
@@ -273,11 +273,11 @@ func TestBoardRowsReadThroughTheBoard(t *testing.T) {
 		}
 		jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`)(w, r, b)
 	})
-	rows3, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002"})
+	rows3, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002"}, tracker.Eligibility{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows4, err := p.BoardRows(t.Context(), "4", []tracker.IssueID{"10001", "10002"})
+	rows4, err := p.BoardRows(t.Context(), "4", []tracker.IssueID{"10001", "10002"}, tracker.Eligibility{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,8 @@ func TestBoardRowsReadThroughTheBoard(t *testing.T) {
 
 // TestBoardRowsWithDeletedIssues proves an id clause Jira refuses or
 // warns about, because it names an issue that no longer exists, is
-// listed again without it, and the deleted issue is Missing. The warned
+// listed again without it, and the deleted issue is Missing with no match
+// asked about it. The warned
 // listing also leaves out an issue that exists, which only the listing
 // made again returns.
 func TestBoardRowsWithDeletedIssues(t *testing.T) {
@@ -319,22 +320,38 @@ func TestBoardRowsWithDeletedIssues(t *testing.T) {
 			})
 			f.On("POST", bulkFetchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
 				jiratest.WantJSON(t, b, `{"issueIdsOrKeys":["10001","10002","10009"],"fields":["status"]}`)
-				jiratest.Reply(200, page("", one, two))(w, r, b)
+				jiratest.Reply(200, bulk(one, two))(w, r, b)
 			})
-			// The deleted issue is matched by no query, with no error
-			// (measured).
-			f.On("POST", matchPath, jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`))
-			rows, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002", "10009"})
-			if err != nil || len(rows.Rows) != 2 || !slices.Equal(rows.Missing, []tracker.IssueID{"10009"}) {
-				t.Fatalf("got %+v %v", rows, err)
+			// The bulk fetch proved the deleted issue absent: no match is
+			// asked about it.
+			matches := 0
+			f.On("POST", matchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+				matches++
+				jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`)(w, r, b)
+			})
+			rows, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002", "10009"}, tracker.Eligibility{})
+			if err != nil || len(rows.Rows) != 2 || !slices.Equal(rows.Missing, []tracker.IssueID{"10009"}) || matches != 0 {
+				t.Fatalf("got %+v %v after %d matches; want 10009 missing with no match", rows, err, matches)
 			}
 		})
 	}
-	// When every issue exists, the failure is the listing's own.
+	// Every issue asked is deleted: each is Missing, and no match is asked.
 	f, p := newSite(t)
+	f.On("GET", board3Issues, jiratest.Reply(400, `{"errorMessages":["An issue with key '10009' does not exist for field 'id'."]}`))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk()))
+	f.On("POST", matchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		t.Error("a match asked about issues the bulk fetch proved absent")
+		jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`)(w, r, b)
+	})
+	if rows, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10008", "10009"}, tracker.Eligibility{}); err != nil ||
+		len(rows.Rows) != 0 || !slices.Equal(rows.Missing, []tracker.IssueID{"10008", "10009"}) {
+		t.Fatalf("every issue deleted: %+v %v", rows, err)
+	}
+	// When every issue exists, the failure is the listing's own.
+	f, p = newSite(t)
 	f.On("GET", board3Issues, jiratest.Reply(400, `{"errorMessages":["bad"]}`))
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", nil))))
-	if _, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001"}); err == nil {
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", nil))))
+	if _, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001"}, tracker.Eligibility{}); err == nil {
 		t.Error("a refused listing of issues that exist read as empty")
 	}
 }
@@ -350,7 +367,7 @@ func TestCards(t *testing.T) {
 		if ids := v["issueIdsOrKeys"].([]any); len(ids) != 3 {
 			t.Errorf("asked for %v", ids)
 		}
-		jiratest.Reply(200, page("", issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", nil), done))(w, r, b)
+		jiratest.Reply(200, bulk(issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", nil), done))(w, r, b)
 	})
 	cards, err := p.Cards(t.Context(), []tracker.IssueID{"10001", "10002", "10009", "10001"})
 	if err != nil || len(cards.Cards) != 2 || !slices.Equal(cards.Missing, []tracker.IssueID{"10009"}) {
@@ -371,7 +388,7 @@ func TestCards(t *testing.T) {
 	if _, err := p.Cards(t.Context(), []tracker.IssueID{"WEB-1"}); !errors.Is(err, tracker.ErrInvalidInput) {
 		t.Errorf("a key for an ID: %v", err)
 	}
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", map[string]any{"status": nil}))))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", map[string]any{"status": nil}))))
 	if _, err := p.Cards(t.Context(), []tracker.IssueID{"10001"}); err == nil {
 		t.Error("a card without its status")
 	}

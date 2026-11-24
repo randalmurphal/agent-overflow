@@ -69,7 +69,13 @@ func (r *run) place(f *refreshed, n newIssue, boards []tracker.BoardID) (settled
 	if len(boards) == 0 {
 		return false, nil
 	}
-	read := r.readAt()
+	read, err := r.beginRead()
+	if err != nil {
+		if errors.Is(err, store.ErrTrackerCacheGone) {
+			f.ended = true
+		}
+		return false, err
+	}
 	r.calls++
 	pl, err := r.p.NewRows(r.ctx, n.issue, boards)
 	if err != nil {
@@ -107,7 +113,7 @@ func (r *run) place(f *refreshed, n newIssue, boards []tracker.BoardID) (settled
 // storePlaced stores br, read at read, and reports whether the store took
 // the row: false when it kept a row a later read stored or refused a new
 // row from a read that began before the board last lost rows.
-func (r *run) storePlaced(f *refreshed, br tracker.BoardRow, cat tracker.Catalog, read int64) (bool, error) {
+func (r *run) storePlaced(f *refreshed, br tracker.BoardRow, cat tracker.Catalog, read store.MirrorRead) (bool, error) {
 	lifetime, err := r.lifetime(br.Board)
 	if err != nil {
 		return false, err
@@ -122,6 +128,7 @@ func (r *run) storePlaced(f *refreshed, br tracker.BoardRow, cat tracker.Catalog
 		return false, fmt.Errorf("trackerapp: store the new issue's row on board %s: %w", br.Board, err)
 	}
 	r.markStructureDue(stored)
-	f.add(br.Board, changesOf(stored))
+	r.told(br.Board, changesOf(stored))
+	f.ch.add(changesOf(stored))
 	return !slices.Contains(stored.Superseded, string(br.Row.Card.ID)), nil
 }

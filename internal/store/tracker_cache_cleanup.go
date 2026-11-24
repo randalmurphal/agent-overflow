@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -32,7 +33,8 @@ var mirrorTableKeys = []struct{ table, keys string }{
 	{"tracker_cache_board_issues", "issue_id, board_id"},
 	{"tracker_cache_issue_sprints", "issue_id, sprint_id"},
 	{"tracker_cache_changes", "issue_id, gen, kind, seq"},
-	{"tracker_cache_issue_details", "rowid"},
+	{"tracker_cache_issue_bodies", "rowid"},
+	{"tracker_cache_open_tickets", "session, pump"},
 	{"tracker_cache_board_column_statuses", "board_id, status_id"},
 	{"tracker_cache_board_columns", "board_id, position"},
 	{"tracker_cache_sprints", "board_id, sprint_id"},
@@ -103,17 +105,21 @@ var mirrorUnkeptRootsSQL = `SELECT DISTINCT i.root_id FROM tracker_cache_issues 
 // detached root and then the root, the rows of every retired board and
 // then the board (starting a new lifetime of a board listed again), the
 // generations of changes a history staging left, and every unkept issue
-// with its changes, sprints and detail. Each transaction deletes at most
-// clearMirrorChunk rows, and pause
-// runs before each. It is idempotent, finishes what a crash or a failure
-// stopped, and costs one statement when nothing is pending. The two reads
-// that walk every root's boardless issues wait for a history read slot
+// with its changes, sprints and body. Each transaction deletes at most
+// clearMirrorChunk rows, and pause runs before each. When ctx ends it
+// stops before the next transaction and returns ctx's cause. It is
+// idempotent, finishes what a crash, a failure or a stop left, and costs
+// one statement when nothing is pending. The two reads that walk every
+// root's boardless issues wait for a history read slot
 // (mirrorReadSnapshot). Calls are serialized; a call that waited for
 // another runs after it. A failure of one item does not stop the others:
 // their errors are joined.
-func (s *Store) FinishMirrorCleanup(pause ChunkPause) error {
+func (s *Store) FinishMirrorCleanup(ctx context.Context, pause ChunkPause) error {
 	s.mirrorCleanup.Lock()
 	defer s.mirrorCleanup.Unlock()
+	if ctx.Err() != nil {
+		return fmt.Errorf("store: finish tracker mirror cleanup: %w: %w", errMirrorCleanupStopped, context.Cause(ctx))
+	}
 	pending, err := mirrorReadSnapshot(s, "check for tracker mirror cleanup", func(q sqlQueryer) (bool, error) {
 		var pending bool
 		err := q.QueryRow(mirrorCleanupPendingSQL).Scan(&pending)
@@ -125,41 +131,67 @@ func (s *Store) FinishMirrorCleanup(pause ChunkPause) error {
 	if !pending {
 		return nil
 	}
-	between := func() {
+	// The context is read after the pause, which may be long.
+	between := func() error {
 		if pause != nil {
 			pause()
 		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: %w", errMirrorCleanupStopped, context.Cause(ctx))
+		}
+		return nil
 	}
 	var errs []error
+	var stop error
+	// item runs one item of the cleanup unless the cleanup stopped, so a
+	// stop ends it with one error.
+	item := func(fn func() error) {
+		if stop != nil {
+			return
+		}
+		if err := fn(); errors.Is(err, errMirrorCleanupStopped) {
+			stop = err
+		} else {
+			errs = append(errs, err)
+		}
+	}
 	roots, err := queryInt64s(s.reader(), `SELECT id FROM tracker_cache_roots WHERE connection_id IS NULL ORDER BY id`)
 	errs = append(errs, err)
 	for _, root := range roots {
-		errs = append(errs, s.drainMirrorRoot(root, between))
+		item(func() error { return s.drainMirrorRoot(root, between) })
 	}
 	boards, err := queryMirrorBoardRefs(s.reader(), `SELECT root_id, board_id FROM tracker_cache_boards WHERE retired = 1 ORDER BY root_id, board_id`)
 	errs = append(errs, err)
 	for _, board := range boards {
-		errs = append(errs, s.drainMirrorBoard(board.root, board.board, between))
+		item(func() error { return s.drainMirrorBoard(board.root, board.board, between) })
 	}
-	errs = append(errs, s.finishMirrorHistoryStagings(between))
-	roots, err = mirrorReadSnapshot(s, "list tracker mirror roots with unkept issues", func(q sqlQueryer) ([]int64, error) {
-		return queryInt64s(q, mirrorUnkeptRootsSQL)
-	})
-	errs = append(errs, err)
-	for _, root := range roots {
-		errs = append(errs, s.sweepMirrorRoot(root, between))
+	item(func() error { return s.finishMirrorHistoryStagings(between) })
+	if stop == nil {
+		roots, err = mirrorReadSnapshot(s, "list tracker mirror roots with unkept issues", func(q sqlQueryer) ([]int64, error) {
+			return queryInt64s(q, mirrorUnkeptRootsSQL)
+		})
+		errs = append(errs, err)
+		for _, root := range roots {
+			item(func() error { return s.sweepMirrorRoot(root, between) })
+		}
 	}
-	if err := errors.Join(errs...); err != nil {
+	if err := errors.Join(append(errs, stop)...); err != nil {
 		return fmt.Errorf("store: finish tracker mirror cleanup: %w", err)
 	}
 	return nil
 }
 
+// errMirrorCleanupStopped is the error of a cleanup whose context ended
+// before one of its transactions.
+var errMirrorCleanupStopped = errors.New("stopped")
+
 // drainMirrorChunks runs one chunk statement until a run deletes less than
 // a chunk, each run its own transaction after between.
-func (s *Store) drainMirrorChunks(query string, between func(), args ...any) error {
+func (s *Store) drainMirrorChunks(query string, between func() error, args ...any) error {
 	for {
-		between()
+		if err := between(); err != nil {
+			return err
+		}
 		result, err := s.db.Exec(query, args...)
 		if err != nil {
 			return err
@@ -174,17 +206,21 @@ func (s *Store) drainMirrorChunks(query string, between func(), args ...any) err
 	}
 }
 
-// drainMirrorRoot deletes a detached root's rows in batches, then the root.
-func (s *Store) drainMirrorRoot(rootID int64, between func()) error {
+// drainMirrorRoot deletes a detached root's rows in batches, then the root
+// and its read clock.
+func (s *Store) drainMirrorRoot(rootID int64, between func() error) error {
 	for _, t := range mirrorTableKeys {
 		if err := s.drainMirrorChunks(mirrorRootChunkSQL[t.table], between, rootID); err != nil {
 			return fmt.Errorf("drain detached tracker mirror %d: %s: %w", rootID, t.table, err)
 		}
 	}
-	between()
+	if err := between(); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`DELETE FROM tracker_cache_roots WHERE id = ? AND connection_id IS NULL`, rootID); err != nil {
 		return fmt.Errorf("delete detached tracker mirror %d: %w", rootID, err)
 	}
+	s.forgetMirrorRead(rootID)
 	return nil
 }
 
@@ -192,13 +228,15 @@ func (s *Store) drainMirrorRoot(rootID int64, between func()) error {
 // batches, then the board, in the transaction that starts the board's next
 // lifetime when a project lists it again. Its sync state went when it was
 // retired.
-func (s *Store) drainMirrorBoard(rootID int64, boardID string, between func()) error {
+func (s *Store) drainMirrorBoard(rootID int64, boardID string, between func() error) error {
 	for _, table := range mirrorBoardTables {
 		if err := s.drainMirrorChunks(mirrorBoardChunkSQL[table], between, rootID, boardID); err != nil {
 			return fmt.Errorf("drain retired tracker mirror %d board %s: %s: %w", rootID, boardID, table, err)
 		}
 	}
-	between()
+	if err := between(); err != nil {
+		return err
+	}
 	action := fmt.Sprintf("store: delete retired tracker mirror %d board %s", rootID, boardID)
 	return s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
 		deleted, err := execChangedTx(tx, `DELETE FROM tracker_cache_boards WHERE root_id = ?1 AND board_id = ?2 AND retired = 1
@@ -217,8 +255,8 @@ func (s *Store) drainMirrorBoard(rootID int64, boardID string, between func()) e
 
 // finishMirrorHistoryStagings deletes, for each issue of a live root whose
 // history staging a crash or a failure stopped, its changes of every
-// generation but its history's.
-func (s *Store) finishMirrorHistoryStagings(between func()) error {
+// generation but its history's. A stop (an error from between) ends it.
+func (s *Store) finishMirrorHistoryStagings(between func() error) error {
 	type dirty struct {
 		root    int64
 		issue   string
@@ -234,6 +272,9 @@ func (s *Store) finishMirrorHistoryStagings(between func()) error {
 	errs := []error{err}
 	for _, d := range issues {
 		err := s.purgeMirrorHistoryGens(d.root, d.issue, d.history, between)
+		if errors.Is(err, errMirrorCleanupStopped) {
+			return err
+		}
 		if !errors.Is(err, ErrTrackerCacheGone) {
 			errs = append(errs, err)
 		}
@@ -242,11 +283,15 @@ func (s *Store) finishMirrorHistoryStagings(between func()) error {
 }
 
 // sweepMirrorRoot removes a live root's unkept issues, a transaction at a
-// time. A root detached meanwhile is left to its drain.
-func (s *Store) sweepMirrorRoot(rootID int64, between func()) error {
+// time. A root detached meanwhile is left to its drain. Every page either
+// moves past an issue or deletes a row (sweepMirrorPage fails otherwise),
+// so the pages end.
+func (s *Store) sweepMirrorRoot(rootID int64, between func() error) error {
 	after := ""
 	for {
-		between()
+		if err := between(); err != nil {
+			return err
+		}
 		next, more, err := s.sweepMirrorPage(rootID, after)
 		if errors.Is(err, ErrTrackerCacheGone) {
 			return nil
@@ -260,39 +305,69 @@ func (s *Store) sweepMirrorRoot(rootID int64, between func()) error {
 
 // mirrorSweepCandidatesSQL reads a page of a root's unkept issues by ID
 // after ?2, from idx_tracker_cache_issues_boardless, each with its changes
-// (at most one more than a chunk) and the rows its own delete cascades to:
-// the issue, its sprints and its detail. A board row cannot cascade: the
-// issue has none.
+// and its sprints (each counted to at most one more than a chunk) and
+// whether it has a body: with the issue itself, what its delete cascades
+// to. A board row cannot cascade: the issue has none.
 var mirrorSweepCandidatesSQL = `SELECT i.issue_id,
 	  (SELECT count(*) FROM (SELECT 1 FROM tracker_cache_changes c WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id
 	    LIMIT ` + strconv.Itoa(clearMirrorChunk+1) + `)),
-	  1 + (SELECT count(*) FROM tracker_cache_issue_sprints m WHERE m.root_id = i.root_id AND m.issue_id = i.issue_id)
-	    + (SELECT count(*) FROM tracker_cache_issue_details d WHERE d.root_id = i.root_id AND d.issue_id = i.issue_id)
+	  (SELECT count(*) FROM (SELECT 1 FROM tracker_cache_issue_sprints m WHERE m.root_id = i.root_id AND m.issue_id = i.issue_id
+	    LIMIT ` + strconv.Itoa(clearMirrorChunk+1) + `)),
+	  i.body_read_at > 0
 	FROM tracker_cache_issues i
 	WHERE i.root_id = ?1 AND i.board_rows = 0 AND i.issue_id > ?2 AND NOT ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
 	ORDER BY i.issue_id LIMIT ` + strconv.Itoa(mirrorSweepPage+1)
 
+// mirrorSweepSQL are the statements of a sweep page's partial removal of
+// an issue, each of ?1 root, ?2 issue and ?3 the rows to delete, the
+// first ?3 by key. Removing changes resets the issue's history times and
+// status time with the read orders of its evidence (mirrorStatusWriteSQL),
+// and moves its receipt, so a history read listed before it
+// is superseded rather than written over the removal, and an issue kept
+// again has its history read again and never shows it in part. Removing
+// sprints sets sprint_set to mirrorSprintSetPartial, so the next write
+// that admits the issue's card replaces its sprints whatever it names.
+var mirrorSweepSQL = struct{ resetHistory, changes, partialSprints, sprints string }{
+	resetHistory: `UPDATE tracker_cache_issues SET history_from = 0, history_for = 0, history_answered_at = 0, history_wait = 0,
+		status_since = 0, status_final_for = 0, status_floor_at = 0, status_read_at = 0, history_receipt = history_receipt + 1
+		WHERE root_id = ?1 AND issue_id = ?2
+		AND (history_from, history_for, history_answered_at, history_wait, status_since, status_final_for, status_floor_at, status_read_at)
+		    IS NOT (0, 0, 0, 0, 0, 0, 0, 0)`,
+	changes: `DELETE FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2
+		AND (gen, kind, seq) <= (SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2
+		                          ORDER BY gen, kind, seq LIMIT 1 OFFSET ?3 - 1)`,
+	partialSprints: `UPDATE tracker_cache_issues SET sprint_set = x'` + mirrorSprintSetPartial + `'
+		WHERE root_id = ?1 AND issue_id = ?2 AND sprint_set IS NOT x'` + mirrorSprintSetPartial + `'`,
+	sprints: `DELETE FROM tracker_cache_issue_sprints WHERE root_id = ?1 AND issue_id = ?2
+		AND sprint_id <= (SELECT sprint_id FROM tracker_cache_issue_sprints WHERE root_id = ?1 AND issue_id = ?2
+		                   ORDER BY sprint_id LIMIT 1 OFFSET ?3 - 1)`,
+}
+
 // sweepMirrorPage removes, in one transaction of at most clearMirrorChunk
 // deleted rows, the unkept issues after after that fit, leaf first: an
-// issue's changes, then the issue with its sprints and detail. An issue
-// whose changes do not fit has a batch of them deleted and its history
-// times and status time reset in the same transaction, so if it is kept
-// again its history is read again and never shows in part. A page that
-// deletes anything advances the root's sweep in its transaction, so a card,
-// detail or history read before it is refused (ErrTrackerCacheSwept). next
-// is the last issue fully removed (or after); more reports work after it.
+// issue's changes and sprints, then the issue with its body. Of the
+// first issue that does not fit it removes what the rest of the budget
+// holds, changes first, then sprints (mirrorSweepSQL), so a page never
+// stops at an issue it cannot finish: the page's first issue always
+// leaves it with a row deleted. A page that deletes anything advances the
+// root's sweep in its transaction, so a card, body or history read
+// before it is refused (ErrTrackerCacheSwept). next is the last issue
+// fully removed (or after); more reports work after it. A page with work
+// after it that neither moves past an issue nor deletes a row fails, so
+// its caller never reads the same page again.
 func (s *Store) sweepMirrorPage(rootID int64, after string) (next string, more bool, err error) {
 	action := fmt.Sprintf("store: sweep tracker mirror %d for unkept issues", rootID)
 	next = after
 	err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
 		type candidate struct {
 			id               string
-			changes, cascade int
+			changes, sprints int
+			body             bool
 		}
 		var page []candidate
 		err := scanMirrorRows(tx, mirrorSweepCandidatesSQL, []any{rootID, after}, func(r rowScanner) error {
 			var c candidate
-			err := r.Scan(&c.id, &c.changes, &c.cascade)
+			err := r.Scan(&c.id, &c.changes, &c.sprints, &c.body)
 			page = append(page, c)
 			return err
 		})
@@ -304,42 +379,57 @@ func (s *Store) sweepMirrorPage(rootID int64, after string) (next string, more b
 		}
 		budget := clearMirrorChunk
 		var whole []string
-		partial, partialChanges := "", 0
+		var partial candidate
 		for _, c := range page {
-			if cost := c.changes + c.cascade; cost <= budget {
+			cost := c.changes + c.sprints + 1
+			if c.body {
+				cost++
+			}
+			if cost <= budget {
 				whole, budget, next = append(whole, c.id), budget-cost, c.id
 				continue
 			}
-			if c.changes > 0 && budget > 0 {
-				partial, partialChanges = c.id, min(budget, c.changes)
-			}
-			more = true
+			partial, more = c, true
 			break
 		}
-		if err := deleteMirrorIssuesTx(tx, rootID, whole); err != nil {
+		deleted, err := deleteMirrorIssuesTx(tx, rootID, whole)
+		if err != nil {
 			return err
 		}
-		if len(whole) == 0 && partial == "" {
+		if partial.id != "" {
+			for _, step := range []struct {
+				what         string
+				held         int
+				mark, delete string
+			}{
+				{"changes", partial.changes, mirrorSweepSQL.resetHistory, mirrorSweepSQL.changes},
+				{"sprints", partial.sprints, mirrorSweepSQL.partialSprints, mirrorSweepSQL.sprints},
+			} {
+				n := min(budget, step.held)
+				if n == 0 {
+					continue
+				}
+				if _, err := tx.Exec(step.mark, rootID, partial.id); err != nil {
+					return fmt.Errorf("mark %s of %s removed in part: %w", step.what, partial.id, err)
+				}
+				removed, err := execCountTx(tx, step.delete, rootID, partial.id, n)
+				if err != nil {
+					return fmt.Errorf("delete %s of %s: %w", step.what, partial.id, err)
+				}
+				deleted, budget = deleted+removed, budget-n
+				if n < step.held {
+					break
+				}
+			}
+		}
+		if deleted == 0 {
+			if more && next == after {
+				return fmt.Errorf("a sweep page after %q deleted nothing and moved past no issue", after)
+			}
 			return nil
 		}
 		if _, err := tx.Exec(`UPDATE tracker_cache_roots SET sweep = sweep + 1 WHERE id = ?1`, rootID); err != nil {
 			return fmt.Errorf("advance sweep: %w", err)
-		}
-		if partial == "" {
-			return nil
-		}
-		// The reset advances the receipt, so a history read listed before it
-		// is superseded rather than written over the partial deletion.
-		if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_from = 0, history_for = 0, history_answered_at = 0, history_wait = 0,
-			status_since = 0, history_receipt = history_receipt + 1 WHERE root_id = ?1 AND issue_id = ?2
-			AND (history_from, history_for, history_answered_at, history_wait, status_since) IS NOT (0, 0, 0, 0, 0)`,
-			rootID, partial); err != nil {
-			return fmt.Errorf("reset history of %s: %w", partial, err)
-		}
-		if _, err := tx.Exec(`DELETE FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2
-			AND (gen, kind, seq) <= (SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2
-			                          ORDER BY gen, kind, seq LIMIT 1 OFFSET ?3)`, rootID, partial, partialChanges-1); err != nil {
-			return fmt.Errorf("delete changes of %s: %w", partial, err)
 		}
 		return nil
 	})
@@ -350,23 +440,36 @@ func (s *Store) sweepMirrorPage(rootID int64, after string) (next string, more b
 }
 
 // deleteMirrorIssuesTx deletes unkept issues with no board row, their
-// changes first.
-func deleteMirrorIssuesTx(tx *sql.Tx, rootID int64, issues []string) error {
+// changes first, and returns how many rows the deletes removed, the
+// cascades not counted.
+func deleteMirrorIssuesTx(tx *sql.Tx, rootID int64, issues []string) (int, error) {
 	if len(issues) == 0 {
-		return nil
+		return 0, nil
 	}
 	encoded, err := encodeMirrorIDs(issues)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := tx.Exec(`DELETE FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id IN (SELECT value FROM json_each(?2))`, rootID, encoded); err != nil {
-		return fmt.Errorf("delete changes of unkept issues: %w", err)
+	changes, err := execCountTx(tx, `DELETE FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id IN (SELECT value FROM json_each(?2))`, rootID, encoded)
+	if err != nil {
+		return 0, fmt.Errorf("delete changes of unkept issues: %w", err)
 	}
-	if _, err := tx.Exec(`DELETE FROM tracker_cache_issues WHERE root_id = ?1 AND issue_id IN (SELECT value FROM json_each(?2))
-		AND board_rows = 0`, rootID, encoded); err != nil {
-		return fmt.Errorf("delete unkept issues: %w", err)
+	removed, err := execCountTx(tx, `DELETE FROM tracker_cache_issues WHERE root_id = ?1 AND issue_id IN (SELECT value FROM json_each(?2))
+		AND board_rows = 0`, rootID, encoded)
+	if err != nil {
+		return 0, fmt.Errorf("delete unkept issues: %w", err)
 	}
-	return nil
+	return changes + removed, nil
+}
+
+// execCountTx runs query and returns the rows it changed.
+func execCountTx(tx *sql.Tx, query string, args ...any) (int, error) {
+	result, err := tx.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, err := result.RowsAffected()
+	return int(n), err
 }
 
 // mirrorBoardRef names a board of a root.

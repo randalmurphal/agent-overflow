@@ -19,6 +19,10 @@ import (
 
 const scenarioSite = "example.atlassian.net"
 
+// scenarioWindow is the mirror's history window (trackerapp.HistoryWindow),
+// the sprint window the scenarios read with.
+const scenarioWindow = 180 * 24 * time.Hour
+
 type scenarioClock struct {
 	mu  sync.Mutex
 	now time.Time
@@ -118,7 +122,7 @@ func newObservedScenario(t *testing.T, withTempo bool, onRequest func(trackerfak
 		t.Fatal(err)
 	}
 	t.Cleanup(jc.Close)
-	opts := Options{Jira: jc, Site: "https://" + scenarioSite}
+	opts := Options{Jira: jc, Site: "https://" + scenarioSite, SprintsFrom: func() time.Time { return clock.Now().Add(-scenarioWindow) }}
 	if withTempo {
 		tc, err := tempo.New(tempo.Options{
 			BaseURL: srv.TempoURL(), Version: "test", Issues: TempoIssues(jc),
@@ -193,7 +197,7 @@ func (s *scenario) detail(t *testing.T, id tracker.IssueID) tracker.Detail {
 
 func (s *scenario) row(t *testing.T, id tracker.IssueID) tracker.Row {
 	t.Helper()
-	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", []tracker.IssueID{id}))
+	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", []tracker.IssueID{id}, tracker.Eligibility{}))
 	if len(rows.Rows) != 1 {
 		t.Fatalf("rows of %s: %+v", id, rows)
 	}

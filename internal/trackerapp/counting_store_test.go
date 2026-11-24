@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"context"
 	"maps"
 	"sync"
 
@@ -60,9 +61,9 @@ func (c *countingStore) DetachMirror(id string) (bool, error) {
 	return c.Store.DetachMirror(id)
 }
 
-func (c *countingStore) FinishMirrorCleanup(pause store.ChunkPause) error {
+func (c *countingStore) FinishMirrorCleanup(ctx context.Context, pause store.ChunkPause) error {
 	c.count("FinishMirrorCleanup")
-	return c.Store.FinishMirrorCleanup(pause)
+	return c.Store.FinishMirrorCleanup(ctx, pause)
 }
 
 func (c *countingStore) GetMirrorSync(root int64, board string, now int64) (store.MirrorSync, bool, error) {
@@ -70,7 +71,7 @@ func (c *countingStore) GetMirrorSync(root int64, board string, now int64) (stor
 	return c.Store.GetMirrorSync(root, board, now)
 }
 
-func (c *countingStore) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (bool, error) {
+func (c *countingStore) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (store.MirrorSyncOutcome, bool, error) {
 	c.count("RecordMirrorSyncAttempt")
 	return c.Store.RecordMirrorSyncAttempt(root, board, a)
 }
@@ -85,14 +86,14 @@ func (c *countingStore) WriteMirrorRows(root int64, page store.MirrorRowPage) (s
 	return c.Store.WriteMirrorRows(root, page)
 }
 
-func (c *countingStore) UpsertMirrorCards(root, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, readAt int64) (store.MirrorChanges, error) {
+func (c *countingStore) UpsertMirrorCards(root, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, read store.MirrorRead) (store.MirrorChanges, error) {
 	c.count("UpsertMirrorCards")
-	return c.Store.UpsertMirrorCards(root, sweep, cards, catalog, readAt)
+	return c.Store.UpsertMirrorCards(root, sweep, cards, catalog, read)
 }
 
-func (c *countingStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (store.MirrorReconcile, error) {
+func (c *countingStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, read store.MirrorRead) (store.MirrorReconcile, error) {
 	c.count("ReconcileMirrorBoard")
-	return c.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, readAt, settledAt)
+	return c.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, read)
 }
 
 func (c *countingStore) ReplaceMirrorStructure(root int64, st store.MirrorStructure) (store.MirrorStructureWrite, error) {
@@ -100,34 +101,29 @@ func (c *countingStore) ReplaceMirrorStructure(root int64, st store.MirrorStruct
 	return c.Store.ReplaceMirrorStructure(root, st)
 }
 
-func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, readAt int64) ([]store.MirrorHistoryResult, bool, error) {
+func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error) {
 	c.count("ReplaceMirrorHistories")
-	return c.Store.ReplaceMirrorHistories(root, sweep, hs, catalog, readAt)
+	return c.Store.ReplaceMirrorHistories(root, sweep, hs, catalog, read)
 }
 
-func (c *countingStore) ListMirrorHistoryDue(root int64, now int64) ([]store.MirrorHistoryDue, bool, error) {
+func (c *countingStore) ListMirrorHistoryDue(root int64, now int64, first ...string) ([]store.MirrorHistoryDue, bool, error) {
 	c.count("ListMirrorHistoryDue")
-	return c.Store.ListMirrorHistoryDue(root, now)
+	return c.Store.ListMirrorHistoryDue(root, now, first...)
 }
 
-func (c *countingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error) {
-	c.count("StoreMirrorDetails")
-	return c.Store.StoreMirrorDetails(root, sweep, docs, openedAt, readAt)
+func (c *countingStore) StoreMirrorTickets(root, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog, opened, read store.MirrorRead) (store.MirrorTicketsWrite, error) {
+	c.count("StoreMirrorTickets")
+	return c.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
 }
 
-func (c *countingStore) ConfirmMirrorDetail(root int64, d store.MirrorDetail, openedAt int64) (store.MirrorDetailWrite, error) {
-	c.count("ConfirmMirrorDetail")
-	return c.Store.ConfirmMirrorDetail(root, d, openedAt)
+func (c *countingStore) ConfirmMirrorBody(root int64, b store.MirrorBody, opened store.MirrorRead) (bool, error) {
+	c.count("ConfirmMirrorBody")
+	return c.Store.ConfirmMirrorBody(root, b, opened)
 }
 
-func (c *countingStore) ListMirrorDetailStates(root int64, issues []string) ([]store.MirrorDetail, error) {
-	c.count("ListMirrorDetailStates")
-	return c.Store.ListMirrorDetailStates(root, issues)
-}
-
-func (c *countingStore) GetMirrorDetail(root int64, issue string) (store.MirrorDetail, bool, error) {
-	c.count("GetMirrorDetail")
-	return c.Store.GetMirrorDetail(root, issue)
+func (c *countingStore) GetMirrorBody(root int64, issue string) (store.MirrorBody, bool, error) {
+	c.count("GetMirrorBody")
+	return c.Store.GetMirrorBody(root, issue)
 }
 
 func (c *countingStore) GetMirrorBoard(root int64, board string) (store.MirrorStructure, bool, error) {
@@ -180,12 +176,22 @@ func (c *countingStore) ReadMirrorRefreshTargets(root int64, cards, details, boa
 	return c.Store.ReadMirrorRefreshTargets(root, cards, details, boards)
 }
 
-func (c *countingStore) ReplaceMirrorWorklogs(root int64, author, from, to string, readAt int64, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
+func (c *countingStore) ReplaceMirrorWorklogs(root int64, author, from, to string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
 	c.count("ReplaceMirrorWorklogs")
-	return c.Store.ReplaceMirrorWorklogs(root, author, from, to, readAt, logs)
+	return c.Store.ReplaceMirrorWorklogs(root, author, from, to, read, logs)
 }
 
 func (c *countingStore) ListMirrorWorklogs(root int64, author, from, to string) ([]store.MirrorWorklog, bool, error) {
 	c.count("ListMirrorWorklogs")
 	return c.Store.ListMirrorWorklogs(root, author, from, to)
+}
+
+func (c *countingStore) KeepMirrorTicket(root int64, issue string, session, pump int64, opened store.MirrorRead) (store.MirrorBind, bool, error) {
+	c.count("KeepMirrorTicket")
+	return c.Store.KeepMirrorTicket(root, issue, session, pump, opened)
+}
+
+func (c *countingStore) DropMirrorTicket(session, pump int64) (bool, error) {
+	c.count("DropMirrorTicket")
+	return c.Store.DropMirrorTicket(session, pump)
 }

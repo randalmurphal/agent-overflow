@@ -6,6 +6,7 @@ import (
 	"maps"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/secret"
 	"agent-overflow/internal/tracker"
@@ -14,6 +15,9 @@ import (
 	"agent-overflow/internal/tracker/tempo"
 	"agent-overflow/internal/tracker/trackerapi"
 )
+
+// allSprints is a sprint window that keeps every sprint a card names.
+func allSprints() time.Time { return time.Time{} }
 
 // The site every test runs against: example.atlassian.net with projects
 // WEB (10000) and APP (10001), scrum boards 3 (story points) and 4
@@ -113,7 +117,7 @@ func newJira(t *testing.T, f *jiratest.Server) *jira.Client {
 
 func newProvider(t *testing.T, f *jiratest.Server, tc *tempo.Client) *Provider {
 	t.Helper()
-	p, err := New(Options{Jira: newJira(t, f), Tempo: tc, Site: "https://example.atlassian.net"})
+	p, err := New(Options{Jira: newJira(t, f), Tempo: tc, Site: "https://example.atlassian.net", SprintsFrom: allSprints})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,6 +160,15 @@ func page(next string, issues ...map[string]any) string {
 		v["nextPageToken"] = next
 	}
 	return mustJSON(v)
+}
+
+// bulk is a bulk fetch's answer holding issues, with no issue Jira could
+// not return.
+func bulk(issues ...map[string]any) string {
+	if issues == nil {
+		issues = []map[string]any{}
+	}
+	return mustJSON(map[string]any{"issues": issues, "issueErrors": []any{}})
 }
 
 func mustJSON(v any) string {

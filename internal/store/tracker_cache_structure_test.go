@@ -19,7 +19,7 @@ func mustGetMirrorBoard(t *testing.T, s *Store, root int64, boardID string) Mirr
 
 func assertMirrorBoard(t *testing.T, s *Store, root int64, want MirrorStructure) {
 	t.Helper()
-	want.Catalog, want.ReadAt, want.Lifetime = MirrorCatalog{}, 0, currentLifetime(s, root, want.Board.ID)
+	want.Catalog, want.ReadAt, want.Lifetime = MirrorCatalog{}, mirrorReadAt(0), currentLifetime(s, root, want.Board.ID)
 	if got := mustGetMirrorBoard(t, s, root, want.Board.ID); !reflect.DeepEqual(got, want) {
 		t.Fatalf("board = %+v\nwant %+v", got, want)
 	}
@@ -62,7 +62,7 @@ func TestReplaceMirrorStructureReportsChanges(t *testing.T) {
 		mustReplaceStructure(t, s, root, webStructure(), true)
 		edited := webStructure()
 		edit(&edited)
-		edited.ReadAt = 2
+		edited.ReadAt = mirrorReadAt(2)
 		// A change of a user or status is the catalog's, which every board
 		// of the root shows; any other is the board's alone.
 		catalog := strings.HasPrefix(name, "user") || strings.HasPrefix(name, "status regroup")
@@ -71,7 +71,7 @@ func TestReplaceMirrorStructureReportsChanges(t *testing.T) {
 			continue
 		}
 		readBack := edited
-		readBack.Catalog, readBack.ReadAt, readBack.Lifetime = MirrorCatalog{}, 0, currentLifetime(s, root, "10")
+		readBack.Catalog, readBack.ReadAt, readBack.Lifetime = MirrorCatalog{}, mirrorReadAt(0), currentLifetime(s, root, "10")
 		if got := mustGetMirrorBoard(t, s, root, "10"); !reflect.DeepEqual(got, readBack) {
 			t.Errorf("%s: board = %+v\nwant %+v", name, got, readBack)
 		}
@@ -89,10 +89,10 @@ func TestMirrorStructureFollowsItsReadOrder(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	st := webStructure()
-	st.ReadAt = 20
+	st.ReadAt = mirrorReadAt(20)
 	mustReplaceStructure(t, s, root, st, true)
 	early := webStructure()
-	early.ReadAt = 10
+	early.ReadAt = mirrorReadAt(10)
 	early.Board.Name = "Old name"
 	early.Catalog.Users[0].Name = "Old user"
 	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, early)); err != nil || got.MirrorWrite != (MirrorWrite{Superseded: true}) {
@@ -100,17 +100,17 @@ func TestMirrorStructureFollowsItsReadOrder(t *testing.T) {
 	}
 	assertMirrorBoard(t, s, root, webStructure())
 	assertRows(t, s.db, `SELECT name FROM tracker_cache_users`, "User 1")
-	st.ReadAt = 30
+	st.ReadAt = mirrorReadAt(30)
 	mustReplaceStructure(t, s, root, st, false)
 	assertRows(t, s.db, `SELECT read_at FROM tracker_cache_boards WHERE board_id = '10'`, "30")
 	assertRows(t, s.db, `SELECT read_at || ' ' || changed_at FROM tracker_cache_users`, "30 20")
-	early.ReadAt = 25
+	early.ReadAt = mirrorReadAt(25)
 	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, early)); err != nil || got.MirrorWrite != (MirrorWrite{Superseded: true}) {
 		t.Fatalf("read between the two = %+v, %v", got, err)
 	}
 	assertRows(t, s.db, `SELECT read_at || ' ' || name FROM tracker_cache_boards WHERE board_id = '10'`, "30 WEB board")
 	assertRows(t, s.db, `SELECT name FROM tracker_cache_users`, "User 1")
-	early.ReadAt = 35
+	early.ReadAt = mirrorReadAt(35)
 	mustReplaceStructure(t, s, root, early, true)
 	assertRows(t, s.db, `SELECT read_at || ' ' || name FROM tracker_cache_boards WHERE board_id = '10'`, "35 Old name")
 }
@@ -158,19 +158,19 @@ func TestMirrorCatalogIsNeverRemovedByAStructure(t *testing.T) {
 		t.Fatalf("statuses by ID = %+v, %v", catalog, err)
 	}
 
-	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user1", Name: "Newer name"}}}, 3); err != nil || !changes.Catalog {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user1", Name: "Newer name"}}}, mirrorReadAt(3)); err != nil || !changes.Catalog {
 		t.Fatalf("later catalog = %+v, %v", changes, err)
 	}
-	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user1", Name: "Older name"}}}, 2); err != nil || changes.Catalog {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user1", Name: "Older name"}}}, mirrorReadAt(2)); err != nil || changes.Catalog {
 		t.Fatalf("earlier catalog = %+v, %v", changes, err)
 	}
 	assertRows(t, s.db, `SELECT name || ' ' || read_at FROM tracker_cache_users`, "Newer name 3")
 	newer, older := want.Statuses[0], want.Statuses[0]
 	newer.Name, older.Name = "Newer status", "Older status"
-	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{newer}}, 3); err != nil || !changes.Catalog {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{newer}}, mirrorReadAt(3)); err != nil || !changes.Catalog {
 		t.Fatalf("later status = %+v, %v", changes, err)
 	}
-	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{older}}, 2); err != nil || changes.Catalog {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{older}}, mirrorReadAt(2)); err != nil || changes.Catalog {
 		t.Fatalf("earlier status = %+v, %v", changes, err)
 	}
 	assertRows(t, s.db, `SELECT name || ' ' || read_at FROM tracker_cache_statuses WHERE status_id = '`+newer.ID+`'`, "Newer status 3")
@@ -187,7 +187,7 @@ func TestReplaceMirrorStructureRefusesInvalidReads(t *testing.T) {
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	for name, edit := range map[string]func(*MirrorStructure){
 		"no board ID":   func(st *MirrorStructure) { st.Board.ID = "" },
-		"no read time":  func(st *MirrorStructure) { st.ReadAt = 0 },
+		"no read time":  func(st *MirrorStructure) { st.ReadAt = mirrorReadAt(0) },
 		"unknown unit":  func(st *MirrorStructure) { st.Board.EstimateUnit = 3 },
 		"negative unit": func(st *MirrorStructure) { st.Board.EstimateUnit = -1 },
 		"field of none": func(st *MirrorStructure) {
@@ -208,11 +208,6 @@ func TestReplaceMirrorStructureRefusesInvalidReads(t *testing.T) {
 				st.Columns[0].Statuses = append(st.Columns[0].Statuses, fmt.Sprint(i))
 			}
 		},
-		"too many users": func(st *MirrorStructure) {
-			for i := range mirrorMaxCatalog {
-				st.Catalog.Users = append(st.Catalog.Users, MirrorUser{ID: fmt.Sprint("acc-", i)})
-			}
-		},
 		"sprint repeated":      func(st *MirrorStructure) { st.Sprints[1].ID = st.Sprints[0].ID },
 		"sprint without ID":    func(st *MirrorStructure) { st.Sprints[0].ID = "" },
 		"sprint state":         func(st *MirrorStructure) { st.Sprints[0].State = 4 },
@@ -229,7 +224,7 @@ func TestReplaceMirrorStructureRefusesInvalidReads(t *testing.T) {
 	} {
 		bad := webStructure()
 		bad.Board.Name = "Changed"
-		bad.ReadAt = 2
+		bad.ReadAt = mirrorReadAt(2)
 		edit(&bad)
 		if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, bad)); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
@@ -245,7 +240,7 @@ func TestReplaceMirrorStructureIsAtomic(t *testing.T) {
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustExec(t, s.db, `CREATE TRIGGER test_refuse_sprint BEFORE INSERT ON tracker_cache_sprints BEGIN SELECT RAISE(ABORT, 'sprint refused'); END`)
 	edited := webStructure()
-	edited.ReadAt = 2
+	edited.ReadAt = mirrorReadAt(2)
 	edited.Board.Name = "Renamed"
 	edited.Catalog.Users[0].Name = "Renamed user"
 	edited.Sprints = append(edited.Sprints, MirrorSprint{ID: "23", State: MirrorSprintFuture})

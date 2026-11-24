@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"slices"
 )
 
 type mirrorUserRow struct {
@@ -55,14 +56,15 @@ const (
 )
 
 // upsertMirrorCatalogTx upserts what a read that began at readAt names and
-// reports whether any content changed: one statement per kind it names,
-// and one more when a status entered or left the done groups, which
-// advances the revision of the boards whose rows have it.
+// reports whether any content changed: one statement per kind it names
+// for each mirrorCatalogChunk of them, and one more when a status entered
+// or left the done groups, which advances the revision of the boards whose
+// rows have it.
 func upsertMirrorCatalogTx(tx *sql.Tx, rootID int64, c MirrorCatalog, readAt int64) (bool, error) {
 	changed := false
-	if len(c.Users) > 0 {
-		users := make([]mirrorUserRow, len(c.Users))
-		for i, u := range c.Users {
+	for chunk := range slices.Chunk(c.Users, mirrorCatalogChunk) {
+		users := make([]mirrorUserRow, len(chunk))
+		for i, u := range chunk {
 			users[i] = mirrorUserRow{ID: u.ID, Name: u.Name, Data: hex.EncodeToString(u.Data)}
 		}
 		encoded, err := encodeMirrorJSON(users)
@@ -80,30 +82,29 @@ func upsertMirrorCatalogTx(tx *sql.Tx, rootID int64, c MirrorCatalog, readAt int
 			return false, fmt.Errorf("upsert users: %w", err)
 		}
 	}
-	if len(c.Statuses) == 0 {
-		return changed, nil
-	}
-	statuses := make([]mirrorStatusRow, len(c.Statuses))
-	for i, st := range c.Statuses {
-		statuses[i] = mirrorStatusRow(st)
-	}
-	encoded, err := encodeMirrorJSON(statuses)
-	if err != nil {
-		return false, err
-	}
 	var moved []string
-	err = scanMirrorRows(tx, mirrorStatusesUpsertSQL, []any{rootID, encoded, readAt}, func(r rowScanner) error {
-		var id string
-		var statusChanged, doneChanged bool
-		err := r.Scan(&id, &statusChanged, &doneChanged)
-		changed = changed || statusChanged
-		if doneChanged {
-			moved = append(moved, id)
+	for chunk := range slices.Chunk(c.Statuses, mirrorCatalogChunk) {
+		statuses := make([]mirrorStatusRow, len(chunk))
+		for i, st := range chunk {
+			statuses[i] = mirrorStatusRow(st)
 		}
-		return err
-	})
-	if err != nil {
-		return false, fmt.Errorf("upsert statuses: %w", err)
+		encoded, err := encodeMirrorJSON(statuses)
+		if err != nil {
+			return false, err
+		}
+		err = scanMirrorRows(tx, mirrorStatusesUpsertSQL, []any{rootID, encoded, readAt}, func(r rowScanner) error {
+			var id string
+			var statusChanged, doneChanged bool
+			err := r.Scan(&id, &statusChanged, &doneChanged)
+			changed = changed || statusChanged
+			if doneChanged {
+				moved = append(moved, id)
+			}
+			return err
+		})
+		if err != nil {
+			return false, fmt.Errorf("upsert statuses: %w", err)
+		}
 	}
 	if len(moved) == 0 {
 		return changed, nil
