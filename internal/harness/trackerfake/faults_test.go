@@ -90,7 +90,9 @@ func TestABodyCutShortAppliesNothing(t *testing.T) {
 	if _, err := conn.Write([]byte(head + body[:len(body)/2])); err != nil {
 		t.Fatal(err)
 	}
-	conn.Close()
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
 	got := w.await(t, func(r Request) bool { return r.Path == "/rest/api/3/issue/WEB-1/comment" })
 	if got.Route != "cut short" || got.Unhandled || got.Status != 0 {
 		t.Fatalf("logged %+v", got)

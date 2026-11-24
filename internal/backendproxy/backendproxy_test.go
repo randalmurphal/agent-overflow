@@ -89,7 +89,7 @@ func TestCarryTransfer_ACutDownloadStaysCut(t *testing.T) {
 	if err != nil {
 		return // cut before the headers: a failed transfer too
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if body, err := io.ReadAll(resp.Body); err == nil {
 		t.Fatalf("a cut download read as a whole file of %d bytes", len(body))
 	}

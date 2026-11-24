@@ -6851,7 +6851,7 @@ export function TrackerMoves(connectionID: string, issue: string): $CancellableP
  * TrackerProjects lists the tracker projects (Linear teams) the
  * connection's user can see, for choosing a project's boards. It asks
  * the tracker, a page at a time, and the whole walk ends at the method's
- * budget (trackerCatalogRun). Its context reaches the network, so it is
+ * budget (trackerRun). Its context reaches the network, so it is
  * not caller-bound.
  */
 export function TrackerProjects(connectionID: string): $CancellablePromise<trackerapp$0.ProjectView[]> {

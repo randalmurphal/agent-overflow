@@ -193,7 +193,7 @@ func TestATrackerTicketReachesItsClient(t *testing.T) {
 	}
 	var attached trackerapp.WriteView
 	err = json.NewDecoder(resp.Body).Decode(&attached)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil || resp.StatusCode != http.StatusOK || !appliedOnly(attached) {
 		t.Fatalf("the upload answered %d, %+v, %v", resp.StatusCode, attached, err)
 	}
@@ -210,7 +210,7 @@ func TestATrackerTicketReachesItsClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil || resp.StatusCode != http.StatusOK || !bytes.Equal(got, payload) {
 		t.Fatalf("the download answered %d, %d bytes, %v", resp.StatusCode, len(got), err)
 	}
@@ -251,7 +251,7 @@ func TestATrackerUploadCutShortAttachesNothing(t *testing.T) {
 	}
 	var v trackerapp.WriteView
 	err = json.NewDecoder(resp.Body).Decode(&v)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil || len(v.Parts) != 1 || v.Parts[0].State != "not_sent" || v.Parts[0].Failure == nil ||
 		v.Parts[0].Failure.Kind != string(trackerapp.FailureUpload) {
 		t.Fatalf("a short upload answered %d, %+v, %v", resp.StatusCode, v, err)
