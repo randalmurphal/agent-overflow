@@ -437,7 +437,10 @@ for (const a of OPS) for (const b of OPS) for (const c of OPS) {
 for (const asked of ['query', 'next', 'prev', 'reopen'] as const) {
   for (const other of OPS) {
     for (const settled of ['settleTrue', 'settleFalse'] as const) {
-      SEQUENCES.push(['hostDeferred', asked, other, settled], ['hostDeferred', asked, settled, other]);
+      SEQUENCES.push(['hostDeferred', asked, other, settled]);
+      // With a settle as the other operation, the line above already makes
+      // both orders.
+      if (other !== 'settleTrue' && other !== 'settleFalse') SEQUENCES.push(['hostDeferred', asked, settled, other]);
       // The rescan the other operation starts runs to its end first.
       SEQUENCES.push(['hostDeferred', asked, other, 'complete', settled], ['hostDeferred', asked, settled, other, 'complete']);
     }

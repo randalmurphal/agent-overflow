@@ -69,45 +69,21 @@ describe('screen presence composition', () => {
     vi.restoreAllMocks();
   });
 
-  it('states every open pane on a desktop', () => {
-    panes.open = ['t-a', 't-b'];
-    refreshScreenPresence();
-    expect(last()).toEqual({ focused: true, threads: ['t-a', 't-b'] });
-  });
-
-  it('states focus false while another app is in front, and keeps the panes', () => {
+  it.each<[string, Partial<typeof layout>, Partial<typeof panes>, Parameters<typeof setDocument>[0], Stated]>([
+    ['states every open pane on a desktop', {}, { open: ['t-a', 't-b'] }, {}, { focused: true, threads: ['t-a', 't-b'] }],
     // The second rule is exactly this case: not focused, still on screen.
-    panes.open = ['t-a'];
-    setDocument({ focused: false });
-    refreshScreenPresence();
-    expect(last()).toEqual({ focused: false, threads: ['t-a'] });
-  });
-
-  it('states nothing on screen while the document is hidden', () => {
-    panes.open = ['t-a'];
-    setDocument({ hidden: true });
-    refreshScreenPresence();
-    expect(last()).toEqual({ focused: false, threads: [] });
-  });
-
-  it('states only the revealed thread under the compact layout', () => {
-    layout.compact = true;
-    layout.screen = 'thread';
-    panes.open = ['t-a', 't-b'];
-    panes.focused = 't-b';
-    refreshScreenPresence();
+    ['states focus false while another app is in front, and keeps the panes', {}, { open: ['t-a'] }, { focused: false }, { focused: false, threads: ['t-a'] }],
+    ['states nothing on screen while the document is hidden', {}, { open: ['t-a'] }, { hidden: true }, { focused: false, threads: [] }],
     // The strip is one pane wide there, so the focused pane is the answer —
     // never the whole registry, which is what the desktop reads.
-    expect(last()).toEqual({ focused: true, threads: ['t-b'] });
-  });
-
-  it('states no thread while the compact layout is showing its list', () => {
-    layout.compact = true;
-    layout.screen = 'list';
-    panes.open = ['t-a'];
-    panes.focused = 't-a';
+    ['states only the revealed thread under the compact layout', { compact: true, screen: 'thread' }, { open: ['t-a', 't-b'], focused: 't-b' }, {}, { focused: true, threads: ['t-b'] }],
+    ['states no thread while the compact layout is showing its list', { compact: true, screen: 'list' }, { open: ['t-a'], focused: 't-a' }, {}, { focused: true, threads: [] }],
+  ])('%s', (_name, shownLayout, shownPanes, documentState, expected) => {
+    Object.assign(layout, shownLayout);
+    Object.assign(panes, shownPanes);
+    setDocument(documentState);
     refreshScreenPresence();
-    expect(last()).toEqual({ focused: true, threads: [] });
+    expect(last()).toEqual(expected);
   });
 
   it('recomputes on focus, blur and visibility, and stops on dispose', () => {

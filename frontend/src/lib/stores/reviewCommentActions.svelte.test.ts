@@ -812,35 +812,24 @@ describe('a write that fails after its pane is gone', () => {
   // In the order they failed, which the test does not fix.
   const messages = () => getToasts().map((toast) => toast.message).sort();
 
-  it('says each was not sent, once each, held until dismissed', async () => {
+  it.each([
+    ['says each was not sent, once each, held until dismissed', refused, `was not sent. ${REFUSED}`],
+    ['says an unconfirmed one was not confirmed, never that it was not sent', unconfirmed, `was not confirmed. ${UNCONFIRMED}`],
+  ])('%s', async (_name, failure, tail) => {
     const { writes } = await inFlight();
     disposePRReviewStates('tools-1');
-    for (const write of writes) write.reject(refused());
+    for (const write of writes) write.reject(failure());
     await settle();
-    expect(messages()).toEqual([
-      `Your comment on src/a.ts:11–12 was not sent. ${REFUSED}`,
-      `Your comment on src/a.ts:12 was not sent. ${REFUSED}`,
-      `Your comment on the pull request was not sent. ${REFUSED}`,
-      `Your edit to the comment on src/a.ts:12 was not sent. ${REFUSED}`,
-    ].sort());
-    for (const toast of getToasts()) {
-      expect(toast.duration).toBe(0);
-      expect(toast.action).toMatchObject({ label: 'Copy text', keep: true });
-    }
-  });
-
-  it('says an unconfirmed one was not confirmed, never that it was not sent', async () => {
-    const { writes } = await inFlight();
-    disposePRReviewStates('tools-1');
-    for (const write of writes) write.reject(unconfirmed());
-    await settle();
-    const tail = `was not confirmed. ${UNCONFIRMED}`;
     expect(messages()).toEqual([
       `Your comment on src/a.ts:11–12 ${tail}`,
       `Your comment on src/a.ts:12 ${tail}`,
       `Your comment on the pull request ${tail}`,
       `Your edit to the comment on src/a.ts:12 ${tail}`,
     ].sort());
+    for (const toast of getToasts()) {
+      expect(toast.duration).toBe(0);
+      expect(toast.action).toMatchObject({ label: 'Copy text', keep: true });
+    }
   });
 
   it('copies the comment\'s whole text and stays up', async () => {

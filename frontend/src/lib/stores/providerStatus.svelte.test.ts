@@ -1,7 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import {
   getProviderStatus,
-  resetForTest,
   type ProviderStatusEvent,
 } from './providerStatus.svelte';
 import { setupEventListeners } from './events';
@@ -136,15 +135,6 @@ describe('providerStatus store', () => {
 
       // Completely missing payload.
       emitWailsEvent('provider:status', null);
-      expect(getProviderStatus('claude')).toBeNull();
-    });
-  });
-
-  describe('resetForTest', () => {
-    it('clears the map so test cases do not leak state', () => {
-      emitWailsEvent('provider:status', statusEvent({ provider: 'claude', status: 'not_found' }));
-      expect(getProviderStatus('claude')).not.toBeNull();
-      resetForTest();
       expect(getProviderStatus('claude')).toBeNull();
     });
   });

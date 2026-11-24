@@ -259,25 +259,18 @@ describe('a suggestion\'s Apply', () => {
     expect(suggestions.pending(THREAD, COMMENT, SUGGESTION)).toBe(false);
   });
 
-  it('reads the PR again for a refusal that says the suggestion changed, by its code', async () => {
+  it.each([
+    ['reads the PR again for a refusal that says the suggestion changed, by its code', 'forge_suggestion_changed', 'The suggestion changed since it was loaded. Reload the pull request.', 1],
+    ['shows any other refusal under the suggestion without reading the PR again', 'forge_refused', 'The suggestion was not applied: the file is a symbolic link.', 0],
+  ])('%s', async (_name, code, sentence, refreshes) => {
     setBindingMock('ApplyPRSuggestion', async () => {
-      throw new TransportError('forge_suggestion_changed', 'The suggestion changed since it was loaded. Reload the pull request.');
+      throw new TransportError(code, sentence);
     });
     const { suggestions } = extras.state;
     await suggestions.apply(THREAD, COMMENT, SUGGESTION);
-    expect(suggestions.error(THREAD, COMMENT, SUGGESTION)).toBe('The suggestion changed since it was loaded. Reload the pull request.');
+    expect(suggestions.error(THREAD, COMMENT, SUGGESTION)).toBe(sentence);
     expect(suggestions.error(THREAD, COMMENT, { index: 1 })).toBeNull();
-    expect(host.refreshes).toBe(1);
-  });
-
-  it('shows any other refusal under the suggestion without reading the PR again', async () => {
-    setBindingMock('ApplyPRSuggestion', async () => {
-      throw new TransportError('forge_refused', 'The suggestion was not applied: the file is a symbolic link.');
-    });
-    const { suggestions } = extras.state;
-    await suggestions.apply(THREAD, COMMENT, SUGGESTION);
-    expect(suggestions.error(THREAD, COMMENT, SUGGESTION)).toBe('The suggestion was not applied: the file is a symbolic link.');
-    expect(host.refreshes).toBe(0);
+    expect(host.refreshes).toBe(refreshes);
   });
 
   it('does nothing with a refusal that answers after the pane\'s PR changed', async () => {
