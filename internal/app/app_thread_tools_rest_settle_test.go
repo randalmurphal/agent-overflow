@@ -135,37 +135,12 @@ func TestASpawnSettlesWhenItsWorkerRests(t *testing.T) {
 	}
 }
 
-// A later turn, here the person's, ends with the shell over: the request
-// settles once, with that turn's message.
-func TestAHeldSpawnSettlesOnceWithItsWorkersLaterMessage(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	f.watchAgentRows()
-	f.holdCallerSession()
-	later := append(restShellDone("bg-2", "task-2"), mockClaudeInitLine,
-		`{"type":"assistant","message":{"id":"msg-later","role":"assistant","content":[{"type":"text","text":"The deploy is green."}]}}`,
-		mockClaudeResultLine)
-	installMockClaudeTurns(t, f.app, [][]string{
-		append(restShellLaunch("bg-2", "task-2", "Watching the deploy."), mockClaudeResultLine),
-		later,
-	})
-	ack := f.spawnWorker(t, "watch the deploy")
-	f.awaitRestHold(t, ack)
-	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "how is it going?", SendMessageOptions{}); err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
-	if string(row.Answer) != "The deploy is green." || row.Revision != 1 {
-		t.Fatalf("settled %+v; want finished once with the later turn's message", row)
-	}
-	waitUntil(t, 10*time.Second, func() bool { return len(durableQueueRows(t, f.app, f.caller.ID)) == 1 })
-}
-
 // A person's message to a held worker opens a turn: from the send's write
 // to the turn's published round the worker is not at rest. The real start
 // is held after it claimed the send, with the shell the worker waited on
 // already ended: thread_status does not read it resting, a rest pass does
-// not settle the spawn, and the spawn settles with that turn's message.
+// not settle the spawn, and the spawn settles once with that turn's message,
+// waking the spawner once.
 func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -220,6 +195,7 @@ func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
 	if string(row.Answer) != "Answered." || row.Revision != 1 {
 		t.Fatalf("settled %+v; want finished once with the new turn's message", row)
 	}
+	waitUntil(t, 10*time.Second, func() bool { return len(durableQueueRows(t, f.app, f.caller.ID)) == 1 })
 }
 
 // gatedTurn is a turn that says text and holds its result until gate

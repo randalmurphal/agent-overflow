@@ -22,45 +22,28 @@ func newBootUpdaterTestApp(currentVersion string) *App {
 	return &App{updater: appupdate.New(currentVersion, appupdate.Deps{})}
 }
 
-func TestInitWSLUpdaterSkipsDevBuild(t *testing.T) {
-	t.Setenv(wsldistro.AppDataEnv, t.TempDir())
-	a := newBootUpdaterTestApp("dev")
-	initWSLUpdaterIn(a, "dev", t.TempDir(), appupdate.LauncherFailure{})
+// A dev build, a launch without the launcher-injected AppData path, and a
+// launch without a marker directory each leave WSL self-update unconfigured.
+func TestInitWSLUpdaterSkipsWithoutItsInputs(t *testing.T) {
+	appData, markerDir := t.TempDir(), t.TempDir()
+	for name, test := range map[string]struct{ version, appData, markerDir string }{
+		"dev build":       {"dev", appData, markerDir},
+		"no launcher env": {"0.0.10", "", markerDir},
+		"no marker dir":   {"0.0.10", appData, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(wsldistro.AppDataEnv, test.appData)
+			a := newBootUpdaterTestApp(test.version)
+			initWSLUpdaterIn(a, test.version, test.markerDir, appupdate.LauncherFailure{})
 
-	availability, err := a.CheckForUpdate()
-	if err != nil {
-		t.Fatalf("CheckForUpdate: %v", err)
-	}
-	if availability.Supported {
-		t.Fatal("dev build configured WSL self-update")
-	}
-}
-
-func TestInitWSLUpdaterRequiresLauncherEnv(t *testing.T) {
-	t.Setenv(wsldistro.AppDataEnv, "")
-	a := newBootUpdaterTestApp("0.0.10")
-	initWSLUpdaterIn(a, "0.0.10", t.TempDir(), appupdate.LauncherFailure{})
-
-	availability, err := a.CheckForUpdate()
-	if err != nil {
-		t.Fatalf("CheckForUpdate: %v", err)
-	}
-	if availability.Supported {
-		t.Fatal("WSL self-update configured without the launcher-injected AppData path")
-	}
-}
-
-func TestInitWSLUpdaterRequiresMarkerDir(t *testing.T) {
-	t.Setenv(wsldistro.AppDataEnv, t.TempDir())
-	a := newBootUpdaterTestApp("0.0.10")
-	initWSLUpdaterIn(a, "0.0.10", "", appupdate.LauncherFailure{})
-
-	availability, err := a.CheckForUpdate()
-	if err != nil {
-		t.Fatalf("CheckForUpdate: %v", err)
-	}
-	if availability.Supported {
-		t.Fatal("WSL self-update configured without a marker directory")
+			availability, err := a.CheckForUpdate()
+			if err != nil {
+				t.Fatalf("CheckForUpdate: %v", err)
+			}
+			if availability.Supported {
+				t.Fatal("WSL self-update configured")
+			}
+		})
 	}
 }
 

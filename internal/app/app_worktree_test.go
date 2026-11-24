@@ -873,7 +873,10 @@ func TestPrepareThreadWorktreeKeepsWorkspaceSwitchWhenRestartFails(t *testing.T)
 // Removing a thread's worktree used to refuse when a sibling thread referenced the same
 // worktree. Under the new cleanup semantics it auto-reattaches every thread
 // (including archived ones, which the user might restore later) back to the
-// project root and proceeds with the removal.
+// project root and proceeds with the removal. The auto-reattach sweep is
+// system-driven: it must NOT bump UpdatedAt, because the sidebar sorts
+// threads by updated_at DESC and a bump would jerk every reattached thread to
+// the top of the list, erasing the position the user had built up.
 func TestRemoveThreadWorktreeReattachesOtherThreadsToProjectRoot(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -902,6 +905,14 @@ func TestRemoveThreadWorktreeReattachesOtherThreadsToProjectRoot(t *testing.T) {
 	if err := app.store.CreateThread(other); err != nil {
 		t.Fatalf("CreateThread(other) error = %v", err)
 	}
+	persistedOwner, err := app.store.GetThread(owner.ID)
+	if err != nil {
+		t.Fatalf("GetThread(owner) error = %v", err)
+	}
+	persistedOther, err := app.store.GetThread(other.ID)
+	if err != nil {
+		t.Fatalf("GetThread(other) error = %v", err)
+	}
 
 	if _, err := app.RemoveOtherWorktree(attachedWorktreeRemoval(t, app, owner.ID)); err != nil {
 		t.Fatalf("RemoveOtherWorktree() error = %v", err)
@@ -920,70 +931,15 @@ func TestRemoveThreadWorktreeReattachesOtherThreadsToProjectRoot(t *testing.T) {
 	if refreshed.Branch != "main" {
 		t.Errorf("other thread Branch = %q, want main", refreshed.Branch)
 	}
-}
-
-// The auto-reattach sweep is system-driven: it must NOT bump UpdatedAt,
-// because the sidebar sorts threads by updated_at DESC and a bump would
-// jerk every reattached thread to the top of the list, erasing the
-// position the user had built up. Set known-old timestamps before the
-// removal and assert they survive intact.
-func TestRemoveThreadWorktreeDoesNotBumpReattachedThreadActivity(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	repo := initMainGitRepo(t)
-
-	project, err := app.ensureProjectForWorkspace(repo)
-	if err != nil {
-		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	if refreshed.UpdatedAt != persistedOther.UpdatedAt {
+		t.Errorf("other.UpdatedAt = %d, want %d (sweep should not bump)", refreshed.UpdatedAt, persistedOther.UpdatedAt)
 	}
-	owner := testThread("thread-worktree-owner-activity")
-	owner.ProjectID = project.ID
-	owner.WorkspacePath = repo
-	if err := app.store.CreateThread(owner); err != nil {
-		t.Fatalf("CreateThread(owner) error = %v", err)
-	}
-	worktreePath, err := worktreePathOf(app.PrepareThreadWorktree(owner.ID, "", "feature/activity-stable", false))
-	if err != nil {
-		t.Fatalf("PrepareThreadWorktree() error = %v", err)
-	}
-
-	other := testThread("thread-worktree-user-activity")
-	other.ProjectID = project.ID
-	other.WorkspacePath = worktreePath
-	other.WorktreePath = worktreePath
-	other.Branch = "feature/activity-stable"
-	if err := app.store.CreateThread(other); err != nil {
-		t.Fatalf("CreateThread(other) error = %v", err)
-	}
-
-	persistedOwner, err := app.store.GetThread(owner.ID)
-	if err != nil {
-		t.Fatalf("GetThread(owner) error = %v", err)
-	}
-	ownerBefore := persistedOwner.UpdatedAt
-	persistedOther, err := app.store.GetThread(other.ID)
-	if err != nil {
-		t.Fatalf("GetThread(other) error = %v", err)
-	}
-	otherBefore := persistedOther.UpdatedAt
-
-	if _, err := app.RemoveOtherWorktree(attachedWorktreeRemoval(t, app, owner.ID)); err != nil {
-		t.Fatalf("RemoveOtherWorktree() error = %v", err)
-	}
-
 	refreshedOwner, err := app.store.GetThread(owner.ID)
 	if err != nil {
 		t.Fatalf("GetThread(owner) after remove: %v", err)
 	}
-	if refreshedOwner.UpdatedAt != ownerBefore {
-		t.Errorf("owner.UpdatedAt = %d, want %d (sweep should not bump)", refreshedOwner.UpdatedAt, ownerBefore)
-	}
-	refreshedOther, err := app.store.GetThread(other.ID)
-	if err != nil {
-		t.Fatalf("GetThread(other) after remove: %v", err)
-	}
-	if refreshedOther.UpdatedAt != otherBefore {
-		t.Errorf("other.UpdatedAt = %d, want %d (sweep should not bump)", refreshedOther.UpdatedAt, otherBefore)
+	if refreshedOwner.UpdatedAt != persistedOwner.UpdatedAt {
+		t.Errorf("owner.UpdatedAt = %d, want %d (sweep should not bump)", refreshedOwner.UpdatedAt, persistedOwner.UpdatedAt)
 	}
 }
 
@@ -2152,86 +2108,66 @@ func claudeProjectSlugForTest(t *testing.T, path string) string {
 // next resume would fail with "No conversation found". The sweep relocates the
 // transcript to the root's slug AND preserves the session ref — it must never
 // clear the ref or silently start a fresh session.
+//
+// claude-tui runs the SAME `claude` CLI binary with cwd-keyed `--resume` and
+// persists its SessionRef through the same handleInit path as the headless
+// claude provider, so it bricks on a workspace change identically — and must
+// relocate identically. Its row guards the provider gate in
+// copyClaudeSessionForWorkspaceChange: scoping that gate to provider.Claude
+// alone silently strands every claude-tui transcript (the row fails on both
+// the relocate and the purge assertion without the claude-tui branch of the
+// gate).
 func TestRemoveThreadWorktreeRelocatesClaudeSessionAndKeepsRef(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	repo := initMainGitRepo(t)
+	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI)} {
+		t.Run(providerName, func(t *testing.T) {
+			t.Parallel()
+			env := setupWorktreeThreadForRelocate(t, "thread-"+providerName+"-relocate", providerName)
 
-	project, err := app.ensureProjectForWorkspace(repo)
-	if err != nil {
-		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
-	}
-	owner := testThread("thread-claude-relocate")
-	owner.ProjectID = project.ID
-	owner.WorkspacePath = repo
-	owner.Provider = string(provider.Claude)
-	if err := app.store.CreateThread(owner); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	worktreePath, err := worktreePathOf(app.PrepareThreadWorktree(owner.ID, "", "feature/relocate", false))
-	if err != nil {
-		t.Fatalf("PrepareThreadWorktree() error = %v", err)
-	}
+			// A session born inside the worktree: its transcript lives only
+			// under the worktree's slug in the App's provider home.
+			const sessionID = "01079734-relocate-test"
+			attachSessionToWorktree(t, env, sessionID, "")
+			placeWorktreeTranscript(t, env.home, env.worktreePath, sessionID)
+			srcTranscript := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.worktreePath), sessionID+".jsonl")
 
-	// Simulate a session born inside the worktree: its transcript lives only
-	// under the worktree's slug in the App's provider home.
-	home := testProviderHome(t, app)
+			if _, err := env.app.RemoveOtherWorktree(attachedWorktreeRemoval(t, env.app, env.owner.ID)); err != nil {
+				t.Fatalf("RemoveOtherWorktree() error = %v", err)
+			}
 
-	const sessionID = "01079734-relocate-test"
-	live, err := app.store.GetThread(owner.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	live.WorkspacePath = worktreePath
-	live.WorktreePath = worktreePath
-	live.SessionRef = sessionID
-	if err := app.store.UpdateThread(live); err != nil {
-		t.Fatalf("UpdateThread(set session) error = %v", err)
-	}
+			// Transcript relocated under the project-root slug, so resume with
+			// cwd == repo resolves it.
+			wantDest := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.repo), sessionID+".jsonl")
+			if _, err := os.Stat(wantDest); err != nil {
+				t.Errorf("transcript not relocated to project-root slug %q: %v", wantDest, err)
+			}
+			if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, env.app), sessionID, env.repo); err != nil {
+				t.Errorf("LocateSessionFile from repo root: %v", err)
+			} else if !samePath(located, wantDest) {
+				t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
+			}
 
-	wtDir := filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, worktreePath))
-	if err := os.MkdirAll(wtDir, 0o700); err != nil {
-		t.Fatalf("mkdir worktree slug dir: %v", err)
-	}
-	srcTranscript := filepath.Join(wtDir, sessionID+".jsonl")
-	if err := os.WriteFile(srcTranscript, []byte("{\"type\":\"user\"}\n"), 0o600); err != nil {
-		t.Fatalf("write transcript: %v", err)
-	}
+			// Move, not copy: the stale transcript under the deleted worktree's
+			// slug is purged so exactly one copy follows the thread (no orphan
+			// left behind on the dead slug, no stale copy the locate fallback
+			// could later surface).
+			if _, err := os.Stat(srcTranscript); !os.IsNotExist(err) {
+				t.Errorf("old worktree-slug transcript should be purged after move, stat err = %v", err)
+			}
 
-	if _, err := app.RemoveOtherWorktree(attachedWorktreeRemoval(t, app, owner.ID)); err != nil {
-		t.Fatalf("RemoveOtherWorktree() error = %v", err)
-	}
-
-	// Transcript relocated under the project-root slug, so resume with cwd ==
-	// repo resolves it.
-	wantDest := filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, repo), sessionID+".jsonl")
-	if _, err := os.Stat(wantDest); err != nil {
-		t.Errorf("transcript not relocated to project-root slug %q: %v", wantDest, err)
-	}
-	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, app), sessionID, repo); err != nil {
-		t.Errorf("LocateSessionFile from repo root: %v", err)
-	} else if !samePath(located, wantDest) {
-		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
-	}
-
-	// Move, not copy: the stale transcript under the deleted worktree's slug is
-	// purged so exactly one copy follows the thread (no orphan left behind on the
-	// dead slug, no stale copy the locate fallback could later surface).
-	if _, err := os.Stat(srcTranscript); !os.IsNotExist(err) {
-		t.Errorf("old worktree-slug transcript should be purged after move, stat err = %v", err)
-	}
-
-	// The session ref MUST survive — relocation preserves the conversation; it
-	// never clears the ref or starts fresh (the whole point of the fix).
-	refreshed, err := app.store.GetThread(owner.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if refreshed.SessionRef != sessionID {
-		t.Errorf("SessionRef = %q, want preserved %q (must not clear / start fresh)", refreshed.SessionRef, sessionID)
-	}
-	if !samePath(refreshed.WorkspacePath, repo) {
-		t.Errorf("WorkspacePath = %q, want project root %q", refreshed.WorkspacePath, repo)
+			// The session ref MUST survive — relocation preserves the
+			// conversation; it never clears the ref or starts fresh.
+			refreshed, err := env.app.store.GetThread(env.owner.ID)
+			if err != nil {
+				t.Fatalf("GetThread() error = %v", err)
+			}
+			if refreshed.SessionRef != sessionID {
+				t.Errorf("SessionRef = %q, want preserved %q (must not clear / start fresh)", refreshed.SessionRef, sessionID)
+			}
+			if !samePath(refreshed.WorkspacePath, env.repo) {
+				t.Errorf("WorkspacePath = %q, want project root %q", refreshed.WorkspacePath, env.repo)
+			}
+		})
 	}
 }
 
@@ -2344,52 +2280,6 @@ func TestRemoveThreadWorktreeRelocatesPendingForkRef(t *testing.T) {
 	}
 	if refreshed.PendingForkRef != forkID {
 		t.Errorf("PendingForkRef = %q, want preserved %q", refreshed.PendingForkRef, forkID)
-	}
-}
-
-// claude-tui runs the SAME `claude` CLI binary with cwd-keyed `--resume` and
-// persists its SessionRef through the same handleInit path as the headless
-// claude provider, so it bricks on a workspace change identically — and must
-// relocate identically. Regression guard for the provider gate in
-// copyClaudeSessionForWorkspaceChange: scoping that gate to provider.Claude
-// alone silently strands every claude-tui transcript (this test fails on both
-// the relocate and the purge assertion without the claude-tui branch of the
-// gate).
-func TestRemoveThreadWorktreeRelocatesClaudeTUISession(t *testing.T) {
-	t.Parallel()
-	env := setupWorktreeThreadForRelocate(t, "thread-claude-tui-relocate", string(provider.ClaudeTUI))
-
-	const sessionID = "claude-tui-session-keep"
-	attachSessionToWorktree(t, env, sessionID, "")
-	placeWorktreeTranscript(t, env.home, env.worktreePath, sessionID)
-	srcTranscript := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.worktreePath), sessionID+".jsonl")
-
-	if _, err := env.app.RemoveOtherWorktree(attachedWorktreeRemoval(t, env.app, env.owner.ID)); err != nil {
-		t.Fatalf("RemoveOtherWorktree() error = %v", err)
-	}
-
-	// Relocated under the project-root slug so `claude --resume` with cwd == repo
-	// resolves it.
-	wantDest := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.repo), sessionID+".jsonl")
-	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t, env.app), sessionID, env.repo); err != nil {
-		t.Errorf("LocateSessionFile from repo root: %v", err)
-	} else if !samePath(located, wantDest) {
-		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
-	}
-
-	// Move, not copy: the worktree-slug source is purged so exactly one copy
-	// follows the thread.
-	if _, err := os.Stat(srcTranscript); !os.IsNotExist(err) {
-		t.Errorf("old worktree-slug transcript should be purged after move, stat err = %v", err)
-	}
-
-	// Ref preserved — relocation never clears the ref or starts a fresh session.
-	refreshed, err := env.app.store.GetThread(env.owner.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if refreshed.SessionRef != sessionID {
-		t.Errorf("SessionRef = %q, want preserved %q (must not clear / start fresh)", refreshed.SessionRef, sessionID)
 	}
 }
 

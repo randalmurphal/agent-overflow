@@ -96,29 +96,6 @@ func TestAReplyReachesASenderThatAskedForNoNotification(t *testing.T) {
 	}
 }
 
-// The turn ending without a reply is still not delivered to a sender that
-// asked for nothing: only the explicit reply is owed.
-func TestAFinalMessageIsNotDeliveredToASenderThatAskedForNoNotification(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	f.mockClaude(t, "I started the tests")
-	f.holdCallerTurn(t)
-	ctx, pending := withThreadToolsPending(t.Context())
-	ack, err := f.adapter().Spawn(ctx, f.callerIdentity(), threadtools.SpawnCall{Prompt: "run the tests"})
-	pending.run(false)
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
-	f.app.threadRequestSettleLock(ack.Token)()
-
-	row := f.request(t, ack.Token)
-	if row.Notify || row.DeliveredAt != 0 {
-		t.Fatalf("request = notify %v, delivered at %d; want nothing armed or delivered", row.Notify, row.DeliveredAt)
-	}
-	f.nothingOwed(t)
-}
-
 // An archived caller is not brought back by a reply to a request nobody was
 // waiting on: archiving is how a person says they are done with the thread.
 // The reply stays on the request.
@@ -155,9 +132,11 @@ func TestAReplyDoesNotWakeAnArchivedSender(t *testing.T) {
 	f.nothingOwed(t)
 }
 
-// A reply that arrives after the turn already ended is delivered too, and it
-// is the only message: the final message nobody asked to be told about is
-// superseded, as it is in thread_status.
+// The turn ending without a reply is not delivered to a sender that asked
+// for nothing: only the explicit reply is owed. A reply that arrives after
+// the turn already ended is delivered, and it is the only message: the final
+// message nobody asked to be told about is superseded, as it is in
+// thread_status.
 func TestALateReplyToAnUnattendedRequestIsTheOnlyMessage(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -171,6 +150,10 @@ func TestALateReplyToAnUnattendedRequestIsTheOnlyMessage(t *testing.T) {
 	}
 	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
 	f.app.threadRequestSettleLock(ack.Token)()
+	if row := f.request(t, ack.Token); row.Notify || row.DeliveredAt != 0 {
+		t.Fatalf("request = notify %v, delivered at %d; want nothing armed or delivered", row.Notify, row.DeliveredAt)
+	}
+	f.nothingOwed(t)
 
 	late, err := f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{
 		Token: ack.Token, Text: "all gates pass at 0d8718b427",
