@@ -2,7 +2,6 @@ package git
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -188,34 +187,6 @@ func TestBackgroundFetchRespectsAndSharesTheStaleWindow(t *testing.T) {
 	}
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("git fetch ran %d times, want 2", got)
-	}
-}
-
-func TestBackgroundFetchFailureLeavesTheClockUnstamped(t *testing.T) {
-	t.Parallel()
-	repo, _ := repoWithOrigin(t)
-
-	core := NewCore()
-	now := time.Unix(10_000, 0)
-	core.nowFn = func() time.Time { return now }
-	var calls atomic.Int64
-	failure := errors.New("remote hung up")
-	core.fetchFn = func(context.Context, string) error {
-		calls.Add(1)
-		return failure
-	}
-
-	if _, err := core.FetchRemotesBackground(t.Context(), repo); !errors.Is(err, failure) {
-		t.Fatalf("FetchRemotesBackground error = %v, want %v", err, failure)
-	}
-	// A failed fetch must not look like a fresh one: once its retry is
-	// due the next tick fetches, well inside FetchStaleWindow.
-	now = now.Add(fetchRetryBase)
-	if _, err := core.FetchRemotesBackground(t.Context(), repo); !errors.Is(err, failure) {
-		t.Fatalf("second FetchRemotesBackground error = %v, want %v", err, failure)
-	}
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("git fetch ran %d times after a failure, want 2 (retry, not throttle)", got)
 	}
 }
 

@@ -205,6 +205,8 @@ func TestExtractRemoteHost(t *testing.T) {
 	}
 }
 
+// forgeFor dispatches on the detected forge; an unsupported origin gets the
+// nullForge (empty ID).
 func TestDetectForgeReadsOriginURL(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -222,9 +224,11 @@ func TestDetectForgeReadsOriginURL(t *testing.T) {
 			repo := initGitRepo(t)
 			testutil.RunGit(t, repo, "remote", "add", "origin", tc.originURL)
 
-			core := NewCore()
-			if got := core.DetectForge(repo); got != tc.want {
+			if got := NewCore().DetectForge(repo); got != tc.want {
 				t.Errorf("DetectForge() = %q, want %q", got, tc.want)
+			}
+			if got := NewCore().forgeFor(repo).ID(); got != tc.want {
+				t.Errorf("forgeFor().ID() = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -232,26 +236,16 @@ func TestDetectForgeReadsOriginURL(t *testing.T) {
 
 func TestDetectForgeReturnsEmptyForNoOrigin(t *testing.T) {
 	t.Parallel()
-	repo := initGitRepo(t)
-	core := NewCore()
-	if got := core.DetectForge(repo); got != "" {
-		t.Errorf("DetectForge() with no origin = %q, want empty", got)
-	}
-}
-
-func TestDetectForgeReturnsEmptyForNonRepo(t *testing.T) {
-	t.Parallel()
-	core := NewCore()
-	if got := core.DetectForge(t.TempDir()); got != "" {
-		t.Errorf("DetectForge() on non-repo = %q, want empty", got)
-	}
-}
-
-func TestDetectForgeReturnsEmptyForEmptyCwd(t *testing.T) {
-	t.Parallel()
-	core := NewCore()
-	if got := core.DetectForge(""); got != "" {
-		t.Errorf("DetectForge(\"\") = %q, want empty", got)
+	for _, tc := range []struct{ name, cwd string }{
+		{"repo without origin", initGitRepo(t)},
+		{"not a repo", t.TempDir()},
+		{"empty cwd", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NewCore().DetectForge(tc.cwd); got != "" {
+				t.Errorf("DetectForge(%q) = %q, want empty", tc.cwd, got)
+			}
+		})
 	}
 }
 
@@ -352,31 +346,5 @@ func TestInvalidateForgeCacheIsScopedToCwd(t *testing.T) {
 	}
 	if !hasB || entryB.forge != "gitlab" {
 		t.Error("InvalidateForgeCache should not have touched /repo/b")
-	}
-}
-
-// TestForgeForReturnsNullForUnsupported verifies the dispatch contract
-// that drives the "self-hosted GitLab" UX: Core.forgeFor returns a
-// nullForge whose every operation surfaces ErrUnsupportedForge.
-func TestForgeForReturnsNullForUnsupported(t *testing.T) {
-	t.Parallel()
-	repo := initGitRepo(t)
-	testutil.RunGit(t, repo, "remote", "add", "origin", "https://git.example.com/owner/repo.git")
-
-	core := NewCore()
-	f := core.forgeFor(repo)
-	if f.ID() != "" {
-		t.Errorf("ID() = %q, want empty (nullForge)", f.ID())
-	}
-}
-
-func TestForgeForReturnsGitHubForGitHubOrigin(t *testing.T) {
-	t.Parallel()
-	repo := initGitRepo(t)
-	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/owner/repo.git")
-
-	core := NewCore()
-	if got := core.forgeFor(repo).ID(); got != "github" {
-		t.Errorf("forgeFor() = %q, want github", got)
 	}
 }

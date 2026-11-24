@@ -433,67 +433,49 @@ func TestGitLabReactionsReadAcrossAnInvalidation(t *testing.T) {
 	}
 }
 
-// The same, for a read whose answer is stored: started before the
-// invalidation and finished after it, it is not kept.
+// The same, for a read whose answer or failure is stored: started before
+// the invalidation and finished after it, it is not kept.
 func TestGitLabReactionsStaleReadIsNotStored(t *testing.T) {
 	t.Parallel()
-	for _, reset := range []bool{false, true} {
-		reactions, started, release := gitlabBlockedReactions(func() forgeAPIAnswer { return gitlabReactionsAnswer() })
-		core, calls, _ := gitlabReactionsCore(t, reactions)
-		t.Cleanup(func() { releaseHeld(release) })
-		done := make(chan error, 1)
-		go func() {
-			_, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
-			done <- err
-		}()
-		<-started
-		if reset {
-			core.ResetForgeCaches()
-		} else if err := core.SetPRCommentReaction(t.Context(), gitlabTestRef(7), CommentTarget{ThreadID: "d", CommentID: "1"}, "heart", true); err != nil {
-			t.Fatal(err)
-		}
-		releaseHeld(release)
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
-		if _, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil); err != nil {
-			t.Fatal(err)
-		}
-		if n := countOps(calls, "MRNoteReactions"); n != 2 {
-			t.Fatalf("reset %t: the read in flight was kept (%d requests)", reset, n)
-		}
-	}
-}
-
-// A failure learned by a read that began before a reset is not kept past
-// it.
-func TestGitLabReactionsFailureAcrossAReset(t *testing.T) {
-	t.Parallel()
-	for name, answer := range map[string]forgeAPIAnswer{
-		"failure": {Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`},
+	for _, tc := range []struct {
+		name  string
+		reset bool
+		held  forgeAPIAnswer
+	}{
+		{"answer across the viewer's reaction write", false, gitlabReactionsAnswer()},
+		{"answer across a reset", true, gitlabReactionsAnswer()},
+		{"failure across a reset", true, forgeAPIAnswer{Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`}},
 	} {
-		var calls atomic.Int32
-		reactions, started, release := gitlabBlockedReactions(func() forgeAPIAnswer {
-			if calls.Add(1) == 1 {
-				return answer
+		t.Run(tc.name, func(t *testing.T) {
+			var answered atomic.Int32
+			reactions, started, release := gitlabBlockedReactions(func() forgeAPIAnswer {
+				if answered.Add(1) == 1 {
+					return tc.held
+				}
+				return gitlabReactionsAnswer()
+			})
+			core, calls, _ := gitlabReactionsCore(t, reactions)
+			t.Cleanup(func() { releaseHeld(release) })
+			done := make(chan error, 1)
+			go func() {
+				_, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+				done <- err
+			}()
+			<-started
+			if tc.reset {
+				core.ResetForgeCaches()
+			} else if err := core.SetPRCommentReaction(t.Context(), gitlabTestRef(7), CommentTarget{ThreadID: "d", CommentID: "1"}, "heart", true); err != nil {
+				t.Fatal(err)
 			}
-			return gitlabReactionsAnswer()
+			releaseHeld(release)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			read, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+			if err != nil || read.ReactionsUnavailable != "" || countOps(calls, "MRNoteReactions") != 2 {
+				t.Fatalf("the read in flight was kept: %q, %d requests, %v", read.ReactionsUnavailable, countOps(calls, "MRNoteReactions"), err)
+			}
 		})
-		core, ops, _ := gitlabReactionsCore(t, reactions)
-		t.Cleanup(func() { releaseHeld(release) })
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			_, _ = core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
-		}()
-		<-started
-		core.ResetForgeCaches()
-		releaseHeld(release)
-		<-done
-		read, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
-		if err != nil || read.ReactionsUnavailable != "" || countOps(ops, "MRNoteReactions") != 2 {
-			t.Fatalf("%s: kept past the reset: %q, %d requests, %v", name, read.ReactionsUnavailable, countOps(ops, "MRNoteReactions"), err)
-		}
 	}
 }
 
