@@ -253,7 +253,8 @@ to the computer and are rows in `tracker_connections`.
 - Removing a connection deletes its key file, then its row, which
   detaches its mirror's root in the same transaction; the mirror's rows are
   then deleted in bounded batches by the cleanup, which runs after each
-  turn off and removal and in the linked-issues loop, and a drain that a
+  turn off and removal, at the start and after each linked-issues round,
+  and a drain that a
   failure or a crash cuts short is finished by the next one. The Tempo connection that
   belongs to it goes with it. A failure part way leaves a row with no key
   file, never a key file with no row. Turning a connection off keeps the row and the key
@@ -1197,9 +1198,9 @@ remaining cards are read by page.
 - `StartLinkedSync` arms the linked-issues loop. `New` starts nothing.
   The app's boot step `tracker.start` (`startTrackers`, with the
   unattended work) arms it, and once the first client's reads settle runs
-  `FinishMirrorCleanup`, which finishes a drain the last run left with no
-  connection on; a failure of either is a boot failure every client
-  shows. Before clients are served it reads the connections once:
+  `FinishMirrorCleanup`, which finishes a drain the last run left; the
+  loop runs one only after each of its rounds. A failure of either is a
+  boot failure every client shows. Before clients are served it reads the connections once:
   70 µs with a 20,000-issue mirror and 50 kept tickets. After the first
   reads, the cleanup with nothing pending costs 0.1 ms, and a drain of a
   detached 20,000-issue root 1.06 s in 542 writes of at most 15 ms.

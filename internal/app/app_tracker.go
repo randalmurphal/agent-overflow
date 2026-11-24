@@ -141,8 +141,8 @@ func (a *App) initTrackers() error {
 // startTrackers is the trackers' boot step: it arms the linked-issues
 // loop, which waits for the first client's reads before its first round,
 // and finishes, once they settle, the mirror cleanup an earlier run left
-// unfinished. The loop runs that cleanup itself only while a connection
-// is on, so a drain a removal left with none on finishes here. Before the
+// unfinished. That cleanup is this step's alone: the loop runs one only
+// after a round, while a connection is on and a client connected. Before the
 // first reads settle it reads the connections once and nothing that grows
 // with the mirror. A failure of either is a boot failure.
 func (a *App) startTrackers() error {
