@@ -17,8 +17,9 @@ func trackerSeed(site string) json.RawMessage {
 
 // The fake trackers serve nothing until a seed, then the sites the first
 // seed named: the App's tracker clients reach them through Origin, a spec
-// through the answer, and every request lands in the log, which a reset
-// empties along with the App's tracker connections.
+// through the answer, and every request lands in the log. A reset ends
+// the App's tracker connections, the log and the origins, so the next
+// seed serves the sites it names.
 func TestHarnessTrackersServeTheirSeedAndResetWithTheHarness(t *testing.T) {
 	trackers := NewTrackerFake()
 	t.Cleanup(trackers.Close)
@@ -81,8 +82,19 @@ func TestHarnessTrackersServeTheirSeedAndResetWithTheHarness(t *testing.T) {
 	if log, err := h.HarnessTrackerRequests(0); err != nil || len(log.Requests) != 0 {
 		t.Fatalf("the request log after a reset = %+v, %v", log, err)
 	}
-	if _, err := h.HarnessTrackerSeed(trackerSeed("example.atlassian.net")); err != nil {
-		t.Fatalf("a seed of the same site after a reset: %v", err)
+	if _, err := trackers.Origin(store.TrackerKindJira, "https://example.atlassian.net"); err == nil {
+		t.Fatal("Origin answered a site the reset dropped")
+	}
+	// The next seed, of another site, starts the origins it names.
+	after, err := h.HarnessTrackerSeed(trackerSeed("other.atlassian.net"))
+	if err != nil {
+		t.Fatalf("a seed of another site after a reset: %v", err)
+	}
+	if got, err := trackers.Origin(store.TrackerKindJira, "https://other.atlassian.net"); err != nil || got != after.Jira["other.atlassian.net"] {
+		t.Fatalf("Origin of the site seeded after the reset = %q, %v, want %q", got, err, after.Jira["other.atlassian.net"])
+	}
+	if _, err := trackers.Origin(store.TrackerKindJira, "https://example.atlassian.net"); err == nil {
+		t.Fatal("Origin answered the site the seed before the reset named")
 	}
 }
 

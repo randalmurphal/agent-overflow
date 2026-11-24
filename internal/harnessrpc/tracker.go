@@ -12,15 +12,17 @@ import (
 )
 
 // TrackerFake is a harness boot's issue trackers: one trackerfake engine,
-// served on loopback from the first HarnessTrackerSeed. The boot gives
+// served on loopback from the first HarnessTrackerSeed after the boot or
+// a HarnessReset. The boot gives
 // Origin to the App as its tracker origin before Start, so every tracker
 // client of the App reaches the fake and nothing else.
 type TrackerFake struct {
 	engine *trackerfake.Engine
 
 	mu sync.Mutex
-	// servers are the engine's origins, started by the first seed with
-	// the Jira sites it names; nil before it.
+	// servers are the engine's origins, started by the first seed since
+	// the boot or the last reset with the Jira sites it names; nil before
+	// it.
 	servers *trackerfake.Servers
 }
 
@@ -31,7 +33,8 @@ func NewTrackerFake() *TrackerFake {
 
 // Origin is where a tracker client of the App connects for a connection
 // of kind on site (trackerapp.Origin): the fake's server for it. Before a
-// seed, and for a Jira site the first seed did not name, it refuses.
+// seed, and for a Jira site the seed that started the servers did not
+// name, it refuses.
 func (f *TrackerFake) Origin(kind, site string) (string, error) {
 	f.mu.Lock()
 	servers := f.servers
@@ -73,10 +76,10 @@ type TrackerOrigins struct {
 	Linear string            `json:"linear"`
 }
 
-// seed seeds the engine with fixture and answers where its tenants are served, the servers started
-// by the first seed with the Jira sites it names. A later seed that names
-// a Jira site the servers do not serve is refused, before it seeds
-// anything.
+// seed seeds the engine with fixture and answers where its tenants are
+// served, the servers started by the first seed since the boot or the
+// last reset with the Jira sites it names. A later seed that names a Jira
+// site the servers do not serve is refused, before it seeds anything.
 func (f *TrackerFake) seed(fixture trackerfake.Fixture) (TrackerOrigins, error) {
 	sites := make([]string, len(fixture.Jira))
 	for i, s := range fixture.Jira {
@@ -112,9 +115,10 @@ func (f *TrackerFake) seed(fixture trackerfake.Fixture) (TrackerOrigins, error) 
 // HarnessTrackerSeed adds Jira sites, Tempo accounts and Linear
 // workspaces to the fake trackers (the fixture format is
 // trackerfake.Fixture), replacing any seeded under the same site or
-// workspace key, and answers where each is served. The first seed fixes
-// the Jira sites served; a later seed naming another is refused.
-// HarnessReset clears the seeded tenants and the request log.
+// workspace key, and answers where each is served. The first seed after
+// the boot or a HarnessReset fixes the Jira sites served; a later seed
+// naming another is refused. HarnessReset clears the seeded tenants, the
+// request log and the servers.
 func (h *Harness) HarnessTrackerSeed(raw json.RawMessage) (TrackerOrigins, error) {
 	if h.config.Trackers == nil {
 		return TrackerOrigins{}, errors.New("this harness boot has no fake trackers")
@@ -145,7 +149,21 @@ func (h *Harness) resetTrackers() error {
 		}
 	}
 	if h.config.Trackers != nil {
-		h.config.Trackers.engine.Reset()
+		h.config.Trackers.reset()
 	}
 	return nil
+}
+
+// reset empties the engine and stops the servers, so the next seed starts
+// the origins it names. The App's tracker connections are gone first
+// (resetTrackers), so no client of them is left to reach the servers.
+// It holds mu throughout, so a seed lands before it or after it whole.
+func (f *TrackerFake) reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.servers != nil {
+		f.servers.Close()
+		f.servers = nil
+	}
+	f.engine.Reset()
 }
