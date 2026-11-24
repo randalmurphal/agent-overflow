@@ -155,16 +155,6 @@ describe('PerItemSmoother', () => {
     b.dispose();
   });
 
-  it('seeds revealed = received on mid-flight start (no jump, no callback)', () => {
-    const { clock, reveals, smoother } = makeSmoother(
-      'already revealed text',
-    );
-    expect(smoother.getRevealed()).toBe('already revealed text');
-    expect(smoother.isCaughtUp()).toBe(true);
-    expect(clock.pendingCount()).toBe(0);
-    expect(reveals).toEqual([]);
-  });
-
   it('reveals one or more word units per tick at the base rate', () => {
     const { clock, reveals, smoother } = makeSmoother();
     smoother.appendDelta('hello world foo bar baz');
@@ -338,8 +328,10 @@ describe('PerItemSmoother', () => {
     // wire from there — the seed text is already on screen, so replaying
     // it would be a visible rewind.
     const { clock, reveals, smoother } = makeSmoother('already on screen ');
+    expect(smoother.getRevealed()).toBe('already on screen ');
     expect(smoother.isCaughtUp()).toBe(true);
     expect(clock.pendingCount()).toBe(0);
+    expect(reveals).toEqual([]);
 
     smoother.appendDelta('and the rest arrives');
     drain(clock, smoother);
@@ -385,23 +377,19 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
     return smoother.getRevealed().length;
   }
 
-  it('drains a large burst at (not above) the rate ceiling on a 60Hz display', () => {
-    // Ceiling-relative bounds: word-unit quantization and fractional
-    // budget land a touch below the exact ceiling — acceptable; the
-    // ceiling is an upper bound, and the lower bound proves the drain
-    // genuinely runs NEAR it rather than at the 160cps base rate.
-    const revealed = revealAfterOneSecond(1000 / 60);
+  // Ceiling-relative bounds: word-unit quantization and fractional budget
+  // land a touch below the exact ceiling — acceptable; the ceiling is an
+  // upper bound, and the lower bound proves the drain genuinely runs NEAR
+  // it rather than at the 160cps base rate. At 165Hz the per-tick-only
+  // ceiling revealed cap × 165 ≈ 2310 chars; the rate clamp holds it at
+  // the refresh-independent ceiling.
+  it.each([
+    ['drains a large burst at (not above) the rate ceiling on a 60Hz display', 60],
+    ['holds the ceiling on a 165Hz display instead of scaling with refresh', 165],
+  ])('%s', (_name, hz) => {
+    const revealed = revealAfterOneSecond(1000 / hz);
     expect(revealed).toBeGreaterThan(MAX_ADAPTIVE_CHARS_PER_SEC * 0.8);
     expect(revealed).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC + 20);
-  });
-
-  it('holds the ceiling on a 165Hz display instead of scaling with refresh', () => {
-    const at165 = revealAfterOneSecond(1000 / 165);
-    expect(at165).toBeGreaterThan(MAX_ADAPTIVE_CHARS_PER_SEC * 0.8);
-    // THE regression bound: the per-tick-only ceiling revealed
-    // cap × 165 ≈ 2310 chars here; the rate clamp holds it at the
-    // refresh-independent ceiling.
-    expect(at165).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC + 20);
   });
 
   it('bounds DOM-mutation cadence on a 165Hz display (refresh decoupling)', () => {
@@ -535,25 +523,21 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
     return smoother.getRevealed().length / 2;
   }
 
-  it('reaches the rate ceiling at 60Hz on four-letter words', () => {
-    // Word alignment carries the budget a unit does not fit into the next
-    // tick; the per-tick cap must leave room for the units that then fit
-    // together, or the cap, not the rate, is the ceiling (a cap of seven
-    // revealed one 'abc ' unit a frame: 240 cps).
-    const cps = ceilingThroughput(60);
+  // At 60Hz, word alignment carries the budget a unit does not fit into the
+  // next tick; the per-tick cap must leave room for the units that then fit
+  // together, or the cap, not the rate, is the ceiling (a cap of seven
+  // revealed one 'abc ' unit a frame: 240 cps). A slow paint is not a
+  // stall: a tick accrues its whole elapsed time up to
+  // MAX_REVEAL_TICK_DT_MS, so a 30Hz or 20Hz paint still drains at the
+  // ceiling (a 30ms bound cut 30Hz to 288 cps and 20Hz to 192 cps).
+  it.each([
+    ['reaches the rate ceiling at 60Hz on four-letter words', 60],
+    ['keeps the rate ceiling on a slow 30Hz paint', 30],
+    ['keeps the rate ceiling on a slow 20Hz paint', 20],
+  ])('%s', (_name, hz) => {
+    const cps = ceilingThroughput(hz);
     expect(cps).toBeGreaterThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 0.95);
     expect(cps).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 1.05);
-  });
-
-  it('keeps the rate ceiling on slow paints down to 20Hz', () => {
-    // A slow paint is not a stall: a tick accrues its whole elapsed time
-    // up to MAX_REVEAL_TICK_DT_MS, so a 30Hz or 20Hz paint still drains at
-    // the ceiling (a 30ms bound cut 30Hz to 288 cps and 20Hz to 192 cps).
-    for (const hz of [30, 20]) {
-      const cps = ceilingThroughput(hz);
-      expect(cps).toBeGreaterThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 0.95);
-      expect(cps).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 1.05);
-    }
   });
 
   it('keeps the rate ceiling for a pane the frame gate holds off', () => {
@@ -747,15 +731,17 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
     }
   });
 
-  it('extends an unrevealed word unit across provider chunk boundaries', () => {
+  it.each([
+    ['extends an unrevealed word unit across provider chunk boundaries', ['hel', 'lo '], 'hello '],
+    ['keeps a leading-whitespace unit intact across provider chunks', ['  ', 'hello', ' '], '  hello '],
+  ])('%s', (_name, chunks, unit) => {
     const { clock, reveals, smoother } = makeSmoother();
-    smoother.appendDelta('hel');
-    smoother.appendDelta('lo ');
+    for (const chunk of chunks) smoother.appendDelta(chunk);
 
     drain(clock, smoother);
 
-    expect(reveals.map((entry) => entry.delta)).toEqual(['hello ']);
-    expect(smoother.getRevealed()).toBe('hello ');
+    expect(reveals.map((entry) => entry.delta)).toEqual([unit]);
+    expect(smoother.getRevealed()).toBe(unit);
   });
 
   it('starts a new unit when a provider continues a word after its prefix was revealed', () => {
@@ -769,17 +755,6 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
 
     expect(reveals.map((entry) => entry.delta)).toEqual(['hel', 'lo ']);
     expect(smoother.getRevealed()).toBe('hello ');
-  });
-
-  it('keeps a leading-whitespace unit intact across provider chunks', () => {
-    const { clock, reveals, smoother } = makeSmoother();
-    smoother.appendDelta('  ');
-    smoother.appendDelta('hello');
-    smoother.appendDelta(' ');
-
-    drain(clock, smoother);
-
-    expect(reveals.map((entry) => entry.delta)).toEqual(['  hello ']);
   });
 
   it('preserves source and reveal order across source-part compaction', () => {

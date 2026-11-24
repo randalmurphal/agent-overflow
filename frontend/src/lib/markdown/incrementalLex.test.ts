@@ -377,37 +377,23 @@ describe('incrementalLex streamed equivalence', () => {
     expect(reuseChecked).toBeGreaterThan(20);
   });
 
-  it('handles grow → replace → grow transitions', () => {
-    const listA = bullets(10, (i) => `- alpha ${i}`);
-    const listB = bullets(10, (i) => `1. beta ${i}`);
+  it.each([
+    ['handles grow → replace → grow transitions', bullets(10, (i) => `1. beta ${i}`), 'list-append'],
+    ['handles a list replaced by a table and back', tableOf(10, (i) => `| ${i} | value ${i} | ok |`), 'table-append'],
+  ])('%s', (_name, replacement, descentPath) => {
     const cache = createIncrementalLexCache();
-    for (const prefix of prefixes(listA, [21])) {
+    for (const prefix of prefixes(bullets(10, (i) => `- alpha ${i}`), [21])) {
       incrementalLex(prefix, [], cache, parseIncompleteMarkdown);
     }
     // Wholesale replacement (thread switch, correction) must fall back to a
     // full lex, then resume descending on the new stream.
     let descentsAfterReplace = 0;
-    for (const prefix of prefixes(listB, [21])) {
+    for (const prefix of prefixes(replacement, [21])) {
       const tokens = incrementalLex(prefix, [], cache, parseIncompleteMarkdown);
       expect(JSON.stringify(tokens)).toBe(JSON.stringify(fullReference(prefix, true)));
-      if (cache.lastPath === 'list-append') descentsAfterReplace += 1;
+      if (cache.lastPath === descentPath) descentsAfterReplace += 1;
     }
     expect(descentsAfterReplace).toBeGreaterThan(0);
-  });
-
-  it('handles a list replaced by a table and back', () => {
-    const cache = createIncrementalLexCache();
-    const table = tableOf(10, (i) => `| ${i} | value ${i} | ok |`);
-    for (const prefix of prefixes(bullets(10, (i) => `- alpha ${i}`), [21])) {
-      incrementalLex(prefix, [], cache, parseIncompleteMarkdown);
-    }
-    let tableDescents = 0;
-    for (const prefix of prefixes(table, [21])) {
-      const tokens = incrementalLex(prefix, [], cache, parseIncompleteMarkdown);
-      expect(JSON.stringify(tokens)).toBe(JSON.stringify(fullReference(prefix, true)));
-      if (cache.lastPath === 'table-append') tableDescents += 1;
-    }
-    expect(tableDescents).toBeGreaterThan(0);
   });
 
   it('is idempotent for an unchanged input', () => {
@@ -957,36 +943,17 @@ describe('parseBlocks trailing-block descent', () => {
     expect(sawDescentState, `descent record must engage on a trailing ${kind}`).toBe(true);
   };
 
-  it('matches the fresh parse at every step of a growing list document', () => {
-    streamedBlocks(
-      `An opening paragraph that commits.\n\n${bullets(40, (i) => `- Item ${i} with \`inline\` and **markup** to lex.`)}`,
-      21,
-      'list',
-    );
-  });
-
-  it('matches the fresh parse at every step of a growing table document', () => {
-    streamedBlocks(
-      `An opening paragraph that commits.\n\n${tableOf(30, (i) => `| Item ${i} | detail \`${i}\` | ${i * 2} |`)}`,
-      21,
-      'table',
-    );
-  });
-
-  it('matches when the list closes and new blocks follow', () => {
-    streamedBlocks(
-      `${bullets(20, (i) => `- item ${i}`)}\n\nA paragraph after.\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n\n${bullets(6, (i) => `1. later ${i}`)}`,
-      17,
-      'list',
-    );
-  });
-
-  it('matches when the table closes and new blocks follow', () => {
-    streamedBlocks(
-      `${tableOf(16, (i) => `| ${i} | mid ${i} | end ${i} |`)}\n\nA paragraph after the table.\n\n${bullets(6, (i) => `- later ${i}`)}`,
-      17,
-      'table',
-    );
+  it.each([
+    ['matches the fresh parse at every step of a growing list document',
+      `An opening paragraph that commits.\n\n${bullets(40, (i) => `- Item ${i} with \`inline\` and **markup** to lex.`)}`, 21, 'list'],
+    ['matches the fresh parse at every step of a growing table document',
+      `An opening paragraph that commits.\n\n${tableOf(30, (i) => `| Item ${i} | detail \`${i}\` | ${i * 2} |`)}`, 21, 'table'],
+    ['matches when the list closes and new blocks follow',
+      `${bullets(20, (i) => `- item ${i}`)}\n\nA paragraph after.\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n\n${bullets(6, (i) => `1. later ${i}`)}`, 17, 'list'],
+    ['matches when the table closes and new blocks follow',
+      `${tableOf(16, (i) => `| ${i} | mid ${i} | end ${i} |`)}\n\nA paragraph after the table.\n\n${bullets(6, (i) => `- later ${i}`)}`, 17, 'table'],
+  ] as const)('%s', (_name, text, chunk, kind) => {
+    streamedBlocks(text, chunk, kind);
   });
 
   it('recovers across a wholesale content replacement', () => {

@@ -53,12 +53,11 @@ it('measures a recording of silence as silent', async () => {
   expect(await measured([], 0.8)).toBeLessThan(SILENCE_PEAK);
 });
 
-it('hears one short sound in a recording that is otherwise silent', async () => {
-  expect(await measured([{ at: 0.4, seconds: 0.04 }], 1)).toBeGreaterThanOrEqual(SILENCE_PEAK);
-});
-
-it('hears a short sound pitched above what a narrow decode keeps', async () => {
-  expect(await measured([{ at: 0.4, seconds: 0.04 }], 1, 6000)).toBeGreaterThanOrEqual(SILENCE_PEAK);
+it.each([
+  ['hears one short sound in a recording that is otherwise silent', 440],
+  ['hears a short sound pitched above what a narrow decode keeps', 6000],
+])('%s', async (_name, frequency) => {
+  expect(await measured([{ at: 0.4, seconds: 0.04 }], 1, frequency)).toBeGreaterThanOrEqual(SILENCE_PEAK);
 });
 
 it('rejects what is not a recording', async () => {

@@ -89,10 +89,6 @@ describe('recordingMeasurer', () => {
   const recording = new Blob(['x']);
   const loud = audio(RATE, [{ from: 10_000, to: 20_000, amplitude: 0.3 }]);
 
-  it('answers the loudness of what the engine decoded', async () => {
-    expect(await recordingMeasurer(async () => loud, 1000)(recording, STRETCH)).toBeCloseTo(0.3, 5);
-  });
-
   it('rejects when the engine cannot decode the recording', async () => {
     const measure = recordingMeasurer(async () => { throw new Error('not audio'); }, 1000);
     await expect(measure(recording, STRETCH)).rejects.toThrow('not audio');

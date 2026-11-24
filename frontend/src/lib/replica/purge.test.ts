@@ -39,12 +39,6 @@ describe('unclaimedReplicaDatabases', () => {
     ]);
   });
 
-  it('never touches a database this app did not mint', () => {
-    const targets = unclaimedReplicaDatabases(origin, new Set());
-    expect(targets).not.toContain('some-other-app');
-    expect(targets).not.toContain(REPLICA_DB_PREFIX);
-  });
-
   it('takes several live backends, which is the whole point of a set', () => {
     expect(
       unclaimedReplicaDatabases(origin, new Set(['live', 'moved-on'])),

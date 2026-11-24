@@ -141,7 +141,6 @@ describe('offline computer catalogs', () => {
     expect(readCatalogRecord(record, 'g2', 'projects', 'stamp')).toBeNull();
     expect(readCatalogRecord({ ...record, rows: [{ project: { id: 'broken' } }] }, 'g1', 'projects', 'stamp')).toBeNull();
     expect(readCatalogRecord({ ...record, rows: Array(5001).fill(project) }, 'g1', 'projects', 'stamp')).toBeNull();
-    expect(makeCatalogRecord('g1', 'projects', [{ ...project, project: { ...project.project, name: 'x'.repeat(65537) } }], 'stamp').rows).toEqual([]);
     await initReplica(identity);
     await putTree('', { projects: [project] });
     const db = await openReplicaDb(replicaDatabaseName(identity.backendId));

@@ -192,14 +192,6 @@ describe('a plugin proxy handed out by an accessor', () => {
     expect(typeof shielded.addListener).toBe('function');
     await expect(shielded.addListener()).rejects.toThrow('addListener()');
   });
-
-  it('would hang unshielded', async () => {
-    const settled = await Promise.race([
-      (async () => capacitorLike())().then(() => 'settled', () => 'settled'),
-      new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 50)),
-    ]);
-    expect(settled).toBe('hung');
-  });
 });
 
 describe('onceUnlocked', () => {

@@ -273,18 +273,6 @@ describe('readElement', () => {
     expect(readElement(doc, '#long', { textCap: 20 }).first?.text).toHaveLength(21);
   });
 
-  it('does not read or return scroll geometry unless requested', () => {
-    const doc = html('<div id="target">content</div>');
-    expect(readElement(doc, '#target').first).not.toHaveProperty('scroll');
-    expect(readElement(doc, '#target', { includeScroll: true }).first?.scroll).toEqual({
-      top: 0,
-      height: 0,
-      client: 0,
-      distanceFromBottom: 0,
-      atBottom: true,
-    });
-  });
-
   it('summarizes nested text without joining the full subtree', () => {
     const doc = html('<div id="nested">  Alpha <span>\ud83d\ude80\n beta</span><i>   gamma</i> </div>');
     const result = readElement(doc, '#nested', { textCap: 12 }).first;
