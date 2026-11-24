@@ -5,7 +5,8 @@
 // later turn of it fails; a worker's row counts its tool calls, tokens and
 // runtime as they move and shows its latest tool call. The body is
 // agents-tray-worker-waiting-helpers.ts.
-import { test } from './fixtures.js';
+// Its backend's settled rows linger AGENT_ROW_LINGER_MS (agents-tray-helpers.ts).
+import { test } from './agents-tray-helpers.js';
 import type { ProviderName } from './thread-tools-helpers.js';
 import { runAncestorWaiting, runHeldThenError, runHeldWorkerFacts, runReplyThenRest, runWorkerWaiting } from './agents-tray-worker-waiting-helpers.js';
 

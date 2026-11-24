@@ -82,14 +82,12 @@ for (const provider of ['claude', 'codex'] as const) {
 
     // The ticker registers its loop, then the neighbor talks last, so it
     // lists above the ticker. The user has read both.
-    await harness.startSession(ticker);
     await harness.send(ticker, 'hi');
     await awaitTurnCompleted(harness, ticker);
     await harness.send(ticker, 'watch the board');
     const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd: tickerP.path, timeoutMs: 60_000 });
     expect(loop.isError, loop.text).toBe(false);
     await awaitTurnCompleted(harness, ticker);
-    await harness.startSession(neighbor);
     await harness.send(neighbor, 'hi');
     await awaitTurnCompleted(harness, neighbor);
     await harness.rpc('MarkThreadsRead', [ticker, neighbor]);
@@ -175,7 +173,6 @@ test('a flagged assistant row stacks its lines without covering one another', as
     }],
     afterTurns: 'silent',
   }));
-  await harness.startSession(agent);
   await harness.send(agent, 'watch the board');
   const flagged = await awaitToolAnswer(harness, { tool: 'thread_attention', cwd: home, timeoutMs: 60_000 });
   expect(flagged.isError, flagged.text).toBe(false);

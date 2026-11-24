@@ -215,7 +215,11 @@ function setMutation(call: ForgeHTTPInvocation): [unknown, unknown] {
 }
 
 export function reviewManageFlow({ compact }: ManageSurface): void {
-  for (const forge of ['gitlab', 'github'] as const) {
+  // The phone's taps and layout branch on no forge, and GitHub's run reaches
+  // every control GitLab's does and the dismiss and approve ones besides;
+  // each forge's own wire is the desktop run's.
+  const forges: readonly Forge[] = compact ? ['github'] : ['gitlab', 'github'];
+  for (const forge of forges) {
     test(`${forge}: the review pane edits, assigns, labels, closes, reopens and merges the PR`, async ({ harness, page }, testInfo: TestInfo) => {
       test.setTimeout(240_000);
       const thread = `Manage thread ${forge}`;

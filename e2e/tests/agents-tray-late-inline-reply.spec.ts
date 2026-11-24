@@ -66,7 +66,6 @@ for (const provider of ['claude', 'codex'] as const) {
       echoUserMessage: true,
       turns: [{ steps: [{ call: { tool: 'thread_status', args: { tokens: [token] } } }], text: 'Read the late reply.' }],
     }));
-    await harness.startSession(lead);
     await harness.send(lead, 'check the worker');
     const status = await awaitToolAnswer<{ requests: { delivered?: string; answer?: string }[] }>(harness, { tool: 'thread_status', cwd: project.path });
     expect(status.isError, status.text).toBe(false);

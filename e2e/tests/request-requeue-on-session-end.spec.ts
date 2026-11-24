@@ -77,10 +77,8 @@ async function holdRequest(harness: HarnessApp, tag: string, end: 'answer' | 'ex
       afterTurns: 'silent',
     }),
   );
-  await harness.startSession(target);
   await harness.send(target, 'start on the first task');
   const held = await awaitGate(harness, 'hold-target', targetProject.path);
-  await harness.startSession(sender);
   await harness.send(sender, 'pass that on');
   const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
   expect(send.isError, send.text).toBe(false);

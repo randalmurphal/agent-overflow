@@ -341,7 +341,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       // ---- No approval notification ever named the worker; an ordinary
       // thread's approval still raises one.
       const plainNotified = harness.waitForEvent<NotificationSend>('notification:send', approvalNeeded(plain), 60_000);
-      await harness.startSession(plain);
       await harness.send(plain, 'clean up');
       await plainNotified;
       expect(harness.countEvents<NotificationSend>('notification:send', approvalNeeded(worker))).toBe(0);
@@ -422,7 +421,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       );
 
       await harness.open(page);
-      await harness.startSession(agent);
       await harness.send(agent, 'rotate the logs');
       const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home });
       const worker = spawn.value!.thread_id;

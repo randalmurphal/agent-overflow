@@ -7,7 +7,8 @@
 // is agents-tray-worker-waiting-helpers.ts. The layout is the same on both
 // providers, so this runs on the Claude mock; each provider's own frames
 // are agents-tray-worker-waiting.spec.ts's, on both.
-import { test } from './fixtures.js';
+// Its backend's settled rows linger AGENT_ROW_LINGER_MS (agents-tray-helpers.ts).
+import { test } from './agents-tray-helpers.js';
 import { runAncestorWaiting, runHeldThenError, runHeldWorkerFacts, runReplyThenRest, runWorkerWaiting } from './agents-tray-worker-waiting-helpers.js';
 
 test('claude: a worker waiting on its background shell or its loop stays open, on a phone', async ({ harness, page }) => {

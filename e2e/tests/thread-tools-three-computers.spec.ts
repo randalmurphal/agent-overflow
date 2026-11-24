@@ -167,7 +167,6 @@ test('computers narrows a search to the one computer it names', async () => {
       ],
     }),
   );
-  await home.startSession(caller.threadIds[0]);
   await home.send(caller.threadIds[0], 'what is on every computer?');
 
   // The default fan-out covers this computer and both paired ones.
@@ -279,7 +278,6 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
     } }], text: 'Packaged.' }, { text: 'Noted.' }],
   }));
 
-  await home.startSession(lead.threadIds[0]);
   await home.send(lead.threadIds[0], 'build it two computers away');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
@@ -391,7 +389,6 @@ test('workers two computers away are placed on their own computers, and archivin
     turns: [{ steps: [{ gate: 'owned-grand-hold' }], text: 'Packaged.' }, { text: 'Noted.' }],
   }));
 
-  await home.startSession(lead.threadIds[0]);
   await home.send(lead.threadIds[0], 'build it two computers away, owned');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
@@ -479,7 +476,6 @@ test('a paired computer that is down becomes an errors row beside the live rows'
   const down = bench!;
   bench = undefined;
   await down.close();
-  await home.startSession(offlineCaller.threadIds[0]);
   await home.send(offlineCaller.threadIds[0], 'search every computer again');
 
   const answer = await awaitToolAnswer<SearchAnswer>(home, {

@@ -28,7 +28,6 @@ test('agy thread switches via model picker, runs ACP turns across reconnect, and
   );
   expect(updated.provider).toBe('agy');
 
-  await harness.startSession(threadId);
   await harness.send(threadId, 'hello antigravity');
   await harness.waitForEvent('provider:turn_completed');
 
@@ -41,7 +40,6 @@ test('agy thread switches via model picker, runs ACP turns across reconnect, and
 
   // Disconnect and reconnect, then send a second turn and verify both turns survive.
   await harness.stopSession(threadId);
-  await harness.startSession(threadId);
   await harness.send(threadId, 'second turn after reconnect');
   await harness.waitForEvent('provider:turn_completed');
 

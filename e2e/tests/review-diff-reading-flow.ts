@@ -166,7 +166,11 @@ function bytesText(bytes: number): string {
 }
 
 export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
-  for (const forge of ['github', 'gitlab'] as const) {
+  // The phone's taps, long presses and layout branch on no forge, and
+  // GitHub's run reaches every control GitLab's does; each forge's own wire
+  // is the desktop run's.
+  const forges: readonly Forge[] = compact ? ['github'] : ['github', 'gitlab'];
+  for (const forge of forges) {
     test(`on ${forge}, runs of commits, image rows and a line's link`, async ({ harness, page }, testInfo) => {
       test.setTimeout(240_000);
       await page.emulateMedia({ colorScheme: 'dark' });

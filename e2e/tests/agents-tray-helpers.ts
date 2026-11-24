@@ -183,7 +183,6 @@ export interface StartedTree {
 
 /** Starts the lead's turn and waits until every request is made. */
 export async function startTree(harness: HarnessApp, tree: AgentsTree): Promise<StartedTree> {
-  await harness.startSession(tree.lead);
   await harness.send(tree.lead, 'run the release');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: tree.leadPath, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
@@ -245,7 +244,6 @@ export async function seedLeadWithWorker(
     turns: [{ steps: [{ gate: 'worker-hold' }], text: 'Written.' }, { text: 'Noted.' }],
     afterTurns: 'repeatLast',
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'Get the changelog written.');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
@@ -428,7 +426,6 @@ export async function seedPastWithAsk(harness: HarnessApp, provider: ProviderNam
   // The asked thread runs a turn first, so its copy has a session to be
   // cut from; the copy's session reads the scenario set after it.
   await setScenario(harness, askedP.path, threadToolsScenario({ name: `${tag}-asked`, provider, turns: [{ text: 'Read the changelog.' }] }));
-  await harness.startSession(asked);
   await harness.send(asked, 'read the changelog');
   await awaitTurnCompleted(harness, asked);
   await setScenario(harness, askedP.path, threadToolsScenario({
@@ -446,7 +443,6 @@ export async function seedPastWithAsk(harness: HarnessApp, provider: ProviderNam
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'write the changelog and ask');
   await awaitTurnCompleted(harness, lead);
   const [spawn, ask] = ledgerRequests(harness, lead);
@@ -480,7 +476,6 @@ export async function seedSettledWorkers(harness: HarnessApp, provider: Provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'split the work');
   await awaitTurnCompleted(harness, lead);
   expect(ledgerRequests(harness, lead).map((r) => r.kind)).toEqual(Array(count).fill('spawn'));
@@ -519,7 +514,6 @@ export async function seedAssistantWithHelper(harness: HarnessApp, provider: Pro
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'get ready');
   await awaitTurnCompleted(harness, lead);
   await setScenario(harness, home, threadToolsScenario({

@@ -1,2 +1,3 @@
-import { asyncQuestionsFlow } from './async-questions-flow.js';
+import { asyncQuestionsCrashFlow, asyncQuestionsFlow } from './async-questions-flow.js';
+asyncQuestionsCrashFlow();
 asyncQuestionsFlow();

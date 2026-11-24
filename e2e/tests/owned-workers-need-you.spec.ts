@@ -50,7 +50,6 @@ test('a worker waiting on the user badges its assistant row until answered', asy
   await page.emulateMedia({ colorScheme: 'dark' });
   await harness.open(page);
   await awaitSidebarSettled(page);
-  await harness.startSession(agent);
   await harness.send(agent, 'rotate the logs');
   const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home });
   const worker = spawn.value!.thread_id;

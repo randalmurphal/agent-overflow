@@ -79,7 +79,6 @@ export async function registerThrough(
       afterTurns: 'repeatLast',
     }),
   );
-  await harness.startSession(agent.thread);
   await harness.send(agent.thread, 'set up the schedule');
   const answers: Record<string, unknown>[] = [];
   for (const call of calls) {

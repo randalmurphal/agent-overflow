@@ -105,7 +105,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       name: `assistant-creates-plain-${provider}`, provider,
       turns: [{ steps: [{ call: { tool: 'thread_new_assistant', args: { name: 'Nobody', role: ROLE } } }], text: 'Refused.' }],
     }));
-    await harness.startSession(plain);
     await harness.send(plain, 'Make an assistant.');
     const refused = await awaitToolAnswer(harness, { tool: 'thread_new_assistant', cwd: plainProject.path, timeoutMs: 60_000 });
     expect(refused.isError).toBe(true);

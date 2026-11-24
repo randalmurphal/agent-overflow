@@ -126,7 +126,6 @@ export async function driveAoToolRows(harness: HarnessApp, provider: ProviderNam
     }),
   );
 
-  await harness.startSession(leadThreadId);
   await harness.send(leadThreadId, 'get the release moving');
   const spawn = await awaitToolAnswer<{ thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', cwd: lead.path });
   const send = await awaitToolAnswer<{ outcome: string }>(harness, { tool: 'thread_send', cwd: lead.path });

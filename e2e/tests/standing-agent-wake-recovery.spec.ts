@@ -92,7 +92,6 @@ echo "the only report"
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'report once');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
@@ -185,6 +184,9 @@ echo "the only report"
           afterTurns: 'silent',
         }),
       );
+      // The app reconnects by itself after the provider's exit, before the
+      // scenario above is set. This start replaces that session, so the
+      // mock that takes the send registered under the scenario above.
       await harness.startSession(thread);
       await harness.send(thread, 'what did you miss?');
       const status = await awaitToolAnswer<{ wakes?: (WakeRow & { last_output?: string; undelivered?: string })[] }>(
@@ -303,7 +305,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'watch tick');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
@@ -485,7 +486,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'report once');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);

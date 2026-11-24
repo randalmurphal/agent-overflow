@@ -297,7 +297,6 @@ test(`claude: loops, watches and outside sends wake a standing agent across rest
     );
 
     // ---- A watch on a thread that is not a standing agent is refused.
-    await harness.startSession(plainThread);
     await harness.send(plainThread, 'watch something for me');
     const refused = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: plainP.path, timeoutMs: 60_000 });
     expect(refused.isError).toBe(true);
@@ -356,7 +355,6 @@ test(`claude: loops, watches and outside sends wake a standing agent across rest
     expect(digestAck.isError, digestAck.text).toBe(false);
 
     // ---- Interval watches: output becomes a wake, a failure an outcome.
-    await harness.startSession(watchThread);
     await harness.send(watchThread, 'watch the build');
     const pollAck = await awaitToolAnswer<WakeRow>(harness, { tool: 'thread_watch', cwd: homes[watchThread], timeoutMs: 60_000 });
     expect(pollAck.isError, pollAck.text).toBe(false);
@@ -400,7 +398,6 @@ test(`claude: loops, watches and outside sends wake a standing agent across rest
     await awaitTurnCompleted(harness, watchThread);
 
     // ---- Long-running watch: each burst of lines is its own wake.
-    await harness.startSession(tailThread);
     await harness.send(tailThread, 'tail the event stream');
     const tailAck = await awaitToolAnswer<WakeRow>(harness, { tool: 'thread_watch', cwd: homes[tailThread], timeoutMs: 60_000 });
     expect(tailAck.isError, tailAck.text).toBe(false);
@@ -532,7 +529,6 @@ test(`claude: loops, watches and outside sends wake a standing agent across rest
     expect(countInputs(harness, homes[loopThread], 'Watch "digest" reported.')).toBe(1);
 
     // ---- A watch run cut by a crash is recorded and rerun.
-    await harness.startSession(watchThread);
     await harness.send(watchThread, 'also watch the slow job');
     const slowAck = await awaitToolAnswer<WakeRow>(harness, { tool: 'thread_watch', cwd: homes[watchThread], timeoutMs: 60_000 });
     expect(slowAck.isError, slowAck.text).toBe(false);
@@ -653,7 +649,6 @@ test(`claude: archive and delete stop loops and watches, a handoff moves them, a
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'hold on');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
@@ -854,7 +849,6 @@ test.describe('an assistant copied to another computer', () => {
         await writeFile(scenarioFile, JSON.stringify(codexTransferScenario(nativeID, join(source.bootstrap.homeDir, nativePath))));
       }
       await setScenario(source, home, scenario);
-      await source.startSession(thread);
       await source.send(thread, 'keep watch');
       const ack = await awaitToolAnswer(source, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
@@ -972,7 +966,6 @@ while [ $i -lt 1000 ]; do printf 'line %064d\\n' $i; i=$((i+1)); done
         afterTurns: 'silent',
       }),
     );
-    await harness.startSession(thread);
     await harness.send(thread, 'watch both');
     const bigAck = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
     expect(bigAck.isError, bigAck.text).toBe(false);
@@ -1240,7 +1233,6 @@ test(`claude: a quiet run leaves a skipped wake for the next wake to report`, as
         afterTurns: 'silent',
       }),
     );
-    await harness.startSession(thread);
     await harness.send(thread, 'watch tick');
     const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
     expect(ack.isError, ack.text).toBe(false);
@@ -1384,7 +1376,6 @@ echo "arrived mid-turn"
       }),
     );
     const rest = (data: NotificationSend) => !data.retract && data.kind === 'turn-complete' && data.target.threadId === thread;
-    await harness.startSession(thread);
     await harness.send(thread, 'do the work');
     const { mockId } = await awaitGate(harness, 'hold', home);
     await writeFile(join(home, 'mid.release'), '');
@@ -1468,7 +1459,6 @@ test('claude: a wake flushed mid-turn is a tick only when it runs as its own tur
       [pickup, pickupHome, 2],
       [drain, drainHome, 1],
     ] as const) {
-      await harness.startSession(thread);
       await harness.send(thread, 'do the work');
       const { mockId } = await awaitGate(harness, 'hold', cwd);
       // The loop fires while the person's turn is parked, and the app flushes
