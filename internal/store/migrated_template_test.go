@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -433,15 +434,23 @@ func TestPrimeReturnsAFailedBuildAndRetries(t *testing.T) {
 }
 
 // A build in progress ends with the caller's context, which is how a stopped
-// backend releases a prime that is waiting on a migration.
+// backend releases a prime that is waiting on a migration. The held build also
+// ends at cleanup, so a prime that ignores its context fails within its bound
+// instead of holding the package.
 func TestPrimeCancelledBuildIsReleasedAndRetried(t *testing.T) {
 	started := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 	var builds atomic.Int32
 	tmpl := newMigratedTemplate(func(ctx context.Context, dir string) ([]byte, error) {
 		if builds.Add(1) == 1 {
 			close(started)
-			<-ctx.Done()
-			return nil, ctx.Err()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-release:
+				return nil, errors.New("held build released by test cleanup")
+			}
 		}
 		return sharedImage(ctx, dir)
 	})
@@ -456,13 +465,62 @@ func TestPrimeCancelledBuildIsReleasedAndRetried(t *testing.T) {
 		t.Fatal("the build never started")
 	}
 	cancel()
-	if err := <-result; !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled prime = %v, want context.Canceled", err)
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled prime = %v, want context.Canceled", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("cancelling the context did not release the prime")
 	}
 	if err := tmpl.prime(context.Background(), t.TempDir()); err != nil {
 		t.Fatalf("prime after a cancelled build: %v", err)
 	}
 	if got := builds.Load(); got != 2 {
 		t.Fatalf("built %d times, want 2", got)
+	}
+}
+
+// primeHelperEnv marks the child process TestPrimeMigratedTemplateBuildsTheProcessImage
+// starts, so the exported function runs against a template no earlier test built.
+const primeHelperEnv = "AO_STORE_PRIME_HELPER"
+
+// PrimeMigratedTemplate builds the process image through the exported entry
+// point: in a fresh process the build runs once, keeps the image, leaves no
+// file in the parent, and a second call builds nothing.
+func TestPrimeMigratedTemplateBuildsTheProcessImage(t *testing.T) {
+	if os.Getenv(primeHelperEnv) == "1" {
+		primeProcessImageInThisProcess(t)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPrimeMigratedTemplateBuildsTheProcessImage$", "-test.count=1")
+	cmd.Env = append(os.Environ(), primeHelperEnv+"=1")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("priming a fresh process: %v\n%s", err, output)
+	}
+}
+
+func primeProcessImageInThisProcess(t *testing.T) {
+	var builds atomic.Int32
+	templateBuildOpened = func(*Store) { builds.Add(1) }
+	t.Cleanup(func() { templateBuildOpened = nil })
+	if processTemplate.image != nil {
+		t.Fatal("the helper process already holds a built image")
+	}
+	dir := t.TempDir()
+	if err := PrimeMigratedTemplate(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if builds.Load() != 1 || processTemplate.image == nil {
+		t.Fatalf("after PrimeMigratedTemplate: %d builds, image kept %v; want 1 build and a kept image", builds.Load(), processTemplate.image != nil)
+	}
+	if names := dirNames(t, dir); len(names) != 0 {
+		t.Fatalf("priming left %v", names)
+	}
+	if err := PrimeMigratedTemplate(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := builds.Load(); got != 1 {
+		t.Fatalf("a primed process built again: %d builds", got)
 	}
 }

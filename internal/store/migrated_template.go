@@ -36,10 +36,12 @@ func NewScratchFromTemplate(ctx context.Context, path string) (*Store, error) {
 }
 
 // PrimeMigratedTemplate builds the process's migrated image, in a temporary
-// directory under parent, when no earlier call has. It opens no clone and
-// leaves no file behind. A caller that must not pay the build inside a later
-// wait, such as a test fixture, calls it first. A failed or cancelled build
-// is returned and the next call builds again.
+// directory under parent, when no earlier call has. The build opens the
+// database it migrates but no clone of it. The directory is removed; a
+// removal error after a successful build is logged and the image is kept. A
+// caller that must not pay the build inside a later wait, such as a test
+// fixture, calls it first. A failed or cancelled build is returned and the
+// next call builds again.
 func PrimeMigratedTemplate(ctx context.Context, parent string) error {
 	return processTemplate.prime(ctx, parent)
 }

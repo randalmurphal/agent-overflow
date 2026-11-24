@@ -13,12 +13,18 @@ func TestHarnessPrimeTransferTemplateRunsUnderTheCallsContext(t *testing.T) {
 	h, _ := newHarnessTestHost(t)
 	h.config.DataDir = t.TempDir()
 	started := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 	var parent string
 	h.primeTemplate = func(ctx context.Context, dir string) error {
 		parent = dir
 		close(started)
-		<-ctx.Done()
-		return ctx.Err()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-release:
+			return errors.New("held build released by test cleanup")
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
@@ -31,8 +37,13 @@ func TestHarnessPrimeTransferTemplateRunsUnderTheCallsContext(t *testing.T) {
 		t.Fatal("the build never started")
 	}
 	cancel()
-	if err := <-result; !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled prime = %v, want context.Canceled", err)
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled prime = %v, want context.Canceled", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("cancelling the context did not release the prime")
 	}
 	if parent != h.config.DataDir {
 		t.Fatalf("build ran under %q, want the data directory %q", parent, h.config.DataDir)
