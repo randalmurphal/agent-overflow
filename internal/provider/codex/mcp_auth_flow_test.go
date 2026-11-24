@@ -75,18 +75,17 @@ done
 	}
 }
 
-func TestMCPAuthFlowRequiresAbsoluteWorkspace(t *testing.T) {
+func TestMCPAuthFlowRefusesAnInvalidConfig(t *testing.T) {
 	t.Parallel()
-	_, _, err := StartMCPAuth(context.Background(), MCPAuthConfig{Reaper: procutiltest.Reaper(), WorkDir: "relative"}, "srv")
-	if err == nil || !strings.Contains(err.Error(), "must be absolute") {
-		t.Fatalf("error = %v, want absolute-workspace refusal", err)
-	}
-}
-
-func TestMCPAuthFlowRequiresBoundedRequest(t *testing.T) {
-	t.Parallel()
-	_, _, err := StartMCPAuth(context.Background(), MCPAuthConfig{Reaper: procutiltest.Reaper(), WorkDir: t.TempDir()}, "srv")
-	if err == nil || !strings.Contains(err.Error(), "timeout must be positive") {
-		t.Fatalf("error = %v, want positive-timeout refusal", err)
+	for _, tc := range []struct{ name, workDir, want string }{
+		{"relative workspace", "relative", "must be absolute"},
+		{"unbounded request", t.TempDir(), "timeout must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := StartMCPAuth(context.Background(), MCPAuthConfig{Reaper: procutiltest.Reaper(), WorkDir: tc.workDir}, "srv")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want a refusal containing %q", err, tc.want)
+			}
+		})
 	}
 }

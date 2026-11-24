@@ -170,88 +170,32 @@ func TestTryParseIdentityResponseSurfacesRPCError(t *testing.T) {
 
 func TestProbeAccountExtractsPlanType(t *testing.T) {
 	t.Parallel()
-	binary := writeMockCodexAppServerScript(t, t.TempDir(),
-		`{"rateLimits":{"limitId":"codex","planType":"pro","primary":{},"secondary":{}}}`,
-		"")
-
-	info, err := ProbeAccount(context.Background(), ProbeConfig{
-		Reaper:  procutiltest.Reaper(),
-		WorkDir: probeWorkDir,
-		Binary:  binary})
-	if err != nil {
-		t.Fatalf("ProbeAccount: %v", err)
-	}
-	if info.SubscriptionType != "pro" {
-		t.Errorf("SubscriptionType: got %q, want %q", info.SubscriptionType, "pro")
-	}
-	if info.APIProvider != "openai" {
-		t.Errorf("APIProvider: got %q, want openai", info.APIProvider)
-	}
-}
-
-func TestProbeAccountSkipsNonMatchingFrames(t *testing.T) {
-	t.Parallel()
-	// The init reply (id=1) and the bare notification baked into the
-	// mock must not confuse the matcher — we read past them until
-	// we see id=2.
-	binary := writeMockCodexAppServerScript(t, t.TempDir(),
-		`{"rateLimits":{"planType":"plus"}}`, "")
-
-	info, err := ProbeAccount(context.Background(), ProbeConfig{
-		Reaper:  procutiltest.Reaper(),
-		WorkDir: probeWorkDir,
-		Binary:  binary})
-	if err != nil {
-		t.Fatalf("ProbeAccount: %v", err)
-	}
-	if info.SubscriptionType != "plus" {
-		t.Errorf("SubscriptionType: got %q, want plus", info.SubscriptionType)
-	}
-}
-
-func TestProbeAccountMissingPlanTypeReturnsZero(t *testing.T) {
-	t.Parallel()
-	// Authenticated but the backend hasn't yet seen activity / hasn't
-	// populated planType. Probe must return AccountInfo with empty
-	// SubscriptionType (still APIProvider="openai") and no error so the
-	// caller can distinguish "succeeded but no plan info" from a hard
-	// failure.
-	binary := writeMockCodexAppServerScript(t, t.TempDir(),
-		`{"rateLimits":{"limitId":"codex"}}`, "")
-
-	info, err := ProbeAccount(context.Background(), ProbeConfig{
-		Reaper:  procutiltest.Reaper(),
-		WorkDir: probeWorkDir,
-		Binary:  binary})
-	if err != nil {
-		t.Fatalf("ProbeAccount: %v", err)
-	}
-	if info.SubscriptionType != "" {
-		t.Errorf("SubscriptionType should be empty, got %q", info.SubscriptionType)
-	}
-	if info.APIProvider != "openai" {
-		t.Errorf("APIProvider: got %q, want openai", info.APIProvider)
-	}
-}
-
-func TestProbeAccountEmptyResultReturnsZero(t *testing.T) {
-	t.Parallel()
-	// The wire could legitimately return result:{} (no rateLimits
-	// container at all). Same outcome: zero SubscriptionType, no error.
-	binary := writeMockCodexAppServerScript(t, t.TempDir(), "", "")
-
-	info, err := ProbeAccount(context.Background(), ProbeConfig{
-		Reaper:  procutiltest.Reaper(),
-		WorkDir: probeWorkDir,
-		Binary:  binary})
-	if err != nil {
-		t.Fatalf("ProbeAccount: %v", err)
-	}
-	if info.SubscriptionType != "" {
-		t.Errorf("SubscriptionType should be empty, got %q", info.SubscriptionType)
-	}
-	if info.APIProvider != "openai" {
-		t.Errorf("APIProvider: got %q, want openai", info.APIProvider)
+	// Every mock emits an id=1 init reply and a bare notification before the
+	// id=2 answer, so each row also proves the matcher reads past them. A
+	// missing planType or an empty result is still an authenticated account:
+	// no error, an empty SubscriptionType, APIProvider "openai".
+	for _, tc := range []struct{ name, rateLimits, want string }{
+		{"plan type present", `{"rateLimits":{"limitId":"codex","planType":"pro","primary":{},"secondary":{}}}`, "pro"},
+		{"plan type missing", `{"rateLimits":{"limitId":"codex"}}`, ""},
+		{"empty result", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			binary := writeMockCodexAppServerScript(t, t.TempDir(), tc.rateLimits, "")
+			info, err := ProbeAccount(context.Background(), ProbeConfig{
+				Reaper:  procutiltest.Reaper(),
+				WorkDir: probeWorkDir,
+				Binary:  binary})
+			if err != nil {
+				t.Fatalf("ProbeAccount: %v", err)
+			}
+			if info.SubscriptionType != tc.want {
+				t.Errorf("SubscriptionType: got %q, want %q", info.SubscriptionType, tc.want)
+			}
+			if info.APIProvider != "openai" {
+				t.Errorf("APIProvider: got %q, want openai", info.APIProvider)
+			}
+		})
 	}
 }
 

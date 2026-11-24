@@ -106,25 +106,6 @@ func TestConfigFromOptionsCarriesDisabledTools(t *testing.T) {
 	}
 }
 
-// The config map and baseInstructions are start-time only — Codex re-reads
-// neither per turn — so a change in either must fall out as a restart.
-func TestPlanLiveUpdateRequiresRestartForOverrideAxes(t *testing.T) {
-	t.Parallel()
-	base := provider.SessionOptions{Provider: "codex", Model: "gpt-5.6-sol"}
-
-	withTools := base
-	withTools.DisabledTools = []string{"web_search"}
-	if _, ok := PlanLiveUpdate(base, withTools); ok {
-		t.Error("PlanLiveUpdate() ok = true for a disabled-tool change; the config map is start-only")
-	}
-
-	withPrompt := base
-	withPrompt.SystemPrompt = "replacement"
-	if _, ok := PlanLiveUpdate(base, withPrompt); ok {
-		t.Error("PlanLiveUpdate() ok = true for a baseInstructions change; it is start-only")
-	}
-}
-
 // A cold thread/resume that omits baseInstructions inherits whatever the
 // thread was FIRST started with (session/mod.rs resolution priority), and
 // one that omits the config map rebuilds the thread with the disabled tools

@@ -23,13 +23,12 @@ func TestReadNestedString(t *testing.T) {
 	if got := readNestedString(data, "missing", "id"); got != "" {
 		t.Errorf("got %q, want empty string", got)
 	}
-}
-
-func TestReadNestedStringDeep(t *testing.T) {
-	t.Parallel()
-	data := json.RawMessage(`{"turn":{"error":{"message":"something broke"}}}`)
-	if got := readNestedString(data, "turn", "error", "message"); got != "something broke" {
+	deep := json.RawMessage(`{"turn":{"error":{"message":"something broke"}}}`)
+	if got := readNestedString(deep, "turn", "error", "message"); got != "something broke" {
 		t.Errorf("got %q, want %q", got, "something broke")
+	}
+	if got := readNestedString(json.RawMessage(`not json`), "key"); got != "" {
+		t.Errorf("got %q, want empty string for invalid JSON", got)
 	}
 }
 
@@ -47,12 +46,8 @@ func TestReadTopLevelString(t *testing.T) {
 	if got := readTopLevelString(data, "other"); got != "" {
 		t.Errorf("got %q, want empty string for non-string value", got)
 	}
-}
-
-func TestReadTopLevelStringInvalidJSON(t *testing.T) {
-	t.Parallel()
 	if got := readTopLevelString(json.RawMessage(`not json`), "key"); got != "" {
-		t.Errorf("got %q, want empty string", got)
+		t.Errorf("got %q, want empty string for invalid JSON", got)
 	}
 }
 
@@ -86,12 +81,5 @@ func TestReadTopLevelIDString(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestReadNestedStringInvalidJSON(t *testing.T) {
-	t.Parallel()
-	if got := readNestedString(json.RawMessage(`not json`), "key"); got != "" {
-		t.Errorf("got %q, want empty string", got)
 	}
 }

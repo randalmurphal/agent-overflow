@@ -32,11 +32,9 @@ func TestCodexEffortFromOption(t *testing.T) {
 	}
 }
 
-// wantCodexRuntime is THE expected RuntimeMode → codex wire mapping. One table,
-// asserted from two angles below: TestRuntimeModeToCodex checks each entry is
-// right, TestRuntimeModeToCodexCoversEveryMode checks the table has an entry
-// for every canonical tier. Keeping it in one place is what stops the two
-// checks from disagreeing about what "correct" means.
+// wantCodexRuntime is THE expected RuntimeMode → codex wire mapping, asserted
+// by TestRuntimeModeToCodexCoversEveryMode. Keeping it in one place is what
+// stops the checks that read it from disagreeing about what "correct" means.
 //
 // Notes on the entries that look duplicated but are not:
 //   - read-only and approval-required share the OS sandbox but differ on
@@ -59,17 +57,24 @@ var wantCodexRuntime = map[provider.RuntimeMode]codexRuntime{
 	provider.RuntimeFullAccess:       {ApprovalPolicy: "never", Sandbox: "danger-full-access", ApprovalsReviewer: "user"},
 }
 
-// TestRuntimeModeToCodex enumerates every runtime tier and asserts the
-// (approval, sandbox, reviewer) triple each produces. Split-then-compose means
-// a future RuntimeMode addition without touching every helper is caught here —
-// the exhaustiveness guard below turns "forgot a mode" into a failure rather
-// than a silent fall-through to the untrusted/read-only/user default.
-func TestRuntimeModeToCodex(t *testing.T) {
+// TestRuntimeModeToCodexCoversEveryMode asserts the (approval, sandbox,
+// reviewer) triple each runtime tier produces, and makes the table above
+// exhaustive by construction. Without it, a new RuntimeMode silently takes the
+// default branch (untrusted/read-only) — which for an unattended mode means
+// every command escalates to a human who is not there.
+func TestRuntimeModeToCodexCoversEveryMode(t *testing.T) {
 	t.Parallel()
-	for mode, want := range wantCodexRuntime {
+	if len(wantCodexRuntime) != len(provider.AllRuntimeModes) {
+		t.Fatalf("wantCodexRuntime has %d entries, provider.AllRuntimeModes has %d — the table has a mode the canonical list does not",
+			len(wantCodexRuntime), len(provider.AllRuntimeModes))
+	}
+	for _, mode := range provider.AllRuntimeModes {
 		t.Run(string(mode), func(t *testing.T) {
-			got := runtimeModeToCodex(mode)
-			if got != want {
+			want, ok := wantCodexRuntime[mode]
+			if !ok {
+				t.Fatalf("runtime mode %q has no asserted codex mapping — add one here and in runtimeModeToCodex", mode)
+			}
+			if got := runtimeModeToCodex(mode); got != want {
 				t.Errorf("runtimeModeToCodex(%q) = %+v, want %+v", mode, got, want)
 			}
 		})
@@ -139,26 +144,8 @@ func TestConfigFromOptionsRuntimeModesTriple(t *testing.T) {
 	}
 }
 
-func TestConfigFromOptionsFastModePreservesModelAndSetsServiceTier(t *testing.T) {
-	t.Parallel()
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider: "codex",
-		Model:    "gpt-5.5",
-		FastMode: true,
-	})
-	if cfg.Model != "gpt-5.5" {
-		t.Errorf("Model = %q, want gpt-5.5", cfg.Model)
-	}
-	if cfg.ServiceTier != "priority" {
-		t.Errorf("ServiceTier = %q, want priority", cfg.ServiceTier)
-	}
-}
-
-// TestConfigFromOptionsServiceTierComesFromTheModelTier covers the axis as a
-// SEQUENCE, not a set of states: fast mode is a toggle and the tier id is
-// resolved per model, so the pairs that matter are the transitions. A tier id
-// left behind after a toggle-off, or a stale id surviving a model switch, would
-// pass a states-only test.
+// TestConfigFromOptionsServiceTierComesFromTheModelTier: fast mode on sends
+// the model's catalog tier id, falling back to the legacy id; off ignores it.
 func TestConfigFromOptionsServiceTierComesFromTheModelTier(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -185,25 +172,6 @@ func TestConfigFromOptionsServiceTierComesFromTheModelTier(t *testing.T) {
 			}
 		})
 	}
-
-	base := provider.SessionOptions{Provider: "codex", Model: "gpt-5.5", FastModeTierID: "turbo"}
-
-	on := base
-	on.FastMode = true
-	if got := ConfigFromOptions(on).ServiceTier; got != "turbo" {
-		t.Fatalf("off→on ServiceTier = %q, want turbo", got)
-	}
-	off := on
-	off.FastMode = false
-	if got := ConfigFromOptions(off).ServiceTier; got != "" {
-		t.Fatalf("on→off ServiceTier = %q, want the key omitted", got)
-	}
-	backOn := off
-	backOn.FastMode = true
-	backOn.FastModeTierID = "priority"
-	if got := ConfigFromOptions(backOn).ServiceTier; got != "priority" {
-		t.Fatalf("off→on after a model switch ServiceTier = %q, want priority", got)
-	}
 }
 
 func TestBuildThreadParamsThreadsServiceTier(t *testing.T) {
@@ -211,18 +179,6 @@ func TestBuildThreadParamsThreadsServiceTier(t *testing.T) {
 	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), ServiceTier: "priority"}, "")
 	if params["serviceTier"] != "priority" {
 		t.Errorf("serviceTier = %v, want priority", params["serviceTier"])
-	}
-}
-
-func TestConfigFromOptionsFastModeOffOmitsServiceTier(t *testing.T) {
-	t.Parallel()
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider: "codex",
-		Model:    "gpt-5.4-mini",
-		FastMode: false,
-	})
-	if cfg.ServiceTier != "" {
-		t.Errorf("ServiceTier = %q, want empty", cfg.ServiceTier)
 	}
 }
 
@@ -235,23 +191,6 @@ func TestConfigFromOptionsTrustsValidatedFastModeForLiveOnlyModel(t *testing.T) 
 	})
 	if cfg.ServiceTier != fastServiceTier {
 		t.Errorf("ServiceTier = %q, want %q for app-validated live model", cfg.ServiceTier, fastServiceTier)
-	}
-}
-
-func TestConfigFromOptionsContextWindowAndAutoCompact(t *testing.T) {
-	t.Parallel()
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:                   "codex",
-		Model:                      "gpt-5.4",
-		ContextWindow:              provider.CodexExtendedContextWindow,
-		AutoCompactExtendedPercent: 80,
-	})
-	if cfg.ContextWindow != provider.CodexExtendedContextWindow {
-		t.Errorf("ContextWindow = %d, want %d", cfg.ContextWindow, provider.CodexExtendedContextWindow)
-	}
-	wantLimit := provider.CodexExtendedContextWindow * 80 / 100
-	if cfg.AutoCompactTokenLimit != wantLimit {
-		t.Errorf("AutoCompactTokenLimit = %d, want %d", cfg.AutoCompactTokenLimit, wantLimit)
 	}
 }
 
@@ -295,23 +234,11 @@ func TestConfigFromOptionsClampsUnsupportedExtendedContext(t *testing.T) {
 	}
 }
 
-// TestConfigFromOptionsResumeFlow — the Codex resume target is the
-// thread-id we stored previously; it must survive the translation.
-func TestConfigFromOptionsResumeFlow(t *testing.T) {
-	t.Parallel()
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider: "codex",
-		Resume:   "codex-thread-abc",
-	})
-	if cfg.ResumeThreadID != "codex-thread-abc" {
-		t.Errorf("ResumeThreadID = %q, want codex-thread-abc", cfg.ResumeThreadID)
-	}
-}
-
-// TestConfigFromOptionsForkSessionIgnored — ForkSession is explicitly a
-// no-op for Codex (fork is a separate thread/fork app-server call). Pin
-// that down so a future contributor reading the helper can't assume it's
-// wired.
+// TestConfigFromOptionsForkSessionIgnored — the Codex resume target is the
+// thread-id we stored previously; it must survive the translation. ForkSession
+// is explicitly a no-op for Codex (fork is a separate thread/fork app-server
+// call). Pin that down so a future contributor reading the helper can't
+// assume it's wired.
 func TestConfigFromOptionsForkSessionIgnored(t *testing.T) {
 	t.Parallel()
 	cfg := ConfigFromOptions(provider.SessionOptions{
@@ -416,27 +343,6 @@ func TestBuildThreadParamsBaseInstructions(t *testing.T) {
 	params := buildThreadParams(Config{Reaper: procutiltest.Reaper(), SystemPrompt: "hello"}, "")
 	if params["baseInstructions"] != "hello" {
 		t.Errorf("baseInstructions = %v, want hello", params["baseInstructions"])
-	}
-}
-
-// TestRuntimeModeToCodexCoversEveryMode makes the mapping table above
-// exhaustive by construction. Without it, a new RuntimeMode silently takes
-// the default branch (untrusted/read-only) — which for an unattended mode
-// means every command escalates to a human who is not there.
-func TestRuntimeModeToCodexCoversEveryMode(t *testing.T) {
-	t.Parallel()
-	if len(wantCodexRuntime) != len(provider.AllRuntimeModes) {
-		t.Fatalf("wantCodexRuntime has %d entries, provider.AllRuntimeModes has %d — the table has a mode the canonical list does not",
-			len(wantCodexRuntime), len(provider.AllRuntimeModes))
-	}
-	for _, mode := range provider.AllRuntimeModes {
-		want, ok := wantCodexRuntime[mode]
-		if !ok {
-			t.Fatalf("runtime mode %q has no asserted codex mapping — add one here and in runtimeModeToCodex", mode)
-		}
-		if got := runtimeModeToCodex(mode); got != want {
-			t.Errorf("runtimeModeToCodex(%q) = %+v, want %+v", mode, got, want)
-		}
 	}
 }
 

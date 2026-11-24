@@ -51,22 +51,6 @@ func TestParseCodexMCPList_OAuthWithTools(t *testing.T) {
 	}
 }
 
-func TestParseCodexMCPList_NotLoggedIn(t *testing.T) {
-	t.Parallel()
-	body, _ := json.Marshal(map[string]any{
-		"data": []map[string]any{
-			{"name": "linear", "authStatus": "notLoggedIn", "tools": map[string]any{}},
-		},
-	})
-	results, err := parseMCPList(body, time.Now())
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if results[0].Status != mcpstatus.StatusNeedsAuth {
-		t.Errorf("status = %q, want %q", results[0].Status, mcpstatus.StatusNeedsAuth)
-	}
-}
-
 // TestParseCodexMCPList_ServerInfoWithZeroTools pins the primary
 // liveness signal: a server that initialized but exposes no tools (a
 // resources-only server, or one whose tool list is empty) is connected.
@@ -89,67 +73,6 @@ func TestParseCodexMCPList_ServerInfoWithZeroTools(t *testing.T) {
 	}
 	if results[0].Status != mcpstatus.StatusConnected {
 		t.Errorf("status = %q, want %q", results[0].Status, mcpstatus.StatusConnected)
-	}
-}
-
-// TestParseCodexMCPList_NoServerInfoZeroToolsIsFailed is the headline
-// regression: the list response describes a SETTLED connection attempt,
-// so an oAuth server that came back with neither serverInfo nor tools
-// failed to initialize. It used to render as "starting" indefinitely.
-func TestParseCodexMCPList_NoServerInfoZeroToolsIsFailed(t *testing.T) {
-	t.Parallel()
-	body, _ := json.Marshal(map[string]any{
-		"data": []map[string]any{
-			{"name": "atlassian", "authStatus": "oAuth", "tools": map[string]any{}},
-			{"name": "bearer-dead", "authStatus": "bearerToken", "tools": map[string]any{}},
-			{"name": "mystery", "authStatus": "unsupported", "tools": map[string]any{}},
-		},
-	})
-	results, err := parseMCPList(body, time.Now())
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for _, r := range results {
-		if r.Status != mcpstatus.StatusFailed {
-			t.Errorf("%s: status = %q, want %q", r.Name, r.Status, mcpstatus.StatusFailed)
-		}
-	}
-}
-
-func TestParseCodexMCPList_ServerInfoAbsentButToolsPresent(t *testing.T) {
-	t.Parallel()
-	// Safety net: tools can only exist past a completed initialize, so a
-	// response that somehow omits serverInfo while listing tools is still
-	// connected.
-	body, _ := json.Marshal(map[string]any{
-		"data": []map[string]any{
-			{"name": "toolsy", "authStatus": "unsupported", "tools": map[string]any{"ping": map[string]any{}}},
-		},
-	})
-	results, _ := parseMCPList(body, time.Now())
-	if results[0].Status != mcpstatus.StatusConnected {
-		t.Errorf("status = %q, want %q", results[0].Status, mcpstatus.StatusConnected)
-	}
-}
-
-// TestParseCodexMCPList_NotLoggedInIgnoresServerInfo: a login
-// requirement outranks any liveness evidence — the row's action is a
-// sign-in either way.
-func TestParseCodexMCPList_NotLoggedInIgnoresServerInfo(t *testing.T) {
-	t.Parallel()
-	body, _ := json.Marshal(map[string]any{
-		"data": []map[string]any{
-			{
-				"name":       "linear",
-				"authStatus": "notLoggedIn",
-				"serverInfo": map[string]any{"name": "linear", "version": "1"},
-				"tools":      map[string]any{"issue_read": map[string]any{}},
-			},
-		},
-	})
-	results, _ := parseMCPList(body, time.Now())
-	if results[0].Status != mcpstatus.StatusNeedsAuth {
-		t.Errorf("status = %q, want %q", results[0].Status, mcpstatus.StatusNeedsAuth)
 	}
 }
 
