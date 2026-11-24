@@ -933,7 +933,7 @@ func TestCodexExecutionSnapshotExcludesOtherRunsAndLeavesSpawnUndecorated(t *tes
 	seedToolChildItem(t, s, "t", "first", 0, 1, "spawn", "first task", "completed")
 	seedToolChildItem(t, s, "t", "nested", 0, 2, "first", "nested task", "completed")
 	seedToolChildItem(t, s, "t", "later", 0, 3, "spawn", "later task", "running")
-	meta, tools, err := s.SnapshotSubagentExecutionMeta("t", "spawn", `{}`, 0, 0, 2)
+	meta, tools, err := s.SnapshotSubagentExecutionMeta("t", "spawn", "", `{}`, 0, 0, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -980,7 +980,7 @@ func TestCodexExecutionToolCountCountsDirectToolCallsInBounds(t *testing.T) {
 	for _, tc := range []struct {
 		start, end, want int
 	}{{0, 6, 2}, {6, 7, 1}, {0, 7, 3}, {7, 50, 0}} {
-		_, tools, err := s.SnapshotSubagentExecutionMeta("t", "spawn", `{}`, 0, tc.start, tc.end)
+		_, tools, err := s.SnapshotSubagentExecutionMeta("t", "spawn", "", `{}`, 0, tc.start, tc.end)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -991,7 +991,7 @@ func TestCodexExecutionToolCountCountsDirectToolCallsInBounds(t *testing.T) {
 	for _, tc := range []struct {
 		after, count, last int
 	}{{0, 3, 7}, {3, 1, 7}, {7, 0, 7}} {
-		count, last, err := s.SubagentExecutionToolCallsAfter("t", "spawn", 0, tc.after)
+		count, last, err := s.SubagentExecutionToolCallsAfter("t", "spawn", "", 0, tc.after)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -198,7 +198,7 @@ func (b *builder) proposedPlan(evt importir.Event) error {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, &store.Payload{
-		ID:        triage.AttachedPayloadID(payloadKindProposedPlan, itemID),
+		ID:        store.AttachedPayloadID(payloadKindProposedPlan, itemID),
 		Kind:      payloadKindProposedPlan,
 		Meta:      payloadMeta,
 		Data:      []byte(evt.Content),
