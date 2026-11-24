@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -634,4 +635,261 @@ func TestWatchSubagentSettlesOnParentSystemStopNoticeAfterLaunch(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected killed settlement on post-launch system stop notice, got %+v", events)
+}
+
+func appendJSONLLine(t *testing.T, path string, v any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal %s: %v", path, err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(append(raw, '\n')); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestWatchSubagentTailsFullTranscriptAndStampsResolvedModelEffort(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "66666666-6666-6666-6666-666666666666"
+
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_full_1", "name": "invoke_subagent"},
+			},
+		},
+	})
+
+	// Populate both compact transcript.jsonl (truncated) and transcript_full.jsonl (full);
+	// WatchSubagent must prefer transcript_full.jsonl.
+	compactPath := filepath.Join(appDataDir, "brain", childID, ".system_generated", "logs", "transcript.jsonl")
+	fullPath := filepath.Join(appDataDir, "brain", childID, ".system_generated", "logs", "transcript_full.jsonl")
+
+	appendJSONLLine(t, compactPath, map[string]any{
+		"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE",
+		"model": "gemini-4-hydrogen-tiered-high", "input_tokens": 1000, "output_tokens": 50,
+		"tool_calls": []map[string]any{{"name": "read_file", "args": map[string]string{"Path": `"/repo/a.go"`}}},
+	})
+	appendJSONLLine(t, compactPath, map[string]any{
+		"step_index": 2, "type": "GENERIC", "status": "DONE",
+		"content": "COMPACT_TRUNCATED_ONLY",
+	})
+
+	appendJSONLLine(t, fullPath, map[string]any{
+		"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE",
+		"created_at": "2026-11-24T19:54:26Z",
+		"model":      "gemini-4-hydrogen-tiered-high", "input_tokens": 5781, "output_tokens": 88,
+		"thinking":   "Checking capabilities.go for MaxMCPWaitSeconds.",
+		"tool_calls": []map[string]any{{"name": "read_file", "args": map[string]string{"Path": `"/repo/capabilities.go"`, "StartLine": "1", "EndLine": "30"}}},
+	})
+	appendJSONLLine(t, fullPath, map[string]any{
+		"step_index": 2, "type": "GENERIC", "status": "DONE",
+		"created_at": "2026-11-24T19:54:28Z",
+		"content":    "FULL_UNTRUNCATED_FILE_OUTPUT_LINE_206_MAX_150",
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var openMu sync.Mutex
+	var openCount int
+	flavor.subagentTranscriptOpenHook = func() {
+		openMu.Lock()
+		openCount++
+		openMu.Unlock()
+	}
+
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+			SessionID:    parentID,
+			ThreadID:     "t1",
+			TurnID:       "turn-1",
+			ToolCallID:   "call_full_1",
+			RawInput:     json.RawMessage(`{"TypeName":"research","Role":"Capabilities Checker","Model":"flash"}`),
+			Started:      acp.NormalizedToolStart{SubagentType: "research", Description: "Capabilities Checker"},
+			ParentModel:  "gemini-4-neon",
+			ParentEffort: "high",
+			Emit: func(evt provider.ProviderEvent) {
+				mu.Lock()
+				events = append(events, evt)
+				mu.Unlock()
+			},
+		})
+	}()
+
+	// Wait until the first two transcript steps have been read and projected.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		sawReadDone := false
+		for _, ev := range events {
+			if ev.Kind == provider.EventToolComplete && ev.ParentToolUseID == "call_full_1" {
+				sawReadDone = true
+				break
+			}
+		}
+		mu.Unlock()
+		if sawReadDone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for transcript_full.jsonl tool completion")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Across several idle ticks at EOF, the os.Stat size gate must prevent reopening the file.
+	openMu.Lock()
+	opensAtEOF := openCount
+	openMu.Unlock()
+	time.Sleep(60 * time.Millisecond)
+	openMu.Lock()
+	opensAfterIdle := openCount
+	openMu.Unlock()
+	if opensAfterIdle != opensAtEOF {
+		t.Fatalf("expected 0 transcript opens while idle at EOF, went from %d to %d", opensAtEOF, opensAfterIdle)
+	}
+
+	// Append final PLANNER_RESPONSE and deliver parent inbox report to settle.
+	appendJSONLLine(t, fullPath, map[string]any{
+		"step_index": 3, "type": "PLANNER_RESPONSE", "status": "DONE",
+		"created_at": "2026-11-24T19:54:30Z",
+		"model":      "gemini-4-hydrogen-tiered-high", "input_tokens": 1200, "output_tokens": 30,
+		"content": "Reported MaxMCPWaitSeconds = 150.",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages", "report.json"), map[string]any{
+		"sender":  childID,
+		"content": "MaxMCPWaitSeconds is 150.",
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchSubagent did not settle after parent inbox report")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawResolvedModel, sawThinking, sawFullRead, sawChildText, sawProgress, sawSettled bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventToolStart && ev.ItemID == "call_full_1" {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["subagent_model"] == "flash" {
+				t.Fatalf("must not prematurely stamp tier alias 'flash' as subagent_model: %+v", m)
+			}
+			if m["subagent_model"] == "gemini-4-hydrogen" && m["run_effort"] == "high" && m["agent_id"] == childID {
+				sawResolvedModel = true
+			}
+		}
+		if ev.Kind == provider.EventThinking && ev.ParentToolUseID == "call_full_1" && strings.Contains(ev.Content, "MaxMCPWaitSeconds") {
+			sawThinking = true
+		}
+		if ev.Kind == provider.EventToolComplete && ev.ParentToolUseID == "call_full_1" && strings.Contains(ev.Content, "FULL_UNTRUNCATED_FILE_OUTPUT_LINE_206_MAX_150") {
+			sawFullRead = true
+		}
+		if ev.Kind == provider.EventTextDelta && ev.ParentToolUseID == "call_full_1" && strings.Contains(ev.Content, "Reported MaxMCPWaitSeconds = 150.") {
+			sawChildText = true
+		}
+		if ev.Kind == provider.EventSubagentProgress && ev.ItemID == "call_full_1" {
+			var p provider.SubagentProgressMeta
+			if json.Unmarshal(ev.Meta, &p) == nil && p.ToolUses == 1 && p.TotalTokens == 5781+88+1200+30 {
+				sawProgress = true
+			}
+		}
+		if ev.Kind == provider.EventBackgroundTaskNotification && ev.ItemID == "call_full_1" && ev.Content == "MaxMCPWaitSeconds is 150." {
+			sawSettled = true
+		}
+	}
+	if !sawResolvedModel || !sawThinking || !sawFullRead || !sawChildText || !sawProgress || !sawSettled {
+		t.Fatalf("missing expected events: resolvedModel=%v thinking=%v fullRead=%v childText=%v progress=%v settled=%v",
+			sawResolvedModel, sawThinking, sawFullRead, sawChildText, sawProgress, sawSettled)
+	}
+}
+
+func TestWatchSubagentFallsBackToCompactTranscriptAndEmitsReportInPane(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "77777777-7777-7777-7777-777777777777"
+
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_compact_1", "name": "invoke_subagent"},
+			},
+		},
+	})
+	// Only compact transcript.jsonl exists, with no assistant text block before reporting.
+	compactPath := filepath.Join(appDataDir, "brain", childID, ".system_generated", "logs", "transcript.jsonl")
+	appendJSONLLine(t, compactPath, map[string]any{
+		"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE",
+		"model": "gemini-4-neon-medium", "input_tokens": 500, "output_tokens": 40,
+		"tool_calls": []map[string]any{{"name": "send_message", "args": map[string]string{"Message": `"Done!"`}}},
+	})
+	appendJSONLLine(t, compactPath, map[string]any{
+		"step_index": 2, "type": "GENERIC", "status": "DONE",
+		"content": "Message sent.",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages", "report.json"), map[string]any{
+		"sender":  childID,
+		"content": "Done!",
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var events []provider.ProviderEvent
+	flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+		SessionID:  parentID,
+		ThreadID:   "t1",
+		TurnID:     "turn-1",
+		ToolCallID: "call_compact_1",
+		RawInput:   json.RawMessage(`{"TypeName":"research","Role":"Quick Check","Model":"pro"}`),
+		Started:    acp.NormalizedToolStart{SubagentType: "research"},
+		Emit: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	})
+
+	var sawModel, sawReportText bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventToolStart && ev.ItemID == "call_compact_1" {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["subagent_model"] == "gemini-4-neon" && m["run_effort"] == "medium" {
+				sawModel = true
+			}
+		}
+		if ev.Kind == provider.EventTextDelta && ev.ParentToolUseID == "call_compact_1" && ev.Content == "Done!" {
+			sawReportText = true
+		}
+	}
+	if !sawModel || !sawReportText {
+		t.Fatalf("expected compact fallback model=%v and reportText=%v; events=%+v", sawModel, sawReportText, events)
+	}
 }

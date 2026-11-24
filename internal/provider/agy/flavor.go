@@ -47,9 +47,10 @@ type Flavor struct {
 	bgLookupCache map[string]bgLookupSnapshot
 
 	// Optional overrides for deterministic unit tests (zero uses defaults).
-	subagentPollInterval     time.Duration
-	subagentDiscoveryTimeout time.Duration
-	bgLookupOpenHook         func()
+	subagentPollInterval       time.Duration
+	subagentDiscoveryTimeout   time.Duration
+	bgLookupOpenHook           func()
+	subagentTranscriptOpenHook func()
 }
 
 // NewFlavor constructs an Antigravity ACP flavor bound to appDataDir.
