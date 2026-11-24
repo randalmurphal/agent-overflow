@@ -400,6 +400,11 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
     INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, source_thread_id, state, created_at, updated_at, spawn_link, run_open)
       VALUES ('rcpt-link-running', 'dev-pending-only', 'spawn', '${s.threadId}', 'source-running', 'running', ${now}, ${now}, 1, 0),
              ('rcpt-run-running', 'dev-pending-only', 'send', '${s.threadId}', 'source-running', 'running', ${now}, ${now}, 0, 1);
+    -- A receipt written before the host clock was set back a day: the
+    -- newest pre-boot stamp is later than the boot, so it bounds no moment
+    -- of the boot.
+    INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, state, created_at, updated_at)
+      VALUES ('rcpt-clock-ahead', '${local.device}', 'send', '${s.quietId}', 'finished', ${now} + 86400000, ${now} + 86400000);
     -- A running receipt of the device that only tracks its spawn: the end
     -- stops the tracking, and the sweep then settles it.
     INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, state, created_at, updated_at, track_spawn)
@@ -634,8 +639,6 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
         sql: `UPDATE thread_request_receipts SET run_tokens = run_tokens + 1 WHERE token = 'rcpt-run-running'` },
       { rule: 'ended-device-spawn-runs: a settled run without its settled runtime', table: 'thread_request_receipts',
         sql: `UPDATE thread_request_receipts SET run_turn_ms = (SELECT turn_ms - 1 FROM snap.thread_tallies WHERE thread_id = '${threadId}') WHERE token = 'rcpt-run-running'` },
-      { rule: 'ended-device-spawn-runs: a settled run with only the settled tally as its runtime', table: 'thread_request_receipts',
-        sql: `UPDATE thread_request_receipts SET run_turn_ms = (SELECT turn_ms FROM snap.thread_tallies WHERE thread_id = '${threadId}') WHERE token = 'rcpt-run-running'` },
       { rule: 'ended-device-spawn-runs: a settled run past the latest release', table: 'thread_request_receipts',
         sql: `UPDATE thread_request_receipts SET run_turn_ms = run_turn_ms + 86400000 WHERE token = 'rcpt-run-running'` },
       { rule: 'ended-device-spawn-runs: a held run with other tool calls', table: 'thread_request_receipts',
