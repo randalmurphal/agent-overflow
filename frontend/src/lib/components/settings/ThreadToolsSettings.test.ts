@@ -25,44 +25,20 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
 // the ao-thread-tools server at all. It is a single host-tier boolean, so
 // the component's whole job is to show the saved value and send the patch.
 describe("<ThreadToolsSettings>", () => {
-  it("shows the switch on when the setting is on", async () => {
-    await seed({ threadToolsEnabled: true });
+  it.each([true, false])("shows the switch as the setting %s, and sends only threadToolsEnabled flipped", async (enabled) => {
+    await seed({ threadToolsEnabled: enabled });
     const { findByRole } = render(ThreadToolsSettings);
 
     const toggle = (await findByRole("switch")) as HTMLButtonElement;
-    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(toggle.getAttribute("aria-checked")).toBe(String(enabled));
     expect(toggle.getAttribute("aria-label")).toBe("Toggle Built-in Thread Tools");
     expect(toggle.disabled).toBe(false);
-  });
 
-  it("shows the switch off when the setting is off", async () => {
-    await seed({ threadToolsEnabled: false });
-    const { findByRole } = render(ThreadToolsSettings);
-
-    const toggle = (await findByRole("switch")) as HTMLButtonElement;
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
-  });
-
-  it("sends only threadToolsEnabled when it is turned off", async () => {
-    await seed({ threadToolsEnabled: true });
-    const { findByRole } = render(ThreadToolsSettings);
-
-    await fireEvent.click(await findByRole("switch"));
+    await fireEvent.click(toggle);
 
     const mock = getBindingMock("UpdateSettings");
     expect(mock).toBeDefined();
-    expect(mock!.mock.calls.at(-1)![0]).toEqual({ threadToolsEnabled: false });
-  });
-
-  it("sends threadToolsEnabled true when it is turned back on", async () => {
-    await seed({ threadToolsEnabled: false });
-    const { findByRole } = render(ThreadToolsSettings);
-
-    await fireEvent.click(await findByRole("switch"));
-
-    expect(getBindingMock("UpdateSettings")!.mock.calls.at(-1)![0]).toEqual({
-      threadToolsEnabled: true,
-    });
+    expect(mock!.mock.calls.at(-1)![0]).toEqual({ threadToolsEnabled: !enabled });
   });
 
   // threadToolsEnabled is host tier (internal/settings/tier.go): the switch

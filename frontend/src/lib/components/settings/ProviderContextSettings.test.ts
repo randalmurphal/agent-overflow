@@ -31,103 +31,38 @@ describe('<ProviderContextSettings>', () => {
     await seed();
   });
 
-  it('renders the two sliders for the Claude provider', async () => {
-    const { getByTestId } = render(ProviderContextSettings, {
-      props: { provider: 'claude' },
-    });
-    const standard = getByTestId(
-      'settings-context-claude-standard-slider',
-    ) as HTMLInputElement;
-    const extended = getByTestId(
-      'settings-context-claude-extended-slider',
-    ) as HTMLInputElement;
-    expect(standard.value).toBe('90');
-    expect(extended.value).toBe('85');
-  });
-
-  it('renders the two sliders for the Codex provider', async () => {
-    const { getByTestId } = render(ProviderContextSettings, {
-      props: { provider: 'codex' },
-    });
-    const standard = getByTestId(
-      'settings-context-codex-standard-slider',
-    ) as HTMLInputElement;
-    const extended = getByTestId(
-      'settings-context-codex-extended-slider',
-    ) as HTMLInputElement;
-    expect(standard.value).toBe('80');
-    expect(extended.value).toBe('75');
-  });
-
-  it('shows 200k as the standard window for Claude', async () => {
+  it.each([
+    ['claude', '90', '85', '200k'],
+    ['codex', '80', '75', '272k'],
+  ] as const)('renders the two sliders and the standard window for %s', async (provider, standard, extended, size) => {
     const { getByTestId, getByText } = render(ProviderContextSettings, {
-      props: { provider: 'claude' },
+      props: { provider },
     });
-    expect(getByTestId('settings-context-claude')).toBeTruthy();
-    expect(getByText('200k')).toBeTruthy();
+    expect(getByTestId(`settings-context-${provider}`)).toBeTruthy();
+    expect((getByTestId(`settings-context-${provider}-standard-slider`) as HTMLInputElement).value).toBe(standard);
+    expect((getByTestId(`settings-context-${provider}-extended-slider`) as HTMLInputElement).value).toBe(extended);
+    expect(getByText(size)).toBeTruthy();
   });
 
-  it('shows 272k as the standard window for Codex', async () => {
-    const { getByTestId, getByText } = render(ProviderContextSettings, {
-      props: { provider: 'codex' },
-    });
-    expect(getByTestId('settings-context-codex')).toBeTruthy();
-    expect(getByText('272k')).toBeTruthy();
-  });
-
-  it('persists the standard slider on commit (change event)', async () => {
+  // The 95 row: the native range input clamps to its min/max attributes,
+  // but the onchange handler clamps again as a defence-in-depth pass, so
+  // the persisted value is within bounds even if a synthetic event pushes
+  // outside.
+  it.each([
+    ['claude', 'standard', '70', { claudeAutoCompactStandardPercent: 70 }],
+    ['codex', 'extended', '60', { codexAutoCompactExtendedPercent: 60 }],
+    ['claude', 'standard', '95', { claudeAutoCompactStandardPercent: 90 }],
+  ] as const)('persists the %s %s slider set to %s on commit', async (provider, slider, value, patch) => {
     const { getByTestId } = render(ProviderContextSettings, {
-      props: { provider: 'claude' },
+      props: { provider },
     });
-    const slider = getByTestId(
-      'settings-context-claude-standard-slider',
-    ) as HTMLInputElement;
-    slider.value = '70';
-    await fireEvent.change(slider);
+    const input = getByTestId(`settings-context-${provider}-${slider}-slider`) as HTMLInputElement;
+    input.value = value;
+    await fireEvent.change(input);
 
     const update = getBindingMock('UpdateSettings');
     expect(update).toBeDefined();
-    expect(update!.mock.calls[0][0]).toEqual({
-      claudeAutoCompactStandardPercent: 70,
-    });
-  });
-
-  it('persists the extended slider on commit', async () => {
-    const { getByTestId } = render(ProviderContextSettings, {
-      props: { provider: 'codex' },
-    });
-    const slider = getByTestId(
-      'settings-context-codex-extended-slider',
-    ) as HTMLInputElement;
-    slider.value = '60';
-    await fireEvent.change(slider);
-
-    const update = getBindingMock('UpdateSettings');
-    expect(update).toBeDefined();
-    expect(update!.mock.calls[0][0]).toEqual({
-      codexAutoCompactExtendedPercent: 60,
-    });
-  });
-
-  it('clamps an out-of-range slider value to 1..90 on commit', async () => {
-    const { getByTestId } = render(ProviderContextSettings, {
-      props: { provider: 'claude' },
-    });
-    const slider = getByTestId(
-      'settings-context-claude-standard-slider',
-    ) as HTMLInputElement;
-    // The native range input clamps to its min/max attributes, but the
-    // onchange handler clamps again as a defence-in-depth pass; assert
-    // the persisted value is within bounds even if a synthetic event
-    // pushes outside.
-    slider.value = '95';
-    await fireEvent.change(slider);
-
-    const update = getBindingMock('UpdateSettings');
-    expect(update).toBeDefined();
-    const patch = update!.mock.calls[0][0] as Record<string, number>;
-    expect(patch.claudeAutoCompactStandardPercent).toBeLessThanOrEqual(90);
-    expect(patch.claudeAutoCompactStandardPercent).toBeGreaterThanOrEqual(1);
+    expect(update!.mock.calls[0][0]).toEqual(patch);
   });
 
   it('does not render any model picker, save button, or default toggle', async () => {
