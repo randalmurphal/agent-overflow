@@ -2865,6 +2865,17 @@ describe('groupItemsBySubagent — production snapshot shape', () => {
   }
 
   it('projects the whole snapshot with no duplicate key in any list and one card per completion', () => {
+    // The fixture must still hold the shape that froze the pane: without
+    // repeated deliveries the assertions below pass on any projection.
+    const deliveriesByLaunch = new Map<string, number>();
+    for (const item of snapshot) {
+      if (item.kind !== 'tool_completion' || !item.completionOf) continue;
+      deliveriesByLaunch.set(item.completionOf, (deliveriesByLaunch.get(item.completionOf) ?? 0) + 1);
+    }
+    const repeated = [...deliveriesByLaunch.values()].filter((count) => count > 1);
+    expect(repeated.length).toBeGreaterThanOrEqual(10);
+    expect(Math.max(...repeated)).toBeGreaterThanOrEqual(3);
+
     const nodes = groupConsecutiveReads(groupItemsBySubagent(snapshot));
     expect(duplicateKeysPerList(nodes)).toEqual([]);
 
