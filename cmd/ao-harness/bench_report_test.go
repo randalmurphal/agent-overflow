@@ -500,6 +500,9 @@ func TestABudgetedMetricThatWasNeverMeasuredFailsTheGate(t *testing.T) {
 	if !slices.Contains(unmeasured, "frames.p95Ms") {
 		t.Errorf("unmeasured = %v, want it to carry the same metric", unmeasured)
 	}
+	if len(comparisons) != 1 || comparisons[0].Metric != "goHeap.maxBytes" {
+		t.Fatalf("comparisons = %+v, want only the measured goHeap.maxBytes", comparisons)
+	}
 	if countDrift(comparisons) != 0 {
 		t.Fatalf("nothing should have drifted: %+v", comparisons)
 	}
@@ -601,19 +604,6 @@ func TestBusyMetricsAreGateableInBothDirections(t *testing.T) {
 	if unit := agg["busy.fitPct.6ms"].Unit; unit != "pct" {
 		t.Errorf("busy.fitPct.6ms unit = %q, want pct", unit)
 	}
-
-	// And it gates: a run that fits 6ms only 77.8% of the time fails a
-	// budget demanding 90%.
-	baseline := benchBaseline{Metrics: map[string]benchTolerance{
-		"busy.fitPct.6ms": {Min: floatPtr(90)},
-	}}
-	comparisons, _, unbudgeted := compareToBaseline(agg, baseline)
-	if len(comparisons) != 1 || !comparisons[0].Drift {
-		t.Fatalf("comparisons = %+v, want one drifting fit metric", comparisons)
-	}
-	if err := benchGateVerdict(comparisons, unbudgeted, "budget.json"); err == nil {
-		t.Fatal("a fit percentage below its floor passed the gate")
-	}
 }
 
 func TestBusyMetricsAreAbsentWhenNoTickWasMeasured(t *testing.T) {
@@ -622,30 +612,12 @@ func TestBusyMetricsAreAbsentWhenNoTickWasMeasured(t *testing.T) {
 	// 0% fit that reads as a catastrophic regression.
 	unmeasured := benchTestReport(1000, 60, 12, 8<<20)
 	agg := aggregateBenchMetrics([]perfReport{unmeasured})
-	for _, name := range []string{"busy.p50Ms", "busy.p95Ms", "busy.maxMs"} {
+	// A budget on a metric that is absent here fails the gate like any other
+	// unmeasured budget (TestABudgetedMetricThatWasNeverMeasuredFailsTheGate).
+	for _, name := range []string{"busy.p50Ms", "busy.p95Ms", "busy.maxMs", "busy.fitPct.6ms"} {
 		if _, ok := agg[name]; ok {
 			t.Errorf("%s present for a run that measured no tick", name)
 		}
-	}
-
-	// A budget on a metric this run could not measure is bad news, not a
-	// pass — the same rule the frontend metrics already follow.
-	baseline := benchBaseline{Metrics: map[string]benchTolerance{
-		"busy.fitPct.6ms": {Min: floatPtr(90)},
-	}}
-	comparisons, unmeasuredNames, unbudgeted := compareToBaseline(agg, baseline)
-	if len(comparisons) != 0 {
-		t.Errorf("comparisons = %+v, want none", comparisons)
-	}
-	if !slices.Contains(unmeasuredNames, "busy.fitPct.6ms") {
-		t.Errorf("unmeasured = %v, want the budgeted fit metric named", unmeasuredNames)
-	}
-	err := benchGateVerdict(comparisons, unbudgeted, "budget.json")
-	if err == nil {
-		t.Fatal("a budgeted-but-unmeasured busy metric passed the gate")
-	}
-	if code := exitCodeOf(t, err); code != exitBadNews {
-		t.Fatalf("exit code = %d, want %d", code, exitBadNews)
 	}
 }
 

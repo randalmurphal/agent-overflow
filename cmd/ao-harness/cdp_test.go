@@ -55,18 +55,17 @@ func TestResolveCDPEndpointRefusalNamesTheEngineRequirement(t *testing.T) {
 // coin flip an operator should not have to call when the registry row
 // already knows.
 func TestResolveCDPEndpointNamesThisInstancesPort(t *testing.T) {
-	row := instanceinfo.Instance{Row: instanceinfo.Row{Identity: instanceinfo.Identity{ID: "abcd1234", Mode: instanceinfo.ModeHarness}}}
-	_, err := resolveCDPEndpoint("", target{ID: row.ID, Row: &row})
-	if err == nil || !strings.Contains(err.Error(), "--cdp 9225") {
-		t.Fatalf("refusal should point at this instance's own port: %v", err)
-	}
-}
-
-func TestResolveCDPEndpointNamesPerfPort(t *testing.T) {
-	row := instanceinfo.Instance{Row: instanceinfo.Row{Identity: instanceinfo.Identity{ID: "abcd1234", Mode: instanceinfo.ModePerf}}}
-	_, err := resolveCDPEndpoint("", target{ID: row.ID, Row: &row})
-	if err == nil || !strings.Contains(err.Error(), "--cdp 9226") {
-		t.Fatalf("refusal should point at the perf instance's own port: %v", err)
+	for mode, want := range map[instanceinfo.Mode]string{
+		instanceinfo.ModeHarness: "--cdp 9225",
+		instanceinfo.ModePerf:    "--cdp 9226",
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			row := instanceinfo.Instance{Row: instanceinfo.Row{Identity: instanceinfo.Identity{ID: "abcd1234", Mode: mode}}}
+			_, err := resolveCDPEndpoint("", target{ID: row.ID, Row: &row})
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("refusal should point at this instance's own port %q: %v", want, err)
+			}
+		})
 	}
 }
 

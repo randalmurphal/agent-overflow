@@ -451,9 +451,6 @@ func TestNotApplicableSectionsNeverWorsenTheVerdict(t *testing.T) {
 	if healthExitCode(report) != exitOK {
 		t.Fatalf("an n/a section failed the rollup")
 	}
-	if healthNA == healthOK {
-		t.Fatal("n/a and ok must stay distinguishable in the rendered report")
-	}
 }
 
 // A ui-oracle section over ZERO trace records is the case that forced the

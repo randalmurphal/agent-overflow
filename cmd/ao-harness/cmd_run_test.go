@@ -87,21 +87,19 @@ func TestRunPlanRefusesItsMonitorLegBeforeRootMutation(t *testing.T) {
 	}
 }
 
-func TestRunGovernorReportsHostPressureReason(t *testing.T) {
-	events := make(chan governor.Event, 1)
-	events <- governor.Event{Reason: governor.ReasonAvailableFloor, AvailableBytes: 99, AvailableFloorBytes: 100}
-	err := (&runGovernor{events: events}).safetyError()
-	if err == nil || !strings.Contains(err.Error(), "available=99 floor=100 (available-floor)") {
-		t.Fatalf("safety error = %v", err)
-	}
-}
-
-func TestRunGovernorReportsMonitorFailure(t *testing.T) {
-	events := make(chan governor.Event, 1)
-	events <- governor.Event{Reason: governor.ReasonMonitorError, Error: "owner disappeared"}
-	err := (&runGovernor{events: events}).safetyError()
-	if err == nil || !strings.Contains(err.Error(), "owner disappeared") {
-		t.Fatalf("monitor error = %v", err)
+func TestRunGovernorSafetyErrorNamesTheReason(t *testing.T) {
+	for want, event := range map[string]governor.Event{
+		"available=99 floor=100 (available-floor)": {Reason: governor.ReasonAvailableFloor, AvailableBytes: 99, AvailableFloorBytes: 100},
+		"owner disappeared":                        {Reason: governor.ReasonMonitorError, Error: "owner disappeared"},
+	} {
+		t.Run(event.Reason, func(t *testing.T) {
+			events := make(chan governor.Event, 1)
+			events <- event
+			err := (&runGovernor{events: events}).safetyError()
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("safety error = %v, want it to contain %q", err, want)
+			}
+		})
 	}
 }
 
