@@ -115,10 +115,11 @@ record names. A backend a spec
 launches itself keeps its console in
 `<root>/agent-overflow/logs/harness-console.log` and is not copied.
 
-A run takes no screenshots unless `AO_E2E_SCREENSHOTS=1`; every capture
-goes through `src/screenshot.ts`. The checks a capture helper makes
-before its shot run either way; work done only for the picture runs only
-with screenshots on.
+A run takes no evidence screenshots unless `AO_E2E_SCREENSHOTS=1`; every
+such capture goes through `src/screenshot.ts`. The checks a capture helper
+makes before its shot run either way; work done only for the picture runs
+only with screenshots on. A spec that asserts on a screenshot's pixels
+calls Playwright's own `screenshot`.
 
 A failed test also gets a `stalled page` attachment for each open page that
 did not answer a trivial evaluate: its paused JavaScript stack with source,

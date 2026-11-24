@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { e2eGrepInvert, grepInvert, harnessTestPackages, jobs, plan, skippedSpecs, suites, toolingSpecs, verdict, vitestCheckRuns, vitestChecks } from './ci-suites.mjs';
+import { e2eGrepInvert, grepInvert, harnessTestPackages, jobs, loadedBy, plan, skippedSpecs, suites, toolingSpecs, verdict, vitestCheckRuns, vitestChecks } from './ci-suites.mjs';
 import { PROJECT_INPUTS, READERS, TRIGGERS } from '../frontend/scripts/vitest-changed.check.mjs';
 
 const harness = harnessTestPackages('# packages\nE2E_TEST_PACKAGES := ./internal/frontendclient ./internal/store\n');
@@ -147,7 +147,7 @@ test('each path that can change the affected-test selection check runs it', () =
   for (const path of [...named.map(path => path.startsWith('../') ? path.slice(3) : `frontend/${path}`),
     'frontend/scripts/vitest-changed.mjs', 'frontend/scripts/vitest-changed.check.mjs', 'frontend/tsconfig.json', 'frontend/tsconfig.node.json',
     'frontend/src/test/config/rawImportsPlugin.ts', 'frontend/scripts/bundleId.ts', 'frontend/src/test/stalledPageWatchdog.ts',
-    'frontend/src/lib/markdown/parseBlockRetention.workload.ts', 'Makefile', 'build/test-inputs.mk', '.github/workflows/ci.yml']) {
+    'frontend/src/lib/native/bundleVersion.ts', 'frontend/src/lib/markdown/parseBlockRetention.workload.ts', 'Makefile', 'build/test-inputs.mk', '.github/workflows/ci.yml']) {
     assert.equal(selects('test-selection', path), true, path);
   }
 });
@@ -155,11 +155,30 @@ test('each path that can change the affected-test selection check runs it', () =
 test('each path that can change the stalled-page watchdog check runs it', () => {
   for (const path of ['frontend/scripts/check-stalled-page-watchdog.mjs', 'frontend/src/test/stalledPageWatchdog.ts',
     'frontend/src/test/stalledPage/blocked-test.fixture.ts', 'frontend/src/test/stalledPage/vitest.config.ts', 'frontend/vitest.config.ts',
-    'frontend/src/test/config/rawImportsPlugin.ts', 'frontend/scripts/bundleId.ts',
+    'frontend/src/test/config/rawImportsPlugin.ts', 'frontend/scripts/bundleId.ts', 'frontend/src/lib/native/bundleVersion.ts',
     'frontend/package.json', 'frontend/pnpm-lock.yaml', 'frontend/tsconfig.json', 'build/test-inputs.mk', 'scripts/playwright-browsers.sh',
     'ci/Dockerfile', '.github/actions/setup/action.yml']) {
     assert.equal(selects('stall-watchdog', path), true, path);
   }
+});
+
+test('the files a config loads are its relative imports that are not type-only, followed through each file', () => {
+  const files = {
+    'a/config.ts': "import { x } from './plugins/x.ts';\nimport type { T } from '../lib/types.ts';\nimport {\n  y,\n} from '../scripts/y.ts';\nimport 'pkg';\nexport const load = () => import('./lazy.ts');\n",
+    'a/plugins/x.ts': "import './side.ts';\nexport * from './again.ts';\nexport { z } from '../config.ts';\n",
+    'a/plugins/side.ts': "import { gone } from './gone';\n",
+    'a/plugins/again.ts': '',
+    'scripts/y.ts': "import { type T, v } from '../lib/v.ts';\n",
+    'lib/v.ts': '',
+    'a/lazy.ts': '',
+    'lib/types.ts': "import { never } from './never.ts';\n",
+  };
+  const read = path => {
+    if (path in files) return files[path];
+    throw Object.assign(new Error(path), { code: 'ENOENT' });
+  };
+  assert.deepEqual([...loadedBy('a/config.ts', read)].sort(), ['a/config.ts', 'a/lazy.ts', 'a/plugins/again.ts', 'a/plugins/gone',
+    'a/plugins/side.ts', 'a/plugins/x.ts', 'lib/v.ts', 'scripts/y.ts']);
 });
 
 test('a pull request skips a Vitest tooling check when no path it changes can change the check', () => {

@@ -179,6 +179,8 @@ test('captures the tools row and a workflows pane beside a thread', async ({ har
     }
     await shoot(row, testInfo, `tools-row-${width}-dark`);
   }
-  await dragSidebarTo(page, 300);
-  await shoot(page, testInfo, 'workflows-pane-beside-thread-dark');
+  if (screenshotsOn) {
+    await dragSidebarTo(page, 300);
+    await shoot(page, testInfo, 'workflows-pane-beside-thread-dark');
+  }
 });
