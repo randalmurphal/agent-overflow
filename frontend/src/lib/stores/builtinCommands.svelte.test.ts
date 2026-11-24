@@ -36,11 +36,7 @@ import { focusPane, getFocusedPaneId, registerPaneForTest } from './panes.svelte
 import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
 import { getPaneLayoutItems, getPromotedPaneId, promotePane, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from './browserCompanion.svelte';
-import {
-  closeMessageSearch,
-  isMessageSearchOpen,
-  openMessageSearch,
-} from './messageSearch.svelte';
+import { closeMessageSearch, isMessageSearchOpen } from './messageSearch.svelte';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 import {
   PANE_FIND_DETAIL_REGION,
@@ -60,11 +56,7 @@ import {
 import { dispatchKey, eventMatchesKeybindingCommand, resetKeybindingsStore, setKeybindingsForTest } from './keybindings.svelte';
 import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
 import { createSurfaceDismissalEvent, isSurfaceDismissalEvent } from '../utils/surfaceDismissal';
-import {
-  closeThreadPicker,
-  isThreadPickerOpen,
-  openThreadPicker,
-} from './threadPicker.svelte';
+import { closeThreadPicker, isThreadPickerOpen } from './threadPicker.svelte';
 import { closeAccountSwitcher, isAccountSwitcherOpen } from './accountSwitcher.svelte';
 import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import {
@@ -742,18 +734,6 @@ describe('terminal.newPane command', () => {
     vi.mocked(openTerminalThread).mockClear();
   });
 
-  it('stays enabled while a terminal is focused (the terminalFocus arm of its when)', () => {
-    const pane = readyPane();
-    registerFixtureCommands(pane);
-    expect(getCommand('terminal.newPane')).toBeDefined();
-    // `when: 'terminalFocus || hasActiveThread'` — the terminalFocus arm is
-    // what lets the mod+shift+~ chord escape a focused xterm (the escape
-    // predicate evaluates the `when` against a synthetic terminalFocus-only
-    // context), proven here by the command remaining enabled under focus.
-    const ctx = makeCommandContext(pane, { terminalFocus: true }) as CommandContext;
-    expect(isCommandEnabled('terminal.newPane', ctx)).toBe(true);
-  });
-
   it('opens a fresh terminal rooted at the active thread project + workspace', () => {
     const pane = readyPane({ projectId: 'proj-9', workspacePath: '/ws/9' });
     registerFixtureCommands(pane);
@@ -809,13 +789,18 @@ describe('terminal tab management commands', () => {
     clearCommandRegistry();
   });
 
-  it('newTab/closeTab/nextTab/prevTab/clear are registered, editableReachable, and enabled under terminalFocus', () => {
+  // Escape-set membership (below) lets a chord bubble out of the xterm, but
+  // App.svelte only dispatches editable-target chords for editableReachable
+  // commands, and a chord escapes only when its `when` holds under a
+  // terminalFocus-only context (terminal.newPane's terminalFocus arm). Both are
+  // pinned on the real registrations.
+  it('newTab/closeTab/nextTab/prevTab/clear/newPane are registered, editableReachable, and enabled under terminalFocus', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
     const ctx = makeCommandContext(pane, { terminalFocus: true }) as CommandContext;
-    for (const id of ['terminal.newTab', 'terminal.closeTab', 'terminal.nextTab', 'terminal.prevTab', 'terminal.clear']) {
-      expect(getCommand(id)?.editableReachable).toBe(true);
-      expect(isCommandEnabled(id, ctx)).toBe(true);
+    for (const id of ['terminal.newTab', 'terminal.closeTab', 'terminal.nextTab', 'terminal.prevTab', 'terminal.clear', 'terminal.newPane']) {
+      expect(getCommand(id)?.editableReachable, id).toBe(true);
+      expect(isCommandEnabled(id, ctx), id).toBe(true);
     }
   });
 
@@ -844,17 +829,6 @@ describe('terminal tab management commands', () => {
 
     expect(runCommand('terminal.clear', makeCommandContext(pane, { terminalFocus: true }))).toBe(true);
     expect(clears).toEqual({ a: 0, b: 1 });
-  });
-
-  it('terminal.newPane is editableReachable so Ctrl+Shift+~ fires from inside a focused xterm', () => {
-    const pane = readyPane();
-    registerFixtureCommands(pane);
-    // Escape-set membership (above) lets the chord bubble out of the xterm, but
-    // App.svelte only dispatches editable-target chords for editableReachable
-    // commands — so this flag on the REAL registration is the other half of the
-    // in-terminal new-pane fix. Pinned here (not just in the keybindings fixture)
-    // so a regression in the actual registerCommand call is caught.
-    expect(getCommand('terminal.newPane')?.editableReachable).toBe(true);
   });
 
   it('terminal.newTab opens a tab in the focused pane and adds it to the surface', async () => {
@@ -993,44 +967,31 @@ describe('terminal tab management commands', () => {
   });
 });
 
-describe('search.messages command', () => {
+// search.messages opens MessageSearch and mod+p's thread.search opens the
+// unified thread picker. Each `.close` variant is gated on its context flag so
+// the palette doesn't let the user run close while nothing is open.
+describe('search.messages and thread.search commands', () => {
   beforeEach(() => {
     clearCommandRegistry();
     closeMessageSearch();
+    closeThreadPicker();
   });
 
-  it('registers the open and close commands', () => {
-    registerFixtureCommands(readyPane());
-    expect(getCommand('search.messages')).toBeDefined();
-    expect(getCommand('search.messages.close')).toBeDefined();
-  });
-
-  it('opens MessageSearch when run', () => {
+  it.each([
+    { id: 'search.messages', isOpen: isMessageSearchOpen, flag: 'messageSearchOpen' },
+    { id: 'thread.search', isOpen: isThreadPickerOpen, flag: 'threadPickerOpen' },
+  ])('$id opens its surface when run, and its close command runs only while the surface is open', ({ id, isOpen, flag }) => {
     const pane = readyPane();
     registerFixtureCommands(pane);
-    const ctx = makeCommandContext(pane, {}) as CommandContext;
-    expect(isMessageSearchOpen()).toBe(false);
-    const ran = runCommand('search.messages', ctx);
-    expect(ran).toBe(true);
-    expect(isMessageSearchOpen()).toBe(true);
-  });
+    expect(isOpen()).toBe(false);
+    expect(isCommandEnabled(`${id}.close`, makeCommandContext(pane, { [flag]: false }) as CommandContext)).toBe(false);
 
-  it('close command is disabled when the dialog is closed', () => {
-    const pane = readyPane();
-    registerFixtureCommands(pane);
-    const ctx = makeCommandContext(pane, { messageSearchOpen: false }) as CommandContext;
-    expect(isCommandEnabled('search.messages.close', ctx)).toBe(false);
-  });
-
-  it('close command is enabled and closes when the dialog is open', () => {
-    const pane = readyPane();
-    registerFixtureCommands(pane);
-    openMessageSearch();
-    expect(isMessageSearchOpen()).toBe(true);
-    const ctx = makeCommandContext(pane, { messageSearchOpen: true }) as CommandContext;
-    expect(isCommandEnabled('search.messages.close', ctx)).toBe(true);
-    runCommand('search.messages.close', ctx);
-    expect(isMessageSearchOpen()).toBe(false);
+    expect(runCommand(id, makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+    expect(isOpen()).toBe(true);
+    const openCtx = makeCommandContext(pane, { [flag]: true }) as CommandContext;
+    expect(isCommandEnabled(`${id}.close`, openCtx)).toBe(true);
+    runCommand(`${id}.close`, openCtx);
+    expect(isOpen()).toBe(false);
   });
 });
 
@@ -1697,53 +1658,6 @@ describe('pane find under compact', () => {
   });
 });
 
-// --- thread.search wiring ---
-//
-// mod+p opens the unified thread picker. Parallel shape to search.messages —
-// the `.close` variant is gated on the `threadPickerOpen` context flag so the
-// palette doesn't let the user run close while nothing is open.
-
-describe('thread.search command', () => {
-  beforeEach(() => {
-    clearCommandRegistry();
-    closeThreadPicker();
-  });
-
-  it('registers the open and close commands', () => {
-    registerFixtureCommands(readyPane());
-    expect(getCommand('thread.search')).toBeDefined();
-    expect(getCommand('thread.search.close')).toBeDefined();
-  });
-
-  it('opens the thread picker when run', () => {
-    const pane = readyPane();
-    registerFixtureCommands(pane);
-    const ctx = makeCommandContext(pane, {}) as CommandContext;
-    expect(isThreadPickerOpen()).toBe(false);
-    const ran = runCommand('thread.search', ctx);
-    expect(ran).toBe(true);
-    expect(isThreadPickerOpen()).toBe(true);
-  });
-
-  it('close command is disabled when the picker is closed', () => {
-    const pane = readyPane();
-    registerFixtureCommands(pane);
-    const ctx = makeCommandContext(pane, { threadPickerOpen: false }) as CommandContext;
-    expect(isCommandEnabled('thread.search.close', ctx)).toBe(false);
-  });
-
-  it('close command closes the picker when enabled', () => {
-    const pane = readyPane();
-    registerFixtureCommands(pane);
-    openThreadPicker();
-    expect(isThreadPickerOpen()).toBe(true);
-    const ctx = makeCommandContext(pane, { threadPickerOpen: true }) as CommandContext;
-    expect(isCommandEnabled('thread.search.close', ctx)).toBe(true);
-    runCommand('thread.search.close', ctx);
-    expect(isThreadPickerOpen()).toBe(false);
-  });
-});
-
 // --- provider.switchAccount wiring ---
 //
 // mod+shift+u toggles the account-switcher picker. Unlike thread.search there
@@ -1916,81 +1830,29 @@ describe('git commit/PR command safety', () => {
     expect(getCommand('git.ship')).toBeUndefined();
   });
 
-  it('opens the Commit dialog for git.commit instead of prompting and calling GitCommit directly', () => {
+  it.each([
+    { id: 'git.commit', dialog: 'commit', binding: 'GitCommit' },
+    { id: 'git.openPR', dialog: 'createPR', binding: 'GitCreatePR' },
+  ])('opens the $dialog dialog for $id instead of prompting and calling $binding directly', ({ id, dialog, binding }) => {
     const pane = readyPane();
     const opened: Array<[string, string]> = [];
     const { promptMock, restore } = installPromptMock();
-    const commitMock = setBindingMock('GitCommit', async () => ({
-      action: 'commit',
-      commitSha: 'abc1234',
-    }));
+    const bindingMock = setBindingMock(binding, async () => ({}));
     registerBuiltinCommands(makeBuiltinHooks({
-      openGitDialog: (paneId, dialog) => {
-        opened.push([paneId, dialog]);
+      openGitDialog: (paneId, opens) => {
+        opened.push([paneId, opens]);
       },
     }));
 
     try {
-      runCommand('git.commit', makeCommandContext(pane, {}));
+      runCommand(id, makeCommandContext(pane, {}));
 
-      expect(opened).toEqual([[pane.paneId, 'commit']]);
+      expect(opened).toEqual([[pane.paneId, dialog]]);
       expect(promptMock).not.toHaveBeenCalled();
-      expect(commitMock).not.toHaveBeenCalled();
+      expect(bindingMock).not.toHaveBeenCalled();
     } finally {
       restore();
     }
-  });
-
-  it('opens the Create PR/MR dialog for git.openPR instead of prompting and creating directly', () => {
-    const pane = readyPane();
-    const opened: Array<[string, string]> = [];
-    const { promptMock, restore } = installPromptMock();
-    const createPrMock = setBindingMock('GitCreatePR', async () => ({
-      action: 'pr',
-      prUrl: 'https://example.test/pr/1',
-    }));
-    registerBuiltinCommands(makeBuiltinHooks({
-      openGitDialog: (paneId, dialog) => {
-        opened.push([paneId, dialog]);
-      },
-    }));
-
-    try {
-      runCommand('git.openPR', makeCommandContext(pane, {}));
-
-      expect(opened).toEqual([[pane.paneId, 'createPR']]);
-      expect(promptMock).not.toHaveBeenCalled();
-      expect(createPrMock).not.toHaveBeenCalled();
-    } finally {
-      restore();
-    }
-  });
-});
-
-// --- sidebar.focus-search wiring ---
-//
-// ⌘K moved from palette.open (now ⌘⇧K) to sidebar.focus-search in Wave 4.
-// This test pins that the command id exists and its run callback routes
-// through the same focusThreadSearch hook search.threads uses — a single
-// shared sink so Sidebar/SidebarSearch have one wiring point.
-
-describe('sidebar.focus-search command', () => {
-  beforeEach(() => {
-    clearCommandRegistry();
-  });
-
-  it('is registered and calls the focusThreadSearch hook', () => {
-    let focusCount = 0;
-    const pane = readyPane();
-    registerBuiltinCommands(makeBuiltinHooks({
-      focusThreadSearch: () => {
-        focusCount += 1;
-      },
-    }));
-    expect(getCommand('sidebar.focus-search')).toBeDefined();
-    const ctx = makeCommandContext(pane, {}) as CommandContext;
-    runCommand('sidebar.focus-search', ctx);
-    expect(focusCount).toBe(1);
   });
 });
 
@@ -2142,53 +2004,25 @@ describe('composer.picker.* commands', () => {
     }
   });
 
-  it('toggling the chord calls open() on a closed handle', async () => {
+  it.each([
+    { picker: 'model', state: 'a closed', initiallyOpen: false, called: 'open' },
+    { picker: 'effort', state: 'an open', initiallyOpen: true, called: 'close' },
+  ] as const)('toggling the chord calls $called() on $state handle', async ({ picker, initiallyOpen, called }) => {
     const { registerComposerPicker, resetComposerPickerRegistryForTest } = await import(
       './composerPickerRegistry.svelte'
     );
     resetComposerPickerRegistryForTest();
     const pane = readyPane();
     registerFixtureCommands(pane);
-    let isOpen = false;
-    const open = vi.fn(() => {
-      isOpen = true;
-    });
-    const close = vi.fn(() => {
-      isOpen = false;
-    });
-    registerComposerPicker(pane.paneId, 'model', {
+    let isOpen: boolean = initiallyOpen;
+    const calls: string[] = [];
+    registerComposerPicker(pane.paneId, picker, {
       isOpen: () => isOpen,
-      open,
-      close,
+      open: () => { calls.push('open'); isOpen = true; },
+      close: () => { calls.push('close'); isOpen = false; },
     });
-    runCommand('composer.picker.model', makeCommandContext(pane, {}) as CommandContext);
-    expect(open).toHaveBeenCalledTimes(1);
-    expect(close).not.toHaveBeenCalled();
-    resetComposerPickerRegistryForTest();
-  });
-
-  it('toggling the chord calls close() on an open handle', async () => {
-    const { registerComposerPicker, resetComposerPickerRegistryForTest } = await import(
-      './composerPickerRegistry.svelte'
-    );
-    resetComposerPickerRegistryForTest();
-    const pane = readyPane();
-    registerFixtureCommands(pane);
-    let isOpen = true;
-    const open = vi.fn(() => {
-      isOpen = true;
-    });
-    const close = vi.fn(() => {
-      isOpen = false;
-    });
-    registerComposerPicker(pane.paneId, 'effort', {
-      isOpen: () => isOpen,
-      open,
-      close,
-    });
-    runCommand('composer.picker.effort', makeCommandContext(pane, {}) as CommandContext);
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(open).not.toHaveBeenCalled();
+    runCommand(`composer.picker.${picker}`, makeCommandContext(pane, {}) as CommandContext);
+    expect(calls).toEqual([called]);
     resetComposerPickerRegistryForTest();
   });
 });
@@ -2269,12 +2103,15 @@ describe('thread-bound commands on placeholders', () => {
     clearCommandRegistry();
   });
 
-  it('terminal.toggle on a placeholder opens without creating a thread', () => {
-    const pane = placeholderPane('term-toggle-draft');
+  it.each([
+    ['terminal.toggle', 'term-toggle-draft'],
+    ['terminal.new', 'term-new-draft'],
+  ])('%s on a placeholder opens without creating a thread', (id, paneId) => {
+    const pane = placeholderPane(paneId);
     // The shared teardown closes the placeholder, which closes the terminal it opened.
     setBindingMock('CloseThreadTerminals', async () => undefined);
     const create = setBindingMock('CreateThread', async () => {
-      throw new Error('CreateThread must not be called for terminal.toggle on a placeholder');
+      throw new Error(`CreateThread must not be called for ${id} on a placeholder`);
     });
     registerFixtureCommands(pane);
 
@@ -2284,26 +2121,7 @@ describe('thread-bound commands on placeholders', () => {
 
     const ctx = makeCommandContext(pane, {}) as CommandContext;
     expect(ctx.hasActiveThread).toBe(true);
-    runCommand('terminal.toggle', ctx);
-
-    expect(create).not.toHaveBeenCalled();
-    expect(pane.threadId).toBeNull();
-    expect(pane.showTerminal).toBe(true);
-  });
-
-  it('terminal.new on a placeholder opens without creating a thread', () => {
-    const pane = placeholderPane('term-new-draft');
-    // The shared teardown closes the placeholder, which closes the terminal it opened.
-    setBindingMock('CloseThreadTerminals', async () => undefined);
-    const create = setBindingMock('CreateThread', async () => {
-      throw new Error('CreateThread must not be called for terminal.new on a placeholder');
-    });
-    registerFixtureCommands(pane);
-
-    expect(pane.threadId).toBeNull();
-    expect(pane.showTerminal).toBe(false);
-
-    runCommand('terminal.new', makeCommandContext(pane, {}) as CommandContext);
+    runCommand(id, ctx);
 
     expect(create).not.toHaveBeenCalled();
     expect(pane.threadId).toBeNull();
@@ -2547,22 +2365,14 @@ describe('pane navigation into a terminal pane', () => {
     expect(TERMINAL_ESCAPE_COMMAND_IDS.has('pane.togglePromoted')).toBe(true);
   });
 
-  it('every PANE_NAV_COMMAND_IDS entry is a registered builtin command', () => {
-    // The xterm escape predicate (eventEscapesTerminalToCommand) and the Go
-    // un-gated alt-chord defaults both key off this hand-maintained set. If a
-    // pane-nav command id is renamed in builtinCommands without updating the
-    // set (or vice versa), its chord would silently fall back to the PTY — this
-    // pins the set to the registry so that drift fails loudly.
-    registerFixtureCommands(createThreadPane({ paneId: 'reg' }));
-    const missing = [...PANE_NAV_COMMAND_IDS].filter((id) => !getCommand(id));
-    expect(missing).toEqual([]);
-  });
-
   it('every TERMINAL_ESCAPE_COMMAND_IDS entry is a registered builtin command', () => {
     // The terminal key handler lets exactly these ids bubble out of a focused
-    // xterm (pane nav + terminal.refresh). If terminal.refresh were renamed in
-    // builtinCommands without updating the set (or vice versa), alt+shift+r would
-    // silently fall back to the PTY — pin the set to the registry so drift fails.
+    // xterm: PANE_NAV_COMMAND_IDS (which the Go un-gated alt-chord defaults
+    // also key off), terminal.refresh, promotion and tab management. If one
+    // were renamed in builtinCommands without updating its set (or vice versa),
+    // its chord would silently fall back to the PTY — pin the sets to the
+    // registry so drift fails.
+    expect([...PANE_NAV_COMMAND_IDS].filter((id) => !TERMINAL_ESCAPE_COMMAND_IDS.has(id))).toEqual([]);
     registerFixtureCommands(createThreadPane({ paneId: 'reg' }));
     const missing = [...TERMINAL_ESCAPE_COMMAND_IDS].filter((id) => !getCommand(id));
     expect(missing).toEqual([]);

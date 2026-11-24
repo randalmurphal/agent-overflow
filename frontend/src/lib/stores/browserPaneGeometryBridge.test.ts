@@ -54,12 +54,14 @@ describe('browser pane geometry to the window host', () => {
     expect(backend).toEqual([1]);
   });
 
-  it('posts each changed report numbered per mount, and still reports to the backend', async () => {
+  it('numbers each distinct report once and sends that number to the backend and the host alike', async () => {
     stubHost(true);
     reportBrowserPaneRect(THREAD, rect(1));
     reportBrowserPaneRect(THREAD, rect(1));
     reportBrowserPaneRect(THREAD, rect(2));
-    expect(posted).toHaveLength(2);
+    expect(postedSeqs()).toEqual([[1, 1], [2, 2]]);
+    // Back to the first rect: a newer report than the first.
+    reportBrowserPaneRect(THREAD, rect(1));
     const reports = posted.map((message) => {
       expect(message.startsWith('ao:pane-geometry:')).toBe(true);
       return JSON.parse(message.slice('ao:pane-geometry:'.length));
@@ -67,21 +69,9 @@ describe('browser pane geometry to the window host', () => {
     expect(reports.map((r) => [r.mount, r.seq, r.x])).toEqual([
       ['mount-1', 1, 1],
       ['mount-1', 2, 2],
+      ['mount-1', 3, 1],
     ]);
     expect(reports[0]).toMatchObject({ devicePixelRatio: 1.25, visible: true, background: '#000000', clipWidth: 800 });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(backend[0]).toBe(1);
-  });
-
-  it('numbers each distinct report once and sends that number to the backend and the host alike', async () => {
-    stubHost(true);
-    reportBrowserPaneRect(THREAD, rect(1));
-    reportBrowserPaneRect(THREAD, rect(1));
-    reportBrowserPaneRect(THREAD, rect(2));
-    // Back to the first rect: a newer report than the first.
-    reportBrowserPaneRect(THREAD, rect(1));
-    expect(postedSeqs()).toEqual([[1, 1], [2, 2], [1, 3]]);
     for (let i = 0; i < 6; i++) await Promise.resolve();
     // The first is sent at once; the newest replaces what queued behind it.
     expect(backendSeqs).toEqual([[1, 1], [1, 3]]);

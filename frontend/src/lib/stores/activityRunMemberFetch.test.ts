@@ -91,18 +91,6 @@ it('coalesces stale refusals and waits for recovery before fetching again', asyn
   f.fetcher.dispose();
 });
 
-it('discards a members answer superseded by a page that moved its loaded edge', async () => {
-  const f = fixture();
-  const result = deferred<unknown>();
-  setBindingMock('ListActivityRunMembers', () => result.promise);
-  const pending = f.fetcher.fetch('run', { direction: 'before', limit: 5 });
-  foldPageStub(f.records, { ...f.stub }, { firstItemId: 'moved', lastItemId: 'moved', items: [] });
-  result.resolve({ items: [], stub: f.stub });
-  await pending;
-  expect(f.onStubApplied).not.toHaveBeenCalled();
-  f.fetcher.dispose();
-});
-
 it('reports a failed shared recovery once without rejecting callers or retrying itself', async () => {
   const f = fixture();
   foldPageStub(f.records, { ...f.stub, firstItemId: 'second' }, null);

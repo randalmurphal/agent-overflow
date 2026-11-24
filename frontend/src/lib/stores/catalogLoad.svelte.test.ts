@@ -715,19 +715,12 @@ describe('the sidebar listing', () => {
     await loadSidebarCatalogs();
     expect(catalogTreeListed('gpu')).toBe(true);
     detachBackend('gpu');
+    expect(catalogTreeListed('gpu')).toBe(false);
     stageBackend({ id: 'gpu' });
     setBindingMock('ListProjects', async () => { if (takePinnedBackend() === 'gpu') offline(); return []; });
     setBindingMock('ListThreads', async () => { if (takePinnedBackend() === 'gpu') offline(); return []; });
     setBindingMock('ListThreadGroups', async () => { if (takePinnedBackend() === 'gpu') offline(); return []; });
     await loadSidebarCatalogs();
-    expect(catalogTreeListed('gpu')).toBe(false);
-  });
-
-  it("forgets a detached computer's listing", async () => {
-    stageBackend({ id: 'gpu' });
-    await loadSidebarCatalogs();
-    expect(catalogTreeListed('gpu')).toBe(true);
-    detachBackend('gpu');
     expect(catalogTreeListed('gpu')).toBe(false);
   });
 });
