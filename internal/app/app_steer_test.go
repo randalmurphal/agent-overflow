@@ -94,15 +94,9 @@ func installSteerTestSessionWithEvents(t *testing.T, app *App, thread store.Thre
 	return installCodexTestSessionWithEvents(t, app, thread, writeCodexSteerBinary(t, thread.ID+"-codex", steerOutcome), onEvent)
 }
 
-// installCodexTestSessionWithBinary is installSteerTestSession over a fake
-// app-server of the caller's own.
-func installCodexTestSessionWithBinary(t *testing.T, app *App, thread store.Thread, binary string) *codex.Session {
-	t.Helper()
-	return installCodexTestSessionWithEvents(t, app, thread, binary, func(provider.ProviderEvent) {})
-}
-
-// installCodexTestSessionWithEvents is installCodexTestSessionWithBinary
-// with the session's own events handed to onEvent.
+// installCodexTestSessionWithEvents is installSteerTestSession over a fake
+// app-server of the caller's own, with the session's own events handed to
+// onEvent.
 func installCodexTestSessionWithEvents(t *testing.T, app *App, thread store.Thread, binary string, onEvent func(provider.ProviderEvent)) *codex.Session {
 	t.Helper()
 	sess, err := codex.NewSession(
