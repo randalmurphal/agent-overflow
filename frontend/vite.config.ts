@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
-import { bundleIdPlugin } from "./scripts/bundleId.ts";
+import { PAGE_VERSION_GLOBAL, buildReleaseVersion, bundleIdPlugin } from "./scripts/bundleId.ts";
 
 // Phase B aliases @wailsio/runtime to the local transport shim. The shim
 // exposes the same surface the generated bindings depend on (Call.ByID,
@@ -13,11 +13,20 @@ import { bundleIdPlugin } from "./scripts/bundleId.ts";
 // localhost WS server.
 const transportShim = resolve(import.meta.dirname, "src/lib/transport/runtime.ts");
 
+// This build's release, computed once: the page reads it as its own version
+// (src/lib/pageVersion.ts) and `bundleIdPlugin` stamps the same value into
+// `bundle-release.json`, which is what a computer's hello reports.
+const pageVersion = buildReleaseVersion(resolve(import.meta.dirname, "package.json"));
+
 export default defineConfig({
   resolve: {
     alias: {
       "@wailsio/runtime": transportShim,
     },
+  },
+
+  define: {
+    [PAGE_VERSION_GLOBAL]: JSON.stringify(pageVersion),
   },
 
   // `configFile: false`: there is no `svelte.config.js`. The only one this
@@ -30,7 +39,7 @@ export default defineConfig({
   // It is what lets a phone running the bundle its APK shipped with
   // recognise that id in a hello and decline to download itself
   // (`scripts/bundleId.ts` argues both halves).
-  plugins: [tailwindcss(), svelte({ configFile: false }), bundleIdPlugin()],
+  plugins: [tailwindcss(), svelte({ configFile: false }), bundleIdPlugin(pageVersion)],
   server: {
     watch: {
       // The dev server only runs for a harness serving working-tree

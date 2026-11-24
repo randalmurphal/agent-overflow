@@ -42,7 +42,7 @@ export function settingsAsV0019(overrides: Partial<Settings> = {}): Partial<Sett
 
 /** What v0.0.19's dispatcher answers for a method it does not register. */
 export function methodNotFound(): TransportError {
-  return new TransportError('method_not_found', 'unknown method');
+  return new TransportError('method_not_found', 'method not registered');
 }
 
 /**

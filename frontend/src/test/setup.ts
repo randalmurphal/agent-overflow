@@ -47,6 +47,7 @@ import { setHostWindowFromBootstrap } from '../lib/transport/pageHost';
 import { resetBuildVariantPage } from './helpers/buildVariant';
 import { resetStagedBackends } from './helpers/backends';
 import { resetTelemetryFooterShapesForTest } from '../lib/stores/telemetryFooterShape.svelte';
+import { installVersionMismatchWording } from '../lib/stores/versionMismatch';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -247,6 +248,10 @@ beforeEach(() => {
   // scope); a test exercising a narrower session sets its own.
   setHostWindowFromBootstrap(true);
   setPageGrantsFromBootstrap(false);
+  // The app installs this at boot (src/main.ts), so a refused call reads in
+  // a test as it does there; a test of the transport's own sentence
+  // uninstalls it for its duration.
+  installVersionMismatchWording();
   // Entity-keyed git status is a module-level singleton shared by every
   // pane, so it outlives a test. Reset after the transport pin, which
   // itself re-sources whatever the previous test left attached.

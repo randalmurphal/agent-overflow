@@ -444,6 +444,9 @@ export {
   GetAttachmentThumbnail,
   GetLocalImage,
   SaveLocalImage,
+  // A repository image; a computer without them refuses, which says so.
+  GetGitBlobImage,
+  SaveGitBlobImage,
   SaveDraft,
   GetDraft,
   ClearDraft,
@@ -1370,8 +1373,6 @@ import {
   ListThreadRecurringJobs as ListThreadRecurringJobsRaw,
   DeleteThreads as DeleteThreadsRaw,
   GetDeleteDependents as GetDeleteDependentsRaw,
-  GetGitBlobImage as GetGitBlobImageRaw,
-  SaveGitBlobImage as SaveGitBlobImageRaw,
   GetNativeMemoryStatus as GetNativeMemoryStatusRaw,
   GetThreadAgentRows as GetThreadAgentRowsRaw,
   GetThreadRequestStates as GetThreadRequestStatesRaw,
@@ -1402,7 +1403,6 @@ import {
   ThreadWorkerSummaryPage as ThreadWorkerSummaryPageClass,
   type AgentProfileCheck,
   type AgentRosterSeeds as AgentRosterSeedsAnswer,
-  type LocalImage as LocalImageRow,
   type NativeMemoryStatus,
   type StandingAgentWakes as StandingAgentWakesRow,
   type ThreadAgentRowRead as ThreadAgentRowReadRow,
@@ -1412,7 +1412,7 @@ import {
 import type { AgentProfile, Settings as SettingsSnapshot } from '../../../bindings/agent-overflow/internal/settings/models.js';
 import type { PastAgentRowsCursor, StandingAgent as StandingAgentRow, Thread as StoreThread } from '../../../bindings/agent-overflow/internal/store/models.js';
 import { methodId } from '../transport/methodId';
-import { orOlder, ThreadsPartlyDeleted } from './olderComputer';
+import { orOlder, ThreadsPartlyDeleted, withNote } from './olderComputer';
 
 export { ArchiveThreadResult, DeleteDependents, DeleteThreadResult };
 
@@ -1508,10 +1508,10 @@ export function MarkThreadsRead(ids: string[]): Promise<StoreThread[]> {
   });
 }
 
-/** Pause and End Sessions; a computer without it says so, and its Pause still pauses. */
+/** Pause and End Sessions; a computer without it refuses, and its Pause still pauses. */
 export function WorkflowPauseItemAndEndSessions(itemId: string): Promise<void> {
-  return orOlder(() => WorkflowPauseItemAndEndSessionsRaw(itemId), () => {
-    throw new Error('That computer runs an older version, which cannot end sessions. Pause still pauses the run.');
+  return orOlder(() => WorkflowPauseItemAndEndSessionsRaw(itemId), (_same, refusal) => {
+    throw withNote(refusal, 'Pause still pauses the run.');
   });
 }
 
@@ -1588,18 +1588,4 @@ export function ResolveForgeFacts(
   fresh: boolean,
 ): Promise<ForgeFactsClass | null> {
   return orOlder(() => ResolveForgeFactsRaw(ws, pr, rev, keys, fresh), () => null);
-}
-
-/** GetGitBlobImage; a computer without it serves no repository image, and the call rejects. */
-export function GetGitBlobImage(ws: Parameters<typeof GetGitBlobImageRaw>[0], oid: string, maxWidth: number): Promise<LocalImageRow> {
-  return orOlder(() => GetGitBlobImageRaw(ws, oid, maxWidth), () => {
-    throw new Error('That computer runs an older version, which cannot show images from its repository.');
-  });
-}
-
-/** SaveGitBlobImage; a computer without it saves no repository image, and the call rejects. */
-export function SaveGitBlobImage(ws: Parameters<typeof SaveGitBlobImageRaw>[0], oid: string, name: string): Promise<string> {
-  return orOlder(() => SaveGitBlobImageRaw(ws, oid, name), () => {
-    throw new Error('That computer runs an older version, which cannot save images from its repository.');
-  });
 }

@@ -1,0 +1,38 @@
+[
+  {
+    "name": "unsupported",
+    "code": "remote_unsupported",
+    "message": "Could not read the log of \"build --cross-platform\": That computer does not support this action. It may run a different version of Agent Overflow than this one. If so, update the older one.",
+    "detail": {
+      "method": "ReadThreadRemoteLog",
+      "chain": [
+        "Could not read the log of \"build --cross-platform\": That computer does not support this action. It may run a different version of Agent Overflow than this one. If so, update the older one.",
+        "The computer this reached does not support this action. It may run a different version of Agent Overflow. If so, update the older one, or reload a page left open during an update."
+      ]
+    }
+  },
+  {
+    "name": "unsupported, v0.0.19",
+    "code": "remote_unsupported",
+    "message": "Could not read the log of \"build --cross-platform\": That computer does not support this action. It may run a different version of Agent Overflow than this one. If so, update the older one.",
+    "detail": {
+      "method": "ReadThreadRemoteLog",
+      "chain": [
+        "Could not read the log of \"build --cross-platform\": That computer does not support this action. It may run a different version of Agent Overflow than this one. If so, update the older one.",
+        "The computer this reached does not support this action. It may run a different version of Agent Overflow. If so, update the older one, or reload a page left open during an update."
+      ]
+    }
+  },
+  {
+    "name": "unreadable",
+    "code": "remote_unsupported",
+    "message": "Could not read the log of \"build --cross-platform\": That computer could not read this request. It may run a different version of Agent Overflow than this one. If so, update the older one.",
+    "detail": {
+      "method": "ReadThreadRemoteLog",
+      "chain": [
+        "Could not read the log of \"build --cross-platform\": That computer could not read this request. It may run a different version of Agent Overflow than this one. If so, update the older one.",
+        "The computer this reached could not read this request. It may run a different version of Agent Overflow. If so, update the older one, or reload a page left open during an update. (RemoteCommandReadLog: expected 3 arguments, got 4)"
+      ]
+    }
+  }
+]

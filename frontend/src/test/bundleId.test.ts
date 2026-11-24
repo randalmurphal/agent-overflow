@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { BUNDLE_ID_FILE, BUNDLE_RELEASE_FILE, RELEASE_BUILD_ENV, bundleFiles, bundleId, bundleIdPlugin, bundleReleaseVersion, computeBundleId, included, nextPatchVersion, stampBundle } from '../../scripts/bundleId';
+import { BUNDLE_ID_FILE, BUNDLE_RELEASE_FILE, RELEASE_BUILD_ENV, buildReleaseVersion, bundleFiles, bundleId, bundleIdPlugin, bundleReleaseVersion, computeBundleId, included, nextPatchVersion, stampBundle } from '../../scripts/bundleId';
 import { compareBundleVersions } from '../lib/native/bundleVersion';
 
 const TESTDATA = resolve(
@@ -144,7 +144,9 @@ describe('release identity in built bundles', () => {
   it('stamps the package version in a release build before hashing all release bytes', async () => {
     process.env[RELEASE_BUILD_ENV] = '1';
     await buildFixture(async (root, output) => {
-      const plugin = bundleIdPlugin();
+      const version = buildReleaseVersion(resolve(root, 'package.json'));
+      expect(version).toBe('1.2.3');
+      const plugin = bundleIdPlugin(version);
       plugin.configResolved({ root, build: { outDir: 'dist' } });
       await plugin.closeBundle();
       expect(JSON.parse(await readFile(resolve(output, BUNDLE_RELEASE_FILE), 'utf8'))).toEqual({ version: '1.2.3' });
@@ -160,10 +162,13 @@ describe('release identity in built bundles', () => {
     delete process.env[RELEASE_BUILD_ENV];
     await buildFixture(async (root, output) => {
       const before = Math.floor(Date.now() / 1000);
-      const plugin = bundleIdPlugin();
+      const built = buildReleaseVersion(resolve(root, 'package.json'));
+      const plugin = bundleIdPlugin(built);
       plugin.configResolved({ root, build: { outDir: 'dist' } });
       await plugin.closeBundle();
       const { version } = JSON.parse(await readFile(resolve(output, BUNDLE_RELEASE_FILE), 'utf8')) as { version: string };
+      // The version the page is compiled with is the one stamped.
+      expect(version).toBe(built);
       const match = /^1\.2\.4-dev\.(\d+)$/.exec(version);
       expect(match).not.toBeNull();
       expect(Number(match![1])).toBeGreaterThanOrEqual(before);
@@ -174,5 +179,6 @@ describe('release identity in built bundles', () => {
 
   it.each([undefined, null, 12, '', 'dev', 'v1.2.3', '1.2', '01.2.3', '1.2.3-01', '1.2.3\n', '1.2.3-', '1.2.3+'])('rejects invalid package version %j before writing', async (version) => {
     await expect(stampBundle('/not-a-real-build-directory', version)).rejects.toThrow('semantic version');
+    expect(() => bundleIdPlugin(version as string)).toThrow('semantic version');
   });
 });

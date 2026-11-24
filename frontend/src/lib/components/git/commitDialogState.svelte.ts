@@ -2,7 +2,6 @@ import type { CommitFile, CommitSelection, WorkspaceRef } from '../../types/git'
 import { GenerateCommitMessage, GitCommit, ListCommitFiles } from '../../stores/bindings';
 import { createRefreshScheduler, type RefreshToken } from '../../utils/refreshScheduler';
 import { userFacingError } from '../../utils/userFacingError';
-import { isMethodUnavailableError } from '../../stores/transportStatus.svelte';
 import { carryActive, carrySelection, commitSelection, toggleAll, toggleOne } from './commitFiles';
 import { askGitAttempt, runGitAttempt, type GitAttemptAnswer } from './gitAttempt';
 
@@ -106,10 +105,7 @@ export function createCommitDialogState(workspace: WorkspaceRef, onEmptied: () =
       if (committedHere && next.length === 0) onEmptied();
     } catch (err) {
       if (!token.isCurrent()) return;
-      // A connected computer on a build older than the file list.
-      listError = isMethodUnavailableError(err)
-        ? 'Update Agent Overflow on this computer to commit from here.'
-        : userFacingError(err, 'Could not list the changed files.');
+      listError = userFacingError(err, 'Could not list the changed files.');
     }
   }
 

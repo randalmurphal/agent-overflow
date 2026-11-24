@@ -25,7 +25,6 @@ import {
 import { SCOPES } from '../transport/scopes';
 import { takePinnedBackend } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { TransportError } from '../transport/wsClient';
 import { __resetScopesForTest } from '../transport/scopes';
 import {
   canInstallSelectedRelease,
@@ -43,6 +42,7 @@ import {
   type ReleaseSummary,
   type ServiceUpdateStatus,
 } from './serviceUpdate.svelte';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 
 function status(overrides: Partial<ServiceUpdateStatus> = {}): ServiceUpdateStatus {
   return {
@@ -124,7 +124,7 @@ describe('serviceUpdate store', () => {
 
     it('is silent when an older backend has no such method, and loud on any other failure', async () => {
       setBindingMock('GetServiceUpdateStatus', async () => {
-        throw new TransportError('method_not_found', 'no such method');
+        throw methodNotFound();
       });
       await loadMachineUpdate(HOME_BACKEND);
       expect(machineUpdate(HOME_BACKEND).loadError).toBe('');

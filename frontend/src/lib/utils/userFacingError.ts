@@ -36,6 +36,14 @@ export function userFacingError(err: unknown, fallback = 'Something went wrong.'
   // instead surface the tail of a server sentence and drift per surface.
   const refusal = scopeRefusalMessage(err);
   if (refusal !== null) return refusal;
+  // The connected computer's dispatcher refused the call: the transport
+  // already wrote the whole sentence (transport/dispatchRefusal.ts), and a
+  // computer's name in it may hold a colon or an id the trimming below
+  // would cut.
+  if (err instanceof TransportError && err.dispatchRefusal !== undefined) return err.message;
+  // A computer passing on another computer's refusal: its message names
+  // that computer and says what to do, so it is shown whole.
+  if (err instanceof TransportError && err.forwardedRefusal) return err.message;
   let raw = '';
   if (err instanceof Error) {
     raw = err.message;

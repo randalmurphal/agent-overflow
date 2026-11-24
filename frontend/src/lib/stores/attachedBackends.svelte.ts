@@ -13,6 +13,7 @@
 
 import {
   attachedBackends as registryBackends,
+  backendById,
   onBackendsChanged,
   requireEntityBackend,
   type BackendEntry,
@@ -105,17 +106,40 @@ export function setBackendNickname(key: BackendKey, value: string): boolean {
 }
 
 function resolveDisplayName(entry: BackendEntry): string {
-  const nickname = backendNickname(entry.id);
-  if (nickname) return nickname;
   const current = list.find((candidate) => candidate.id === entry.id) ?? entry;
-  if (current.nickname) return current.nickname;
-  return getBackendIdentity(entry.id).name || rememberedIdentity(entry.id)?.name
-    || current.name || entry.name || (entry.home ? 'This computer' : entry.id);
+  return namedInMemory(current, current.backendId) || rememberedIdentity(entry.id)?.name
+    || current.name || entry.name || fallbackName(entry);
+}
+
+/** The names a person or the computer itself gave, as memory holds them,
+ * in the order a display name prefers them: this frontend's nickname for
+ * the computer identity `computerId`, the pairing nickname, the live name. */
+function namedInMemory(entry: BackendEntry, computerId: string): string {
+  return (computerId ? nicknames.get(computerId) : undefined) || entry.nickname
+    || getBackendIdentity(entry.id).name || '';
+}
+
+function fallbackName(entry: BackendEntry): string {
+  return entry.home ? 'This computer' : entry.id;
+}
+
+/**
+ * An attached computer's name from what is in memory, looked up by key: no
+ * scan of the attached list, no rebuild of the display-name map, and no
+ * storage read, so it costs the same with one computer or fifty. It skips
+ * the remembered identity `backendDisplayName` falls back to, which only an
+ * offline computer needs: a computer that just answered a call has its live
+ * identity. Not reactive. Null once the computer has detached.
+ */
+export function attachedBackendNameNow(key: BackendKey): string | null {
+  const entry = backendById(key);
+  if (entry === undefined || entry.id !== key) return null;
+  return namedInMemory(entry, getBackendIdentity(key).backendId) || entry.name || fallbackName(entry);
 }
 
 /** Resolve once per connection/identity/nickname change, not per sidebar row. */
 export function backendDisplayName(entry: BackendEntry): string {
-  return displayNames.get(entry.id) || entry.name || (entry.home ? 'This computer' : entry.id);
+  return displayNames.get(entry.id) || entry.name || fallbackName(entry);
 }
 
 /** Test seam: clear both in-memory and persisted frontend nicknames. */

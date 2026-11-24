@@ -2,10 +2,15 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/transport"
@@ -41,6 +46,146 @@ func TestRemoteErrorsPreserveSafeDetailsAndExplainUncertainAcceptance(t *testing
 	text := remoteErrorText(remoteOperationErrorFor("cancel", remoteRef{ComputerID: id, RequestID: id}, context.DeadlineExceeded))
 	if !strings.Contains(text, "Cancellation is not confirmed") {
 		t.Fatal(text)
+	}
+}
+
+// A destination's dispatcher that refused the call did not run it: it lacks
+// the method or could not read the arguments, and either way it often runs
+// a different release. A person or the model reads which, under a code of
+// this computer's own, and is not told the call may have run. The kind
+// survives forwarding, whatever release the destination runs, and so does
+// what did not fit, in the wrapped cause the frame's detail lists.
+func TestRemoteErrorsWordTheDestinationsDispatcherRefusal(t *testing.T) {
+	t.Parallel()
+	const id = "2018ba7a-359c-4a0b-92a2-0b7cae76a515"
+	for _, tc := range []struct {
+		name    string
+		refusal *rpcclient.Error
+		want    string
+		inChain string
+	}{
+		{"a method it does not have", &rpcclient.Error{Code: transport.ErrCodeMethodNotFound, Message: dispatchrefusal.Unsupported, Dispatch: dispatchrefusal.UnsupportedRefusal()},
+			dispatchrefusal.ForwardedUnsupported, dispatchrefusal.Unsupported},
+		{"v0.0.19, a method it does not have", &rpcclient.Error{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"},
+			dispatchrefusal.ForwardedUnsupported, dispatchrefusal.Unsupported},
+		{"arguments it cannot read", &rpcclient.Error{Code: transport.ErrCodeBadParams, Message: dispatchrefusal.Unreadable, Dispatch: dispatchrefusal.CountRefusal("RemoteCommandRun", 1, 2, false, false)},
+			dispatchrefusal.ForwardedUnreadable, "RemoteCommandRun: expected 1 arguments, got 2"},
+		{"v0.0.18, arguments it cannot read", &rpcclient.Error{Code: transport.ErrCodeBadParams, Message: "main.App.RemoteCommandRun: expected 1 params, got 2"},
+			dispatchrefusal.ForwardedUnreadable, "main.App.RemoteCommandRun: expected 1 params, got 2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, message, uncertain := remoteErrorDetails("run", tc.refusal)
+			if code != "remote_unsupported" || message != tc.want || uncertain {
+				t.Fatalf("details = (%q, %q, uncertain %v), want remote_unsupported, %q, certain", code, message, uncertain, tc.want)
+			}
+			err := remoteOperationErrorFor("run", remoteRef{ComputerID: id, ComputerName: "Nexus", RequestID: id}, tc.refusal)
+			want := "[remote_unsupported] Remote run on Nexus (computer " + id + ") for request " + id + ": " + tc.want
+			if text := remoteErrorText(err); text != want {
+				t.Fatalf("tool error = %q, want %q", text, want)
+			}
+			if chain := strings.Join(errorsx.Chain(err), "\n"); !strings.Contains(chain, tc.inChain) {
+				t.Fatalf("chain = %q, want it to keep %q", chain, tc.inChain)
+			}
+		})
+	}
+	// A refusal a method there returned under the same code is that
+	// method's own answer, kept as it is.
+	own := &rpcclient.Error{Code: transport.ErrCodeBadParams, Message: "Choose at least one project for the assistant, or all projects."}
+	if code, message, uncertain := remoteErrorDetails("run", own); code != transport.ErrCodeBadParams || message != own.Message || uncertain {
+		t.Fatalf("a method's own refusal = (%q, %q, uncertain %v), want it kept", code, message, uncertain)
+	}
+}
+
+// The tray reads a remote job's log through this computer's
+// ReadThreadRemoteLog. When the job's computer refused, the failure is this
+// computer's method's answer: it names the job, says which refusal, and
+// reaches the page under a code of its own and without the dispatch mark,
+// so the page never takes it for a refusal by the computer it is connected
+// to. These are the frames the page receives, which
+// frontend/src/test/fixtures/forwardedRefusalFrames.json holds for the
+// tray's test (RemoteJobTrayRow.test.ts).
+func TestAForwardedRefusalIsNotThisComputersOwn(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	thread := remoteWatchThread(t, a, "codex")
+	watch := registeredRemoteWatch(t, a, thread)
+	type wireDetail struct {
+		Method string   `json:"method"`
+		Chain  []string `json:"chain"`
+	}
+	type wireFrame struct {
+		Name     string                   `json:"name"`
+		Code     string                   `json:"code"`
+		Message  string                   `json:"message"`
+		Detail   *wireDetail              `json:"detail"`
+		Dispatch *dispatchrefusal.Refusal `json:"dispatch,omitempty"`
+	}
+	var frames []wireFrame
+	for _, tc := range []struct {
+		name    string
+		refusal *rpcclient.Error
+		want    string
+	}{
+		{"unsupported", &rpcclient.Error{Code: transport.ErrCodeMethodNotFound, Message: dispatchrefusal.Unsupported, Dispatch: dispatchrefusal.UnsupportedRefusal()}, dispatchrefusal.ForwardedUnsupported},
+		{"unsupported, v0.0.19", &rpcclient.Error{Code: transport.ErrCodeMethodNotFound, Message: "method not registered"}, dispatchrefusal.ForwardedUnsupported},
+		{"unreadable", &rpcclient.Error{Code: transport.ErrCodeBadParams, Message: dispatchrefusal.Unreadable, Dispatch: dispatchrefusal.CountRefusal("RemoteCommandReadLog", 3, 4, false, false)}, dispatchrefusal.ForwardedUnreadable},
+	} {
+		d := transport.NewDispatcher()
+		receiver := &forwardingReceiver{err: a.remoteUserError("read the log of", watch.ComputerID, watch.RequestID, tc.refusal)}
+		if _, err := d.Register(receiver, transport.RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
+			t.Fatal(err)
+		}
+		m, fe := d.ResolveForOrigin(0, "ReadThreadRemoteLog", true)
+		if fe != nil {
+			t.Fatal(fe)
+		}
+		_, fe = d.Invoke(context.Background(), m, nil)
+		want := `Could not read the log of "build --cross-platform": ` + tc.want
+		if fe == nil || fe.Code != "remote_unsupported" || fe.Message != want || fe.Dispatch != nil || fe.Detail == nil {
+			t.Fatalf("%s: frame = %+v, want remote_unsupported, %q, detail, and no dispatch mark", tc.name, fe, want)
+		}
+		frames = append(frames, wireFrame{Name: tc.name, Code: fe.Code, Message: fe.Message, Detail: &wireDetail{Method: fe.Detail.Method, Chain: fe.Detail.Chain}})
+	}
+	got, err := json.MarshalIndent(frames, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("frontend", "src", "test", "fixtures", "forwardedRefusalFrames.json")
+	held, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(held) != string(got)+"\n" {
+		t.Fatalf("%s is not the frames a forwarder sends; it should read:\n%s", path, got)
+	}
+}
+
+// forwardingReceiver is a method that fails with err, as this computer's
+// ReadThreadRemoteLog does when the job's computer refused it.
+type forwardingReceiver struct{ err error }
+
+func (r *forwardingReceiver) ReadThreadRemoteLog() error { return r.err }
+
+// A job's label goes first in a person's error, and a page shows only the
+// first 256 characters of it (frontend/src/lib/transport/frames.ts): the
+// label is shortened so what to do is never cut.
+func TestARemoteErrorKeepsItsRemedyWithinWhatAPageShows(t *testing.T) {
+	t.Parallel()
+	frames, err := os.ReadFile(filepath.Join("frontend", "src", "lib", "transport", "frames.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(frames), fmt.Sprintf("const LOG_STRING_MAX = %d;", pageMessageLimit)) {
+		t.Fatalf("frames.ts no longer clamps at %d", pageMessageLimit)
+	}
+	for _, label := range []string{strings.Repeat("x", 300), strings.Repeat("\U0001F600", 120), strings.Repeat(`"`, 120), "build"} {
+		message := remoteUserMessage("read the log of", label, strings.Repeat("n", 80), dispatchrefusal.ForwardedUnreadable)
+		if utf16Len(message) > pageMessageLimit || !strings.HasSuffix(message, ": "+dispatchrefusal.ForwardedUnreadable) {
+			t.Fatalf("message of %d code units = %q, want at most %d ending with the remedy", utf16Len(message), message, pageMessageLimit)
+		}
+	}
+	if got := remoteUserMessage("stop", "build", "Nexus", "Timed out."); got != `Could not stop "build" on Nexus: Timed out.` {
+		t.Fatalf("short label = %q", got)
 	}
 }
 

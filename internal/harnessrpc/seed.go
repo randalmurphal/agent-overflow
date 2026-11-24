@@ -81,6 +81,9 @@ type HarnessSeedThread struct {
 	// spawner of a thread an agent spawned into another project. At most
 	// one of SpawnedBy and SpawnedByID.
 	SpawnedByID string `json:"spawnedById,omitempty"`
+	// Placement "standalone" gives a spawned thread a sidebar row, as a
+	// spawn placed standalone leaves it. Empty keeps it owned.
+	Placement string `json:"placement,omitempty"`
 	// Assistant makes the thread an assistant's current thread, its title
 	// the name, with the record and home New Assistant makes and no opening
 	// message. The thread moves into the home, out of its project, and the
@@ -316,6 +319,9 @@ func (h *Harness) seedProject(spec HarnessSeedProject) (HarnessSeedProjectResult
 				return out, fmt.Errorf("thread %d: spawnedById %q: %w", ti+1, spawner, err)
 			}
 		}
+		if threadSpec.Placement != "" && (threadSpec.Placement != store.PlacementStandalone || (spawner == "" && threadSpec.SpawnedBy == "")) {
+			return out, fmt.Errorf("thread %d: placement %q: only a spawned thread may be placed, and only standalone", ti+1, threadSpec.Placement)
+		}
 		if threadSpec.SpawnedBy != "" {
 			var ok bool
 			if spawner, ok = seededByTitle[threadSpec.SpawnedBy]; !ok {
@@ -398,8 +404,13 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread, spawnerID
 		}); err != nil {
 			return thread.ID, fmt.Errorf("record spawner: %w", err)
 		}
-		// Owned, as a spawn with the default placement leaves it.
-		if _, err := h.store().SetThreadPlacement([]string{thread.ID}, store.PlacementOwned); err != nil {
+		// Owned, as a spawn with the default placement leaves it, unless
+		// the spec places it standalone.
+		placement := store.PlacementOwned
+		if spec.Placement != "" {
+			placement = spec.Placement
+		}
+		if _, err := h.store().SetThreadPlacement([]string{thread.ID}, placement); err != nil {
 			return thread.ID, fmt.Errorf("own by spawner: %w", err)
 		}
 	}
