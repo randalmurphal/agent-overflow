@@ -58,7 +58,7 @@ func TestIdleTickStatements(t *testing.T) {
 	record := func() error {
 		a := attempt
 		a.ReadAt = mirrorReadAt(at)
-		_, err := s.RecordMirrorSyncAttempt(root, "10", a)
+		_, _, err := s.RecordMirrorSyncAttempt(root, "10", a)
 		return err
 	}
 	type idleTick struct {

@@ -268,6 +268,8 @@ var mirrorNotReadTimes = map[string]string{
 	"tracker_cache_boards.structure_wall":          "a wall time (MirrorRead.Wall)",
 	"tracker_cache_sync.read_wall":                 "a wall time (MirrorRead.Wall)",
 	"tracker_cache_sync.failed_wall":               "a wall time (MirrorRead.Wall)",
+	"tracker_cache_sync.reconcile_failed_wall":     "a wall time (when the failing call returned)",
+	"tracker_cache_sync.reconcile_refused":         "a flag",
 	"tracker_cache_board_unexplained.kind":         "an enum",
 	"tracker_cache_board_columns.position":         "a position",
 	"tracker_cache_board_column_statuses.position": "a position",
@@ -480,17 +482,17 @@ func TestEveryMirrorWriterRefusesAReadOfAnotherRoot(t *testing.T) {
 		{"RecordMirrorSyncAttempt read", func(read MirrorRead) error {
 			a := currentAttempt(s, root, "10", MirrorSyncAttempt{})
 			a.ReadAt = read
-			_, err := s.RecordMirrorSyncAttempt(root, "10", a)
+			_, _, err := s.RecordMirrorSyncAttempt(root, "10", a)
 			return err
 		}},
 		{"RecordMirrorSyncAttempt reconcile", func(read MirrorRead) error {
 			a := currentAttempt(s, root, "10", MirrorSyncAttempt{})
 			a.ReconciledAt = read
-			_, err := s.RecordMirrorSyncAttempt(root, "10", a)
+			_, _, err := s.RecordMirrorSyncAttempt(root, "10", a)
 			return err
 		}},
 		{"RecordMirrorSyncAttempt failure", func(read MirrorRead) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "", MirrorSyncAttempt{Failure: MirrorAttemptFailure{At: read, Kind: MirrorFailureTransient, Message: "m"}})
+			_, _, err := s.RecordMirrorSyncAttempt(root, "", MirrorSyncAttempt{Failure: MirrorAttemptFailure{At: read, Kind: MirrorFailureTransient, Message: "m"}})
 			return err
 		}},
 	} {

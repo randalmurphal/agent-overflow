@@ -157,7 +157,7 @@ func TestMirrorCursorFollowsItsReadOrder(t *testing.T) {
 	cursor(30, "c2", "c2")
 	assertRows(t, s.db, `SELECT cursor_read_at FROM tracker_cache_sync WHERE board_id = '10'`, "30")
 	cursor(25, "c3", "c2")
-	if _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadAt(40)})); err != nil {
+	if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadAt(40)})); err != nil {
 		t.Fatal(err)
 	}
 	cursor(35, "c4", "c2")

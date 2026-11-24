@@ -318,6 +318,12 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	t.Helper()
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
+	// The board's sync row holds a reconcile failure, so each of its
+	// columns holds a value.
+	if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReconcileFailure: MirrorReconcileAttempt{
+		At: mirrorReadOf(root, 6), Returned: 6, Kind: MirrorFailureTracker, Message: "Jira refused the query.", Refused: true}})); err != nil {
+		t.Fatal(err)
+	}
 	mustExec(t, s.db, `INSERT INTO tracker_cache_board_unexplained(root_id, board_id, kind, ref_id, named_at) VALUES (?, '10', 3, '99', 0)`, root)
 	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: "10001", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}); err != nil {
 		t.Fatal(err)

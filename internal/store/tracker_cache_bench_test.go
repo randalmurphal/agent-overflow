@@ -214,7 +214,7 @@ func BenchmarkMirrorListingCheck(b *testing.B) {
 	b.Run("write", func(b *testing.B) {
 		s, root := openBenchMirror(b)
 		measureMirror(b, func(i int) error {
-			changed, err := s.RecordMirrorSyncAttempt(root, benchBoardID(0), currentAttempt(s, root, benchBoardID(0), MirrorSyncAttempt{ReadAt: mirrorReadAt(int64(10 + i))}))
+			_, changed, err := s.RecordMirrorSyncAttempt(root, benchBoardID(0), currentAttempt(s, root, benchBoardID(0), MirrorSyncAttempt{ReadAt: mirrorReadAt(int64(10 + i))}))
 			if err == nil && !changed {
 				err = errors.New("the attempt was not recorded")
 			}

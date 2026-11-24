@@ -55,6 +55,26 @@ func TestTrackerMirrorMigration(t *testing.T) {
 	assertRows(t, db, `SELECT count(*) FROM pragma_table_info('tracker_cache_board_issues') WHERE name = 'listed'`, "0")
 	assertRows(t, db, `SELECT board_id || ':' || read_at || ':' || structure_wall FROM tracker_cache_boards`, "10:900:0")
 	assertRows(t, db, `SELECT read_at || ':' || read_wall || ':' || reconciled_at || ':' || reconciled_wall || ':' || failed_wall FROM tracker_cache_sync`, "903:0:904:0:0")
+	assertRows(t, db, `SELECT reconcile_failed_at || ':' || reconcile_failed_wall || ':' || reconcile_failure_kind || ':' || reconcile_failure_message || ':' || reconcile_refused
+		FROM tracker_cache_sync`, "0:0:::0")
+	// The reconcile failure's columns hold together: a kind with a time, a
+	// message or a refusal only with a kind.
+	for _, set := range []string{
+		`reconcile_failed_at = 5`,
+		`reconcile_failure_kind = 'tracker'`,
+		`reconcile_failure_kind = 'internal', reconcile_failed_at = 5`,
+		`reconcile_failure_message = 'x'`,
+		`reconcile_refused = 1`,
+		`reconcile_refused = 2, reconcile_failure_kind = 'tracker', reconcile_failed_at = 5`,
+	} {
+		if _, err := db.Exec(`UPDATE tracker_cache_sync SET ` + set); err == nil {
+			t.Errorf("SET %s was accepted", set)
+		}
+	}
+	mustExec(t, db, `UPDATE tracker_cache_sync SET reconcile_failed_at = 905, reconcile_failed_wall = 1, reconcile_failure_kind = 'tracker',
+		reconcile_failure_message = 'refused', reconcile_refused = 1`)
+	mustExec(t, db, `UPDATE tracker_cache_sync SET reconcile_failed_at = 0, reconcile_failed_wall = 0, reconcile_failure_kind = '',
+		reconcile_failure_message = '', reconcile_refused = 0`)
 	assertRows(t, db, `SELECT count(*) FROM sqlite_master WHERE name LIKE 'tracker_cache_issue_details%' OR name LIKE 'idx_tracker_cache_issue_details%'`, "0")
 	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issue_bodies`, "0")
 	if upgraded, fresh := migrationSchema(t, db), migrationSchema(t, migrateThrough(t, trackerMirrorMigrationVersion)); !maps.Equal(upgraded, fresh) {

@@ -71,7 +71,7 @@ func (c *countingStore) GetMirrorSync(root int64, board string, now int64) (stor
 	return c.Store.GetMirrorSync(root, board, now)
 }
 
-func (c *countingStore) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (bool, error) {
+func (c *countingStore) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (store.MirrorSyncOutcome, bool, error) {
 	c.count("RecordMirrorSyncAttempt")
 	return c.Store.RecordMirrorSyncAttempt(root, board, a)
 }

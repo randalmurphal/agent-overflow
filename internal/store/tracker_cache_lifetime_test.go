@@ -39,7 +39,7 @@ func TestMirrorBoardLifetimeFencesItsReads(t *testing.T) {
 			return err
 		},
 		"sync": func() error {
-			_, err := s.RecordMirrorSyncAttempt(root, "12", MirrorSyncAttempt{Lifetime: old, ReadAt: mirrorReadAt(50)})
+			_, _, err := s.RecordMirrorSyncAttempt(root, "12", MirrorSyncAttempt{Lifetime: old, ReadAt: mirrorReadAt(50)})
 			return err
 		},
 	}

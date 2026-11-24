@@ -180,10 +180,10 @@ func mustSyncWrite(t *testing.T, what string, changed bool, err error, want bool
 }
 
 // Each attempt is one write that leaves the cursor and only moves the
-// scope's state forward: a read or reconcile time never goes back, a
-// success clears a failure recorded no later than it, a failure from
-// before the scope's last read, reconcile or outcome is superseded, and an
-// attempt that changes nothing writes nothing.
+// scope's state forward: a read or reconcile time never goes back, a read
+// clears a failure recorded no later than it (a reconcile does not), a
+// failure from before the scope's last read or outcome is superseded, and
+// an attempt that changes nothing writes nothing.
 func TestMirrorSyncStateMovesForward(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -210,7 +210,7 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 		{"failure again", limited, false},
 		{"failure before the reconcile", failed(15, MirrorFailureTransient, ""), false},
 	} {
-		changed, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", step.attempt))
+		_, changed, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", step.attempt))
 		mustSyncWrite(t, step.name, changed, err, step.want)
 	}
 	var structureAt int64
@@ -236,10 +236,10 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 		{"later read", read(60), true},
 		{"failure before the read", failed(58, MirrorFailureTransient, ""), false},
 	} {
-		changed, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", step.attempt))
+		_, changed, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", step.attempt))
 		mustSyncWrite(t, step.name, changed, err, step.want)
 	}
-	assertRows(t, s.db, `SELECT read_at || ':' || reconciled_at || ':' || failure_kind || ':' || outcome_at FROM tracker_cache_sync WHERE board_id = '10'`, "60:55::55")
+	assertRows(t, s.db, `SELECT read_at || ':' || reconciled_at || ':' || failure_kind || ':' || outcome_at FROM tracker_cache_sync WHERE board_id = '10'`, "60:55::60")
 	next := webPage("10")
 	next.ReadAt = mirrorReadAt(60)
 	mustWriteRowPage(t, s, root, next, []byte("c2"))
@@ -250,12 +250,12 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 
 	// The linked issues are a scope of their own, with no board; a board
 	// no project lists has none.
-	changed, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", read(40)))
+	_, changed, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", read(40)))
 	mustSyncWrite(t, "linked scope read", changed, err, true)
 	if got, ok, err := s.GetMirrorSync(root, "", testNow); err != nil || !ok || !reflect.DeepEqual(got, MirrorSync{Sweep: 1, ReadAt: 40, ReadWall: 40}) {
 		t.Fatalf("linked scope = %+v, %v, %v", got, ok, err)
 	}
-	if _, err := s.RecordMirrorSyncAttempt(root, "13", currentAttempt(s, root, "13", read(40))); !errors.Is(err, ErrTrackerCacheUnlisted) {
+	if _, _, err := s.RecordMirrorSyncAttempt(root, "13", currentAttempt(s, root, "13", read(40))); !errors.Is(err, ErrTrackerCacheUnlisted) {
 		t.Fatalf("read of an unlisted board: %v", err)
 	}
 	for name, attempt := range map[string]MirrorSyncAttempt{
@@ -267,15 +267,16 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 		"negative reconcile":   {ReadAt: mirrorReadAt(70), ReconciledAt: mirrorReadAt(-1)},
 		"negative failure":     {ReadAt: mirrorReadAt(70), Failure: MirrorAttemptFailure{At: mirrorReadAt(-1), Kind: MirrorFailureSetup}},
 	} {
-		if _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", attempt)); !errors.Is(err, ErrInvalidTrackerCache) {
+		if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", attempt)); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 }
 
 // One attempt records a tick whole, its successes and the failure that
-// followed them, in one statement beside the listing check: at most one
-// row written, none when nothing would change.
+// followed them, in one statement beside the listing check, which returns
+// the outcome the row holds: at most one row written, and none when
+// nothing would change, which reads the outcome in a third statement.
 func TestMirrorSyncAttemptRecordsATickInOneStatement(t *testing.T) {
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
@@ -291,31 +292,131 @@ func TestMirrorSyncAttemptRecordsATickInOneStatement(t *testing.T) {
 		changed bool
 		state   string
 	}{
-		{"read then a failure", MirrorSyncAttempt{ReadAt: mirrorReadAt(10), Failure: failure(10, MirrorFailureTransient)}, true, "10:0:10:transient:10"},
-		{"the same tick again", MirrorSyncAttempt{ReadAt: mirrorReadAt(10), Failure: failure(10, MirrorFailureTransient)}, false, "10:0:10:transient:10"},
-		{"reconcile, read, then another failure", MirrorSyncAttempt{ReadAt: mirrorReadAt(20), ReconciledAt: mirrorReadAt(20), Failure: failure(21, MirrorFailureTracker)},
-			true, "20:20:21:tracker:21"},
-		{"a success clears it", MirrorSyncAttempt{ReadAt: mirrorReadAt(30)}, true, "30:20:0::30"},
-		{"an earlier tick", MirrorSyncAttempt{ReadAt: mirrorReadAt(25), Failure: failure(25, MirrorFailureTransient)}, false, "30:20:0::30"},
+		{"read then a failure", MirrorSyncAttempt{ReadAt: mirrorReadAt(10), Failure: failure(11, MirrorFailureTransient)}, true, "10:0:11:transient:11"},
+		{"the same tick again", MirrorSyncAttempt{ReadAt: mirrorReadAt(10), Failure: failure(11, MirrorFailureTransient)}, false, "10:0:11:transient:11"},
+		{"read, reconcile, then another failure", MirrorSyncAttempt{ReadAt: mirrorReadAt(20), ReconciledAt: mirrorReadAt(21), Failure: failure(22, MirrorFailureTracker)},
+			true, "20:21:22:tracker:22"},
+		{"a read clears it", MirrorSyncAttempt{ReadAt: mirrorReadAt(30)}, true, "30:21:0::30"},
+		{"an earlier tick", MirrorSyncAttempt{ReadAt: mirrorReadAt(25), Failure: failure(26, MirrorFailureTransient)}, false, "30:21:0::30"},
 		{"a failure before the tick's read", MirrorSyncAttempt{ReadAt: mirrorReadAt(40), ReconciledAt: mirrorReadAt(35), Failure: failure(38, MirrorFailureSetup)},
 			true, "40:35:0::30"},
 		{"a failure alone", MirrorSyncAttempt{Failure: failure(45, MirrorFailureRateLimited)}, true, "40:35:45:rate_limited:45"},
-		{"a reconcile that clears it", MirrorSyncAttempt{ReconciledAt: mirrorReadAt(50)}, true, "40:50:0::50"},
+		{"a reconcile leaves it", MirrorSyncAttempt{ReconciledAt: mirrorReadAt(50)}, true, "40:50:45:rate_limited:45"},
+		{"a read at its time clears it", MirrorSyncAttempt{ReadAt: mirrorReadAt(45)}, true, "45:50:0::45"},
 	} {
 		attempt := currentAttempt(s, root, "10", step.attempt)
 		recorder.reset()
-		var changed bool
-		var err error
-		statements := countMirrorStatements(t, func() { changed, err = s.RecordMirrorSyncAttempt(root, "10", attempt) })
+		var (
+			out     MirrorSyncOutcome
+			changed bool
+			err     error
+		)
+		statements := countMirrorStatements(t, func() { out, changed, err = s.RecordMirrorSyncAttempt(root, "10", attempt) })
 		mustSyncWrite(t, step.name, changed, err, step.changed)
 		writes, want := recorder.rowWrites(), map[string]int{}
+		wantStatements := 3
 		if step.changed {
-			want["tracker_cache_sync"] = 1
+			want["tracker_cache_sync"], wantStatements = 1, 2
 		}
-		if statements != 2 || !reflect.DeepEqual(writes, want) {
-			t.Errorf("%s: %d statements, rows %v; want 2 and %v", step.name, statements, writes, want)
+		if statements != wantStatements || !reflect.DeepEqual(writes, want) {
+			t.Errorf("%s: %d statements, rows %v; want %d and %v", step.name, statements, writes, wantStatements, want)
 		}
 		assertRows(t, s.db, state, step.state)
+		if got, _, err := s.GetMirrorSync(root, "10", testNow); err != nil || !reflect.DeepEqual(out, got.MirrorSyncOutcome) {
+			t.Errorf("%s: returned %+v; the row holds %+v, %v", step.name, out, got.MirrorSyncOutcome, err)
+		}
+	}
+}
+
+// reconcileFailed is an attempt whose reconcile failed at read at, the
+// call returning at returned.
+func reconcileFailed(at, returned int64, refused bool) MirrorSyncAttempt {
+	return MirrorSyncAttempt{ReconcileFailure: MirrorReconcileAttempt{At: mirrorReadAt(at), Returned: returned,
+		Kind: MirrorFailureTracker, Message: "Jira refused the query.", Refused: refused}}
+}
+
+// A board's reconcile failure has a slot of its own: only a reconcile that
+// completed at or after it clears it, a later reconcile failure replaces
+// it, and a read neither clears it nor is cleared by it. Its wall time is
+// when its call returned, not when the read began.
+func TestMirrorReconcileFailureHasItsOwnSlot(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	record := func(name string, a MirrorSyncAttempt, want bool) MirrorSyncOutcome {
+		t.Helper()
+		out, changed, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", a))
+		mustSyncWrite(t, name, changed, err, want)
+		return out
+	}
+	refusal := MirrorReconcileFailure{MirrorSyncFailure: MirrorSyncFailure{At: 10, Wall: 1_000, Kind: MirrorFailureTracker, Message: "Jira refused the query."}, Refused: true}
+	if out := record("a refusal", reconcileFailed(10, 1_000, true), true); out.ReconcileFailure != refusal || out.Failure != (MirrorSyncFailure{}) {
+		t.Fatalf("after a refusal: %+v", out)
+	}
+	if out := record("a read", MirrorSyncAttempt{ReadAt: mirrorReadAt(20)}, true); out.ReconcileFailure != refusal {
+		t.Fatalf("a read cleared the refusal: %+v", out)
+	}
+	other := MirrorSyncFailure{At: 25, Wall: 25, Kind: MirrorFailureTransient}
+	if out := record("a delta failure", MirrorSyncAttempt{Failure: MirrorAttemptFailure{At: mirrorReadAt(25), Kind: MirrorFailureTransient}}, true); out.ReconcileFailure != refusal || out.Failure != other {
+		t.Fatalf("after a delta failure: %+v", out)
+	}
+	record("an earlier reconcile failure", reconcileFailed(8, 2_000, false), false)
+	later := MirrorReconcileFailure{MirrorSyncFailure: MirrorSyncFailure{At: 26, Wall: 3_000, Kind: MirrorFailureTracker, Message: "Jira refused the query."}}
+	if out := record("a later reconcile failure", reconcileFailed(26, 3_000, false), true); out.ReconcileFailure != later || out.Failure != other {
+		t.Fatalf("after a later reconcile failure: %+v", out)
+	}
+	if out := record("a reconcile", MirrorSyncAttempt{ReconciledAt: mirrorReadAt(30)}, true); out.ReconcileFailure != (MirrorReconcileFailure{}) || out.Failure != other {
+		t.Fatalf("after a reconcile: %+v; want the delta's failure alone", out)
+	}
+	record("a reconcile failure before the reconcile", reconcileFailed(28, 4_000, true), false)
+	record("a reconcile failure at the reconcile", reconcileFailed(30, 4_000, true), false)
+
+	// The linked scope has no reconcile, and a reconcile is either
+	// completed or failed.
+	for name, c := range map[string]struct {
+		board   string
+		attempt MirrorSyncAttempt
+	}{
+		"linked reconcile":         {"", MirrorSyncAttempt{ReconciledAt: mirrorReadAt(40)}},
+		"linked reconcile failure": {"", reconcileFailed(40, 1, false)},
+		"completed and failed":     {"10", MirrorSyncAttempt{ReconciledAt: mirrorReadAt(40), ReconcileFailure: reconcileFailed(41, 1, false).ReconcileFailure}},
+		"never returned":           {"10", reconcileFailed(40, 0, false)},
+		"unknown kind":             {"10", MirrorSyncAttempt{ReconcileFailure: MirrorReconcileAttempt{At: mirrorReadAt(40), Returned: 1, Kind: "flaky"}}},
+		"refused with no time":     {"10", MirrorSyncAttempt{ReadAt: mirrorReadAt(40), ReconcileFailure: MirrorReconcileAttempt{Refused: true}}},
+	} {
+		if _, _, err := s.RecordMirrorSyncAttempt(root, c.board, currentAttempt(s, root, c.board, c.attempt)); !errors.Is(err, ErrInvalidTrackerCache) {
+			t.Errorf("%s: %v; want ErrInvalidTrackerCache", name, err)
+		}
+	}
+}
+
+// A success and a failure of its own slot at the same order time end in
+// the same state whichever is recorded first: the success wins the tie,
+// for the reconcile's slot and for the other one.
+func TestMirrorSyncSuccessWinsATieInEitherOrder(t *testing.T) {
+	t.Parallel()
+	for name, pair := range map[string][2]MirrorSyncAttempt{
+		"reconcile": {reconcileFailed(10, 1_000, true), {ReconciledAt: mirrorReadAt(10)}},
+		"read":      {{Failure: MirrorAttemptFailure{At: mirrorReadAt(10), Kind: MirrorFailureTransient}}, {ReadAt: mirrorReadAt(10)}},
+	} {
+		var ends []MirrorSyncOutcome
+		for _, order := range [][2]int{{0, 1}, {1, 0}} {
+			s, _, root := newMirror(t)
+			mustReplaceStructure(t, s, root, webStructure(), true)
+			for _, i := range order {
+				if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", pair[i])); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, _, err := s.GetMirrorSync(root, "10", testNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ends = append(ends, got.MirrorSyncOutcome)
+		}
+		if ends[0] != ends[1] || ends[0].Failure != (MirrorSyncFailure{}) || ends[0].ReconcileFailure != (MirrorReconcileFailure{}) {
+			t.Errorf("%s: failure then success %+v, success then failure %+v; want the same, with no failure", name, ends[0], ends[1])
+		}
 	}
 }
 

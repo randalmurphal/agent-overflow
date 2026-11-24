@@ -180,7 +180,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	next := func() int64 { at++; return at }
 	syncState := func(board string) error { _, _, err := s.GetMirrorSync(root, board, testNow); return err }
 	record := func() error {
-		_, err := s.RecordMirrorSyncAttempt(root, board, MirrorSyncAttempt{Lifetime: lifetime, ReadAt: mirrorReadAt(next())})
+		_, _, err := s.RecordMirrorSyncAttempt(root, board, MirrorSyncAttempt{Lifetime: lifetime, ReadAt: mirrorReadAt(next())})
 		return err
 	}
 	// The rows of a delta that changed k issues spread over the board, at

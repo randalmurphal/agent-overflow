@@ -62,7 +62,7 @@ func TestDeleteTrackerConnectionDetachesItsMirror(t *testing.T) {
 			t.Fatalf("the removal deleted %s rows: %v, was %v", table, after, before)
 		}
 	}
-	if _, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReadAt: mirrorReadAt(1)})); !errors.Is(err, ErrTrackerCacheGone) {
+	if _, _, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReadAt: mirrorReadAt(1)})); !errors.Is(err, ErrTrackerCacheGone) {
 		t.Fatalf("write after the removal: %v", err)
 	}
 	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
@@ -133,7 +133,7 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 	writeMirrorBoard(t, s, root, "11", mirrorRows(20000, 1, "a"))
 	listMirrorBoards(t, s, mustCreateTrackerProject(t, s, "p2"), jira.ID, "11")
 	for _, board := range []string{"10", "11"} {
-		if _, err := s.RecordMirrorSyncAttempt(root, board, currentAttempt(s, root, board, MirrorSyncAttempt{ReadAt: mirrorReadAt(5)})); err != nil {
+		if _, _, err := s.RecordMirrorSyncAttempt(root, board, currentAttempt(s, root, board, MirrorSyncAttempt{ReadAt: mirrorReadAt(5)})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -185,7 +185,7 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 			return err
 		},
 		"sync": func() error {
-			_, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadAt(9)}))
+			_, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadAt(9)}))
 			return err
 		},
 	} {

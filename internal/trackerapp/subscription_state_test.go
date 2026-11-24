@@ -22,9 +22,9 @@ type failingStore struct {
 
 var errStoreDown = errors.New("test: the store failed")
 
-func (s *failingStore) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (bool, error) {
+func (s *failingStore) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (store.MirrorSyncOutcome, bool, error) {
 	if s.fail.Load() {
-		return false, errStoreDown
+		return store.MirrorSyncOutcome{}, false, errStoreDown
 	}
 	return s.Store.RecordMirrorSyncAttempt(root, board, a)
 }

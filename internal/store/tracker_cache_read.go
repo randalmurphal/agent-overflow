@@ -72,7 +72,7 @@ var mirrorReadTimeColumns = []struct {
 	{"tracker_cache_board_issues", []string{"read_at"}},
 	{"tracker_cache_open_tickets", []string{"opened_at"}},
 	{"tracker_cache_worklog_days", []string{"read_at"}},
-	{"tracker_cache_sync", []string{"cursor_read_at", "read_at", "reconciled_at", "outcome_at"}},
+	{"tracker_cache_sync", []string{"cursor_read_at", "read_at", "reconciled_at", "outcome_at", "reconcile_failed_at"}},
 }
 
 // mirrorBoundedReadTimes are the read times the seed leaves out, each with

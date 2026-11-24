@@ -47,7 +47,7 @@ type MirrorStore interface {
 
 	BeginMirrorRead(rootID, now int64) (store.MirrorRead, error)
 	GetMirrorSync(rootID int64, boardID string, now int64) (store.MirrorSync, bool, error)
-	RecordMirrorSyncAttempt(rootID int64, boardID string, a store.MirrorSyncAttempt) (bool, error)
+	RecordMirrorSyncAttempt(rootID int64, boardID string, a store.MirrorSyncAttempt) (store.MirrorSyncOutcome, bool, error)
 
 	WriteMirrorRowPage(rootID int64, page store.MirrorRowPage, cursor []byte) (store.MirrorChanges, error)
 	WriteMirrorRows(rootID int64, page store.MirrorRowPage) (store.MirrorChanges, error)

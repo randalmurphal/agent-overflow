@@ -27,6 +27,15 @@ package store
 //     and failure), each the MirrorRead.Wall of the read whose order time
 //     the row already stores, written by the same statement. A row stored
 //     before them holds 0, which is due: each scope is read once.
+//   - A board's reconcile failure, beside the scope's other failure:
+//     tracker_cache_sync.reconcile_failed_at (the order time of the read
+//     its failing call began, which seeds the clock), reconcile_failed_wall
+//     (when that call returned), reconcile_failure_kind and _message, and
+//     reconcile_refused (the tracker refused the listing's rule, which
+//     starts the reconcile's wait). Only a completed reconcile clears it,
+//     and the other failure is cleared only by a read
+//     (RecordMirrorSyncAttempt). A failure stored before v164 stays in the
+//     other slot, which the next read clears.
 //   - The issue record is the one record of an issue (StoreMirrorTickets):
 //     tracker_cache_issues.status_final_for is the update time whose
 //     status time a final read decided (MirrorStatusSince), backfilled
@@ -76,6 +85,15 @@ ALTER TABLE tracker_cache_boards ADD COLUMN structure_wall INTEGER NOT NULL DEFA
 ALTER TABLE tracker_cache_sync ADD COLUMN read_wall INTEGER NOT NULL DEFAULT 0 CHECK(read_wall >= 0);
 ALTER TABLE tracker_cache_sync ADD COLUMN reconciled_wall INTEGER NOT NULL DEFAULT 0 CHECK(reconciled_wall >= 0);
 ALTER TABLE tracker_cache_sync ADD COLUMN failed_wall INTEGER NOT NULL DEFAULT 0 CHECK(failed_wall >= 0);
+ALTER TABLE tracker_cache_sync ADD COLUMN reconcile_failed_at INTEGER NOT NULL DEFAULT 0 CHECK(reconcile_failed_at >= 0);
+ALTER TABLE tracker_cache_sync ADD COLUMN reconcile_failed_wall INTEGER NOT NULL DEFAULT 0 CHECK(reconcile_failed_wall >= 0);
+ALTER TABLE tracker_cache_sync ADD COLUMN reconcile_failure_kind TEXT NOT NULL DEFAULT ''
+ CHECK(reconcile_failure_kind IN ('', 'transient', 'rate_limited', 'setup', 'forbidden', 'tracker')
+   AND (reconcile_failure_kind = '') = (reconcile_failed_at = 0));
+ALTER TABLE tracker_cache_sync ADD COLUMN reconcile_failure_message TEXT NOT NULL DEFAULT ''
+ CHECK(reconcile_failure_kind <> '' OR reconcile_failure_message = '');
+ALTER TABLE tracker_cache_sync ADD COLUMN reconcile_refused INTEGER NOT NULL DEFAULT 0
+ CHECK(reconcile_refused IN (0, 1) AND (reconcile_refused = 0 OR reconcile_failure_kind <> ''));
 ALTER TABLE tracker_cache_issues ADD COLUMN sprint_set BLOB NOT NULL DEFAULT x'';
 DROP INDEX idx_tracker_cache_board_issues_order;
 ALTER TABLE tracker_cache_board_issues DROP COLUMN listed;

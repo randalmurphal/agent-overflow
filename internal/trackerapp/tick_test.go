@@ -77,8 +77,8 @@ func TestBoardTickStopsAtTheFirstFailure(t *testing.T) {
 	if s := m.sync(testBoard); s.Failure.Kind != string(FailureTransient) || s.ReadAt != 0 {
 		t.Fatalf("sync state %+v", s)
 	}
-	// The reconcile runs alone and succeeds: it records its time and clears
-	// the failure in one write.
+	// The reconcile runs alone and succeeds: it records its time in one
+	// write and leaves the delta's failure, which only a read clears.
 	m.p.set(func(p *scripted) {
 		p.boardIssues = func(tracker.BoardID, time.Time) (tracker.Listing, error) {
 			return tracker.Listing{Complete: true}, nil
@@ -89,7 +89,7 @@ func TestBoardTickStopsAtTheFirstFailure(t *testing.T) {
 	if out.Failure != nil || calls["RecordMirrorSyncAttempt"] != 1 {
 		t.Fatalf("reconcile %+v, sync writes %v", out, calls)
 	}
-	if s := m.sync(testBoard); s.Failure.Kind != "" || s.ReadAt != 0 || s.ReconciledAt == 0 {
+	if s := m.sync(testBoard); s.Failure.Kind != string(FailureTransient) || s.ReadAt != 0 || s.ReconciledAt == 0 {
 		t.Fatalf("sync state %+v", s)
 	}
 	// A reconcile and a delta that succeed and a history that fails: one

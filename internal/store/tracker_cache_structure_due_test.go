@@ -63,7 +63,7 @@ func TestMirrorRowNamingAnUnknownSprintMakesTheStructureDue(t *testing.T) {
 		"a delta that succeeded":   {ReadAt: mirrorReadAt(7)},
 		"a structure read failure": {Failure: MirrorAttemptFailure{At: mirrorReadAt(8), Kind: MirrorFailureTransient, Message: "timed out"}},
 	} {
-		if _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", attempt)); err != nil {
+		if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", attempt)); err != nil {
 			t.Fatal(err)
 		}
 		if due := structureDue(t, s, root); due != 5 {

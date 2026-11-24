@@ -262,11 +262,38 @@ const (
 )
 
 // MirrorSyncFailure is a scope's last failure; the zero value is none. At
-// is the order time of the unit that failed and Wall the wall time it
-// began, which a person is shown (zero: stored before v164).
+// is the order time of the read it followed and Wall the wall time a
+// person is shown (zero: stored before v164).
 type MirrorSyncFailure struct {
 	At, Wall      int64
 	Kind, Message string
+}
+
+// MirrorReconcileFailure is a board's last reconcile failure; the zero
+// value is none. Its Wall is when the failing call returned, which is
+// also when a refusal's wait began. Refused reports that the tracker
+// refused the query that carried the listing's rule (tracker.ErrRuleRefused).
+type MirrorReconcileFailure struct {
+	MirrorSyncFailure
+	Refused bool
+}
+
+// MirrorSyncOutcome is what a scope's ticks recorded, which the store
+// orders: the latest read and reconcile that succeeded, and two failures.
+// Failure is the last failure of any unit but a board's reconcile, which
+// only a later read clears; ReconcileFailure is a board's last reconcile
+// failure, which only a later reconcile clears. ReadWall and
+// ReconciledWall are the wall times the read and the reconcile began (zero:
+// stored before v164): what the reconcile interval is measured from and
+// what a person is shown, where ReadAt and ReconciledAt are order times,
+// which order the writes.
+type MirrorSyncOutcome struct {
+	ReadAt           int64
+	ReadWall         int64
+	ReconciledAt     int64
+	ReconciledWall   int64
+	Failure          MirrorSyncFailure
+	ReconcileFailure MirrorReconcileFailure
 }
 
 // MirrorSync is a scope's sync state. A scope is a board, or with board ID
@@ -287,14 +314,10 @@ type MirrorSyncFailure struct {
 // it in each page of the walk (MirrorRowPage.EstimateResetAt), so a walk
 // begun under an earlier definition stores no cursor. StructureWall, set
 // for a listed board, is the wall time the stored structure's read began
-// (zero: none stored, or stored before v164), and ReadWall and
-// ReconciledWall the wall times the latest read and reconcile began (zero
-// likewise): what the structure and reconcile intervals are measured from
-// and what a person is shown, where ReadAt and ReconciledAt are order
-// times, which order the writes. HistoryDue, set for every scope, reports that an issue the
-// root keeps is due a history read at the time GetMirrorSync was given
-// (ListMirrorHistoryDue lists them), so a caller deciding whether to run
-// history reads nothing more.
+// (zero: none stored, or stored before v164). HistoryDue, set for every
+// scope, reports that an issue the root keeps is due a history read at
+// the time GetMirrorSync was given (ListMirrorHistoryDue lists them), so
+// a caller deciding whether to run history reads nothing more.
 type MirrorSync struct {
 	Lifetime        int64
 	Sweep           int64
@@ -303,11 +326,21 @@ type MirrorSync struct {
 	StructureWall   int64
 	HistoryDue      bool
 	Cursor          []byte
-	ReadAt          int64
-	ReadWall        int64
-	ReconciledAt    int64
-	ReconciledWall  int64
-	Failure         MirrorSyncFailure
+	MirrorSyncOutcome
+}
+
+// mirrorSyncOutcomeColumns are the columns of a MirrorSyncOutcome, in the
+// order scanOutcome reads them.
+const mirrorSyncOutcomeColumns = `read_at, read_wall, reconciled_at, reconciled_wall,
+	  failed_at, failed_wall, failure_kind, failure_message,
+	  reconcile_failed_at, reconcile_failed_wall, reconcile_failure_kind, reconcile_failure_message, reconcile_refused`
+
+// outcomeDest are the scan destinations of mirrorSyncOutcomeColumns.
+func (o *MirrorSyncOutcome) outcomeDest() []any {
+	r := &o.ReconcileFailure
+	return []any{&o.ReadAt, &o.ReadWall, &o.ReconciledAt, &o.ReconciledWall,
+		&o.Failure.At, &o.Failure.Wall, &o.Failure.Kind, &o.Failure.Message,
+		&r.At, &r.Wall, &r.Kind, &r.Message, &r.Refused}
 }
 
 // mirrorSyncStateSQL reads whether the root is live (NULL: no root), a
@@ -323,7 +356,9 @@ var mirrorSyncStateSQL = `SELECT rt.connection_id IS NOT NULL, coalesce(rt.sweep
 	  ` + mirrorHistoryDueExistsSQL("?3") + `,
 	  s.root_id IS NOT NULL, s.cursor, coalesce(s.read_at, 0), coalesce(s.read_wall, 0),
 	  coalesce(s.reconciled_at, 0), coalesce(s.reconciled_wall, 0), coalesce(s.failed_at, 0), coalesce(s.failed_wall, 0),
-	  coalesce(s.failure_kind, ''), coalesce(s.failure_message, '')
+	  coalesce(s.failure_kind, ''), coalesce(s.failure_message, ''),
+	  coalesce(s.reconcile_failed_at, 0), coalesce(s.reconcile_failed_wall, 0), coalesce(s.reconcile_failure_kind, ''),
+	  coalesce(s.reconcile_failure_message, ''), coalesce(s.reconcile_refused, 0)
 	FROM (SELECT 1)
 	LEFT JOIN tracker_cache_roots rt ON rt.id = ?1
 	LEFT JOIN tracker_cache_boards bl ON bl.root_id = ?1 AND bl.board_id = ?2 AND bl.retired = 0
@@ -343,9 +378,9 @@ func (s *Store) GetMirrorSync(rootID int64, boardID string, now int64) (MirrorSy
 	var st MirrorSync
 	var live sql.NullBool
 	var ok bool
-	err := s.reader().QueryRow(mirrorSyncStateSQL, rootID, boardID, now).Scan(&live, &st.Sweep, &st.Lifetime, &st.StructureDueAt, &st.EstimateResetAt,
-		&st.StructureWall, &st.HistoryDue, &ok,
-		&st.Cursor, &st.ReadAt, &st.ReadWall, &st.ReconciledAt, &st.ReconciledWall, &st.Failure.At, &st.Failure.Wall, &st.Failure.Kind, &st.Failure.Message)
+	dest := append([]any{&live, &st.Sweep, &st.Lifetime, &st.StructureDueAt, &st.EstimateResetAt, &st.StructureWall, &st.HistoryDue, &ok, &st.Cursor},
+		st.outcomeDest()...)
+	err := s.reader().QueryRow(mirrorSyncStateSQL, rootID, boardID, now).Scan(dest...)
 	if err == nil && !live.Bool {
 		err = ErrTrackerCacheGone
 	}
@@ -361,14 +396,17 @@ func (s *Store) GetMirrorSync(rootID int64, boardID string, now int64) (MirrorSy
 
 // MirrorSyncAttempt is the outcome of one tick of a scope: ReadAt is when
 // a read that succeeded began, ReconciledAt when a reconcile that
-// succeeded began, and Failure a failure that followed them (its kind one
-// of MirrorFailure*); a zero time is none, and an attempt names at least
-// one. Lifetime is the board's lifetime its caller captured (zero for the
-// linked scope).
+// completed began, Failure the failure of a unit other than a board's
+// reconcile that followed them, and ReconcileFailure a board's failed
+// reconcile; a zero time is none, and an attempt names at least one. A
+// tick names a reconcile's completion or its failure, never both.
+// Lifetime is the board's lifetime its caller captured (zero for the
+// linked scope, which names no reconcile).
 type MirrorSyncAttempt struct {
 	Lifetime             int64
 	ReadAt, ReconciledAt MirrorRead
 	Failure              MirrorAttemptFailure
+	ReconcileFailure     MirrorReconcileAttempt
 }
 
 // MirrorAttemptFailure is an attempt's failure: when the unit that failed
@@ -378,112 +416,169 @@ type MirrorAttemptFailure struct {
 	Kind, Message string
 }
 
+// MirrorReconcileAttempt is an attempt's reconcile failure: At is the read
+// the failing call began, which orders it, and Returned the wall clock in
+// Unix ms when that call returned, which is shown and which a refusal's
+// wait runs from (MirrorReconcileFailure.Wall): one call can make several
+// requests, the refused one last.
+type MirrorReconcileAttempt struct {
+	At            MirrorRead
+	Returned      int64
+	Kind, Message string
+	Refused       bool
+}
+
 // mirrorSyncTimes are an attempt's reads once checked against the root it
 // is recorded in (MirrorSyncAttempt.in).
-type mirrorSyncTimes struct{ succeeded, reconciled, failed mirrorReadTimes }
+type mirrorSyncTimes struct{ succeeded, reconciled, failed, reconcileFailed mirrorReadTimes }
 
 func (a MirrorSyncAttempt) in(rootID int64) (t mirrorSyncTimes, err error) {
-	if t.succeeded, err = a.ReadAt.in(rootID); err != nil {
-		return mirrorSyncTimes{}, err
-	}
-	if t.reconciled, err = a.ReconciledAt.in(rootID); err != nil {
-		return mirrorSyncTimes{}, err
-	}
-	if t.failed, err = a.Failure.At.in(rootID); err != nil {
-		return mirrorSyncTimes{}, err
+	for _, r := range []struct {
+		of MirrorRead
+		to *mirrorReadTimes
+	}{{a.ReadAt, &t.succeeded}, {a.ReconciledAt, &t.reconciled}, {a.Failure.At, &t.failed}, {a.ReconcileFailure.At, &t.reconcileFailed}} {
+		if *r.to, err = r.of.in(rootID); err != nil {
+			return mirrorSyncTimes{}, err
+		}
 	}
 	return t, nil
 }
 
 func (a MirrorSyncAttempt) check(boardID string, t mirrorSyncTimes) error {
-	f := MirrorSyncFailure{At: t.failed.at, Kind: a.Failure.Kind, Message: a.Failure.Message}
+	rf := a.ReconcileFailure
 	switch {
-	case t.succeeded.at < 0 || t.reconciled.at < 0 || f.At < 0 || t.succeeded.at+t.reconciled.at+f.At == 0:
+	case t.succeeded.at < 0 || t.reconciled.at < 0 || t.failed.at < 0 || t.reconcileFailed.at < 0 ||
+		t.succeeded.at+t.reconciled.at+t.failed.at+t.reconcileFailed.at == 0:
 		return fmt.Errorf("%w: an attempt needs the time of its success or failure", ErrInvalidTrackerCache)
 	case boardID == "" && a.Lifetime != 0:
 		return fmt.Errorf("%w: the linked scope has no lifetime", ErrInvalidTrackerCache)
-	case f.At == 0 && (f.Kind != "" || f.Message != ""):
+	case boardID == "" && (t.reconciled.at != 0 || rf != (MirrorReconcileAttempt{})):
+		return fmt.Errorf("%w: the linked scope has no reconcile", ErrInvalidTrackerCache)
+	case t.reconciled.at != 0 && t.reconcileFailed.at != 0:
+		return fmt.Errorf("%w: a reconcile that completed and failed", ErrInvalidTrackerCache)
+	case t.reconcileFailed.at == 0 && rf != (MirrorReconcileAttempt{}):
+		return fmt.Errorf("%w: a reconcile failure with no time", ErrInvalidTrackerCache)
+	case t.reconcileFailed.at != 0 && (rf.Returned <= 0 || !mirrorFailureKind(rf.Kind)):
+		return fmt.Errorf("%w: reconcile failure kind %q returned at %d", ErrInvalidTrackerCache, rf.Kind, rf.Returned)
+	case t.failed.at == 0 && (a.Failure.Kind != "" || a.Failure.Message != ""):
 		return fmt.Errorf("%w: a failure with no time", ErrInvalidTrackerCache)
+	case t.failed.at != 0 && !mirrorFailureKind(a.Failure.Kind):
+		return fmt.Errorf("%w: failure kind %q", ErrInvalidTrackerCache, a.Failure.Kind)
 	}
-	switch f.Kind {
+	return nil
+}
+
+// mirrorFailureKind reports kind as one of MirrorFailure*.
+func mirrorFailureKind(kind string) bool {
+	switch kind {
 	case MirrorFailureTransient, MirrorFailureRateLimited, MirrorFailureSetup, MirrorFailureForbidden, MirrorFailureTracker:
-		return nil
-	case "":
-		if f.At == 0 {
-			return nil
-		}
+		return true
 	}
-	return fmt.Errorf("%w: failure kind %q", ErrInvalidTrackerCache, f.Kind)
+	return false
 }
 
 // mirrorSyncAttemptSQL records an attempt in one statement: ?1 root, ?2
 // board, ?3 the read, ?4 the reconcile, ?5 to ?7 the failure's time, kind
-// and message, and ?8 to ?10 the wall times of the reconcile, the read and
-// the failure, each stored with the order time it began at
-// (MirrorSync.ReconciledWall, ReadWall, Failure.Wall). Every SET
-// expression reads the row as it was, so the fragments below are spelled
-// out where they are used:
-//   - {cleared}: a success clears a failure recorded no later than it;
-//   - {admitted}: the failure replaces the stored one (after the clear)
-//     unless the scope was read, reconciled, failed or cleared later, this
-//     attempt's successes included, and it differs from it;
+// and message, ?8 to ?10 the wall times of the reconcile, the read and the
+// failure, each stored with the order time it began at, and ?11 to ?15
+// the reconcile failure's time, kind, message, wall time and refusal.
+// Every SET expression reads the row as it was, so the fragments below are
+// spelled out where they are used. A success wins a tie with a failure of
+// its own slot in either order, and a failure replaces only an older one:
+//   - {cleared}: a read clears the failure recorded at or before it;
+//   - {admitted}: the failure replaces the stored one when it is later
+//     than the scope's last read, failure and clear, this attempt's read
+//     included;
+//   - {rcleared} and {radmitted}: the same of the reconcile failure, by
+//     the reconcile's completions;
 //   - {failed_at} and the other failure columns: their new values.
 //
-// The WHERE writes the row only when a value changes.
+// The WHERE writes the row only when a value changes, and RETURNING
+// returns the outcome the row holds then.
 const mirrorSyncAttemptTemplate = `INSERT INTO tracker_cache_sync(root_id, board_id, read_at, read_wall, reconciled_at, reconciled_wall,
-	    failed_at, failed_wall, failure_kind, failure_message, outcome_at)
-	SELECT ?1, ?2, ?3, ?9, ?4, ?8, iif(f, ?5, 0), iif(f, ?10, 0), iif(f, ?6, ''), iif(f, ?7, ''), iif(f, ?5, 0)
-	  FROM (SELECT ?5 > 0 AND ?5 >= max(?3, ?4) AS f) WHERE true
+	    failed_at, failed_wall, failure_kind, failure_message, outcome_at,
+	    reconcile_failed_at, reconcile_failed_wall, reconcile_failure_kind, reconcile_failure_message, reconcile_refused)
+	SELECT ?1, ?2, ?3, ?9, ?4, ?8, iif(f, ?5, 0), iif(f, ?10, 0), iif(f, ?6, ''), iif(f, ?7, ''), iif(f, ?5, 0),
+	    iif(rf, ?11, 0), iif(rf, ?14, 0), iif(rf, ?12, ''), iif(rf, ?13, ''), iif(rf, ?15, 0)
+	  FROM (SELECT ?5 > 0 AND ?5 > ?3 AS f, ?11 > 0 AND ?11 > ?4 AS rf) WHERE true
 	ON CONFLICT(root_id, board_id) DO UPDATE SET read_at = max(read_at, ?3), read_wall = iif(?3 > read_at, ?9, read_wall),
 	    reconciled_at = max(reconciled_at, ?4), reconciled_wall = iif(?4 > reconciled_at, ?8, reconciled_wall),
 	    failed_at = {failed_at}, failed_wall = {failed_wall},
-	    failure_kind = {failure_kind}, failure_message = {failure_message}, outcome_at = {outcome_at}
+	    failure_kind = {failure_kind}, failure_message = {failure_message}, outcome_at = {outcome_at},
+	    reconcile_failed_at = {reconcile_failed_at}, reconcile_failed_wall = {reconcile_failed_wall},
+	    reconcile_failure_kind = {reconcile_failure_kind}, reconcile_failure_message = {reconcile_failure_message},
+	    reconcile_refused = {reconcile_refused}
 	WHERE ?3 > read_at OR ?4 > reconciled_at OR {failed_at} IS NOT failed_at OR {failure_kind} IS NOT failure_kind
 	   OR {failure_message} IS NOT failure_message OR {outcome_at} IS NOT outcome_at
-	RETURNING board_id`
+	   OR {reconcile_failed_at} IS NOT reconcile_failed_at OR {reconcile_failure_kind} IS NOT reconcile_failure_kind
+	   OR {reconcile_failure_message} IS NOT reconcile_failure_message OR {reconcile_refused} IS NOT reconcile_refused
+	RETURNING ` + mirrorSyncOutcomeColumns
 
 var mirrorSyncAttemptSQL = strings.NewReplacer(
-	"{cleared}", `(failure_kind <> '' AND max(?3, ?4) > 0 AND max(?3, ?4) >= outcome_at)`,
+	"{cleared}", `(failure_kind <> '' AND ?3 > 0 AND ?3 >= outcome_at)`,
+	"{rcleared}", `(reconcile_failure_kind <> '' AND ?4 > 0 AND ?4 >= reconcile_failed_at)`,
 ).Replace(strings.NewReplacer(
-	"{admitted}", `(?5 > 0 AND ?5 >= max(iif({cleared}, max(?3, ?4), outcome_at), read_at, reconciled_at, ?3, ?4)
-		AND (iif({cleared}, 0, failed_at) IS NOT ?5 OR iif({cleared}, '', failure_kind) IS NOT ?6
-		  OR iif({cleared}, '', failure_message) IS NOT ?7))`,
+	"{admitted}", `(?5 > 0 AND ?5 > max(outcome_at, read_at, ?3))`,
+	"{radmitted}", `(?11 > 0 AND ?11 > max(reconcile_failed_at, reconciled_at, ?4))`,
 ).Replace(strings.NewReplacer(
 	"{failed_at}", `iif({admitted}, ?5, iif({cleared}, 0, failed_at))`,
 	"{failed_wall}", `iif({admitted}, ?10, iif({cleared}, 0, failed_wall))`,
 	"{failure_kind}", `iif({admitted}, ?6, iif({cleared}, '', failure_kind))`,
 	"{failure_message}", `iif({admitted}, ?7, iif({cleared}, '', failure_message))`,
-	"{outcome_at}", `iif({admitted}, ?5, iif({cleared}, max(?3, ?4), outcome_at))`,
+	"{outcome_at}", `iif({admitted}, ?5, iif({cleared}, ?3, outcome_at))`,
+	"{reconcile_failed_at}", `iif({radmitted}, ?11, iif({rcleared}, 0, reconcile_failed_at))`,
+	"{reconcile_failed_wall}", `iif({radmitted}, ?14, iif({rcleared}, 0, reconcile_failed_wall))`,
+	"{reconcile_failure_kind}", `iif({radmitted}, ?12, iif({rcleared}, '', reconcile_failure_kind))`,
+	"{reconcile_failure_message}", `iif({radmitted}, ?13, iif({rcleared}, '', reconcile_failure_message))`,
+	"{reconcile_refused}", `iif({radmitted}, ?15, iif({rcleared}, 0, reconcile_refused))`,
 ).Replace(mirrorSyncAttemptTemplate)))
+
+// mirrorSyncOutcomeSQL reads a scope's outcome, for an attempt that
+// changed nothing.
+var mirrorSyncOutcomeSQL = `SELECT ` + mirrorSyncOutcomeColumns + ` FROM tracker_cache_sync WHERE root_id = ?1 AND board_id = ?2`
 
 // RecordMirrorSyncAttempt records the outcome of one tick of a scope in
 // one upsert, after the root check (and a board's lifetime check) every
-// mirror write makes, and reports whether the scope's state changed; an
-// attempt that changes nothing writes nothing. A success moves the read or
-// reconcile time forward, never back, and clears a failure recorded no
-// later than it. A failure replaces the stored one unless the scope was
-// read, reconciled, failed or cleared later, by this attempt's successes
+// mirror write makes, and returns the outcome the scope holds after it and
+// whether it changed; an attempt that changes nothing writes nothing and
+// reads the outcome in the same transaction. A read moves the read time
+// forward and clears the failure recorded at or before it; a completed
+// reconcile does the same of the reconcile time and the reconcile
+// failure. A failure replaces the one of its slot only when it is later
+// than that slot's last success, failure and clear, this attempt's success
 // included (superseded). A board scope must be listed in a.Lifetime
 // (ErrTrackerCacheUnlisted).
-func (s *Store) RecordMirrorSyncAttempt(rootID int64, boardID string, a MirrorSyncAttempt) (changed bool, err error) {
+func (s *Store) RecordMirrorSyncAttempt(rootID int64, boardID string, a MirrorSyncAttempt) (out MirrorSyncOutcome, changed bool, err error) {
 	times, err := a.in(rootID)
 	if err != nil {
-		return false, err
+		return MirrorSyncOutcome{}, false, err
 	}
 	if err := a.check(boardID, times); err != nil {
-		return false, err
+		return MirrorSyncOutcome{}, false, err
 	}
+	rf := a.ReconcileFailure
 	action := fmt.Sprintf("store: record tracker mirror %d sync attempt of board %q", rootID, boardID)
 	write := func(tx *sql.Tx) error {
-		var err error
-		changed, err = execChangedTx(tx, mirrorSyncAttemptSQL, rootID, boardID, times.succeeded.at, times.reconciled.at,
-			times.failed.at, a.Failure.Kind, a.Failure.Message, times.reconciled.wall, times.succeeded.wall, times.failed.wall)
-		return err
+		out, changed = MirrorSyncOutcome{}, false
+		err := tx.QueryRow(mirrorSyncAttemptSQL, rootID, boardID, times.succeeded.at, times.reconciled.at,
+			times.failed.at, a.Failure.Kind, a.Failure.Message, times.reconciled.wall, times.succeeded.wall, times.failed.wall,
+			times.reconcileFailed.at, rf.Kind, rf.Message, rf.Returned, rf.Refused).Scan(out.outcomeDest()...)
+		switch {
+		case err == nil:
+			changed = true
+			return nil
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+		return tx.QueryRow(mirrorSyncOutcomeSQL, rootID, boardID).Scan(out.outcomeDest()...)
 	}
 	if boardID == "" {
 		err = s.mirrorWrite(rootID, action, write)
 	} else {
 		err = s.mirrorBoardWrite(rootID, boardID, a.Lifetime, action, false, func(tx *sql.Tx, _ mirrorBoard) error { return write(tx) })
 	}
-	return changed, err
+	if err != nil {
+		return MirrorSyncOutcome{}, false, err
+	}
+	return out, changed, nil
 }

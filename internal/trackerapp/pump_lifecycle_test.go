@@ -28,7 +28,7 @@ func (c *boardCounts) GetMirrorSync(root int64, board string, now int64) (store.
 	return c.Store.GetMirrorSync(root, board, now)
 }
 
-func (c *boardCounts) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (bool, error) {
+func (c *boardCounts) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (store.MirrorSyncOutcome, bool, error) {
 	defer func() {
 		c.mu.Lock()
 		c.records[board]++

@@ -321,7 +321,7 @@ func (r *run) record(done []step, began []store.MirrorRead, out Outcome) (store.
 	if a == (store.MirrorSyncAttempt{Lifetime: a.Lifetime}) {
 		return a, nil
 	}
-	if _, err := r.s.store.RecordMirrorSyncAttempt(r.root, string(r.scope.Board), a); err != nil {
+	if _, _, err := r.s.store.RecordMirrorSyncAttempt(r.root, string(r.scope.Board), a); err != nil {
 		return a, fmt.Errorf("trackerapp: record the sync outcome of %s board %q: %w", r.row.ID, r.scope.Board, err)
 	}
 	return a, nil

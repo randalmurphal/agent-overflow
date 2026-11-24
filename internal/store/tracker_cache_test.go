@@ -221,15 +221,20 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"RecordMirrorSyncAttempt": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 9)}))
+			_, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 9)}))
 			return err
 		},
 		"RecordMirrorSyncAttempt reconcile": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReconciledAt: mirrorReadOf(root, 9)}))
+			_, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReconciledAt: mirrorReadOf(root, 9)}))
+			return err
+		},
+		"RecordMirrorSyncAttempt reconcile failure": func(root int64) error {
+			_, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReconcileFailure: MirrorReconcileAttempt{
+				At: mirrorReadOf(root, 9), Returned: 9, Kind: MirrorFailureTracker, Message: "refused", Refused: true}}))
 			return err
 		},
 		"RecordMirrorSyncAttempt failure": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 8), Failure: MirrorAttemptFailure{At: mirrorReadOf(root, 9), Kind: MirrorFailureTransient, Message: "timed out"}}))
+			_, _, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 8), Failure: MirrorAttemptFailure{At: mirrorReadOf(root, 9), Kind: MirrorFailureTransient, Message: "timed out"}}))
 			return err
 		},
 		"KeepMirrorTicket": func(root int64) error {
