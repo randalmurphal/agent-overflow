@@ -993,3 +993,47 @@ func TestNormalizeToolCompleteDetectsBackgroundCommand(t *testing.T) {
 		t.Fatalf("OutputFile = %q, want %q", inProg.OutputFile, filepath.Clean(logPath))
 	}
 }
+
+func TestAgyExtractTodoUpdate(t *testing.T) {
+	t.Parallel()
+	f := NewFlavor("")
+
+	if entries, ok := f.ExtractTodoUpdate(&acp.ToolCallUpdate{Name: "read_file"}); ok || len(entries) != 0 {
+		t.Fatalf("read_file should not be a todo tool: entries=%+v ok=%v", entries, ok)
+	}
+	if entries, ok := f.ExtractTodoUpdate(&acp.ToolCallUpdate{Title: "update_steps", RawInput: json.RawMessage(`{"steps":[{"title":"Via title","status":"done"}]}`)}); !ok || len(entries) != 1 || entries[0].Content != "Via title" || entries[0].Status != "completed" {
+		t.Fatalf("title-only update_steps failed: entries=%+v ok=%v", entries, ok)
+	}
+	if entries, ok := f.ExtractTodoUpdate(&acp.ToolCallUpdate{Name: "update_steps", RawInput: json.RawMessage(`{"steps":[]}`)}); !ok || len(entries) != 0 {
+		t.Fatalf("empty update_steps should still be recognized as todo tool: entries=%+v ok=%v", entries, ok)
+	}
+
+	entries, ok := f.ExtractTodoUpdate(&acp.ToolCallUpdate{
+		Name: "update_steps",
+		RawInput: json.RawMessage(`{"steps":[
+			{"title":"First","status":"done"},
+			{"title":"Second","status":"in_progress"},
+			{"title":"Third","status":"pending"},
+			{"title":"Fourth","status":"skipped"},
+			{"title":"Fifth","status":"failed"}
+		]}`),
+	})
+	if !ok {
+		t.Fatal("expected update_steps to be recognized as todo tool")
+	}
+	want := []acp.PlanEntry{
+		{Content: "First", Status: "completed"},
+		{Content: "Second", Status: "inProgress"},
+		{Content: "Third", Status: "pending"},
+		{Content: "Fourth", Status: "completed"},
+		{Content: "Fifth", Status: "pending"},
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("len(entries) = %d, want %d: %+v", len(entries), len(want), entries)
+	}
+	for i := range want {
+		if entries[i] != want[i] {
+			t.Errorf("entries[%d] = %+v, want %+v", i, entries[i], want[i])
+		}
+	}
+}

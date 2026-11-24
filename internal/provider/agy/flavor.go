@@ -888,6 +888,58 @@ func (f *Flavor) ClassifyPermission(threadID, turnID, requestID string, req acp.
 	return cls
 }
 
+// ExtractTodoUpdate intercepts Antigravity's update_steps checklist tool and
+// normalizes its step list into ACP PlanEntry items so acp.Session routes it
+// to AO's live composer todo rail (EventTodoUpdate) without cluttering the
+// timeline with raw update_steps tool rows.
+func (f *Flavor) ExtractTodoUpdate(u *acp.ToolCallUpdate) ([]acp.PlanEntry, bool) {
+	if u == nil {
+		return nil, false
+	}
+	name := strings.TrimSpace(firstNonEmpty(u.Name, u.Title))
+	if !strings.EqualFold(name, "update_steps") {
+		return nil, false
+	}
+	rawIn := u.EffectiveInput()
+	if len(rawIn) == 0 {
+		return nil, true
+	}
+	var payload struct {
+		Steps []struct {
+			Title   string `json:"title"`
+			Content string `json:"content"`
+			Step    string `json:"step"`
+			Status  string `json:"status"`
+		} `json:"steps"`
+	}
+	if json.Unmarshal(rawIn, &payload) != nil || len(payload.Steps) == 0 {
+		return nil, true
+	}
+	entries := make([]acp.PlanEntry, 0, len(payload.Steps))
+	for _, s := range payload.Steps {
+		text := strings.TrimSpace(firstNonEmpty(s.Title, s.Content, s.Step))
+		if text == "" {
+			continue
+		}
+		entries = append(entries, acp.PlanEntry{
+			Content: text,
+			Status:  normalizeAgyTodoStatus(s.Status),
+		})
+	}
+	return entries, true
+}
+
+func normalizeAgyTodoStatus(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "in_progress", "inprogress":
+		return "inProgress"
+	case "done", "completed", "skipped":
+		return "completed"
+	default:
+		return "pending"
+	}
+}
+
 // hasAgySecurityWarning reports whether any permission option carries
 // `_meta["agy.security.warning"]`.
 func hasAgySecurityWarning(options []acp.PermissionOption) bool {

@@ -19,6 +19,7 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 	var textBuf strings.Builder
 	startedTools := make(map[string]NormalizedToolStart)
 	completedTools := make(map[string]bool)
+	suppressedTodoTools := make(map[string]bool)
 	// Leave event timestamps zero so sessionimport stamps monotonic historical
 	// timestamps from the session's activity clock rather than time.Now().
 	var zeroTime time.Time
@@ -124,6 +125,21 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 			if tc.ToolCallID == "" {
 				continue
 			}
+			if entries, isTodo := flavor.ExtractTodoUpdate(&tc); isTodo {
+				emitted := false
+				if len(entries) > 0 {
+					if evt := buildTodoUpdateEvent("", "", tc.ToolCallID, entries, zeroTime); evt != nil {
+						events = append(events, *evt)
+						emitted = true
+					}
+				}
+				if tc.Status == "completed" || tc.Status == "failed" || tc.Status == "cancelled" {
+					completedTools[tc.ToolCallID] = true
+				} else {
+					suppressedTodoTools[tc.ToolCallID] = emitted
+				}
+				continue
+			}
 			norm := flavor.NormalizeToolStart(&tc)
 			events = append(events, provider.ProviderEvent{
 				Kind:      provider.EventToolStart,
@@ -148,6 +164,21 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 			if tc.ToolCallID == "" {
 				continue
 			}
+			if emitted, isSuppressed := suppressedTodoTools[tc.ToolCallID]; isSuppressed {
+				if !emitted {
+					if entries, ok := flavor.ExtractTodoUpdate(&tc); ok && len(entries) > 0 {
+						if evt := buildTodoUpdateEvent("", "", tc.ToolCallID, entries, zeroTime); evt != nil {
+							events = append(events, *evt)
+							suppressedTodoTools[tc.ToolCallID] = true
+						}
+					}
+				}
+				if tc.Status == "completed" || tc.Status == "failed" || tc.Status == "cancelled" {
+					delete(suppressedTodoTools, tc.ToolCallID)
+					completedTools[tc.ToolCallID] = true
+				}
+				continue
+			}
 			if tc.Status != "completed" && tc.Status != "failed" && tc.Status != "cancelled" {
 				continue
 			}
@@ -159,6 +190,11 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 			completedTools[tc.ToolCallID] = true
 			norm := flavor.NormalizeToolComplete(&tc, started)
 			events = append(events, buildToolCompleteEvents("", "", tc.ToolCallID, norm, zeroTime)...)
+		case "plan":
+			flush()
+			if evt := buildTodoUpdateEvent("", "", "", u.Entries, zeroTime); evt != nil {
+				events = append(events, *evt)
+			}
 		case "usage_update":
 			flush()
 		}

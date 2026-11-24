@@ -201,6 +201,7 @@ type Session struct {
 	activeSubagentWatchers   int
 	pendingPerms             map[string]pendingPermission
 	pendingToolQuestions     map[string]pendingToolQuestion
+	suppressedTodoTools      map[string]bool
 	pendingBgCommands        map[string]pendingBackgroundCommand
 	bgCmdWatcherRunning      bool
 	bgCmdWakeCh              chan struct{}
@@ -284,6 +285,7 @@ func (c *Conn) open(
 		trackedSubagents:     make(map[string]SubagentLaunchContext),
 		pendingPerms:         make(map[string]pendingPermission),
 		pendingToolQuestions: make(map[string]pendingToolQuestion),
+		suppressedTodoTools:  make(map[string]bool),
 		pendingBgCommands:    make(map[string]pendingBackgroundCommand),
 		bgCmdWakeCh:          make(chan struct{}, 1),
 		sessionCtx:           sessionCtx,
@@ -2330,6 +2332,20 @@ func (s *Session) handleToolCallStart(tc *ToolCallUpdate, parentToolUseID string
 	if tc.ToolCallID == "" {
 		return
 	}
+	if entries, isTodo := s.flavor.ExtractTodoUpdate(tc); isTodo {
+		s.mu.Lock()
+		turnID := s.activeTurnID
+		if s.suppressedTodoTools == nil {
+			s.suppressedTodoTools = make(map[string]bool)
+		}
+		emitted := parentToolUseID != "" || len(entries) > 0
+		s.suppressedTodoTools[tc.ToolCallID] = emitted
+		s.mu.Unlock()
+		if parentToolUseID == "" && len(entries) > 0 {
+			s.emitTodoUpdate(turnID, tc.ToolCallID, entries)
+		}
+		return
+	}
 	norm := s.flavor.NormalizeToolStart(tc)
 
 	s.mu.Lock()
@@ -2445,14 +2461,30 @@ func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate, parentToolUseID s
 		return
 	}
 	s.mu.Lock()
+	todoEmitted, isSuppressedTodo := s.suppressedTodoTools[tc.ToolCallID]
 	var started NormalizedToolStart
-	if parentToolUseID == "" {
-		started = s.startedTools[tc.ToolCallID]
-	} else {
-		started = s.childStartedTools[tc.ToolCallID]
+	if !isSuppressedTodo {
+		if parentToolUseID == "" {
+			started = s.startedTools[tc.ToolCallID]
+		} else {
+			started = s.childStartedTools[tc.ToolCallID]
+		}
 	}
 	turnID := s.activeTurnID
 	s.mu.Unlock()
+	if isSuppressedTodo {
+		if !todoEmitted && parentToolUseID == "" {
+			if entries, ok := s.flavor.ExtractTodoUpdate(tc); ok && len(entries) > 0 {
+				s.mu.Lock()
+				if _, still := s.suppressedTodoTools[tc.ToolCallID]; still {
+					s.suppressedTodoTools[tc.ToolCallID] = true
+				}
+				s.mu.Unlock()
+				s.emitTodoUpdate(turnID, tc.ToolCallID, entries)
+			}
+		}
+		return
+	}
 
 	if tc.Kind != "execute" && started.ItemType != "command_execution" {
 		return
@@ -2813,6 +2845,20 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 	if tc.ToolCallID == "" {
 		return
 	}
+	s.mu.Lock()
+	todoEmitted, isSuppressedTodo := s.suppressedTodoTools[tc.ToolCallID]
+	if isSuppressedTodo {
+		delete(s.suppressedTodoTools, tc.ToolCallID)
+		turnID := s.activeTurnID
+		s.mu.Unlock()
+		if !todoEmitted && parentToolUseID == "" {
+			if entries, ok := s.flavor.ExtractTodoUpdate(tc); ok && len(entries) > 0 {
+				s.emitTodoUpdate(turnID, tc.ToolCallID, entries)
+			}
+		}
+		return
+	}
+	s.mu.Unlock()
 	// Serialize command_execution completion with background-command promotion
 	// so the watcher cannot emit a meta_update_only after completion.
 	s.bgCmdEmitMu.Lock()
@@ -3166,25 +3212,62 @@ func extractStructuredJSONObject(text string) json.RawMessage {
 }
 
 func (s *Session) handlePlanUpdate(entries []PlanEntry) {
+	s.mu.Lock()
+	turnID := s.activeTurnID
+	s.mu.Unlock()
+	s.emitTodoUpdate(turnID, "", entries)
+}
+
+func (s *Session) emitTodoUpdate(turnID, itemID string, entries []PlanEntry) {
+	evt := buildTodoUpdateEvent(s.threadID, turnID, itemID, entries, time.Now())
+	if evt == nil {
+		return
+	}
+	s.emitEvent(*evt)
+}
+
+func buildTodoUpdateEvent(threadID, turnID, itemID string, entries []PlanEntry, ts time.Time) *provider.ProviderEvent {
 	type planStep struct {
 		Step   string `json:"step"`
 		Status string `json:"status"`
 	}
 	steps := make([]planStep, 0, len(entries))
 	for _, e := range entries {
-		status := e.Status
-		if status == "in_progress" {
-			status = "inProgress"
+		content := strings.TrimSpace(e.Content)
+		if content == "" {
+			continue
 		}
-		steps = append(steps, planStep{Step: e.Content, Status: status})
+		status := strings.TrimSpace(e.Status)
+		switch strings.ToLower(status) {
+		case "in_progress", "inprogress":
+			status = "inProgress"
+		case "done", "completed", "skipped":
+			status = "completed"
+		default:
+			status = "pending"
+		}
+		steps = append(steps, planStep{Step: content, Status: status})
 	}
-	meta, _ := json.Marshal(map[string]any{"plan": steps})
-	s.emitEvent(provider.ProviderEvent{
-		Kind:      provider.EventTodoUpdate,
-		ThreadID:  s.threadID,
-		Meta:      meta,
-		Timestamp: time.Now(),
+	if len(steps) == 0 {
+		return nil
+	}
+	meta, err := json.Marshal(map[string]any{
+		"kind":  "todo_update",
+		"title": "Updated Todos",
+		"plan":  steps,
 	})
+	if err != nil {
+		return nil
+	}
+	return &provider.ProviderEvent{
+		Kind:      provider.EventTodoUpdate,
+		ThreadID:  threadID,
+		TurnID:    turnID,
+		ItemID:    itemID,
+		Content:   "Updated Todos",
+		Meta:      meta,
+		Timestamp: ts,
+	}
 }
 
 func (s *Session) checkPendingCompaction() {

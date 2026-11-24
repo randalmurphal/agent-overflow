@@ -1100,3 +1100,152 @@ func TestACPBgCmdWatcherSkipsPendingApprovalAndCatchesNearTimeoutCompletion(t *t
 		t.Fatalf("expected EventBackgroundTaskTerminal for cmd-near, events=%+v", events)
 	}
 }
+
+type todoTestFlavor struct {
+	DefaultFlavor
+}
+
+func (todoTestFlavor) ExtractTodoUpdate(u *ToolCallUpdate) ([]PlanEntry, bool) {
+	if u == nil {
+		return nil, false
+	}
+	name := strings.TrimSpace(u.Name)
+	if name == "" {
+		name = strings.TrimSpace(u.Title)
+	}
+	if name != "update_steps" {
+		return nil, false
+	}
+	raw := u.EffectiveInput()
+	if len(raw) == 0 {
+		return nil, true
+	}
+	var in struct {
+		Steps []struct {
+			Title  string `json:"title"`
+			Status string `json:"status"`
+		} `json:"steps"`
+	}
+	if json.Unmarshal(raw, &in) != nil {
+		return nil, true
+	}
+	out := make([]PlanEntry, 0, len(in.Steps))
+	for _, s := range in.Steps {
+		out = append(out, PlanEntry{Content: s.Title, Status: s.Status})
+	}
+	return out, true
+}
+
+func TestACPTodoToolSuppressedAndRoutedToEventTodoUpdate(t *testing.T) {
+	t.Parallel()
+	fl := todoTestFlavor{DefaultFlavor: DefaultFlavor{Kind: provider.Agy}}
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(fl, &events, &mu)
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+
+	// 1. Live parent update_steps with immediate input -> EventTodoUpdate only, zero tool rows.
+	s.handleToolCallStart(&ToolCallUpdate{
+		ToolCallID: "todo-1",
+		Name:       "update_steps",
+		Status:     "in_progress",
+		RawInput:   json.RawMessage(`{"steps":[{"title":"Step A","status":"done"},{"title":"Step B","status":"in_progress"},{"title":"Step C","status":"pending"}]}`),
+	}, "")
+	s.handleToolCallInProgress(&ToolCallUpdate{
+		ToolCallID: "todo-1",
+		Name:       "update_steps",
+		Status:     "in_progress",
+	}, "")
+	s.handleToolCallComplete(&ToolCallUpdate{
+		ToolCallID: "todo-1",
+		Name:       "update_steps",
+		Status:     "completed",
+	}, "")
+
+	// 2. Deferred input arriving only on completion -> still emits EventTodoUpdate, zero tool rows.
+	s.handleToolCallStart(&ToolCallUpdate{
+		ToolCallID: "todo-2",
+		Name:       "update_steps",
+		Status:     "in_progress",
+	}, "")
+	s.handleToolCallComplete(&ToolCallUpdate{
+		ToolCallID: "todo-2",
+		Name:       "update_steps",
+		Status:     "completed",
+		RawInput:   json.RawMessage(`{"steps":[{"title":"Deferred","status":"skipped"}]}`),
+	}, "")
+
+	// 3. Child/subagent update_steps -> suppressed cleanly without overwriting parent live_todo.
+	s.handleToolCallStart(&ToolCallUpdate{
+		ToolCallID: "child:todo-3",
+		Name:       "update_steps",
+		Status:     "in_progress",
+		RawInput:   json.RawMessage(`{"steps":[{"title":"Child private step","status":"in_progress"}]}`),
+	}, "launch-1")
+	s.handleToolCallComplete(&ToolCallUpdate{
+		ToolCallID: "child:todo-3",
+		Name:       "update_steps",
+		Status:     "completed",
+	}, "launch-1")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 {
+		t.Fatalf("expected exactly 2 EventTodoUpdate events (and 0 tool rows), got %d: %+v", len(events), events)
+	}
+	for i, ev := range events {
+		if ev.Kind != provider.EventTodoUpdate {
+			t.Fatalf("event[%d].Kind = %q, want EventTodoUpdate", i, ev.Kind)
+		}
+	}
+	var m0 struct {
+		Kind string `json:"kind"`
+		Plan []struct {
+			Step   string `json:"step"`
+			Status string `json:"status"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(events[0].Meta, &m0); err != nil {
+		t.Fatalf("unmarshal todo meta: %v", err)
+	}
+	if m0.Kind != "todo_update" || len(m0.Plan) != 3 ||
+		m0.Plan[0].Status != "completed" || m0.Plan[1].Status != "inProgress" || m0.Plan[2].Status != "pending" {
+		t.Fatalf("unexpected todo plan[0]: %+v", m0)
+	}
+	var m1 struct {
+		Plan []struct {
+			Step   string `json:"step"`
+			Status string `json:"status"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(events[1].Meta, &m1); err != nil {
+		t.Fatalf("unmarshal deferred todo meta: %v", err)
+	}
+	if len(m1.Plan) != 1 || m1.Plan[0].Step != "Deferred" || m1.Plan[0].Status != "completed" {
+		t.Fatalf("unexpected deferred todo plan: %+v", m1)
+	}
+
+	// 4. ReplayUpdatesToEvents must also suppress update_steps tool rows and emit EventTodoUpdate.
+	replayed := ReplayUpdatesToEvents([]SessionUpdate{
+		{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "replay-todo-1",
+			Title:         "update_steps",
+			Status:        "completed",
+			RawInput:      json.RawMessage(`{"steps":[{"title":"Replayed","status":"in_progress"}]}`),
+		},
+	}, fl)
+	var sawReplayTodo bool
+	for _, ev := range replayed {
+		if ev.Kind == provider.EventToolStart || ev.Kind == provider.EventToolComplete {
+			t.Fatalf("replayed update_steps must not emit tool row: %+v", ev)
+		}
+		if ev.Kind == provider.EventTodoUpdate {
+			sawReplayTodo = true
+		}
+	}
+	if !sawReplayTodo {
+		t.Fatalf("expected EventTodoUpdate in replayed events, got %+v", replayed)
+	}
+}

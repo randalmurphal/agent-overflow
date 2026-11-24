@@ -117,10 +117,11 @@ type transcriptToolCall struct {
 }
 
 type pendingChildTool struct {
-	id       string
-	name     string
-	rawInput json.RawMessage
-	started  acp.NormalizedToolStart
+	id         string
+	name       string
+	rawInput   json.RawMessage
+	started    acp.NormalizedToolStart
+	suppressed bool
 }
 
 // ResolveSubagentLaunch maps a child conversation ID (from a live forwarded ACP
@@ -336,6 +337,17 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 						Status:     "in_progress",
 						RawInput:   rawArgs,
 					}
+					if _, isTodo := f.ExtractTodoUpdate(&u); isTodo {
+						// Suppress subagent update_steps rows so they neither
+						// clutter the agent pane nor overwrite parent live_todo,
+						// while still matching the upcoming GENERIC result step.
+						pendingTools = append(pendingTools, pendingChildTool{
+							id:         tcID,
+							name:       tc.Name,
+							suppressed: true,
+						})
+						continue
+					}
 					norm := f.NormalizeToolStart(&u)
 					launch.Emit(provider.ProviderEvent{
 						Kind:            provider.EventToolStart,
@@ -365,6 +377,9 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 				if len(pendingTools) > 0 {
 					pt := pendingTools[0]
 					pendingTools = pendingTools[1:]
+					if pt.suppressed {
+						continue
+					}
 					status := "completed"
 					content := step.Content
 					if strings.EqualFold(strings.TrimSpace(step.Status), "ERROR") || strings.TrimSpace(step.Error) != "" {
@@ -414,6 +429,9 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 		// Close any in-flight child tool call rows if the subagent ended abruptly.
 		now := time.Now()
 		for _, pt := range pendingTools {
+			if pt.suppressed {
+				continue
+			}
 			termStatus := "failed"
 			if status == "killed" {
 				termStatus = "cancelled"

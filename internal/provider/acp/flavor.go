@@ -142,6 +142,7 @@ type Flavor interface {
 	NormalizeToolComplete(u *ToolCallUpdate, started NormalizedToolStart) NormalizedToolComplete
 	ClassifyPermission(threadID, turnID, requestID string, req RequestPermissionParams, policy PermissionPolicy) PermissionClassification
 	ExtractPendingQuestion(u *ToolCallUpdate) ([]provider.UserInputQuestion, bool)
+	ExtractTodoUpdate(u *ToolCallUpdate) (entries []PlanEntry, isTodoTool bool)
 	BeforePrompt(ctx context.Context, sessionID string) any
 	AfterPrompt(ctx context.Context, sessionID string, stopReason string, beforeToken any) *PromptOutcomeOverride
 	ShouldHoldSpontaneousWakeClose(ctx context.Context, sessionID string) bool
@@ -656,6 +657,10 @@ func (DefaultFlavor) InitCompactionCursor(context.Context, string) int {
 
 func (DefaultFlavor) DetectCompaction(context.Context, string, int) (int, *CompactionEvent) {
 	return -1, nil
+}
+
+func (DefaultFlavor) ExtractTodoUpdate(*ToolCallUpdate) ([]PlanEntry, bool) {
+	return nil, false
 }
 
 func isEditToolKind(kind, name string) bool {
