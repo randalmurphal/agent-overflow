@@ -183,35 +183,28 @@ func TestClaudeCleanupPeriodDaysFollowsTheSavedWindowAndTheClaudeFile(t *testing
 func TestClaudeCleanupPeriodDaysResolvesPerWorkingDirectory(t *testing.T) {
 	t.Parallel()
 
-	t.Run("a workspace that keeps longer is left alone", func(t *testing.T) {
-		t.Parallel()
-		app, _ := setupE2EApp(t)
-		setTestRetentionDays(t, app, 90)
-		writeTestClaudeSettings(t, app, `{"cleanupPeriodDays":7}`)
-		keepsLonger := writeTestWorkspaceClaudeSettings(t, `{"cleanupPeriodDays":365}`)
+	for _, tc := range []struct {
+		name, user, workspace  string
+		inWorkspace, elsewhere int
+	}{
+		{name: "a workspace that keeps longer is left alone", user: `{"cleanupPeriodDays":7}`, workspace: `{"cleanupPeriodDays":365}`, inWorkspace: 0, elsewhere: 90},
+		{name: "a workspace that keeps less is lengthened", user: `{"cleanupPeriodDays":365}`, workspace: `{"cleanupPeriodDays":7}`, inWorkspace: 90, elsewhere: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app, _ := setupE2EApp(t)
+			setTestRetentionDays(t, app, 90)
+			writeTestClaudeSettings(t, app, tc.user)
+			workspace := writeTestWorkspaceClaudeSettings(t, tc.workspace)
 
-		if got := app.claudeCleanupPeriodDays(keepsLonger); got != 0 {
-			t.Fatalf("workspace keeping 365 days: got %d, want 0", got)
-		}
-		if got := app.claudeCleanupPeriodDays(t.TempDir()); got != 90 {
-			t.Fatalf("workspace with no Claude settings: got %d, want 90", got)
-		}
-	})
-
-	t.Run("a workspace that keeps less is lengthened", func(t *testing.T) {
-		t.Parallel()
-		app, _ := setupE2EApp(t)
-		setTestRetentionDays(t, app, 90)
-		writeTestClaudeSettings(t, app, `{"cleanupPeriodDays":365}`)
-		keepsLess := writeTestWorkspaceClaudeSettings(t, `{"cleanupPeriodDays":7}`)
-
-		if got := app.claudeCleanupPeriodDays(keepsLess); got != 90 {
-			t.Fatalf("workspace keeping 7 days: got %d, want 90", got)
-		}
-		if got := app.claudeCleanupPeriodDays(t.TempDir()); got != 0 {
-			t.Fatalf("workspace under the user's 365 days: got %d, want 0", got)
-		}
-	})
+			if got := app.claudeCleanupPeriodDays(workspace); got != tc.inWorkspace {
+				t.Fatalf("workspace settings %s under user settings %s: got %d, want %d", tc.workspace, tc.user, got, tc.inWorkspace)
+			}
+			if got := app.claudeCleanupPeriodDays(t.TempDir()); got != tc.elsewhere {
+				t.Fatalf("workspace with no Claude settings under user settings %s: got %d, want %d", tc.user, got, tc.elsewhere)
+			}
+		})
+	}
 }
 
 // startClaudeAndReadSettingsBlock starts a Claude session for a new thread in

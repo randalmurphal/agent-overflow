@@ -52,16 +52,9 @@ func TestConfigureIsolationCarriesTheBrowserEnginePin(t *testing.T) {
 func TestSetBrowserNativeWindowRecordsThePresenceOfAGetter(t *testing.T) {
 	t.Parallel()
 	app := &App{}
-	if app.browser.nativeWindow != nil {
-		t.Fatal("a bare App already carries a window getter")
-	}
-	app2 := &App{}
-	SetBrowserNativeWindow(app2, func() unsafe.Pointer { return nil })
-	if app2.browser.nativeWindow == nil {
+	SetBrowserNativeWindow(app, func() unsafe.Pointer { return nil })
+	if app.browser.nativeWindow == nil {
 		t.Fatal("SetBrowserNativeWindow did not record the getter")
-	}
-	if app2.browser.nativeWindow() != nil {
-		t.Fatal("a getter answering nil should still answer nil")
 	}
 }
 

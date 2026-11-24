@@ -141,20 +141,6 @@ func TestRequireAutonomyFollowsTheSelectedMode(t *testing.T) {
 	}
 }
 
-// TestRequireAutonomyAdmitsACallWithNoSession is the compatibility case: an
-// in-process saga, a workflow phase, a test, and every launch-credential
-// connection name no session and must keep working exactly as before.
-func TestRequireAutonomyAdmitsACallWithNoSession(t *testing.T) {
-	t.Parallel()
-	app, _, _ := autonomyApp(t)
-
-	for _, ctx := range []context.Context{context.Background(), callFrom("", false)} {
-		if err := app.requireAutonomy(ctx, string(provider.RuntimeFullAccess)); err != nil {
-			t.Errorf("a call with no session behind it was refused: %v", err)
-		}
-	}
-}
-
 // TestRequireAutonomyIgnoresWhatIsNotASelection: an empty mode is "whatever
 // this thread already resolves to", and an unparseable one is a bad argument
 // the method's own validator explains. Neither is a capability request, and

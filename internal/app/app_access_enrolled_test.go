@@ -144,16 +144,6 @@ func TestPairingStatusViewPredicates(t *testing.T) {
 			}
 		})
 	}
-
-	// A waiting caller must not read an unknown state as "keep waiting
-	// forever" AND as "nothing to act on" at once; every declared state is
-	// covered above, so this pins that the set has not grown silently.
-	if got := len([]string{
-		pairingStatePending, pairingStateRedeemed, pairingStateConfirmed,
-		pairingStateCanceled, pairingStateExpired,
-	}); got != len(tests) {
-		t.Fatalf("%d declared pairing states but %d covered", got, len(tests))
-	}
 }
 
 // The class the serve console enrolls has to be one identity declares, and

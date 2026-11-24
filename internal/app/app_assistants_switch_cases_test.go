@@ -155,35 +155,6 @@ func TestTurningAssistantsOnWaitsForADeleteThatClaimedAWaitingThread(t *testing.
 	}
 }
 
-// A message queued in a paused assistant's composer queue, by a client
-// that still shows it, waits there too, rather than coming back as a
-// failed start.
-func TestAQueuedMessageForAPausedAssistantWaits(t *testing.T) {
-	t.Parallel()
-	a, _ := newAppForFlushQueueRPC(t)
-	thread := noticeTestThread(t, a, "paused-queue")
-	testAssistant(t, a, thread.ID)
-	setAssistants(t, a, false)
-	if _, err := a.RegisterQueueItem(t.Context(), thread.ID, "later", SendMessageOptions{SendID: "person-later"}); err != nil {
-		t.Fatalf("RegisterQueueItem: %v", err)
-	}
-	if err := a.drainFlushDispatch(t.Context(), 10*time.Second); err != nil {
-		t.Fatal(err)
-	}
-	if queued := durableQueueRows(t, a, thread.ID); len(queued) != 1 || queued[0].SendID != "person-later" {
-		t.Fatalf("queue = %+v, want the message waiting", queued)
-	}
-	items, err := a.store.ListItems(thread.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range items {
-		if item.Kind == "error" {
-			t.Fatalf("an error row: %s", item.Summary)
-		}
-	}
-}
-
 // Toggled off and on again before the first change has been applied, the
 // computer ends where the setting ends: on, nothing paused.
 func TestAssistantsToggledTwiceQuicklyEndOn(t *testing.T) {

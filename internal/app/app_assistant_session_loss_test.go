@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -182,10 +183,22 @@ func TestASecondSendRightAfterSessionLossKeepsBothTexts(t *testing.T) {
 }
 
 // A handoff that fails puts every carried text back in the old thread's
-// composer, in the order sent, ahead of what was typed there since.
+// composer, in the order sent, ahead of what was typed there since. It
+// writes them in one write, holding the old thread's mutation lock, so the
+// composer move of a handoff a send starts meanwhile finds them in place.
 func TestAFailedSessionLossHandOffReturnsEveryText(t *testing.T) {
 	t.Parallel()
 	f, threadID, _ := lostSessionAssistant(t)
+	var mu sync.Mutex
+	lockedAtReturn := []bool{}
+	f.app.testEmitHook = func(name string, data any) {
+		if evt, ok := data.(DraftUpdatedEvent); ok && name == "draft:updated" && evt.ThreadID == threadID {
+			locked := f.app.threadApplication().MutationRefs(threadID) > 0
+			mu.Lock()
+			lockedAtReturn = append(lockedAtReturn, locked)
+			mu.Unlock()
+		}
+	}
 	// An archived assistant refuses the handoff.
 	release := holdSessionLossHandOff(t, f.app, func() {
 		if _, _, err := f.app.store.ArchiveThread(threadID); err != nil {
@@ -199,6 +212,12 @@ func TestAFailedSessionLossHandOffReturnsEveryText(t *testing.T) {
 
 	if got := draftContent(t, f.app, threadID); got != "first message\n\nsecond message" {
 		t.Fatalf("old thread's composer = %q, want both messages in order", got)
+	}
+	mu.Lock()
+	locked := slices.Clone(lockedAtReturn)
+	mu.Unlock()
+	if len(locked) != 1 || !locked[0] {
+		t.Fatalf("composer lock held at each write of the returned texts: %v, want one write, held", locked)
 	}
 	if agent, found, err := f.app.store.GetStandingAgent(threadID); err != nil || !found || agent.ThreadID != threadID {
 		t.Fatalf("assistant = %+v %v %v, want it still on its thread", agent, found, err)

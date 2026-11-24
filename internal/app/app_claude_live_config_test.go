@@ -217,7 +217,8 @@ func TestObserveClaudeCommandResultSyncsUserTypedEffort(t *testing.T) {
 
 // TestPurgeClaudeLiveConfigStateIsTokenScoped — unregistering one session
 // drops exactly its pending applies and degraded marks; another session's
-// state survives.
+// state survives. It goes through take(), the registry removal the deferred
+// restart and StopSession use, so it pins the wiring, not just the purge.
 func TestPurgeClaudeLiveConfigStateIsTokenScoped(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -230,7 +231,9 @@ func TestPurgeClaudeLiveConfigStateIsTokenScoped(t *testing.T) {
 	app.markClaudeLiveApplyDegraded("tok-b", claudeLiveApplyAxisFast)
 
 	app.sessionManager().put("purged", session{Token: "tok-a"})
-	app.sessionManager().take("purged")
+	if _, ok := app.sessionManager().take("purged"); !ok {
+		t.Fatal("take() found no session")
+	}
 
 	if _, ok := app.takeClaudeLiveConfigApply("cmd-a"); ok {
 		t.Fatal("purged session's pending apply survived")
@@ -268,30 +271,6 @@ func TestRegisterClaudeLiveConfigAppliesEvictsStaleEntries(t *testing.T) {
 	}
 	if _, ok := app.takeClaudeLiveConfigApply("cmd-new"); !ok {
 		t.Fatal("fresh entry missing")
-	}
-}
-
-// TestSessionTakePurgesClaudeLiveConfigState pins the wiring, not just the
-// purge function: every registry-removal path must clear the session's
-// pending applies and degraded marks, and take() is the one the deferred
-// restart and StopSession use.
-func TestSessionTakePurgesClaudeLiveConfigState(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, token := "thread-take-purge", "tok-1"
-	seedClaudeLiveConfigThread(t, app, id, token, provider.SessionOptions{Model: "claude-opus-5"})
-	app.registerClaudeLiveConfigApplies(id, token, provider.SessionOptions{},
-		claude.LiveUpdate{Effort: "low"}, claude.LiveApplyReceipt{EffortCommandUUID: "cmd-1"})
-	app.markClaudeLiveApplyDegraded(token, claudeLiveApplyAxisFast)
-
-	if _, ok := app.sessionManager().take(id); !ok {
-		t.Fatal("take() found no session")
-	}
-	if _, ok := app.takeClaudeLiveConfigApply("cmd-1"); ok {
-		t.Fatal("pending apply survived take()")
-	}
-	if app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOff}) {
-		t.Fatal("degraded mark survived take()")
 	}
 }
 
@@ -499,32 +478,61 @@ func TestFastModeOnConfirmsByContainment(t *testing.T) {
 	assertNoRestartWithin(t, started, 50*time.Millisecond, "fast mode enabled successfully")
 }
 
-// TestFastModeSDKUnavailableFallsBackToRestart — unlike the account-credits
-// gate, "not available in the Agent SDK" IS fixed by a restart with the
-// spawn opt-in. Reaching it means the opt-in gate was wrong; the restart is
-// the correct recovery.
-func TestFastModeSDKUnavailableFallsBackToRestart(t *testing.T) {
+// TestFastApplyRejectionsDeclineAndRestart — a fast-mode reply that a
+// restart fixes, or that shows the session is not running the requested
+// value, degrades the axis, reverts launchOpts and restarts.
+func TestFastApplyRejectionsDeclineAndRestart(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, token := "thread-fast-sdk", "tok-1"
-	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
-	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
-
-	prev := optimistic
-	prev.FastMode = false
-	app.registerClaudeLiveConfigApplies(id, token, prev,
-		claude.LiveUpdate{FastMode: claude.FastModeOn}, claude.LiveApplyReceipt{FastCommandUUID: "cmd-fast"})
-
-	app.observeClaudeCommandResult(id, token,
-		commandResultEvent(t, "cmd-fast", "Fast mode unavailable: Fast mode is not available in the Agent SDK"))
-
-	if !app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOn}) {
-		t.Fatal("SDK gate did not degrade the axis — the restart adds the opt-in")
+	const badArgument = `Unknown argument "onn". Use: /fast [on|off]`
+	if !isFastCommandReply(badArgument) {
+		t.Fatalf("isFastCommandReply(%q) = false; the bad-argument reply routed nowhere", badArgument)
 	}
-	if launchOptsForThread(t, app, id).FastMode {
-		t.Fatal("launchOpts fast mode kept true after the SDK gate declined it")
+	for _, tc := range []struct {
+		name, commandUUID, reply string
+	}{
+		// Unlike the account-credits gate, "not available in the Agent SDK"
+		// IS fixed by a restart with the spawn opt-in. Reaching it means the
+		// opt-in gate was wrong; the restart is the correct recovery.
+		{name: "SDK unavailable", commandUUID: "cmd-fast", reply: "Fast mode unavailable: Fast mode is not available in the Agent SDK"},
+		// The tripwire for the substring hazard the gate arm is built
+		// around. The bare SDK reason CONTAINS the environment-wide reason
+		// while meaning the opposite thing about restarts: the spawn opt-in
+		// fixes it. A gate arm that matched the shorter string without
+		// carving this one out would convert every SDK refusal into accepted
+		// parity, and the session would run without fast mode forever while
+		// the UI said it was on.
+		{name: "bare SDK reason", commandUUID: "cmd-fast", reply: fastModeSDKUnavailableText},
+		// AO only ever sends `/fast on` or `/fast off`, so this reply means
+		// the command AO wrote is not the command the CLI parsed, and the
+		// session is NOT running the requested value. With no uuid, routing
+		// is the matcher's job, the case that used to strand; the verdict is
+		// decline, not parity, because a restart spawning from launchOpts is
+		// exactly the recovery.
+		{name: "unknown argument", reply: badArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			id, token := "thread-fast-declined", "tok-1"
+			optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
+			started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
+
+			prev := optimistic
+			prev.FastMode = false
+			app.registerClaudeLiveConfigApplies(id, token, prev,
+				claude.LiveUpdate{FastMode: claude.FastModeOn}, claude.LiveApplyReceipt{FastCommandUUID: "cmd-fast"})
+
+			app.observeClaudeCommandResult(id, token, commandResultEvent(t, tc.commandUUID, tc.reply))
+
+			if !app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOn}) {
+				t.Fatal("the rejected fast apply did not degrade the axis; the restart is the recovery")
+			}
+			if launchOptsForThread(t, app, id).FastMode {
+				t.Fatal("launchOpts fast mode kept true after the CLI declined it")
+			}
+			waitRestart(t, started, id)
+		})
 	}
-	waitRestart(t, started, id)
 }
 
 // TestResolveSkipsSessionScopedEffectsWhenSessionGone — a drained answer
@@ -730,71 +738,6 @@ func TestBareFastModeGateRepliesSettleAsParity(t *testing.T) {
 			assertNoRestartWithin(t, started, 50*time.Millisecond, "fast mode hit a gate a restart cannot fix")
 		})
 	}
-}
-
-// TestBareSDKFastModeReasonStillRestarts — the tripwire for the substring
-// hazard the gate arm is built around. "Fast mode is not available in the
-// Agent SDK" CONTAINS the environment-wide reason above while meaning the
-// opposite thing about restarts: the spawn opt-in fixes it. A gate arm that
-// matched the shorter string without carving this one out would silently
-// convert every SDK refusal into accepted parity, and the session would run
-// without fast mode forever while the UI said it was on.
-func TestBareSDKFastModeReasonStillRestarts(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, token := "thread-fast-sdk-bare", "tok-1"
-	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
-	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
-
-	prev := optimistic
-	prev.FastMode = false
-	app.registerClaudeLiveConfigApplies(id, token, prev,
-		claude.LiveUpdate{FastMode: claude.FastModeOn}, claude.LiveApplyReceipt{FastCommandUUID: "cmd-fast"})
-
-	app.observeClaudeCommandResult(id, token,
-		commandResultEvent(t, "cmd-fast", fastModeSDKUnavailableText))
-
-	if !app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOn}) {
-		t.Fatal("the bare SDK reason was accepted as parity — the restart adds the opt-in")
-	}
-	if launchOptsForThread(t, app, id).FastMode {
-		t.Fatal("launchOpts fast mode kept true after the SDK gate declined it")
-	}
-	waitRestart(t, started, id)
-}
-
-// TestUnknownFastArgumentDeclinesInsteadOfStranding — AO only ever sends
-// `/fast on` or `/fast off`, so this reply means the command AO wrote is not
-// the command the CLI parsed, and the session is NOT running the requested
-// value. Routing it is what makes that visible now rather than at the
-// watchdog's expiry; the verdict is decline, not parity, because a restart
-// spawning from launchOpts is exactly the recovery.
-func TestUnknownFastArgumentDeclinesInsteadOfStranding(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, token := "thread-fast-badarg", "tok-1"
-	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
-	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
-
-	prev := optimistic
-	prev.FastMode = false
-	app.registerClaudeLiveConfigApplies(id, token, prev,
-		claude.LiveUpdate{FastMode: claude.FastModeOn}, claude.LiveApplyReceipt{FastCommandUUID: "cmd-fast"})
-
-	const badArgument = `Unknown argument "onn". Use: /fast [on|off]`
-	if !isFastCommandReply(badArgument) {
-		t.Fatalf("isFastCommandReply(%q) = false; the bad-argument reply routed nowhere", badArgument)
-	}
-	// No uuid, so routing is the matcher's job — the case that used to strand.
-	app.observeClaudeCommandResult(id, token, commandResultEvent(t, "", badArgument))
-
-	if !app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOn}) {
-		t.Fatal("a rejected /fast argument did not degrade the axis")
-	}
-	if launchOptsForThread(t, app, id).FastMode {
-		t.Fatal("launchOpts fast mode kept true after the CLI rejected the command")
-	}
-	waitRestart(t, started, id)
 }
 
 func TestWireEffortPreservesUnselectedDefaults(t *testing.T) {
