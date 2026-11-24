@@ -90,51 +90,22 @@ describe('StreamingBoundarySplitter — equivalence to splitAtBoundary', () => {
   // NON-initial block context, which is exactly where an incorrect
   // resume context would diverge from a from-scratch scan.
 
-  it('matches across a list with trailing non-list content (in-list context)', () => {
-    assertEquivalentCharByChar(
-      '# Heading\n\n- item one\n- item two\n- item three\n\nA paragraph after the list.\n\nAnother paragraph.',
-    );
-  });
-
-  it('matches across a multi-line fenced code block (in-fence context)', () => {
-    assertEquivalentCharByChar(
-      'Intro paragraph.\n\n```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;\n```\n\nClosing paragraph here.',
-    );
-  });
-
-  it('matches across nested blockquotes (container/blockquote context)', () => {
-    assertEquivalentCharByChar(
-      'Lead-in.\n\n> outer quote\n> > inner quote\n> > more inner\n> back to outer\n\nPlain paragraph after.',
-    );
-  });
-
-  it('matches across a setext heading (late-underline i-1 path)', () => {
-    assertEquivalentCharByChar(
-      'Title goes here\n===============\n\nBody paragraph one.\n\nBody paragraph two.',
-    );
-  });
-
-  it('matches across a mixed document with several block kinds', () => {
-    assertEquivalentCharByChar(
-      [
-        '## Section',
-        '',
-        'Some prose that wraps a bit and keeps going for a line or two.',
-        '',
-        '```js',
-        'function f(x) {',
-        '  return x + 1;',
-        '}',
-        '```',
-        '',
-        '- bullet a',
-        '- bullet b',
-        '',
-        '> a quote line',
-        '',
-        'Final paragraph still streaming',
-      ].join('\n'),
-    );
+  it.each([
+    ['matches across a list with trailing non-list content (in-list context)',
+      '# Heading\n\n- item one\n- item two\n- item three\n\nA paragraph after the list.\n\nAnother paragraph.'],
+    ['matches across a multi-line fenced code block (in-fence context)',
+      'Intro paragraph.\n\n```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;\n```\n\nClosing paragraph here.'],
+    ['matches across nested blockquotes (container/blockquote context)',
+      'Lead-in.\n\n> outer quote\n> > inner quote\n> > more inner\n> back to outer\n\nPlain paragraph after.'],
+    ['matches across a setext heading (late-underline i-1 path)',
+      'Title goes here\n===============\n\nBody paragraph one.\n\nBody paragraph two.'],
+    ['matches across a mixed document with several block kinds',
+      '## Section\n\nSome prose that wraps a bit and keeps going for a line or two.\n\n```js\nfunction f(x) {\n  return x + 1;\n}\n```\n\n'
+        + '- bullet a\n- bullet b\n\n> a quote line\n\nFinal paragraph still streaming'],
+    ['matches char-by-char on a CRLF document',
+      'First line.\r\n\r\nSecond paragraph here.\r\n\r\n- a\r\n- b\r\n\r\nTrailing prose'],
+  ])('%s', (_name, doc) => {
+    assertEquivalentCharByChar(doc);
   });
 
   it('handles a wholesale shrink by resetting (sliding-window safety)', () => {
@@ -358,12 +329,6 @@ describe('StreamingBoundarySplitter — incremental line cache', () => {
     } finally {
       findStableBoundary.mockRestore();
     }
-  });
-
-  it('matches char-by-char on a CRLF document', () => {
-    assertEquivalentCharByChar(
-      'First line.\r\n\r\nSecond paragraph here.\r\n\r\n- a\r\n- b\r\n\r\nTrailing prose',
-    );
   });
 
   it('falls back to a full re-split on a tail shrink above the committed offset', () => {

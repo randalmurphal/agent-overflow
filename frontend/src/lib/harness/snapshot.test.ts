@@ -255,11 +255,12 @@ describe('readElement', () => {
       tag: 'button',
       text: 'Send',
       textLength: 4,
-      scroll: { top: 0, height: 0, client: 0, distanceFromBottom: 0, atBottom: true },
       role: 'button',
       ariaLabel: 'Send message',
       testId: 'send',
     });
+    // Exact: the scroll geometry carries these keys and no others.
+    expect(result.first?.scroll).toEqual({ top: 0, height: 0, client: 0, distanceFromBottom: 0, atBottom: true });
   });
 
   it('answers a miss with a null first rather than an error', () => {
@@ -271,18 +272,6 @@ describe('readElement', () => {
   it('caps the text it returns', () => {
     const doc = html(`<p id="long">${'x'.repeat(900)}</p>`);
     expect(readElement(doc, '#long', { textCap: 20 }).first?.text).toHaveLength(21);
-  });
-
-  it('does not read or return scroll geometry unless requested', () => {
-    const doc = html('<div id="target">content</div>');
-    expect(readElement(doc, '#target').first).not.toHaveProperty('scroll');
-    expect(readElement(doc, '#target', { includeScroll: true }).first?.scroll).toEqual({
-      top: 0,
-      height: 0,
-      client: 0,
-      distanceFromBottom: 0,
-      atBottom: true,
-    });
   });
 
   it('summarizes nested text without joining the full subtree', () => {

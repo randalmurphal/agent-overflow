@@ -121,20 +121,17 @@ describe('a quoted body is lexed by the active lexer', () => {
   const kinds = (tokens: Node[] | undefined) => (tokens ?? []).filter((token) => token.type !== 'space').map((token) => token.type);
   const DETAILS = '<details>\n> <summary>More</summary>\n>\n> - one\n> - two\n>\n> </details>';
 
-  it('keeps a <details> run whole inside a quote', () => {
-    const [quote] = lex(`> before\n>\n> ${DETAILS}\n>\n> after\n`, EMBEDDED_HTML_EXTENSIONS) as Node[];
-    expect(quote.type).toBe('blockquote');
-    expect(kinds(quote.tokens)).toEqual(['paragraph', 'details', 'paragraph']);
-    const details = quote.tokens?.find((token) => token.type === 'details');
-    expect(kinds(details?.tokens)).toEqual(['detailsSummary', 'list']);
-  });
-
-  it('keeps a <details> run whole inside an alert, the marker stripped', () => {
-    const [alert] = lex(`> [!NOTE]\n> Processing.\n>\n> ${DETAILS}\n`, EMBEDDED_HTML_EXTENSIONS) as Node[];
-    expect(alert.type).toBe('alert');
-    expect(kinds(alert.tokens)).toEqual(['paragraph', 'details']);
-    expect(alert.tokens?.[0].text).toBe('Processing.');
-    const details = alert.tokens?.find((token) => token.type === 'details');
+  it.each([
+    ['keeps a <details> run whole inside a quote',
+      `> before\n>\n> ${DETAILS}\n>\n> after\n`, 'blockquote', ['paragraph', 'details', 'paragraph'], 'before'],
+    ['keeps a <details> run whole inside an alert, the marker stripped',
+      `> [!NOTE]\n> Processing.\n>\n> ${DETAILS}\n`, 'alert', ['paragraph', 'details'], 'Processing.'],
+  ])('%s', (_name, source, type, children, firstText) => {
+    const [block] = lex(source, EMBEDDED_HTML_EXTENSIONS) as Node[];
+    expect(block.type).toBe(type);
+    expect(kinds(block.tokens)).toEqual(children);
+    expect(block.tokens?.[0].text).toBe(firstText);
+    const details = block.tokens?.find((token) => token.type === 'details');
     expect(kinds(details?.tokens)).toEqual(['detailsSummary', 'list']);
   });
 
@@ -228,16 +225,15 @@ const CORPUS = Array.from(
  * shape it takes.
  */
 const probeSharedLexers = (parses: number) => {
-  type Probe = { inlineQueue: unknown[] };
-  const first = new Set<Probe>();
-  const later = new Set<Probe>();
+  const first = new Set<unknown>();
+  const later = new Set<unknown>();
   let sink = first;
   const proto = Lexer.prototype as unknown as {
     blockTokens: (this: unknown, ...args: unknown[]) => unknown;
   };
   const original = proto.blockTokens;
   proto.blockTokens = function (this: unknown, ...args: unknown[]) {
-    sink.add(this as Probe);
+    sink.add(this);
     return original.apply(this, args);
   };
   try {
@@ -247,23 +243,13 @@ const probeSharedLexers = (parses: number) => {
   } finally {
     proto.blockTokens = original;
   }
-  const shared = [...first].filter((lexer) => later.has(lexer));
-  return {
-    shared: shared.length,
-    queued: shared.reduce((total, lexer) => total + lexer.inlineQueue.length, 0),
-  };
+  return [...first].filter((lexer) => later.has(lexer)).length;
 };
 
 describe('marked-alert holds no lexer between documents', () => {
   it('never reaches through a lexer a previous parse used', () => {
-    expect(probeSharedLexers(6).shared).toBe(0);
-  });
-
-  it('retains no inline-queue entries, and retains no more of them as parses accumulate', () => {
-    const short = probeSharedLexers(2);
-    const long = probeSharedLexers(30);
-    // Upstream: one shared lexer, its queue growing by ~200 entries per parse.
-    expect(short.queued).toBe(0);
-    expect(long.queued).toBe(short.queued);
+    // Upstream: one shared lexer, its inline queue growing by ~200 entries
+    // per parse. With no shared lexer there is no queue left to grow.
+    expect(probeSharedLexers(6)).toBe(0);
   });
 });

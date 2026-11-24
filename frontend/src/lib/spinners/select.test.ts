@@ -46,20 +46,15 @@ describe('assembleSpritePool', () => {
 describe('resolveCompactionSprite', () => {
   const all = mergedSprites([custom('mine')]);
 
-  it('resolves "" to the built-in default', () => {
-    expect(resolveCompactionSprite(all, '')?.id).toBe(DEFAULT_COMPACTION_SPRITE_ID);
-  });
+  const sprite = (id: string) => all.find((entry) => entry.id === id);
 
-  it('resolves "none" to null', () => {
-    expect(resolveCompactionSprite(all, 'none')).toBeNull();
-  });
-
-  it('resolves a custom id', () => {
-    expect(resolveCompactionSprite(all, 'mine')?.custom).toBe(true);
-  });
-
-  it('answers null for an id that matches nothing', () => {
-    expect(resolveCompactionSprite(all, 'ghost')).toBeNull();
+  it.each([
+    ['resolves "" to the built-in default', '', sprite(DEFAULT_COMPACTION_SPRITE_ID)],
+    ['resolves "none" to null', 'none', null],
+    ['resolves a custom id', 'mine', sprite('mine')],
+    ['answers null for an id that matches nothing', 'ghost', null],
+  ])('%s', (_name, id, expected) => {
+    expect(resolveCompactionSprite(all, id)).toBe(expected);
   });
 });
 
