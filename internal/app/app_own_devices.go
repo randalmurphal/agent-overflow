@@ -318,6 +318,9 @@ func (a *App) MintOwnDeviceIntroduction(ctx context.Context, keyThumbprint strin
 }
 func (a *App) mintOwnIntroduction(caller OwnDeviceMember, key string) (PairingInvite, error) {
 	target, e := a.store.OwnDevice(key)
+	if e != nil && !errors.Is(e, sql.ErrNoRows) {
+		return PairingInvite{}, identity.OwnDevicesUnread(e)
+	}
 	if e != nil || target.Removed {
 		return PairingInvite{}, errors.New("target is not an active own device")
 	}

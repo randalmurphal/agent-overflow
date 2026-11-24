@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/owndevices"
 	"agent-overflow/internal/store"
 	"database/sql"
@@ -80,6 +81,71 @@ func TestAnIntroductionThatCannotReadItsMembersSaysToTryTheSameLinkAgain(t *test
 	proof := target.proof(t, "POST", "/auth/pair", link.Token+target.thumbprint()+"-again", s.now())
 	if _, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: proof}); reason.Refused() {
 		t.Fatalf("the same link presented again = %s", reason)
+	}
+}
+
+// An own-device check whose sponsor or member cannot be read from storage
+// is this computer's to retry; a sponsor that is no longer the member it was
+// admitted as is refused.
+func TestAnOwnDeviceCheckThatCannotReadItsMembersSaysToTryAgain(t *testing.T) {
+	s, _, raw, owner, _ := stragglerFixture(t)
+	sponsor := newSigningDevice(t)
+	personalPair(t, s, owner, sponsor)
+	target := newSigningDevice(t)
+	if _, e := s.MergeOwnDevices([]owndevices.Member{{KeyThumbprint: target.thumbprint(), Generation: 1}}); e != nil {
+		t.Fatal(e)
+	}
+	sponsorMember, e := s.store.OwnDevice(sponsor.thumbprint())
+	if e != nil {
+		t.Fatal(e)
+	}
+	request := func(sponsorGeneration int64) PairingRequest {
+		return PairingRequest{Purpose: "own-introduction", ExpectedKey: target.thumbprint(), MemberGeneration: 1, SponsorKey: sponsor.thumbprint(), SponsorGeneration: sponsorGeneration, UserID: owner.ID, DeviceClass: DevicePhone, BindingClass: BindingDeviceBound, Scopes: []Scope{ScopeThreadsRead}}
+	}
+	temporary := func(what string, e error) {
+		t.Helper()
+		if code, _, ok := errorsx.PublicDetails(e); !ok || code != ReasonTemporarilyUnavailable.Code() {
+			t.Fatalf("%s = %v, want %s", what, e, ReasonTemporarilyUnavailable)
+		}
+	}
+	unreadable := func(key string) func() {
+		t.Helper()
+		var member string
+		if e := raw.QueryRow(`SELECT member FROM own_devices WHERE key_thumbprint = ?`, key).Scan(&member); e != nil {
+			t.Fatal(e)
+		}
+		if _, e := raw.Exec(`UPDATE own_devices SET member = '[]' WHERE key_thumbprint = ?`, key); e != nil {
+			t.Fatalf("install the failure: %v", e)
+		}
+		return func() {
+			if _, e := raw.Exec(`UPDATE own_devices SET member = ? WHERE key_thumbprint = ?`, member, key); e != nil {
+				t.Fatalf("remove the failure: %v", e)
+			}
+		}
+	}
+
+	restore := unreadable(sponsor.thumbprint())
+	_, e = s.MintOwnIntroduction(request(sponsorMember.Generation))
+	temporary("an introduction whose sponsor could not be read", e)
+	_, e = s.MergeOwnDevicesAs(sponsorMember, nil)
+	temporary("a merge whose sponsor could not be read", e)
+	_, e = s.RegisterOwnDeviceAs(sponsorMember, sponsorMember)
+	temporary("a registration whose sponsor could not be read", e)
+	restore()
+
+	restore = unreadable(target.thumbprint())
+	_, e = s.MintOwnIntroduction(request(sponsorMember.Generation))
+	temporary("an introduction whose member could not be read", e)
+	restore()
+
+	if _, e = s.MintOwnIntroduction(request(sponsorMember.Generation + 1)); e == nil || e.Error() != "own-device introduction is not authorized" {
+		t.Fatalf("an introduction from a sponsor at another generation = %v, want it refused", e)
+	}
+	if _, e = s.MergeOwnDevicesAs(owndevices.Member{KeyThumbprint: sponsor.thumbprint(), Generation: sponsorMember.Generation + 1}, nil); e == nil || e.Error() != "own-device membership changed; reconnect before trying again" {
+		t.Fatalf("a merge from a sponsor at another generation = %v, want it refused", e)
+	}
+	if _, e = s.MintOwnIntroduction(request(sponsorMember.Generation)); e != nil {
+		t.Fatalf("an introduction once its members read again = %v", e)
 	}
 }
 

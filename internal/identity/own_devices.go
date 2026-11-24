@@ -6,9 +6,25 @@ import (
 	"fmt"
 	"reflect"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/owndevices"
 	"agent-overflow/internal/store"
 )
+
+// errOwnMembershipChanged refuses a sponsor that is no longer the member,
+// at the generation, it was admitted as.
+var errOwnMembershipChanged = errors.New("own-device membership changed; reconnect before trying again")
+
+// errOwnIntroductionRefused refuses an introduction its request or the
+// membership does not allow.
+var errOwnIntroductionRefused = errors.New("own-device introduction is not authorized")
+
+// OwnDevicesUnread answers an own-device check whose member or sponsor
+// could not be read from storage: this computer's failure, not a refusal,
+// so the same request can be made again.
+func OwnDevicesUnread(err error) error {
+	return errorsx.Public(ReasonTemporarilyUnavailable.Code(), "this computer could not read its own devices; try again", err)
+}
 
 func (s *Sessions) MergeOwnDevices(members []owndevices.Member) (bool, error) {
 	return s.mergeOwnDevices(nil, members)
@@ -40,8 +56,11 @@ func (s *Sessions) mergeOwnDevices(sponsor *owndevices.Member, members []owndevi
 }
 func (s *Sessions) checkOwnSponsor(sponsor owndevices.Member) error {
 	current, err := s.store.OwnDevice(sponsor.KeyThumbprint)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return OwnDevicesUnread(err)
+	}
 	if err != nil || current.Removed || current.Generation != sponsor.Generation {
-		return errors.New("own-device membership changed; reconnect before trying again")
+		return errOwnMembershipChanged
 	}
 	return nil
 }
@@ -92,13 +111,24 @@ func (s *Sessions) ownIntroductionLive(link store.PairingLink) (bool, error) {
 }
 func (s *Sessions) MintOwnIntroduction(req PairingRequest) (PairingLink, error) {
 	s.ownMu.Lock()
-	if s.checkOwnSponsor(owndevices.Member{KeyThumbprint: req.SponsorKey, Generation: req.SponsorGeneration}) != nil || req.Purpose != "own-introduction" || !owndevices.ValidKey(req.ExpectedKey) {
+	if req.Purpose != "own-introduction" || !owndevices.ValidKey(req.ExpectedKey) {
 		s.ownMu.Unlock()
-		return PairingLink{}, errors.New("own-device introduction is not authorized")
+		return PairingLink{}, errOwnIntroductionRefused
 	}
-	if live, err := s.ownIntroductionLive(store.PairingLink{ExpectedKey: req.ExpectedKey, MemberGeneration: req.MemberGeneration, SponsorKey: req.SponsorKey}); err != nil || !live {
+	if err := s.checkOwnSponsor(owndevices.Member{KeyThumbprint: req.SponsorKey, Generation: req.SponsorGeneration}); err != nil {
 		s.ownMu.Unlock()
-		return PairingLink{}, errors.New("own-device introduction is not authorized")
+		if errors.Is(err, errOwnMembershipChanged) {
+			err = errOwnIntroductionRefused
+		}
+		return PairingLink{}, err
+	}
+	live, err := s.ownIntroductionLive(store.PairingLink{ExpectedKey: req.ExpectedKey, MemberGeneration: req.MemberGeneration, SponsorKey: req.SponsorKey})
+	if err != nil || !live {
+		s.ownMu.Unlock()
+		if err != nil {
+			return PairingLink{}, OwnDevicesUnread(err)
+		}
+		return PairingLink{}, errOwnIntroductionRefused
 	}
 	ids, released, err := s.store.RetireOwnIntroductions(req.ExpectedKey, s.now().UnixMilli())
 	if err != nil {
