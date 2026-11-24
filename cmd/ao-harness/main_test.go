@@ -71,34 +71,37 @@ func TestTopLevelDashHPrintsTheWholeToolNotJustGlobals(t *testing.T) {
 }
 
 // A subcommand's -h is a question, not a mistake: an agent reading a
-// command's flags should not have to ignore a nonzero exit.
+// command's flags should not have to ignore a nonzero exit. It is answered
+// locally, without resolving or attaching to an instance.
 func TestSubcommandDashHPrintsItsFlagsAndExitsZero(t *testing.T) {
-	code, stdout, _ := run(t, "db", "-h")
-	if code != exitOK {
-		t.Fatalf("exit = %d, want 0", code)
-	}
-	if !strings.Contains(stdout, "-file") || !strings.Contains(stdout, "-limit") {
-		t.Fatalf("db -h did not print its own flags:\n%s", stdout)
-	}
-}
-
-func TestBenchDashHDoesNotResolveAnInstance(t *testing.T) {
-	code, stdout, stderr := run(t, "bench", "-h", "--registry-dir", t.TempDir())
-	if code != exitOK {
-		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "-repeat") || strings.Contains(stderr, "instances are running") {
-		t.Fatalf("bench help was not answered locally\nstdout: %s\nstderr: %s", stdout, stderr)
-	}
-}
-
-func TestMonitorListDashHDoesNotResolveAnInstance(t *testing.T) {
-	code, stdout, stderr := run(t, "monitor", "list", "-h", "--registry-dir", t.TempDir())
-	if code != exitOK {
-		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "-page-id") || strings.Contains(stderr, "no live instance") {
-		t.Fatalf("monitor list help was not answered locally\nstdout: %s\nstderr: %s", stdout, stderr)
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		stdout    []string
+		stderrNot []string
+	}{
+		{"db", []string{"db", "-h"}, []string{"-file", "-limit"}, nil},
+		{"bench", []string{"bench", "-h", "--registry-dir", t.TempDir()}, []string{"-repeat"}, []string{"instances are running"}},
+		{"monitor list", []string{"monitor", "list", "-h", "--registry-dir", t.TempDir()}, []string{"-page-id"}, []string{"no live instance"}},
+		{"monitor", []string{"monitor", "-h", "--registry-dir", t.TempDir()},
+			[]string{"start", "heartbeat", "status", "collect", "stop", "cleanup", "last"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, stdout, stderr := run(t, tc.args...)
+			if code != exitOK {
+				t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, stdout, stderr)
+			}
+			for _, want := range tc.stdout {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("%v did not print %q:\n%s", tc.args, want, stdout)
+				}
+			}
+			for _, refused := range tc.stderrNot {
+				if strings.Contains(stderr, refused) {
+					t.Errorf("%v was not answered locally; stderr: %s", tc.args, stderr)
+				}
+			}
+		})
 	}
 }
 
@@ -106,18 +109,6 @@ func TestMonitorListParsesJSONAfterSubcommand(t *testing.T) {
 	code, _, stderr := run(t, "monitor", "list", "-o", "json", "--registry-dir", t.TempDir())
 	if code == exitUsage || !strings.Contains(stderr, "no live instance") {
 		t.Fatalf("monitor list rejected its output/global flags before attach: exit=%d stderr=%s", code, stderr)
-	}
-}
-
-func TestMonitorSubcommandHelpListsTypedOperationsWithoutAttaching(t *testing.T) {
-	code, stdout, stderr := run(t, "monitor", "-h", "--registry-dir", t.TempDir())
-	if code != exitOK {
-		t.Fatalf("monitor help exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
-	}
-	for _, name := range []string{"start", "heartbeat", "status", "collect", "stop", "cleanup", "last"} {
-		if !strings.Contains(stdout, name) {
-			t.Errorf("monitor help omits %q:\n%s", name, stdout)
-		}
 	}
 }
 

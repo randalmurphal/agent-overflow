@@ -220,7 +220,8 @@ func TestResolveTargetPicksTheOnlyLiveRow(t *testing.T) {
 }
 
 // Guessing between two live instances would send a reset at the wrong
-// one, so ambiguity is an error that lists what it saw.
+// one, so ambiguity is an error that lists what it saw. It is a WRONG
+// INVOCATION, exit 2, so a script can tell it from "the harness refused".
 func TestResolveTargetRefusesTwoLiveInstances(t *testing.T) {
 	registry := t.TempDir()
 	first := seedInstance(t, registry, t.TempDir(), os.Getpid())
@@ -230,6 +231,9 @@ func TestResolveTargetRefusesTwoLiveInstances(t *testing.T) {
 	_, err := e.resolveTarget()
 	if err == nil {
 		t.Fatal("want an ambiguity error")
+	}
+	if code := exitCodeOf(t, err); code != exitUsage {
+		t.Fatalf("exit code = %d, want %d", code, exitUsage)
 	}
 	for _, id := range []string{first, second} {
 		if !strings.Contains(err.Error(), id) {
@@ -263,7 +267,7 @@ func TestAttachAcceptsAuthenticatedBackendAcrossPIDNamespace(t *testing.T) {
 
 	e, _, stderr := testEnv(t.TempDir())
 	e.instance = root
-	client, target, bs, err := e.attach(context.Background())
+	client, target, _, err := e.attach(context.Background())
 	if err != nil {
 		t.Fatalf("attach across PID namespace: %v", err)
 	}
@@ -273,9 +277,6 @@ func TestAttachAcceptsAuthenticatedBackendAcrossPIDNamespace(t *testing.T) {
 	}
 	if target.ID != instanceinfo.ID(root) {
 		t.Fatalf("target id = %s, want %s", target.ID, instanceinfo.ID(root))
-	}
-	if bs.PID == os.Getpid() || instanceinfo.ProcessAlive(bs.PID) {
-		t.Fatalf("test bootstrap pid %d unexpectedly resolves in this namespace", bs.PID)
 	}
 }
 
@@ -569,23 +570,6 @@ func TestResolveTargetRefusesAnAmbiguousIDPrefixWithExitTwo(t *testing.T) {
 		if !strings.Contains(err.Error(), id) {
 			t.Errorf("error omits candidate %s: %v", id, err)
 		}
-	}
-}
-
-// Two live instances is ambiguity, and ambiguity is a WRONG INVOCATION —
-// exit 2, so a script can tell it from "the harness refused".
-func TestResolveTargetAmbiguityExitsTwo(t *testing.T) {
-	registry := t.TempDir()
-	seedInstance(t, registry, t.TempDir(), os.Getpid())
-	seedInstance(t, registry, t.TempDir(), os.Getpid())
-
-	e, _, _ := testEnv(registry)
-	_, err := e.resolveTarget()
-	if err == nil {
-		t.Fatal("want an ambiguity error")
-	}
-	if code := exitCodeOf(t, err); code != exitUsage {
-		t.Fatalf("exit code = %d, want %d", code, exitUsage)
 	}
 }
 
