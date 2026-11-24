@@ -64,37 +64,27 @@ describe('persistence round-trip', () => {
     expect(peekThreadSizePriorsForTest('t1')).toEqual(hydrated);
   });
 
-  it('round-trips every geometry bucket, in LRU order, after an in-memory clear', () => {
-    setThreadSizePriors('t1', geom(800), bucket({ rows: new Map([['sig', 42]]) }));
-    setThreadSizePriors('t1', geom(600), bucket({ expansionSig: 'x', rows: new Map([['sig', 61]]) }));
-    vi.advanceTimersByTime(1000);
-
-    clearAllThreadSizePriorsForTest();
-    const hydrated = getThreadSizePriors('t1')!;
-    expect([...hydrated.byGeometry.keys()]).toEqual([key(800), key(600)]); // most recent LAST
-    expect(sizePriorsAtGeometry(hydrated, geom(800))?.rows.get('sig')).toBe(42);
-    expect(sizePriorsAtGeometry(hydrated, geom(600))?.rows.get('sig')).toBe(61);
-    expect(sizePriorsAtGeometry(hydrated, geom(600))?.expansionSig).toBe('x');
-  });
-
-  it('round-trips the composite key, so typography survives a restart', () => {
+  // Two buckets on one thread survive an in-memory clear, most recent LAST.
+  it.each([
+    ['round-trips every geometry bucket, in LRU order, after an in-memory clear',
+      geom(800), geom(600), 'x', [key(800), key(600)]],
     // Two buckets at the SAME width, separated only by typography: the
     // stored key has to carry both halves or they collapse into one on
     // load and the wrong heights replay.
-    const small = geom(800, 'f13/sgeist/mgeist/c1/w1');
-    const large = geom(800, 'f18/shack-nerd/mgeist/c0/w1');
-    setThreadSizePriors('t1', small, bucket({ rows: new Map([['sig', 42]]) }));
-    setThreadSizePriors('t1', large, bucket({ rows: new Map([['sig', 61]]) }));
+    ['round-trips the composite key, so typography survives a restart',
+      geom(800, 'f13/sgeist/mgeist/c1/w1'), geom(800, 'f18/shack-nerd/mgeist/c0/w1'), '',
+      ['800|f13/sgeist/mgeist/c1/w1', '800|f18/shack-nerd/mgeist/c0/w1']],
+  ])('%s', (_, first, second, secondSig, keys) => {
+    setThreadSizePriors('t1', first, bucket({ rows: new Map([['sig', 42]]) }));
+    setThreadSizePriors('t1', second, bucket({ expansionSig: secondSig, rows: new Map([['sig', 61]]) }));
     vi.advanceTimersByTime(1000);
 
     clearAllThreadSizePriorsForTest();
     const hydrated = getThreadSizePriors('t1')!;
-    expect([...hydrated.byGeometry.keys()]).toEqual([
-      '800|f13/sgeist/mgeist/c1/w1',
-      '800|f18/shack-nerd/mgeist/c0/w1',
-    ]);
-    expect(sizePriorsAtGeometry(hydrated, small)?.rows.get('sig')).toBe(42);
-    expect(sizePriorsAtGeometry(hydrated, large)?.rows.get('sig')).toBe(61);
+    expect([...hydrated.byGeometry.keys()]).toEqual(keys);
+    expect(sizePriorsAtGeometry(hydrated, first)?.rows.get('sig')).toBe(42);
+    expect(sizePriorsAtGeometry(hydrated, second)?.rows.get('sig')).toBe(61);
+    expect(sizePriorsAtGeometry(hydrated, second)?.expansionSig).toBe(secondSig);
   });
 
   it('coalesces repeated persists before the debounce fires into one write of the latest entry', () => {
@@ -110,96 +100,57 @@ describe('persistence round-trip', () => {
 });
 
 describe('malformed storage', () => {
-  it('drops malformed JSON, warns once, and removes the key', () => {
-    localStorage.setItem(`${V3_PREFIX}bad`, '{not json');
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(getThreadSizePriors('bad')).toBeUndefined();
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem(`${V3_PREFIX}bad`)).toBeNull();
-    warn.mockRestore();
-  });
-
-  it('drops an entry that fails shape validation', () => {
-    localStorage.setItem(
-      `${V3_PREFIX}bad2`,
-      JSON.stringify({ buckets: [['not-a-geometry-key', { expansionSig: '', rows: [] }]] }),
-    );
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(getThreadSizePriors('bad2')).toBeUndefined();
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem(`${V3_PREFIX}bad2`)).toBeNull();
-    warn.mockRestore();
-  });
-
-  it('drops a row pair with a non-finite height', () => {
+  // Every malformed payload drops the whole thread entry: warn once, return
+  // nothing, and remove the key.
+  it.each([
+    ['drops malformed JSON, warns once, and removes the key', 'bad', '{not json'],
+    ['drops an entry that fails shape validation', 'bad2',
+      JSON.stringify({ buckets: [['not-a-geometry-key', { expansionSig: '', rows: [] }]] })],
     // NaN doesn't survive JSON.stringify (becomes null), so seed the raw
     // string directly to exercise the finite-number guard.
-    localStorage.setItem(
-      `${V3_PREFIX}bad3`,
-      '{"buckets":[["800|f15",{"expansionSig":"","rows":[["sig",null]]}]]}',
-    );
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(getThreadSizePriors('bad3')).toBeUndefined();
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
-  });
-
-  it('drops a row pair with a negative height (corrupt prior)', () => {
-    // Capture filters UNMEASURED/negatives before persisting, so a
-    // negative height can only come from corrupt/hand-edited storage — a
-    // negative estimate would poison the size store's offsets.
-    localStorage.setItem(
-      `${V3_PREFIX}bad4`,
-      '{"buckets":[["800|f15",{"expansionSig":"","rows":[["sig",-5]]}]]}',
-    );
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(getThreadSizePriors('bad4')).toBeUndefined();
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem(`${V3_PREFIX}bad4`)).toBeNull();
-    warn.mockRestore();
-  });
-
-  it('drops the WHOLE thread entry when one geometry bucket is malformed', () => {
+    ['drops a row pair with a non-finite height', 'bad3',
+      '{"buckets":[["800|f15",{"expansionSig":"","rows":[["sig",null]]}]]}'],
+    // Capture filters UNMEASURED/negatives before persisting, so a negative
+    // height can only come from corrupt/hand-edited storage; a negative
+    // estimate would poison the size store's offsets.
+    ['drops a row pair with a negative height (corrupt prior)', 'bad4',
+      '{"buckets":[["800|f15",{"expansionSig":"","rows":[["sig",-5]]}]]}'],
     // A bucket is only ever written as a unit, so a bucket that fails
     // validation means the value was corrupted or hand-edited; the buckets
     // around it are no more trustworthy than the one that failed.
-    localStorage.setItem(
-      `${V3_PREFIX}bad5`,
+    ['drops the WHOLE thread entry when one geometry bucket is malformed', 'bad5',
       JSON.stringify({
         buckets: [
           [key(800), { expansionSig: '', rows: [['sig', 42]] }],
           [key(600), { expansionSig: 7, rows: [] }],
         ],
-      }),
-    );
+      })],
+    ['drops a negative width in the geometry key', 'bad6',
+      JSON.stringify({ buckets: [['-800|f15', { expansionSig: '', rows: [['sig', 42]] }]] })],
+    // The cap is the pane's own retention ceiling, so a bucket past it
+    // cannot have come from a capture in this app; there is nothing to
+    // salvage, the way a negative height has nothing to salvage.
+    ['drops a bucket holding more rows than a pane can retain', 'wide-bucket',
+      JSON.stringify({
+        buckets: [[key(800), {
+          expansionSig: '',
+          rows: Array.from({ length: MAX_ROWS_PER_BUCKET + 1 }, (_, i) => [`sig${i}`, 10]),
+        }]],
+      })],
+    // v1 keyed a thread's measurements by a bare numeric width. A
+    // hand-copied or half-swept profile can still hold one; it names no
+    // geometry this build could ever look up, so the entry goes rather
+    // than sitting in the cap as a permanent miss.
+    ['drops a v1-shaped bucket key that escaped the version sweep', 'v1shape',
+      JSON.stringify({ buckets: [[800, { expansionSig: '', rows: [['sig', 42]] }]] })],
+  ])('%s', (_, threadId, raw) => {
+    localStorage.setItem(`${V3_PREFIX}${threadId}`, raw);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    expect(getThreadSizePriors('bad5')).toBeUndefined();
+    expect(getThreadSizePriors(threadId)).toBeUndefined();
 
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem(`${V3_PREFIX}bad5`)).toBeNull();
-    warn.mockRestore();
-  });
-
-  it('drops a negative width in the geometry key', () => {
-    localStorage.setItem(
-      `${V3_PREFIX}bad6`,
-      JSON.stringify({ buckets: [['-800|f15', { expansionSig: '', rows: [['sig', 42]] }]] }),
-    );
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(getThreadSizePriors('bad6')).toBeUndefined();
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
+    expect(localStorage.getItem(`${V3_PREFIX}${threadId}`)).toBeNull();
   });
 
   it('caps a stored entry that carries more geometry buckets than the store keeps', () => {
@@ -219,24 +170,6 @@ describe('malformed storage', () => {
     ]);
   });
 
-  it('drops a bucket holding more rows than a pane can retain', () => {
-    // The cap is the pane's own retention ceiling, so a bucket past it
-    // cannot have come from a capture in this app — there is nothing to
-    // salvage, the way a negative height above has nothing to salvage.
-    const rows = Array.from({ length: MAX_ROWS_PER_BUCKET + 1 }, (_, i) => [`sig${i}`, 10]);
-    localStorage.setItem(
-      `${V3_PREFIX}wide-bucket`,
-      JSON.stringify({ buckets: [[key(800), { expansionSig: '', rows }]] }),
-    );
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(getThreadSizePriors('wide-bucket')).toBeUndefined();
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem(`${V3_PREFIX}wide-bucket`)).toBeNull();
-    warn.mockRestore();
-  });
-
   it('keeps a bucket holding exactly the cap', () => {
     const rows = Array.from({ length: MAX_ROWS_PER_BUCKET }, (_, i) => [`sig${i}`, 10]);
     localStorage.setItem(
@@ -247,24 +180,6 @@ describe('malformed storage', () => {
     expect(sizePriorsAtGeometry(getThreadSizePriors('at-cap')!, geom(800))?.rows.size).toBe(
       MAX_ROWS_PER_BUCKET,
     );
-  });
-
-  it('drops a v1-shaped bucket key that escaped the version sweep', () => {
-    // v1 keyed a thread's measurements by a bare numeric width. A
-    // hand-copied or half-swept profile can still hold one; it names no
-    // geometry this build could ever look up, so the entry goes rather
-    // than sitting in the cap as a permanent miss.
-    localStorage.setItem(
-      `${V3_PREFIX}v1shape`,
-      JSON.stringify({ buckets: [[800, { expansionSig: '', rows: [['sig', 42]] }]] }),
-    );
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(getThreadSizePriors('v1shape')).toBeUndefined();
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem(`${V3_PREFIX}v1shape`)).toBeNull();
-    warn.mockRestore();
   });
 });
 

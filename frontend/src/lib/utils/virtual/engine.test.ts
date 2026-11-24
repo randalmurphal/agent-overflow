@@ -168,12 +168,28 @@ describe('applyMeasurements', () => {
 });
 
 describe('applyMeasurements — straddling-row attribution', () => {
-  it('compensates the measured part of the delta that landed above the top', () => {
+  // Row 3 spans [300, 400) under a viewport top at 350. The measurer
+  // reports how much of the row's delta landed above the top; the engine
+  // bounds it to [0, rowDelta] (or [rowDelta, 0] for a shrink).
+  it.each([
+    // Grows by 100; 40 of it landed above 350.
+    ['compensates the measured part of the delta that landed above the top', 200, 40,
+      { kind: 'remeasure-above', delta: 40, target: 390 }],
+    // A stale anchor claims 400 of a 100px growth landed above the top.
+    ['clamps an over-reported shift to the row delta', 200, 400,
+      { kind: 'remeasure-above', delta: 100, target: 450 }],
+    // Row grew, measurer says content above the reading position moved UP.
+    ['clamps a sign-flipped shift to zero (degrades to compensating nothing)', 200, -400, undefined],
+    ['treats a non-finite measurement as no information', 200, NaN, undefined],
+    ['shrinking row: compensates the measured part of the shrink', 40, -30,
+      { kind: 'remeasure-above', delta: -30, target: 320 }],
+    ['shrinking row: clamps an over-reported shift to the row delta', 40, -400,
+      { kind: 'remeasure-above', delta: -60, target: 290 }],
+    ['shrinking row: clamps a sign-flipped shift to zero', 40, 400, undefined],
+  ] as const)('%s', (_, size, shift, compensation) => {
     const engine = mountedEngine();
     engine.applyScroll(350);
-    // Row 3 spans [300, 400) and grows by 100; 40 of it landed above 350.
-    const update = engine.applyMeasurements([[3, 200]], () => 40);
-    expect(update?.compensation).toEqual({ kind: 'remeasure-above', delta: 40, target: 390 });
+    expect(engine.applyMeasurements([[3, size]], () => shift)?.compensation).toEqual(compensation);
   });
 
   it('asks only about the row that spans the top, and only once', () => {
@@ -229,67 +245,25 @@ describe('applyMeasurements — straddling-row attribution', () => {
     expect(update?.compensation?.delta).toBe(100);
   });
 
-  it('clamps an over-reported shift to the row delta', () => {
+  // Row 3 spans [300, 400) and grows by 100.
+  it.each([
+    // Starts exactly at the top: entirely at/below it, so its growth pushes
+    // content down and needs no compensation at all.
+    ['does not ask about the row exactly at the viewport top', 300, undefined],
+    // Entirely above: it compensates exactly and the measured path must not
+    // double-count it.
+    ['does not ask about a row that ends exactly at the viewport top', 400,
+      { kind: 'remeasure-above', delta: 100, target: 500 }],
+  ] as const)('%s', (_, scroll, compensation) => {
     const engine = mountedEngine();
-    engine.applyScroll(350);
-    // A stale anchor claims 400 of a 100px growth landed above the top.
-    const update = engine.applyMeasurements([[3, 200]], () => 400);
-    expect(update?.compensation?.delta).toBe(100);
-  });
-
-  it('clamps a sign-flipped shift to zero (degrades to compensating nothing)', () => {
-    const engine = mountedEngine();
-    engine.applyScroll(350);
-    // Row grew, measurer says content above the reading position moved UP.
-    const update = engine.applyMeasurements([[3, 200]], () => -400);
-    expect(update?.compensation).toBeUndefined();
-  });
-
-  it('mirrors both clamps for a shrinking row', () => {
-    const engine = mountedEngine();
-    engine.applyScroll(350);
-    expect(engine.applyMeasurements([[3, 40]], () => -30)?.compensation?.delta).toBe(-30);
-
-    const over = mountedEngine();
-    over.applyScroll(350);
-    expect(over.applyMeasurements([[3, 40]], () => -400)?.compensation?.delta).toBe(-60);
-
-    const flipped = mountedEngine();
-    flipped.applyScroll(350);
-    expect(flipped.applyMeasurements([[3, 40]], () => 400)?.compensation).toBeUndefined();
-  });
-
-  it('treats a non-finite measurement as no information', () => {
-    const engine = mountedEngine();
-    engine.applyScroll(350);
-    expect(engine.applyMeasurements([[3, 200]], () => NaN)?.compensation).toBeUndefined();
-  });
-
-  it('does not ask about the row exactly at the viewport top', () => {
-    const engine = mountedEngine();
-    engine.applyScroll(300);
-    // Row 3 starts exactly at 300 — entirely at/below the top, so its
-    // growth pushes content down and needs no compensation at all.
-    const asked: number[] = [];
-    engine.applyMeasurements([[3, 200]], (index) => {
-      asked.push(index);
-      return 40;
-    });
-    expect(asked).toEqual([]);
-  });
-
-  it('does not ask about a row that ends exactly at the viewport top', () => {
-    const engine = mountedEngine();
-    engine.applyScroll(400);
-    // Row 3 spans [300, 400): entirely above, so it compensates exactly and
-    // the measured path must not double-count it.
+    engine.applyScroll(scroll);
     const asked: number[] = [];
     const update = engine.applyMeasurements([[3, 200]], (index) => {
       asked.push(index);
       return 40;
     });
     expect(asked).toEqual([]);
-    expect(update?.compensation?.delta).toBe(100);
+    expect(update?.compensation).toEqual(compensation);
   });
 
   it('a mixed batch sums only the rows above the viewport', () => {
@@ -301,12 +275,6 @@ describe('applyMeasurements — straddling-row attribution', () => {
     ]);
     expect(update?.compensation).toEqual({ kind: 'remeasure-above', delta: 50, target: 750 });
     expect(update?.totalSize).toBe(1150);
-  });
-
-  it('returns null when every entry matches the stored size', () => {
-    const engine = mountedEngine();
-    expect(engine.applyMeasurements([[5, 100]])).not.toBeNull();
-    expect(engine.applyMeasurements([[5, 100]])).toBeNull();
   });
 
   it('ignores out-of-range indices (stale RO deliveries)', () => {
@@ -349,15 +317,28 @@ describe('applyLength', () => {
     expect(engine.applyLength(10)).toBeNull();
   });
 
-  it('head prepend emits head-splice compensation', () => {
+  // Each row starts from 10 rows scrolled to `scroll`, then applies
+  // applyLength(count, head). The window is built at the compensation
+  // target, not the stale observed offset.
+  it.each([
+    ['head prepend emits head-splice compensation', 300, 12, 2,
+      [3, 10], 1200, { kind: 'head-splice', delta: 200, target: 500 }],
+    ['clamps the compensation target at 0', 100, 8, -2,
+      [0, 5], 800, { kind: 'head-splice', delta: -200, target: 0 }],
+    ['handles a head splice and tail change in one batch', 300, 11, 2,
+      [3, 10], 1100, { kind: 'head-splice', delta: 200, target: 500 }],
+    // 10 → 12 rows where 2 left the head: 4 rows of tail growth.
+    ['handles a head removal and tail growth in one batch', 300, 12, -2,
+      [0, 6], 1200, { kind: 'head-splice', delta: -200, target: 100 }],
+    // Length stays 10, but 2 rows left the head and 2 arrived at the tail;
+    // the first-line guard deliberately admits it because headSplice is
+    // nonzero.
+    ['handles the net-zero shape: head removal offset by equal tail growth', 300, 10, -2,
+      [0, 6], 1000, { kind: 'head-splice', delta: -200, target: 100 }],
+  ] as const)('%s', (_, scroll, count, head, window, totalSize, compensation) => {
     const engine = mountedEngine();
-    engine.applyScroll(300);
-    const update = engine.applyLength(12, 2);
-    expect(update).toEqual({
-      window: [3, 10],
-      totalSize: 1200,
-      compensation: { kind: 'head-splice', delta: 200, target: 500 },
-    });
+    engine.applyScroll(scroll);
+    expect(engine.applyLength(count, head)).toEqual({ window, totalSize, compensation });
   });
 
   it('a prepend consults the estimate at the NEW post-splice head indices', () => {
@@ -393,46 +374,14 @@ describe('applyLength', () => {
     engine.applyScroll(300); // seeds the full offsets memo
     seen.length = 0;
 
-    const update = engine.applyLength(8, -2);
-    expect(update?.compensation).toEqual({ kind: 'head-splice', delta: -200, target: 100 });
+    expect(engine.applyLength(8, -2)).toEqual({
+      window: [0, 6],
+      totalSize: 800,
+      compensation: { kind: 'head-splice', delta: -200, target: 100 },
+    });
     // Seeding computed the full offsets memo, so the removal reads the
     // memo's already-known removed size instead of calling estimate.
     expect(seen).toEqual([]);
-  });
-
-  it('clamps the compensation target at 0', () => {
-    const engine = mountedEngine();
-    engine.applyScroll(100);
-    const update = engine.applyLength(8, -2);
-    expect(update?.compensation).toEqual({ kind: 'head-splice', delta: -200, target: 0 });
-  });
-
-  it('handles a head splice and tail change in one batch', () => {
-    const engine = mountedEngine();
-    engine.applyScroll(300);
-    const update = engine.applyLength(11, 2);
-    expect(update?.totalSize).toBe(1100);
-    expect(update?.compensation).toEqual({ kind: 'head-splice', delta: 200, target: 500 });
-  });
-
-  it('handles a head removal and tail growth in one batch', () => {
-    const engine = mountedEngine();
-    engine.applyScroll(300);
-    // 10 → 12 rows where 2 left the head: 4 rows of tail growth.
-    const update = engine.applyLength(12, -2);
-    expect(update?.totalSize).toBe(1200);
-    expect(update?.compensation).toEqual({ kind: 'head-splice', delta: -200, target: 100 });
-  });
-
-  it('handles the net-zero shape: head removal offset by equal tail growth', () => {
-    const engine = mountedEngine();
-    engine.applyScroll(300);
-    // Length stays 10, but 2 rows left the head and 2 arrived at the
-    // tail — the first-line guard deliberately admits it because
-    // headSplice is nonzero.
-    const update = engine.applyLength(10, -2);
-    expect(update?.totalSize).toBe(1000);
-    expect(update?.compensation).toEqual({ kind: 'head-splice', delta: -200, target: 100 });
   });
 
   it('shrinks to empty and regrows from estimates', () => {
@@ -608,7 +557,7 @@ describe('exact-height rows', () => {
     expect(engine.sizeAt(4)).toBe(100);
     expect(engine.getItemOffset(7)).toBe(700);
     // Snapshots stay honest: exactness is not a measurement.
-    expect(engine.takeSnapshot()).toEqual(new Array(10).fill(UNMEASURED));
+    expect(engine.takeSnapshot()).toEqual(Array.from({ length: 10 }, () => UNMEASURED));
   });
 
   it('a mixed estimate reports exactness per row', () => {
@@ -727,7 +676,7 @@ describe('queries', () => {
     engine.applyMeasurements([[0, 110]]);
     const snapshot = engine.takeSnapshot();
     expect(snapshot[0]).toBe(110);
-    expect(snapshot.slice(1)).toEqual(new Array(9).fill(UNMEASURED));
+    expect(snapshot.slice(1)).toEqual(Array.from({ length: 9 }, () => UNMEASURED));
   });
 
   describe('targetOffsetFor', () => {
@@ -738,22 +687,15 @@ describe('queries', () => {
       expect(engine.targetOffsetFor(5, 'center')).toBe(400);
     });
 
-    it('nearest stays put when fully visible', () => {
+    // Row 5 spans [500, 600) in a 300px viewport.
+    it.each([
+      ['nearest stays put when fully visible', 450, 450],
+      ['nearest aligns start when the row is above', 600, 500],
+      ['nearest aligns end when the row is below', 100, 300],
+    ])('%s', (_, scroll, target) => {
       const engine = mountedEngine();
-      engine.applyScroll(450);
-      expect(engine.targetOffsetFor(5, 'nearest')).toBe(450);
-    });
-
-    it('nearest aligns start when the row is above', () => {
-      const engine = mountedEngine();
-      engine.applyScroll(600);
-      expect(engine.targetOffsetFor(5, 'nearest')).toBe(500);
-    });
-
-    it('nearest aligns end when the row is below', () => {
-      const engine = mountedEngine();
-      engine.applyScroll(100);
-      expect(engine.targetOffsetFor(5, 'nearest')).toBe(300);
+      engine.applyScroll(scroll);
+      expect(engine.targetOffsetFor(5, 'nearest')).toBe(target);
     });
 
     it('applies extraOffset and clamps to the scrollable extent', () => {
