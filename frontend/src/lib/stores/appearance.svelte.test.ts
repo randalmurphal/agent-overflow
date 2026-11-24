@@ -179,7 +179,7 @@ describe('loadAppearance', () => {
 });
 
 describe('loadAppearance — transient failure', () => {
-  it('keeps writes enabled and reports the failure as state', async () => {
+  it('keeps writes enabled and the loaded themes, and reports the failure as state', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await loadAppearance();
     setBindingMock('GetThemeFiles', async () => {
@@ -189,21 +189,13 @@ describe('loadAppearance — transient failure', () => {
 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(getAppearanceLoadError()).toContain('socket closed');
+    // The picker keeps the themes it already loaded rather than emptying.
+    expect(getAppearanceThemes().map((theme) => theme.id)).toEqual(['nord']);
+    expect(isThemeDirectoryAvailable()).toBe(true);
     // A boot-time WS blip must not silently stop persistence for the session.
     expect(isAppearanceWritable()).toBe(true);
     await setAppearance({ mode: 'light' });
     expect(getBindingMock('SetAppearance')!.mock.calls).toHaveLength(1);
-  });
-
-  it('keeps the themes it already loaded rather than emptying the picker', async () => {
-    await loadAppearance();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    setBindingMock('GetThemeFiles', async () => {
-      throw new Error('socket closed');
-    });
-    await loadAppearance();
-    expect(getAppearanceThemes().map((theme) => theme.id)).toEqual(['nord']);
-    expect(isThemeDirectoryAvailable()).toBe(true);
   });
 
   it('clears the failure once a load succeeds again', async () => {
