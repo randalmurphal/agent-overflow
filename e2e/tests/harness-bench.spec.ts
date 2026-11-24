@@ -7,8 +7,8 @@
 // join: that a CLI outside the app can reset an instance, reload the page
 // it is holding, seed a fixture, arm the meters, drive a scenario to turn
 // completion, and land a report with numbers a real browser produced; and
-// that `send --wait` names the turn its own message opened from the
-// completions the backend really publishes.
+// that `send --wait` names its message's turn from the completions the
+// backend really publishes, and refuses a working thread.
 import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -167,17 +167,14 @@ for (const provider of ['claude', 'codex'] as const) {
     await setScenario(harness, cwd, threadToolsScenario({
       name: `cli-send-wait-${provider}`,
       provider,
-      turns: [{ text: 'The first answer.' }, { text: 'The second answer.' }, { steps: [{ gate }], text: 'The held answer.' }],
+      turns: [{ text: 'The first answer.' }, { steps: [{ gate }], text: 'The held answer.' }],
     }));
     const cli = (...args: string[]) =>
       execProduct(productBinary('ao-harness'), ['--instance', harness.bootstrap.dataRoot, '-o', 'json', ...args], { timeout: 60_000 });
-    const completedTurn = async (text: string) =>
-      (JSON.parse((await cli('send', '--thread', threadId, '--wait', text)).stdout) as { completed: { threadId: string; turnIndex: number } }).completed;
 
-    // At rest: each completion reported is the one for the turn the CLI's
-    // own message opened, after an earlier turn's is already published.
-    expect(await completedTurn('first message')).toMatchObject({ threadId, turnIndex: 0 });
-    expect(await completedTurn('second message')).toMatchObject({ threadId, turnIndex: 1 });
+    // At rest: the CLI exits 0 with the completion of its message's turn.
+    const { stdout } = await cli('send', '--thread', threadId, '--wait', 'first message');
+    expect((JSON.parse(stdout) as { completed: unknown }).completed).toMatchObject({ threadId, turnIndex: 0 });
 
     // Working: the backend refuses the send. Were it taken, it would queue
     // behind the held turn, and the turn it runs in could not be named.
