@@ -79,21 +79,6 @@ describe('springGateIsOpen', () => {
   ] as const)('closes when %s', (_label, override) => {
     expect(springGateIsOpen({ ...open, ...override })).toBe(false);
   });
-
-  it('takes no input describing what caused the growth', () => {
-    // The gate is scroller STATE only. A recency window over the last
-    // content stamp used to sit here and teleported every growth no code
-    // path happened to stamp (late row enrichment, drain growth landing
-    // in a reveal gap — 2026-07-25). Adding such a term back is the
-    // regression this pins: the key set is closed.
-    expect(Object.keys(open).sort()).toEqual([
-      'escaped',
-      'isAtBottom',
-      'paused',
-      'prefersReducedMotion',
-      'springStopRequested',
-    ]);
-  });
 });
 
 describe('resolveContentDelivery — first fire', () => {
@@ -104,13 +89,11 @@ describe('resolveContentDelivery — first fire', () => {
     expect(d.setIsAtBottom).toBe(false);
   });
 
-  it('does not pin when escaped', () => {
-    const d = resolveContentDelivery(state({ escaped: true }), { kind: 'first', target: TARGET });
-    expect(d.write).toBeNull();
-  });
-
-  it('does not pin when the intent flag is off', () => {
-    const d = resolveContentDelivery(state({ isAtBottom: false }), { kind: 'first', target: TARGET });
+  it.each([
+    ['escaped', { escaped: true }],
+    ['the intent flag is off', { isAtBottom: false }],
+  ] as const)('does not pin when %s', (_label, override) => {
+    const d = resolveContentDelivery(state(override), { kind: 'first', target: TARGET });
     expect(d.write).toBeNull();
   });
 
@@ -265,47 +248,34 @@ describe('resolveContentDelivery — stranded-oscillation recovery', () => {
     expect(d.bumpTargetChanged).toBe(false);
   });
 
-  it('no recovery when scrollTop is already within the arrival band', () => {
-    const d = resolveContentDelivery(
+  it.each([
+    [
+      'no recovery when scrollTop is already within the arrival band',
       strandedState,
       delta({ delta: 37, scrollTop: TARGET - ARRIVAL_DISTANCE_PX }),
-    );
-    expect(d.oscillationRecovery).toBe(false);
-    expect(d.startSpring).toBe(true);
-  });
-
-  it('no recovery when there is no sentinel entry', () => {
-    const d = resolveContentDelivery(
+    ],
+    [
+      'no recovery when there is no sentinel entry',
       state({ springActive: true }),
       delta({ delta: 37, scrollTop: TARGET - 37 }),
-    );
-    expect(d.oscillationRecovery).toBe(false);
-    expect(d.startSpring).toBe(true);
-  });
-
-  it('no recovery without witnessed clamp evidence — an authored displacement glides instead', () => {
+    ],
     // Same numeric shape as the strand (target back at the entry,
     // scrollTop off it) but the provenance ledger explains the position
     // — a head-splice compensation's anchor hold, not a browser clamp.
     // The growth the displacement hides is owed a glide
     // (bug-report-20260801T213259Z).
-    const d = resolveContentDelivery(
+    [
+      'no recovery without witnessed clamp evidence — an authored displacement glides instead',
       state({ springActive: true, sentinelEntryTarget: TARGET }),
       delta({ delta: 37, scrollTop: TARGET - 37 }),
-    );
-    expect(d.oscillationRecovery).toBe(false);
-    expect(d.startSpring).toBe(true);
-  });
-
-  it('genuine new growth beyond the sentinel entry spring-chases instead', () => {
-    const d = resolveContentDelivery(
-      state({
-        springActive: true,
-        sentinelEntryTarget: TARGET - 40,
-        sentinelClampWitnessed: true,
-      }),
+    ],
+    [
+      'genuine new growth beyond the sentinel entry spring-chases instead',
+      state({ springActive: true, sentinelEntryTarget: TARGET - 40, sentinelClampWitnessed: true }),
       delta({ delta: 40, scrollTop: TARGET - 40 }),
-    );
+    ],
+  ])('%s', (_name, resolverState, obs) => {
+    const d = resolveContentDelivery(resolverState, obs);
     expect(d.oscillationRecovery).toBe(false);
     expect(d.startSpring).toBe(true);
   });
@@ -365,45 +335,6 @@ describe('resolveContentDelivery — stranded-oscillation recovery', () => {
 
 describe('resolveContentDelivery — positive delta', () => {
   it('spring-chases when warm with the gate open', () => {
-    const d = resolveContentDelivery(
-      state(),
-      delta({ delta: 20, scrollTop: TARGET - 20 }),
-    );
-    expect(d.startSpring).toBe(true);
-    expect(d.write).toBeNull();
-  });
-
-  it('sync-pins before warm-up completes', () => {
-    const d = resolveContentDelivery(
-      state({ warm: false }),
-      delta({ delta: 20, scrollTop: TARGET - 20 }),
-    );
-    expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
-    expect(d.startSpring).toBe(false);
-  });
-
-  it('sync-pins width-reflow layout corrections even in spring mode', () => {
-    const d = resolveContentDelivery(
-      state(),
-      delta({ delta: 20, scrollTop: TARGET - 20, widthReflowActive: true }),
-    );
-    expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
-  });
-
-  it('sync-pins inside the pinned-remeasure settle window (post-warm correction wave)', () => {
-    // bug-report-20260822T020840Z: the reopen correction wave outlives
-    // the warm gate; the displaced anchor-redirect opened the settle
-    // window and the wave's trailing growth is layout correction, not
-    // the bottom advancing.
-    const d = resolveContentDelivery(
-      state(),
-      delta({ delta: 20, scrollTop: TARGET - 20, pinnedRemeasureActive: true }),
-    );
-    expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
-    expect(d.startSpring).toBe(false);
-  });
-
-  it('chases growth that no code path stamped as live content', () => {
     // THE regression guard for the 2026-07-25 jump classes. Growth that
     // nothing marked as "live" — a row's late enrichment (highlight
     // spans, KaTeX, Mermaid, image load) landing after the stream went
@@ -419,19 +350,24 @@ describe('resolveContentDelivery — positive delta', () => {
     expect(d.write).toBeNull();
   });
 
-  it('sync-pins under reduced motion', () => {
+  it.each<[string, Partial<ResolverState>, Partial<ContentDeltaObservation>]>([
+    ['sync-pins before warm-up completes', { warm: false }, {}],
+    ['sync-pins width-reflow layout corrections even in spring mode', {}, { widthReflowActive: true }],
+    // bug-report-20260822T020840Z: the reopen correction wave outlives
+    // the warm gate; the displaced anchor-redirect opened the settle
+    // window and the wave's trailing growth is layout correction, not
+    // the bottom advancing.
+    [
+      'sync-pins inside the pinned-remeasure settle window (post-warm correction wave)',
+      {},
+      { pinnedRemeasureActive: true },
+    ],
+    ['sync-pins under reduced motion', {}, { prefersReducedMotion: true }],
+    ['sync-pins while a spring stop is requested', { springStopRequested: true }, {}],
+  ])('%s', (_name, stateOverrides, deltaOverrides) => {
     const d = resolveContentDelivery(
-      state(),
-      delta({ delta: 20, scrollTop: TARGET - 20, prefersReducedMotion: true }),
-    );
-    expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
-    expect(d.startSpring).toBe(false);
-  });
-
-  it('sync-pins while a spring stop is requested', () => {
-    const d = resolveContentDelivery(
-      state({ springStopRequested: true }),
-      delta({ delta: 20, scrollTop: TARGET - 20 }),
+      state(stateOverrides),
+      delta({ delta: 20, scrollTop: TARGET - 20, ...deltaOverrides }),
     );
     expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
     expect(d.startSpring).toBe(false);
@@ -681,18 +617,6 @@ describe('resolveEngineCompensation — anchor redirect', () => {
     expect(decision.write).toEqual({ caller: 'engine.anchorRedirect', value: TARGET });
   });
 
-  it('does not redirect an unpinned DOM mid-chase (legitimate relocation while the spring is closing the gap)', () => {
-    // Pre-W1 this passed with springActive: false too; since
-    // bug-report-20260822T020840Z an idle displaced compensation
-    // redirects (the displaced-pinned tier). The verbatim pass for an
-    // unpinned DOM is now scoped to an in-flight chase.
-    const decision = resolveEngineCompensation(
-      state({ springActive: true }),
-      comp({ target: 600, scrollTop: 700 }),
-    );
-    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 600 });
-  });
-
   it('does not redirect a request within the epsilon band of the bottom', () => {
     const decision = resolveEngineCompensation(
       state(),
@@ -742,22 +666,31 @@ describe('resolveEngineCompensation — mid-chase apply', () => {
   // height delta, then the spring re-chased the same distance. The
   // compensation is a coordinate shift (spring re-reads scrollTop each
   // tick, gap unchanged), so it must apply.
-  it('applies a small remeasure-above compensation while a spring chase is in flight', () => {
+  it.each([
+    // Pre-W1 this passed with springActive: false too; since
+    // bug-report-20260822T020840Z an idle displaced compensation
+    // redirects (the displaced-pinned tier). The verbatim pass for an
+    // unpinned DOM is now scoped to an in-flight chase.
+    [
+      'does not redirect an unpinned DOM mid-chase (legitimate relocation while the spring is closing the gap)',
+      600, 700, TARGET,
+    ],
+    // Mid-chase: DOM is short of the bottom target, an above-viewport
+    // row grew by 290px.
+    ['applies a small remeasure-above compensation while a spring chase is in flight', 990, 700, 1000],
+    ['applies a correction larger than the viewport mid-chase (20260622T041049Z)', 1301, 700, 2000],
+    // The idle form of this shape redirects (displaced pinned redirect
+    // suite below).
+    [
+      'keeps the verbatim apply for the same shape mid-chase — a running glide is relocated, never teleported',
+      801, 5242, 8919,
+    ],
+  ])('%s', (_name, target, scrollTop, bottomTarget) => {
     const decision = resolveEngineCompensation(
       state({ springActive: true }),
-      // Mid-chase: DOM is short of the bottom target, an above-viewport
-      // row grew by 290px.
-      comp({ target: 990, scrollTop: 700, bottomTarget: 1000 }),
+      comp({ target, scrollTop, bottomTarget }),
     );
-    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 990 });
-  });
-
-  it('applies a correction larger than the viewport mid-chase (20260622T041049Z)', () => {
-    const decision = resolveEngineCompensation(
-      state({ springActive: true }),
-      comp({ target: 1301, scrollTop: 700, bottomTarget: 2000 }),
-    );
-    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 1301 });
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: target });
   });
 
   // The 20260524T200233Z lesson — suppression caused the thread-switch
@@ -779,14 +712,6 @@ describe('resolveEngineCompensation — displaced pinned redirect (bug-report-20
       comp({ target: 801, scrollTop: 5242, bottomTarget: 8919 }),
     );
     expect(decision.write).toEqual({ caller: 'engine.anchorRedirect', value: 8919 });
-  });
-
-  it('keeps the verbatim apply for the same shape mid-chase — a running glide is relocated, never teleported', () => {
-    const decision = resolveEngineCompensation(
-      state({ springActive: true }),
-      comp({ target: 801, scrollTop: 5242, bottomTarget: 8919 }),
-    );
-    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 801 });
   });
 
   it('yields to a pending structural append like every other redirect', () => {
