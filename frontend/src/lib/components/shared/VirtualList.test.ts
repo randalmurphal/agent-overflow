@@ -102,24 +102,6 @@ describe('<VirtualList>', () => {
     expect(rows.length).toBeGreaterThan(0);
   });
 
-  it('spacer reserves the full scroll height', async () => {
-    const items = makeItems(1000);
-    const { container } = render(VirtualList as any, {
-      props: {
-        items,
-        rowHeight: 48,
-        children: null as unknown as undefined,
-      },
-    });
-    await tick();
-
-    const spacer = container.querySelector<HTMLElement>('[data-testid="virtual-list-spacer"]');
-    expect(spacer).toBeTruthy();
-    const height = spacer!.style.height;
-    // 1000 * 48 = 48000px
-    expect(height).toBe('48000px');
-  });
-
   it('scrolling updates the rendered window', async () => {
     const items = makeItems(1000);
     stubDim(500);

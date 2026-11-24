@@ -48,11 +48,6 @@ describe('<ReviewFileTree>', () => {
     // Clearing the search restores the manual collapse.
     await fireEvent.input(view.getByTestId('review-tree-search'), { target: { value: '' } });
     expect(view.queryByText('app.ts')).toBeNull();
-
-    await fireEvent.input(view.getByTestId('review-tree-search'), {
-      target: { value: 'no-such-file' },
-    });
-    expect(view.getByTestId('review-tree-empty')).toBeInTheDocument();
   });
 
   it('says no file matches without an empty list beside it', async () => {

@@ -68,40 +68,18 @@ describe('<ConfirmDialog>', () => {
     expect(getByText('Nope')).toBeInTheDocument();
   });
 
-  it('clicking Cancel fires onCancel, not onConfirm', async () => {
-    const onConfirm = vi.fn();
-    const onCancel = vi.fn();
+  it.each([
+    ['Cancel', 'onCancel', 'onConfirm'],
+    ['Confirm', 'onConfirm', 'onCancel'],
+  ] as const)('clicking %s fires %s, not %s', async (label, fired, other) => {
+    const handlers = { onConfirm: vi.fn(), onCancel: vi.fn() };
     const { getByText } = render(ConfirmDialog, {
-      props: {
-        open: true,
-        title: 't',
-        description: 'd',
-        onConfirm,
-        onCancel,
-      },
+      props: { open: true, title: 't', description: 'd', ...handlers },
     });
     await flushFocus();
-    await fireEvent.click(getByText('Cancel'));
-    expect(onCancel).toHaveBeenCalledTimes(1);
-    expect(onConfirm).not.toHaveBeenCalled();
-  });
-
-  it('clicking Confirm fires onConfirm, not onCancel', async () => {
-    const onConfirm = vi.fn();
-    const onCancel = vi.fn();
-    const { getByText } = render(ConfirmDialog, {
-      props: {
-        open: true,
-        title: 't',
-        description: 'd',
-        onConfirm,
-        onCancel,
-      },
-    });
-    await flushFocus();
-    await fireEvent.click(getByText('Confirm'));
-    expect(onConfirm).toHaveBeenCalledTimes(1);
-    expect(onCancel).not.toHaveBeenCalled();
+    await fireEvent.click(getByText(label));
+    expect(handlers[fired]).toHaveBeenCalledTimes(1);
+    expect(handlers[other]).not.toHaveBeenCalled();
   });
 
   it('Escape on the backdrop fires onCancel', async () => {
@@ -142,71 +120,20 @@ describe('<ConfirmDialog>', () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
-  it('destructive=true paints the confirm button with the error palette', async () => {
+  // A destructive prompt puts focus on Cancel so a stray Enter does not
+  // confirm; otherwise focusTrap lands focus on Confirm.
+  it.each([
+    ['destructive=true paints confirm with the error palette and autofocuses cancel', { destructive: true }, 'bg-error', 'bg-accent', 'Cancel', 'Confirm'],
+    ['default (non-destructive) paints confirm with the accent palette and autofocuses it', {}, 'bg-accent', 'bg-error', 'Confirm', 'Cancel'],
+  ])('%s', async (_name, extra, palette, otherPalette, focused, unfocused) => {
     const { getByText } = render(ConfirmDialog, {
-      props: {
-        open: true,
-        title: 't',
-        description: 'd',
-        destructive: true,
-        onConfirm: () => {},
-        onCancel: () => {},
-      },
+      props: { open: true, title: 't', description: 'd', ...extra, onConfirm: () => {}, onCancel: () => {} },
     });
     await flushFocus();
     const confirmBtn = getByText('Confirm');
-    expect(confirmBtn.className).toContain('bg-error');
-    expect(confirmBtn.className).not.toContain('bg-accent');
-  });
-
-  it('default (non-destructive) uses the accent palette for confirm', async () => {
-    const { getByText } = render(ConfirmDialog, {
-      props: {
-        open: true,
-        title: 't',
-        description: 'd',
-        onConfirm: () => {},
-        onCancel: () => {},
-      },
-    });
-    await flushFocus();
-    const confirmBtn = getByText('Confirm');
-    expect(confirmBtn.className).toContain('bg-accent');
-    expect(confirmBtn.className).not.toContain('bg-error');
-  });
-
-  it('non-destructive: confirm button carries data-autofocus so focusTrap lands focus there', async () => {
-    const { getByText } = render(ConfirmDialog, {
-      props: {
-        open: true,
-        title: 't',
-        description: 'd',
-        onConfirm: () => {},
-        onCancel: () => {},
-      },
-    });
-    await flushFocus();
-    const confirmBtn = getByText('Confirm');
-    const cancelBtn = getByText('Cancel');
-    expect(confirmBtn.hasAttribute('data-autofocus')).toBe(true);
-    expect(cancelBtn.hasAttribute('data-autofocus')).toBe(false);
-  });
-
-  it('destructive: cancel button carries data-autofocus so a stray Enter does not confirm', async () => {
-    const { getByText } = render(ConfirmDialog, {
-      props: {
-        open: true,
-        title: 't',
-        description: 'd',
-        destructive: true,
-        onConfirm: () => {},
-        onCancel: () => {},
-      },
-    });
-    await flushFocus();
-    const confirmBtn = getByText('Confirm');
-    const cancelBtn = getByText('Cancel');
-    expect(cancelBtn.hasAttribute('data-autofocus')).toBe(true);
-    expect(confirmBtn.hasAttribute('data-autofocus')).toBe(false);
+    expect(confirmBtn.className).toContain(palette);
+    expect(confirmBtn.className).not.toContain(otherPalette);
+    expect(getByText(focused).hasAttribute('data-autofocus')).toBe(true);
+    expect(getByText(unfocused).hasAttribute('data-autofocus')).toBe(false);
   });
 });

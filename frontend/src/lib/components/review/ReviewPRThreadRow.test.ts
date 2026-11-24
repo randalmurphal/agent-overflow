@@ -44,22 +44,14 @@ function setup() {
 }
 
 describe('<ReviewPRThreadRow> reply keyboard send', () => {
-  it('sends on Ctrl+Enter', async () => {
+  it.each([
+    ['sends on Ctrl+Enter', { ctrlKey: true }, 1],
+    ['sends on Cmd+Enter (macOS)', { metaKey: true }, 1],
+    ['does not send on plain Enter', {}, 0],
+  ])('%s', async (_name, modifier, sends) => {
     const { onSendReply, textarea } = setup();
-    await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
-    expect(onSendReply).toHaveBeenCalledTimes(1);
-  });
-
-  it('sends on Cmd+Enter (macOS)', async () => {
-    const { onSendReply, textarea } = setup();
-    await fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
-    expect(onSendReply).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not send on plain Enter', async () => {
-    const { onSendReply, textarea } = setup();
-    await fireEvent.keyDown(textarea, { key: 'Enter' });
-    expect(onSendReply).not.toHaveBeenCalled();
+    await fireEvent.keyDown(textarea, { key: 'Enter', ...modifier });
+    expect(onSendReply).toHaveBeenCalledTimes(sends);
   });
 });
 
