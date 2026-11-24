@@ -404,6 +404,12 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
     -- stops the tracking, and the sweep then settles it.
     INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, state, created_at, updated_at, track_spawn)
       VALUES ('rcpt-tracked', 'dev-pending-only', 'spawn', '${s.draftId}', 'running', ${now}, ${now}, 1);
+    -- A spawn of the device the last run held for its thread's rest: its
+    -- turn ended, so the boot holds it again, running, while the end
+    -- releases its link and closes its run.
+    INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, source_thread_id, turn_id, state, created_at, updated_at, spawn_link, run_open)
+      SELECT 'rcpt-held', 'dev-pending-only', 'spawn', '${s.quietId}', 'source-held', '${s.quietId}#' || MAX(turn_index), 'running', ${now}, ${now}, 1, 1
+        FROM turns WHERE thread_id = '${s.quietId}';
     INSERT INTO thread_receipt_nudges (token, link_token, target_thread_id, started_at, run_open, run_base_tool_calls, run_base_tokens, run_base_turn_ms, ended_at)
       VALUES ('nudge-spawn-linked', 'rcpt-spawn-linked', '${s.draftId}', ${now}, 0, 0, 0, 0, ${now});
     UPDATE threads SET placement = 'owned' WHERE id = '${s.draftId}';
@@ -508,9 +514,9 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       'unsettled-review-claims diff_review_comments': 1,
       'replacement-draft-recoveries thread_draft_recoveries': 1,
       'replacement-drafts thread_drafts': 1,
-      // The three running receipts of the device whose last session ended
+      // The four running receipts of the device whose last session ended
       // count under the end's rules and the sweep's.
-      'open-receipts thread_request_receipts': 4,
+      'open-receipts thread_request_receipts': 5,
       'open-local-requests thread_requests': 1,
       'background-terminal-stashes pending_background_task_terminals': 1,
       'running-remote-jobs remote_jobs': 1,
@@ -522,9 +528,9 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       'own-admission-members own_devices': 1,
       'own-admission-revocations sessions': 1,
       'pending-link-sessions sessions': 3,
-      'ended-device-spawn-links thread_request_receipts': 2,
+      'ended-device-spawn-links thread_request_receipts': 3,
       'ended-device-spawn-tracking thread_request_receipts': 1,
-      'ended-device-spawn-runs thread_request_receipts': 2,
+      'ended-device-spawn-runs thread_request_receipts': 3,
       'ended-device-nudges thread_receipt_nudges': 1,
       // One for each tracked receipt to the draft thread its placement wrote.
       'ended-device-spawn-revisions spawn_revisions': 2,
@@ -533,6 +539,10 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       'expired-refresh-secrets refresh_secrets': 1,
       'expired-pairing-links pairing_links': 1,
     });
+    // The spawn held for its thread's rest is still running, its link
+    // released and its run closed.
+    expect(await dbQuery(rig.dbPath, `SELECT state, spawn_link, run_open FROM thread_request_receipts WHERE token = 'rcpt-held'`))
+      .toEqual([{ state: 'running', spawn_link: 0, run_open: 0 }]);
     // The finished worker's launch keeps running beside its sibling; the boot left it alone.
     const launch = `SELECT status, meta FROM items WHERE thread_id = '${threadId}' AND id = 'tu-done'`;
     expect(await dbQuery(rig.dbPath, launch)).toEqual(await dbQuery(snapshotDB, launch));
@@ -624,8 +634,16 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
         sql: `UPDATE thread_request_receipts SET run_tokens = run_tokens + 1 WHERE token = 'rcpt-run-running'` },
       { rule: 'ended-device-spawn-runs: a settled run without its settled runtime', table: 'thread_request_receipts',
         sql: `UPDATE thread_request_receipts SET run_turn_ms = (SELECT turn_ms - 1 FROM snap.thread_tallies WHERE thread_id = '${threadId}') WHERE token = 'rcpt-run-running'` },
+      { rule: 'ended-device-spawn-runs: a settled run with only the settled tally as its runtime', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET run_turn_ms = (SELECT turn_ms FROM snap.thread_tallies WHERE thread_id = '${threadId}') WHERE token = 'rcpt-run-running'` },
       { rule: 'ended-device-spawn-runs: a settled run past the latest release', table: 'thread_request_receipts',
         sql: `UPDATE thread_request_receipts SET run_turn_ms = run_turn_ms + 86400000 WHERE token = 'rcpt-run-running'` },
+      { rule: 'ended-device-spawn-runs: a held run with other tool calls', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET run_tool_calls = run_tool_calls + 1 WHERE token = 'rcpt-held'` },
+      { rule: 'open-receipts: a receipt held for rest moved back to accepted', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET state = 'accepted' WHERE token = 'rcpt-held'` },
+      { rule: 'open-receipts: a receipt no rest holds left running', table: 'thread_request_receipts',
+        sql: `UPDATE thread_request_receipts SET state = 'running' WHERE token = 'rcpt-open'` },
       { rule: 'ended-device-spawn-links: a settled link left linked', table: 'thread_request_receipts',
         sql: `UPDATE thread_request_receipts SET spawn_link = 1 WHERE token = 'rcpt-link-running'` },
       { rule: 'ended-device-spawn-tracking: a settled receipt still tracking', table: 'thread_request_receipts',

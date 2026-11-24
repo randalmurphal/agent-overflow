@@ -206,10 +206,9 @@ const deviceLostItsLastSession = (device: string) => `EXISTS (SELECT 1 FROM mig.
 /**
  * The totals store.tallyFiguresSQL gives thread `t` at `now`: its tool
  * calls; its tokens with its pending usage; and its runtime with its newest
- * turn's span to `now` while that turn is open, or without that span
- * (settledTurnMs). Read from the tables as the migrations left them, which
- * is what the session ends read: identity.Bootstrap (app.initIdentity) runs
- * before every other boot writer.
+ * turn's span to `now` while that turn is open. Read from the tables as the
+ * migrations left them, which is what the session ends read:
+ * identity.Bootstrap (app.initIdentity) runs before every other boot writer.
  */
 const tallyFigures = (t: string, now: string) => {
   const settledTurnMs = `COALESCE((SELECT turn_ms FROM mig.thread_tallies WHERE thread_id = ${t}), 0)`;
@@ -217,7 +216,6 @@ const tallyFigures = (t: string, now: string) => {
     toolCalls: `COALESCE((SELECT tool_calls FROM mig.thread_tallies WHERE thread_id = ${t}), 0)`,
     tokens: `(COALESCE((SELECT tokens FROM mig.thread_tallies WHERE thread_id = ${t}), 0)
       + COALESCE((SELECT SUM(input_tokens + cache_creation_input_tokens + output_tokens) FROM mig.usage_pending WHERE thread_id = ${t}), 0))`,
-    settledTurnMs,
     turnMs: `(${settledTurnMs}
       + COALESCE((SELECT CASE WHEN nt.completed_at IS NULL THEN MAX(0, ${now} - nt.started_at) END
         FROM mig.turns nt WHERE nt.thread_id = ${t} ORDER BY nt.turn_index DESC LIMIT 1), 0))`,
@@ -241,8 +239,30 @@ const releasedLinksStamp = (x: string, where: string) => `(SELECT MAX(l.updated_
 const runReleasedAt = (x: string) => releasedLinksStamp(x, " AND ml.state NOT IN ('accepted', 'running')");
 /** No earlier than the release: a link the sweep settled afterward carries the sweep's later moment. */
 const runReleasedBy = (x: string) => releasedLinksStamp(x, '');
+/**
+ * The newest moment the pre-boot store proves had passed, read cheaply from
+ * the receipts it holds: the boot, and so the release, came after it.
+ */
+const preBootMoment = '(SELECT MAX(updated_at) FROM mig.thread_request_receipts)';
 const releasedRunTotals = tallyFigures('s.target_thread_id', runReleasedAt('s'));
+const earliestRunTotals = tallyFigures('s.target_thread_id', preBootMoment);
 const latestRunTotals = tallyFigures('s.target_thread_id', runReleasedBy('s'));
+/**
+ * The open receipt `x` the boot holds for its thread's rest again
+ * (app.heldReceiptAtBoot), from the rows the migrations left: running, its
+ * turn ended other than interrupted or errored with no later turn open,
+ * interrupted or errored, and a spawn or a send from the thread that
+ * spawned its target (app.receiptAwaitsRest).
+ */
+const heldForRest = (x: string) => `${x}.state = 'running' AND COALESCE(${x}.target_thread_id, '') <> ''
+  AND EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = ${x}.target_thread_id
+    AND ${x}.turn_id = ${x}.target_thread_id || '#' || t.turn_index
+    AND t.completed_at IS NOT NULL AND t.stop_reason NOT IN ('interrupted', 'error') AND t.error_message = ''
+    AND NOT EXISTS (SELECT 1 FROM mig.turns l WHERE l.thread_id = t.thread_id AND l.turn_index > t.turn_index
+      AND (l.completed_at IS NULL OR l.stop_reason IN ('interrupted', 'error') OR l.error_message <> '')))
+  AND (${x}.kind = 'spawn' OR (${x}.kind = 'send' AND ${x}.source_thread_id <> ''
+    AND EXISTS (SELECT 1 FROM mig.thread_request_receipts sp WHERE sp.target_thread_id = ${x}.target_thread_id
+      AND sp.kind = 'spawn' AND sp.owner_device_id = ${x}.owner_device_id AND sp.source_thread_id = ${x}.source_thread_id)))`;
 
 /**
  * Whether `json` is a JSON array, and the array or an empty one, so
@@ -503,8 +523,13 @@ export const recoveryRules: RecoveryRule[] = [
     to: `${draftRestored('s')} AND ${draftPlanKept}`,
   },
   {
+    // The sweep settles every open receipt but one held for its thread's
+    // rest, which it leaves running; that one settles at its thread's rest
+    // once the boot recovered what the thread waits on
+    // (app.settleHeldReceiptsAtRest), so either is valid.
     name: 'open-receipts', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_request_receipts',
-    rows: "s.state IN ('accepted', 'running')", columns: ['*'], to: "b.state NOT IN ('accepted', 'running')",
+    rows: "s.state IN ('accepted', 'running')", columns: ['*'],
+    to: `b.state NOT IN ('accepted', 'running') OR (b.state IS s.state AND ${heldForRest('s')})`,
   },
   {
     name: 'open-local-requests', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_requests',
@@ -586,11 +611,11 @@ export const recoveryRules: RecoveryRule[] = [
     // The release ends the open run of each released link's source thread
     // on its thread, with the thread's figures then (tallyFiguresSQL). The
     // tool calls and tokens are exact. The runtime is exact when a released
-    // link still carries the release's moment; when the receipt sweep
-    // settled every released link afterward, which restamps it, the runtime
-    // is checked only to lie between the thread's runtime without its open
-    // turn and that runtime with the open turn's span to the latest link
-    // stamp.
+    // link still carries the release's moment; when the receipt sweep may
+    // have restamped every released link afterward, the runtime is checked
+    // only to lie between the thread's runtime with its open turn's span to
+    // the newest moment the pre-boot store records and that runtime with the
+    // span to the latest link stamp.
     name: 'ended-device-spawn-runs', writer: 'store.endSessionsTx (releaseSpawnLinksTx), for the session ends above',
     table: 'thread_request_receipts',
     rows: `s.run_open = 1 AND EXISTS (SELECT 1 FROM mig.thread_request_receipts r WHERE r.spawn_link = 1
@@ -599,7 +624,7 @@ export const recoveryRules: RecoveryRule[] = [
     columns: ['run_open', 'run_tool_calls', 'run_tokens', 'run_turn_ms'],
     to: `b.run_open = 0 AND b.run_tool_calls = ${releasedRunTotals.toolCalls} AND b.run_tokens = ${releasedRunTotals.tokens}
       AND CASE WHEN ${runReleasedAt('s')} IS NOT NULL THEN b.run_turn_ms = ${releasedRunTotals.turnMs}
-        ELSE b.run_turn_ms BETWEEN ${latestRunTotals.settledTurnMs} AND ${latestRunTotals.turnMs} END`,
+        ELSE b.run_turn_ms BETWEEN ${earliestRunTotals.turnMs} AND ${latestRunTotals.turnMs} END`,
   },
   {
     name: 'ended-device-nudges', writer: 'store.endSessionsTx, for the session ends above', table: 'thread_receipt_nudges',
