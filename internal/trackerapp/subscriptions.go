@@ -52,6 +52,9 @@ var (
 	// ErrNotListed is a board subscribe naming a board the project does not
 	// list.
 	ErrNotListed = errors.New("trackerapp: the project does not list the board")
+	// ErrUnknownAttachment is an attachment the ticket a subscription
+	// shows does not hold.
+	ErrUnknownAttachment = errors.New("trackerapp: the ticket does not hold the attachment")
 )
 
 // BoardEvent tells a board's subscribers that the mirror changed. Changed
@@ -232,11 +235,11 @@ func (s *Service) SubscriptionBoard(id string) (Scope, error) {
 }
 
 // SubscriptionCountsForTesting reports the board and ticket handles the
-// service holds and the board pumps live.
-func (s *Service) SubscriptionCountsForTesting() (boardHandles, ticketHandles, boardPumps int) {
+// service holds and the board and ticket pumps live.
+func (s *Service) SubscriptionCountsForTesting() (boardHandles, ticketHandles, boardPumps, ticketPumps int) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
-	return s.subs.boardHandles, s.subs.ticketHandles, len(s.subs.boards)
+	return s.subs.boardHandles, s.subs.ticketHandles, len(s.subs.boards), len(s.subs.tickets)
 }
 
 // ReleaseSubscription drops handle id; the last handle on a pump stops

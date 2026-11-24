@@ -230,6 +230,28 @@ func (s *Service) TicketDetail(id string) (TicketView, error) {
 	return h.ticket.toldLocked(), nil
 }
 
+// TicketAttachment is the attachment of handle id's ticket, as its
+// subscribers were last told of it, with the ticket's connection and
+// issue: what a download of it names. It reads nothing. An attachment the
+// ticket did not hold then fails with ErrUnknownAttachment.
+func (s *Service) TicketAttachment(id, attachment string) (connection string, issue tracker.IssueID, a AttachmentView, err error) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	h := s.subs.handles[id]
+	if h == nil || h.ticket == nil {
+		return "", "", AttachmentView{}, fmt.Errorf("%w: ticket %s", ErrUnknownSubscription, id)
+	}
+	tp := h.ticket
+	if d := tp.view.detail; d != nil {
+		for _, a := range d.Attachments {
+			if a.ID == attachment {
+				return tp.key.connection, tp.key.issue, a, nil
+			}
+		}
+	}
+	return "", "", AttachmentView{}, fmt.Errorf("%w: %s on %s", ErrUnknownAttachment, attachment, tp.key.issue)
+}
+
 // digestOf identifies v's content.
 func (s *Service) digestOf(v DetailView) uint64 {
 	encoded, err := json.Marshal(v)

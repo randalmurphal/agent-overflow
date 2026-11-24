@@ -31,6 +31,9 @@ func TestFormReadsSettleTheProblem(t *testing.T) {
 	if _, ok := errors.AsType[*trackerapi.TransientError](err); !ok || f.problem() != FailureTransient {
 		t.Fatalf("projects failed with %v, problem %q", err, f.problem())
 	}
+	if cf, ok := errors.AsType[*CallFailure](err); !ok || cf.Failure != ClassifyFailure(f.conn.Kind, cf.Err) || cf.Failure.Kind != FailureTransient {
+		t.Fatalf("projects failed without the person's sentence: %v", err)
+	}
 	if _, err := f.svc.Search(t.Context(), f.conn.ID, SearchRequest{}); !errors.Is(err, tracker.ErrInvalidInput) || f.problem() != FailureTransient {
 		t.Fatalf("a search of nothing: %v, problem %q", err, f.problem())
 	}

@@ -1067,6 +1067,66 @@ var Routes = []Route{
 			"in memory until the recording is finished or abandoned.",
 	},
 	{
+		Pattern:    "PUT /attachments/tracker/upload",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureStructured,
+		Why: "One file attached to an issue tracker ticket. The ticket is " +
+			"minted by a tracker:operate call on the computer that holds " +
+			"the tracker connection, which refused a tracker that stores " +
+			"no files and a size over the largest file it stores; its " +
+			"subject names the connection, the ticket, the filename and " +
+			"the exact length, and the request contributes the bytes and " +
+			"nothing else. The bytes stream through to the tracker as they " +
+			"arrive, under the declared length and capped DURING the read; " +
+			"a body that ends short, runs long or stops arriving fails the " +
+			"tracker request before it completes, so nothing is attached. " +
+			"Answers the write's outcome as JSON, or a refusal's code and " +
+			"sentence as JSON with a 4xx. nosniff and Cache-Control: " +
+			"no-store as on every ticketed transfer. Not Origin-guarded and " +
+			"not rate limited, for the reasons argued on the attachment " +
+			"download row.",
+	},
+	{
+		Pattern:    "OPTIONS /attachments/tracker/upload",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The tracker upload's preflight, for the reason the " +
+			"attachment upload has one. No credential to check, no work " +
+			"done, 204 with the allow headers for the one admitted origin " +
+			"and the listener's ordinary 404 for anybody else.",
+	},
+	{
+		Pattern:    "GET /attachments/tracker/{attachmentID}",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureOpaqueMedia,
+		Why: "One attachment of an issue tracker ticket, streamed from the " +
+			"tracker as it arrives. The ticket is minted by a tracker:read " +
+			"call that found the attachment on the ticket a subscription " +
+			"shows, with no tracker request; the path is compared against " +
+			"its subject. Whatever the file is, it goes out as " +
+			"application/octet-stream with an attachment disposition, so " +
+			"nothing a tracker user attached can render at the SPA origin. " +
+			"The status waits for the first byte, so a failure before it " +
+			"answers a refusal's code and sentence as JSON; one after it " +
+			"ends the response short. nosniff and Cache-Control: no-store " +
+			"as on every ticketed transfer. Not Origin-guarded and not " +
+			"rate limited, for the reasons argued on the attachment " +
+			"download row.",
+	},
+	{
+		Pattern:    "OPTIONS /attachments/tracker/{attachmentID}",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The tracker download's preflight, for the reason its " +
+			"siblings have one. No credential to check, no work done, 204 " +
+			"with the allow headers for the one admitted origin and the " +
+			"listener's ordinary 404 for anybody else.",
+	},
+	{
 		Pattern:    "GET /attachments/speech/{speechID}",
 		Listener:   "app transport",
 		Credential: CredTransferTicket,

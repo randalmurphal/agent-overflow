@@ -124,6 +124,12 @@ var callerConnectionRefusals = map[string]connectionRefusal{
 		// with "tracker connections are not available before the app has
 		// started".
 	},
+	"SubscribeTrackerTicket": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.SubscribeTrackerTicket(ctx, "connection", "10101"))
+		},
+		// As SubscribeTrackerBoard's.
+	},
 	"GetNativeNetworkConfig": {
 		call: func(a *App, ctx context.Context) error { return ignoreResult(a.GetNativeNetworkConfig(ctx)) },
 		created: func(a *App) bool {

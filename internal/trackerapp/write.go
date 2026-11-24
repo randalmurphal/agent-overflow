@@ -165,7 +165,7 @@ func (s *Service) interact(ctx context.Context, id string) (*run, error) {
 		r.finish()
 		var c *callError
 		errors.As(r.startErr, &c)
-		return nil, errors.Join(c.err, settleErr)
+		return nil, errors.Join(callFailure(r.row.Kind, c.err), settleErr)
 	}
 	return r, nil
 }

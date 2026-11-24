@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"path/filepath"
 	"testing"
 	"time"
@@ -117,13 +116,9 @@ func (a *App) initTrackers() error {
 		Now:            time.Now,
 		Life:           a.appCtx,
 		EmitBoard:      func(e trackerapp.BoardEvent) { a.emit(eventchan.TrackerBoardUpdated, e) },
-		// No bound method subscribes to a ticket yet, so its event has no
-		// channel: one arriving means a subscription was made without it.
-		EmitIssue: func(e trackerapp.IssueEvent) {
-			log.Printf("tracker: an issue event of connection %s has no channel to its clients", e.Connection)
-		},
-		Settled: a.awaitFirstReadsSettled,
-		Cadence: a.trackerCadence,
+		EmitIssue:      func(e trackerapp.IssueEvent) { a.emit(eventchan.TrackerIssueUpdated, e) },
+		Settled:        a.awaitFirstReadsSettled,
+		Cadence:        a.trackerCadence,
 		ClientConnected: func() bool {
 			bus := a.eventBus.Load()
 			return bus != nil && bus.SubscriberCount() > 0

@@ -70,6 +70,23 @@ type Failure struct {
 	Message string
 }
 
+// CallFailure is a tracker call of a form read, a download or a write's
+// start that failed, with the Failure a person reads. It unwraps to the
+// call's error.
+type CallFailure struct {
+	Failure Failure
+	Err     error
+}
+
+func (e *CallFailure) Error() string { return e.Err.Error() }
+func (e *CallFailure) Unwrap() error { return e.Err }
+
+// callFailure is err, a failed call to a connection of kind, as a
+// CallFailure.
+func callFailure(kind string, err error) error {
+	return &CallFailure{Failure: ClassifyFailure(kind, err), Err: err}
+}
+
 // KeyFileError is a key file that could not give a credential: missing,
 // empty, refused or unreadable. Its message is keyfile's, which names the
 // file by its label and never quotes its contents.

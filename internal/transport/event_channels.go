@@ -1360,6 +1360,19 @@ var channelPolicies = []ChannelPolicy{
 			"remote client subscribes to boards of this computer's projects.",
 	},
 	{
+		Channel:   eventchan.TrackerIssueUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeTrackerRead,
+		Why: "A subscribed ticket's change nudge (trackerapp.IssueEvent): " +
+			"the connection, the issue ID, whether it changed and its read " +
+			"failure, never its fields. Every frame names its own ticket, so " +
+			"a reconnect replays them all: never latest-only. Unkeyed by " +
+			"thread. Scope: its pull half, TrackerTicket, is tracker:read. " +
+			"Audience: a remote client opens tickets of this computer's " +
+			"tracker connections.",
+	},
+	{
 		Channel:   eventchan.TerminalEndFailed,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
