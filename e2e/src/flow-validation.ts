@@ -1,4 +1,4 @@
-import type { BuiltinMonitorId } from '../../frontend/src/lib/harness/monitorTypes.ts';
+import type { BuiltinMonitorId, MonitorCompatibilityLeg } from '../../frontend/src/lib/harness/monitorTypes.ts';
 import { validateMonitorSelection, validateCompatibilityLeg } from './monitor-catalog.ts';
 import {
   FUNCTIONAL_FLOW_VERSION,
@@ -110,6 +110,27 @@ export function parseFunctionalScenario(raw: unknown): FunctionalScenario {
   const monitors = value.monitors === undefined ? undefined : parseMonitors(value.monitors);
   const extensions = value.extensions === undefined ? undefined : parseExtensions(value.extensions);
   return { v: FUNCTIONAL_FLOW_VERSION, id, actions, ...(assertions ? { assertions } : {}), ...(monitors ? { monitors } : {}), ...(extensions ? { extensions } : {}) };
+}
+
+/**
+ * Checks a run's compatibility leg against its scenario by the rule the
+ * harness commands apply to a leg (validateMonitorLeg in cmd/ao-harness):
+ * the leg must select a typed monitor, and every typed monitor must belong
+ * to it. `option` names the leg as the caller sets it.
+ */
+export function validateScenarioLeg(scenario: FunctionalScenario, leg: MonitorCompatibilityLeg | undefined, option: string): void {
+  if (leg === undefined) return;
+  const typed = (scenario.monitors ?? []).flatMap((monitor) => (monitor.monitorId === undefined ? [] : [monitor.monitorId]));
+  if (typed.length === 0) {
+    throw new Error(`${option} ${leg} selects no monitor: scenario ${JSON.stringify(scenario.id)} has no typed monitor; add one of that leg to scenario.monitors or drop ${option}`);
+  }
+  for (const monitorId of typed) {
+    try {
+      validateMonitorSelection(monitorId, leg);
+    } catch (error) {
+      throw new Error(`${option} ${leg}: ${(error as Error).message}`);
+    }
+  }
 }
 
 function parseMonitors(raw: unknown): FlowMonitor[] {

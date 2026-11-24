@@ -310,9 +310,6 @@ func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResul
 		run.compatibilityLeg = spec.CompatibilityLeg
 	}
 	h.perf.run = run
-	// A new run supersedes an uncollected self-finished one: keeping it
-	// would hand the NEXT stop a report from a run two arms ago.
-	h.perf.expired = nil
 	h.perf.mu.Unlock()
 	monitorsArmed := false
 	cleanupStart := func(cause error) (HarnessPerfStatusResult, error) {
@@ -363,6 +360,12 @@ func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResul
 		}
 	}
 
+	// A run that armed supersedes an uncollected self-finished one: keeping
+	// it would hand the NEXT stop a report from a run two arms ago. A start
+	// that failed above leaves it collectable.
+	h.perf.mu.Lock()
+	h.perf.expired = nil
+	h.perf.mu.Unlock()
 	go h.runPerfSampler(run)
 	return h.HarnessPerfStatus()
 }

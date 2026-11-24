@@ -10,7 +10,7 @@ import {
   type FunctionalFlowReport,
   type FunctionalScenario,
 } from './flow-model.ts';
-import { parseFunctionalScenario } from './flow-validation.ts';
+import { parseFunctionalScenario, validateScenarioLeg } from './flow-validation.ts';
 import { isOwnedPage, OwnedPage } from './flow-page.ts';
 import { SemanticUI } from './flow-ui.ts';
 import { runFlowMonitor } from './flow-monitors.ts';
@@ -36,6 +36,7 @@ export class FunctionalFlowRunner {
     let releasePage: (() => void) | undefined;
     try {
       const scenario = parseFunctionalScenario(rawScenario);
+      validateScenarioLeg(scenario, this.runOptions.compatibilityLeg, 'compatibilityLeg');
       releasePage = this.page.claimRun();
       const observations: FlowMonitorSample[] = [];
       const monitorResults: FlowMonitorResult[] = [];
@@ -50,7 +51,7 @@ export class FunctionalFlowRunner {
         cancellation.abort();
         throw error;
       });
-      const monitorHost = { ui: this.ui, compatibilityLeg: this.runOptions.compatibilityLeg, monitorQuery: this.runOptions.monitorQuery };
+      const monitorHost = { ui: this.ui, monitorQuery: this.runOptions.monitorQuery };
       const monitors = (scenario.monitors ?? []).map((monitor) => runFlowMonitor(monitorHost, monitor, observations, monitorResults, runId, cancellation.signal)
         .catch((error: unknown) => {
           cancellation.abort();

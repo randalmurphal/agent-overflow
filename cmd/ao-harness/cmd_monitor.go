@@ -122,20 +122,22 @@ func finiteNonNegative(value float64) bool {
 // monitorTypes.test.ts there fails when the two lists differ).
 var monitorCompatibilityLegs = []string{"clean-renderer", "instrumented-renderer", "functional"}
 
-// validateMonitorLeg is the check every command that takes a monitor
-// compatibility leg runs on it; flag is the flag as the command spells it.
-// A leg only narrows the monitors a command arms, so one without a monitor
-// would be accepted and ignored.
-func validateMonitorLeg(flag, leg string, monitors []string) error {
+// validateMonitorLeg is the check every command and run plan that takes a
+// monitor compatibility leg runs on it. legName names the leg as the caller
+// edits it ("--leg", "plan field monitorLeg"); addMonitor says how the
+// caller selects a monitor of that leg ("--monitor <id> of that leg"). A leg only narrows the
+// monitors a command arms, so one without a monitor would be accepted and
+// ignored.
+func validateMonitorLeg(legName, addMonitor, leg string, monitors []string) error {
 	if leg == "" {
 		return nil
 	}
 	if !slices.Contains(monitorCompatibilityLegs, leg) {
-		return usagef("unknown monitor compatibility leg %s %q (want %s; `ao-harness monitor list` shows each monitor's leg)",
-			flag, leg, strings.Join(monitorCompatibilityLegs, ", "))
+		return usagef("%s %q is not a monitor compatibility leg (want %s; `ao-harness monitor list` shows each monitor's leg)",
+			legName, leg, strings.Join(monitorCompatibilityLegs, ", "))
 	}
 	if len(monitors) == 0 {
-		return usagef("%s %s selects no monitor: add --monitor <id> of that leg (`ao-harness monitor list`) or drop %s", flag, leg, flag)
+		return usagef("%s %s selects no monitor: add %s (`ao-harness monitor list`) or drop %s", legName, leg, addMonitor, legName)
 	}
 	return nil
 }
@@ -221,7 +223,7 @@ func monitorStart(e *env, args []string) error {
 	if len(opts.monitor) == 0 {
 		return usagef("monitor start needs at least one --monitor ID")
 	}
-	if err := validateMonitorLeg("--leg", opts.leg, opts.monitor); err != nil {
+	if err := validateMonitorLeg("--leg", "--monitor <id> of that leg", opts.leg, opts.monitor); err != nil {
 		return err
 	}
 	seen := make(map[string]struct{}, len(opts.monitor))

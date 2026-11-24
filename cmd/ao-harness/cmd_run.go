@@ -38,6 +38,10 @@ func runManaged(e *env, args []string) error {
 		return err
 	}
 	plan = harnessrun.ApplyDefaults(plan)
+	// Before the run takes a lease or launches anything.
+	if err := validateMonitorLeg("plan field monitorLeg", "a monitor id of that leg to plan field monitors", plan.MonitorLeg, plan.Monitors); err != nil {
+		return err
+	}
 	e.pageID = strings.TrimSpace(plan.PageID)
 	if plan.Instance != "" {
 		e.instance = plan.Instance

@@ -94,7 +94,7 @@ func validateBenchInvocation(opts *benchCLIOptions, rest []string) (benchWorkloa
 	if err != nil {
 		return benchWorkload{}, 0, nil, "", err
 	}
-	if err := validateMonitorLeg("--monitor-leg", strings.TrimSpace(*opts.monitorLeg), *opts.monitors); err != nil {
+	if err := validateMonitorLeg("--monitor-leg", "--monitor <id> of that leg", strings.TrimSpace(*opts.monitorLeg), *opts.monitors); err != nil {
 		return benchWorkload{}, 0, nil, "", err
 	}
 	resolvedLeg := strings.TrimSpace(*opts.leg)
