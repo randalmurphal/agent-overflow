@@ -147,7 +147,7 @@ func TestBuiltRequestCarriesNoCredential(t *testing.T) {
 	if err := c.loadCredential(t.Context(), false, 0); err != nil {
 		t.Fatal(err)
 	}
-	req, err := k.request(t.Context(), k.target, nil, c.userAgent)
+	req, _, err := k.request(t.Context(), k.target, nil, c.userAgent)
 	if err != nil {
 		t.Fatal(err)
 	}

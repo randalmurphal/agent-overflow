@@ -125,7 +125,7 @@ func preReads() []preRead {
 			return p.Unlink(ctx, tracker.UnlinkInput{Issue: "10001", Link: "300", Other: "10002"})
 		}, true},
 		{"Attach", "none", nil, func(ctx context.Context, p *Provider) tracker.Result {
-			return p.Attach(ctx, tracker.AttachInput{Issue: "10001", Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("a")}}})
+			return p.Attach(ctx, tracker.AttachInput{Issue: "10001", Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("a"), Size: 1}}})
 		}, false},
 		{"Time.AddWorklog", "who", nil, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.Time().AddWorklog(ctx, tracker.WorklogInput{Issue: "10001", Day: day1(), Spent: time.Hour})

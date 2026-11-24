@@ -161,7 +161,7 @@ func TestFakeScenario(t *testing.T) {
 		t.Fatalf("unlinked %+v", links)
 	}
 
-	allApplied(t, "attach", s.p.Attach(s.ctx, tracker.AttachInput{Issue: "10102", Files: []tracker.File{{Name: "notes.txt", Content: strings.NewReader("hello")}}}))
+	allApplied(t, "attach", s.p.Attach(s.ctx, tracker.AttachInput{Issue: "10102", Files: []tracker.File{{Name: "notes.txt", Content: strings.NewReader("hello"), Size: 5}}}))
 	atts := s.detail(t, "10102").Attachments
 	if len(atts) != 1 || atts[0].Name != "notes.txt" {
 		t.Fatalf("attachments %+v", atts)

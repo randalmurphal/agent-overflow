@@ -23,10 +23,6 @@ import (
 // uploaded yet.
 const pendingPrefix = "pending-upload:"
 
-// uploadFraming is the room an upload body keeps for its multipart
-// boundaries and headers.
-const uploadFraming = 4 << 10
-
 // Image is a local image a Markdown body embeds, read and checked when
 // planned and uploaded to the issue when applied.
 type Image struct {
@@ -47,8 +43,8 @@ type Image struct {
 // pass over the images and closed before it returns, so no descriptor
 // outlives a call. A plan keeps the folder's path and each image's hash,
 // and its apply reads every image again before its first write. Together
-// the images of one write hold at most limit bytes, the upload limit
-// less its multipart framing, which bounds what an apply holds in memory.
+// the images of one write hold at most limit bytes (Options.MaxImageBytes),
+// which bounds what an apply holds in memory.
 type imageStage struct {
 	dir    string
 	limit  int64
@@ -57,8 +53,8 @@ type imageStage struct {
 	list   []*Image
 }
 
-func newImageStage(dir string, maxUpload int64) *imageStage {
-	return &imageStage{dir: dir, limit: maxUpload - uploadFraming, byPath: map[string]*Image{}}
+func newImageStage(dir string, maxImages int64) *imageStage {
+	return &imageStage{dir: dir, limit: maxImages, byPath: map[string]*Image{}}
 }
 
 // imagePath normalizes ref to a name inside the image folder, so every
@@ -131,7 +127,7 @@ func readImage(ctx context.Context, root *os.Root, name string, limit int64) ([]
 		return nil, err
 	}
 	if int64(buf.Len()) > limit {
-		return nil, fmt.Errorf("the images of one write are over the %d-byte upload limit", limit)
+		return nil, fmt.Errorf("the images of one write are over the %d-byte limit on what one write holds", limit)
 	}
 	return buf.Bytes(), nil
 }

@@ -1,7 +1,6 @@
 package trackerapi
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -105,10 +104,14 @@ func (s *stall) reader(r io.Reader) io.Reader {
 	return &progressReader{r: r, s: s, left: -1}
 }
 
-// upload is a request body that counts its progress and starts the wait
-// for the answer once it is all read.
-func (s *stall) upload(body []byte) io.ReadCloser {
-	return io.NopCloser(&progressReader{r: bytes.NewReader(body), s: s, left: int64(len(body))})
+// upload is a request body of size bytes that counts its progress and
+// starts the wait for the answer once it is all read. On a nil stall, the
+// body of a call that is not a transfer, it is body as it is.
+func (s *stall) upload(body io.Reader, size int64) io.ReadCloser {
+	if s == nil {
+		return io.NopCloser(body)
+	}
+	return io.NopCloser(&progressReader{r: body, s: s, left: size})
 }
 
 type progressReader struct {

@@ -11,8 +11,8 @@ import (
 // error, so every provider refuses the same input the same way. A
 // Markdown body may embed local images only when ImageDir names the
 // absolute folder they are read from, and only on a tracker with
-// Capabilities.Attachments; a provider without it refuses a write that
-// names an ImageDir.
+// Capabilities.MaxAttachmentBytes; a provider without it refuses a write
+// that names an ImageDir.
 
 // CreateInput is an issue to create. Type is required with
 // Capabilities.IssueTypes and must be empty without it. Fields set every
@@ -361,10 +361,12 @@ func (in UnlinkInput) Check() error {
 	return nil
 }
 
-// File is one file to attach. The provider reads Content once.
+// File is one file to attach: Content holds exactly Size bytes. The
+// provider reads Content once, as it sends it.
 type File struct {
 	Name    string
 	Content io.Reader
+	Size    int64
 }
 
 // AttachInput attaches files to an issue.
@@ -374,14 +376,14 @@ type AttachInput struct {
 }
 
 // Check refuses an attach that names no issue or file, or a file with no
-// name or content.
+// name or content or a negative size.
 func (in AttachInput) Check() error {
 	if in.Issue == "" || len(in.Files) == 0 {
 		return invalidf("an attach needs an issue and a file")
 	}
 	for _, f := range in.Files {
-		if f.Name == "" || f.Content == nil {
-			return invalidf("an attached file needs a name and content")
+		if f.Name == "" || f.Content == nil || f.Size < 0 {
+			return invalidf("an attached file needs a name, content and a size")
 		}
 	}
 	return nil

@@ -34,6 +34,15 @@ type NotSentError struct{ Err error }
 func (e *NotSentError) Error() string { return e.Err.Error() }
 func (e *NotSentError) Unwrap() error { return e.Err }
 
+// SourceError is an upload whose content failed, or did not hold the size
+// it declared, while it was sent (Upload). The request stopped short of
+// the Content-Length it declared, so the tracker cannot have acted on it:
+// the write was not applied.
+type SourceError struct{ Err error }
+
+func (e *SourceError) Error() string { return e.Err.Error() }
+func (e *SourceError) Unwrap() error { return e.Err }
+
 // ErrInvalidInput is matched, through errors.Is, by the error of a call
 // a tracker client refused before sending because its input is wrong or
 // cannot apply as given. Such an error is also a *NotSentError; this
@@ -243,6 +252,7 @@ type outcome interface {
 }
 
 func (e *NotSentError) notApplied() bool { return true }
+func (e *SourceError) notApplied() bool  { return true }
 func (e *AuthError) notApplied() bool    { return clientError(e.Status) }
 func (e *StatusError) notApplied() bool  { return clientError(e.Status) }
 

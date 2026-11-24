@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"agent-overflow/internal/secret"
 )
 
 // A transfer has no total timeout: a download that keeps moving outlives
@@ -86,12 +90,12 @@ func TestUploadTimeouts(t *testing.T) {
 			}
 		}, nil)
 		upload := func(path string, size int) (time.Duration, error) {
-			body, contentType, err := Multipart(t.Context(), []Part{{FieldName: "file", FileName: "a.bin", Content: bytes.NewReader(make([]byte, size))}}, 64<<20)
+			body, err := Multipart([]Part{{FieldName: "file", FileName: "a.bin", Content: bytes.NewReader(make([]byte, size)), Size: int64(size)}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			start := time.Now()
-			_, err = c.Do(t.Context(), Request{Method: http.MethodPost, Path: path, Body: body, ContentType: contentType, Transfer: true})
+			_, err = c.Do(t.Context(), Request{Method: http.MethodPost, Path: path, Body: body, Transfer: true})
 			return time.Since(start), err
 		}
 
@@ -116,7 +120,7 @@ func TestStallTimesTheUploadBody(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		st := newStall(t.Context(), true)
 		defer st.stop()
-		body := st.upload(make([]byte, 10))
+		body := st.upload(bytes.NewReader(make([]byte, 10)), 10)
 		for range 3 {
 			time.Sleep(stallTimeout - time.Second)
 			if _, err := body.Read(make([]byte, 1)); err != nil || st.ctx.Err() != nil {
@@ -131,7 +135,7 @@ func TestStallTimesTheUploadBody(t *testing.T) {
 
 		st = newStall(t.Context(), true)
 		defer st.stop()
-		body = st.upload(make([]byte, 10))
+		body = st.upload(bytes.NewReader(make([]byte, 10)), 10)
 		if _, err := io.ReadAll(body); err != nil {
 			t.Fatal(err)
 		}
@@ -173,10 +177,15 @@ func TestDownloadHeaderTimeout(t *testing.T) {
 	})
 }
 
+// An upload's body is mime/multipart's framing around each part's
+// content, read as it is sent, with its exact length declared.
 func TestMultipart(t *testing.T) {
 	t.Parallel()
 	tr := newTracker(t, route{
 		"POST /issue/WEB-1/attachments": func(w http.ResponseWriter, r *http.Request) {
+			if r.ContentLength <= 0 || len(r.TransferEncoding) > 0 {
+				t.Errorf("Content-Length %d, Transfer-Encoding %v: want a declared length", r.ContentLength, r.TransferEncoding)
+			}
 			if err := r.ParseMultipartForm(1 << 20); err != nil {
 				t.Errorf("parse: %v", err)
 				return
@@ -189,53 +198,177 @@ func TestMultipart(t *testing.T) {
 				t.Errorf("files = %+v", files)
 				return
 			}
-			f, _ := files[0].Open()
-			content, _ := io.ReadAll(f)
-			if string(content) != "first" {
+			f, err := files[0].Open()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer func() { _ = f.Close() }()
+			if content, _ := io.ReadAll(f); string(content) != "first" {
 				t.Errorf("content = %q", content)
 			}
 			writeString(w, `[{"id":"1"},{"id":"2"}]`)
 		},
 	})
 	c, _ := loopbackClient(t, testOptions(tr.url()))
-	body, contentType, err := Multipart(t.Context(), []Part{
-		{FieldName: "file", FileName: `a "quoted".txt`, Content: strings.NewReader("first")},
-		{FieldName: "file", FileName: "b.png", Content: bytes.NewReader([]byte{0x89, 'P', 'N', 'G'})},
-		{FieldName: "comment", Content: strings.NewReader("see attached")},
-	}, 1<<20)
+	parts := []Part{
+		{FieldName: "file", FileName: `a "quoted".txt`, Content: bytes.NewReader([]byte("first")), Size: 5},
+		{FieldName: "file", FileName: "b.png", Content: bytes.NewReader([]byte{0x89, 'P', 'N', 'G'}), Size: 4},
+		{FieldName: "comment", Content: bytes.NewReader([]byte("see attached")), Size: 12},
+	}
+	body, err := Multipart(parts)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The bytes are mime/multipart's own, as a buffered body has them.
+	var want bytes.Buffer
+	w := multipart.NewWriter(&want)
+	if err := w.SetBoundary(body.contentType[strings.Index(body.contentType, "boundary=")+len("boundary="):]); err != nil {
+		t.Fatal(err)
+	}
+	for _, content := range []struct{ field, file, text string }{{"file", `a "quoted".txt`, "first"}, {"file", "b.png", "\x89PNG"}, {"comment", "", "see attached"}} {
+		var dst io.Writer
+		if content.file != "" {
+			dst, err = w.CreateFormFile(content.field, content.file)
+		} else {
+			dst, err = w.CreateFormField(content.field)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeString(dst, content.text)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if body.Size() != int64(want.Len()) {
+		t.Fatalf("size %d, want %d", body.Size(), want.Len())
+	}
+	// Seekable contents are read again from their start for each attempt.
+	for attempt := range 2 {
+		sent, err := body.open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := io.ReadAll(sent); err != nil || !bytes.Equal(got, want.Bytes()) {
+			t.Fatalf("attempt %d sent %q, %v; want %q", attempt, got, err, want.Bytes())
+		}
+	}
 	var out []struct{ ID string }
-	if _, err := c.JSON(t.Context(), Request{Method: http.MethodPost, Path: "issue/WEB-1/attachments", Body: body, ContentType: contentType, Transfer: true}, &out); err != nil || len(out) != 2 {
+	if _, err := c.JSON(t.Context(), Request{Method: http.MethodPost, Path: "issue/WEB-1/attachments", Body: body, Transfer: true}, &out); err != nil || len(out) != 2 {
 		t.Fatalf("upload: %v, %+v", err, out)
 	}
-
-	if _, _, err := Multipart(t.Context(), []Part{{FieldName: "file", FileName: "big", Content: bytes.NewReader(make([]byte, 2000))}}, 1000); !errors.Is(err, ErrUploadTooLarge) {
-		t.Fatalf("over the cap: %v", err)
-	}
-	if _, _, err := Multipart(t.Context(), []Part{{FieldName: "file", FileName: "big", Content: bytes.NewReader(make([]byte, 900))}}, 1000); !errors.Is(err, ErrUploadTooLarge) {
-		t.Fatalf("over the cap with boundaries: %v", err)
-	}
-	broken := errors.New("disk gone")
-	if _, _, err := Multipart(t.Context(), []Part{{FieldName: "file", FileName: "a", Content: io.MultiReader(strings.NewReader("x"), errReader{broken})}}, 1000); !errors.Is(err, broken) {
-		t.Fatalf("a failing reader: %v", err)
+	if _, err := c.Do(t.Context(), Request{Method: http.MethodPost, Path: "issue/WEB-1/attachments", Body: body, ContentType: "text/plain", Transfer: true}); err == nil {
+		t.Fatal("an Upload with a content type of the caller's: no error")
 	}
 	for _, bad := range [][]Part{
-		{{FileName: "a", Content: strings.NewReader("x")}},
-		{{FieldName: "file", FileName: "a"}},
+		{{FileName: "a", Content: strings.NewReader("x"), Size: 1}},
+		{{FieldName: "file", FileName: "a", Size: 1}},
+		{{FieldName: "file", FileName: "a", Content: strings.NewReader("x"), Size: -1}},
 	} {
-		if _, _, err := Multipart(t.Context(), bad, 1000); err == nil {
+		if _, err := Multipart(bad); err == nil {
 			t.Fatalf("%+v: no error", bad)
 		}
 	}
-	if _, _, err := Multipart(t.Context(), nil, 0); err == nil {
-		t.Fatal("a zero limit: no error")
+}
+
+// A content that fails, ends short of its size or runs past it while it is
+// sent stops the request short of its declared length: the tracker never
+// had the whole request, so the write was not applied (*SourceError),
+// never unknown. Nothing is sent again.
+func TestUploadSourceFailureIsNotApplied(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	tr := newTracker(t, route{
+		"POST /upload": func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			if _, err := io.Copy(io.Discard, r.Body); err != nil {
+				return
+			}
+			writeString(w, `{}`)
+		},
+	})
+	c, _ := loopbackClient(t, testOptions(tr.url()))
+	broken := errors.New("the client went away")
+	for _, tc := range []struct {
+		name    string
+		content io.Reader
+		size    int64
+		want    string
+	}{
+		{"a failing content", io.MultiReader(strings.NewReader("abc"), errReader{broken}), 10, "the client went away"},
+		{"a content shorter than its size", strings.NewReader("abc"), 10, "7 bytes short"},
+		{"a content longer than its size", strings.NewReader("abcdef"), 3, "more than its declared size"},
+	} {
+		body, err := Multipart([]Part{{FieldName: "file", FileName: "a", Content: tc.content, Size: tc.size}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = c.Do(t.Context(), Request{Method: http.MethodPost, Path: "upload", Body: body, Transfer: true})
+		source, ok := errors.AsType[*SourceError](err)
+		if !ok || !WriteNotApplied(err) || !strings.Contains(source.Error(), tc.want) {
+			t.Errorf("%s: %v", tc.name, err)
+		}
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if _, _, err := Multipart(ctx, []Part{{FieldName: "file", FileName: "a", Content: strings.NewReader("x")}}, 1000); !errors.Is(err, context.Canceled) {
-		t.Fatalf("a cancelled build: %v", err)
+	if n := requests.Load(); n > 3 {
+		t.Errorf("%d requests for three uploads: one was sent again", n)
+	}
+}
+
+// A body read once is never sent again: not after a refused credential
+// that was replaced, which sends a seekable body again, and the call
+// answers with the refusal.
+func TestUploadReadOnceIsSentOnce(t *testing.T) {
+	t.Parallel()
+	var requests, limits atomic.Int32
+	tr := newTracker(t, route{
+		"POST /upload": func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			if requests.Add(1)%2 == 1 {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			writeString(w, `{}`)
+		},
+		"POST /limited": func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			limits.Add(1)
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+		},
+	})
+	opts := testOptions(tr.url())
+	reads := 0
+	opts.Credentials = sourceFunc(func(context.Context) (*Credential, error) {
+		reads++
+		return Bearer(secret.New([]byte(fmt.Sprintf("%s-%d", testSecret, reads)))), nil
+	})
+	c, _ := loopbackClient(t, opts)
+	send := func(content io.Reader) error {
+		body, err := Multipart([]Part{{FieldName: "file", FileName: "a", Content: content, Size: 3}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = c.Do(t.Context(), Request{Method: http.MethodPost, Path: "upload", Body: body, Transfer: true})
+		return err
+	}
+	if err := send(bytes.NewReader([]byte("abc"))); err != nil || requests.Load() != 2 {
+		t.Fatalf("a seekable body after a replaced credential: %v after %d requests", err, requests.Load())
+	}
+	// The refusal is the answer, not a failure to send the body again.
+	err := send(io.MultiReader(strings.NewReader("abc")))
+	if _, refused := errors.AsType[*AuthError](err); !refused || requests.Load() != 3 {
+		t.Fatalf("a body read once after a refusal: %v after %d requests", err, requests.Load())
+	}
+	// An interactive write goes again after a 429, but not one read once
+	// (io.MultiReader hides the strings.Reader's Seek).
+	body, err := Multipart([]Part{{FieldName: "file", FileName: "a", Content: io.MultiReader(strings.NewReader("abc")), Size: 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Do(WithInteractive(t.Context()), Request{Method: http.MethodPost, Path: "limited", Body: body, Transfer: true})
+	if _, limited := errors.AsType[*RateLimitedError](err); !limited || limits.Load() != 1 {
+		t.Fatalf("a body read once after a rate limit: %v after %d requests", err, limits.Load())
 	}
 }
 

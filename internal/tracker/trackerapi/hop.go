@@ -120,7 +120,7 @@ func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.U
 	}
 	x := &exchange{}
 	if k.transfer {
-		x.st = newStall(ctx, len(k.body) > 0)
+		x.st = newStall(ctx, k.sending())
 	}
 	hopCtx, cancel := context.WithCancel(x.st.context(ctx))
 	x.cancel = cancel
@@ -130,7 +130,7 @@ func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.U
 		return nil, err
 	}
 	x.trace.GotConn = x.gotConn
-	req, err := k.request(httptrace.WithClientTrace(hopCtx, &x.trace), target, x.st, c.userAgent)
+	req, sent, err := k.request(httptrace.WithClientTrace(hopCtx, &x.trace), target, x.st, c.userAgent)
 	if err != nil {
 		return fail(&NotSentError{Err: fmt.Errorf("%s: %w", c.where(k.method, target), c.cause(sentWith{}, err))})
 	}
@@ -142,8 +142,13 @@ func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.U
 	resp, err := c.conns.transport.RoundTrip(req)
 	if err != nil {
 		failure := c.sendError(ctx, c.where(k.method, target), x.st, x.sent, err)
-		if !x.connected.Load() {
+		switch source := sent.sourceFailure(); {
+		case !x.connected.Load():
 			failure = &NotSentError{Err: failure}
+		case source != nil:
+			// The body stopped short of the length it declared, so the
+			// tracker never had the whole request to act on.
+			failure = &SourceError{Err: fmt.Errorf("%s: %w", c.where(k.method, target), source)}
 		}
 		return fail(failure)
 	}

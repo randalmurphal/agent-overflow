@@ -104,7 +104,7 @@ func TestUnsupportedWrites(t *testing.T) {
 		"start sprint":    p.StartSprint(ctx, tracker.SprintStart{Board: web, Sprint: "c1", Start: start, End: end}),
 		"complete sprint": p.CompleteSprint(ctx, tracker.SprintCompletion{Board: web, Sprint: "c1"}),
 		"edit sprint":     p.EditSprint(ctx, tracker.SprintEdit{Board: web, Sprint: "c1", Name: &name}),
-		"attach":          p.Attach(ctx, tracker.AttachInput{Issue: id, Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("x")}}}),
+		"attach":          p.Attach(ctx, tracker.AttachInput{Issue: id, Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("x"), Size: 1}}}),
 		"move with fields": p.Move(ctx, tracker.MoveInput{Issue: id, Move: "s-done",
 			Fields: []tracker.FieldEdit{{Field: tracker.FieldAssignee, Value: tracker.PickValues("user-1")}}}),
 		"field beyond the list": p.Edit(ctx, tracker.EditInput{Issue: id,

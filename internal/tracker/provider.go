@@ -21,9 +21,10 @@ type Capabilities struct {
 	// SprintWrites: sprints are created, started, edited and completed
 	// through the API (Jira; Linear generates cycles).
 	SprintWrites bool
-	// Attachments: issues hold uploaded files, and Markdown bodies may
-	// embed local images (Jira).
-	Attachments bool
+	// MaxAttachmentBytes is the largest file the tracker stores, zero for
+	// a tracker whose issues hold no uploaded files. Above zero, Markdown
+	// bodies may embed local images too (Jira).
+	MaxAttachmentBytes int64
 	// DetailMovesUpdated: every change to the issue that its Detail shows
 	// (a field, the description, a comment, a link, an attachment, a
 	// status change) moves the issue's update time, and Detail reads
@@ -154,7 +155,7 @@ type Provider interface {
 	Search(ctx context.Context, q SearchQuery) (SearchPage, error)
 	// Download streams one of an issue's attachments, after in.Check. An
 	// attachment that is not the issue's fails wrapping ErrInvalidInput,
-	// a tracker without Capabilities.Attachments fails wrapping
+	// a tracker without Capabilities.MaxAttachmentBytes fails wrapping
 	// ErrUnsupported before any request, and a file over the limit fails
 	// with the transport's error once the limit has been written.
 	Download(ctx context.Context, in DownloadInput) error
@@ -192,8 +193,9 @@ type Provider interface {
 	// Unlink removes one link as one StepLink part about in.Issue that
 	// names both issues' detail.
 	Unlink(ctx context.Context, in UnlinkInput) Result
-	// Attach uploads files to an issue as one StepUpload part; refused without
-	// Capabilities.Attachments.
+	// Attach uploads files to an issue as one StepUpload part, reading
+	// each file's content as it is sent; refused without
+	// Capabilities.MaxAttachmentBytes.
 	Attach(ctx context.Context, in AttachInput) Result
 
 	// Time is the connection's logged time; nil for a tracker with no time

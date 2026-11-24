@@ -86,7 +86,8 @@ a field that is empty for the other.
   (`ReasonStale`), never read as a name.
 - **Capabilities** say what a connection supports beyond what every
   tracker does: issue types, custom fields, moves that take fields, sprint
-  writes and attachments, and whether an issue's update time moves with
+  writes, the largest attachment it stores (none on Linear), and whether
+  an issue's update time moves with
   everything its detail shows. Time tracking is the presence of a time
   tracker, not a flag.
 

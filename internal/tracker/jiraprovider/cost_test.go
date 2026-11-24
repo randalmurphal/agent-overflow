@@ -213,7 +213,7 @@ func TestRequestCost(t *testing.T) {
 		return p.Unlink(ctx, tracker.UnlinkInput{Issue: costIDs(5, 1)[0], Link: d.Links[0].ID, Other: costIDs(6, 1)[0]})
 	})
 	r.result("Attach", func() tracker.Result {
-		return p.Attach(ctx, tracker.AttachInput{Issue: first, Files: []tracker.File{{Name: "notes.txt", Content: strings.NewReader("hello")}}})
+		return p.Attach(ctx, tracker.AttachInput{Issue: first, Files: []tracker.File{{Name: "notes.txt", Content: strings.NewReader("hello"), Size: 5}}})
 	})
 	d, err = p.Detail(ctx, first)
 	if err != nil || len(d.Attachments) == 0 {

@@ -56,15 +56,26 @@ func (c *Client) Attachments(ctx context.Context, issue string) ([]Attachment, e
 	return is.Attachments, nil
 }
 
-// File is one file to attach.
+// MaxAttachmentBytes is the largest file Jira Cloud stores: the ceiling of
+// its per-file attachment setting, 2 GB (Atlassian, "Configure file
+// attachments"). A site's own setting may be lower, and Jira refuses a
+// file over that.
+const MaxAttachmentBytes = 2 << 30
+
+// File is one file to attach: Content holds exactly Size bytes, read as
+// the upload is sent (trackerapi.Upload).
 type File struct {
 	Name    string
 	Content io.Reader
+	Size    int64
 }
 
 // Attach uploads files to an issue in one request and returns the
-// attachments Jira stored. The request is bounded by
-// Options.MaxUploadBytes; Jira refuses more than 60 files at once. An
+// attachments Jira stored. Each file's content is read as the request is
+// sent and held nowhere; Jira refuses more than 60 files at once, and a
+// file over the site's attachment size setting (at most
+// MaxAttachmentBytes). A content that fails or does not hold its Size is
+// a *trackerapi.SourceError, not applied. An
 // upload whose answer could not be read in full is a StepUpload
 // *StepError: Applied, with the stored attachments by ID, when the answer
 // names them, and an unknown outcome otherwise.
@@ -94,9 +105,9 @@ func (c *Client) attach(ctx context.Context, issue string, files ...File) ([]Att
 		if strings.TrimSpace(f.Name) == "" || strings.ContainsFunc(f.Name, isControl) || f.Content == nil {
 			return nil, notSent("attach to %s: file %d needs a name and content", issue, i)
 		}
-		parts[i] = trackerapi.Part{FieldName: "file", FileName: f.Name, Content: f.Content}
+		parts[i] = trackerapi.Part{FieldName: "file", FileName: f.Name, Content: f.Content, Size: f.Size}
 	}
-	body, contentType, err := trackerapi.Multipart(ctx, parts, c.maxUpload)
+	body, err := trackerapi.Multipart(parts)
 	if err != nil {
 		return nil, notSentErr(fmt.Errorf("jira: attach to %s: %w", issue, err))
 	}
@@ -107,7 +118,7 @@ func (c *Client) attach(ctx context.Context, issue string, files ...File) ([]Att
 		// Jira blocks an upload without it, as a cross-site request.
 		Header:   http.Header{"X-Atlassian-Token": {"no-check"}},
 		Body:     body,
-		Transfer: true, ContentType: contentType,
+		Transfer: true,
 	}, bodyAnswer(namesEveryID, http.StatusOK), &stored)
 	if err != nil {
 		// What was stored is known by ID even when the rest is not read;
