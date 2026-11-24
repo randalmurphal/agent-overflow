@@ -1,7 +1,36 @@
 import { expect } from '@playwright/test';
+import { test } from './base-test.js';
 import type { HarnessApp } from '../src/harness.js';
 
 export interface TransferRow { id: string; threadId: string; kind: string; phase: string; error?: string; targetThreadId: string }
+
+const PRIME_TIMEOUT_MS = 300_000;
+
+/**
+ * Builds the receiving backend's migrated database image (the first transfer a
+ * backend process receives builds it while validating the history, which on a
+ * loaded machine outlasts a transfer wait). Call it first in the test, before
+ * the test creates state it later observes, so the build falls outside every
+ * completion poll. The build does not spend the test's own time: the timeout
+ * is raised by the call's bound while it runs and then fixed at the original
+ * plus what the call took.
+ */
+export async function primeTransferRecipient(destination: HarnessApp): Promise<void> {
+  const info = test.info();
+  const budget = info.timeout;
+  // Zero is Playwright's "no limit"; leave it alone.
+  if (budget === 0) {
+    await destination.rpcWithin(PRIME_TIMEOUT_MS, 'HarnessPrimeTransferTemplate');
+    return;
+  }
+  info.setTimeout(budget + PRIME_TIMEOUT_MS);
+  const started = performance.now();
+  try {
+    await destination.rpcWithin(PRIME_TIMEOUT_MS, 'HarnessPrimeTransferTemplate');
+  } finally {
+    info.setTimeout(budget + Math.ceil(performance.now() - started));
+  }
+}
 
 /**
  * Waits for the source host's transfer of threadId (of kind, when given) to

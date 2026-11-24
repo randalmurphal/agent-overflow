@@ -9,7 +9,7 @@ import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
 import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
-import { codexTransferScenario, expectTransferComplete } from './conversation-transfer-helpers.js';
+import { codexTransferScenario, expectTransferComplete, primeTransferRecipient } from './conversation-transfer-helpers.js';
 import { RESULT_LINE, claudeTurnsScenario, emit, listItems, textLines, toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string; threadIds: string[] }> }
@@ -67,6 +67,7 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
     for (const provider of providers) {
       test(`${provider}: copies independently, then moves the original with its image and workspace`, async ({ page }, info) => {
         test.setTimeout(120_000);
+        await primeTransferRecipient(destination);
         const portable = `Portable ${provider} conversation`;
         const independent = `Independent ${provider} copy`;
         const errors: string[] = [];
@@ -148,6 +149,7 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
     // stop ended the process that held it.
     test('names the recurring job a transfer ends, then copies and moves the conversation', async ({ page }, info) => {
       test.setTimeout(150_000);
+      await primeTransferRecipient(destination);
       const title = 'Looping Claude conversation';
       const reply = 'Checking the deploy every five minutes.';
       const errors: string[] = [];
