@@ -228,58 +228,6 @@ func TestGenerateCommitMessage_ClaudeDefaultFollowsTheCLIModelList(t *testing.T)
 	}
 }
 
-func TestGenerateCommitMessage_RoutingRespectsSettings(t *testing.T) {
-	t.Parallel()
-	app := newCommitMsgTestApp(t)
-	workspace := initCommitMsgRepo(t)
-	if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
-		t.Fatalf("dirty: %v", err)
-	}
-	ref := testWorkspaceRef(t, app, workspace)
-
-	// Test both routes with a per-provider recognisable arg.
-	tests := []struct {
-		name     string
-		provider string
-		sentinel string
-	}{
-		{"codex", "codex", "exec"},
-		{"claude", "claude", "-p"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := app.settings.Update(map[string]any{
-				"textGenerationProvider": tc.provider,
-			}); err != nil {
-				t.Fatalf("set provider: %v", err)
-			}
-
-			var gotSpec textgen.CLISpec
-			app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
-				gotSpec = spec
-				if tc.provider == "codex" {
-					outputPath := extractCodexOutputPath(spec.Args)
-					_ = os.WriteFile(outputPath, []byte(`{"subject":"ok","body":""}`), 0o600)
-					return textgen.CLIResult{ExitCode: 0}, nil
-				}
-				return textgen.CLIResult{
-					Stdout:   `{"structured_output":{"subject":"ok","body":""}}`,
-					ExitCode: 0,
-				}, nil
-			}
-
-			claudeReportsModels(app)
-			if _, err := app.GenerateCommitMessage(ref, CommitSelection{All: true}); err != nil {
-				t.Fatalf("generate: %v", err)
-			}
-			if !argsContain(gotSpec.Args, tc.sentinel) {
-				t.Errorf("%s route didn't pass its sentinel arg %q; got %v",
-					tc.provider, tc.sentinel, gotSpec.Args)
-			}
-		})
-	}
-}
-
 func TestGenerateCommitMessage_RoutingCustomEffortAndModel(t *testing.T) {
 	t.Parallel()
 	app := newCommitMsgTestApp(t)

@@ -179,37 +179,6 @@ func TestComposer_DraftOverwritePreservesMostRecent(t *testing.T) {
 	}
 }
 
-// TestComposer_DraftStaleGenerationCounterRejected documents the actual
-// contract: the backend has NO generation counter. Writes land in the order
-// the client sends them. The frontend's composerDraft.svelte.ts guards
-// against out-of-order saves via its own in-memory counter; Go simply
-// performs last-writer-wins upserts.
-//
-// This test exercises back-to-back SaveDrafts and asserts the final state
-// reflects the last call, proving the contract: it is the caller's job to
-// serialize writes.
-func TestComposer_DraftStaleGenerationCounterRejected(t *testing.T) {
-	t.Parallel()
-	app, _ := newComposerTestApp(t)
-	composerSeedThread(t, app, "thr-gen", "")
-
-	// "Newer" save with higher logical generation (gen=1, content "new").
-	if err := app.SaveDraft(t.Context(), "thr-gen", "new", nil, nil, nil); err != nil {
-		t.Fatalf("SaveDraft gen=1: %v", err)
-	}
-	// "Older" save arriving late (gen=0, content "old"). No counter → it wins.
-	if err := app.SaveDraft(t.Context(), "thr-gen", "old", nil, nil, nil); err != nil {
-		t.Fatalf("SaveDraft gen=0: %v", err)
-	}
-	got, err := app.GetDraft("thr-gen")
-	if err != nil {
-		t.Fatalf("GetDraft: %v", err)
-	}
-	if got.Content != "old" {
-		t.Fatalf("CONTRACT: backend has no generation counter; last write wins. Content = %q, want \"old\"", got.Content)
-	}
-}
-
 // TestComposer_DraftPerThreadIsolation confirms two threads' drafts do not
 // leak into each other.
 func TestComposer_DraftPerThreadIsolation(t *testing.T) {

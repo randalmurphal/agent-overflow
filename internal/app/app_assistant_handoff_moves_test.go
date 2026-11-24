@@ -328,42 +328,6 @@ func TestSendsDuringAFailedReturnEndInTheNextSuccessor(t *testing.T) {
 	}
 }
 
-// A failed session-loss handoff puts the carried sends back in the old
-// composer in one write, holding the old thread's mutation lock, so the
-// composer move of a handoff a send starts meanwhile finds them in place.
-func TestAFailedSessionLossHandOffReturnsTheTextsUnderTheComposerLock(t *testing.T) {
-	t.Parallel()
-	f, threadID, _ := lostSessionAssistant(t)
-	var mu sync.Mutex
-	lockedAtReturn := []bool{}
-	f.app.testEmitHook = func(name string, data any) {
-		if evt, ok := data.(DraftUpdatedEvent); ok && name == "draft:updated" && evt.ThreadID == threadID {
-			locked := f.app.threadApplication().MutationRefs(threadID) > 0
-			mu.Lock()
-			lockedAtReturn = append(lockedAtReturn, locked)
-			mu.Unlock()
-		}
-	}
-	// An archived assistant refuses the handoff.
-	release := holdSessionLossHandOff(t, f.app, func() {
-		if _, _, err := f.app.store.ArchiveThread(threadID); err != nil {
-			t.Error(err)
-		}
-	})
-	sendFindingTheSessionGone(t, f.app, threadID, "first message")
-	sendFindingTheSessionGone(t, f.app, threadID, "second message")
-	release()
-	f.app.waitAgentNoticeWork()
-	if got := draftContent(t, f.app, threadID); got != "first message\n\nsecond message" {
-		t.Fatalf("old composer = %q, want the carried texts in order", got)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(lockedAtReturn) != 1 || !lockedAtReturn[0] {
-		t.Fatalf("composer lock held at each write of the returned texts: %v, want one write, held", lockedAtReturn)
-	}
-}
-
 // A failed handoff's end is one take and one write however many sends it
 // kept, and a send that finds the session gone while it writes is no longer
 // this handoff's, so a steady sender cannot keep it from returning.

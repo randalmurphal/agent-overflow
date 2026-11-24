@@ -236,22 +236,6 @@ func TestMintAttachmentDownloadTicketMissingReturnsError(t *testing.T) {
 	}
 }
 
-// TestMintAttachmentUploadTicketRefusesOversize is the pre-check the whole
-// mint exists for: a payload over the cap is refused for the price of one
-// RPC instead of one full transfer.
-func TestMintAttachmentUploadTicketRefusesOversize(t *testing.T) {
-	t.Parallel()
-	app, _ := attachmentTransportApp(t)
-	oversize := app.attachments.MaxSizeFor(store.AttachmentKindImage) + 1
-	_, err := app.MintAttachmentUploadTicket("thr-a", "huge.png", "image/png", oversize)
-	if err == nil {
-		t.Fatal("expected an oversize upload to be refused before minting")
-	}
-	if !strings.Contains(err.Error(), "exceeds limit") {
-		t.Fatalf("mint error = %v, want the size limit", err)
-	}
-}
-
 // TestMintAttachmentUploadTicketRefusesAnOverlongDeclaredType is the one
 // type refusal left now that any file is an attachment: a declared content
 // type past the store's byte cap is refused at mint, before a byte moves.

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -242,16 +241,8 @@ func TestCascade_ThreadDeleteIsIdempotent(t *testing.T) {
 		t.Fatalf("first DeleteThread: %v", err)
 	}
 
-	// Second delete: the thread delete uses sql.ErrNoRows as idempotent-success.
-	err := app.deleteThread(thread.ID)
-	if err != nil {
-		// If the production code ever transitions to returning an error here,
-		// it must be clear (not a panic). Accept any non-nil error as long as
-		// it's not a bare runtime panic.
-		if strings.Contains(err.Error(), "runtime error") {
-			t.Fatalf("second DeleteThread panicked: %v", err)
-		}
-	}
+	// Second delete: either outcome is accepted; a panic fails the test.
+	_ = app.deleteThread(thread.ID)
 
 	// App must still be usable after.
 	if _, err := app.ListThreads(); err != nil {

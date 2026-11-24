@@ -374,60 +374,47 @@ func installFakeCodexSessionWithResume(
 	})
 }
 
-// TestStartSessionTriggersCodexReconcileResumesOnNotLoaded covers the
+// TestStartSessionTriggersCodexReconcileResumesOnlyWhenNotLoaded covers the
 // post-start reconcile path: when startSessionNow seats a Codex session
 // with a resume ref, reconcileCodexAfterStart runs, and if the probe
 // reports notLoaded it triggers Resume to rehydrate the thread before
-// the user sends another turn.
+// the user sends another turn. An idle/active probe must NOT trigger
+// Resume: the session is live, and a redundant resume would be a waste of
+// a round-trip and could race with real turn traffic.
 //
 // We can't drive startSessionNow end-to-end in a unit test (it spawns a
 // real codex process), so we exercise reconcileCodexAfterStart directly
 // — that's the same code path the goroutine in startSessionNow enters.
-func TestStartSessionTriggersCodexReconcileResumesOnNotLoaded(t *testing.T) {
+func TestStartSessionTriggersCodexReconcileResumesOnlyWhenNotLoaded(t *testing.T) {
 	t.Parallel()
-	st := storetest.Clone(t)
-	a := newAppWithStore(t, st)
-	threadID := seedCodexThread(t, st, "thread-reconcile-start")
+	for _, tc := range []struct {
+		status      codex.ThreadStatusKind
+		wantResumes int32
+	}{
+		{status: codex.ThreadStatusNotLoaded, wantResumes: 1},
+		{status: codex.ThreadStatusIdle, wantResumes: 0},
+	} {
+		t.Run(string(tc.status), func(t *testing.T) {
+			t.Parallel()
+			st := storetest.Clone(t)
+			a := newAppWithStore(t, st)
+			threadID := seedCodexThread(t, st, "thread-reconcile-start")
 
-	var resumeCalls atomic.Int32
-	installFakeCodexSessionWithResume(t, a, threadID,
-		codexProbeStub{status: codex.ThreadStatusNotLoaded},
-		func(_ context.Context) error {
-			resumeCalls.Add(1)
-			return nil
-		},
-	)
+			var resumeCalls atomic.Int32
+			installFakeCodexSessionWithResume(t, a, threadID,
+				codexProbeStub{status: tc.status},
+				func(_ context.Context) error {
+					resumeCalls.Add(1)
+					return nil
+				},
+			)
 
-	a.reconcileCodexAfterStart(threadID, registeredSession(t, a, threadID))
+			a.reconcileCodexAfterStart(threadID, registeredSession(t, a, threadID))
 
-	if got := resumeCalls.Load(); got != 1 {
-		t.Fatalf("resumeCalls = %d, want 1 on notLoaded probe", got)
-	}
-}
-
-// TestStartSessionTriggersCodexReconcileSkipsResumeOnAlive covers the
-// alive path: an idle/active probe must NOT trigger Resume. The session
-// is live; a redundant resume would be a waste of a round-trip and
-// could race with real turn traffic.
-func TestStartSessionTriggersCodexReconcileSkipsResumeOnAlive(t *testing.T) {
-	t.Parallel()
-	st := storetest.Clone(t)
-	a := newAppWithStore(t, st)
-	threadID := seedCodexThread(t, st, "thread-reconcile-alive")
-
-	var resumeCalls atomic.Int32
-	installFakeCodexSessionWithResume(t, a, threadID,
-		codexProbeStub{status: codex.ThreadStatusIdle},
-		func(_ context.Context) error {
-			resumeCalls.Add(1)
-			return nil
-		},
-	)
-
-	a.reconcileCodexAfterStart(threadID, registeredSession(t, a, threadID))
-
-	if got := resumeCalls.Load(); got != 0 {
-		t.Fatalf("resumeCalls = %d, want 0 on idle probe", got)
+			if got := resumeCalls.Load(); got != tc.wantResumes {
+				t.Fatalf("resumeCalls = %d, want %d on a %s probe", got, tc.wantResumes, tc.status)
+			}
+		})
 	}
 }
 

@@ -140,19 +140,25 @@ func TestGetContextSettingsReturnsProviderModelOptions(t *testing.T) {
 	}
 }
 
-func TestGetContextSettingsReturnsStandardOnlyForCodexGPT55(t *testing.T) {
+// gpt-5.5 and the single-window Codex defaults (gpt-5.2) offer only the
+// standard window.
+func TestGetContextSettingsReturnsStandardOnlyCodexWindows(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 
-	profile, err := app.GetContextSettings("codex", "gpt-5.5")
-	if err != nil {
-		t.Fatalf("GetContextSettings(codex/gpt-5.5): %v", err)
-	}
-	if profile.ContextWindow != provider.CodexStandardContextWindow {
-		t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.CodexStandardContextWindow)
-	}
-	if len(profile.ContextWindows) != 1 || profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
-		t.Fatalf("ContextWindows = %+v, want standard-only", profile.ContextWindows)
+	for _, model := range []string{"gpt-5.5", "gpt-5.2"} {
+		t.Run(model, func(t *testing.T) {
+			profile, err := app.GetContextSettings("codex", model)
+			if err != nil {
+				t.Fatalf("GetContextSettings(codex/%s): %v", model, err)
+			}
+			if profile.ContextWindow != provider.CodexStandardContextWindow {
+				t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.CodexStandardContextWindow)
+			}
+			if len(profile.ContextWindows) != 1 || profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
+				t.Fatalf("ContextWindows = %+v, want standard-only", profile.ContextWindows)
+			}
+		})
 	}
 }
 
@@ -191,22 +197,6 @@ func TestGetContextSettingsClampsStaleCodexGPT55Profile(t *testing.T) {
 	profile, err := app.GetContextSettings("codex", "gpt-5.5")
 	if err != nil {
 		t.Fatalf("GetContextSettings(codex/gpt-5.5): %v", err)
-	}
-	if profile.ContextWindow != provider.CodexStandardContextWindow {
-		t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.CodexStandardContextWindow)
-	}
-	if len(profile.ContextWindows) != 1 || profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
-		t.Fatalf("ContextWindows = %+v, want standard-only", profile.ContextWindows)
-	}
-}
-
-func TestGetContextSettingsReturnsSingleWindowCodexDefaults(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	profile, err := app.GetContextSettings("codex", "gpt-5.2")
-	if err != nil {
-		t.Fatalf("GetContextSettings(codex/gpt-5.2): %v", err)
 	}
 	if profile.ContextWindow != provider.CodexStandardContextWindow {
 		t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.CodexStandardContextWindow)
