@@ -32,6 +32,11 @@ func TestClassifyNotification_TurnStarted(t *testing.T) {
 			params: `{}`,
 			turnID: "",
 		},
+		{
+			name:   "malformed params",
+			params: `not json`,
+			turnID: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -169,22 +174,6 @@ func TestClassifyNotification_ThreadTokenUsageUpdatedDoesNotFalseFireExceeded(t 
 	}
 	if window.Exceeded {
 		t.Fatalf("expected Exceeded=false for normal high reading (last==window but total!=window), got %+v", window)
-	}
-}
-
-// TestClassifyNotification_ItemUpdatedIsPhantom pins that the Codex
-// app-server wire protocol has NO `item/updated` method — it only
-// emits `item/started` and `item/completed`. Reference:
-// https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts.
-// Any classifier branch that produces events for `item/updated` would
-// be dispatching on a phantom method; this test locks that in by
-// asserting zero events come out for such a method.
-func TestClassifyNotification_ItemUpdatedIsPhantom(t *testing.T) {
-	t.Parallel()
-	params := `{"item":{"id":"item-9","type":"command_execution","status":"in_progress"}}`
-	events := ClassifyNotification("t1", "item/updated", json.RawMessage(params))
-	if len(events) != 0 {
-		t.Errorf("expected no events for phantom method item/updated, got %d: %+v", len(events), events)
 	}
 }
 
@@ -340,20 +329,6 @@ func TestClassifyItemCompleted_UserMessage_MultiTextBlocks(t *testing.T) {
 	}
 }
 
-// TestClassifyItemNotification_UserMessageStarted_StillDropped pins
-// today's behavior: `item/started` for `userMessage` returns no
-// events. The started event is the in-flight half of the user
-// envelope and has no UI signal we want — only the completed half
-// promotes to EventUserText.
-func TestClassifyItemNotification_UserMessageStarted_StillDropped(t *testing.T) {
-	t.Parallel()
-	params := `{"turnId":"turn-9","item":{"id":"item-abc","type":"userMessage","content":[{"type":"text","text":"hi from user"}]}}`
-	events := ClassifyNotification("thread-1", "item/started", json.RawMessage(params))
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events for item/started userMessage, got %d: %+v", len(events), events)
-	}
-}
-
 // TestClassifyItemCompleted_AgentMessageSettlesText pins the Codex
 // multi-message turn boundary. Deltas create the assistant_text row;
 // item/completed closes that streaming row so a later tool or final_answer
@@ -446,58 +421,41 @@ func TestParseCodexRetryCounts(t *testing.T) {
 	}
 }
 
+// An absent willRetry is treated identically to willRetry:false: fatal, with
+// meta.fatal:true so the triage router's fatal branch closes the open turn
+// instead of treating the error as recoverable.
 func TestClassifyNotification_ErrorWithoutWillRetry(t *testing.T) {
 	t.Parallel()
-	params := `{"error":{"message":"fatal error"}}`
-	events := ClassifyNotification("t1", "error", json.RawMessage(params))
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	evt := events[0]
-	if evt.Kind != provider.EventError {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventError)
-	}
-	if evt.Failure == nil || evt.Failure.Class != provider.FailureFatal || !evt.Failure.EndsTurn() {
-		t.Fatalf("failure = %+v, want terminal fatal", evt.Failure)
-	}
-	if evt.Content != "fatal error" {
-		t.Errorf("content: got %q, want %q", evt.Content, "fatal error")
-	}
-	// Absent willRetry treated identically to willRetry:false — fatal.
-	var meta map[string]any
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if fatal, _ := meta["fatal"].(bool); !fatal {
-		t.Errorf("meta.fatal: got %v, want true", meta["fatal"])
-	}
-}
-
-func TestClassifyNotification_ErrorWillRetryFalse(t *testing.T) {
-	t.Parallel()
-	params := `{"error":{"message":"giving up"},"willRetry":false}`
-	events := ClassifyNotification("t1", "error", json.RawMessage(params))
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	evt := events[0]
-	if evt.Kind != provider.EventError {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventError)
-	}
-	// `willRetry:false` is fatal — meta.fatal:true so the triage router's
-	// fatal branch closes the open turn instead of treating the error as
-	// recoverable.
-	var meta map[string]any
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if fatal, _ := meta["fatal"].(bool); !fatal {
-		t.Errorf("meta.fatal: got %v, want true", meta["fatal"])
-	}
-	if got, want := meta["error"], "giving up"; got != want {
-		t.Errorf("meta.error: got %q, want %q", got, want)
+	for _, tc := range []struct{ name, params, message string }{
+		{"willRetry absent", `{"error":{"message":"fatal error"}}`, "fatal error"},
+		{"willRetry false", `{"error":{"message":"giving up"},"willRetry":false}`, "giving up"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := ClassifyNotification("t1", "error", json.RawMessage(tc.params))
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(events))
+			}
+			evt := events[0]
+			if evt.Kind != provider.EventError {
+				t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventError)
+			}
+			if evt.Failure == nil || evt.Failure.Class != provider.FailureFatal || !evt.Failure.EndsTurn() {
+				t.Fatalf("failure = %+v, want terminal fatal", evt.Failure)
+			}
+			if evt.Content != tc.message {
+				t.Errorf("content: got %q, want %q", evt.Content, tc.message)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if fatal, _ := meta["fatal"].(bool); !fatal {
+				t.Errorf("meta.fatal: got %v, want true", meta["fatal"])
+			}
+			if got := meta["error"]; got != tc.message {
+				t.Errorf("meta.error: got %q, want %q", got, tc.message)
+			}
+		})
 	}
 }
 
@@ -539,34 +497,6 @@ func TestClassifyNotification_ErrorNormalizesUsageLimitReason(t *testing.T) {
 		events[0].Failure.Code != "usageLimitExceeded" ||
 		!events[0].Failure.WaitsForTurnComplete() {
 		t.Fatalf("events = %+v, want a normalized usage-limit transient", events)
-	}
-}
-
-func TestClassifyNotification_UnknownMethod(t *testing.T) {
-	t.Parallel()
-	events := ClassifyNotification("t1", "some/future/method", json.RawMessage(`{}`))
-	if len(events) != 0 {
-		t.Errorf("expected 0 events, got %d", len(events))
-	}
-}
-
-func TestClassifyNotification_MalformedParams(t *testing.T) {
-	t.Parallel()
-	events := ClassifyNotification("t1", "turn/started", json.RawMessage(`not json`))
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	// Should still emit an event with empty turn ID.
-	if events[0].TurnID != "" {
-		t.Errorf("expected empty turnID for malformed params, got %q", events[0].TurnID)
-	}
-}
-
-func TestClassifyNotification_ItemAgentMessageDeltaEmpty(t *testing.T) {
-	t.Parallel()
-	events := ClassifyNotification("t1", "item/agentMessage/delta", json.RawMessage(`{"delta":""}`))
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for empty delta, got %d", len(events))
 	}
 }
 
@@ -655,19 +585,6 @@ func TestClassifyNotification_FailedCollabSpawnCarriesFailedStatus(t *testing.T)
 	}
 }
 
-func TestClassifyNotification_CollabSendInputUsesDedicatedType(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"item":{"id":"call-2","type":"collabAgentToolCall","tool":"sendInput","prompt":"continue","receiverThreadIds":["child-1"],"status":"completed"}}`)
-	events := ClassifyNotification("t1", "item/completed", params)
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].ItemType != "send_input" {
-		t.Fatalf("itemType: got %q, want %q", events[0].ItemType, "send_input")
-	}
-}
-
 // TestClassifyNotification_CollabSpawnSurfacesAgentsStates is the
 // primary user of the agentsStates enrichment: the parent spawn_agent
 // card tracks each child thread's live status so the UI can render
@@ -737,16 +654,16 @@ func TestClassifyNotification_CollabSpawnWithoutAgentsStatesOmitsKey(t *testing.
 // `wait` collab tool emits a dedicated `wait_agent` item type so the UI
 // can render a distinct "waiting on N agents" card. The wire value is
 // `"wait"` per codex-source v2.rs:4977 (`CollabAgentTool::Wait` with
-// `rename_all = "camelCase"` — single-word enums serialize verbatim).
-// The older `"waitAgent"` variant is never emitted by a live server but
-// is accepted as a defensive alias.
+// `rename_all = "camelCase"` — single-word enums serialize verbatim);
+// TestClassifyNotification_CollabAgentCompletionCarriesAgentMessage
+// covers it. The older `"waitAgent"` variant is never emitted by a live
+// server but is accepted as a defensive alias.
 func TestClassifyNotification_CollabWaitEmitsWaitAgent(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
 		tool string
 	}{
-		{"canonical wire value", "wait"},
 		{"defensive alias waitAgent", "waitAgent"},
 		{"defensive alias wait_agent", "wait_agent"},
 		{"title-case legacy", "WaitAgent"},
@@ -821,17 +738,6 @@ func TestClassifyNotification_CollabWaitSurfacesAgentsStates(t *testing.T) {
 	}
 	if child1["message"] != "ok" {
 		t.Errorf("child-1 message: got %v, want %q", child1["message"], "ok")
-	}
-}
-
-// TestClassifyNotification_UnknownMethodDoesNotCrash guards the
-// default-skip branch for a hypothetical Codex method we don't handle
-// yet. It must not panic and must emit no events.
-func TestClassifyNotification_UnknownMethodDoesNotCrash(t *testing.T) {
-	t.Parallel()
-	events := ClassifyNotification("t1", "item/futurefeature", json.RawMessage(`{"whatever":true}`))
-	if len(events) != 0 {
-		t.Errorf("unknown method emitted %d events, want 0", len(events))
 	}
 }
 
@@ -910,7 +816,8 @@ func TestClassifyNotification_ItemCompletedStatusFailed(t *testing.T) {
 // surfaces here instead of silently dropping.
 func TestClassifyNotification_ItemCompletedEachStatus(t *testing.T) {
 	t.Parallel()
-	statuses := []string{"inProgress", "completed", "failed", "declined"}
+	// "failed" is covered by TestClassifyNotification_ItemCompletedStatusFailed.
+	statuses := []string{"inProgress", "completed", "declined"}
 	for _, status := range statuses {
 		t.Run(status, func(t *testing.T) {
 			params := json.RawMessage(
@@ -976,50 +883,6 @@ func TestClassifyNotification_TerminalInteractionEmptyStdin(t *testing.T) {
 	}
 }
 
-func TestClassifyNotification_RawResponseWriteStdinCallDropped(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(
-		`{"threadId":"th-1","turnId":"turn-2","item":{"id":"fc-1","type":"function_call","name":"write_stdin","call_id":"call-stdin","arguments":"{\"session_id\":17313,\"chars\":\"\",\"yield_time_ms\":1000}"}}`,
-	)
-	events := ClassifyNotification("th-1", "rawResponseItem/completed", params)
-	if len(events) != 0 {
-		t.Fatalf("expected empty write_stdin raw response to stay non-visual, got %d", len(events))
-	}
-}
-
-func TestClassifyNotification_RawResponseWriteStdinWithInputDropped(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(
-		`{"threadId":"th-1","turnId":"turn-2","item":{"id":"fc-1","type":"function_call","name":"write_stdin","call_id":"call-stdin","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"secret\\n\"}"}}`,
-	)
-	events := ClassifyNotification("th-1", "rawResponseItem/completed", params)
-	if len(events) != 0 {
-		t.Fatalf("expected non-empty write_stdin raw response to be dropped, got %d events", len(events))
-	}
-}
-
-func TestClassifyNotification_RawResponseWriteStdinOutputDropped(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(
-		`{"threadId":"th-1","turnId":"turn-2","item":{"type":"function_call_output","call_id":"call-stdin","rawToolName":"write_stdin","processId":"17313","waitResult":"running","output":"Chunk ID: x\nWall time: 1.0000 seconds\nProcess running with session ID 17313\nOutput:\n"}}`,
-	)
-	events := ClassifyNotification("th-1", "rawResponseItem/completed", params)
-	if len(events) != 0 {
-		t.Fatalf("expected write_stdin raw output to be dropped, got %d events", len(events))
-	}
-}
-
-func TestClassifyNotification_RawSpawnAgentOutputDropped(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(
-		`{"threadId":"th-1","turnId":"turn-2","item":{"type":"function_call_output","call_id":"spawn-1","rawToolName":"spawn_agent","output":"agent thread limit reached"}}`,
-	)
-	events := ClassifyNotification("th-1", "rawResponseItem/completed", params)
-	if len(events) != 0 {
-		t.Fatalf("expected raw spawn_agent output to stay non-visual, got %d events", len(events))
-	}
-}
-
 // TestClassifyNotification_TerminalInteractionNonEmptyStdin pins the
 // non-empty-stdin variant: the model forwarded actual keystrokes to the
 // backgrounded PTY. The parser must STILL emit the event (rather than
@@ -1049,17 +912,6 @@ func TestClassifyNotification_TerminalInteractionNonEmptyStdin(t *testing.T) {
 	}
 	if meta["stdin"] != "y\n" {
 		t.Errorf("meta.stdin = %v, want \"y\\n\"", meta["stdin"])
-	}
-}
-
-func TestClassifyNotification_McpToolCallProgressDropped(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(
-		`{"threadId":"th-1","turnId":"t1","itemId":"mcp-1","message":"Indexed 47/100 files"}`,
-	)
-	events := ClassifyNotification("th-1", "item/mcpToolCall/progress", params)
-	if len(events) != 0 {
-		t.Fatalf("expected mcpToolCall/progress to be dropped, got %d event(s)", len(events))
 	}
 }
 
@@ -1677,22 +1529,6 @@ func TestChildAgentTokenSpendRefusesEmptyFrames(t *testing.T) {
 
 // -- ClassifyNotification tests --
 
-func TestTurnStarted(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"turn":{"id":"turn-1"}}`)
-	events := ClassifyNotification(testThread, "turn/started", params)
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventTurnStart {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTurnStart)
-	}
-	if events[0].TurnID != "turn-1" {
-		t.Errorf("turnID: got %q, want %q", events[0].TurnID, "turn-1")
-	}
-}
-
 func TestTurnCompletedSuccess(t *testing.T) {
 	t.Parallel()
 	params := json.RawMessage(`{"turn":{"id":"turn-1","status":"completed"}}`)
@@ -1750,16 +1586,6 @@ func TestItemAgentMessageDelta(t *testing.T) {
 	}
 	if events[0].Role != "assistant" {
 		t.Errorf("role: got %q, want %q", events[0].Role, "assistant")
-	}
-}
-
-func TestItemAgentMessageDeltaEmpty(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"delta":""}`)
-	events := ClassifyNotification(testThread, "item/agentMessage/delta", params)
-
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for empty delta, got %d", len(events))
 	}
 }
 
@@ -1908,7 +1734,7 @@ func TestItemCompletedSettlesStreamingContentTypes(t *testing.T) {
 		itemType      string
 		wantBlockType string
 	}{
-		{name: "agent message", itemType: "agentMessage", wantBlockType: "text"},
+		// agentMessage is covered by TestClassifyItemCompleted_AgentMessageSettlesText.
 		{name: "assistant message", itemType: "assistantMessage", wantBlockType: "text"},
 		{name: "reasoning", itemType: "reasoning", wantBlockType: "thinking"},
 	}
@@ -2005,65 +1831,6 @@ func TestTurnDiffUpdatedTurnID(t *testing.T) {
 		if events := ClassifyNotification(testThread, "turn/diff/updated", json.RawMessage(params)); len(events) != 0 {
 			t.Errorf("%s: events = %+v, want none", params, events)
 		}
-	}
-}
-
-func TestFileChangeOutputDelta(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"delta":"diff content"}`)
-	events := ClassifyNotification(testThread, "item/fileChange/outputDelta", params)
-
-	if len(events) != 0 {
-		t.Fatalf("item/fileChange/outputDelta should not create transcript events, got %+v", events)
-	}
-}
-
-func TestFileChangePatchUpdated(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"itemId":"patch-1","changes":[]}`)
-	events := ClassifyNotification(testThread, "item/fileChange/patchUpdated", params)
-
-	if len(events) != 0 {
-		t.Fatalf("item/fileChange/patchUpdated should not create transcript events, got %+v", events)
-	}
-}
-
-func TestTokenUsageUpdated(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"tokenUsage":{"last":{"inputTokens":100,"outputTokens":20,"cachedInputTokens":6,"totalTokens":126},"total":{"inputTokens":9000,"outputTokens":2000,"cachedInputTokens":839,"totalTokens":11839},"modelContextWindow":258400}}`)
-	events := ClassifyNotification(testThread, "thread/tokenUsage/updated", params)
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventTokenUsage {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTokenUsage)
-	}
-	var window provider.ContextWindow
-	if err := json.Unmarshal(events[0].Meta, &window); err != nil {
-		t.Fatalf("unmarshal context window: %v", err)
-	}
-	if window.UsedTokens != 126 {
-		t.Fatalf("usedTokens: got %d, want 126", window.UsedTokens)
-	}
-	if window.MaxTokens != 258400 {
-		t.Fatalf("maxTokens: got %d, want 258400", window.MaxTokens)
-	}
-}
-
-func TestErrorNotification(t *testing.T) {
-	t.Parallel()
-	params := json.RawMessage(`{"error":{"message":"rate limited"}}`)
-	events := ClassifyNotification(testThread, "error", params)
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventError {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventError)
-	}
-	if events[0].Content != "rate limited" {
-		t.Errorf("content: got %q, want %q", events[0].Content, "rate limited")
 	}
 }
 
@@ -2514,25 +2281,43 @@ func TestClassifyServerRequestResolvedPrefersProviderRequestID(t *testing.T) {
 	}
 }
 
-func TestSkippedMethods(t *testing.T) {
+// Notifications that must not become transcript or UI events: skipped
+// lifecycle methods, progress the typed item notifications already carry,
+// raw response transcript items, and methods the classifier does not know.
+func TestClassifyNotification_EmitsNoEvents(t *testing.T) {
 	t.Parallel()
-	skipped := []string{
-		"thread/started",
-		"thread/status/changed",
-		"thread/archived",
-		"thread/unarchived",
-		"thread/closed",
-		"item/autoApprovalReview/started",
-		"item/autoApprovalReview/completed",
-		"account/updated",
-		"account/login/completed",
+	cases := []struct{ name, method, params string }{
+		{"thread/started", "thread/started", `{}`},
+		{"thread/status/changed", "thread/status/changed", `{}`},
+		{"thread/archived", "thread/archived", `{}`},
+		{"thread/unarchived", "thread/unarchived", `{}`},
+		{"thread/closed", "thread/closed", `{}`},
+		{"item/autoApprovalReview/started", "item/autoApprovalReview/started", `{}`},
+		{"item/autoApprovalReview/completed", "item/autoApprovalReview/completed", `{}`},
+		{"account/updated", "account/updated", `{}`},
+		{"account/login/completed", "account/login/completed", `{}`},
+		{"empty agent message delta", "item/agentMessage/delta", `{"delta":""}`},
+		{"file change output delta", "item/fileChange/outputDelta", `{"delta":"diff content"}`},
+		{"file change patch updated", "item/fileChange/patchUpdated", `{"itemId":"patch-1","changes":[]}`},
+		{"mcp tool call progress", "item/mcpToolCall/progress", `{"threadId":"th-1","turnId":"t1","itemId":"mcp-1","message":"Indexed 47/100 files"}`},
+		{"raw empty write_stdin call", "rawResponseItem/completed", `{"threadId":"th-1","turnId":"turn-2","item":{"id":"fc-1","type":"function_call","name":"write_stdin","call_id":"call-stdin","arguments":"{\"session_id\":17313,\"chars\":\"\",\"yield_time_ms\":1000}"}}`},
+		{"raw write_stdin call with input", "rawResponseItem/completed", `{"threadId":"th-1","turnId":"turn-2","item":{"id":"fc-1","type":"function_call","name":"write_stdin","call_id":"call-stdin","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"secret\\n\"}"}}`},
+		{"raw write_stdin output", "rawResponseItem/completed", `{"threadId":"th-1","turnId":"turn-2","item":{"type":"function_call_output","call_id":"call-stdin","rawToolName":"write_stdin","processId":"17313","waitResult":"running","output":"Chunk ID: x\nWall time: 1.0000 seconds\nProcess running with session ID 17313\nOutput:\n"}}`},
+		{"raw spawn_agent output", "rawResponseItem/completed", `{"threadId":"th-1","turnId":"turn-2","item":{"type":"function_call_output","call_id":"spawn-1","rawToolName":"spawn_agent","output":"agent thread limit reached"}}`},
+		{"unknown method", "some/future/method", `{}`},
+		{"unknown item method", "item/futurefeature", `{"whatever":true}`},
+		// The app-server protocol has no item/updated method, only
+		// item/started and item/completed (codex-rs/app-server-protocol
+		// schema/typescript/ServerNotification.ts); a branch for it would
+		// dispatch on a phantom.
+		{"phantom item/updated", "item/updated", `{"item":{"id":"item-9","type":"command_execution","status":"in_progress"}}`},
 	}
-
-	for _, method := range skipped {
-		events := ClassifyNotification(testThread, method, json.RawMessage(`{}`))
-		if len(events) != 0 {
-			t.Errorf("method %q: expected 0 events, got %d", method, len(events))
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if events := ClassifyNotification(testThread, tc.method, json.RawMessage(tc.params)); len(events) != 0 {
+				t.Fatalf("%s: expected 0 events, got %d: %+v", tc.method, len(events), events)
+			}
+		})
 	}
 }
 
@@ -2553,14 +2338,6 @@ func TestClassifyReasoningSummaryPartAddedEmitsParagraphBreak(t *testing.T) {
 	}
 	if events[0].Content != "\n\n" {
 		t.Errorf("content: got %q, want %q", events[0].Content, "\n\n")
-	}
-}
-
-func TestUnknownMethod(t *testing.T) {
-	t.Parallel()
-	events := ClassifyNotification(testThread, "future/feature", json.RawMessage(`{}`))
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for unknown method, got %d", len(events))
 	}
 }
 
