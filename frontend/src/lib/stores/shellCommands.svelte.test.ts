@@ -129,18 +129,6 @@ describe('event projection', () => {
 });
 
 describe('snapshot reconciliation', () => {
-  it('re-reads the run when a frame was lost', async () => {
-    applyShellCommandEvent(started());
-    applyShellCommandEvent(output(1, 'a\n'));
-    GetThreadShellCommands.mockResolvedValue(snapshot('run-1', 'a\nb\nc\n', 3));
-    applyShellCommandEvent(output(3, 'c\n'));
-    await vi.waitFor(() => expect(getShellRun(THREAD)?.output).toBe('a\nb\nc\n'));
-    expect(GetThreadShellCommands).toHaveBeenCalledTimes(1);
-    // The stream continues from the snapshot's position.
-    applyShellCommandEvent(output(4, 'd\n'));
-    expect(getShellRun(THREAD)?.output).toBe('a\nb\nc\nd\n');
-  });
-
   it('shows a live frame past a hole at once and fills the hole from the snapshot', async () => {
     applyShellCommandEvent(started());
     applyShellCommandEvent(output(1, 'a\n'));

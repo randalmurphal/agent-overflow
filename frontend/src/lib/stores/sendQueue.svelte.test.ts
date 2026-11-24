@@ -242,12 +242,6 @@ describe('sendQueue store', () => {
       expect(getQueueRevisionForThread('t1')).toBe(before + 1);
     });
 
-    it('confirming the last entry deletes the map key', () => {
-      markItemsFlushed('t1', [{ queueItemId: 'q:0', userItemId: 'u:0', message: 'a' }]);
-      confirmFlushedByUserItemId('t1', 'u:0');
-      expect(getFlushedForThread('t1')).toHaveLength(0);
-    });
-
     it('removeRestoredQueueItems removes restored Zone 1 and Zone 2 markers', () => {
       replaceQueueForThread('t1', [
         makeItem({ id: 'q:queued', threadId: 't1', message: 'queued' }),

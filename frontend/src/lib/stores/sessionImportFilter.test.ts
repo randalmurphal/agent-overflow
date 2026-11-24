@@ -214,20 +214,6 @@ describe('buildProjectGroups', () => {
     ]);
   });
 
-  it('tiebreaks the path only — the label is a property of the group', () => {
-    // Every row of a known project carries that project's own name (the scan
-    // stamps `ProjectLabel = project.Name`) and an unknown group is keyed on
-    // the path itself, so the path is the only field members can disagree on.
-    const groups = buildProjectGroups(
-      [
-        row('sub', { projectPath: '/repos/alpha/frontend' }),
-        row('root', { projectPath: '/repos/alpha' }),
-      ],
-      GROUP_FILTERS,
-    );
-    expect(groups.map((g) => [g.path, g.label])).toEqual([['/repos/alpha', 'alpha']]);
-  });
-
   it('keeps project-less rows keyed by path, one entry per cwd', () => {
     const groups = buildProjectGroups(
       [unknownProjectRow('a', '/tmp/one'), unknownProjectRow('b', '/tmp/two')],
@@ -328,17 +314,9 @@ describe('selectionSummary', () => {
       row('b', { sizeBytes: 25 }),
       row('c', { sizeBytes: 99 }),
     ];
+    // Exact shape: one session maps to one thread, so a thread figure would
+    // only repeat the selection count and does not belong in the footer.
     expect(selectionSummary(catalog, new Set(['a', 'b']))).toEqual({ count: 2, bytes: 35 });
-  });
-
-  // One session maps to one thread, so a thread figure would only repeat the
-  // selection count and does not belong in the footer.
-  it('does not repeat the one-thread-per-session count', () => {
-    const catalog = [row('a'), row('b')];
-    expect(Object.keys(selectionSummary(catalog, new Set(['a', 'b']))).sort()).toEqual([
-      'bytes',
-      'count',
-    ]);
   });
 
   it('ignores selected ids the catalog no longer holds', () => {

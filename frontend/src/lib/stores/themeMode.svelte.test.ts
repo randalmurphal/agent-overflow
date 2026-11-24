@@ -58,19 +58,10 @@ describe('themeMode', () => {
     vi.unstubAllGlobals();
   });
 
-  it("returns 'dark' for theme='dark'", async () => {
-    await setTheme('dark');
-    expect(getResolvedTheme()).toBe('dark');
-  });
-
   it("returns 'light' for theme='light'", async () => {
+    // matchMedia says dark, but appearance.mode=light wins.
     await setTheme('light');
     expect(getResolvedTheme()).toBe('light');
-  });
-
-  it("returns the system preference for theme='system'", async () => {
-    await setTheme('system');
-    expect(getResolvedTheme()).toBe('dark');
   });
 
   it('reflects system color-scheme changes for theme=system', async () => {
@@ -91,12 +82,6 @@ describe('themeMode', () => {
     // the cached state. The next read re-detects from matchMedia,
     // which is now the (refreshed) initial value.
     expect(getResolvedTheme()).toBe('dark');
-  });
-
-  it('mode=light overrides system preference', async () => {
-    // matchMedia says dark, but appearance.mode=light wins.
-    await setTheme('light');
-    expect(getResolvedTheme()).toBe('light');
   });
 
   it('mode=dark overrides system preference', async () => {

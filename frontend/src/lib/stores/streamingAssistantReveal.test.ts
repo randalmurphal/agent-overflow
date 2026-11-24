@@ -62,11 +62,12 @@ function parserSource(
 }
 
 describe('assistant reveal sink registration transitions', () => {
-  // Idempotent release and rejected duplicate registration each have
-  // their own test below. The lap those two miss is RE-registration: a
-  // row unmounts and remounts (virtualizer recycle, pane switch, a
-  // `{#key}` remount on a settings change) and the router must come back
-  // to the same resting state every time, never feeding a released sink.
+  // Idempotent release has its own test below; rejected duplicate
+  // registration is the onAgain lap here. The main subject is
+  // RE-registration: a row unmounts and remounts (virtualizer recycle, pane
+  // switch, a `{#key}` remount on a settings change) and the router must
+  // come back to the same resting state every time, never feeding a
+  // released sink.
   it('re-registers cleanly and never feeds a released sink', () => {
     const router = new StreamingAssistantRevealRouter();
     const canonical = { value: '' };
@@ -464,16 +465,6 @@ describe('streaming assistant reveal bridge', () => {
     expect(parserSource(router, source.value)).toBe('first ');
     expect(publish(router, source, 'third ')).toBe(true);
     expect(second.appended).toEqual(['second ', 'third ']);
-  });
-
-  it('rejects duplicate registration instead of giving two releases one Set entry', () => {
-    const router = new StreamingAssistantRevealRouter();
-    const target = makeSink();
-    router.register('item', target.sink, () => {});
-
-    expect(() => router.register('item', target.sink, () => {})).toThrow(
-      /already registered/,
-    );
   });
 
   it('clears state and removes a representation whose restore throws', () => {
