@@ -48,23 +48,24 @@ type AccountProbeRequest struct {
 // the configuration it runs with, from one read of the settings.
 type Deps struct {
 	// Reaper ends a model-list process if the backend dies first.
-	Reaper                     procutil.Reaper
-	CurrentSettings            func() settings.Settings
-	SettingsService            func() *settings.Service
-	ProviderBinary             func(providerName string) string
-	Selection                  func(providerName string) AccountSelection
-	ProbeKey                   func(providerName, binary, accountID string) provider.ProbeCacheKey
-	ProbeKeyForEnv             func(binary, accountID string, customEnv map[string]string) provider.ProbeCacheKey
-	RunAccountProbe            func(AccountProbeRequest) (provider.AccountInfo, error)
-	ClaudeProbe                func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig)
-	CodexProbe                 func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig)
-	AgyProbe                   func(binary, accountID string) (provider.ProbeCacheKey, agy.ProbeConfig)
+	Reaper          procutil.Reaper
+	CurrentSettings func() settings.Settings
+	SettingsService func() *settings.Service
+	ProviderBinary  func(providerName string) string
+	Selection       func(providerName string) AccountSelection
+	ProbeKey        func(providerName, binary, accountID string) provider.ProbeCacheKey
+	ProbeKeyForEnv  func(binary, accountID string, customEnv map[string]string) provider.ProbeCacheKey
+	RunAccountProbe func(AccountProbeRequest) (provider.AccountInfo, error)
+	ClaudeProbe     func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig)
+	CodexProbe      func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig)
+	// AgyProbe returns the canonical Antigravity probe's cache key and the
+	// probe, which decides the login store as it starts.
+	AgyProbe                   func(binary, accountID string) (provider.ProbeCacheKey, func(context.Context) (provider.AccountInfo, error))
 	EmitStatus                 func(providerstatus.Event)
 	EmitRateLimits             func(provider.RateLimitsSnapshot)
 	DetectProvider             func(providerName, binary string) provider.ProviderStatus
 	ProbeClaude                func(context.Context, claude.ProbeConfig) (provider.AccountInfo, error)
 	ProbeCodex                 func(context.Context, codex.ProbeConfig) (provider.AccountInfo, error)
-	ProbeAgy                   func(context.Context, agy.ProbeConfig) (provider.AccountInfo, error)
 	CheckClaudeTransferAccount func(context.Context, string) error
 	CheckCodexTransferAccount  func(context.Context, string) error
 	CheckAgyTransferAccount    func(context.Context, string) error
@@ -144,9 +145,6 @@ func New(deps Deps, caches *Caches) *Service {
 	}
 	if deps.ProbeCodex == nil {
 		deps.ProbeCodex = codex.ProbeAccount
-	}
-	if deps.ProbeAgy == nil {
-		deps.ProbeAgy = agy.ProbeAccount
 	}
 	return &Service{deps: deps, caches: caches}
 }

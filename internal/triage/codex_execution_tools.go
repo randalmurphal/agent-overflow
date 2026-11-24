@@ -1,7 +1,9 @@
 package triage
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
@@ -35,14 +37,18 @@ type codexExecutionTools struct {
 	// sessionToken is the session whose frame started the execution; a
 	// row that session's frame writes after it was retired is not counted.
 	sessionToken string
+	// executionTurnID is the execution's child turn id, empty until a child
+	// status names it. A row another execution started is not counted
+	// (store.CodexExecutionTurnMetaKey).
+	executionTurnID string
 }
 
 // startCodexExecutionTools begins the live tool count of the execution
 // that starts after startIndex in the spawn's turn. It replaces the
 // previous execution's count, which the max rule of
 // mergeSubagentProgress would otherwise keep.
-func (r *Router) startCodexExecutionTools(launch store.Item, startIndex int, sessionToken string) error {
-	count, last, err := r.store.SubagentExecutionToolCallsAfter(launch.ThreadID, launch.ID, launch.TurnIndex, startIndex)
+func (r *Router) startCodexExecutionTools(launch store.Item, executionTurnID string, startIndex int, sessionToken string) error {
+	count, last, err := r.store.SubagentExecutionToolCallsAfter(launch.ThreadID, launch.ID, executionTurnID, launch.TurnIndex, startIndex)
 	if err != nil {
 		return fmt.Errorf("seed Codex execution tool count %s: %w", launch.ID, err)
 	}
@@ -55,7 +61,7 @@ func (r *Router) startCodexExecutionTools(launch store.Item, startIndex int, ses
 	if _, exists := state.tools[launch.ID]; !exists && len(state.tools) >= subagentProgressCap {
 		return fmt.Errorf("Codex execution tool count limit reached for thread %s", launch.ThreadID)
 	}
-	state.tools[launch.ID] = codexExecutionTools{turnIndex: launch.TurnIndex, afterIndex: last, count: count, parentID: launch.ParentID, sessionToken: sessionToken}
+	state.tools[launch.ID] = codexExecutionTools{turnIndex: launch.TurnIndex, afterIndex: last, count: count, parentID: launch.ParentID, sessionToken: sessionToken, executionTurnID: executionTurnID}
 	progress := r.state(launch.ThreadID).subagentProgress[launch.ID]
 	progress.ToolUses = count
 	r.putLiveSubagentProgressLocked(launch.ThreadID, launch.ID, progress)
@@ -76,7 +82,7 @@ func (r *Router) countCodexExecutionToolCall(item store.Item) {
 		return
 	}
 	tools, ok := state.tools[item.ParentID]
-	if !ok || item.TurnIndex != tools.turnIndex || item.ItemIndex <= tools.afterIndex || r.frameRetiredLocked(item.ThreadID, tools.sessionToken) {
+	if !ok || item.TurnIndex != tools.turnIndex || item.ItemIndex <= tools.afterIndex || r.frameRetiredLocked(item.ThreadID, tools.sessionToken) || !codexExecutionMember(item, tools.executionTurnID) {
 		r.mu.Unlock()
 		return
 	}
@@ -93,4 +99,25 @@ func (r *Router) countCodexExecutionToolCall(item store.Item) {
 		Progress:  progress,
 		UpdatedAt: item.UpdatedAt,
 	})
+}
+
+// codexExecutionMember reports whether item, a row just written, belongs to
+// the execution named by executionTurnID: unless it is tagged
+// (store.CodexExecutionTurnMetaKey) with another execution. It is the live
+// counter's copy of the store's rule (codexExecutionMemberSQL), applied to a
+// row in memory before any read. A meta that does not decode carries no
+// tag.
+func codexExecutionMember(item store.Item, executionTurnID string) bool {
+	if executionTurnID == "" || !strings.Contains(item.Meta, store.CodexExecutionTurnMetaKey) {
+		return true
+	}
+	var tagged map[string]json.RawMessage
+	if json.Unmarshal([]byte(item.Meta), &tagged) != nil {
+		return true
+	}
+	var tag string
+	if json.Unmarshal(tagged[store.CodexExecutionTurnMetaKey], &tag) != nil {
+		return true
+	}
+	return tag == "" || tag == executionTurnID
 }

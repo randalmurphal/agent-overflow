@@ -2,6 +2,7 @@ package agy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -290,16 +291,27 @@ func ProbeCatalogOnConn(ctx context.Context, conn *acp.Conn, workDir string) ([]
 	return out, nil
 }
 
-// ProbeCatalog dials a temporary agy acp server when no pooled connection is
-// live, probes the model catalog, and closes the temporary server.
-func ProbeCatalog(ctx context.Context, binary, workDir string, customEnv map[string]string, reaper procutil.Reaper) ([]provider.ModelInfo, error) {
-	env, unset := LaunchEnv(customEnv, nil)
+// ProbeCatalog dials a temporary agy acp server on the home that source
+// decides when no pooled connection is live, probes the model catalog, and
+// closes the temporary server.
+func ProbeCatalog(ctx context.Context, binary, workDir string, source HomeSource, customEnv map[string]string, reaper procutil.Reaper) ([]provider.ModelInfo, error) {
+	if source == nil {
+		return nil, errors.New("agy: probe catalog: launch without a home")
+	}
+	home, err := source(ctx)
+	if err != nil {
+		return nil, err
+	}
+	launch, err := home.Launch(customEnv)
+	if err != nil {
+		return nil, err
+	}
 	conn, err := acp.Dial(ctx, acp.ConnConfig{
 		Binary:       ResolveBinary(binary),
-		Args:         LaunchArgs("", ""),
+		Args:         launch.ACPArgs(),
 		WorkDir:      workDir,
-		Env:          env,
-		UnsetEnv:     unset,
+		Env:          launch.Env,
+		UnsetEnv:     launch.Unset,
 		Reaper:       reaper,
 		ProviderName: string(provider.Agy),
 	})

@@ -35,7 +35,16 @@ alive. Rate-limit persistence and emission enter through narrow
 - A Codex device flow may complete on another screen. Correlate completion by
   `loginId` through projected state rather than a blocking return.
 - Each attempt owns one provider process and closes it on success, failure,
-  cancellation, or replacement.
+  cancellation, or replacement. Every run ends in `finishLoginRun`: a
+  teardown that fails is audited on every exit as what failed (the process
+  close, or the temporary home's removal), and a failed sign-in shows that
+  failure after its own sentence, each within its own bound.
+- Adoption (`adoptLogin`) runs on the sign-in's context: the probe of the
+  temporary home and the identity requests stop at a Cancel or the time
+  limit, and a step that failed because the sign-in ended reports that end.
+  Its commit point is under the reconcile lock, before `selectionChanging`
+  and any write: a sign-in that ended before it saves nothing, and one past
+  it is saved whole and reported.
 - Adoption lands a login by its identity and never switches: a saved account
   is renewed in its slot, a new one is appended. Only a login for the selected
   account, or the first login when none is selected, replaces the canonical
@@ -72,7 +81,8 @@ alive. Rate-limit persistence and emission enter through narrow
   userinfo, under the ACP probe's bound (`agyIdentifyTimeout`), or by the
   email its credential carries; a failed lookup of a credential that
   carries none identified nothing, so reconciliation fails with it and the
-  next one asks again.
+  next one asks again, and a sign-in fails unsaved
+  (`agySignInUnidentifiedError`).
 - A usage reading of any managed provider, or a Codex spend, of the selected
   account whose canonical credential is not the recorded one reconciles
   first (`reconciledUsageStart`), under the lock it already holds, and runs

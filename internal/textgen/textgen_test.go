@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -844,17 +845,25 @@ func assertFlagValue(t *testing.T, args []string, flag string, want []string) {
 
 func TestRunAgyAndDecodeStructured(t *testing.T) {
 	var got CLISpec
+	// The store is decided as the run starts: the config is built while the
+	// login is in the file, and the run starts after it moved to the
+	// Keychain.
+	fileStorage := true
 	cfg := Config{
 		Provider: "agy",
 		Binary:   "agy",
 		Model:    DefaultAgyModel,
 		Effort:   "low",
+		AgyHome: func(context.Context) (agy.Home, error) {
+			return agy.CanonicalHome("", fileStorage)
+		},
 		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
 			got = spec
 			return CLIResult{Stdout: `{"result":"{\"title\":\"Add Antigravity textgen\"}"}`}, nil
 		},
 	}
 
+	fileStorage = false
 	out, err := RunAgy(context.Background(), cfg, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute)
 	if err != nil {
 		t.Fatalf("RunAgy: %v", err)
@@ -869,6 +878,31 @@ func TestRunAgyAndDecodeStructured(t *testing.T) {
 	}
 	if got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"] != "1" {
 		t.Errorf("AGY_CLI_DISABLE_AUTO_UPDATE = %q, want 1", got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"])
+	}
+	// The run reads the login from the store its home names: the Keychain
+	// here, so an inherited file-storage flag is cleared.
+	if !slices.Contains(got.UnsetEnv, "AGY_ACP_FORCE_FILE_STORAGE") {
+		t.Errorf("agy unset = %v, want the file-storage flag cleared", got.UnsetEnv)
+	}
+	isolated, err := agy.IsolatedHome(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	named, err := agy.CanonicalHome(filepath.Join(t.TempDir(), ".gemini", "antigravity-cli"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, home := range map[string]agy.HomeSource{
+		"no source":                   nil,
+		"no home":                     agy.Home{}.Source(),
+		"an isolated home":            isolated.Source(),
+		"a home naming its directory": named.Source(),
+	} {
+		refused := cfg
+		refused.AgyHome = home
+		if _, err := RunAgy(context.Background(), refused, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute); err == nil {
+			t.Errorf("RunAgy ran with %s", name)
+		}
 	}
 
 	type titlePayload struct {

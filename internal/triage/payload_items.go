@@ -414,27 +414,9 @@ func (r *Router) attachPayloadToItemWithEmit(
 	}
 
 	if !linked {
-		payloadID = AttachedPayloadID(payloadKind, item.ID)
+		payloadID = store.AttachedPayloadID(payloadKind, item.ID)
 	}
-
-	metaEvt := evt
-	metaEvt.Content = string(data)
-	metaJSON := BuildPayloadMeta(payloadKind, metaEvt)
-	payload := store.Payload{
-		ID:        payloadID,
-		Kind:      payloadKind,
-		Meta:      metaJSON,
-		Data:      data,
-		CreatedAt: now,
-	}
-	item.PayloadID = payloadID
-	if summary != "" {
-		item.Summary = summary
-	}
-	item.UpdatedAt = now
-	if item.CreatedAt == 0 {
-		item.CreatedAt = now
-	}
+	item, payload := withWholePayload(item, evt, payloadKind, payloadID, summary)
 	var err error
 	if emit {
 		err = r.persistItem(item, &payload)
@@ -453,6 +435,28 @@ func (r *Router) attachPayloadToItemWithEmit(
 		r.notifyDiffPayloadPersisted(evt.ThreadID, payloadID, ToolResultMeta{}, string(data))
 	}
 	return nil
+}
+
+// withWholePayload builds the payload that holds evt.Content whole under
+// payloadID and links it, with summary and evt's time, onto item.
+func withWholePayload(item store.Item, evt provider.ProviderEvent, payloadKind, payloadID, summary string) (store.Item, store.Payload) {
+	now := eventTimestampMillis(evt)
+	payload := store.Payload{
+		ID:        payloadID,
+		Kind:      payloadKind,
+		Meta:      BuildPayloadMeta(payloadKind, evt),
+		Data:      []byte(evt.Content),
+		CreatedAt: now,
+	}
+	item.PayloadID = payloadID
+	if summary != "" {
+		item.Summary = summary
+	}
+	item.UpdatedAt = now
+	if item.CreatedAt == 0 {
+		item.CreatedAt = now
+	}
+	return item, payload
 }
 
 func BuildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {

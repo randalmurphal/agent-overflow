@@ -179,39 +179,32 @@ func NewCredentialsWithFileKeychain(userHome string, policy Policy) (*Credential
 	return credentials, nil
 }
 
-// AgyShouldForceFileStorage reports whether launching `agy` against appDataDir
-// should set AGY_ACP_FORCE_FILE_STORAGE=1 so the subprocess reads the exact
-// same credential source that this Credentials store manages.
-//
-// When this store was constructed with file-backed credentials (e.g. `serve`,
-// harness mode, Linux/WSL, or tests), it returns true unconditionally (even
-// when the token file does not yet exist) so `agy` never falls back to the
-// host macOS desktop Keychain.
-func (c *Credentials) AgyShouldForceFileStorage(appDataDir string) bool {
-	if c != nil {
-		if _, isFile := c.agyKeychain.(fileAgyKeychain); isFile {
-			return true
+// AgyCanonicalFileStorage reports whether the canonical Antigravity login
+// this store reads and writes is the file under the canonical home (true) or
+// the macOS Keychain item (false). An agy process launched for the canonical
+// login must use the same store (agy.CanonicalHome); a failed Keychain query
+// is returned, never answered as either store.
+func (c *Credentials) AgyCanonicalFileStorage(ctx context.Context) (bool, error) {
+	keychain, ok := c.keychainFor("agy")
+	if !ok {
+		return true, nil
+	}
+	switch backend := keychain.(type) {
+	case fileAgyKeychain:
+		return true, nil
+	case securityAgyKeychain:
+		paths, err := c.Paths("agy")
+		if err != nil {
+			return false, err
 		}
-		if strings.TrimSpace(appDataDir) == "" && strings.TrimSpace(c.userHome) != "" {
-			appDataDir = filepath.Join(c.userHome, ".gemini", "antigravity-cli")
+		fileStorage, err := backend.canonicalFileStorage(ctx, paths.SharedHome, agyKeychainQueryTimeout)
+		if err != nil {
+			return false, fmt.Errorf("provideraccounts: query the macOS Keychain for the Antigravity login: %w", err)
 		}
+		return fileStorage, nil
+	default:
+		return false, fmt.Errorf("provideraccounts: unknown Antigravity credential backend %T", keychain)
 	}
-	if strings.TrimSpace(appDataDir) == "" {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(appDataDir, agyCredentialFileName))
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if c == nil {
-		return AgyShouldForceFileStorage(appDataDir)
-	}
-	if sec, isSec := c.agyKeychain.(securityAgyKeychain); isSec && runtime.GOOS == "darwin" {
-		if present, kcErr := sec.itemPresent(); kcErr == nil && present {
-			return false
-		}
-	}
-	return true
 }
 
 func (c *Credentials) keychainFor(providerName string) (providerKeychain, bool) {
