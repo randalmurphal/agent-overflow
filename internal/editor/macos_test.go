@@ -23,63 +23,42 @@ func fakeEnvWithStat(available map[string]bool, env map[string]string) detectEnv
 	}
 }
 
-func TestFindMacOSInstall_VSCodeSystemBundle(t *testing.T) {
+func TestFindMacOSInstall(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS install table only fires on darwin")
 	}
-	env := fakeEnvWithStat(
-		map[string]bool{
-			"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code": true,
-		},
-		map[string]string{"HOME": "/Users/test"},
+	const (
+		systemCode = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+		userCode   = "/Users/test/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+		zedPreview = "/Applications/Zed Preview.app/Contents/MacOS/cli"
 	)
-	got := findMacOSInstall("code", env)
-	want := "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
-	if got != want {
-		t.Fatalf("findMacOSInstall(code) = %q, want %q", got, want)
-	}
-}
-
-func TestFindMacOSInstall_PrefersSystemOverHome(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("macOS install table only fires on darwin")
-	}
-	env := fakeEnvWithStat(
-		map[string]bool{
-			"/Applications/Cursor.app/Contents/Resources/app/bin/cursor":            true,
-			"/Users/test/Applications/Cursor.app/Contents/Resources/app/bin/cursor": true,
+	cases := []struct {
+		name      string
+		editorID  string
+		available map[string]bool
+		want      string
+	}{
+		{"vscode system bundle", "code", map[string]bool{systemCode: true}, systemCode},
+		{
+			"system bundle wins over user-local", "cursor",
+			map[string]bool{
+				"/Applications/Cursor.app/Contents/Resources/app/bin/cursor":            true,
+				"/Users/test/Applications/Cursor.app/Contents/Resources/app/bin/cursor": true,
+			},
+			"/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
 		},
-		map[string]string{"HOME": "/Users/test"},
-	)
-	got := findMacOSInstall("cursor", env)
-	if got != "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" {
-		t.Fatalf("system-wide bundle should win over user-local; got %q", got)
+		{"falls back to ~/Applications", "code", map[string]bool{userCode: true}, userCode},
+		{"unknown editor", "emacs", map[string]bool{}, ""},
+		// Zed Preview is reachable when stable Zed isn't installed.
+		{"zed preview bundle", "zed", map[string]bool{zedPreview: true}, zedPreview},
 	}
-}
-
-func TestFindMacOSInstall_FallsBackToUserApplications(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("macOS install table only fires on darwin")
-	}
-	env := fakeEnvWithStat(
-		map[string]bool{
-			"/Users/test/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code": true,
-		},
-		map[string]string{"HOME": "/Users/test"},
-	)
-	got := findMacOSInstall("code", env)
-	if got != "/Users/test/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" {
-		t.Fatalf("expected ~/Applications fallback; got %q", got)
-	}
-}
-
-func TestFindMacOSInstall_UnknownEditor(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("macOS install table only fires on darwin")
-	}
-	env := fakeEnvWithStat(map[string]bool{}, map[string]string{"HOME": "/Users/test"})
-	if got := findMacOSInstall("emacs", env); got != "" {
-		t.Fatalf("unknown editor should miss; got %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := fakeEnvWithStat(tc.available, map[string]string{"HOME": "/Users/test"})
+			if got := findMacOSInstall(tc.editorID, env); got != tc.want {
+				t.Fatalf("findMacOSInstall(%s) = %q, want %q", tc.editorID, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -95,21 +74,5 @@ func TestFindMacOSInstall_NoOpOffDarwin(t *testing.T) {
 	)
 	if got := findMacOSInstall("code", env); got != "" {
 		t.Fatalf("findMacOSInstall must be a no-op off darwin; got %q", got)
-	}
-}
-
-func TestFindMacOSInstall_ZedPreviewBundle(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("macOS install table only fires on darwin")
-	}
-	env := fakeEnvWithStat(
-		map[string]bool{
-			"/Applications/Zed Preview.app/Contents/MacOS/cli": true,
-		},
-		map[string]string{"HOME": "/Users/test"},
-	)
-	got := findMacOSInstall("zed", env)
-	if got != "/Applications/Zed Preview.app/Contents/MacOS/cli" {
-		t.Fatalf("Zed Preview bundle should be reachable when stable Zed isn't installed; got %q", got)
 	}
 }

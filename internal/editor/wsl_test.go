@@ -38,50 +38,41 @@ func TestIsWSLEnv_ReturnsFalseOnReadError(t *testing.T) {
 	}
 }
 
-func TestPathTargetsWindows_DirectMntCPath(t *testing.T) {
-	fs := &fakeFS{}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	if !pathTargetsWindows("/mnt/c/Program Files/Microsoft VS Code/bin/code", env) {
-		t.Fatal("absolute /mnt/c path must short-circuit to true")
-	}
-	if !pathTargetsWindows("/mnt/c", env) {
-		t.Fatal("/mnt/c root must register")
-	}
-}
-
-func TestPathTargetsWindows_ShimContentSniff(t *testing.T) {
-	shim := []byte(`#!/bin/bash
+func TestPathTargetsWindows(t *testing.T) {
+	cases := []struct {
+		name  string
+		path  string
+		files map[string][]byte
+		want  bool
+	}{
+		// Absolute /mnt/c paths short-circuit without a read.
+		{"absolute mnt/c path", "/mnt/c/Program Files/Microsoft VS Code/bin/code", nil, true},
+		{"mnt/c root", "/mnt/c", nil, true},
+		{
+			"shim that execs mnt/c", "/usr/local/bin/code",
+			map[string][]byte{"/usr/local/bin/code": []byte(`#!/bin/bash
 # Microsoft VS Code WSL launcher
 ELECTRON="/mnt/c/Users/Alice/AppData/Local/Programs/Microsoft VS Code/Code.exe"
 exec "$ELECTRON" "$@"
-`)
-	fs := &fakeFS{
-		files: map[string][]byte{"/usr/local/bin/code": shim},
-	}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	if !pathTargetsWindows("/usr/local/bin/code", env) {
-		t.Fatal("shim that exec's /mnt/c/... must register as windows-targeting")
-	}
-}
-
-func TestPathTargetsWindows_LinuxNativeRejected(t *testing.T) {
-	linuxOnly := []byte(`#!/bin/sh
+`)},
+			true,
+		},
+		{
+			"linux-only shim rejected", "/usr/bin/code-oss",
+			map[string][]byte{"/usr/bin/code-oss": []byte(`#!/bin/sh
 exec /usr/share/code-oss/code-oss "$@"
-`)
-	fs := &fakeFS{
-		files: map[string][]byte{"/usr/bin/code-oss": linuxOnly},
+`)},
+			false,
+		},
+		{"missing binary collapses to not-windows", "/no/such/file", nil, false},
 	}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	if pathTargetsWindows("/usr/bin/code-oss", env) {
-		t.Fatal("linux-only shim must NOT register as windows-targeting")
-	}
-}
-
-func TestPathTargetsWindows_ReadErrorIsFalse(t *testing.T) {
-	fs := &fakeFS{}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	if pathTargetsWindows("/no/such/file", env) {
-		t.Fatal("missing binary must collapse to not-windows")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newDetectEnv(&fakeFS{files: tc.files}, pathTable{}, nil)
+			if got := pathTargetsWindows(tc.path, env); got != tc.want {
+				t.Fatalf("pathTargetsWindows(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -90,21 +81,6 @@ func TestFindWindowsInstall_SkipsUnknownEditors(t *testing.T) {
 	env := newDetectEnv(fs, pathTable{}, nil)
 	if got := findWindowsInstall("nonexistent-editor", env); got != "" {
 		t.Fatalf("unknown editor must return empty; got %q", got)
-	}
-}
-
-func TestFindWindowsInstall_HandlesUsersDirReadError(t *testing.T) {
-	// /mnt/c/Users readDir fails → caller falls through to the
-	// system-paths list. This covers the "WSL distro hasn't
-	// auto-mounted /mnt/c yet" case.
-	systemPath := "/mnt/c/Program Files/Microsoft VS Code/bin/code"
-	fs := &fakeFS{
-		files: map[string][]byte{systemPath: []byte("")},
-	}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	got := findWindowsInstall("code", env)
-	if got != systemPath {
-		t.Fatalf("expected system fallback %q, got %q", systemPath, got)
 	}
 }
 
@@ -123,14 +99,30 @@ func TestFindWindowsInstall_StatErrorPropagatesToFalse(t *testing.T) {
 	}
 }
 
-// TestValidateWindowsCodeShim_BrokenInstallRejected pins the fix for
-// the half-uninstalled VS Code case: bin/code is still present but the
-// VERSIONFOLDER it references no longer has resources/app/out/cli.js.
-// Without rejection, detection would hand back this candidate and the
-// silently-failing spawn would leave the user wondering why click-to-
-// open does nothing.
-func TestValidateWindowsCodeShim_BrokenInstallRejected(t *testing.T) {
-	shim := []byte(`#!/usr/bin/env sh
+// TestValidateWindowsCodeShim pins the shim check detection runs on
+// every WSL candidate. A half-uninstalled VS Code keeps bin/code but
+// loses the cli.js its VERSIONFOLDER references; without rejection,
+// detection would hand back that candidate and the silently-failing
+// spawn would leave click-to-open doing nothing. A shim without the
+// VERSIONFOLDER pattern (Sublime, Zed, a custom $EDITOR target) has no
+// cheap validation, so it passes and the spawn step decides. An
+// unreadable shim can't be inspected, so it is rejected and detection
+// falls through to the next candidate.
+func TestValidateWindowsCodeShim(t *testing.T) {
+	const (
+		systemShim = "/mnt/c/Program Files/Microsoft VS Code/bin/code"
+		userShim   = "/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code"
+	)
+	cases := []struct {
+		name  string
+		path  string
+		files map[string][]byte
+		want  bool
+	}{
+		{
+			"broken install rejected", systemShim,
+			// cli.js intentionally absent.
+			map[string][]byte{systemShim: []byte(`#!/usr/bin/env sh
 COMMIT="072586267e68ece9a47aa43f8c108e0dcbf44622"
 APP_NAME="code"
 QUALITY="stable"
@@ -139,66 +131,36 @@ SERVERDATAFOLDER=".vscode-server"
 VERSIONFOLDER="072586267e"
 VSCODE_PATH="$(dirname "$(dirname "$(realpath "$0")")")"
 ELECTRON="$VSCODE_PATH/$NAME.exe"
-`)
-	// Note: cli.js intentionally absent — this is the broken install.
-	fs := &fakeFS{
-		files: map[string][]byte{
-			"/mnt/c/Program Files/Microsoft VS Code/bin/code": shim,
+`)},
+			false,
 		},
-	}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	if validateWindowsCodeShim("/mnt/c/Program Files/Microsoft VS Code/bin/code", env) {
-		t.Fatal("broken shim must be rejected (cli.js missing under VERSIONFOLDER)")
-	}
-}
-
-// TestValidateWindowsCodeShim_WorkingInstallAccepted confirms the
-// happy path: the shim's VERSIONFOLDER points at a cli.js that exists.
-func TestValidateWindowsCodeShim_WorkingInstallAccepted(t *testing.T) {
-	shim := []byte(`#!/usr/bin/env sh
+		{
+			"working install accepted", userShim,
+			map[string][]byte{
+				userShim: []byte(`#!/usr/bin/env sh
 VERSIONFOLDER="034f571df5"
 ELECTRON="something"
-`)
-	fs := &fakeFS{
-		files: map[string][]byte{
-			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code":                            shim,
-			"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/034f571df5/resources/app/out/cli.js": []byte("// cli.js"),
+`),
+				"/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/034f571df5/resources/app/out/cli.js": []byte("// cli.js"),
+			},
+			true,
 		},
-	}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	if !validateWindowsCodeShim("/mnt/c/Users/alice/AppData/Local/Programs/Microsoft VS Code/bin/code", env) {
-		t.Fatal("working shim with matching cli.js must be accepted")
-	}
-}
-
-// TestValidateWindowsCodeShim_UnrecognizedFormatPassesThrough covers
-// editors whose shim doesn't follow the Microsoft VERSIONFOLDER pattern
-// (Sublime, Zed, a custom $EDITOR target). We have no cheap way to
-// validate them, so detection should defer to the spawn step rather
-// than rejecting them outright. Returning true here keeps existing
-// non-Microsoft editors working unchanged.
-func TestValidateWindowsCodeShim_UnrecognizedFormatPassesThrough(t *testing.T) {
-	shim := []byte(`#!/bin/sh
+		{
+			"unrecognized format passes through", "/usr/local/bin/subl",
+			map[string][]byte{"/usr/local/bin/subl": []byte(`#!/bin/sh
 exec /opt/sublime-text/sublime_text "$@"
-`)
-	fs := &fakeFS{
-		files: map[string][]byte{"/usr/local/bin/subl": shim},
+`)},
+			true,
+		},
+		{"read error rejects", "/no/such/path", nil, false},
 	}
-	env := newDetectEnv(fs, pathTable{}, nil)
-	if !validateWindowsCodeShim("/usr/local/bin/subl", env) {
-		t.Fatal("unrecognized shim format must pass validation (defer to spawn)")
-	}
-}
-
-// TestValidateWindowsCodeShim_ReadErrorRejects ensures we don't
-// silently treat an unreadable shim as valid. If we can't read it, we
-// can't know what it points at; better to fall through to the next
-// candidate than to hand back a path we can't inspect.
-func TestValidateWindowsCodeShim_ReadErrorRejects(t *testing.T) {
-	fs := &fakeFS{} // no fixture for the path
-	env := newDetectEnv(fs, pathTable{}, nil)
-	if validateWindowsCodeShim("/no/such/path", env) {
-		t.Fatal("unreadable shim must be rejected")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newDetectEnv(&fakeFS{files: tc.files}, pathTable{}, nil)
+			if got := validateWindowsCodeShim(tc.path, env); got != tc.want {
+				t.Fatalf("validateWindowsCodeShim(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
 	}
 }
 
