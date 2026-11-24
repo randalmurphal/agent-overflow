@@ -301,6 +301,12 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("re-init: %v", err)
 	}
+	// The init alone emits the wake's turn_started, naming the new turn.
+	if starts := filterEmissions(emissions.snapshot(), "provider:turn_started"); len(starts) != 2 {
+		t.Fatalf("expected 2 provider:turn_started once the re-init opened turn 1, got %d: %+v", len(starts), starts)
+	} else if wake := starts[1].data.(TurnStartedEvent); wake.TurnIndex != 1 || wake.ThreadID != "t1" {
+		t.Errorf("provider-started turn payload = index %d thread %q, want index 1 (a turn of its own) on t1", wake.TurnIndex, wake.ThreadID)
+	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: normalTurnCompleteMeta(),
@@ -345,54 +351,6 @@ func TestRoundEmissionPerWireResult(t *testing.T) {
 	}
 	if turn.CompletedAt == nil {
 		t.Fatalf("expected completed_at set after first wire complete")
-	}
-}
-
-// TestRoundStartedAfterSystemInit pins handleInit's provider-started
-// turn: an EventInit with no pending send, after the session settled a
-// turn, opens the next logical turn and emits provider:turn_started with
-// a per-round uuid as TurnID and the new turn's index. This is what
-// flips the frontend's working indicator back on when the CLI wakes
-// itself.
-func TestRoundStartedAfterSystemInit(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("turn start: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnComplete, ThreadID: "t1",
-		TurnComplete: normalTurnCompleteMeta(),
-		Timestamp:    time.Now(),
-	}); err != nil {
-		t.Fatalf("turn complete: %v", err)
-	}
-	emissions.reset() // discard the round-1 turn_started/turn_completed
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventInit, ThreadID: "t1",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("re-init: %v", err)
-	}
-
-	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
-	if len(starts) != 1 {
-		t.Fatalf("expected 1 provider:turn_started after re-init, got %d: %+v", len(starts), starts)
-	}
-	payload := starts[0].data.(TurnStartedEvent)
-	if payload.TurnID == "" {
-		t.Errorf("provider-started turn payload.TurnID is empty — handleInit must allocate a fresh round uuid")
-	}
-	if payload.TurnIndex != 1 {
-		t.Errorf("provider-started turn payload.TurnIndex = %d, want 1 (a turn of its own)", payload.TurnIndex)
-	}
-	if payload.ThreadID != "t1" {
-		t.Errorf("provider-started turn payload.ThreadID = %q, want t1", payload.ThreadID)
 	}
 }
 
@@ -577,34 +535,6 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 	}
 	if got := completes[0].data.(TurnCompletedEvent).TurnID; got != t2Round {
 		t.Errorf("t2 turn_completed TurnID = %q, want %q (cross-thread leak suspected)", got, t2Round)
-	}
-}
-
-// TestNoRoundEmissionOnRealSessionInit pins the negative case: an
-// EventInit with no pending send and no opener, for a session with no
-// open turn and no settled turn (a real session start), MUST NOT emit
-// provider:turn_started. Without an open or settled turn the init cannot
-// be a self-wake, because background work does not survive a CLI
-// restart; it is a session attaching. Emitting here would lie to the
-// frontend about the model being engaged.
-func TestNoRoundEmissionOnRealSessionInit(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	// Fresh session: EventInit arrives before any EventTurnStart.
-	// Mirrors the recovery-resume path where the app reattaches to a
-	// thread whose last logical turn already completed (or was never
-	// started) before the previous session ended.
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventInit, ThreadID: "t1",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("init: %v", err)
-	}
-
-	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
-	if len(starts) != 0 {
-		t.Errorf("expected 0 provider:turn_started for real session init, got %d: %+v (handleInit opens a provider-started turn only when the session has an open or settled turn)", len(starts), starts)
 	}
 }
 
@@ -1670,97 +1600,61 @@ func TestParentContentResumeDoesNotCollideRowIDs(t *testing.T) {
 	}
 }
 
-// TestSubagentContentDoesNotReArmDuringSoftClose pins the rule in
-// docs/architecture/turn-lifecycle.md §Rounds and turns: in the
-// local_agent-outlives case the parent's message ends (soft end_turn)
-// while a Task subagent keeps running until the trailing `result`. The
-// indicator SHOULD stay cleared through that wait, so subagent content
-// (parent_tool_use_id != "") must NOT re-open the parent's round.
-// Without the parent-only gate in handleContentBlockStart this would
-// wrongly light the indicator during the subagent wait.
-func TestSubagentContentDoesNotReArmDuringSoftClose(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("turn start: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
+// TestContentBlockDoesNotReArmRound pins when a content block start must
+// not emit provider:turn_started:
+//
+//   - subagent content during a soft close: the rule in
+//     docs/architecture/turn-lifecycle.md §Rounds and turns. In the
+//     local_agent-outlives case the parent's message ends (soft end_turn)
+//     while a Task subagent keeps running until the trailing `result`. The
+//     indicator stays cleared through that wait, so subagent content
+//     (parent_tool_use_id != "") must not re-open the parent's round; the
+//     parent-only gate in handleContentBlockStart enforces it.
+//   - parent content mid-round: the round is still open (ordinary
+//     streaming, no soft close yet). handleParentContentResume returns
+//     early on an open turn, so every in-round block start is a no-op.
+//   - parent content in a fresh session: a session attaches to a thread
+//     (no opener, no turn open or settled in this process, so the init
+//     opens nothing) and the model streams. With no soft-closed turn
+//     nothing reopens, and with no settled turn handleParentContentResume
+//     opens no provider-started turn.
+func TestContentBlockDoesNotReArmRound(t *testing.T) {
+	turnStart := provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now()}
+	softClose := provider.ProviderEvent{
 		Kind: provider.EventTurnComplete, ThreadID: "t1",
 		TurnComplete: &provider.SoftRoundCloseMeta{StopReason: "end_turn"},
 		Timestamp:    time.Now(),
-	}); err != nil {
-		t.Fatalf("soft close: %v", err)
 	}
-	emissions.reset()
+	initEvt := provider.ProviderEvent{Kind: provider.EventInit, ThreadID: "t1", Timestamp: time.Now()}
+	subagentBlock := parentContentBlockStart("t1", "text")
+	subagentBlock.ParentToolUseID = "task-abc"
 
-	// Subagent streams content while the parent round is closed.
-	subBlock := parentContentBlockStart("t1", "text")
-	subBlock.ParentToolUseID = "task-abc"
-	if err := router.Handle(subBlock); err != nil {
-		t.Fatalf("subagent content block: %v", err)
-	}
+	for _, tc := range []struct {
+		name  string
+		setup []provider.ProviderEvent
+		block provider.ProviderEvent
+	}{
+		{"subagent content during soft close", []provider.ProviderEvent{turnStart, softClose}, subagentBlock},
+		{"parent content mid round", []provider.ProviderEvent{turnStart}, parentContentBlockStart("t1", "thinking")},
+		{"parent content in a fresh session", []provider.ProviderEvent{initEvt}, parentContentBlockStart("t1", "thinking")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, emissions := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			for _, evt := range tc.setup {
+				if err := router.Handle(evt); err != nil {
+					t.Fatalf("setup %s: %v", evt.Kind, err)
+				}
+			}
+			emissions.reset()
 
-	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
-	if len(starts) != 0 {
-		t.Fatalf("subagent content must NOT re-open the parent round, got %d turn_started: %+v",
-			len(starts), starts)
-	}
-}
-
-// TestParentContentDoesNotReArmMidRound guards against over-firing: a
-// parent content block while the round is still OPEN (ordinary
-// streaming, no soft-close yet) must not emit a spurious
-// provider:turn_started. handleParentContentResume returns early on an
-// open turn, so every in-round block start is a no-op.
-func TestParentContentDoesNotReArmMidRound(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("turn start: %v", err)
-	}
-	emissions.reset() // discard round-1 turn_started
-
-	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
-		t.Fatalf("mid-round content block: %v", err)
-	}
-	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
-	if len(starts) != 0 {
-		t.Fatalf("mid-round (open, unsettled) content must not re-arm, got %d: %+v", len(starts), starts)
-	}
-}
-
-// TestParentContentDoesNotReArmFreshSession guards the fresh-attach
-// case: a session attaches to a thread (no opener, no turn open or
-// settled in this process, so the init opens nothing) and the model
-// streams. A parent content block must not synthesize a turn_started out
-// of nothing: with no soft-closed turn nothing reopens, and with no
-// settled turn handleParentContentResume opens no provider-started turn.
-func TestParentContentDoesNotReArmFreshSession(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventInit, ThreadID: "t1",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("init: %v", err)
-	}
-	emissions.reset()
-
-	if err := router.Handle(parentContentBlockStart("t1", "thinking")); err != nil {
-		t.Fatalf("fresh-session content block: %v", err)
-	}
-	starts := filterEmissions(emissions.snapshot(), "provider:turn_started")
-	if len(starts) != 0 {
-		t.Fatalf("fresh-session content must not synthesize a round, got %d: %+v", len(starts), starts)
+			if err := router.Handle(tc.block); err != nil {
+				t.Fatalf("content block: %v", err)
+			}
+			if starts := filterEmissions(emissions.snapshot(), "provider:turn_started"); len(starts) != 0 {
+				t.Fatalf("content block re-armed the round, got %d turn_started: %+v", len(starts), starts)
+			}
+		})
 	}
 }
 

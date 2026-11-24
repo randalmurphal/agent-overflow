@@ -128,12 +128,22 @@ func assertNoErrorRows(t *testing.T, st *store.Store) {
 
 // A streamed thinking block whose stop carries the narration marker
 // settles as assistant text: one upsert of the same row, holding the whole
-// text and what a settled prose row carries.
+// text and what a settled prose row carries. The search index holds
+// assistant text and no thinking, so the row enters it, with its whole
+// text, only once it settles.
 func TestNarrationStopSettlesStreamedThinkingAsAssistantText(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	narrationThread(t, st)
 	echoCodeSpans(t, router)
 	text := narrationText(t)
+	search := func() []store.ThreadSearchHit {
+		t.Helper()
+		hits, err := st.SearchThreads(narrationHead, store.ThreadSearchFilter{ThreadIDs: []string{"t1"}})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		return hits
+	}
 
 	handleOrFatal(t, router, provider.ProviderEvent{
 		Kind: provider.EventContentBlockStart, ThreadID: "t1", Timestamp: time.Now(),
@@ -143,6 +153,9 @@ func TestNarrationStopSettlesStreamedThinkingAsAssistantText(t *testing.T) {
 	streaming := firstItemByKind(t, st, "t1", itemKindThinking)
 	if streaming.Status != statusStreaming {
 		t.Fatalf("the block is %s before its stop, want streaming thinking", streaming.Status)
+	}
+	if hits := search(); len(hits) != 0 {
+		t.Fatalf("a streaming thinking row is indexed: %+v", hits)
 	}
 
 	handleOrFatal(t, router, provider.ProviderEvent{
@@ -173,6 +186,9 @@ func TestNarrationStopSettlesStreamedThinkingAsAssistantText(t *testing.T) {
 	if err != nil || string(data) != text {
 		t.Fatalf("payload data = %d bytes (%v), want the whole text", len(data), err)
 	}
+	if hits := search(); len(hits) != 1 || hits[0].ItemID != row.ID || hits[0].Kind != store.ThreadSearchKindAssistant {
+		t.Fatalf("search hits = %+v, want the narration row as assistant text", hits)
+	}
 
 	events := itemStreamEventsFor(t, emissions, row.ID)
 	last := events[len(events)-1]
@@ -199,35 +215,6 @@ func TestNarrationStopSettlesStreamedThinkingAsAssistantText(t *testing.T) {
 	}
 	if router.hasActiveStreamingItem("t1") {
 		t.Fatal("the settle left the thread streaming")
-	}
-}
-
-// The search index holds assistant text and no thinking, so the settled
-// narration row enters it with its whole text.
-func TestNarrationRowIsIndexedForSearch(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	narrationThread(t, st)
-	text := narrationText(t)
-	streamThinking(t, router, "", "", text)
-	search := func() []store.ThreadSearchHit {
-		t.Helper()
-		hits, err := st.SearchThreads(narrationHead, store.ThreadSearchFilter{ThreadIDs: []string{"t1"}})
-		if err != nil {
-			t.Fatalf("search: %v", err)
-		}
-		return hits
-	}
-	if hits := search(); len(hits) != 0 {
-		t.Fatalf("a streaming thinking row is indexed: %+v", hits)
-	}
-	handleOrFatal(t, router, provider.ProviderEvent{
-		Kind: provider.EventContentBlockStop, ThreadID: "t1", Timestamp: time.Now(), Meta: narrationStopMeta,
-	})
-	router.WaitForPendingSettles()
-	row := firstItemByKind(t, st, "t1", itemKindAssistantText)
-	hits := search()
-	if len(hits) != 1 || hits[0].ItemID != row.ID || hits[0].Kind != store.ThreadSearchKindAssistant {
-		t.Fatalf("search hits = %+v, want the narration row as assistant text", hits)
 	}
 }
 
