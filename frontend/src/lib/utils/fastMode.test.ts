@@ -3,6 +3,7 @@ import {
   fastModeContradictionText,
   fastModeReasonText,
   isFastModeContradicted,
+  type FastModeReport,
 } from './fastMode';
 
 describe('fastModeReasonText', () => {
@@ -41,27 +42,17 @@ describe('fastModeReasonText', () => {
 });
 
 describe('isFastModeContradicted', () => {
-  it('is false when the thread does not ask for fast mode', () => {
-    expect(isFastModeContradicted(false, { state: 'off', disabledReason: 'free' })).toBe(false);
-  });
-
-  it('is false when the provider has said nothing', () => {
+  it.each<[string, boolean, FastModeReport | undefined, boolean]>([
+    ['is false when the thread does not ask for fast mode', false, { state: 'off', disabledReason: 'free' }, false],
     // Older CLI / no turn finished / non-Claude provider. Unknown is not
     // disabled.
-    expect(isFastModeContradicted(true, undefined)).toBe(false);
-  });
-
-  it('is false when the provider reports a reason but no state', () => {
-    expect(isFastModeContradicted(true, { state: '', disabledReason: 'unknown' })).toBe(false);
-  });
-
-  it('is false when the provider confirms fast mode is on', () => {
-    expect(isFastModeContradicted(true, { state: 'on', disabledReason: '' })).toBe(false);
-  });
-
-  it('is true for off and for cooldown', () => {
-    expect(isFastModeContradicted(true, { state: 'off', disabledReason: 'free' })).toBe(true);
-    expect(isFastModeContradicted(true, { state: 'cooldown', disabledReason: '' })).toBe(true);
+    ['is false when the provider has said nothing', true, undefined, false],
+    ['is false when the provider reports a reason but no state', true, { state: '', disabledReason: 'unknown' }, false],
+    ['is false when the provider confirms fast mode is on', true, { state: 'on', disabledReason: '' }, false],
+    ['is true for off', true, { state: 'off', disabledReason: 'free' }, true],
+    ['is true for cooldown', true, { state: 'cooldown', disabledReason: '' }, true],
+  ])('%s', (_name, requested, report, want) => {
+    expect(isFastModeContradicted(requested, report)).toBe(want);
   });
 });
 

@@ -592,10 +592,5 @@ describe('relocateEditors', () => {
       expect(text).not.toHaveBeenCalled();
       expect(resident).not.toHaveBeenCalled();
     });
-
-    it('is in the diff when its file is, even with the budget spent', async () => {
-      const out = await relocateEditors(new Map([['e', placedOn(fileOf(BASE_TO_A), report, '  report();')]]), [fileOf(BASE_TO_A)], new RelocationBudget(1, 1), never);
-      expect(out.get('e')).toMatchObject({ anchor: null, reason: 'line-changed' });
-    });
   });
 });

@@ -12,19 +12,16 @@ describe('parseDiffLines', () => {
     ]);
   });
 
-  it('classifies + lines as add (but not +++ file header)', () => {
-    const out = parseDiffLines('+foo\n+++ b/file.ts');
-    expect(out[0]).toEqual({ type: 'add', content: '+foo' });
-    // +++ is a file header, not an added line — classified as context
-    // so callers can style it the same way they style --- without
-    // special cases.
-    expect(out[1]).toEqual({ type: 'context', content: '+++ b/file.ts' });
-  });
-
-  it('classifies - lines as del (but not --- file header)', () => {
-    const out = parseDiffLines('-bar\n--- a/file.ts');
-    expect(out[0]).toEqual({ type: 'del', content: '-bar' });
-    expect(out[1]).toEqual({ type: 'context', content: '--- a/file.ts' });
+  // A +++ or --- file header is not an added or deleted line: it is
+  // context, so callers style both headers alike without special cases.
+  it.each([
+    ['add', '+foo', '+++ b/file.ts'],
+    ['del', '-bar', '--- a/file.ts'],
+  ])('classifies %s lines like %s, keeping the full line, but not the file header %s', (type, line, header) => {
+    expect(parseDiffLines(`${line}\n${header}`)).toEqual([
+      { type, content: line },
+      { type: 'context', content: header },
+    ]);
   });
 
   it('reads header lookalikes inside a hunk as the lines they are', () => {
@@ -36,11 +33,6 @@ describe('parseDiffLines', () => {
     const out = parseDiffLines(' unchanged\nplain');
     expect(out[0]).toEqual({ type: 'context', content: ' unchanged' });
     expect(out[1]).toEqual({ type: 'context', content: 'plain' });
-  });
-
-  it('preserves the full line content including leading prefix', () => {
-    const out = parseDiffLines('+hello');
-    expect(out[0]?.content).toBe('+hello');
   });
 
   it('handles a realistic mixed hunk', () => {

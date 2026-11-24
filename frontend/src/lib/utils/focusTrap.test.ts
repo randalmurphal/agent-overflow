@@ -47,35 +47,23 @@ afterEach(() => {
 });
 
 describe('focusTrap', () => {
-  it('wraps Tab from last focusable back to first', async () => {
+  it.each([
+    ['Tab from last focusable back to first', false, 'c', 'a'],
+    ['Shift+Tab from first focusable to last', true, 'a', 'c'],
+  ])('wraps %s', async (_name, shift, from, to) => {
     const host = mountTrap(
       '<button id="a">A</button><button id="b">B</button><button id="c">C</button>',
     );
     // Let autoFocus microtask run so focus lands on A.
     await Promise.resolve();
 
-    const c = host.querySelector<HTMLButtonElement>('#c')!;
-    c.focus();
-    expect(document.activeElement).toBe(c);
+    const start = host.querySelector<HTMLButtonElement>(`#${from}`)!;
+    start.focus();
+    expect(document.activeElement).toBe(start);
 
-    const ev = dispatchTab(c);
+    const ev = dispatchTab(start, shift);
     expect(ev.defaultPrevented).toBe(true);
-    expect(document.activeElement?.id).toBe('a');
-  });
-
-  it('wraps Shift+Tab from first focusable to last', async () => {
-    const host = mountTrap(
-      '<button id="a">A</button><button id="b">B</button><button id="c">C</button>',
-    );
-    await Promise.resolve();
-
-    const a = host.querySelector<HTMLButtonElement>('#a')!;
-    a.focus();
-    expect(document.activeElement).toBe(a);
-
-    const ev = dispatchTab(a, true);
-    expect(ev.defaultPrevented).toBe(true);
-    expect(document.activeElement?.id).toBe('c');
+    expect(document.activeElement?.id).toBe(to);
   });
 
   it('auto-focuses the first focusable element on attach', async () => {

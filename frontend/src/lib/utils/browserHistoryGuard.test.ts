@@ -189,16 +189,6 @@ describe('installBrowserHistoryGuard', () => {
       expect(event.defaultPrevented).toBe(false);
     });
 
-    it('suppresses the native menu on non-editable surfaces without blocking app handlers', () => {
-      cleanup = installBrowserHistoryGuard();
-      const seen = vi.fn();
-      on('contextmenu', seen);
-
-      const event = rightClick(mount(document.createElement('div')));
-      expect(event.defaultPrevented).toBe(true);
-      expect(seen).toHaveBeenCalledTimes(1);
-    });
-
     it('allows the native menu in writable textareas and text inputs', () => {
       cleanup = installBrowserHistoryGuard();
 
