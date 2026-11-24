@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -377,6 +378,43 @@ func TestAnOversizedFirstFrameIsReportedAtTheNextClaimOrTeardown(t *testing.T) {
 			t.Fatalf("teardown log = %q, want %q once", logged, want)
 		}
 	})
+}
+
+// The connection picks source session A for a fork's frame by the
+// single-session fallback. Before A dispatches it, session B resumes the fork
+// and binds its id, which claims the fork's hold. The point between the two is
+// the gate: A dispatches the frame only after B bound. The connection hands
+// the frame to B, the thread's owner, instead of opening a hold nobody will
+// claim.
+func TestAFrameForARoutedThreadGoesToItsOwner(t *testing.T) {
+	fx, a, _ := recordingRootSession(t)
+	deadlines := fx.deadlines()
+	delta := json.RawMessage(`{"threadId":"fork-thread","turnId":"fork-turn","itemId":"fork-answer","delta":"forked"}`)
+	if got := fx.conn.routeTarget("fork-thread", "", "", true); got != a {
+		t.Fatalf("the fallback routed the fork's frame to %v, want the only session", got)
+	}
+
+	var mu sync.Mutex
+	var bEvents []provider.ProviderEvent
+	fx.session("ao-thread-b", "fork-thread", func(event provider.ProviderEvent) {
+		mu.Lock()
+		bEvents = append(bEvents, event)
+		mu.Unlock()
+	})
+	a.dispatchNotificationDirect("item/agentMessage/delta", delta)
+
+	if got := fx.heldFrames("fork-thread"); got != 0 || deadlines.count() != 0 {
+		t.Fatalf("held %d frames and armed %d deadlines for a thread routed to B", got, deadlines.count())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	reached := false
+	for _, event := range bEvents {
+		reached = reached || event.ItemID == "fork-answer"
+	}
+	if !reached {
+		t.Fatalf("the fork's frame did not reach B: %+v", bEvents)
+	}
 }
 
 // TestForkAnnouncementWithOneSessionWaitsUnseen covers a revert's live-session

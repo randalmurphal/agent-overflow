@@ -56,10 +56,10 @@ func (s *Session) dispatchNotificationDirect(method string, params json.RawMessa
 		return
 	}
 	providerThreadID := providerThreadIDFromParams(params)
-	if dispatch, _ := s.dispatchesWireThread(providerThreadID, deferredChildWireEvent{
+	if !s.dispatchesWireThread(providerThreadID, deferredChildWireEvent{
 		Method: method,
 		Params: params,
-	}, nil); !dispatch {
+	}, nil) {
 		return
 	}
 

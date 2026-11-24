@@ -1250,27 +1250,33 @@ func (c *Conn) routeOrQuarantine(
 	return nil
 }
 
-// deliverOrHold decides, for a frame s received on a thread that is not its
-// root, whether s delivers it: only when providerThreadID is routed to s,
-// which registerChildRoute does after the thread's spawn was emitted.
-// Otherwise the frame joins the thread's hold, read and written under the
-// same routesMu acquisition as the route, so a claim either sees the frame or
-// the frame sees the claim. held reports whether the hold accepted a frame s
-// does not deliver; a frame the bounds refuse is rejected when it is a
+// deliverOrHold decides, once and under routesMu, who gets a frame s received
+// on a thread that is not its root: s delivers it when the thread is routed to
+// s; a frame for a thread routed to another session goes to that session's
+// early queue, as a claim's held frames do; any other frame joins the
+// thread's hold, which a claim either takes whole or never sees. A frame is
+// therefore never held for a thread that has a route. It reports whether s
+// delivers the frame. A frame the hold bounds refuse is rejected when it is a
 // request and dropped otherwise.
-func (c *Conn) deliverOrHold(providerThreadID string, s *Session, ev deferredChildWireEvent, requestID *json.Number) (deliver, held bool) {
+func (c *Conn) deliverOrHold(providerThreadID string, s *Session, ev deferredChildWireEvent, requestID *json.Number) bool {
 	c.routesMu.Lock()
-	if c.byThread[strings.TrimSpace(providerThreadID)] == s {
+	owner := c.byThread[strings.TrimSpace(providerThreadID)]
+	if owner == s {
 		c.routesMu.Unlock()
-		return true, false
+		return true
+	}
+	if owner != nil {
+		owner.enqueueEarlyFrames([]deferredChildWireEvent{ev.retained()})
+		c.routesMu.Unlock()
+		owner.flushEarlyFrames()
+		return false
 	}
 	rejection := c.holdLocked(providerThreadID, ev)
 	c.routesMu.Unlock()
 	if rejection != "" {
 		c.rejectQuarantinedRequest(requestID, rejection)
-		return false, false
 	}
-	return false, true
+	return false
 }
 
 // holdLocked adds ev to providerThreadID's hold, creating the hold and arming
@@ -1310,9 +1316,7 @@ func (c *Conn) holdLocked(providerThreadID string, ev deferredChildWireEvent) st
 			c.expireHold(trimmedID, hold)
 		})
 	}
-	ev.Params = append(json.RawMessage(nil), ev.Params...)
-	ev.RawLine = append(json.RawMessage(nil), ev.RawLine...)
-	hold.frames = append(hold.frames, ev)
+	hold.frames = append(hold.frames, ev.retained())
 	hold.bytes += evBytes
 	c.heldFrames++
 	c.heldBytes += evBytes

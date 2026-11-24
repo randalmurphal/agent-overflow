@@ -39,7 +39,8 @@ func TestRecoverChildOwnershipUsesOriginalSpawnAndKeepsNestedScope(t *testing.T)
 	s.collabHistory.visited["worker"] = 1
 	s.collabHistory.visited["helper"] = 1
 	t.Cleanup(s.collabAsyncWG.Wait)
-	if dispatch, held := s.dispatchesWireThread("helper", deferredChildWireEvent{Method: "item/agentMessage/delta", Params: json.RawMessage(`{"threadId":"helper","turnId":"helper-turn","itemId":"answer","delta":"child text"}`)}, nil); dispatch || !held {
+	if s.dispatchesWireThread("helper", deferredChildWireEvent{Method: "item/agentMessage/delta", Params: json.RawMessage(`{"threadId":"helper","turnId":"helper-turn","itemId":"answer","delta":"child text"}`)}, nil) ||
+		fx.heldFrames("helper") != 1 {
 		t.Fatal("helper event was not held")
 	}
 	if err := s.recoverChildOwnership(ctx, "helper", make(map[string]bool)); err != nil {

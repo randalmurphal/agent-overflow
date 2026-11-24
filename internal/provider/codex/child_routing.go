@@ -29,6 +29,14 @@ type deferredChildWireEvent struct {
 	RawLine   json.RawMessage
 }
 
+// retained returns e with its own copy of the line, for a frame kept past
+// the read that produced it.
+func (e deferredChildWireEvent) retained() deferredChildWireEvent {
+	e.Params = append(json.RawMessage(nil), e.Params...)
+	e.RawLine = append(json.RawMessage(nil), e.RawLine...)
+	return e
+}
+
 func (e deferredChildWireEvent) sizeBytes() int {
 	return len(e.Method) + len(e.Params) + len(e.RequestID) + len(e.RawLine)
 }
@@ -36,15 +44,14 @@ func (e deferredChildWireEvent) sizeBytes() int {
 // dispatchesWireThread reports whether this session dispatches a frame on
 // providerThreadID itself: the root, any frame before the root is known, or a
 // child the connection routes to this session, which it does once the child's
-// spawn was emitted (registerChildRoute). Any other frame joins the thread's
-// hold on the connection until a spawn claims the thread or the deadline
-// drops it, so a child's frame never reaches the root. held reports whether
-// the connection accepted the frame rather than refusing it for its bounds.
-func (s *Session) dispatchesWireThread(providerThreadID string, event deferredChildWireEvent, requestID *json.Number) (dispatch, held bool) {
+// spawn was emitted (registerChildRoute). The connection hands any other frame
+// to the session the thread is routed to, or holds it until a spawn claims the
+// thread or the deadline drops it, so a child's frame never reaches the root.
+func (s *Session) dispatchesWireThread(providerThreadID string, event deferredChildWireEvent, requestID *json.Number) bool {
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	rootThreadID := strings.TrimSpace(s.rootThreadID())
 	if providerThreadID == "" || rootThreadID == "" || providerThreadID == rootThreadID {
-		return true, false
+		return true
 	}
 	return s.conn.deliverOrHold(providerThreadID, s, event, requestID)
 }
@@ -88,12 +95,12 @@ func (s *Session) dispatchServerRequestDirect(method string, id *json.Number, pa
 	if id != nil {
 		requestID = id.String()
 	}
-	if dispatch, _ := s.dispatchesWireThread(providerThreadIDFromParams(params), deferredChildWireEvent{
+	if !s.dispatchesWireThread(providerThreadIDFromParams(params), deferredChildWireEvent{
 		Method:    method,
 		Params:    params,
 		RequestID: requestID,
 		RawLine:   line,
-	}, id); !dispatch {
+	}, id) {
 		return
 	}
 	s.handleServerRequest(method, id, params, line)
