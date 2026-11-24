@@ -165,16 +165,25 @@ func isCodexCLIVersionSupported(version string) bool {
 	return compareCodexCLIVersions(version, minimumCodexCLIVersion) >= 0
 }
 
-// formatCodexCLIUpgradeMessage names the installed version, the minimum and
-// the binary the version came from. The binary comes last: a surface that
-// clips the message still shows what to do.
-func formatCodexCLIUpgradeMessage(version, path string) string {
+func formatCodexCLIUpgradeMessage(version string) string {
+	if version == "" {
+		return fmt.Sprintf(
+			"Codex CLI is too old for Agent Overflow. Upgrade to v%s or newer and restart the app.",
+			minimumCodexCLIVersion,
+		)
+	}
 	return fmt.Sprintf(
-		"Codex CLI v%s is too old for Agent Overflow. Upgrade to v%s or newer and restart the app. Binary: %s",
+		"Codex CLI v%s is too old for Agent Overflow. Upgrade to v%s or newer and restart the app.",
 		version,
 		minimumCodexCLIVersion,
-		path,
 	)
+}
+
+// CodexCLIUpgradeMessage is the too-old message for the version text a Codex
+// binary printed. It names no path, so it can go where a binary's path may
+// not; DetectProvider adds the path for the provider status.
+func CodexCLIUpgradeMessage(versionOutput string) string {
+	return formatCodexCLIUpgradeMessage(parseCodexCLIVersion(versionOutput))
 }
 
 func isNumericString(value string) bool {

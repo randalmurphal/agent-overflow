@@ -124,7 +124,7 @@ RPC. It is process-wide and lower precedence than the config map.
 ## Version notes
 
 - `baseInstructions`/`developerInstructions` present since ~0.130.0,
-  unchanged through rust-v0.148.0-alpha.20. AO's floor (0.143) is above.
+  unchanged through rust-v0.148.0-alpha.20. AO's floor is above.
 - The tool/feature keys above are byte-identical 0.147.0 → 0.148.0-alpha.20,
   and the relevant feature stages are all `Stable`, documented as "kept
   for ad-hoc enabling/disabling", so disabling is supported, not a hack.

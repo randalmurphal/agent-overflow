@@ -106,10 +106,22 @@ func TestCompareCodexCLIVersions(t *testing.T) {
 }
 
 func TestFormatCodexCLIUpgradeMessage(t *testing.T) {
-	got := formatCodexCLIUpgradeMessage("0.36.0", "/usr/local/bin/codex")
-	want := "Codex CLI v0.36.0 is too old for Agent Overflow. Upgrade to v0.154.0 or newer and restart the app. Binary: /usr/local/bin/codex"
+	got := formatCodexCLIUpgradeMessage("0.36.0")
+	want := "Codex CLI v0.36.0 is too old for Agent Overflow. Upgrade to v0.154.0 or newer and restart the app."
 	if got != want {
 		t.Fatalf("formatCodexCLIUpgradeMessage() = %q, want %q", got, want)
+	}
+
+	got = formatCodexCLIUpgradeMessage("")
+	want = "Codex CLI is too old for Agent Overflow. Upgrade to v0.154.0 or newer and restart the app."
+	if got != want {
+		t.Fatalf("formatCodexCLIUpgradeMessage(empty) = %q, want %q", got, want)
+	}
+
+	got = CodexCLIUpgradeMessage("codex-cli 0.153.4")
+	want = "Codex CLI v0.153.4 is too old for Agent Overflow. Upgrade to v0.154.0 or newer and restart the app."
+	if got != want {
+		t.Fatalf("CodexCLIUpgradeMessage() = %q, want %q", got, want)
 	}
 }
 
