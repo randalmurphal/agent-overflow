@@ -28,7 +28,7 @@
 //    svelte-patch-event-slot.test.ts), so this suite needs no flush —
 //    the settle waits in collectHard let the clear fire.
 //
-// Needs --expose-gc; the suite skips (loudly) without it. The
+// Needs --expose-gc; the suite reports skipped without it. The
 // `make test` gate runs without it — run explicitly via:
 //   NODE_OPTIONS=--expose-gc pnpm exec vitest run --project unit \
 //     src/test/integration/chatview-dom-retention.test.ts
@@ -303,12 +303,6 @@ describe.runIf(gc)('closed pane under PaneHost is collectable while siblings liv
     unmount(app);
     flushSync();
     target.remove();
-  });
-});
-
-describe.runIf(!gc)('closed chat pane DOM is collectable (SKIPPED)', () => {
-  it('requires --expose-gc (run with NODE_OPTIONS=--expose-gc)', () => {
-    expect(true).toBe(true);
   });
 });
 

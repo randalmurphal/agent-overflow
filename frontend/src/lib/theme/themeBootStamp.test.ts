@@ -141,29 +141,26 @@ describe('boot stamp CSS validator', () => {
     );
   });
 
-  it('refuses anything that is not that grammar', () => {
-    // Every one of these is reachable by hand-editing the origin store, and
-    // every one of them is a rule the serializer could never have produced.
-    expect(okCss('')).toBe(false);
-    expect(okCss('body { background: url(http://evil/x) }')).toBe(false);
-    expect(okCss(':root {\n  --a: red;\n}\n* { display: none }')).toBe(false);
-    expect(okCss(':root {\n  --a: red;\n')).toBe(false);
-    expect(okCss(':root {\n  --a: red;\n}\n@import url(http://evil/x);')).toBe(false);
+  // Every one of these is reachable by hand-editing the origin store.
+  it.each([
+    // Rules the serializer could never have produced.
+    ['empty', ''],
+    ['a rule outside :root', 'body { background: url(http://evil/x) }'],
+    ['a second rule', ':root {\n  --a: red;\n}\n* { display: none }'],
+    ['an unclosed block', ':root {\n  --a: red;\n'],
+    ['a trailing @import', ':root {\n  --a: red;\n}\n@import url(http://evil/x);'],
     // A value that can end the declaration, open a block, or close the element.
-    expect(okCss(':root {\n  --a: red; } body { color: red;\n}')).toBe(false);
-    expect(okCss(':root {\n  --a: </style><script>x()</script>;\n}')).toBe(false);
-    expect(okCss(':root {\n  --a: "x";\n}')).toBe(false);
+    ['a value that closes the block', ':root {\n  --a: red; } body { color: red;\n}'],
+    ['a value that closes the element', ':root {\n  --a: </style><script>x()</script>;\n}'],
+    ['a quoted value', ':root {\n  --a: "x";\n}'],
     // An unclosed function consumes to EOF in CSS's tokenizer.
-    expect(okCss(':root {\n  --a: rgb(1, 2, 3;\n}')).toBe(false);
+    ['an unclosed function', ':root {\n  --a: rgb(1, 2, 3;\n}'],
     // A property name that is not a custom property, and a bad token shape.
-    expect(okCss(':root {\n  color: red;\n}')).toBe(false);
-    expect(okCss(':root {\n  --A: red;\n}')).toBe(false);
+    ['a standard property', ':root {\n  color: red;\n}'],
+    ['an uppercase custom property', ':root {\n  --A: red;\n}'],
     // Indentation is part of the grammar the serializer emits.
-    expect(okCss(':root {\n--a: red;\n}')).toBe(false);
-    expect(okCss('html.dark {\n  --a: red;\n}')).toBe(false);
-  });
-
-  it('refuses the fetch-capable functions the serializer refuses, inside the grammar', () => {
+    ['an unindented declaration', ':root {\n--a: red;\n}'],
+    ['an html.dark block', 'html.dark {\n  --a: red;\n}'],
     // These fit the line grammar perfectly — the danger is the VALUE. The
     // boot CSS paints before any app code runs and with no CSP, and app.css
     // paints `background: var(--surface-0)` (a shorthand, which accepts an
@@ -171,12 +168,14 @@ describe('boot stamp CSS validator', () => {
     // on the first frame of every launch. The validator mirrors
     // themeResolve's REFUSED_FUNCTIONS; schemeless URLs keep the charset
     // happy (no colon needed: `//host/x` fetches).
-    expect(okCss(':root {\n  --surface-0: url(//evil.test/x);\n}')).toBe(false);
-    expect(okCss(':root {\n  --surface-0: URL (//evil.test/x);\n}')).toBe(false);
-    expect(okCss(':root {\n  --surface-0: image-set(//evil.test/x 1x);\n}')).toBe(false);
-    expect(okCss(':root {\n  --surface-0: src(//evil.test/x);\n}')).toBe(false);
-    expect(okCss(':root {\n  --surface-0: var(--other);\n}')).toBe(false);
-    expect(okCss(':root {\n  --surface-0: attr(data-x);\n}')).toBe(false);
-    expect(okCss(':root {\n  --surface-0: env(safe-area-inset-top);\n}')).toBe(false);
+    ['url()', ':root {\n  --surface-0: url(//evil.test/x);\n}'],
+    ['URL () with a space', ':root {\n  --surface-0: URL (//evil.test/x);\n}'],
+    ['image-set()', ':root {\n  --surface-0: image-set(//evil.test/x 1x);\n}'],
+    ['src()', ':root {\n  --surface-0: src(//evil.test/x);\n}'],
+    ['var()', ':root {\n  --surface-0: var(--other);\n}'],
+    ['attr()', ':root {\n  --surface-0: attr(data-x);\n}'],
+    ['env()', ':root {\n  --surface-0: env(safe-area-inset-top);\n}'],
+  ])('refuses %s', (_name, css) => {
+    expect(okCss(css)).toBe(false);
   });
 });

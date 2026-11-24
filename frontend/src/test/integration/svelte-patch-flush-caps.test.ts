@@ -85,11 +85,27 @@ describe('svelte patch: flush loops are capped', () => {
     const cycle = startBatchPerLapCycle(queueSvelteMicroTask);
 
     try {
-      expect(() => flushSync()).toThrow(
+      let captured: unknown;
+      try {
+        flushSync();
+      } catch (err) {
+        captured = err;
+      }
+      // Svelte's own error shape, so boundary/DEV handling treats it the same
+      // and `window.onerror` capture records a real stack.
+      expect(captured).toBeInstanceOf(Error);
+      const error = captured as Error;
+      expect(error.name).toBe('Svelte error');
+      expect(error.message).toMatch(
         new RegExp(
           `flush_loop_exceeded[\\s\\S]*\`flushSync\` loop did not settle after ${FLUSH_SYNC_MAX_LAPS} laps`,
         ),
       );
+      // Present in production builds too, deliberately: there is no
+      // svelte.dev/e/ page for this code, and the captured record is the whole
+      // point of the hunk.
+      expect(error.message).toContain('patches/svelte@5.57.0.patch');
+      expect(error.message).toContain('flush-loop-caps');
       // Pristine svelte never gets here — it spins until the tab is killed.
       // The effect ran once per lap, which is what makes `flush_count`
       // useless against this shape.
@@ -114,34 +130,6 @@ describe('svelte patch: flush loops are capped', () => {
     }
 
     expectRuntimeStillUsable();
-  });
-
-  it('carries the loop name and the patch reference in the aborting error', () => {
-    const cycle = startBatchPerLapCycle(queueSvelteMicroTask);
-    let captured: unknown;
-
-    try {
-      try {
-        flushSync();
-      } catch (err) {
-        captured = err;
-      }
-    } finally {
-      cycle.dispose();
-      flushSync();
-    }
-
-    // Svelte's own error shape, so boundary/DEV handling treats it the same
-    // and `window.onerror` capture records a real stack.
-    expect(captured).toBeInstanceOf(Error);
-    const error = captured as Error;
-    expect(error.name).toBe('Svelte error');
-    expect(error.message).toContain('flushSync');
-    // Present in production builds too, deliberately: there is no
-    // svelte.dev/e/ page for this code, and the captured record is the whole
-    // point of the hunk.
-    expect(error.message).toContain('patches/svelte@5.57.0.patch');
-    expect(error.message).toContain('flush-loop-caps');
   });
 
   it('aborts a microtask drain that re-queues itself, and abandons the queue', () => {

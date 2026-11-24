@@ -72,23 +72,19 @@ describe('svelte patch: init-time prop reads must not leak subscribers', () => {
   // is removed, so toBeNull() is the canonical "no subscribers" — and
   // unlike a `?? []` fallback it fails loudly if a svelte upgrade
   // renames the internal field out from under this suite.
-  it('leak shape 1: defaulted prop (prop() init read) leaves no subscribers', () => {
-    const { paneSig, seen } = runCycles('default', 3);
+  // Each cycle's reopened rows read the fresh pane through the lazy
+  // (unconnected) chain.
+  it.each([
+    ['leak shape 1: defaulted prop (prop() init read)', 'default'],
+    ['leak shape 2: explicit init-time read of a plain prop', 'no-default'],
+  ] as const)('%s leaves no subscribers and still computes fresh values per cycle', (_name, variant) => {
+    const { paneSig, seen } = runCycles(variant, 3);
     expect(paneSig.reactions).toBeNull();
-    expect(seen).toHaveLength(ROWS * 3);
-  });
-
-  it('leak shape 2: explicit init-time read of a plain prop leaves no subscribers', () => {
-    const { paneSig, seen } = runCycles('no-default', 3);
-    expect(paneSig.reactions).toBeNull();
-    expect(seen).toHaveLength(ROWS * 3);
-  });
-
-  it('the lazy unconnected chain still computes fresh values per cycle', () => {
-    const { seen } = runCycles('default', 3);
-    expect(seen.slice(0, ROWS)).toEqual(Array(ROWS).fill('/repo0'));
-    expect(seen.slice(ROWS, ROWS * 2)).toEqual(Array(ROWS).fill('/repo1'));
-    expect(seen.slice(ROWS * 2)).toEqual(Array(ROWS).fill('/repo2'));
+    expect(seen).toEqual([
+      ...Array(ROWS).fill('/repo0'),
+      ...Array(ROWS).fill('/repo1'),
+      ...Array(ROWS).fill('/repo2'),
+    ]);
   });
 
   // Positive control: proves the `reactions` introspection observes real

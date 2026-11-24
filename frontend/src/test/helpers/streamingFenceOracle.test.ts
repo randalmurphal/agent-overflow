@@ -12,16 +12,8 @@ describe('expectedStreamingFenceTexts', () => {
     ['two-byte partial closer', '```ts\nbody\n``', ['body'], true],
     ['invalid inline opener', '`` ` not a fence\n```ts\na\n```', ['a'], false],
     ['four-space indentation', '    ```ts\nnot top level\n    ```', [], false],
+    ['marker inside an open fence is no opener', '```ts\nbody\n~~~\nstill code', ['body\n~~~\nstill code'], true],
   ] as const)('%s', (_name, source, texts, hasOpenFence) => {
     expect(expectedStreamingFenceTexts(source)).toEqual({ texts, hasOpenFence });
-  });
-
-  it('never treats marker-looking lines inside an open fence as another opener', () => {
-    expect(expectedStreamingFenceTexts(
-      '```ts\nbody\n~~~\nstill code',
-    )).toEqual({
-      texts: ['body\n~~~\nstill code'],
-      hasOpenFence: true,
-    });
   });
 });

@@ -26,7 +26,7 @@
 // events. It failed on svelte 5.56.8 and must keep passing from 5.57.0
 // on, with or without a patch.
 //
-// Needs --expose-gc; skips loudly without it:
+// Needs --expose-gc; reports skipped without it:
 //   NODE_OPTIONS=--expose-gc pnpm exec vitest run --project unit \
 //     src/test/integration/svelte-patch-event-slot.test.ts
 import { describe, expect, it } from 'vitest';
@@ -83,11 +83,5 @@ describe.runIf(gc)('svelte patch: delegated-event slot releases after dispatch',
     // nulled the slot and the element must be collectable.
     await collectHard();
     expect(ref.deref(), 'clicked element still retained — did the upstream slot clear regress?').toBeUndefined();
-  });
-});
-
-describe.runIf(!gc)('svelte patch: delegated-event slot releases after dispatch (SKIPPED)', () => {
-  it('requires --expose-gc (run with NODE_OPTIONS=--expose-gc)', () => {
-    expect(true).toBe(true);
   });
 });
