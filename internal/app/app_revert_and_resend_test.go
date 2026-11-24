@@ -93,20 +93,24 @@ func seedResendThread(t *testing.T, app *App, id string) (store.Thread, string) 
 // is sliced to drop the original prompt, the EDITED replacement is
 // persisted and dispatched in its place, and the composer draft comes
 // back byte-identical to the work-in-progress the user had before —
-// terminal chips included. The `user_message:reverted` event carries
-// draftPendingResend so the frontend knows the draft row it just saw was
-// saga state, not composer content.
+// terminal chips and plan link included. The `user_message:reverted`
+// event carries draftPendingResend so the frontend knows the draft row it
+// just saw was saga state, not composer content.
 func TestRevertAndResendReplacesMessageAndRestoresWIP(t *testing.T) {
 	t.Parallel()
 	app, bus := newResendTestApp(t)
 	thread, workspace := seedResendThread(t, app, "t-resend")
 
+	// The richest WIP the composer holds: the terminal chips and the
+	// sourceProposedPlan link are carried by composerdraft.MergeParts rather
+	// than rebuilt, so losing them is otherwise silent.
 	wip := store.ThreadDraft{
-		ThreadID:      thread.ID,
-		Content:       "half-typed follow-up",
-		Attachments:   `["att-wip"]`,
-		TerminalChips: `[{"id":"chip-1","label":"npm test"}]`,
-		UpdatedAt:     time.Now().UnixMilli(),
+		ThreadID:                  thread.ID,
+		Content:                   "half-typed follow-up",
+		Attachments:               `["att-wip"]`,
+		TerminalChips:             `[{"id":"chip-1","label":"npm test","preview":"ok","content":"PASS","createdAt":7}]`,
+		PendingPlanImplementation: `{"threadId":"plan-thread","itemId":"plan-item"}`,
+		UpdatedAt:                 time.Now().UnixMilli(),
 	}
 	if _, err := app.store.UpsertThreadDraft(wip); err != nil {
 		t.Fatalf("seed WIP draft: %v", err)
