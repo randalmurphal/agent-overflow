@@ -181,7 +181,9 @@ func flipMACBit(credential string) string {
 
 // TestLiveIsTheAuthorityForEveryCall — nothing may authorize from state
 // captured when a connection was established, so the per-call answer has
-// to change the instant the row does.
+// to change the instant the row does. The fixture attaches no connection
+// registry, as on a headless boot: revocation must reach the row and the
+// fast path without one.
 func TestLiveIsTheAuthorityForEveryCall(t *testing.T) {
 	sessions, _, c, owner, device := newFixture(t)
 	session, credential := mustMint(t, sessions, owner, device, time.Hour)
@@ -301,8 +303,8 @@ func TestRevokeDeviceEndsEverySessionItHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RevokeDevice: %v", err)
 	}
-	if !revoked.DeviceMoved || revoked.SessionsEnded != 2 {
-		t.Fatalf("RevokeDevice returned %+v, want the device and both sessions", revoked)
+	if !revoked.DeviceMoved || revoked.SessionsEnded != 2 || revoked.ConnectionsClosed != 2 {
+		t.Fatalf("RevokeDevice returned %+v, want the device, both sessions, 2 connections", revoked)
 	}
 	for _, credential := range []string{firstCredential, secondCredential} {
 		if _, reason := sessions.Verify(credential); reason != ReasonRevokedSession {
@@ -315,6 +317,16 @@ func TestRevokeDeviceEndsEverySessionItHeld(t *testing.T) {
 	closer.mustHaveClosed(t, first.ID, second.ID)
 	if closer.closed(untouched.ID) {
 		t.Fatal("another device's connections were closed")
+	}
+
+	// "Already revoked, nothing was live" is a different answer, and the
+	// surface has to be able to tell it apart.
+	again, err := sessions.RevokeDevice(device.ID)
+	if err != nil {
+		t.Fatalf("second RevokeDevice: %v", err)
+	}
+	if again.DeviceMoved || again.SessionsEnded != 0 || again.ConnectionsClosed != 0 {
+		t.Fatalf("second RevokeDevice = %+v, want nothing", again)
 	}
 }
 
@@ -345,20 +357,6 @@ func TestRevocationReachesLiveConnectionsSynchronously(t *testing.T) {
 		t.Fatal("a second revocation reported the row as having moved")
 	}
 	closer.mustHaveClosed(t, session.ID)
-}
-
-// TestRevocationWorksWithNoTransportAttached — a headless boot or a test
-// has no connection registry, and revocation must still reach the row and
-// the fast path rather than depending on one being wired.
-func TestRevocationWorksWithNoTransportAttached(t *testing.T) {
-	sessions, _, _, owner, device := newFixture(t)
-	session, credential := mustMint(t, sessions, owner, device, time.Hour)
-	if _, err := sessions.RevokeSession(session.ID); err != nil {
-		t.Fatalf("RevokeSession: %v", err)
-	}
-	if _, reason := sessions.Verify(credential); reason != ReasonRevokedSession {
-		t.Fatalf("Verify = %s, want revoked_session", reason)
-	}
 }
 
 func TestRefusalsAreRecordedWithPeerAttribution(t *testing.T) {
