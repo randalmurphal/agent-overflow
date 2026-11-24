@@ -121,9 +121,7 @@ jobs:
     needs: toolchain
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['build-macos']
     runs-on: macos-latest
-    # A change that touches most packages builds and lints with nothing
-    # cached: 8 minutes of build and over 21 of lint on this runner.
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -133,13 +131,11 @@ jobs:
           frontend-dist: "true"
           cache-name: build-macos
       - run: make go-build
-      # Every file only macOS compiles is in the default file set, so one
-      # pass covers them; the lint job runs the other sets and the Windows
-      # launcher's. The pass stays whole-tree: 158 of the 264 packages
-      # compile a darwin-only file or depend on one, and an enum's members
-      # come from the package that declares it.
+      # The lint job reads every file Linux compiles; this pass reads the
+      # packages whose files differ on macOS (the Makefile recipe says how
+      # they are found).
       - name: exhaustive on the files macOS compiles
-        run: make go-lint GO_LINT_FLAGS="--enable-only exhaustive" GO_LINT_TIMEOUT=40m
+        run: make go-lint-host-files
       # The orphan reaper is a script macOS's own /bin/sh runs, and its sweep
       # reads macOS's kernel process record; no other job executes either
       # there.

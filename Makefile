@@ -1,4 +1,4 @@
-.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen forge-schemas linear-schema go-lint go-lint-whole-tree go-vet fmt-check go-vuln bindings-check frontend-lint frontend-deadcode install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build e2e-browsers harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen forge-schemas linear-schema go-lint go-lint-whole-tree go-lint-host-files go-vet fmt-check go-vuln bindings-check frontend-lint frontend-deadcode install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build e2e-browsers harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -9,7 +9,7 @@ help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
 		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=... | make go-test-noremote | make vitest-unit | make vitest-browser | make script-tests' \
-		'Static:  make fmt-check | make go-vet | make go-lint | make go-lint-whole-tree | make frontend-lint | make frontend-deadcode | make bindings-check | make go-vuln' \
+		'Static:  make fmt-check | make go-vet | make go-lint | make go-lint-whole-tree | make go-lint-host-files | make frontend-lint | make frontend-deadcode | make bindings-check | make go-vuln' \
 		'Android: make apk | make apk-release | make e2e-android' \
 		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
 		'Harness: make harness | make harness-window | make harness-wsl' \
@@ -299,9 +299,8 @@ GOLANGCI_LINT_BUILD := $(filter $(GOLANGCI_LINT_BUILT),$(GOLANGCI_LINT))
 $(GOLANGCI_LINT_BUILT):
 	GOBIN=$(abspath $(dir $@)) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 GO_LINT_FLAGS ?=
-GO_LINT_TIMEOUT ?= 20m
 go-lint: $(GOLANGCI_LINT_BUILD)
-	$(GOLANGCI_LINT) run --timeout $(GO_LINT_TIMEOUT) $(GO_LINT_FLAGS) ./...
+	$(GOLANGCI_LINT) run --timeout 20m $(GO_LINT_FLAGS) ./...
 
 # go-lint-whole-tree runs the two linters that have no backlog over the
 # whole tree, not only a change's lines: exhaustive reports at the switch,
@@ -317,7 +316,7 @@ go-lint: $(GOLANGCI_LINT_BUILD)
 # TestExhaustiveLintPassesReachEveryFile reads the passes from this recipe
 # and fails for a file none of them compiles. Every file only macOS
 # compiles is in the untagged set, which CI's macOS job lints with `make
-# go-lint GO_LINT_FLAGS="--enable-only exhaustive"`.
+# go-lint-host-files`.
 #
 # unused reads one file set, the untagged Linux one: a helper that only
 # another platform or a build tag calls lives in that platform's or tag's
@@ -332,6 +331,26 @@ go-lint-whole-tree: $(GOLANGCI_LINT_BUILD)
 		echo "exhaustive: the Windows launcher's packages, tags '$$tags'"; \
 		GOOS=windows CGO_ENABLED=0 $(GO_LINT_WHOLE_TREE) --enable-only exhaustive --build-tags "$$tags" $$packages; \
 	done
+
+# go-lint-host-files runs exhaustive over the files this host compiles and
+# Linux does not, which go-lint-whole-tree on Linux cannot read: CI's macOS
+# job runs it. It lints every package this host compiles whose file set
+# (GO_FILE_SET) differs from Linux's, so a package gains or loses the pass
+# with its files and the other packages are read as compiled dependencies,
+# not type-checked from source. A switch outside those packages over an enum
+# that gains a constant in a file only this host compiles is not read.
+GO_HAS_FILES := {{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles}}$(GO_FILE_SET){{end}}
+go-lint-host-files: $(GOLANGCI_LINT_BUILD)
+	@set -e; \
+	host=$$(go list -f '$(GO_HAS_FILES)' $(GO_PACKAGE_ROOTS)); \
+	linux=$$(GOOS=linux CGO_ENABLED=1 go list -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS)); \
+	packages=$$({ printf '%s\n' "$$linux" | sed 's/^/linux /'; printf '%s\n' "$$host" | sed 's/^/host /'; } | awk ' \
+		$$1 == "linux" { sub(/^linux /, ""); onLinux[$$0] = 1; next } \
+		{ sub(/^host /, ""); if ($$0 != "" && !($$0 in onLinux)) print $$1 }' | \
+		sort -u | sed -e 's|^agent-overflow$$|.|' -e 's|^agent-overflow/|./|'); \
+	if [ -z "$$packages" ]; then echo "ERROR: no package's files differ between this host and Linux"; exit 1; fi; \
+	echo "go-lint-host-files: $$(echo "$$packages" | wc -l) packages:" $$packages; \
+	$(GO_LINT_WHOLE_TREE) --enable-only exhaustive $$packages
 
 go-vet:
 	go vet $(GO_PACKAGE_ROOTS)

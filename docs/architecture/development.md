@@ -260,7 +260,8 @@ compiles in two passes, one with no build tag and one with `nogui`,
 (`TestExhaustiveLintPassesReachEveryFile` fails for a file no pass
 compiles), then lints the Windows
 launcher's packages as Windows compiles them. The macOS job runs the linter
-over the default file set alone, which holds every file only macOS
+with no build tag over the packages whose files differ between macOS and
+Linux (`make go-lint-host-files`), which hold every file only macOS
 compiles. A Windows-only file outside the
 launcher's packages is compiled by no job and is not checked.
 

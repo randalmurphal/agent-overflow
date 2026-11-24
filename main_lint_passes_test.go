@@ -21,7 +21,9 @@ type lintTarget struct {
 	goos   string
 	cgo    bool
 	passes [][]string
-	// wholeTree is false for a target whose passes name only some packages.
+	// wholeTree is false for a target whose passes skip packages that hold
+	// files only it compiles. The macOS pass names packages, and names every
+	// one whose files differ from Linux's, so it skips none.
 	wholeTree bool
 }
 
@@ -83,7 +85,7 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 
 // exhaustiveLintTargets reads the passes from where they are run: this
 // host's and the Windows launcher's from the go-lint-whole-tree recipe, and
-// the macOS job's from the CI workflow.
+// the macOS job's from the CI workflow and the go-lint-host-files recipe.
 func exhaustiveLintTargets(t *testing.T) []lintTarget {
 	t.Helper()
 	recipe := makefileRecipe(t, "go-lint-whole-tree")
@@ -116,8 +118,11 @@ func exhaustiveLintTargets(t *testing.T) []lintTarget {
 		t.Fatalf("read the CI workflow: %v", err)
 	}
 	macOSJob, _, _ := strings.Cut(afterFirst(string(workflow), "\n  build-macos:\n"), "\n  go-lint:\n")
-	if !strings.Contains(macOSJob, `run: make go-lint GO_LINT_FLAGS="--enable-only exhaustive"`) {
-		t.Fatal("the CI workflow's macOS job no longer runs the exhaustive linter over the untagged file set")
+	if !strings.Contains(macOSJob, "run: make go-lint-host-files\n") {
+		t.Fatal("the CI workflow's macOS job no longer runs make go-lint-host-files")
+	}
+	if hostFiles := makefileRecipe(t, "go-lint-host-files"); !strings.Contains(hostFiles, "\t$(GO_LINT_WHOLE_TREE) --enable-only exhaustive $$packages\n") {
+		t.Fatalf("the go-lint-host-files recipe no longer runs exhaustive with no build tag over the packages it finds:\n%s", hostFiles)
 	}
 
 	return []lintTarget{
