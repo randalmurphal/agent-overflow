@@ -11,6 +11,7 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread, stubScrollController } from '../../test/helpers/chat';
 import { FakeSmoothingClock, flushMicrotasks, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { utf8Length } from '../utils/utf8Offsets';
+import type { ScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { prependThread, removeThread } from './threads.svelte';
 import { getBindingMock } from '../../test/mocks/bindings-app';
 import { __attachBackendForTest } from '../transport/backends';
@@ -527,49 +528,27 @@ describe('threadSwitchLoad', () => {
       expect(calls).toEqual(['ListThreadSliceAround']);
     });
 
-    it('uses the scroll snapshot anchor when calling ListThreadSliceAround', async () => {
+    it.each<[string, ScrollSnapshot, string]>([
+      ['uses the scroll snapshot anchor when calling ListThreadSliceAround',
+        { kind: 'anchor', itemId: 'wanted', offsetTop: -42 }, 'wanted'],
+      ['passes empty anchor when the scroll snapshot is the bottom kind', { kind: 'bottom' }, ''],
+    ])('%s', async (_name, snapshot, expectedAnchor) => {
       const { setThreadScrollSnapshot, clearThreadScrollSnapshotsForTest } =
         await import('../utils/threadScrollSnapshots');
       clearThreadScrollSnapshotsForTest();
-      setThreadScrollSnapshot('t', {
-        kind: 'anchor',
-        itemId: 'wanted',
-        offsetTop: -42,
-      });
-
-      const pane = createThreadPane();
-      let observedAnchor = '';
-      setBindingMock(
-        'ListThreadSliceAround',
-        async (threadID: unknown, anchorID: unknown, _count: unknown) => {
-          observedAnchor = String(anchorID ?? '');
-          void threadID;
-          return { items: [], oldestTurnIndex: -1, hasMore: false };
-        },
-      );
-      await pane.switchThread(makeThread({ id: 't' }));
-      expect(observedAnchor).toBe('wanted');
-      clearThreadScrollSnapshotsForTest();
-    });
-
-    it('passes empty anchor when the scroll snapshot is the bottom kind', async () => {
-      const { setThreadScrollSnapshot, clearThreadScrollSnapshotsForTest } =
-        await import('../utils/threadScrollSnapshots');
-      clearThreadScrollSnapshotsForTest();
-      setThreadScrollSnapshot('t', { kind: 'bottom' });
+      setThreadScrollSnapshot('t', snapshot);
 
       const pane = createThreadPane();
       let observedAnchor = 'unset';
       setBindingMock(
         'ListThreadSliceAround',
-        async (threadID: unknown, anchorID: unknown, _count: unknown) => {
+        async (_threadID: unknown, anchorID: unknown) => {
           observedAnchor = String(anchorID ?? '');
-          void threadID;
           return { items: [], oldestTurnIndex: -1, hasMore: false };
         },
       );
       await pane.switchThread(makeThread({ id: 't' }));
-      expect(observedAnchor).toBe('');
+      expect(observedAnchor).toBe(expectedAnchor);
       clearThreadScrollSnapshotsForTest();
     });
 

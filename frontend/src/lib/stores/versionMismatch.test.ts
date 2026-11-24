@@ -139,6 +139,9 @@ describe('a refused call as every surface reads it', () => {
     expect(userFacingError(err)).toBe(sentence);
     expect(errString(err)).toBe(sentence);
     expect(`Failed to delete: ${err.message}`).not.toContain('method not registered');
+    // v0.0.19's frame for a method it does not have.
+    expect(err.dispatchRefusal).toBe('unsupported');
+    expect(err.cause).toBe('method not registered');
   });
 
   it('words arguments the computer could not read, from a computer that still sends the old text', () => {
@@ -150,18 +153,16 @@ describe('a refused call as every surface reads it', () => {
 
   // The real frames of the releases named, as their dispatchers sent them
   // before any method ran (internal/transport/dispatcher.go at each tag).
-  it.each<[string, string, string, Record<string, unknown>, 'unsupported' | 'unreadable', string]>([
-    ['v0.0.17 refusing ListPRCommits\' revision, with detail', 'bad_params', 'bad parameter 2',
-      { detail: { ref: 'ref-1', method: 'ListPRCommits', at: 1, chain: ['json: cannot unmarshal object into Go value of type string'] } }, 'unreadable', 'bad parameter 2'],
-    ['v0.0.15 refusing a page of history', 'bad_params', 'bad parameter 3', {}, 'unreadable', 'bad parameter 3'],
-    ['v0.0.19 without the method', 'method_not_found', 'method not registered', {}, 'unsupported', 'method not registered'],
-  ])('words %s as the refusal it is', (_case, code, message, fields, kind, cause) => {
+  it.each<[string, string, Record<string, unknown>]>([
+    ['v0.0.17 refusing ListPRCommits\' revision, with detail', 'bad parameter 2',
+      { detail: { ref: 'ref-1', method: 'ListPRCommits', at: 1, chain: ['json: cannot unmarshal object into Go value of type string'] } }],
+    ['v0.0.15 refusing a page of history', 'bad parameter 3', {}],
+  ])('words %s as the refusal it is', (_case, message, fields) => {
     stageBackend({ id: 'studio', name: 'Studio' }).setHello(hello('0.0.1'));
-    const err = new TransportError(code, message, { ...fields, backend: 'studio' });
-    const lead = kind === 'unsupported' ? 'Studio does not support this action.' : 'Studio could not read this request.';
-    expect(userFacingError(err)).toBe(`${lead} Studio runs Agent Overflow 0.0.1, older than this page (${PAGE_VERSION}). Update Agent Overflow on Studio.`);
-    expect(err.dispatchRefusal).toBe(kind);
-    expect(err.cause).toBe(cause);
+    const err = new TransportError('bad_params', message, { ...fields, backend: 'studio' });
+    expect(userFacingError(err)).toBe(`Studio could not read this request. Studio runs Agent Overflow 0.0.1, older than this page (${PAGE_VERSION}). Update Agent Overflow on Studio.`);
+    expect(err.dispatchRefusal).toBe('unreadable');
+    expect(err.cause).toBe(message);
   });
 
   it('words this release\'s marked refusal and puts what did not fit in Details', () => {

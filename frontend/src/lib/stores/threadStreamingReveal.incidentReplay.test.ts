@@ -208,128 +208,6 @@ describe('incident 2026-08-29 replay: fat-burst final text + instant settle', ()
   const summaryOf = (pane: ReturnType<typeof createThreadPane>, id: string) =>
     pane.items.find((item) => item.id === id)?.summary ?? '';
 
-  it('stage 1: burst deltas + completion patch drain to the full text', () => {
-    withClock((clock) => {
-      const pane = createThreadPane();
-      pane.applyProviderItemUpserts([
-        textRow({ id: 'text:4:0', kind: 'assistant_text', itemIndex: 28, status: 'streaming', summary: '' }),
-      ]);
-      const events: ReplayEvent[] = [
-        ...textDeltaEvents(pane, 100),
-        {
-          at: 120,
-          run: () =>
-            pane.applyItemPatch({
-              threadId: TID,
-              itemId: 'text:4:0',
-              kind: 'assistant_text',
-              patch: { rev: 0, status: 'completed', summary: INCIDENT_TEXT_FULL, updatedAt: 120 },
-            }),
-        },
-      ];
-      pumpTo(clock, events, null, 8_000);
-
-      expect(summaryOf(pane, 'text:4:0')).toBe(INCIDENT_TEXT_FULL);
-      expect(pane.isItemSmoothing('text:4:0')).toBe(false);
-      expect(pane.revealBoundary).toBeNull();
-    });
-  });
-
-  it('stage 2: preceding thinking block settling 1ms before the text', () => {
-    withClock((clock) => {
-      const pane = createThreadPane();
-      seedTurnWindow(pane);
-      const events: ReplayEvent[] = [
-        {
-          at: 3205,
-          run: () => {
-            pane.applyProviderItemUpserts([
-              textRow({ id: 'think:4:2', kind: 'thinking', itemIndex: 24, status: 'streaming', summary: '' }),
-            ]);
-            pane.applyItemDelta({
-              threadId: TID,
-              itemId: 'think:4:2',
-              kind: 'thinking',
-              delta: INCIDENT_THINK_DELTAS[0],
-              updatedAt: 3205,
-            });
-          },
-        },
-        {
-          at: 3209,
-          run: () =>
-            pane.applyItemDelta({
-              threadId: TID,
-              itemId: 'think:4:2',
-              kind: 'thinking',
-              delta: INCIDENT_THINK_DELTAS[1],
-              updatedAt: 3209,
-            }),
-        },
-        {
-          at: 3615,
-          run: () =>
-            pane.applyItemDelta({
-              threadId: TID,
-              itemId: 'think:4:2',
-              kind: 'thinking',
-              delta: INCIDENT_THINK_DELTAS[2],
-              updatedAt: 3615,
-            }),
-        },
-        {
-          at: 6760,
-          run: () =>
-            pane.applyItemPatch({
-              threadId: TID,
-              itemId: 'think:4:2',
-              kind: 'thinking',
-              patch: { rev: 0, status: 'completed', summary: INCIDENT_THINK_FULL, updatedAt: 6760 },
-            }),
-        },
-        {
-          at: 6761,
-          run: () =>
-            pane.applyProviderItemUpserts([
-              textRow({ id: 'text:4:0', kind: 'assistant_text', itemIndex: 28, status: 'streaming', summary: '' }),
-            ]),
-        },
-        ...textDeltaEvents(pane, 6761),
-        {
-          at: 6781,
-          run: () =>
-            pane.applyItemPatch({
-              threadId: TID,
-              itemId: 'text:4:0',
-              kind: 'assistant_text',
-              patch: { rev: 0, status: 'completed', summary: INCIDENT_TEXT_FULL, updatedAt: 6781 },
-            }),
-        },
-        {
-          at: 6798,
-          run: () =>
-            pane.settleTurn({
-              turnId: 'turn-4',
-              turnIndex: 4,
-              startedAt: 0,
-              completedAt: 6798,
-              stopReason: 'end_turn',
-              assistantMessageId: 'msg_011CeYBawRKyYWALkGJ3AuDV',
-              tokenUsage: null,
-              aborted: false,
-              errorMessage: '',
-            }),
-        },
-      ];
-      pumpTo(clock, events, null, 20_000);
-
-      expect(summaryOf(pane, 'think:4:2')).toBe(INCIDENT_THINK_FULL);
-      expect(summaryOf(pane, 'text:4:0')).toBe(INCIDENT_TEXT_FULL);
-      expect(pane.isItemSmoothing('text:4:0')).toBe(false);
-      expect(pane.revealBoundary).toBeNull();
-    });
-  });
-
   it('stage 3: full replay with continuous subagent child churn', () => {
     withClock((clock) => {
       const pane = createThreadPane();
@@ -419,6 +297,7 @@ describe('incident 2026-08-29 replay: fat-burst final text + instant settle', ()
       ];
       pumpTo(clock, events, churn, 30_000);
 
+      expect(summaryOf(pane, 'think:4:2')).toBe(INCIDENT_THINK_FULL);
       expect(summaryOf(pane, 'text:4:0')).toBe(INCIDENT_TEXT_FULL);
       expect(pane.isItemSmoothing('text:4:0')).toBe(false);
       expect(pane.revealBoundary).toBeNull();
