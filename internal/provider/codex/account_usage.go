@@ -228,8 +228,8 @@ func (f *AccountUsageFetcher) Fetch(ctx context.Context) (_ AccountUsage, retErr
 			"optOutNotificationMethods": oneShotOptOutNotificationMethods(),
 		},
 		"clientInfo": map[string]any{
-			"name":    "agent_overflow_account_usage",
-			"version": "0.1.0",
+			"name":    provider.CodexUsageClientName,
+			"version": provider.CodexClientVersion,
 		},
 	}); err != nil {
 		return AccountUsage{}, fmt.Errorf("codex account usage: %w", err)

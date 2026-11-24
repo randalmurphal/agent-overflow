@@ -123,7 +123,7 @@ func ForkThread(ctx context.Context, spec ForkSpec) (string, error) {
 		Binary:     spec.Binary,
 		WorkDir:    spec.WorkDir,
 		Env:        spec.Env,
-		ClientName: "agent-overflow-fork",
+		ClientName: provider.CodexForkClientName,
 		Label:      "thread fork",
 	})
 	if err != nil {

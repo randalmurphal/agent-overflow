@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/providertest"
 	"bufio"
 	"os"
@@ -80,13 +81,13 @@ func TestWriteMockClaudeSessionEmitsAllEvents(t *testing.T) {
 	_ = stdin.Close()
 }
 
-// TestWriteMockCodexSessionRespondsToInitialize verifies the mock responds
-// with a matching id for the initialize JSON-RPC request.
+// TestWriteMockCodexSessionRespondsToInitialize verifies the mock answers
+// initialize with a matching id and the user agent a stock Codex answers the
+// client that sent it with.
 func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	t.Parallel()
 
 	path := WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		`"method":"thread/start"`:  `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"t-1"}}}`,
 		`"method":"thread/resume"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"t-1"}}}`,
 	})
@@ -103,7 +104,7 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	}()
 
 	// Send an initialize request.
-	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n"
+	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"agent_overflow_probe","version":"0.1.0"}}}` + "\n"
 	if _, err := stdin.Write([]byte(req)); err != nil {
 		t.Fatalf("write stdin: %v", err)
 	}
@@ -112,8 +113,8 @@ func TestWriteMockCodexSessionRespondsToInitialize(t *testing.T) {
 	if !strings.Contains(line, `"id":1`) {
 		t.Fatalf("response = %q, missing id=1", line)
 	}
-	if !strings.Contains(line, providertest.CodexUserAgent) {
-		t.Fatalf("response = %q, want the user agent the template carries", line)
+	if !strings.Contains(line, providertest.CodexUserAgentFor(provider.CodexProbeClientName)) {
+		t.Fatalf("response = %q, want the probe client's user agent", line)
 	}
 
 	req2 := `{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}` + "\n"

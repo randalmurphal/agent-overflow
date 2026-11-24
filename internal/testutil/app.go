@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -196,18 +198,32 @@ func MockWaitForFile(path string) string {
 }
 
 // WriteMockCodexSession writes a shell script that behaves like `codex
-// app-server`: it reads JSON-RPC requests line-by-line and for each
-// line matches against the provided key → response map.
+// app-server` at the minimum version: it reads JSON-RPC requests
+// line-by-line and for each line matches against the provided key →
+// response map.
 //
-// The map is keyed by substring probe ("initialize", "thread/start",
-// "thread/resume", "turn/start", etc.). The associated value is a single JSON-RPC
-// response template with `%d` placeholders where the matching request's
-// numeric id should be substituted. The first matching key wins; use an empty
-// key "" for a fallback response.
+// It answers `initialize` itself, as a stock Codex answers the AO client
+// that sent it (providertest.CodexUserAgentShellCase), so responses holds
+// no initialize key. The map is keyed by substring probe ("thread/start",
+// "thread/resume", "turn/start", etc.). The associated value is a single
+// JSON-RPC response template with `%d` placeholders where the matching
+// request's numeric id should be substituted. The first matching key wins;
+// use an empty key "" for a fallback response.
 //
 // The script exits when stdin closes.
 func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string) string {
 	t.Helper()
+	return WriteMockCodexSessionAt(t, dir, provider.MinimumCodexCLIVersion, responses)
+}
+
+// WriteMockCodexSessionAt is WriteMockCodexSession for a Codex of build.
+func WriteMockCodexSessionAt(t *testing.T, dir, build string, responses map[string]string) string {
+	t.Helper()
+	for key := range responses {
+		if strings.Contains(key, "initialize") {
+			t.Fatalf("WriteMockCodexSession answers initialize itself; drop the %q response", key)
+		}
+	}
 	// Generate a stable ordering: user-specified "" fallback goes last.
 	var keys []string
 	var fallback string
@@ -226,6 +242,11 @@ func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string
 	b.WriteString("while IFS= read -r line; do\n")
 	b.WriteString("  id=$(/bin/echo \"$line\" | /usr/bin/grep -o '\"id\":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')\n")
 	b.WriteString("  if [ -z \"$id\" ]; then continue; fi\n")
+	b.WriteString("  if /bin/echo \"$line\" | /usr/bin/grep -q '\"method\":\"initialize\"'; then\n")
+	b.WriteString(providertest.CodexUserAgentShellCase("ua", build, providertest.CodexClientNames...))
+	b.WriteString("    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"userAgent\":\"%s\"}}\\n' \"$id\" \"$ua\"\n")
+	b.WriteString("    continue\n")
+	b.WriteString("  fi\n")
 	for _, key := range keys {
 		tmpl := responses[key]
 		fmt.Fprintf(&b, "  if /bin/echo \"$line\" | /usr/bin/grep -q %s; then\n", stringsx.ShellQuote(key))

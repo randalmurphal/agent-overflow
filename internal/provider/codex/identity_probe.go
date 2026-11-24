@@ -47,7 +47,7 @@ func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (_ provider.AccountInfo
 	// Response-only client: it reads account/read and never waits on a
 	// notification, so the whole catalogue is noise.
 	if err := lineHandshake(probeCtx, proc, lines, probeInitializeID,
-		codexInitializeParams("agent_overflow_probe", oneShotOptOutNotificationMethods())); err != nil {
+		codexInitializeParams(provider.CodexProbeClientName, oneShotOptOutNotificationMethods())); err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: identity probe: %w", err)
 	}
 	if err := writeJSONRPC(proc, map[string]any{

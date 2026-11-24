@@ -318,7 +318,7 @@ with `-c thread_unload_delay_secs=0`: AO is the only client, every thread
 it is not using is unsubscribed on purpose, and holding an unsubscribed
 thread loaded only keeps its writer lock and MCP children alive. Codex
 reads the key from 0.154.0, AO's minimum: every AO client refuses an
-app-server whose `initialize` user agent reports an older or unreadable version.
+app-server whose `initialize` user agent reports an older build.
 
 ### End Session
 

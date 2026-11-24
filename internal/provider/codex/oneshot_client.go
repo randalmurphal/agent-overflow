@@ -109,7 +109,7 @@ func (c *oneshotClient) initialize(ctx context.Context, spec oneshotSpec) error 
 		"clientInfo": map[string]any{
 			"name":    spec.ClientName,
 			"title":   "Agent Overflow",
-			"version": "0.1.0",
+			"version": provider.CodexClientVersion,
 		},
 		"capabilities": capabilities,
 	}

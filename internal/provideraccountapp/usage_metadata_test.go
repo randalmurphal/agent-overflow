@@ -47,17 +47,17 @@ func codexUsageProbe(t *testing.T) (binary, accountFrame string) {
 
 func shellQuoteForTest(s string) string { return "'" + s + "'" }
 
-// codexInitFrame answers a Codex client's initialize (id 1) as a supported
-// app-server. Every client waits for it before it sends anything else.
-const codexInitFrame = `{"jsonrpc":"2.0","id":1,"result":` + providertest.CodexInitializeResult + `}`
-
 // codexInitReply is the opening of a fake that reads requests in order: it
-// reads initialize and answers it.
-const codexInitReply = "read -r _ || true\nprintf '%s\\n' '" + codexInitFrame + "'\n"
+// reads initialize and answers it as a supported app-server answers the
+// client that sent it. Every client waits for it before it sends anything
+// else.
+var codexInitReply = providertest.CodexInitializeInOrder()
 
 // codexInitCase is the initialize branch of a fake that matches requests in
-// a case statement.
-const codexInitCase = `*'"method":"initialize"'*) printf '%s\n' '` + codexInitFrame + `' ;;` + "\n"
+// a case statement on $line.
+var codexInitCase = `*'"method":"initialize"'*)
+` + providertest.CodexUserAgentShellCase("ua", provider.MinimumCodexCLIVersion, providertest.CodexClientNames...) +
+	`printf '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"%s"}}\n' "$ua" ;;` + "\n"
 
 func writeAccountReadFrame(t *testing.T, path, frame string) {
 	t.Helper()

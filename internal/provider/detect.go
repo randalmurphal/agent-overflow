@@ -74,7 +74,7 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 		// status stays ready; the app-server's own `initialize` is what
 		// admits or refuses the process that runs.
 		if parsed := ParseCodexCLIVersion(version); parsed != "" {
-			if err := CheckCodexVersion(resolvedPath, parsed, version); err != nil {
+			if err := CheckCodexVersion(resolvedPath, parsed); err != nil {
 				status.Status = "version_too_old"
 				status.Message = err.Error()
 			}

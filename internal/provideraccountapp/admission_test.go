@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/testutil"
 )
@@ -54,7 +53,6 @@ func TestLoginAdmissionOutlivesStartAndReleasesAfterCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		"initialize":           `{"id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		"account/login/start":  `{"id":%s,"result":{"type":"chatgptDeviceCode","loginId":"login-device","verificationUrl":"https://chatgpt.com/device","userCode":"ABCD-EFGH"}}`,
 		"account/login/cancel": `{"id":%s,"result":{"status":"canceled"}}`,
 	})
@@ -84,9 +82,7 @@ func TestLoginAdmissionOutlivesStartAndReleasesAfterCancel(t *testing.T) {
 	}
 	// A Codex below the minimum is refused at its handshake: the person gets
 	// the refusal, and the lease is released.
-	old := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		"initialize": `{"id":%s,"result":{"userAgent":"agent_overflow_probe/0.153.4 (Linux 6.6.0; x86_64) xterm-256color"}}`,
-	})
+	old := testutil.WriteMockCodexSessionAt(t, t.TempDir(), "0.153.4", map[string]string{})
 	manager.deps.ProviderBinary = func(string) string { return old }
 	_, err = manager.StartProviderLogin("codex", LoginMethodRemote)
 	var refusal *provider.CodexVersionError

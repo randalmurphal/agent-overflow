@@ -84,8 +84,8 @@ func TestParseCodexCLIVersion(t *testing.T) {
 
 // TestCheckCodexVersionBoundary pins the minimum: the last release before
 // it is refused, the minimum and later releases are admitted, a
-// pre-release of the minimum orders below it and is refused, and an
-// unreadable version is refused as unreadable.
+// pre-release of the minimum orders below it and is refused, and text that
+// is not a version is a caller's error.
 func TestCheckCodexVersionBoundary(t *testing.T) {
 	cases := []struct {
 		version  string
@@ -105,21 +105,24 @@ func TestCheckCodexVersionBoundary(t *testing.T) {
 		{"01.154.0", false},
 	}
 	for _, tc := range cases {
-		err := CheckCodexVersion("/opt/codex", tc.version, "codex-cli "+tc.version)
+		err := CheckCodexVersion("/opt/codex", tc.version)
 		if tc.admitted {
 			if err != nil {
 				t.Errorf("CheckCodexVersion(%q) = %v, want admitted", tc.version, err)
 			}
 			continue
 		}
+		// Text that is not a version is a caller's error, never a refusal:
+		// a reply that names no build is not read.
 		var versionErr *CodexVersionError
-		if !errors.As(err, &versionErr) || !errors.Is(err, ErrCodexVersionUnsupported) {
-			t.Errorf("CheckCodexVersion(%q) = %v, want a *CodexVersionError", tc.version, err)
+		if _, readable := ParseCodexVersion(tc.version); !readable {
+			if err == nil || errors.As(err, &versionErr) || errors.Is(err, ErrCodexVersionUnsupported) {
+				t.Errorf("CheckCodexVersion(%q) = %v, want a plain error", tc.version, err)
+			}
 			continue
 		}
-		_, readable := ParseCodexVersion(tc.version)
-		if (versionErr.Version != "") != readable {
-			t.Errorf("CheckCodexVersion(%q).Version = %q, readable %v", tc.version, versionErr.Version, readable)
+		if !errors.As(err, &versionErr) || !errors.Is(err, ErrCodexVersionUnsupported) || versionErr.Version != tc.version {
+			t.Errorf("CheckCodexVersion(%q) = %v, want a *CodexVersionError", tc.version, err)
 		}
 	}
 }
@@ -141,14 +144,6 @@ func TestCodexVersionErrorMessages(t *testing.T) {
 			CodexVersionError{Version: "0.150.0"},
 			"Codex v0.150.0 is installed; Agent Overflow needs v0.154.0 or newer. Update Codex.",
 		},
-		{
-			CodexVersionError{Path: "/opt/codex", Raw: "codex_cli_rs/dev (Linux)"},
-			`Agent Overflow could not read the version of Codex (/opt/codex) from "codex_cli_rs/dev (Linux)". Update Codex to v0.154.0 or newer.`,
-		},
-		{
-			CodexVersionError{Path: "/opt/codex"},
-			"Agent Overflow could not read the version of Codex (/opt/codex). Update Codex to v0.154.0 or newer.",
-		},
 	}
 	for _, tc := range cases {
 		if got := tc.err.Error(); got != tc.want {
@@ -157,45 +152,24 @@ func TestCodexVersionErrorMessages(t *testing.T) {
 	}
 }
 
-// TestCheckCodexVersionBoundsTheTextItKeeps builds refusals from long
-// version text on both branches: an unreadable version and a parsed one
-// below the minimum. Each keeps at most 120 bytes of each text, copied, so a
+// TestCheckCodexVersionBoundsTheTextItKeeps builds a refusal from a long
+// version below the minimum. It keeps at most 120 bytes of it, copied, so a
 // cached refusal neither pins nor repeats megabytes of provider output.
 func TestCheckCodexVersionBoundsTheTextItKeeps(t *testing.T) {
-	long := strings.Repeat("x", 4096)
-	t.Run("unreadable", func(t *testing.T) {
-		raw := "codex_cli_rs/" + long + " (Linux)"
-		var refusal *CodexVersionError
-		if !errors.As(CheckCodexVersion("/opt/codex", "", raw), &refusal) {
-			t.Fatal("an unreadable version was admitted")
-		}
-		if want := raw[:120] + "..."; refusal.Raw != want {
-			t.Fatalf("Raw = %q, want %q", refusal.Raw, want)
-		}
-		if unsafe.StringData(refusal.Raw) == unsafe.StringData(raw) {
-			t.Fatal("Raw shares the input's bytes")
-		}
-	})
-	t.Run("below the minimum", func(t *testing.T) {
-		version := "0.153.0-" + long
-		raw := "codex_cli_rs/" + version + " (Linux)"
-		var refusal *CodexVersionError
-		if !errors.As(CheckCodexVersion("/opt/codex", version, raw), &refusal) {
-			t.Fatal("a version below the minimum was admitted")
-		}
-		if want := version[:120] + "..."; refusal.Version != want {
-			t.Fatalf("Version = %q, want %q", refusal.Version, want)
-		}
-		if want := raw[:120] + "..."; refusal.Raw != want {
-			t.Fatalf("Raw = %q, want %q", refusal.Raw, want)
-		}
-		if unsafe.StringData(refusal.Version) == unsafe.StringData(version) {
-			t.Fatal("Version shares the input's bytes")
-		}
-		if len(refusal.Error()) > 400 {
-			t.Fatalf("message is %d bytes: %q", len(refusal.Error()), refusal.Error())
-		}
-	})
+	version := "0.153.0-" + strings.Repeat("x", 4096)
+	var refusal *CodexVersionError
+	if !errors.As(CheckCodexVersion("/opt/codex", version), &refusal) {
+		t.Fatal("a version below the minimum was admitted")
+	}
+	if want := version[:120] + "..."; refusal.Version != want {
+		t.Fatalf("Version = %q, want %q", refusal.Version, want)
+	}
+	if unsafe.StringData(refusal.Version) == unsafe.StringData(version) {
+		t.Fatal("Version shares the input's bytes")
+	}
+	if len(refusal.Error()) > 400 {
+		t.Fatalf("message is %d bytes: %q", len(refusal.Error()), refusal.Error())
+	}
 }
 
 // TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate pins the

@@ -65,7 +65,7 @@ func writeSpendScript(t *testing.T, consumeFrame string, accountDelay time.Durat
 	script := "#!/bin/bash\n" +
 		`log="` + transcript + `"` + "\n" +
 		record +
-		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":` + providertest.CodexInitializeResult + `}'` + "\n" +
+		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":` + providertest.CodexInitializeResultFor(provider.CodexProbeClientName) + `}'` + "\n" +
 		record + record
 	if accountDelay > 0 {
 		script += "sleep " + strings.TrimSuffix(accountDelay.String(), "s") + "\n"

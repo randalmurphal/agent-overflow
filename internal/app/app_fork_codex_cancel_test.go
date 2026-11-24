@@ -28,7 +28,8 @@ while IFS= read -r line; do
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
-        printf '{"jsonrpc":"2.0","id":%%s,"result":`+providertest.CodexInitializeResult+`}\n' "$id"
+        `+providertest.CodexUserAgentShellCase("ua", provider.MinimumCodexCLIVersion, providertest.CodexClientNames...)+`
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"userAgent":"%%s"}}\n' "$id" "$ua"
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/fork"'; then

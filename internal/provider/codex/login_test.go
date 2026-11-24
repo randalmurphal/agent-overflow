@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/providertest"
 	"context"
 	"errors"
@@ -19,14 +20,14 @@ import (
 // `jsonrpc` field on every response on purpose — that is what the real
 // app-server does, and a decoder that required it would pass here and fail
 // against the CLI.
-const mockCodexLoginScript = `#!/bin/bash
+var mockCodexLoginScript = `#!/bin/bash
 printf '%s\n' "$*" > "$AO_CODEX_LOGIN_ARGV"
 while IFS= read -r line; do
   if [ -n "$AO_CODEX_LOGIN_LOG" ]; then printf '%s\n' "$line" >> "$AO_CODEX_LOGIN_LOG"; fi
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*)
-      printf '{"id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
+      printf '{"id":%s,"result":` + providertest.CodexInitializeResultFor(provider.CodexLoginClientName) + `}\n' "$id"
       ;;
     *'"type":"chatgptDeviceCode"'*)
       printf '{"id":%s,"result":{"type":"chatgptDeviceCode","loginId":"login-device","verificationUrl":"https://chatgpt.com/device","userCode":"ABCD-EFGH"}}\n' "$id"

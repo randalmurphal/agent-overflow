@@ -113,7 +113,7 @@ func TestCodexInitializeReportsAVersion(t *testing.T) {
 	env := writeScenarioFile(t, queueScenario(), "")
 	p := startMock(t, []string{"app-server"}, env, t.TempDir())
 
-	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"agent_overflow"}}}`)
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"agent_overflow","version":"0.1.0"}}}`)
 	resp := p.expectLine(testTimeout)
 	var body struct {
 		Result struct {
@@ -125,12 +125,36 @@ func TestCodexInitializeReportsAVersion(t *testing.T) {
 	}
 	// Upstream's shape, with the originator the handshake sent and the
 	// mock's version as a whole build.
-	want := providertest.CodexUserAgentFor("agent_overflow", mockVersionNumber)
+	want := providertest.FormatCodexUserAgent(mockVersionNumber, "agent_overflow", "agent_overflow", provider.CodexClientVersion)
 	if body.Result.UserAgent != want {
 		t.Fatalf("initialize userAgent = %q, want %q", body.Result.UserAgent, want)
 	}
 	if _, ok := provider.ParseCodexVersion(mockVersionNumber); !ok {
 		t.Fatalf("the mock's version %q is not a Codex build", mockVersionNumber)
+	}
+	p.closeStdinAndExpectExit(0, testTimeout)
+}
+
+// A launch whose environment overrides the originator answers with that
+// originator in front and the client's own name and version at the end, as
+// upstream does, so a test reads the real reply of a renamed launcher.
+func TestCodexInitializeKeepsTheClientSuffixUnderAnOverride(t *testing.T) {
+	env := append(writeScenarioFile(t, queueScenario(), ""), "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=agent_overflow/team")
+	p := startMock(t, []string{"app-server"}, env, t.TempDir())
+
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"agent_overflow_probe","version":"0.1.0"}}}`)
+	resp := p.expectLine(testTimeout)
+	var body struct {
+		Result struct {
+			UserAgent string `json:"userAgent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(resp), &body); err != nil {
+		t.Fatalf("decode initialize response %q: %v", resp, err)
+	}
+	want := providertest.FormatCodexUserAgent(mockVersionNumber, "agent_overflow/team", "agent_overflow_probe", "0.1.0")
+	if body.Result.UserAgent != want {
+		t.Fatalf("initialize userAgent = %q, want %q", body.Result.UserAgent, want)
 	}
 	p.closeStdinAndExpectExit(0, testTimeout)
 }

@@ -634,20 +634,22 @@ func (a *codexAdapter) sendInterruptedTurn(vars scenario.Vars) {
 
 // mockUserAgent is the user agent Codex of version answers this handshake
 // with: its originator is CODEX_INTERNAL_ORIGINATOR_OVERRIDE when that is
-// set, otherwise the clientInfo.name the handshake sent, in upstream's
-// shape (providertest.CodexUserAgentFor).
+// set, otherwise the clientInfo.name the handshake sent, and it ends with
+// the clientInfo name and version the handshake sent, as upstream does
+// (providertest.FormatCodexUserAgent).
 func mockUserAgent(params json.RawMessage, version string) string {
+	var init struct {
+		ClientInfo struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"clientInfo"`
+	}
+	_ = json.Unmarshal(params, &init)
 	originator, ok := os.LookupEnv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE")
 	if !ok {
-		var init struct {
-			ClientInfo struct {
-				Name string `json:"name"`
-			} `json:"clientInfo"`
-		}
-		_ = json.Unmarshal(params, &init)
 		originator = init.ClientInfo.Name
 	}
-	return providertest.CodexUserAgentFor(originator, version)
+	return providertest.FormatCodexUserAgent(version, originator, init.ClientInfo.Name, init.ClientInfo.Version)
 }
 
 func (a *codexAdapter) respond(id json.RawMessage, method string, vars scenario.Vars) {

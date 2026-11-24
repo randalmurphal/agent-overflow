@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/harness/scenario"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provider/providertest"
 )
@@ -313,7 +314,7 @@ func TestCodexInitializeCarriesTheScenarioProviderVersion(t *testing.T) {
 	a := newCodexAdapter(e, newLineWriter(&buf), nil)
 	e.adapter = a
 
-	frame := codexRequest(t, a, &buf, "initialize", `{"clientInfo":{"name":"agent_overflow"}}`)
+	frame := codexRequest(t, a, &buf, "initialize", `{"clientInfo":{"name":"agent_overflow","version":"0.1.0"}}`)
 	if frame.Error != nil {
 		t.Fatalf("initialize = %+v", frame.Error)
 	}
@@ -323,7 +324,7 @@ func TestCodexInitializeCarriesTheScenarioProviderVersion(t *testing.T) {
 	if err := json.Unmarshal(frame.Result, &decoded); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if decoded.UserAgent != providertest.CodexUserAgentFor("agent_overflow", "0.147.0") {
+	if decoded.UserAgent != providertest.FormatCodexUserAgent("0.147.0", "agent_overflow", "agent_overflow", provider.CodexClientVersion) {
 		t.Fatalf("userAgent = %q, want the scenario's pinned 0.147.0", decoded.UserAgent)
 	}
 }

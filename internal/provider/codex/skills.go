@@ -260,7 +260,7 @@ func (f *SkillsFetcher) Fetch(ctx context.Context, cwds []string, forceReload bo
 		Binary:     f.Binary,
 		WorkDir:    workDir,
 		Env:        f.Env,
-		ClientName: "agent_overflow_skills",
+		ClientName: provider.CodexSkillsClientName,
 		Label:      skillsListMethod,
 	})
 	if err != nil {

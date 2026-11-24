@@ -42,7 +42,8 @@ while IFS= read -r line; do
   id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
   if [ -z "$id" ]; then continue; fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
-    printf '{"jsonrpc":"2.0","id":%%s,"result":`+providertest.CodexInitializeResult+`}\n' "$id"
+    `+providertest.CodexUserAgentShellCase("ua", provider.MinimumCodexCLIVersion, providertest.CodexClientNames...)+`
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"userAgent":"%%s"}}\n' "$id" "$ua"
     continue
   fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"account/read"'; then

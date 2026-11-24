@@ -51,7 +51,7 @@ func StartMCPAuth(ctx context.Context, cfg MCPAuthConfig, serverName string) (*M
 		Binary:            cfg.Binary,
 		WorkDir:           cfg.WorkDir,
 		Env:               cfg.Env,
-		ClientName:        "agent-overflow-mcp-auth",
+		ClientName:        provider.CodexMCPAuthClientName,
 		KeepNotifications: []string{"mcpServer/oauthLogin/completed"},
 		Label:             "mcp auth",
 	})

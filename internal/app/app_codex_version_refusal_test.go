@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -75,7 +76,8 @@ while IFS= read -r line; do
   id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
   if [ -z "$id" ]; then continue; fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":{"userAgent":"agent_overflow/%s (Linux 6.6.0; x86_64) xterm-256color"}}\n' "$id" "$version"
+    ` + providertest.CodexUserAgentShellCase("ua", `'"$version"'`, providertest.CodexClientNames...) + `
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"userAgent":"%s"}}\n' "$id" "$ua"
   elif /bin/echo "$line" | /usr/bin/grep -q '"method":"config/read"'; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"config":{}}}\n' "$id"
   elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then

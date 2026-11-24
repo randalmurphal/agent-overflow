@@ -692,7 +692,7 @@ while IFS= read -r line; do
         continue
     fi
 %s    if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
-        printf '{"jsonrpc":"2.0","id":%%s,"result":%s}\n' "$id"
+%s        printf '{"jsonrpc":"2.0","id":%%s,"result":{"userAgent":"%%s"}}\n' "$id" "$ua"
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
@@ -735,7 +735,8 @@ while IFS= read -r line; do
         continue
     fi
 done
-`, mock.turnsTail, turnStartClause+injectClauses+memoryModeClause, providertest.CodexInitializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
+`, mock.turnsTail, turnStartClause+injectClauses+memoryModeClause,
+		providertest.CodexUserAgentShellCase("ua", provider.MinimumCodexCLIVersion, providertest.CodexClientNames...), logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
 		logRevertRequest, revertReply, logInterruptRequest, logForkRequest, tailExpr,
 		mock.forkedThreadID)
 

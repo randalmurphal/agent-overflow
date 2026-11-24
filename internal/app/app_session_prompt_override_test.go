@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/provider/providertest"
 	"context"
 	"fmt"
 	"maps"
@@ -644,7 +643,6 @@ func startOverrideSessionIn(t *testing.T, app *App, id string, providerName prov
 	settingsKey := "codexPromptOverrides"
 	binaryKey := "codexBinaryPath"
 	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		`"method":"initialize"`:   `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		`"method":"thread/start"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-` + id + `"}}}`,
 		`"method":"config/read"`:  `{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}`,
 	})
@@ -796,7 +794,6 @@ func TestNextSpawnAfterACodexForkStillCarriesTheOverrideAxes(t *testing.T) {
 func registerLiveCodexSession(t *testing.T, app *App, threadID string, launchOpts provider.SessionOptions) {
 	t.Helper()
 	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		`"method":"thread/start"`:  `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"mock-thread-override"}}}`,
 		`"method":"thread/resume"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"mock-thread-override"}}}`,
 	})

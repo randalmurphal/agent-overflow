@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -27,8 +28,9 @@ func TestACodexBelowTheMinimumRefusesSwitchAndRemoveWithoutEndingUses(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			manager, store, credentials, _, _, _ := codexOutsideLoginRig(t, "b@example.com")
 			old := mockexec.Write(t, filepath.Join(t.TempDir(), "codex"), "#!/bin/bash\n"+
-				"read -r _ || true\n"+
-				`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"agent_overflow/0.153.4 (Linux 6.6.0; x86_64) dumb (agent_overflow; 0.1.0)"}}'`+"\n"+
+				"IFS= read -r line || true\n"+
+				providertest.CodexUserAgentShellCase("ua", "0.153.4", providertest.CodexClientNames...)+
+				`printf '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"%s"}}\n' "$ua"`+"\n"+
 				"read -r _ || true\n")
 			manager.deps.ProviderBinary = func(string) string { return old }
 			outside := codexWorkspaceLogin(t, "b@example.com", "ws-b", "rt-b1", time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC))

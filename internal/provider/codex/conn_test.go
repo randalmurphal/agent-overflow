@@ -352,7 +352,7 @@ func TestConnThreadScopedMCPStartupUpdateNotifiesConnHandler(t *testing.T) {
 
 func TestConnOpenPooledFailsWithErrThreadUnloadFailedWhenUnsubscribeUnsupported(t *testing.T) {
 	t.Parallel()
-	const noUnsubscribeScript = `#!/usr/bin/env python3
+	noUnsubscribeScript := `#!/usr/bin/env python3
 import json, sys
 
 def emit(obj):

@@ -454,7 +454,6 @@ func TestCodexReviewLazyStartsAColdThread(t *testing.T) {
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := newCodexThreadForReviewTest(t, app, "thread-codex-no-session")
 	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		`"method":"initialize"`:           `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		`"method":"thread/start"`:         `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"cold-codex-thread"}}}`,
 		`"method":"config/read"`:          `{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}`,
 		`"method":"review/start"`:         `{"jsonrpc":"2.0","id":%s,"result":{"reviewThreadId":"cold-codex-thread","turn":{"id":"cold-review","status":"inProgress","items":[]}}}`,

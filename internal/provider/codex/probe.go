@@ -198,7 +198,7 @@ func runAccountProbe(ctx context.Context, cfg ProbeConfig, spend bool) (_ provid
 	// Response-only client: account/read plus account/rateLimits/read, no
 	// notification is ever awaited.
 	if err := lineHandshake(prepCtx, proc, lines, probeInitializeID,
-		codexInitializeParams("agent_overflow_probe", oneShotOptOutNotificationMethods())); err != nil {
+		codexInitializeParams(provider.CodexProbeClientName, oneShotOptOutNotificationMethods())); err != nil {
 		return provider.AccountInfo{}, "", fmt.Errorf("codex: probe: %w", err)
 	}
 

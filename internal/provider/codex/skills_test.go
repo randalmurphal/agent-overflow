@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
@@ -364,7 +365,7 @@ set -euo pipefail
 while IFS= read -r line; do
   id="$(printf '%s\n' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
   if [[ "$line" == *'"method":"initialize"'* ]]; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
+    printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResultFor(provider.CodexSkillsClientName) + `}\n' "$id"
   elif [[ "$line" == *'"method":"skills/list"'* ]]; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"cwd":"/repo","skills":[{"name":"code-review","description":"Reviews a diff","interface":{"displayName":"Code Review","defaultPrompt":"Review my working tree"},"path":"/repo/.codex/skills/code-review/SKILL.md","scope":"repo","enabled":true}],"errors":[]}]}}\n' "$id"
   fi

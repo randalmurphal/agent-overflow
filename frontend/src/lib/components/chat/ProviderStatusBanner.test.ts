@@ -203,9 +203,9 @@ describe('<ProviderStatusBanner>', () => {
         status: 'version_too_old',
         message: 'Codex v0.153.4 (/usr/bin/codex) is installed; Agent Overflow needs v0.154.0 or newer. Update Codex.',
       }],
-      ['an unreadable version, then updated', {
+      ['a failed version check, then updated', {
         status: 'error',
-        message: 'Agent Overflow could not read the version of Codex (/usr/bin/codex). Update Codex to v0.154.0 or newer.',
+        message: 'version check of /usr/bin/codex failed: exit status 1',
       }],
     ];
 

@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/providertest"
 	"context"
 	"os"
@@ -19,14 +20,14 @@ func TestMCPAuthFlowUsesThreadlessAppServerThroughCompletion(t *testing.T) {
 		t.Skip("mock shell binaries are POSIX-only")
 	}
 	tracePath := filepath.Join(t.TempDir(), "requests.ndjson")
-	const script = `#!/usr/bin/env bash
+	script := `#!/usr/bin/env bash
 set -u
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$TRACE_PATH"
   case "$line" in
     *'"initialize"'*)
       id=$(printf '%s' "$line" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
-      printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResultFor(provider.CodexMCPAuthClientName) + `}\n' "$id"
       ;;
     *'"mcpServer/oauth/login"'*)
       id=$(printf '%s' "$line" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"unicode/utf8"
 
@@ -21,17 +22,17 @@ import (
 // `{originator}/{build} ({os type} {os version}; {arch}) {terminal}`, then
 // ` ({client name}; {client version})` (rust-v0.154.0
 // codex-rs/login/src/auth/default_client.rs get_codex_user_agent). Every
-// field is written unescaped, and the originator, the os version and the
-// arch may each hold slashes, parentheses and version-like text, so no rule
-// over the string alone can say which slash ends the originator. The
-// originator is what this side knows: a fresh app-server's is
-// CODEX_INTERNAL_ORIGINATOR_OVERRIDE from its environment when that is set,
-// otherwise the clientInfo.name the handshake sent
-// (codex-rs/app-server/src/request_processors/initialize_processor.rs). The
-// build is read right after it. Every client that completes a handshake
-// admits the process by it through admitInitialize, before its first other
-// request, so it describes the process actually on the other end of the
-// pipe.
+// field is written unescaped, so a launcher that changes the originator can
+// make any reply text, including one byte for byte equal to another
+// launch's. The reader therefore reads only what it can attribute: the
+// originator this side launched the process with (CODEX_INTERNAL_ORIGINATOR_OVERRIDE
+// from its environment when that is set, otherwise the clientInfo.name the
+// handshake sent; codex-rs/app-server/src/request_processors/initialize_processor.rs),
+// then `/`, a whole build and ` (`. That build is checked against the
+// minimum. Any other reply is not read: the process is admitted, as a
+// `--version` output with no version in it is (provider.DetectProvider),
+// with no recorded build. Every client that completes a handshake admits
+// the process through admitInitialize, before its first other request.
 
 // AppServerVersion returns the codex build this session's process reported at
 // `initialize`, or "" when it could not be determined.
@@ -83,51 +84,53 @@ func validHeaderValue(value string) bool {
 // path is the executable that answered, originator what its user agent
 // starts with (handshakeOriginator) and result the reply. It returns the
 // build the reply reports, an owned copy, or the *provider.CodexVersionError
-// refusing the process, unwrapped so every client refuses with the same
-// message.
+// refusing a build below the minimum, unwrapped so every client refuses with
+// the same message. A reply it cannot read is admitted with no build and
+// logged once, here, for the one handshake of the process.
 func admitInitialize(path, originator string, result json.RawMessage) (string, error) {
 	userAgent := readNestedString(result, "userAgent")
 	version := appServerBuild(userAgent, originator)
-	if err := provider.CheckCodexVersion(path, version, userAgent); err != nil {
+	if version == "" {
+		log.Printf("codex: %s answered initialize with a user agent that does not report its build after %q; admitted without a version check: %q",
+			path, originator, userAgentForLog(userAgent))
+		return "", nil
+	}
+	if err := provider.CheckCodexVersion(path, version); err != nil {
 		return "", err
 	}
 	return version, nil
 }
 
-// appServerBuild reads the build from userAgent: the word right after
-// originator and its slash, which must be a whole version followed by the
-// OS block's " (". A reply that does not start with originator came from a
-// process whose environment a launcher changed; its build is read only
-// when exactly one position in it is a slash, a version and " (", and
-// otherwise it is unreadable. "" when no build can be read.
+// appServerBuild is the build userAgent reports right after originator
+// and its slash: a whole version (provider.ParseCodexVersion) followed by
+// the OS block's " (". "" for any other reply.
 func appServerBuild(userAgent, originator string) string {
-	if rest, ok := strings.CutPrefix(userAgent, originator+"/"); ok {
-		return buildBeforeOSBlock(rest)
-	}
-	build, found := "", 0
-	for i := 0; i < len(userAgent); i++ {
-		if userAgent[i] != '/' {
-			continue
-		}
-		if candidate := buildBeforeOSBlock(userAgent[i+1:]); candidate != "" {
-			build, found = candidate, found+1
-		}
-	}
-	if found != 1 {
+	rest, ok := strings.CutPrefix(userAgent, originator+"/")
+	if !ok {
 		return ""
 	}
-	return build
-}
-
-// buildBeforeOSBlock is the version s starts with when the word is a whole
-// Codex version (provider.ParseCodexVersion) and " (" follows it, else "".
-func buildBeforeOSBlock(s string) string {
-	word, after, ok := strings.Cut(s, " ")
+	word, after, ok := strings.Cut(rest, " ")
 	if !ok || !strings.HasPrefix(after, "(") {
 		return ""
 	}
 	version, _ := provider.ParseCodexVersion(word)
 	return version
+}
+
+// userAgentLogLimit bounds the provider text a log line quotes.
+const userAgentLogLimit = 160
+
+// userAgentForLog is userAgent as a log line quotes it: provider text, so
+// capped, and %q escapes what it does not print.
+func userAgentForLog(userAgent string) string {
+	if len(userAgent) <= userAgentLogLimit {
+		return userAgent
+	}
+	cut := userAgentLogLimit
+	for cut > 0 && !utf8.RuneStart(userAgent[cut]) {
+		cut--
+	}
+	return userAgent[:cut] + "..."
 }
 
 // lineHandshake runs `initialize` for a client that reads frames from lines

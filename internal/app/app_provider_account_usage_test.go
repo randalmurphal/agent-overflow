@@ -17,6 +17,7 @@ import (
 	"net/url"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/transport"
 )
@@ -516,7 +517,10 @@ func writeCodexAppServerMock(t *testing.T, app *App) {
 		"  case \"$line\" in\n"+
 		"    *'\"method\":\"account/read\"'*) result='{\"account\":{\"type\":\"chatgpt\",\"email\":null,\"planType\":\"pro\"},\"requiresOpenaiAuth\":true}' ;;\n"+
 		"    *'\"method\":\"account/rateLimits/read\"'*) result='{\"rateLimits\":{\"limitId\":\"codex\",\"planType\":\"pro\",\"primary\":{\"usedPercent\":7,\"windowDurationMins\":300,\"resetsAt\":1778479200}}}' ;;\n"+
-		"    *) result='{\"protocolVersion\":\"v2\",\"userAgent\":\"agent_overflow/0.200.0 (Linux 6.6.0; x86_64) xterm-256color\"}' ;;\n"+
+		"    *'\"method\":\"initialize\"'*)\n"+
+		providertest.CodexUserAgentShellCase("ua", "0.200.0", providertest.CodexClientNames...)+
+		"      result=\"{\\\"protocolVersion\\\":\\\"v2\\\",\\\"userAgent\\\":\\\"$ua\\\"}\" ;;\n"+
+		"    *) result='{}' ;;\n"+
 		"  esac\n"+
 		"  printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":%s}\\n' \"$id\" \"$result\"\n"+
 		"done\n")

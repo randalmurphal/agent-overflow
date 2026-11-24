@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"agent-overflow/internal/provider/providertest"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -366,7 +365,6 @@ func TestATurnRunBeforeTheStartAnswerSettlesTheStart(t *testing.T) {
 		line("hook/completed", map[string]any{"turnId": "t0", "run": run}) +
 		line("turn/completed", map[string]any{"turn": map[string]any{"id": "t0", "status": "completed", "items": []any{}}})
 	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		`"method":"initialize"`:   `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		`"method":"thread/start"`: early + `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"` + root + `"}}}`,
 		"":                        `{"jsonrpc":"2.0","id":%s,"result":{}}`,
 	})
@@ -996,7 +994,6 @@ func TestCodexForgetsAPendingDeliveryWhenTheSessionEnds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-				`"method":"initialize"`:    `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 				`"method":"thread/resume"`: tc.early + `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"` + root + `"}}}`,
 				"":                         `{"jsonrpc":"2.0","id":%s,"result":{}}`,
 			})

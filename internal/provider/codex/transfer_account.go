@@ -57,7 +57,7 @@ func readNativeAccount(ctx context.Context, cfg ProbeConfig, label string, refre
 	}
 	defer func() { retErr = errors.Join(retErr, proc.Close()) }()
 	client := &oneshotClient{proc: proc, label: label}
-	if err := client.initialize(ctx, oneshotSpec{ClientName: "agent_overflow_probe"}); err != nil {
+	if err := client.initialize(ctx, oneshotSpec{ClientName: provider.CodexProbeClientName}); err != nil {
 		return nil, err
 	}
 	return client.request(ctx, "account/read", map[string]any{"refreshToken": refresh})

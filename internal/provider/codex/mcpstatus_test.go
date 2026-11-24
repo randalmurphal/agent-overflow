@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/providertest"
 	"context"
 	"encoding/json"
@@ -192,13 +193,13 @@ func writeMockCodexAppServer(t *testing.T, dir, scriptBody string) string {
 //
 // The script extracts the request id with a tiny jq-free regex so we
 // don't depend on jq being installed.
-const mockCodexAppServerScript = `#!/usr/bin/env bash
+var mockCodexAppServerScript = `#!/usr/bin/env bash
 set -u
 while IFS= read -r line; do
   case "$line" in
     *'"initialize"'*)
       id=$(printf '%s' "$line" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"capabilities":{},"protocolVersion":"2025-06-18","serverInfo":{"name":"mock-codex","version":"0.0.0"},"userAgent":"` + providertest.CodexUserAgent + `"}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"capabilities":{},"protocolVersion":"2025-06-18","serverInfo":{"name":"mock-codex","version":"0.0.0"},"userAgent":"` + providertest.CodexUserAgentFor(provider.CodexMCPStatusClientName) + `"}}\n' "$id"
       ;;
     *'"mcpServerStatus/list"'*)
       id=$(printf '%s' "$line" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
@@ -251,7 +252,7 @@ func TestMCPStatusFetcher_Fetch_InitializeError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell binaries are POSIX-only")
 	}
-	const script = `#!/usr/bin/env bash
+	script := `#!/usr/bin/env bash
 while IFS= read -r line; do
   case "$line" in
     *'"initialize"'*)
@@ -277,12 +278,12 @@ func TestMCPStatusFetcher_Fetch_ListError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell binaries are POSIX-only")
 	}
-	const script = `#!/usr/bin/env bash
+	script := `#!/usr/bin/env bash
 while IFS= read -r line; do
   case "$line" in
     *'"initialize"'*)
       id=$(printf '%s' "$line" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
-      printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResultFor(provider.CodexMCPStatusClientName) + `}\n' "$id"
       ;;
     *'"mcpServerStatus/list"'*)
       id=$(printf '%s' "$line" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
@@ -314,7 +315,7 @@ func TestMCPStatusFetcher_Fetch_Timeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell binaries are POSIX-only")
 	}
-	const script = `#!/usr/bin/env bash
+	script := `#!/usr/bin/env bash
 sleep 5
 `
 	binPath := writeMockCodexAppServer(t, t.TempDir(), script)

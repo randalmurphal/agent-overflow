@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
@@ -700,8 +701,9 @@ func TestProviderBinaryDowngradeBelowTheMinimumIsRecordedOnce(t *testing.T) {
 	// The downgrade: every launch is logged, and initialize reports 0.153.4.
 	version = "0.153.4"
 	writeProviderBinaryFile(t, binary, "echo launch >> '"+launchLog+"'\n"+
-		"read -r _ || true\n"+
-		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex_cli_rs/0.153.4 (Linux 6.1; x86_64) dumb"}}'`+"\n"+
+		"IFS= read -r line || true\n"+
+		providertest.CodexUserAgentShellCase("ua", "0.153.4", providertest.CodexClientNames...)+
+		`printf '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"%s"}}\n' "$ua"`+"\n"+
 		"read -r _ || true\nexit 0")
 	app.sweepProviderBinaries()
 	launches := func() int {

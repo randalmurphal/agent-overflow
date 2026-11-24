@@ -36,7 +36,7 @@ var probeWorkDir = os.TempDir()
 // probeInitReply is the shell lines a probe fake starts with: it reads the
 // initialize request and answers it as a supported Codex, which the probe
 // waits for before it sends anything else.
-const probeInitReply = "read -r _ || true\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + providertest.CodexInitializeResult + "}'\n"
+var probeInitReply = providertest.CodexInitializeInOrder()
 
 func writeMockCodexAppServerScript(t *testing.T, tmpDir, rateLimitsJSON, errMsg string) string {
 	t.Helper()

@@ -5,6 +5,8 @@ import (
 	"log"
 	"slices"
 	"sync"
+
+	"agent-overflow/internal/provider"
 )
 
 // codexNotificationCatalog is every server notification method a Codex
@@ -309,7 +311,7 @@ func codexInitializeParams(clientName string, optOut []string) map[string]any {
 		"clientInfo": map[string]any{
 			"name":    clientName,
 			"title":   "Agent Overflow",
-			"version": "0.1.0",
+			"version": provider.CodexClientVersion,
 		},
 		"capabilities": capabilities,
 	}

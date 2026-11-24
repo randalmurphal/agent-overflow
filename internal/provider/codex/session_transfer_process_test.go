@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/providertest"
 	"bufio"
 	"context"
@@ -66,7 +67,10 @@ func runTransferTestServer() error {
 		var result any = map[string]any{}
 		switch request.Method {
 		case "initialize":
-			result = map[string]any{"userAgent": providertest.CodexUserAgent}
+			info, _ := request.Params["clientInfo"].(map[string]any)
+			name, _ := info["name"].(string)
+			version, _ := info["version"].(string)
+			result = map[string]any{"userAgent": providertest.FormatCodexUserAgent(provider.MinimumCodexCLIVersion, name, name, version)}
 		case "initialized":
 			continue
 		case "account/read":

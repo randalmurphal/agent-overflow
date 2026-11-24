@@ -16,9 +16,10 @@ import (
 )
 
 // codexProbeInitReply opens a Codex fake that reads its requests in order:
-// it reads initialize and answers it as a supported app-server, which every
-// client waits for before it sends anything else.
-const codexProbeInitReply = "read -r _ || true\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + providertest.CodexInitializeResult + "}'\n"
+// it reads initialize and answers it as a supported app-server answers the
+// client that sent it, which every client waits for before it sends
+// anything else.
+var codexProbeInitReply = providertest.CodexInitializeInOrder()
 
 // resetCodexProbeCacheForTest gives the test fresh process-wide probe caches
 // and resets them again when it ends. Like resetClaudeProbeCacheForTest, a test

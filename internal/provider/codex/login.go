@@ -164,7 +164,7 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	go session.readLoop()
 
 	initParams := codexInitializeParams(
-		"agent_overflow_login",
+		provider.CodexLoginClientName,
 		// account/login/completed is the ONE notification this client waits
 		// on. account/updated follows a success carrying {authMode, planType}
 		// and is deliberately opted out: the adoption epilogue probes the

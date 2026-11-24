@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/provider/providertest"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -486,7 +485,6 @@ func TestEveryListedProfileSpawnsWithWhatItLists(t *testing.T) {
 	}, time.Now)
 	claudeBinary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{mockClaudeInitLine}})
 	codexBinary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		`"method":"initialize"`:   `{"jsonrpc":"2.0","id":%s,"result":` + providertest.CodexInitializeResult + `}`,
 		`"method":"thread/start"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-thread"}}}`,
 		`"method":"config/read"`:  `{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}`,
 		`"method":"turn/start"`:   `{"jsonrpc":"2.0","id":%s,"result":{"turn":{"id":"turn-1"}}}`,

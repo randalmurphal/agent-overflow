@@ -103,8 +103,8 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 			"optOutNotificationMethods": oneShotOptOutNotificationMethods(),
 		},
 		"clientInfo": map[string]any{
-			"name":    "agent-overflow-mcpstatus",
-			"version": "0.1.0",
+			"name":    provider.CodexMCPStatusClientName,
+			"version": provider.CodexClientVersion,
 		},
 	}
 	initResp, err := client.call(ctx, "initialize", initParams)

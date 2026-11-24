@@ -57,7 +57,8 @@ while IFS= read -r line; do
         continue
     fi
     if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":` + providertest.CodexInitializeResultQuoted + `}"
+        ` + providertest.CodexUserAgentShellCase("ua", provider.MinimumCodexCLIVersion, provider.CodexClientOrigin, provider.CodexForkClientName) + `
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"userAgent\":\"$ua\"}}"
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/start"'; then
@@ -224,7 +225,8 @@ while IFS= read -r line; do
         continue
     fi
     if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":` + providertest.CodexInitializeResultQuoted + `}"
+        ` + providertest.CodexUserAgentShellCase("ua", provider.MinimumCodexCLIVersion, provider.CodexClientOrigin, provider.CodexForkClientName) + `
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"userAgent\":\"$ua\"}}"
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/start"'; then
@@ -276,7 +278,8 @@ while IFS= read -r line; do
         continue
     fi
     if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":` + providertest.CodexInitializeResultQuoted + `}"
+        ` + providertest.CodexUserAgentShellCase("ua", provider.MinimumCodexCLIVersion, provider.CodexClientOrigin, provider.CodexForkClientName) + `
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"userAgent\":\"$ua\"}}"
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/fork"'; then

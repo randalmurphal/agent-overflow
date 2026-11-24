@@ -34,9 +34,10 @@ Every client that completes `initialize` (`Dial`, the one-shot client,
 sign-in, the account, identity and usage probes, MCP status) passes the
 reply to `admitInitialize` before any other request, with the originator
 it started the process with (`handshakeOriginator`). It reads the build
-right after that originator through `provider.ParseCodexVersion`, and
-refuses an app-server whose build is below
-`provider.MinimumCodexCLIVersion`, or empty or unreadable. A new
+only when the user agent is that originator, `/`, a whole version
+(`provider.ParseCodexVersion`) and ` (`, and refuses a build below
+`provider.MinimumCodexCLIVersion`. Any other reply is admitted with no
+recorded build and logged; never scan it for another version. A new
 handshake uses it too. Raise that minimum instead of adding a per-method
 version gate. Mid-turn user messages use
 `turn/steer`, never the provider queue.

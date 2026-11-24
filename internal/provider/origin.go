@@ -23,7 +23,24 @@ const (
 	// ClaudeEntrypointOrigin is the CLAUDE_CODE_ENTRYPOINT value pinned on
 	// every Claude spawn (`claude/session.go`).
 	ClaudeEntrypointOrigin = "agent-overflow"
-	// CodexClientOrigin is the `clientInfo.name` sent on every Codex
-	// app-server handshake (`codex/session.go`, `codex/models.go`).
+	// CodexClientOrigin is the `clientInfo.name` a Codex session's
+	// app-server handshake sends (`codex/conn.go`), and the model list's
+	// and conversation transfer's.
 	CodexClientOrigin = "agent_overflow"
+)
+
+// The `clientInfo` each other Codex client sends at `initialize`. A stock
+// Codex starts its user agent with the name and ends it with the name and
+// the version (codex.admitInitialize), so test fixtures answer each client
+// with its own (providertest.FormatCodexUserAgent).
+const (
+	CodexProbeClientName     = "agent_overflow_probe"
+	CodexLoginClientName     = "agent_overflow_login"
+	CodexUsageClientName     = "agent_overflow_account_usage"
+	CodexSkillsClientName    = "agent_overflow_skills"
+	CodexForkClientName      = "agent-overflow-fork"
+	CodexMCPAuthClientName   = "agent-overflow-mcp-auth"
+	CodexMCPStatusClientName = "agent-overflow-mcpstatus"
+	// CodexClientVersion is the clientInfo.version every Codex client sends.
+	CodexClientVersion = "0.1.0"
 )

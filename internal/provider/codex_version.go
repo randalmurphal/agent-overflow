@@ -22,23 +22,21 @@ import (
 const MinimumCodexCLIVersion = "0.154.0"
 
 // ErrCodexVersionUnsupported is the sentinel every *CodexVersionError
-// unwraps to: the Codex binary is below MinimumCodexCLIVersion or its
-// version could not be read. It is final until the binary changes.
+// unwraps to: the Codex binary reported a version below
+// MinimumCodexCLIVersion. It is final until the binary changes.
 var ErrCodexVersionUnsupported = errors.New("codex version unsupported")
 
-// codexVersionTextLimit bounds each piece of version text a refusal keeps
-// and quotes back to the user.
+// codexVersionTextLimit bounds the version text a refusal keeps and quotes
+// back to the user.
 const codexVersionTextLimit = 120
 
-// CodexVersionError is a refusal of one Codex binary. Version is the
-// parsed version, "" when none could be read; Raw is the text it was read
-// from (`codex --version` output or the app-server's initialize user
-// agent); Path is the binary that was checked. CheckCodexVersion builds it
-// with Version and Raw trimmed, copied and capped at codexVersionTextLimit.
+// CodexVersionError is a refusal of one Codex binary: Version is the
+// version it reported, below the minimum, and Path the binary that was
+// checked. CheckCodexVersion builds it with Version copied and capped at
+// codexVersionTextLimit.
 type CodexVersionError struct {
 	Path    string
 	Version string
-	Raw     string
 }
 
 func (e *CodexVersionError) Error() string {
@@ -46,21 +44,9 @@ func (e *CodexVersionError) Error() string {
 	if e.Path != "" {
 		at = " (" + e.Path + ")"
 	}
-	if e.Version != "" {
-		return fmt.Sprintf(
-			"Codex v%s%s is installed; Agent Overflow needs v%s or newer. Update Codex.",
-			e.Version, at, MinimumCodexCLIVersion,
-		)
-	}
-	if e.Raw == "" {
-		return fmt.Sprintf(
-			"Agent Overflow could not read the version of Codex%s. Update Codex to v%s or newer.",
-			at, MinimumCodexCLIVersion,
-		)
-	}
 	return fmt.Sprintf(
-		"Agent Overflow could not read the version of Codex%s from %q. Update Codex to v%s or newer.",
-		at, e.Raw, MinimumCodexCLIVersion,
+		"Codex v%s%s is installed; Agent Overflow needs v%s or newer. Update Codex.",
+		e.Version, at, MinimumCodexCLIVersion,
 	)
 }
 
@@ -76,16 +62,18 @@ func (e *CodexVersionError) PublicDetails() (code, message string) {
 	return CodexVersionUnsupportedCode, e.Error()
 }
 
-// CheckCodexVersion admits a Codex binary. version is the parsed version
-// ("" when unreadable), raw the text it came from and path the binary
-// checked. It returns nil for a supported version and a *CodexVersionError
-// otherwise; an unreadable version is unsupported.
-func CheckCodexVersion(path, version, raw string) error {
+// CheckCodexVersion checks the version a Codex binary reported against the
+// minimum. version is a build ParseCodexVersion accepts and path the binary
+// it came from. It returns nil for a supported version and a
+// *CodexVersionError for an older one; text that is not a version is a
+// caller's error, never a refusal, because a reply that names no build is
+// not read (codex.admitInitialize, DetectProvider).
+func CheckCodexVersion(path, version string) error {
 	if _, ok := ParseCodexVersion(version); !ok {
-		return &CodexVersionError{Path: path, Raw: codexVersionText(raw)}
+		return fmt.Errorf("check the Codex version of %s: %q is not a version", path, codexVersionText(version))
 	}
 	if CompareCodexVersions(version, MinimumCodexCLIVersion) < 0 {
-		return &CodexVersionError{Path: path, Version: codexVersionText(version), Raw: codexVersionText(raw)}
+		return &CodexVersionError{Path: path, Version: codexVersionText(version)}
 	}
 	return nil
 }
