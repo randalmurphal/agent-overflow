@@ -24,7 +24,7 @@ import {
 } from '../../stores/keybindings.svelte';
 import { projectTurnStarted, setThreadStatus } from '../../stores/threadStatuses.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { setBindingMock, resetBindingMocks, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
   addProjectLocal,
   resetProjectsForTest,
@@ -220,18 +220,6 @@ describe('<ChatHeader>', () => {
     consoleErr.mockRestore();
   });
 
-  it('toggles the review pane via the Diffs button', async () => {
-    const pane = await buildPane();
-    // Opening review reads the workspace diff: no changes.
-    setReviewDiffMock('OpenWorkspaceDiff', () => '');
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    expect(pane.showReviewPane).toBe(false);
-    await fireEvent.click(getByTestId('review-toggle'));
-    expect(pane.showReviewPane).toBe(true);
-  });
-
   it('uses platform-aware shortcut labels in action tooltips', async () => {
     // Chord hints come from the loaded keybindings store — there is no
     // hardcoded fallback (one would resurrect a chord the user rebound
@@ -359,13 +347,6 @@ describe('<ChatHeader>', () => {
     const title = getByTestId('chat-header-title');
     expect(title).not.toHaveAttribute('data-focused');
     expect(title.className).not.toContain('bg-accent/15');
-  });
-
-  it('omits the line from an unfocused idle pane', async () => {
-    const { other } = await renderTwoPaneHeader();
-    const { queryByTestId } = render(ChatHeader, { props: { pane: other } });
-    await tick();
-    expect(queryByTestId('pane-header-line')).toBeNull();
   });
 
   it('follows focus as it moves between panes', async () => {

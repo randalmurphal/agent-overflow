@@ -69,45 +69,27 @@ describe('direct markdown reveal visible-text monotonicity', () => {
     if (!root) throw new Error('direct markdown root did not mount');
 
     const recorder = recordVisibleText(root);
-    try {
-      for (const unit of revealUnits(INCIDENT_PARAGRAPH)) await harness.append(unit);
+    const expectMonotonic = (): void => {
       recorder.drain();
       expect(recorder.matchesDom(), 'replay model diverged from the live tree').toBe(true);
-
       const violations = recorder.violations();
       expect(
         violations.length,
         `visible text stopped extending:\n${describeViolations(violations)}`,
       ).toBe(0);
       expect(recorder.checkpointViolations()).toEqual([]);
+    };
+    try {
+      for (const unit of revealUnits(INCIDENT_PARAGRAPH)) await harness.append(unit);
+      expectMonotonic();
       expect(recorder.visible().trim()).toBe(INCIDENT_PARAGRAPH);
       expect(recorder.steps().length).toBeGreaterThan(0);
-    } finally {
-      recorder.stop();
-    }
-  });
 
-  it('replaces a diverging completion body in one atomic mutation record', async () => {
-    const view = render(DirectMarkdownDifferentialHarness);
-    const harness = view.component as unknown as Harness;
-    const root = view.container.querySelector<HTMLElement>('[data-differential-direct]');
-    if (!root) throw new Error('direct markdown root did not mount');
-
-    const recorder = recordVisibleText(root);
-    try {
-      for (const unit of revealUnits(INCIDENT_PARAGRAPH)) await harness.append(unit);
+      // A diverging completion body replaces the reveal in one atomic
+      // mutation record.
       await harness.complete(INCIDENT_COMPLETION);
-      recorder.drain();
-      expect(recorder.matchesDom(), 'replay model diverged from the live tree').toBe(true);
-
-      const violations = recorder.violations();
-      expect(
-        violations.length,
-        `visible text stopped extending:\n${describeViolations(violations)}`,
-      ).toBe(0);
-      expect(recorder.checkpointViolations()).toEqual([]);
+      expectMonotonic();
       expect(recorder.visible().trim()).toBe(INCIDENT_COMPLETION);
-
       const baseline = view.container.querySelector('[data-differential-baseline] .markdown-body');
       const direct = view.container.querySelector('[data-differential-direct] .markdown-body');
       expect(direct?.textContent).toBe(baseline?.textContent);

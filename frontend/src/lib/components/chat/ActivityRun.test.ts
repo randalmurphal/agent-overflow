@@ -160,13 +160,6 @@ describe('<ActivityRun>', () => {
       expect(getByTestId('activity-run-earlier').textContent).toContain('4 earlier');
       // The window starts on the tail, so nothing is ever hidden below it.
       expect(queryByTestId('activity-run-later')).toBeNull();
-    });
-
-    it('mounts an earlier chunk on demand', async () => {
-      await updateSetting('activityRunWindowRows', 10);
-      const { getByTestId, getAllByTestId, queryByTestId } = await renderRun(
-        Array.from({ length: 14 }, (_, i) => tool(`t${i}`, i)),
-      );
 
       await fireEvent.click(getByTestId('activity-run-earlier'));
       await tick();
