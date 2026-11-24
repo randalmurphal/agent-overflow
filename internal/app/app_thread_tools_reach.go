@@ -137,7 +137,7 @@ func (p threadPeerClient) Invoke(ctx context.Context, name string, args json.Raw
 // on v0.0.19 does not serve it and runs the wait through ThreadToolQuery.
 func (p threadPeerClient) Watch(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	raw, err := p.forward(ctx, "ThreadToolWatch", "thread_status", args)
-	if older := (*rpcclient.Error)(nil); errors.As(err, &older) && older.Code == transport.ErrCodeMethodNotFound {
+	if older := (*rpcclient.Error)(nil); errors.As(err, &older) && older.Unsupported() {
 		return p.Query(ctx, "thread_status", args)
 	}
 	return raw, err

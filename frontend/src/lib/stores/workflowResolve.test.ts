@@ -15,7 +15,7 @@ import {
 } from './workflowsOverlay.svelte';
 import { getToasts, removeToast } from './toast.svelte';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
-import { answerAsV0019 } from '../../test/helpers/olderComputer';
+import { answerAsV0019, methodNotFound } from '../../test/helpers/olderComputer';
 
 function item(id: string, endedAt: number): WorkItem {
   return { id, projectId: 'p', state: 'needs-human', reason: 'gate', endedAt, createdAt: endedAt } as WorkItem;
@@ -94,14 +94,14 @@ describe('resolveWorkflowRun', () => {
     expect(getToasts().at(-1)).toMatchObject({ type: 'info', message: expect.stringContaining('Stopping') });
   });
 
-  // A computer on v0.0.19 cannot end sessions: the person is told so, not
-  // that they ended, and nothing is paused in their place.
+  // A computer on v0.0.19 cannot end sessions: the person reads its
+  // refusal, not that they ended, and nothing is paused in their place.
   it('says a computer on v0.0.19 cannot end sessions when asked to pause and end them', async () => {
     answerAsV0019();
     expect(await resolveWorkflowRun(parked[0], { kind: 'pause', endSessions: true }, 0)).toBe(false);
     expect(getToasts().at(-1)).toMatchObject({
       type: 'error',
-      message: 'That computer runs an older version, which cannot end sessions. Pause still pauses the run.',
+      message: `${methodNotFound().message} Pause still pauses the run.`,
     });
     expect(getBindingMock('WorkflowPauseItem')).not.toHaveBeenCalled();
   });

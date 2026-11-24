@@ -1,5 +1,6 @@
 import { captureError, type CapturedError } from './errorReports.svelte';
 import { TOAST_MS } from '../pageTiming';
+import { refusalReason } from '../utils/errorReport';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 export interface ToastAction {
@@ -45,7 +46,12 @@ export function addToast(
 
 /**
  * An error toast that keeps the error it reports: `message` is what the
- * toast reads, and `err` is what its details and copy actions describe.
+ * toast reads, and `err` is what its details and copy actions describe. A
+ * computer's refusal of the call stays until dismissed, its reason shown
+ * whole beside `message` (ToastItem.svelte): it says what to do, which
+ * takes longer to read than a toast's usual delay. Because it stays, the
+ * same refusal under the same headline is shown once: a repeat returns the
+ * id of the toast already showing it.
  */
 export function addErrorToast(
   message: string,
@@ -53,7 +59,13 @@ export function addErrorToast(
   duration = TOAST_MS,
   action?: ToastAction,
 ): string {
-  return addToast('error', message, duration, action, captureError(err, { context: message }));
+  const refusal = refusalReason(err);
+  if (refusal !== undefined) {
+    const showing = toasts.find((toast) => toast.type === 'error' && toast.message === message && toast.captured?.report.refusal === refusal);
+    if (showing) return showing.id;
+  }
+  const captured = captureError(err, { context: message });
+  return addToast('error', message, refusal === undefined ? duration : 0, action, captured);
 }
 
 /**

@@ -93,7 +93,7 @@ describe('<TransportStatusBanner> and failed boot phases', () => {
   });
 
   it('yields to a connection problem or check and outranks a bundle notice', async () => {
-    noteBundleReady();
+    noteBundleReady('0.0.21');
     __setTransportHelloForTest(hello('launch-1', [worktrees]));
     const view = render(TransportStatusBanner);
     await tick();

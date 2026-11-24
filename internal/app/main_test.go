@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/memory"
 	"agent-overflow/internal/store/storetest"
@@ -36,6 +37,10 @@ func TestMain(m *testing.M) {
 	if err := testparallel.CapDefault(); err != nil {
 		panic(err)
 	}
+	// No give-up limit fires in a test that did not set it (giveUpBound).
+	// Two minutes is testutil's wait budget, which it does not export: a
+	// party that never answers still fails with the limit's own error.
+	giveUpPatience = 2 * time.Minute
 	goBuildCache = resolveGoBuildCache()
 	removeHome, err := detachTestProcessHome()
 	if err != nil {

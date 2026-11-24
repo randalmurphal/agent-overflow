@@ -177,7 +177,7 @@ func testWorkerPromptsByRun(t *testing.T, placement string) {
 			})
 			var tokens []string
 			waitUntil(t, 10*time.Second, func() bool {
-				if err := app.drainWorkerPrompts(context.Background(), 5*time.Second); err != nil {
+				if err := app.drainWorkerPrompts(context.Background(), testutil.WaitBudget(t)); err != nil {
 					t.Fatal(err)
 				}
 				app.waitAgentNoticeWork()

@@ -9,6 +9,7 @@ import {
 import { applyTheme } from '../../theme/themeApply.svelte';
 import { BUILTIN_UI_THEME_ID, BUILTIN_CODE_THEME_ID } from '../../theme/builtins';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { methodNotFound } from '../../../test/helpers/olderComputer';
 
 interface ThemeFile {
   id: string;
@@ -283,7 +284,7 @@ describe('<ThemeSettings> — degraded session', () => {
 
   it('says so, and keeps the built-ins selectable, when the RPCs are refused', async () => {
     setBindingMock('GetThemeFiles', async () => {
-      throw Object.assign(new Error('nope'), { code: 'method_not_found' });
+      throw methodNotFound();
     });
     await loadAppearance();
     const { container, getByTestId, queryByTestId } = render(ThemeSettings);
@@ -297,7 +298,7 @@ describe('<ThemeSettings> — degraded session', () => {
     // The LAN posture: the read is allowed, both writes are local-only.
     await loadAppearance();
     setBindingMock('SetAppearance', async () => {
-      throw Object.assign(new Error('nope'), { code: 'method_not_found' });
+      throw methodNotFound();
     });
     await setAppearance({ mode: 'dark' });
 
@@ -310,7 +311,7 @@ describe('<ThemeSettings> — degraded session', () => {
 
   it('still applies the selection locally in a refused session', async () => {
     setBindingMock('GetThemeFiles', async () => {
-      throw Object.assign(new Error('nope'), { code: 'method_not_found' });
+      throw methodNotFound();
     });
     await loadAppearance();
     const { getByTestId } = render(ThemeSettings);

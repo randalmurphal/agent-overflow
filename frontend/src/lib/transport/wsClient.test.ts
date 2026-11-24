@@ -107,6 +107,7 @@ import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/moc
 import { setHomeEndpoint } from './homeEndpoint';
 import { DamagedTrustError } from '../native/networkTrust';
 import { MAX_REPLAY_BUFFER_CHARS } from './replayBuffer';
+import { installDispatchRefusalWording, setDispatchRefusalDiagnosticsSink, UNREADABLE_SENTENCE } from './dispatchRefusal';
 
 const bootstrap = async () => ({ wsUrl: 'ws://example/ws', token: 'test-token' });
 
@@ -241,7 +242,10 @@ describe('WSClient', () => {
     ws.acceptOpen();
     await flushMicrotasks();
     const id = ws.sent[1]!.id as string;
-    ws.pushFrame({ type: 'rpc', id, error: { code: 'method_not_found', message: 'missing' } });
+    ws.pushFrame({ type: 'rpc', id, error: {
+      code: 'bad_params', message: UNREADABLE_SENTENCE,
+      dispatch: { refusal: 'unreadable', method: 'Seven', problem: 'expected 0 arguments, got 1' },
+    } });
     let caught: unknown;
     try {
       await p;
@@ -249,10 +253,44 @@ describe('WSClient', () => {
       caught = err;
     }
     expect(caught).toBeInstanceOf(TransportError);
-    expect((caught as TransportError).code).toBe('method_not_found');
-    expect((caught as TransportError).message).toBe('missing');
+    expect((caught as TransportError).code).toBe('bad_params');
+    // The dispatcher's marked refusal reads as its sentence, and what did
+    // not fit is the cause (./dispatchRefusal.ts).
+    installDispatchRefusalWording(null);
+    expect((caught as TransportError).dispatchRefusal).toBe('unreadable');
+    expect((caught as TransportError).message).toBe(UNREADABLE_SENTENCE);
+    expect((caught as TransportError).cause).toBe('Seven: expected 0 arguments, got 1');
 
     client.close();
+  });
+
+  // Settling the call cannot depend on presentation: the pending entry and
+  // its timer are gone before the rejection is built.
+  it('rejects a refused call when both the wording and its diagnostics throw', async () => {
+    installDispatchRefusalWording({
+      capture: () => { throw new Error('capture broke'); },
+      word: () => { throw new Error('wording broke'); },
+    });
+    setDispatchRefusalDiagnosticsSink(() => { throw new Error('sink broke'); });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      const p = client.callByID(7, []);
+      await flushMicrotasks();
+      const ws = MockWebSocket.instances[0]!;
+      ws.acceptOpen();
+      await flushMicrotasks();
+      const id = ws.sent[1]!.id as string;
+      ws.pushFrame({ type: 'rpc', id, error: { code: 'bad_params', message: 'main.App.Seven: expected 1 params, got 2' } });
+      const caught = await p.then(() => null, (err: unknown) => err);
+      expect(caught).toBeInstanceOf(TransportError);
+      expect((caught as TransportError).message).toBe(UNREADABLE_SENTENCE);
+      expect(consoleError).toHaveBeenCalledWith('transport: dispatch refusal wording failed', expect.any(Error), expect.any(Error));
+      client.close();
+    } finally {
+      setDispatchRefusalDiagnosticsSink(null);
+      consoleError.mockRestore();
+    }
   });
 
   it('carries a scope refusal\u2019s capability name onto the rejection', async () => {

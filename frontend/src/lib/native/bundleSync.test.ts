@@ -84,6 +84,7 @@ describe('decideBundleSync', () => {
     expect(decideBundleSync(input())).toEqual({
       kind: 'download',
       id: OFFERED,
+      version: '1.2.3',
       backend: HOME_BACKEND,
     });
   });
@@ -103,7 +104,7 @@ describe('decideBundleSync', () => {
     // The window between staging and a restart is minutes or days. A
     // phone that re-downloaded across it would download the same bundle
     // on every reconnect for as long as nobody killed the app.
-    expect(decideBundleSync(input({ state: state({ next: OFFERED }) }))).toEqual({ kind: 'ready', id: OFFERED });
+    expect(decideBundleSync(input({ state: state({ next: OFFERED }) }))).toEqual({ kind: 'ready', id: OFFERED, version: '1.2.3' });
   });
 
   it('refuses a bundle that already failed its first boot here', () => {

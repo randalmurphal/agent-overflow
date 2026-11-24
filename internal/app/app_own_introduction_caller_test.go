@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/owndevices"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/transport"
 )
 
 // A peer's introduction call is bound to its caller. One that waits on a
@@ -23,7 +24,8 @@ import (
 func TestAnIntroductionCutWhileWaitingEndsAndItsRetryConnects(t *testing.T) {
 	remotetest.Require(t)
 	t.Parallel()
-	host := ownConnectionBackend(t)
+	introductions := make(chan error, 2)
+	host := ownConnectionHostOn(t, serveObservedIntroductions(t, introductions))
 	other := newIntroducingComputer(t, host, introducingHoldsRedemption)
 	person := callOverTheWire(t, host, "AddBackend", other.personLink)
 	awaitArrival(t, "the person's redemption reaching the other computer", other.pairArrived, person)
@@ -36,16 +38,25 @@ func TestAnIntroductionCutWhileWaitingEndsAndItsRetryConnects(t *testing.T) {
 			t.Fatal("the introduction never checked the other computer's address")
 		}
 	}
-	select {
-	case err := <-introduction:
-		t.Fatalf("the introduction answered %v while the person's pairing was in flight; want it to wait", err)
-	case <-time.After(200 * time.Millisecond):
-	}
 	cut()
 	select {
 	case <-introduction:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the cut introduction call did not return")
+	}
+	// The client's call returns at the cut; this computer sees the cut when
+	// its connection closes. Until then the introduction's wait can still
+	// end on the person's pairing, so the pairing is released only once the
+	// introduction ended here, and it ended with the cut: an introduction
+	// that answered while the person's pairing was in flight ended with
+	// something else.
+	select {
+	case err := <-introductions:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the introduction ended here with %v; want it waiting until the cut", err)
+		}
+	case <-time.After(testutil.WaitBudget(t)):
+		t.Fatal("the introduction never ended here after its caller left")
 	}
 
 	other.release()
@@ -57,9 +68,6 @@ func TestAnIntroductionCutWhileWaitingEndsAndItsRetryConnects(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the person's pairing did not finish once answered")
 	}
-	// A handler still working for the cut call would redeem now, on what
-	// the person's pairing left.
-	time.Sleep(500 * time.Millisecond)
 	if n := other.redemptions.Load(); n != 1 {
 		t.Fatalf("%d redemptions after the cut; want only the person's", n)
 	}
@@ -81,6 +89,36 @@ func TestAnIntroductionCutWhileWaitingEndsAndItsRetryConnects(t *testing.T) {
 	if n := other.redemptions.Load(); n != 2 {
 		t.Fatalf("%d redemptions; want the person's and the retry's", n)
 	}
+}
+
+// observedIntroductions is a host App that reports what each
+// AcceptOwnDeviceIntroduction call returned on this computer.
+type observedIntroductions struct {
+	*App
+	returned chan<- error
+}
+
+func (o *observedIntroductions) AcceptOwnDeviceIntroduction(ctx context.Context, link string) error {
+	err := o.App.AcceptOwnDeviceIntroduction(ctx, link)
+	o.returned <- err
+	return err
+}
+
+// serveObservedIntroductions serves an identity App whose introductions
+// report to returned.
+func serveObservedIntroductions(t *testing.T, returned chan<- error) *pairedBackend {
+	t.Helper()
+	app := identityApp(t)
+	observed := &observedIntroductions{App: app, returned: returned}
+	return servePairedApp(t, app, func(cfg *transport.Config) {
+		dispatcher := transport.NewDispatcher()
+		if _, err := dispatcher.Register(observed, transport.RegisterOptions{
+			Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		cfg.Dispatcher = dispatcher
+	})
 }
 
 // A peer's introduction call cut by its caller during the redemption ends

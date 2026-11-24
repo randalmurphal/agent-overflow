@@ -2,6 +2,7 @@ package transport
 
 import (
 	"agent-overflow/internal/computerroute"
+	"agent-overflow/internal/dispatchrefusal"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -638,6 +639,12 @@ type FrameError struct {
 	// (errorsx.Public) failure, absent on refusals the caller decides on
 	// (authorization, transfers, not_found, already_handled).
 	Detail *ErrorDetail `json:"detail,omitempty"`
+	// Dispatch is set only by the dispatcher, on a refusal it gave before
+	// any method ran: a call this computer does not have, or one whose
+	// arguments it cannot read (internal/dispatchrefusal). A failure a
+	// method returned never carries it, whatever its code, so a reader
+	// never infers who refused.
+	Dispatch *dispatchrefusal.Refusal `json:"dispatch,omitempty"`
 }
 
 // ErrorDetail identifies one failure for the person who saw it. Ref

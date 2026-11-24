@@ -12,9 +12,13 @@
 // it, the window settles within a bounded number of page and members
 // calls, and no error toast is raised. A computer restarted as the older
 // build and back while its thread is open here regroups that thread each
-// time.
+// time. An action the older computer does not have, and no fallback
+// covers, fails with a toast that says the computer does not support it
+// and what the page knows about the two versions, never the wire's own
+// text.
 // Specs: docs/architecture/timeline-window-pages.md,
-// docs/architecture/activity-runs.md.
+// docs/architecture/activity-runs.md,
+// docs/architecture/transport.md#rpc-failures.
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +29,7 @@ import { pairOwnDevice } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { instrument, methodNameById, type Surfaced } from './offhost-helpers.js';
 import { awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { chooseRowMenuItem } from './sidebar-sections-helpers.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -398,5 +403,50 @@ test('desktop: a computer restarted across the capability regroups the open thre
     if (pairedId) await home.rpc('RemoveBackend', pairedId, true);
     await restarted.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// SetThreadPlacement came after v0.0.19 and nothing stands in for it: the
+// refusal reaches the person, saying what happened and what the page knows
+// about the versions. The harness builds both computers from one bundle, so
+// the older computer's hello reports this page's own release: the sentence
+// says so and claims no difference. It reads "the same version" only when
+// the page's compiled-in release equals the one its bundle-release.json
+// stamps, which is what the computer reports.
+test('desktop: an action the older computer does not have says what happened', async ({ browser }) => {
+  test.setTimeout(120_000);
+  const result = await older.rpc<{ projects: SeededProject[] }>('HarnessSeed', {
+    projects: [{
+      name: 'mismatch-placement',
+      repo: {},
+      threads: [{ title: 'Mismatch lead', provider: 'claude' }, { title: 'Mismatch worker', provider: 'claude', spawnedBy: 'Mismatch lead', placement: 'standalone' }],
+    }],
+  });
+  const worker = result.projects[0].threadIds[1];
+  const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
+  try {
+    const view = await context.newPage();
+    view.setDefaultTimeout(30_000);
+    const surfaced = await instrument(view);
+    await home.open(view);
+    await expect(sidebarRow(view, worker)).toBeVisible({ timeout: 60_000 });
+    const release = await view.evaluate(async () => {
+      const answer = await fetch('/bundle-release.json');
+      return ((await answer.json()) as { version: string }).version;
+    });
+    expect(release).toMatch(/^\d+\.\d+\.\d+/);
+    await chooseRowMenuItem(view, 'desktop', worker, 'Remove from Sidebar');
+    const sentence = 'Old computer does not support this action.'
+      + ` Old computer runs the same version of Agent Overflow as this page (${release}).`
+      + ' Report this as a bug in Agent Overflow.';
+    await expect(view.getByTestId('toast')).toContainText(sentence);
+    expect(surfaced.errorToasts).toHaveLength(1);
+    expect(surfaced.errorToasts[0]).toContain(sentence);
+    expect(surfaced.refusals.some((refusal) => refusal.startsWith('SetThreadPlacement method_not_found'))).toBe(true);
+    await expect(view.getByText('method not registered')).toHaveCount(0);
+    // Nothing changed there: the worker keeps its row.
+    await expect(sidebarRow(view, worker)).toBeVisible();
+  } finally {
+    await context.close();
   }
 });

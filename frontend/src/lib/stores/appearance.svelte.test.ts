@@ -18,6 +18,7 @@ import {
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 
 // Spelled literally: the store no longer exports the key, because nothing
 // outside it reads the selection cache — the boot script reads the APPLIED
@@ -35,10 +36,6 @@ function files(overrides: Record<string, unknown> = {}) {
     warnings: [],
     ...overrides,
   };
-}
-
-function methodNotFound(): Error & { code: string } {
-  return Object.assign(new Error('method not found'), { code: 'method_not_found' });
 }
 
 /** A promise plus the handle that settles it, for interleaving tests. */

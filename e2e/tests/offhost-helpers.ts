@@ -40,8 +40,12 @@ import { expect, type Page, type WebSocketRoute } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { RECONNECT_MAX_REMOTE_MS } from '../../frontend/src/lib/pageTiming.ts';
 
-/** The refusal for a method a peer may not even see. */
-export const UNENUMERABLE = { code: 'method_not_found', message: 'method not registered' };
+/** The refusal for a method a peer may not even see: the same frame as for a
+ * method the computer does not have (internal/dispatchrefusal). */
+export const UNENUMERABLE = {
+  code: 'method_not_found',
+  message: 'The computer this reached does not support this action. It may run a different version of Agent Overflow. If so, update the older one, or reload a page left open during an update.',
+};
 
 interface RpcFrame {
   type: string;
