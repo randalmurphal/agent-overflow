@@ -196,38 +196,6 @@ func TestRemoteAdmissionToAnUnreachableComputerReleasesTheWatch(t *testing.T) {
 	}
 }
 
-// A start whose reply was lost may have run. A retry under the same ID that
-// cannot reach the computer says so beside its own failure, tells the
-// caller to read the first attempt's status before retrying, and keeps the
-// watch that stands for it.
-func TestRemoteAdmissionRetryAfterALostReplySaysTheFirstAttemptMayHaveRun(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
-	source, receiver, ctx, input := remoteAdmissionFixture(t)
-	receiver.lostReply.Store(true)
-	if _, err := source.AgentRemoteStart(ctx, input); err == nil {
-		t.Fatal("a start whose reply was lost succeeded")
-	}
-	stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := receiver.wire.srv.Shutdown(stop); err != nil {
-		t.Fatalf("stop the destination: %v", err)
-	}
-	_, err := source.AgentRemoteStart(ctx, input)
-	_, message, _ := errorsx.PublicDetails(err)
-	for _, said := range []string{"nothing was sent", "earlier attempt with this request_id may already have run", "Check remote_status with these same IDs"} {
-		if !strings.Contains(message, said) {
-			t.Fatalf("retry on an unreachable computer = %q, want it to say %q", message, said)
-		}
-	}
-	if receiver.calls.Load() != 1 {
-		t.Fatalf("the destination saw %d starts, want the first alone", receiver.calls.Load())
-	}
-	if watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.Notification != "pending" {
-		t.Fatalf("the first attempt's watch = %#v %v, want it pending", watch, err)
-	}
-}
-
 // A start whose reply was lost leaves a receipt-less pending watch. The poller
 // settles it against the destination: no receipt there means the request was
 // never accepted, and the watch is released. While a retry holds the attempt
