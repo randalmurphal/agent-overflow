@@ -55,50 +55,6 @@ func TestParentToolUseIDFlowsThroughInlineEmit(t *testing.T) {
 	}
 }
 
-func TestParentToolUseIDPersistsOnTurnText(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	// Simulate a streaming subagent text delta followed by turn complete.
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:            provider.EventTextDelta,
-		ThreadID:        "t1",
-		Content:         "subagent result",
-		ParentToolUseID: "task_tool_99",
-		Timestamp:       time.Now(),
-	}); err != nil {
-		t.Fatalf("text delta: %v", err)
-	}
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:            provider.EventTurnComplete,
-		ThreadID:        "t1",
-		ParentToolUseID: "task_tool_99",
-		TurnComplete:    normalTurnCompleteMeta(),
-		Timestamp:       time.Now(),
-	}); err != nil {
-		t.Fatalf("turn complete: %v", err)
-	}
-
-	items, err := st.ListItems("t1")
-	if err != nil {
-		t.Fatalf("list items: %v", err)
-	}
-	var found bool
-	for _, it := range items {
-		if it.Summary == "subagent result" {
-			if it.ParentID != "task_tool_99" {
-				t.Errorf("persisted item ParentID: got %q, want %q",
-					it.ParentID, "task_tool_99")
-			}
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected item 'subagent result', items=%+v", items)
-	}
-}
-
 func TestParentToolUseIDEmptyWhenAbsent(t *testing.T) {
 	// Top-level events have no ParentToolUseID, so the emitted payload
 	// and persisted column stay empty.
@@ -156,7 +112,8 @@ func TestParentToolUseIDEmptyWhenAbsent(t *testing.T) {
 // render the combined text under the wrong Task card.
 //
 // The test also asserts item.ParentID is populated on each subagent row
-// so the frontend's subagent grouping can bucket them by parent.
+// so the frontend's subagent grouping can bucket them by parent, and that
+// a subagent's turn complete keeps it.
 func TestTextItemIDDisambiguatesSubagentScopes(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -238,5 +195,22 @@ func TestTextItemIDDisambiguatesSubagentScopes(t *testing.T) {
 	}
 	if !strings.Contains(betaRowID, "task_tool_beta") {
 		t.Errorf("beta row id %q does not encode its scope", betaRowID)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventTurnComplete,
+		ThreadID:        "t1",
+		ParentToolUseID: alphaID,
+		TurnComplete:    normalTurnCompleteMeta(),
+		Timestamp:       time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	alpha, found, err := st.GetThreadItem("t1", alphaRowID)
+	if err != nil || !found {
+		t.Fatalf("alpha row after turn complete: found=%v err=%v", found, err)
+	}
+	if alpha.ParentID != alphaID || alpha.Summary != "A output" {
+		t.Fatalf("alpha row after turn complete = (%q, %q), want (%q, %q)", alpha.ParentID, alpha.Summary, alphaID, "A output")
 	}
 }

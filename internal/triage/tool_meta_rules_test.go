@@ -177,40 +177,32 @@ func TestApplyToolMetaRule_AskUserQuestion(t *testing.T) {
 	}
 }
 
-func TestApplyToolMetaRule_UnknownToolPassesThrough(t *testing.T) {
-	raw := mustMarshalMeta(t, map[string]any{
-		"toolName": "TotallyMadeUpTool_v3",
-		"input":    map[string]any{"alpha": 1, "beta": "two", "gamma": []int{1, 2, 3}},
-	})
-
-	trimmed, payload, err := applyToolMetaRule("TotallyMadeUpTool_v3", raw, 1)
-	if err != nil {
-		t.Fatalf("applyToolMetaRule: %v", err)
-	}
-	if payload != nil {
-		t.Errorf("unknown tool should not promote")
-	}
-	if string(trimmed) != string(raw) {
-		t.Errorf("unknown tool meta should pass through unchanged")
-	}
-}
-
-func TestApplyToolMetaRule_NoInputKeyPassesThrough(t *testing.T) {
-	raw := mustMarshalMeta(t, map[string]any{
-		"toolName":  "Edit",
-		"task_id":   "t-1",
-		"is_inline": true,
-	})
-
-	trimmed, payload, err := applyToolMetaRule("Edit", raw, 1)
-	if err != nil {
-		t.Fatalf("applyToolMetaRule: %v", err)
-	}
-	if payload != nil {
-		t.Errorf("rule should not fabricate a payload when input is absent")
-	}
-	if string(trimmed) != string(raw) {
-		t.Errorf("meta without input should pass through unchanged")
+// Meta of a tool with no rule, or with no input to trim, passes through
+// unchanged and promotes no payload.
+func TestApplyToolMetaRule_PassesThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name, tool string
+		meta       map[string]any
+	}{
+		{"unknown tool", "TotallyMadeUpTool_v3", map[string]any{
+			"toolName": "TotallyMadeUpTool_v3",
+			"input":    map[string]any{"alpha": 1, "beta": "two", "gamma": []int{1, 2, 3}},
+		}},
+		{"no input key", "Edit", map[string]any{"toolName": "Edit", "task_id": "t-1", "is_inline": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := mustMarshalMeta(t, tc.meta)
+			trimmed, payload, err := applyToolMetaRule(tc.tool, raw, 1)
+			if err != nil {
+				t.Fatalf("applyToolMetaRule: %v", err)
+			}
+			if payload != nil {
+				t.Errorf("pass-through meta must not promote a payload")
+			}
+			if string(trimmed) != string(raw) {
+				t.Errorf("meta should pass through unchanged: got %s, want %s", trimmed, raw)
+			}
+		})
 	}
 }
 

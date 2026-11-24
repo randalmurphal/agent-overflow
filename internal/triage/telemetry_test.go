@@ -159,24 +159,6 @@ func requireErroredSpan(t *testing.T, span trace.ReadOnlySpan, description strin
 	t.Errorf("span did not record an exception event; events=%+v", span.Events())
 }
 
-func TestTurnSpanOpensOnStart(t *testing.T) {
-	r, telemetry, _ := newTestRouterWithTelemetry(t)
-
-	if err := r.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		ThreadID:  "thread-1",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("Handle TurnStart: %v", err)
-	}
-
-	// Span is still open; tracetest only records ended spans.
-	if len(telemetry.spans.Ended()) != 0 {
-		t.Errorf("Ended() = %d, want 0 before TurnComplete", len(telemetry.spans.Ended()))
-	}
-	assertTurnMetrics(t, telemetry.metrics, 1, 0, 0)
-}
-
 func TestTurnSpanClosesOnComplete(t *testing.T) {
 	r, telemetry, _ := newTestRouterWithTelemetry(t)
 
@@ -187,6 +169,12 @@ func TestTurnSpanClosesOnComplete(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Handle TurnStart: %v", err)
 	}
+	// Span is still open; tracetest only records ended spans.
+	if len(telemetry.spans.Ended()) != 0 {
+		t.Errorf("Ended() = %d, want 0 before TurnComplete", len(telemetry.spans.Ended()))
+	}
+	assertTurnMetrics(t, telemetry.metrics, 1, 0, 0)
+
 	if err := r.Handle(provider.ProviderEvent{
 		Kind:         provider.EventTurnComplete,
 		ThreadID:     "thread-1",

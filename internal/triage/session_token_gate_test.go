@@ -333,7 +333,10 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			if err := r.handleApprovalRequest(fromSession(approvalRequestEvent(t, threadID, request, ""), token)); err != nil {
 				t.Fatal(err)
 			}
-		}, func(r *Router) bool { approvals, _ := pendingRequestIDs(r, threadID); return len(approvals) != 0 }},
+		}, func(r *Router) bool {
+			approvals, questions := pendingRequestIDs(r, threadID)
+			return len(approvals) != 0 || len(questions) != 0
+		}},
 		{"user inputs", "user input request", func(t *testing.T, r *Router, token string) {
 			evt := provider.ProviderEvent{
 				Kind: provider.EventUserInputRequest, ThreadID: threadID, ItemID: "q-1", Timestamp: time.Now(),
@@ -345,7 +348,10 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			if err := r.handleUserInputRequest(fromSession(evt, token)); err != nil {
 				t.Fatal(err)
 			}
-		}, func(r *Router) bool { _, questions := pendingRequestIDs(r, threadID); return len(questions) != 0 }},
+		}, func(r *Router) bool {
+			approvals, questions := pendingRequestIDs(r, threadID)
+			return len(approvals) != 0 || len(questions) != 0
+		}},
 		{"streams", "text stream", func(t *testing.T, r *Router, token string) {
 			if err := r.handleTextDelta(fromSession(provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: threadID, Content: "text", Timestamp: time.Now()}, token)); err != nil {
 				t.Fatal(err)
@@ -387,37 +393,6 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// The probes below are the verifier's, kept as they found the gaps: a frame
-// already being handled when the replacement commits.
-func TestInFlightRetiredFrameDoesNotSeedSubagentProgress(t *testing.T) {
-	const threadID = "thread-probe-progress"
-	r := NewRouter(nil, func(eventchan.Channel, any) {})
-	r.MarkThreadActive(threadID, "session-a")
-	meta, _ := json.Marshal(provider.SubagentProgressMeta{TaskID: "task-1"})
-	tick := fromSession(provider.ProviderEvent{ThreadID: threadID, ItemID: "launch-a", Meta: meta, Timestamp: time.Now()}, "session-a")
-	r.MarkThreadActive(threadID, "session-b")
-	if err := r.handleSubagentProgress(tick); err != nil {
-		t.Fatal(err)
-	}
-	if got := r.LiveSubagentProgress(threadID); len(got) != 0 {
-		t.Fatalf("replacement's live state carries the retired session's subagent progress: %+v", got)
-	}
-}
-
-func TestInFlightRetiredTurnStartDoesNotOpenATurn(t *testing.T) {
-	r, _, _ := newTestRouter(t)
-	const threadID = "thread-probe-turn"
-	r.MarkThreadActive(threadID, "session-a")
-	start := fromSession(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: threadID, TurnID: "turn-a", Timestamp: time.Now()}, "session-a")
-	r.MarkThreadActive(threadID, "session-b")
-	if err := r.handleTurnStart(start); err != nil {
-		t.Fatal(err)
-	}
-	if r.HasInFlightTurnOrRound(threadID) {
-		t.Fatalf("replacement holds an open turn opened by the retired session's in-flight frame (AnyUnfinishedWork=%v)", r.AnyUnfinishedWork(time.Minute))
 	}
 }
 
@@ -549,24 +524,6 @@ func TestRetiredChildRowStaysInHistoryAndTheReplacementCountsItsOwn(t *testing.T
 	}
 }
 
-// A retired session's in-flight text delta opens no stream on the
-// replacement. Its block stop is queued behind it and refused at the gate,
-// so nothing of A's would ever settle it.
-func TestInFlightRetiredTextDeltaOpensNoStream(t *testing.T) {
-	r, st, _ := newTestRouter(t)
-	const threadID = "thread-r2-stream"
-	createTestThread(t, st, threadID)
-	r.MarkThreadActive(threadID, "session-a")
-	r.MarkThreadActive(threadID, "session-b")
-	delta := fromSession(provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: threadID, Content: "late text from A", Timestamp: time.Now()}, "session-a")
-	if err := r.handleTextDelta(delta); err != nil {
-		t.Fatal(err)
-	}
-	if r.hasActiveStreamingItem(threadID) {
-		t.Fatalf("the replacement holds a stream opened by the retired session's in-flight delta (AnyUnfinishedWork=%v)", r.AnyUnfinishedWork(time.Minute))
-	}
-}
-
 // After the replacement serves a full turn, nothing of the retired
 // session's in-flight delta holds the thread.
 func TestInFlightRetiredTextDeltaLeavesNothingAfterTheReplacementsTurn(t *testing.T) {
@@ -587,46 +544,6 @@ func TestInFlightRetiredTextDeltaLeavesNothingAfterTheReplacementsTurn(t *testin
 	r.DrainWireItemRefresh()
 	if r.hasActiveStreamingItem(threadID) || r.AnyUnfinishedWork(time.Minute) {
 		t.Fatalf("after B's own turn ended, A's in-flight stream still holds the thread: streaming=%v unfinished=%v", r.hasActiveStreamingItem(threadID), r.AnyUnfinishedWork(time.Minute))
-	}
-}
-
-// A retired session's in-flight approval request registers no prompt on
-// the replacement: only A's dead process could take the answer.
-func TestInFlightRetiredApprovalRequestRegistersNoPrompt(t *testing.T) {
-	r, st, _ := newTestRouter(t)
-	const threadID = "thread-r2-approval"
-	createTestThread(t, st, threadID)
-	r.MarkThreadActive(threadID, "session-a")
-	r.MarkThreadActive(threadID, "session-b")
-	evt := approvalRequestEvent(t, threadID, provider.ApprovalRequest{RequestID: "req-a", ThreadID: threadID, ToolUseID: "tool-a", ToolName: "Bash", Kind: "command", Input: []byte(`{"command":"make"}`)}, "")
-	if err := r.handleApprovalRequest(fromSession(evt, "session-a")); err != nil {
-		t.Fatal(err)
-	}
-	approvals, questions := pendingRequestIDs(r, threadID)
-	if len(approvals) != 0 || len(questions) != 0 {
-		t.Fatalf("the replacement holds the retired session's prompt: approvals=%v questions=%v unfinished=%v", approvals, questions, r.AnyUnfinishedWork(time.Minute))
-	}
-}
-
-func TestInFlightRetiredUserInputRequestRegistersNoQuestion(t *testing.T) {
-	r, st, _ := newTestRouter(t)
-	const threadID = "thread-r2-question"
-	createTestThread(t, st, threadID)
-	r.MarkThreadActive(threadID, "session-a")
-	r.MarkThreadActive(threadID, "session-b")
-	evt := provider.ProviderEvent{
-		Kind: provider.EventUserInputRequest, ThreadID: threadID, ItemID: "q-a", Timestamp: time.Now(),
-		Meta: parkMeta(t, map[string]any{
-			"requestId": "q-a", "threadId": threadID, "toolUseId": "tool-q", "toolName": "AskUserQuestion",
-			"questions": []provider.UserInputQuestion{{ID: "q1", Header: "Target", Question: "Which target?"}},
-		}),
-	}
-	if err := r.handleUserInputRequest(fromSession(evt, "session-a")); err != nil {
-		t.Fatal(err)
-	}
-	approvals, questions := pendingRequestIDs(r, threadID)
-	if len(approvals) != 0 || len(questions) != 0 {
-		t.Fatalf("the replacement holds the retired session's question: approvals=%v questions=%v unfinished=%v", approvals, questions, r.AnyUnfinishedWork(time.Minute))
 	}
 }
 
