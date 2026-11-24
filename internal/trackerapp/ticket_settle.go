@@ -27,6 +27,14 @@ import (
 // whole, errs by pump (errOf), over when every pump read ended.
 type ticketsResult struct {
 	failed bool
+	// historyDue reports that the read found an issue of the connection
+	// due a history read (detailsRead.historyDue); historyWanted that a
+	// round's read wants the history unit run (roundRead).
+	historyDue, historyWanted bool
+	// unsettled are the issues of the tickets the read answered whose
+	// records' status times no final read decided (ticketRead.unsettled),
+	// in the read's order: the history read takes them first.
+	unsettled []string
 	// errs holds, at a pump's index, what the read answers the person who
 	// asked for that ticket (askerErr); nil when no ticket has one.
 	errs []error
@@ -67,50 +75,50 @@ func askerErr(rd *ticketRead, failure *Failure, readErr error) error {
 	return errUnanswered
 }
 
-// ticketInputs reports what ch, changes stored by one read, moves of tp's
-// view: read when the issue's own card changed and the ticket is due a
-// full read at once, rebuild when an input of the view other than its
-// document may have changed. The inputs are those detailView reads: the
-// mirror's card of the issue (its status time, from the card and its
-// history), the cards of the issues it shows (its parent and the issues it
-// links) and whether the mirror keeps them (a row stored or removed), the
-// connection's users and statuses, and the mirror's copy of the document
-// (another read stored it, or the cap dropped it, or the issue stopped or
-// started being kept). origin reports that ch is the read's of the ticket
-// itself, which settles its own card and document.
+// ticketInputs reports what ch, changes stored by one write, moves of
+// tp's view: read when the issue's own card changed and the same write
+// stored no body of it, so the ticket is due a full read at once; rebuild
+// when an input of the view other than its document may have changed, or
+// another read stored its body, which the rebuild reads from the mirror.
+// The inputs are those detailView reads: the record's card of the issue
+// (with its status time), the cards of the issues it shows (its parent
+// and the issues it links) and whether the mirror keeps them (a row
+// stored or removed, a ticket's keep ended or begun again), the
+// connection's users and
+// statuses, and the mirror's body (another read stored it, or the cap
+// dropped it, or the issue stopped or started being kept). origin reports
+// that ch is a write of the read of the ticket itself, which settles its
+// own card and body.
 func ticketInputs(tp *ticketPump, ch Changes, origin bool) (read, rebuild bool) {
 	own := func(ids []tracker.IssueID) bool { return slices.Contains(ids, tp.key.issue) }
 	shown := func(ids []tracker.IssueID) bool {
 		return slices.ContainsFunc(tp.shows, func(id tracker.IssueID) bool { return slices.Contains(ids, id) })
 	}
-	read = !origin && own(ch.Cards)
-	rebuild = ch.Catalog || own(ch.Cards) || own(ch.History) || own(ch.Rows) || own(ch.Removed) || own(ch.Dropped) ||
-		!origin && own(ch.Details) || shown(ch.Cards) || shown(ch.Rows) || shown(ch.Removed)
+	read = !origin && own(ch.Cards) && !own(ch.Details)
+	rebuild = ch.Catalog || own(ch.Cards) || own(ch.History) || own(ch.Rows) || own(ch.Removed) || own(ch.Dropped) || own(ch.Visibility) ||
+		!origin && own(ch.Details) || shown(ch.Cards) || shown(ch.Rows) || shown(ch.Removed) || shown(ch.Visibility)
 	return read, rebuild
 }
 
 // readTickets reads the tickets of pumps, all of connection conn, together
 // (readDetails), each checked against what its pump settled last and read
-// in full when full is set or it was due a read at once (ticketReads),
-// passes what the read stored through the change funnel under the root the
-// read held, and settles each pump with its own outcome (settleTickets).
-// opened records a person's opening.
+// in full when full is set (ticketReads), each write's changes passed
+// through the change funnel as it commits with these pumps as its origin,
+// and settles each pump with its own outcome (settleTickets). opened
+// records a person's opening.
 func (s *Service) readTickets(ctx context.Context, conn string, pumps []*ticketPump, u Urgency, full, opened bool) ticketsResult {
 	began, reads := s.ticketReads(pumps, full)
 	at := millis(s.now())
-	var openedAt int64
-	if opened {
-		openedAt = at
-	}
-	res, err := s.readDetails(ctx, conn, reads, u, openedAt)
-	s.publish(res.root, res.gen, conn, res.ch, nil, &tickOrigin{tickets: pumps})
+	res, err := s.readDetails(ctx, conn, reads, u, opened, &tickOrigin{tickets: pumps})
 	return s.settleTickets(ctx, conn, pumps, began, reads, res, err, at)
 }
 
 // ticketReads are the reads of pumps' tickets, each checked against what
-// its pump settled last and read in full when full is set or it was due a
-// read at once (readNowLocked), and the stamp the read began at. Each is
-// in flight (ticketPump.reading) until settleTickets settles it.
+// its pump settled last and read in full when full is set, and the stamp
+// the read began at. A read at once (readNowLocked) is checked as any
+// other, and read in full when the card stored since is newer than its
+// document (mirrorMoved). Each is in flight (ticketPump.reading) until
+// settleTickets settles it.
 func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, reads []*ticketRead) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
@@ -118,7 +126,7 @@ func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, rea
 	reads = make([]*ticketRead, len(pumps))
 	for i, tp := range pumps {
 		tp.reading++
-		reads[i] = &ticketRead{issue: tp.key.issue, full: full || tp.nudged > tp.settled}
+		reads[i] = &ticketRead{issue: tp.key.issue, tp: tp, full: full, nudged: tp.nudged > tp.settled}
 		if tp.check != nil {
 			prior := *tp.check
 			reads[i].prior = &prior
@@ -139,7 +147,7 @@ func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, rea
 // ends every pump. Each pump's asker is answered its own ticket's outcome
 // (ticketsResult.errOf).
 func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticketPump, began uint64, reads []*ticketRead, res detailsRead, err error, at int64) ticketsResult {
-	var out ticketsResult
+	out := ticketsResult{historyDue: res.historyDue}
 	end := readEnd{kind: res.kind, at: at, ok: !slices.ContainsFunc(reads, (*ticketRead).failed)}
 	stopped := err != nil && ctx.Err() != nil
 	ended := errors.Is(err, errEnded) || errors.Is(err, ErrDisabled) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrStopped)
@@ -152,6 +160,11 @@ func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticke
 		end.failure = internalFailure(at)
 		out.failed = true
 		s.logf("trackerapp: the read of %d open tickets of %s failed: %v", len(pumps), conn, err)
+	}
+	for _, rd := range reads {
+		if rd.answered && rd.err == nil && rd.unsettled {
+			out.unsettled = append(out.unsettled, string(rd.issue))
+		}
 	}
 	for i := range pumps {
 		if e := askerErr(reads[i], res.failure, err); e != nil {
@@ -269,8 +282,12 @@ func (s *Service) settleTicketLocked(tp *ticketPump, began uint64, rd *ticketRea
 		if rd.view != nil {
 			tp.docs++
 			if began >= tp.inputs {
+				again := s.unwatchedLocked(tp, rd.shows, began)
 				tp.shows = rd.shows
-				s.installViewLocked(tp, rd.view, rd.digest, rd.check.readAt, began)
+				s.installViewLocked(tp, rd.view, rd.digest, rd.check.wall, began)
+				if again {
+					s.rebuildAgainLocked(tp)
+				}
 			}
 		}
 		tp.tellFailureLocked(nil)
@@ -291,11 +308,11 @@ func (tp *ticketPump) behindLocked() bool {
 
 // installViewLocked makes v (nil: not loaded), with digest, tp's view,
 // built from the document tp holds now (held by the pump when its check
-// holds it, the document's read begun at readAt) in a build that began at
+// holds it, the document's read begun at wall time wall) in a build that began at
 // stamp at. A view that differs from the one told, in content or in
 // being loaded, is due to be told. The caller holds subMu and has checked
 // that the view is current (settleTicketLocked, rebuildTicket).
-func (s *Service) installViewLocked(tp *ticketPump, v *DetailView, digest uint64, readAt int64, at uint64) {
+func (s *Service) installViewLocked(tp *ticketPump, v *DetailView, digest uint64, wall int64, at uint64) {
 	loaded := v != nil
 	if loaded != tp.view.loaded || digest != tp.view.digest {
 		tp.changed, tp.pending = true, true
@@ -303,7 +320,7 @@ func (s *Service) installViewLocked(tp *ticketPump, v *DetailView, digest uint64
 	tp.view = toldView{loaded: loaded, digest: digest, docs: tp.docs, at: at}
 	tp.held = nil
 	if loaded && tp.check != nil && tp.check.held != nil {
-		tp.held = &heldDetail{view: *v, readAt: readAt}
+		tp.held = &heldDetail{view: *v, wall: wall}
 	}
 }
 
@@ -349,10 +366,10 @@ func (s *Service) notLoadedLocked(tp *ticketPump, at uint64) {
 func (s *Service) rebuildTicket(tp *ticketPump) {
 	s.subMu.Lock()
 	b, docs := s.nextStampLocked(), tp.docs
-	var held *tracker.Detail
-	var readAt int64
+	var held *ticketDoc
+	var readAt, wall int64
 	if tp.check != nil {
-		held, readAt = tp.check.held, tp.check.readAt
+		held, readAt, wall = tp.check.held, tp.check.readAt, tp.check.wall
 	}
 	first := tp.settled == 0
 	s.subMu.Unlock()
@@ -361,7 +378,7 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 		return
 	}
 	at := millis(s.now())
-	v, d, mirrored, ok, err := s.rebuiltView(tp.key, held, readAt)
+	v, shows, mirrored, ok, err := s.rebuiltView(tp.key, held, readAt)
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	switch {
@@ -387,40 +404,49 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 			// The mirror's copy is another read's document.
 			tp.check = &mirrored
 			tp.docs++
-			readAt = mirrored.readAt
+			wall = mirrored.wall
 		}
-		tp.shows = showsOf(d)
-		s.installViewLocked(tp, &v, s.digestOf(v), readAt, b)
+		again := s.unwatchedLocked(tp, shows, b)
+		tp.shows = shows
+		s.installViewLocked(tp, &v, s.digestOf(v), wall, b)
+		if again {
+			s.rebuildAgainLocked(tp)
+		}
 	}
 	s.flushTicketLocked(tp, false)
 }
 
 // rebuiltView is key's view built from the newer, by when their reads
 // began, of the document its pump holds (held, its read begun at heldAt;
-// nil for none) and the mirror's copy, which another read may have stored
-// beside the pump's. mirrored is the mirror's copy's check when the view is
-// built from it. ok is false when neither holds a document.
-func (s *Service) rebuiltView(key ticketKey, held *tracker.Detail, heldAt int64) (v DetailView, d tracker.Detail, mirrored detailCheck, ok bool, err error) {
+// nil for none) and the mirror's body, which another read may have stored
+// beside the pump's. mirrored is the mirror's body's check when the view
+// is built from it. ok is false when neither holds a document.
+func (s *Service) rebuiltView(key ticketKey, held *ticketDoc, heldAt int64) (v DetailView, shows []tracker.IssueID, mirrored detailCheck, ok bool, err error) {
 	root, err := s.readRoot(key.connection)
 	if errors.Is(err, ErrNotMirrored) {
-		return DetailView{}, tracker.Detail{}, detailCheck{}, false, nil
+		return DetailView{}, nil, detailCheck{}, false, nil
 	}
 	if err != nil {
-		return DetailView{}, tracker.Detail{}, detailCheck{}, false, err
+		return DetailView{}, nil, detailCheck{}, false, err
 	}
 	defer s.leave()
-	m, stored, isStored, err := s.storedDetail(root, key.issue)
+	row, err := s.viewRow(key.connection)
+	if err != nil {
+		return DetailView{}, nil, detailCheck{}, false, err
+	}
+	var d ticketDoc
+	b, stored, isStored, err := s.storedDetail(root, key.issue)
 	switch {
 	case err != nil:
-		return DetailView{}, tracker.Detail{}, detailCheck{}, false, err
-	case isStored && (held == nil || m.ReadAt > heldAt):
+		return DetailView{}, nil, detailCheck{}, false, err
+	case isStored && (held == nil || b.ReadAt > heldAt):
 		d = stored
-		mirrored = detailCheck{readAt: m.ReadAt, updated: millis(stored.Card.Updated), doc: maphash.Bytes(s.digestSeed, m.Data)}
+		mirrored = detailCheck{readAt: b.ReadAt, wall: b.Wall, updated: b.UpdatedAt, doc: maphash.Bytes(s.digestSeed, b.Data)}
 	case held != nil:
 		d = *held
 	default:
-		return DetailView{}, tracker.Detail{}, detailCheck{}, false, nil
+		return DetailView{}, nil, detailCheck{}, false, nil
 	}
-	v, err = s.detailView(root, d)
-	return v, d, mirrored, err == nil, err
+	v, shows, err = s.detailView(root, row, d)
+	return v, shows, mirrored, err == nil, err
 }

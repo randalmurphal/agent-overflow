@@ -14,6 +14,7 @@ type options struct {
 	dial       DialContextFunc
 	probe      time.Duration
 	redemption func() (time.Duration, error)
+	retry      string
 	lifetime   context.Context
 	// roundTrip wraps the credential transport; set by this package's tests
 	// (withRoundTrip).
@@ -43,6 +44,14 @@ func WithProbeInterval(interval time.Duration) Option {
 // past pinTimeout.
 func WithRedemptionBound(bound func() (time.Duration, error)) Option {
 	return func(o *options) { o.redemption = bound }
+}
+
+// WithRetryRemedy names what a person does after a redemption (Redeem,
+// Pair) the backend gave no verdict on: the backend limited it (429),
+// failed or timed out (408, 5xx), or was not reached. Every such failure
+// then ends with then. Without it they read as a renewal's do.
+func WithRetryRemedy(then string) Option {
+	return func(o *options) { o.retry = then }
 }
 
 // WithLifetime is the owner's lifetime. When it ends, a rotation in flight

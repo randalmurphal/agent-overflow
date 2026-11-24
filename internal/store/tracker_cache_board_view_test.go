@@ -26,7 +26,7 @@ func TestMirrorBoardViewIsOneSnapshot(t *testing.T) {
 		checked(stmt, query)
 		if strings.Contains(query, "FROM tracker_cache_board_column_statuses") && armed.CompareAndSwap(true, false) {
 			// A sync commits between the view's reads.
-			_, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "10", Lifetime: lifetime, Rows: []MirrorRow{webRow("10003", 5, "c")}, ReadAt: 9})
+			_, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "10", Lifetime: lifetime, Rows: []MirrorRow{webRow("10003", 5, "c")}, ReadAt: mirrorReadAt(9)})
 			if err != nil {
 				t.Error(err)
 			}

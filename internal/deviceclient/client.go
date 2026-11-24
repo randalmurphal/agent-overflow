@@ -2,8 +2,10 @@ package deviceclient
 
 import (
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/authlimit"
 	"agent-overflow/internal/logging"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
@@ -242,7 +244,7 @@ func Redeem(ctx context.Context, dir string, link Link, label, platform string, 
 	if err != nil {
 		return nil, err
 	}
-	issued, err := client.exchange(ctx, redeemer, authPairPath, body, nil)
+	issued, err := client.exchange(ctx, redeemer, authPairPath, body, nil, resolveOptions(opts).retry)
 	if err != nil {
 		return nil, err
 	}
@@ -605,7 +607,10 @@ func (c *Client) mintTicket(ctx context.Context) (_ string, err error) {
 		// from "this path does not exist". The caller disambiguates by
 		// rotating, not by reading a code that is not there.
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
-		if err := temporaryHTTPFailure(resp.StatusCode); err != nil {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return "", authlimit.By(resp.Header, "connections")
+		}
+		if err := temporaryHTTPFailure(resp.StatusCode, "try again"); err != nil {
 			return "", err
 		}
 		return "", &Refusal{Status: resp.StatusCode}
@@ -742,7 +747,10 @@ const maxResponseBytes = 64 << 10
 // secret in the body and its proof in the header. Neither ever puts a
 // proof in the body — a proof a caller may write into the same document it
 // is proving something about is not a proof.
-func (c *Client) exchange(ctx context.Context, hc *http.Client, path string, body []byte, held *Session) (_ grant, err error) {
+//
+// then, when set, is what a person does after an exchange the backend gave
+// no verdict on (WithRetryRemedy); every such failure ends with it.
+func (c *Client) exchange(ctx context.Context, hc *http.Client, path string, body []byte, held *Session, then string) (_ grant, err error) {
 	step := stepRenew
 	if path == authPairPath {
 		step = stepPair
@@ -764,7 +772,11 @@ func (c *Client) exchange(ctx context.Context, hc *http.Client, path string, bod
 
 	resp, err := hc.Do(req)
 	if err != nil {
-		return grant{}, fmt.Errorf("deviceclient: reach %s%s: %w", c.base, path, err)
+		unreached := fmt.Errorf("deviceclient: reach %s%s: %w", c.base, path, err)
+		if then != "" {
+			unreached = fmt.Errorf("%w; %s", unreached, then)
+		}
+		return grant{}, unreached
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -772,7 +784,16 @@ func (c *Client) exchange(ctx context.Context, hc *http.Client, path string, bod
 	if err := decodeBody(resp.Body, &answered); err != nil && resp.StatusCode == http.StatusOK {
 		return grant{}, err
 	}
-	if err := temporaryHTTPFailure(resp.StatusCode); err != nil {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		attempts := "sign-in renewals"
+		if step == stepPair {
+			attempts = "pairing attempts"
+		}
+		limited := authlimit.By(resp.Header, attempts)
+		limited.Then = cmp.Or(then, limited.Then)
+		return grant{}, limited
+	}
+	if err := temporaryHTTPFailure(resp.StatusCode, cmp.Or(then, "try again")); err != nil {
 		return grant{}, err
 	}
 	if resp.StatusCode != http.StatusOK || answered.SessionID == "" || answered.Credential == "" {
@@ -787,9 +808,10 @@ func (c *Client) exchange(ctx context.Context, hc *http.Client, path string, bod
 
 // Only an authentication verdict can end a stored pairing. A busy backend,
 // proxy failure or rate limit is not evidence that the device was revoked.
-func temporaryHTTPFailure(status int) error {
+// then is what a person does next.
+func temporaryHTTPFailure(status int, then string) error {
 	if status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
-		return fmt.Errorf("deviceclient: backend temporarily unavailable (HTTP %d); try again", status)
+		return fmt.Errorf("deviceclient: backend temporarily unavailable (HTTP %d); %s", status, then)
 	}
 	return nil
 }

@@ -59,6 +59,12 @@ type Store struct {
 	reads atomic.Uint64
 	// readObserver is the function ObserveReads set, or nil.
 	readObserver atomic.Pointer[func()]
+	// mirrorReads is each tracker mirror root's read clock
+	// (BeginMirrorRead).
+	mirrorReads mirrorReadClocks
+	// mirrorBinds is the current bind of each open ticket's issue
+	// (ActivateMirrorBind).
+	mirrorBinds mirrorBinds
 	// assistantsPaused keeps the due reads off the threads that live under
 	// an assistant while assistants are turned off (assistants_paused.go).
 	assistantsPaused atomic.Bool
@@ -118,6 +124,10 @@ type Store struct {
 	// shared, runs in ListThreadAgentStopRows after each full page, so a
 	// test can write a request between two of its pages.
 	agentStopPageReadForTest func()
+	// pairingAccessReadForTest, set only by tests before the store is
+	// shared, wraps the reads of PairingAccessOf, so a test can write
+	// between two of them.
+	pairingAccessReadForTest func(sqlQueryer) sqlQueryer
 }
 
 // Options configures NewWithOptions.

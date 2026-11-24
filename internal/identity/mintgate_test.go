@@ -21,13 +21,21 @@ import (
 // calls are what bring a credential into existence or keep one alive, and
 // each carries the device gate at the point of the write:
 //
-//   - store.CreateSession — the device predicate is inside the INSERT;
+//   - store.CompletePairingRedemption - the session INSERT, whose device
+//     predicate is inside the statement, inside the
+//     transaction that names the pending session on its link, and for an
+//     own-device introduction the activation UPDATE's predicate as well;
+//   - store.CreateDeviceSession - the same INSERT, inside the transaction
+//     that writes a passkey sign-in's device row with its live session;
 //   - store.EnsureLocalSession - inside its serialized initialization transaction;
-//   - store.ActivateSession - inside the UPDATE;
+//   - store.ConfirmRedeemedPairing - the activation UPDATE's predicate, inside
+//     the confirmation's transaction;
 //   - store.RotateRefreshSecret — session/device predicates inside the durable transaction;
-//   - signClaims — reached only through Mint (which must then survive
-//     CreateSession) or accessTokensFor (which takes the device ROW and refuses
-//     a revoked one).
+//   - renderClaims - reached only through an accessSigner,
+//     whose only constructor, accessSignerFor, takes the device ROW and
+//     refuses a revoked one; its signAccess is called only by
+//     newTokens and by Refresh, which resolves it before its rotation
+//     commits.
 //
 // So a new mint path built from these operations inherits the refusal. This test
 // fails when one of them is called from somewhere new, which is the moment
@@ -39,11 +47,13 @@ import (
 // for a device the owner revoked.
 func TestEveryCredentialProducingCallGoesThroughAChokepoint(t *testing.T) {
 	chokepoints := map[string][]string{
-		"CreateSession":       {"Sessions.Mint"},
-		"EnsureLocalSession":  {"Sessions.EnsureLocalChannelSession"},
-		"ActivateSession":     {"Sessions.confirmPairing"},
-		"RotateRefreshSecret": {"Sessions.Refresh"},
-		"signClaims":          {"Sessions.Mint", "Sessions.accessTokensFor"},
+		"CompletePairingRedemption": {"Sessions.mintRedemptionSession"},
+		"CreateDeviceSession":       {"Sessions.FinishPasskeySignIn"},
+		"EnsureLocalSession":        {"Sessions.EnsureLocalChannelSession"},
+		"ConfirmRedeemedPairing":    {"Sessions.confirmPairing"},
+		"RotateRefreshSecret":       {"Sessions.Refresh"},
+		"renderClaims":              {"accessSigner.signAccess"},
+		"signAccess":                {"Sessions.Refresh", "Sessions.newTokens"},
 	}
 	found := map[string][]string{}
 	for name, callers := range callersInPackage(t) {

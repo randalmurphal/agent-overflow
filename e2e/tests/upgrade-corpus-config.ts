@@ -51,6 +51,7 @@ export const migrationExceptions: MigrationException[] = [
   { version: 154, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v154 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
   { version: 154, table: 'remote_watches', rowsMayShrink: true, reason: 'v154 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
   { version: 158, table: 'thread_requests', columns: ['next_check'], reason: 'v158 makes the acknowledgement it owes again for an answer from a paired computer due at once' },
+  { version: 165, table: 'tracker_cache_issue_details', dropped: true, reason: 'v165 drops the documents of opened tracker issues; each ticket body is read again into tracker_cache_issue_bodies at its next opening' },
 ];
 
 /**
@@ -197,6 +198,69 @@ const completionSend = (x: string) => `'remote-completion:' || ${x}.computer_id 
 const incompleteOwnAdmission = (x: string) => `${x}.purpose <> '' AND ${x}.confirmed_at IS NOT NULL AND ${x}.canceled_at IS NULL
   AND ${x}.session_id NOT IN (SELECT session_id FROM mig.own_device_sessions)
   AND ${x}.session_id IN (SELECT id FROM mig.sessions WHERE revoked_at IS NULL)`;
+/**
+ * The device `device` held an unrevoked session the boot ended and holds
+ * none after it: a device store.endSessionsTx finds unreachable.
+ */
+const deviceLostItsLastSession = (device: string) => `EXISTS (SELECT 1 FROM mig.sessions k WHERE k.device_id = ${device} AND k.revoked_at IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM main.sessions k WHERE k.device_id = ${device} AND k.revoked_at IS NULL)`;
+/**
+ * The totals store.tallyFiguresSQL gives thread `t` at `now`: its tool
+ * calls; its tokens with its pending usage; and its runtime with its newest
+ * turn's span to `now` while that turn is open, or without that span
+ * (settledTurnMs). Read from the tables as the migrations left them, which
+ * is what the session ends read: identity.Bootstrap (app.initIdentity) runs
+ * before every other boot writer.
+ */
+const tallyFigures = (t: string, now: string) => {
+  const settledTurnMs = `COALESCE((SELECT turn_ms FROM mig.thread_tallies WHERE thread_id = ${t}), 0)`;
+  return {
+    toolCalls: `COALESCE((SELECT tool_calls FROM mig.thread_tallies WHERE thread_id = ${t}), 0)`,
+    tokens: `(COALESCE((SELECT tokens FROM mig.thread_tallies WHERE thread_id = ${t}), 0)
+      + COALESCE((SELECT SUM(input_tokens + cache_creation_input_tokens + output_tokens) FROM mig.usage_pending WHERE thread_id = ${t}), 0))`,
+    settledTurnMs,
+    turnMs: `(${settledTurnMs}
+      + COALESCE((SELECT CASE WHEN nt.completed_at IS NULL THEN MAX(0, ${now} - nt.started_at) END
+        FROM mig.turns nt WHERE nt.thread_id = ${t} ORDER BY nt.turn_index DESC LIMIT 1), 0))`,
+  };
+};
+/**
+ * The latest booted updated_at of the links releaseSpawnLinksTx released
+ * for the run row `x`'s target, owner and source thread, over those links
+ * `where` admits. The release stamps each link it releases with the moment
+ * it ends the runs.
+ */
+const releasedLinksStamp = (x: string, where: string) => `(SELECT MAX(l.updated_at) FROM main.thread_request_receipts l
+  JOIN mig.thread_request_receipts ml ON ml.token = l.token
+  WHERE ml.spawn_link = 1 AND l.spawn_link = 0 AND ml.target_thread_id = ${x}.target_thread_id
+    AND ml.owner_device_id = ${x}.owner_device_id AND ml.source_thread_id = ${x}.source_thread_id${where})`;
+/**
+ * When the release ended the run row `x`, read from a released link no
+ * later boot writer touched: one the receipt sweep (open-receipts) does
+ * not settle. Null when the sweep settled every one, which restamps it.
+ */
+const runReleasedAt = (x: string) => releasedLinksStamp(x, " AND ml.state NOT IN ('accepted', 'running')");
+/** No earlier than the release: a link the sweep settled afterward carries the sweep's later moment. */
+const runReleasedBy = (x: string) => releasedLinksStamp(x, '');
+const releasedRunTotals = tallyFigures('s.target_thread_id', runReleasedAt('s'));
+const latestRunTotals = tallyFigures('s.target_thread_id', runReleasedBy('s'));
+/**
+ * The open receipt `x` the boot holds for its thread's rest again
+ * (app.heldReceiptAtBoot), from the rows the migrations left: running, its
+ * turn ended other than interrupted or errored with no later turn open,
+ * interrupted or errored, and a spawn or a send from the thread that
+ * spawned its target (app.receiptAwaitsRest).
+ */
+const heldForRest = (x: string) => `${x}.state = 'running' AND COALESCE(${x}.target_thread_id, '') <> ''
+  AND EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = ${x}.target_thread_id
+    AND ${x}.turn_id = ${x}.target_thread_id || '#' || t.turn_index
+    AND t.completed_at IS NOT NULL AND t.stop_reason NOT IN ('interrupted', 'error') AND t.error_message = ''
+    AND NOT EXISTS (SELECT 1 FROM mig.turns l WHERE l.thread_id = t.thread_id AND l.turn_index > t.turn_index
+      AND (l.completed_at IS NULL OR l.stop_reason IN ('interrupted', 'error') OR l.error_message <> '')))
+  AND (${x}.kind = 'spawn' OR (${x}.kind = 'send' AND ${x}.source_thread_id <> ''
+    AND EXISTS (SELECT 1 FROM mig.thread_request_receipts sp WHERE sp.target_thread_id = ${x}.target_thread_id
+      AND sp.kind = 'spawn' AND sp.owner_device_id = ${x}.owner_device_id AND sp.source_thread_id = ${x}.source_thread_id)))`;
+
 /**
  * Whether `json` is a JSON array, and the array or an empty one, so
  * json_each never reads a corrupt value. CASE keeps the JSON functions
@@ -456,8 +520,13 @@ export const recoveryRules: RecoveryRule[] = [
     to: `${draftRestored('s')} AND ${draftPlanKept}`,
   },
   {
+    // The sweep settles every open receipt but one held for its thread's
+    // rest, which it leaves running; that one settles at its thread's rest
+    // once the boot recovered what the thread waits on
+    // (app.settleHeldReceiptsAtRest), so either is valid.
     name: 'open-receipts', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_request_receipts',
-    rows: "s.state IN ('accepted', 'running')", columns: ['*'], to: "b.state NOT IN ('accepted', 'running')",
+    rows: "s.state IN ('accepted', 'running')", columns: ['*'],
+    to: `b.state NOT IN ('accepted', 'running') OR (b.state IS s.state AND ${heldForRest('s')})`,
   },
   {
     name: 'open-local-requests', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_requests',
@@ -511,6 +580,66 @@ export const recoveryRules: RecoveryRule[] = [
     name: 'own-admission-revocations', writer: 'identity.(*Sessions).RecoverOwnAdmissions (RevokeSession when AdmitOwnPairing refuses)',
     table: 'sessions', rows: `s.id IN (SELECT l.session_id FROM mig.pairing_links l WHERE ${incompleteOwnAdmission('l')})`,
     columns: ['revoked_at'], to: 'b.revoked_at IS NOT NULL',
+  },
+  {
+    name: 'pending-link-sessions', writer: 'identity.Bootstrap (store.RetirePendingPairings)', table: 'sessions',
+    rows: `s.activated_at IS NULL AND s.revoked_at IS NULL
+      AND s.id IN (SELECT l.session_id FROM mig.pairing_links l WHERE l.session_id <> '')`,
+    columns: ['revoked_at'], to: 'b.revoked_at IS NOT NULL',
+  },
+  // A device the session ends above leave with no unrevoked session is
+  // unreachable: the end (store.endSessionsTx) releases its spawn links and
+  // forgets its spawn changes in the same transaction.
+  {
+    // A released link is stamped and stops tracking.
+    name: 'ended-device-spawn-links', writer: 'store.endSessionsTx (releaseSpawnLinksTx), for the session ends above',
+    table: 'thread_request_receipts',
+    rows: `${deviceLostItsLastSession('s.owner_device_id')} AND s.spawn_link = 1`,
+    columns: ['spawn_link', 'track_spawn', 'updated_at'], to: 'b.spawn_link = 0 AND b.track_spawn = 0',
+  },
+  {
+    // Any other receipt of the device only stops tracking, unstamped.
+    name: 'ended-device-spawn-tracking', writer: 'store.endSessionsTx, for the session ends above',
+    table: 'thread_request_receipts',
+    rows: `${deviceLostItsLastSession('s.owner_device_id')} AND s.spawn_link = 0 AND s.track_spawn = 1`,
+    columns: ['track_spawn'], to: 'b.track_spawn = 0',
+  },
+  {
+    // The release ends the open run of each released link's source thread
+    // on its thread, with the thread's figures then (tallyFiguresSQL). The
+    // tool calls and tokens are exact. The runtime is exact when a released
+    // link still carries the release's moment. When the receipt sweep
+    // restamped every released link afterward, the runtime is bounded, not
+    // verified: nothing stored carries the release instant, so the open
+    // turn's span at the release is unknown, and no pre-boot stamp bounds it
+    // from below once the host clock may have been set back. It is checked
+    // only to lie between the thread's runtime without its open turn and that
+    // runtime with the open turn's span to the latest link stamp.
+    name: 'ended-device-spawn-runs', writer: 'store.endSessionsTx (releaseSpawnLinksTx), for the session ends above',
+    table: 'thread_request_receipts',
+    rows: `s.run_open = 1 AND EXISTS (SELECT 1 FROM mig.thread_request_receipts r WHERE r.spawn_link = 1
+      AND r.target_thread_id = s.target_thread_id AND r.owner_device_id = s.owner_device_id
+      AND r.source_thread_id = s.source_thread_id AND ${deviceLostItsLastSession('r.owner_device_id')})`,
+    columns: ['run_open', 'run_tool_calls', 'run_tokens', 'run_turn_ms'],
+    to: `b.run_open = 0 AND b.run_tool_calls = ${releasedRunTotals.toolCalls} AND b.run_tokens = ${releasedRunTotals.tokens}
+      AND CASE WHEN ${runReleasedAt('s')} IS NOT NULL THEN b.run_turn_ms = ${releasedRunTotals.turnMs}
+        ELSE b.run_turn_ms BETWEEN ${latestRunTotals.settledTurnMs} AND ${latestRunTotals.turnMs} END`,
+  },
+  {
+    name: 'ended-device-nudges', writer: 'store.endSessionsTx, for the session ends above', table: 'thread_receipt_nudges',
+    rows: `EXISTS (SELECT 1 FROM mig.thread_request_receipts r WHERE r.token = s.link_token AND ${deviceLostItsLastSession('r.owner_device_id')})`,
+    removes: true,
+  },
+  {
+    name: 'ended-device-spawn-revisions', writer: 'store.endSessionsTx, for the session ends above', table: 'spawn_revisions',
+    rows: deviceLostItsLastSession('s.owner_device_id'), removes: true,
+  },
+  {
+    // The released link's thread goes standalone (trg_thread_placement_link_gone).
+    name: 'ended-device-placements', writer: 'store.endSessionsTx (releaseSpawnLinksTx), for the session ends above', table: 'threads',
+    rows: `s.placement = 'owned' AND EXISTS (SELECT 1 FROM mig.thread_request_receipts r
+      WHERE r.target_thread_id = s.id AND r.spawn_link = 1 AND ${deviceLostItsLastSession('r.owner_device_id')})`,
+    columns: ['placement'], to: "b.placement = 'standalone'",
   },
   {
     name: 'expired-sessions', writer: 'identity.(*Sessions).PruneCredentials (store.DeleteSessionsExpiredBefore)', table: 'sessions',
@@ -706,9 +835,9 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'devices', columns: ['passkey_credential_id', 'last_seen_at', 'revoked_at'], values: { class: ['browser', 'phone', 'cli', 'backend-peer'] }, reason: "rows the pairing flow writes for a browser, phone, CLI or a peer backend another computer introduced, and a revoked or passkey device; the top-up pairs one computer of the person's own" },
   { table: 'own_devices', values: { removed: [1] }, reason: "a paired computer of the person's own they removed; the top-up keeps its pairing" },
   {
-    table: 'pairing_links', columns: ['canceled_at', 'expected_key', 'sponsor_key'],
-    values: { binding_class: ['loopback-only', 'public'], device_class: ['browser', 'phone', 'cli', 'backend-peer'], purpose: ['', 'own-introduction'] },
-    reason: "a link minted for a browser, phone, CLI or peer backend, a canceled link and an introduction one computer sponsors for another; the top-up redeems one link between two computers of the person's own",
+    table: 'pairing_links', columns: ['canceled_at', 'expected_key', 'sponsor_key', 'bootstrap'],
+    values: { binding_class: ['loopback-only', 'public'], device_class: ['browser', 'phone', 'cli', 'backend-peer'], purpose: ['', 'own-introduction'], bootstrap: [1] },
+    reason: "a link minted for a browser, phone, CLI or peer backend, a canceled link, an introduction one computer sponsors for another and a computer pairing window's invitation (v164); the top-up redeems one link between two computers of the person's own",
   },
   { table: 'passkeys', reason: 'a WebAuthn registration from a browser' },
   { table: 'push_sender', reason: 'the push credential a paired phone registers' },
@@ -819,10 +948,11 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'tracker_cache_board_issues', reason: 'a tracker issue\'s row on a board (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_issue_sprints', reason: 'the sprints a tracker issue is in (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_changes', reason: 'a tracker issue\'s status, sprint, estimate or assignee change (v162); no app method syncs a tracker yet' },
-  { table: 'tracker_cache_issue_details', reason: 'the detail of a recently opened tracker issue (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_issue_bodies', reason: 'the ticket body of an open or recently opened tracker issue (v165); no app method syncs a tracker yet' },
   { table: 'tracker_cache_worklogs', reason: 'time logged in a tracker (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_worklog_days', reason: 'the latest read of a day of a tracker author\'s worklogs (v162); no app method syncs a tracker yet' },
   { table: 'tracker_cache_sync', reason: 'a tracker mirror scope\'s sync state (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_open_tickets', reason: 'a tracker ticket a person has open, which keeps its issue in the mirror (v165); no app method syncs a tracker yet' },
   { table: 'chat_model_profiles', values: { reasoning_effort: ['none', 'minimal', 'low', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last' },
 
   // Provider accounting the mock does not report.

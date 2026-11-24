@@ -95,7 +95,8 @@ type ListQuery struct {
 }
 
 // ListIssues reads one page of an issue list. Its warnings are Jira's
-// notes on the JQL, with no Type.
+// notes on the JQL, with no Type. A 400 to a page narrowed by JQL is a
+// *QueryRefusedError.
 func (c *Client) ListIssues(ctx context.Context, q ListQuery) (SearchPage, error) {
 	if err := c.admit(ctx); err != nil {
 		return SearchPage{}, err
@@ -131,6 +132,9 @@ func (c *Client) listPage(ctx context.Context, q ListQuery) (SearchPage, error) 
 	}
 	resp, err := c.call(ctx, trackerapi.Request{Path: path, Query: v}, &j)
 	if err != nil {
+		if q.JQL != "" {
+			err = refusedQuery(err)
+		}
 		return SearchPage{}, fmt.Errorf("jira: issue list: %w", err)
 	}
 	page := SearchPage{Issues: make([]*Issue, len(j.Issues)), Date: answerDate(resp)}

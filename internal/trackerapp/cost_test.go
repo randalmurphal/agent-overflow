@@ -202,20 +202,25 @@ func idsOfRows(rows []tracker.Row) []tracker.IssueID {
 }
 
 // The stored size of each blob for a realistic record, pinned so a change
-// that grows one shows.
+// that grows one shows. A Linear card stores its URL (the workspace, the
+// identifier and a slug of the title) where a Jira card builds its own
+// from the site and the key.
 func TestBlobSizes(t *testing.T) {
 	t.Parallel()
-	card := must[store.MirrorCard](t)(mirrorCard(realisticRow(1, time.UnixMilli(1_799_000_000_000).UTC()).Card))
+	c := realisticRow(1, time.UnixMilli(1_799_000_000_000).UTC()).Card
+	card := must[store.MirrorCard](t)(mirrorCard(c))
+	c.URL = "https://linear.app/example/issue/WEB-2/make-the-checkout-page-load-faster-part-1"
+	linear := must[store.MirrorCard](t)(mirrorCard(c))
 	catalog := must[store.MirrorCatalog](t)(mirrorCatalog(tracker.Catalog{Users: []tracker.User{{
 		ID: "acc-user1", Name: "User 1", Email: "user1@example.com", AvatarURL: "https://avatar.example.com/acc-user1/48.png", Active: true,
 	}}}))
 	st := webStructure(testBoard)
 	st.Estimate = tracker.Estimate{Unit: tracker.UnitPoints, Choices: []tracker.EstimateChoice{{Value: 1}, {Value: 2}, {Value: 3}, {Value: 5}, {Value: 8}}}
-	board := must[store.MirrorStructure](t)(mirrorStructure(st, 1))
-	detail := must[[]byte](t)(mirrorDetail(realisticDetail()))
-	sizes := map[string]int{"card": len(card.Data), "user": len(catalog.Users[0].Data), "board": len(board.Board.Data), "detail": len(detail)}
+	board := must[store.MirrorStructure](t)(mirrorStructure(st, store.MirrorRead{}))
+	body := must[[]byte](t)(mirrorBody(realisticDetail()))
+	sizes := map[string]int{"card": len(card.Data), "linear card": len(linear.Data), "user": len(catalog.Users[0].Data), "board": len(board.Board.Data), "body": len(body)}
 	t.Logf("blob bytes: %s", describeCounts(sizes))
-	want := map[string]int{"card": 211, "user": 108, "board": 79, "detail": 16582}
+	want := map[string]int{"card": 211, "linear card": 300, "user": 108, "board": 79, "body": 16468}
 	if !maps.Equal(sizes, want) {
 		t.Errorf("blob bytes %s, pinned %s", describeCounts(sizes), describeCounts(want))
 	}
@@ -301,13 +306,13 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 		}},
 		{"detail, none stored", detail, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"GetMirrorDetail": 1, "StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 1})),
 		}},
 		// The mirror keeps none of the linked issues: they show what the
 		// detail holds.
 		{"detail, verified unchanged", checked, costOf{
 			map[string]int{"Cards": 1},
-			with(plus(view, map[string]int{"GetMirrorDetail": 1, "UpsertMirrorCards": 1, "ConfirmMirrorDetail": 1})),
+			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 1})),
 		}},
 		// A read stored the three linked issues' cards, one renamed: the
 		// view shows them from the mirror in its one cards lookup, and the
@@ -321,40 +326,40 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 				}
 				linked = append(linked, must[store.MirrorCard](t)(mirrorCard(c)))
 			}
-			must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, linked, store.MirrorCatalog{}, m.now().UnixMilli()))
+			must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, linked, store.MirrorCatalog{}, m.read()))
 			v, ch, err := m.svc.IssueDetail(t.Context(), m.conn.ID, issue, Interactive)
 			if err != nil || v.Links[1].Issue.Title != "Renamed" || len(ch.Details) != 0 || len(asked) != 1 {
 				t.Fatalf("the links: %+v, changes %+v, cards of %v, %v", v.Links, ch, asked, err)
 			}
 		}, costOf{
 			map[string]int{"Cards": 1},
-			with(plus(view, map[string]int{"GetMirrorDetail": 1, "UpsertMirrorCards": 1, "ConfirmMirrorDetail": 1})),
+			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 1})),
 		}},
 		{"detail, verified changed", func(t *testing.T) {
 			held.Updated = held.Updated.Add(time.Minute)
 			checked(t)
 		}, costOf{
 			map[string]int{"Cards": 1, "Details": 1},
-			with(plus(view, map[string]int{"GetMirrorDetail": 1, "UpsertMirrorCards": 1, "StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 2})),
 		}},
 		// Sync stored a newer card than the stored detail's: no check.
 		{"detail, the mirror already newer", func(t *testing.T) {
 			held.Updated = held.Updated.Add(time.Minute)
 			newer := must[store.MirrorCard](t)(mirrorCard(held))
-			must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{newer}, store.MirrorCatalog{}, m.now().UnixMilli()))
+			must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{newer}, store.MirrorCatalog{}, m.read()))
 			detail(t)
 		}, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"GetMirrorDetail": 1, "StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 1})),
 		}},
 		{"detail, older than the age bound", func(t *testing.T) {
 			sd, _, _ := m.storedDetail(t, string(issue))
-			later := time.UnixMilli(sd.ReadAt).Add(detailMaxAge + time.Millisecond)
+			later := time.UnixMilli(sd.Wall).Add(detailMaxAge + time.Millisecond)
 			m.svc.now = func() time.Time { return later }
 			detail(t)
 		}, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"GetMirrorDetail": 1, "StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 1})),
 		}},
 		// A person's refresh reads no stored detail first.
 		{"detail, forced refresh", func(t *testing.T) {
@@ -363,7 +368,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			}
 		}, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"StoreMirrorTickets": 1})),
 		}},
 		// No run: no sync state read, no client.
 		{"detail, the mirror's copy", func(t *testing.T) {
@@ -372,7 +377,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			}
 		}, costOf{
 			map[string]int{},
-			plus(view, map[string]int{"GetMirrorRoot": 1, "GetMirrorDetail": 1, "ConfirmMirrorDetail": 1}),
+			plus(view, map[string]int{"GetMirrorRoot": 1, "GetMirrorBody": 1, "ConfirmMirrorBody": 1}),
 		}},
 		// A tracker whose update time does not move with its detail: read
 		// every time, with no stored detail read first.
@@ -381,7 +386,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			detail(t)
 		}, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"StoreMirrorTickets": 1})),
 		}},
 		{"board view, three sections", func(t *testing.T) {
 			must[BoardView](t)(m.svc.Board(scope, []Section{{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}))

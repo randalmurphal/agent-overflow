@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"hash/maphash"
+	"slices"
 	"time"
 
 	"agent-overflow/internal/pump"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -20,6 +22,21 @@ import (
 type ticketPump struct {
 	core pump.Core[readRequest]
 	key  ticketKey
+	// number names the pump within the service's session: its row in the
+	// mirror's open tickets, which keeps its issue. kept reports that the
+	// row committed under root (keepTicketLocked), and dropped that the
+	// pump ended and deleted it (dropTicket), after which nothing keeps it
+	// again. They are under opMu, as is every write of the row.
+	number  int64
+	kept    bool
+	dropped bool
+	root    int64
+	// bind is the pump's bind while it is the issue's current one (store
+	// ActivateMirrorBind), made only after the row committed and while the
+	// pump is live, and zero from its retirement (retireTicketLocked): a
+	// read of the ticket carries it as the read begins (boundDetails). It
+	// is under subMu.
+	bind store.MirrorBind
 	// gen is the mirror generation the pump shows (genLocked).
 	gen uint64
 	// every is the connection's round interval, the answer's PollEvery.
@@ -38,11 +55,13 @@ type ticketPump struct {
 	settled, docs uint64
 	// due is when the round reads the ticket next. nudged is the stamp of
 	// the last request to read it at once (readNowLocked): a read that
-	// began before it neither undoes it nor counts as its read, and the
-	// next read is a full one. inputs is the stamp of the last change to
-	// an input of the view other than its document (ticketInputs).
-	due            time.Time
-	nudged, inputs uint64
+	// began before it neither undoes it nor counts as its read. inputs is
+	// the stamp of the last change to an input of the view other than its
+	// document (ticketInputs). judged is the stamp of the last change the
+	// funnel judged by shows (tellTicketLocked), which a view built before
+	// it with other dependencies is checked against (unwatchedLocked).
+	due                    time.Time
+	nudged, inputs, judged uint64
 	// reading counts the reads of the ticket begun and not settled
 	// (ticketReads, settleTickets): while one is in flight, the document a
 	// read stored in the mirror is that read's to settle (rebuildTicket).
@@ -53,8 +72,8 @@ type ticketPump struct {
 	shows []tracker.IssueID
 	// held is the view when the pump, not the mirror, holds the ticket's
 	// content (check.held is its document): the mirror does not keep the
-	// issue or no longer holds its detail. Which one holds it is decided
-	// on every successful read. Nothing else of a ticket is held.
+	// issue or no longer holds its body. Which one holds it is decided on
+	// every successful read. Nothing else of a ticket is held.
 	held *heldDetail
 	// failure is the failure the subscribers were last told of; changed and
 	// pending are what the next event carries.
@@ -73,15 +92,17 @@ type toldView struct {
 	docs, at uint64
 }
 
-// heldDetail is a view a ticket pump holds, with when its read began.
+// heldDetail is a view a ticket pump holds, with the wall time its read
+// began.
 type heldDetail struct {
-	view   DetailView
-	readAt int64
+	view DetailView
+	wall int64
 }
 
 // TicketView is an open ticket as its subscribers were last told of it:
 // its detail when the mirror, or the ticket's pump, holds one (Loaded),
-// with when its read began, and its failure, nil while its reads succeed.
+// with when its read began (Unix milliseconds by this computer's wall
+// clock), and its failure, nil while its reads succeed.
 type TicketView struct {
 	Loaded  bool         `json:"loaded"`
 	Detail  *DetailView  `json:"detail,omitempty"`
@@ -171,9 +192,15 @@ func (s *Service) answeredNotLoadedLocked(tp *ticketPump, asked uint64) {
 }
 
 // launchTicketLocked starts tp's goroutine and follows its connection's
-// round. The caller holds subMu.
+// round. The goroutine runs for a pump stopped before its launch too (Stop
+// came first, its subscribe failed, or its connection was turned off
+// meanwhile): a read may have kept its issue meanwhile (a write's refresh
+// during the first paint), and the goroutine's exit drops the row
+// (dropTicket). The caller holds subMu, inside the subscribe's call, so
+// Stop joins it.
 func (s *Service) launchTicketLocked(tp *ticketPump) {
-	s.launchLocked(&tp.core, tp.exited, func() { s.runTicketPump(tp) })
+	s.workers.Add(1)
+	go s.runTicketPump(tp)
 	s.followRoundLocked(tp.key.connection)
 }
 
@@ -200,9 +227,10 @@ func (s *Service) takeTicketHandle(key ticketKey) (id string, tp *ticketPump, st
 		if s.subs.tickets == nil {
 			s.subs.tickets = map[ticketKey]*ticketPump{}
 		}
+		s.subs.pumps++
 		tp = &ticketPump{
-			core: s.newCore(), key: key, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind), exited: make(chan struct{}),
-			viewChanged: make(chan struct{}, 1),
+			core: s.newCore(), key: key, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind),
+			exited: make(chan struct{}), viewChanged: make(chan struct{}, 1),
 		}
 		s.subs.tickets[key] = tp
 		start = true
@@ -222,7 +250,7 @@ func (tp *ticketPump) toldLocked() TicketView {
 	v := TicketView{Failure: tp.failure}
 	if tp.held != nil {
 		view := tp.held.view
-		v.Loaded, v.Detail, v.ReadAt = true, &view, tp.held.readAt
+		v.Loaded, v.Detail, v.ReadAt = true, &view, tp.held.wall
 	}
 	return v
 }
@@ -275,10 +303,16 @@ func (s *Service) digestOf(v DetailView) uint64 {
 // that records the opening, a full read on a person's request, and a view
 // rebuild with no tracker call when an input of the view moved, made when
 // shown again if it came while hidden. A failed read is retried by the
-// connection's round.
+// connection's round. The mirror keeps the ticket's issue from the bind
+// its first read makes (bindTickets) until the goroutine returns
+// (dropTicket), which every end of the pump comes to: its last handle
+// released, its connection turned off or removed, Stop, and a read that
+// found the pump ended; for a pump stopped before its launch, its first
+// read ends at once with its context.
 func (s *Service) runTicketPump(tp *ticketPump) {
 	defer s.workers.Done()
 	defer close(tp.exited)
+	defer s.dropTicket(tp)
 	ctx, conn, self := tp.core.Context(), tp.key.connection, []*ticketPump{tp}
 	over := s.readTickets(ctx, conn, self, Interactive, false, true).over
 	for !over {
@@ -331,9 +365,9 @@ func (tp *ticketPump) tellFailureLocked(f *FailureView) {
 	}
 }
 
-// endTicketLocked ends tp: it stops, it and its handles are forgotten, its
-// subscribers are told once, and its connection's round follows. The
-// caller holds subMu.
+// endTicketLocked ends tp: its subscribers are told once, it retires
+// (retireTicketLocked), its handles are forgotten, and its connection's
+// round follows. The caller holds subMu.
 func (s *Service) endTicketLocked(tp *ticketPump) {
 	if tp.over {
 		return
@@ -342,10 +376,213 @@ func (s *Service) endTicketLocked(tp *ticketPump) {
 	// (endBoardLocked).
 	s.flushTicketLocked(tp, true)
 	tp.over, tp.held, tp.check = true, nil, nil
+	s.retireTicketLocked(tp)
+	s.endHandlesLocked(&tp.core)
+	s.followRoundLocked(tp.key.connection)
+}
+
+// retireTicketLocked is the one end of tp as its issue's open ticket, by
+// its identity, and tells no one: its core stops, it leaves the open
+// tickets unless another pump of its issue replaced it there, and its bind
+// ends (store EndMirrorBind), so no ticket write whose admission follows
+// stores a body or an opening of it; a write admitted before commits. Its
+// last release, endTicketLocked (its connection turned off or removed, its
+// generation ended, a read that found it ended) and Stop come here; the
+// app's exit is Stop. Its row is its goroutine's to drop (dropTicket). The
+// caller holds subMu.
+func (s *Service) retireTicketLocked(tp *ticketPump) {
 	tp.core.StopLocked()
 	if s.subs.tickets[tp.key] == tp {
 		delete(s.subs.tickets, tp.key)
 	}
-	s.endHandlesLocked(&tp.core)
-	s.followRoundLocked(tp.key.connection)
+	s.store.EndMirrorBind(tp.bind)
+	tp.bind = store.MirrorBind{}
+}
+
+// ticketLiveLocked reports that tp is its issue's open ticket, live, of
+// connection generation gen. The caller holds subMu.
+func (s *Service) ticketLiveLocked(tp *ticketPump, gen uint64) bool {
+	return s.subs.tickets[tp.key] == tp && !tp.over && !tp.core.DeadLocked() && tp.gen == gen && s.genLocked(tp.key.connection) == gen
+}
+
+// bindTickets binds the open tickets of reads that the mirror does not
+// keep yet, those of the run's mirror generation that are live, under the
+// run's root (keepTicketLocked), kept at one read begun before the read of
+// the tickets begins: the bind admits a body from any read that begins
+// after it (store StoreMirrorTickets). A bind that fails is its
+// ticket's failure, answered without a read of it, which the retry
+// schedule reads, and binds, again. A pump whose bind failed shows its
+// failure until a bind succeeds; so a ticket whose content the mirror does
+// not keep is one of an issue it does not keep, never one it failed to. A
+// bind that shows a held record again (a ticket closed and opened again
+// before the cleanup) is published as its keep commits
+// (Changes.Visibility), before the read of the tickets begins.
+func (r *run) bindTickets(reads []*ticketRead) error {
+	s := r.s
+	unbound := func(rd *ticketRead) bool {
+		return rd.tp != nil && !rd.tp.kept && !rd.tp.dropped && rd.tp.gen == r.gen
+	}
+	s.opMu.Lock()
+	any := slices.ContainsFunc(reads, unbound)
+	s.opMu.Unlock()
+	if !any {
+		return nil
+	}
+	opened, err := r.beginRead()
+	if err != nil {
+		return err
+	}
+	var shown []tracker.IssueID
+	s.opMu.Lock()
+	for _, rd := range reads {
+		if !unbound(rd) {
+			continue
+		}
+		again, err := s.keepTicketLocked(rd.tp, r.root, r.gen, opened)
+		switch {
+		case err != nil:
+			rd.err, rd.answered = fmt.Errorf("trackerapp: keep the open ticket %s of connection %s: %w", rd.issue, r.row.ID, err), true
+		case again:
+			shown = append(shown, rd.issue)
+		}
+	}
+	s.opMu.Unlock()
+	if len(shown) > 0 {
+		slices.Sort(shown)
+		s.publish(r.root, r.gen, r.row.ID, Changes{Visibility: shown}, nil, nil)
+	}
+	return nil
+}
+
+// keepTicketLocked writes tp's keep under root, kept at opened (store
+// KeepMirrorTicket), and reports whether it showed the issue's held record
+// again, only while tp is live, of generation gen, both as the keep starts
+// and once it committed: a pump retired before makes no row, and one
+// retired during the keep shows nothing, its bind ends unactivated and its
+// goroutine drops the row. Once the row committed, the row is the pump's
+// to drop, and the bind the keep issued becomes the issue's current one
+// (store ActivateMirrorBind), ending the pump's earlier one.
+// The caller holds opMu, and the keep's SQL runs without subMu held.
+func (s *Service) keepTicketLocked(tp *ticketPump, root int64, gen uint64, opened store.MirrorRead) (bool, error) {
+	s.subMu.Lock()
+	live := s.ticketLiveLocked(tp, gen)
+	s.subMu.Unlock()
+	if !live {
+		return false, nil
+	}
+	bind, shown, err := s.store.KeepMirrorTicket(root, string(tp.key.issue), s.session, tp.number, opened)
+	if err != nil {
+		return false, err
+	}
+	tp.kept, tp.root = true, root
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	if !s.ticketLiveLocked(tp, gen) {
+		s.store.EndMirrorBind(bind)
+		return false, nil
+	}
+	// A bind of the root a restore emptied ends as this one replaces it.
+	s.store.EndMirrorBind(tp.bind)
+	tp.bind = store.MirrorBind{}
+	if !s.store.ActivateMirrorBind(bind) {
+		return false, fmt.Errorf("trackerapp: the store refused to activate the bind its keep of %s just issued", tp.key.issue)
+	}
+	tp.bind = bind
+	return shown, nil
+}
+
+// owedDrop is the keep of an ended pump whose drop has not committed: the
+// store keeps the issue until it does.
+type owedDrop struct {
+	key    ticketKey
+	number int64
+	root   int64
+	gen    uint64
+}
+
+// dropTicket ends tp's keep as its goroutine returns, and no bind follows
+// it (dropKeep). A drop that fails stays owed: the next run retries it
+// (payOwedDrops), and Stop makes a last try, after which the next process
+// drops the row (dropEarlierTickets).
+func (s *Service) dropTicket(tp *ticketPump) {
+	s.opMu.Lock()
+	tp.dropped = true
+	kept := tp.kept
+	tp.kept = false
+	s.opMu.Unlock()
+	if kept {
+		s.dropKeep(owedDrop{key: tp.key, number: tp.number, root: tp.root, gen: tp.gen}, "the next run tries it again")
+	}
+}
+
+// dropKeep deletes d's keep (store DropMirrorTicket) under opMu, the lock
+// of every write of the row. When the issue is kept no longer, the change
+// reaches every subscription that shows it as another's parent or link
+// (Changes.Visibility). A drop that fails is logged with retry, what
+// follows it, and owed until a later try commits.
+func (s *Service) dropKeep(d owedDrop, retry string) {
+	s.opMu.Lock()
+	unkept, err := s.store.DropMirrorTicket(s.session, d.number)
+	if err != nil {
+		s.owedDrops = append(s.owedDrops, d)
+	}
+	s.opMu.Unlock()
+	switch {
+	case err != nil:
+		s.logf("trackerapp: drop the open ticket %s of connection %s: %v; %s", d.key.issue, d.key.connection, err, retry)
+	case unkept:
+		s.publish(d.root, d.gen, d.key.connection, Changes{Visibility: []tracker.IssueID{d.key.issue}}, nil, nil)
+	}
+}
+
+// payOwedDrops tries again every drop owed (dropKeep), retry naming what
+// follows one that fails again.
+func (s *Service) payOwedDrops(retry string) {
+	s.opMu.Lock()
+	owed := s.owedDrops
+	s.owedDrops = nil
+	s.opMu.Unlock()
+	for _, d := range owed {
+		s.dropKeep(d, retry)
+	}
+}
+
+// keepTicketsAgainLocked binds again, under root, every live open ticket
+// of connection id's generation gen, root being a root made in place of
+// one a restore emptied (mirrorRootLocked): the restore emptied their rows
+// with the mirror, so none is kept any more, and a ticket whose earlier
+// bind failed is kept with the others. One read begun now keeps them all,
+// and each new bind replaces the pump's bind of the emptied root only for
+// a pump still live once its keep committed (keepTicketLocked); a pump
+// whose keep fails carries no read under the old one, as its next read
+// keeps it first (bindTickets). A bind that fails leaves its ticket
+// unbound, which its next read binds (bindTickets), and is logged. The
+// caller holds opMu.
+func (s *Service) keepTicketsAgainLocked(id string, gen uint64, root int64) {
+	s.subMu.Lock()
+	var live []*ticketPump
+	for k, tp := range s.subs.tickets {
+		if k.connection == id && s.ticketLiveLocked(tp, gen) {
+			live = append(live, tp)
+		}
+	}
+	s.subMu.Unlock()
+	live = slices.DeleteFunc(live, func(tp *ticketPump) bool { return tp.dropped })
+	for _, tp := range live {
+		tp.kept = false
+	}
+	if len(live) == 0 {
+		return
+	}
+	opened, err := s.store.BeginMirrorRead(root, millis(s.now()))
+	if err != nil {
+		s.logf("trackerapp: keep the %d open tickets of connection %s again after its mirror was emptied: %v; each read binds its own", len(live), id, err)
+		return
+	}
+	for _, tp := range live {
+		// A root made now holds no record, so no keep shows one again.
+		if _, err := s.keepTicketLocked(tp, root, gen, opened); err != nil {
+			s.logf("trackerapp: keep the open ticket %s of connection %s again after its mirror was emptied: %v; its next read binds it", tp.key.issue, id, err)
+		}
+	}
 }

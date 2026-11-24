@@ -6,8 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-
-	"github.com/google/uuid"
 )
 
 var (
@@ -29,6 +27,11 @@ type RefreshRotation struct {
 	OldHash, NextHash              []byte
 	Now, AccessUntil, RefreshUntil int64
 	Recoverable                    bool
+	// NotReady, when set, is the caller's reason it cannot return the new
+	// credential. The rotation still classifies the presentation, answering
+	// reuse, superseded or an unknown or expired secret as it would, and
+	// refuses with NotReady, writing nothing, where it would have committed.
+	NotReady error
 }
 
 type RefreshRotationResult struct {
@@ -58,7 +61,7 @@ func (s *Store) RotateRefreshSecret(ctx context.Context, in RefreshRotation) (Re
 	session, err := scanSession(tx.QueryRowContext(ctx, sessionSelect+`
         WHERE s.id = ? AND s.device_id = ? AND s.revoked_at IS NULL
           AND s.activated_at IS NOT NULL
-          AND s.device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`, in.SessionID, in.DeviceID))
+          AND d.revoked_at IS NULL`, in.SessionID, in.DeviceID))
 	if err != nil {
 		return out, err
 	}
@@ -119,12 +122,12 @@ func (s *Store) RotateRefreshSecret(ctx context.Context, in RefreshRotation) (Re
 		if taken > 0 {
 			return out, ErrRefreshSuccessorTaken
 		}
-		out.Secret = RefreshSecret{ID: uuid.NewString(), SessionID: session.ID, CreatedAt: in.Now, ExpiresAt: in.RefreshUntil}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO refresh_secrets
-            (id, session_id, secret_hash, created_at, expires_at, consumed_at, consumed_by)
-            VALUES (?, ?, ?, ?, ?, NULL, '')`, out.Secret.ID, session.ID, in.NextHash, in.Now, in.RefreshUntil); err != nil {
+		if out.Secret, err = insertRefreshSecret(tx, session.ID, in.NextHash, in.Now, in.RefreshUntil); err != nil {
 			return out, fmt.Errorf("store: create refresh successor: %w", err)
 		}
+	}
+	if in.NotReady != nil {
+		return RefreshRotationResult{}, in.NotReady
 	}
 	session.ExpiresAt = max(session.ExpiresAt, in.AccessUntil)
 	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET expires_at = ? WHERE id = ?`, session.ExpiresAt, session.ID); err != nil {

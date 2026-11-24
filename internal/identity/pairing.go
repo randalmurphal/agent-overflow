@@ -80,6 +80,27 @@ const (
 // request.
 var ErrPairingRefused = errors.New("identity: pairing refused")
 
+// ErrPairingNotCompleted answers a confirmation that could not admit its
+// device; the link was cancelled and its session revoked, so the device has
+// to pair again.
+var ErrPairingNotCompleted = errors.New("identity: the pairing was not completed; pair the device again")
+
+// ErrPairingAlreadyConfirmed answers a confirmation of a link an earlier
+// confirmation already admitted, whose session and device are still live
+// (store.ErrPairingAlreadyConfirmed): the device is allowed.
+var ErrPairingAlreadyConfirmed = errors.New("identity: the device is already allowed")
+
+// ErrPairingAccessEnded answers a confirmation of a link an earlier
+// confirmation admitted whose device can no longer use its access
+// (store.ErrPairingAccessEnded): only a new pairing admits it again.
+var ErrPairingAccessEnded = errors.New("identity: the device was allowed and its access has ended")
+
+// ErrPairingDeviceRemoved answers a confirmation of a link an earlier
+// confirmation admitted whose device the owner removed
+// (store.ErrPairingDeviceRemoved): the device pairs again only once the
+// owner restores or forgets it.
+var ErrPairingDeviceRemoved = errors.New("identity: the device was allowed and has since been removed")
+
 // PairingPayload is what the minting surface hands to the new device: the
 // contents of the URL fragment behind a pairing link, and the same fields a
 // QR code or a typed code carries.
@@ -182,6 +203,9 @@ type PairingRequest struct {
 	// the only layer that knows which certificate the listener presents;
 	// empty is a link that names none.
 	CertFingerprint string
+	// Bootstrap marks a link a computer pairing window mints, whose
+	// comparison number is that window's (store.PairingLink.Bootstrap).
+	Bootstrap bool
 }
 
 // PairingLink is a minted, unredeemed link: the row plus the token, which
@@ -231,6 +255,7 @@ func (s *Sessions) mintPairingLink(req PairingRequest) (PairingLink, error) {
 		CertFingerprint: req.CertFingerprint,
 		CreatedAt:       now,
 		ExpiresAt:       now + PairingLinkTTL.Milliseconds(),
+		Bootstrap:       req.Bootstrap,
 	}
 	if err := s.store.CreatePairingLink(link, digest[:]); err != nil {
 		return PairingLink{}, err
@@ -325,10 +350,17 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 	}
 	digest := hashPairingToken(req.Token)
 	now := s.now().UnixMilli()
+	// Until the link is spent (redeemSpending), a failure to read or write
+	// it leaves it as it was: the device is told to present the same link
+	// again. A refusal of the link keeps its own answer.
 	checked, err := s.store.PairingLinkByTokenHash(digest[:])
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
 		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, "")
 		return Redemption{}, ReasonUnknownCredential
+	}
+	if err != nil {
+		log.Printf("identity: read pairing link: %v", err)
+		return Redemption{}, ReasonTemporarilyUnavailable
 	}
 	if checked.Purpose != "" && enrollment.kind != ProofSignedKey {
 		s.auditPairingRefusal(ReasonMissingProof, req.Peer, checked.ID)
@@ -338,75 +370,101 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		s.auditPairingRefusal(ReasonKeyMismatch, req.Peer, checked.ID)
 		return Redemption{}, ReasonKeyMismatch
 	}
-	if checked.Purpose == "own-introduction" && !s.ownIntroductionLive(checked) {
+	if checked.Purpose == "own-introduction" {
+		live, err := s.ownIntroductionLive(checked)
+		if err != nil {
+			log.Printf("identity: read the members of own introduction %s: %v", checked.ID, err)
+			return Redemption{}, ReasonTemporarilyUnavailable
+		}
+		if !live {
+			s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, checked.ID)
+			return Redemption{}, ReasonUnknownCredential
+		}
+	}
+	// The number depends only on the link and the key, so it is derived
+	// before anything is written: a redemption that commits is never then
+	// refused.
+	number, err := s.VerificationNumber(checked.ID, enrollment.thumbprint)
+	if err != nil {
+		log.Printf("identity: derive verification number for %s: %v", checked.ID, err)
+		return Redemption{}, ReasonTemporarilyUnavailable
+	}
+
+	// The spend and everything it produces run inside the pairing gate, from
+	// its check to the last commit: a link the gate refuses (a computer
+	// pairing window's invitation whose window is gone) is never spent, and
+	// a retirement of the link waits for a redemption already admitted.
+	var out Redemption
+	reason = ReasonNone
+	err = s.admitPairing(checked.ID, checked.Bootstrap, func() error {
+		out, reason = s.redeemSpending(req, digest[:], enrollment, now)
+		return nil
+	})
+	if errors.Is(err, ErrPairingRefused) {
 		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, checked.ID)
 		return Redemption{}, ReasonUnknownCredential
 	}
+	if err != nil {
+		log.Printf("identity: redeem pairing link %s: %v", checked.ID, err)
+		return Redemption{}, ReasonTemporarilyUnavailable
+	}
+	if reason.Refused() {
+		return Redemption{}, reason
+	}
+	out.VerificationNumber = number
+	return out, ReasonNone
+}
 
+// redeemSpending spends the link and writes what its redemption produced,
+// inside the pairing gate (RedeemPairing).
+func (s *Sessions) redeemSpending(req RedemptionRequest, digest []byte, enrollment deviceEnrollment, now int64) (Redemption, Reason) {
 	// Spend the link FIRST. Everything after this point can still refuse
 	// the redemption, and a refusal settles the link (cancelRedeemedLink)
 	// rather than releasing it — a link that could be freed by a failed
 	// redemption would be one a second presentation gets another turn at,
 	// which is exactly what single-use forbids.
-	pending, err := s.store.RedeemPairingLink(digest[:], now, enrollment.thumbprint)
+	pending, err := s.store.RedeemPairingLink(digest, now, enrollment.thumbprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, "")
 		return Redemption{}, ReasonUnknownCredential
 	}
 	if err != nil {
+		// One statement: a failure spent nothing.
 		log.Printf("identity: redeem pairing link: %v", err)
-		return Redemption{}, ReasonUnknownCredential
+		return Redemption{}, ReasonTemporarilyUnavailable
 	}
 
-	device, reason := s.resolveRedeemingDevice(pending, req, enrollment)
+	device, newDevice, reason := s.resolveDevice(pending.UserID, DeviceClass(pending.DeviceClass), req.Label, req.Platform, enrollment)
 	if reason.Refused() {
-		s.cancelRedeemedLink(pending.ID)
+		s.cancelRedeemedLink(pending, "", false)
 		s.auditPairingRefusal(reason, req.Peer, pending.ID)
 		return Redemption{}, reason
 	}
 
-	session, tokens, err := s.mintPendingSession(pending, device, now)
+	// The link names what it produced before the device is told the
+	// redemption worked: the device row, the session, its refresh secret,
+	// the link's record of them and, for an own-device introduction that no
+	// owner confirms, the confirmation commit together or not at all. A
+	// failure here leaves none of them, and the spent link is settled so
+	// nothing can present it again.
+	session, tokens, err := s.mintRedemptionSession(pending, device, newDevice, now)
 	if err != nil {
 		log.Printf("identity: mint pairing session for link %s: %v", pending.ID, err)
-		s.cancelRedeemedLink(pending.ID)
+		// An introduction whose membership was refused is recorded as the
+		// cancellation it is, with the device it would have admitted.
+		s.cancelRedeemedLink(pending, device.ID, errors.Is(err, store.ErrPairingIncomplete))
 		return Redemption{}, ReasonUnknownCredential
-	}
-	// The link must NAME what it produced before the device is told the
-	// redemption worked: confirmation activates `link.session_id`, so a
-	// link that reached this point without one is a pairing nothing could
-	// ever complete. Fail it here, where the device learns to start over,
-	// rather than at a confirmation the owner cannot explain.
-	if err := s.store.AttachPairingRedemption(pending.ID, device.ID, session.ID); err != nil {
-		log.Printf("identity: attach pairing redemption %s: %v", pending.ID, err)
-		if _, revokeErr := s.RevokeSession(session.ID); revokeErr != nil {
-			log.Printf("identity: revoke unattached pairing session %s: %v", session.ID, revokeErr)
-		}
-		s.cancelRedeemedLink(pending.ID)
-		return Redemption{}, ReasonUnknownCredential
-	}
-	if pending.Purpose == "own-introduction" {
-		if _, err := s.confirmPairing(pending.ID); err != nil {
-			s.RevokeSession(session.ID)
-			return Redemption{}, ReasonUnknownCredential
-		}
-		tokens.AwaitingConfirmation = false
 	}
 
-	number, err := s.VerificationNumber(pending.ID, enrollment.thumbprint)
-	if err != nil {
-		log.Printf("identity: derive verification number for %s: %v", pending.ID, err)
-		return Redemption{}, ReasonUnknownCredential
-	}
 	s.audit(store.AuthAuditEntry{
 		Event: string(AuditPairingRedeemed), Outcome: store.AuthAuditOutcomeAllowed,
 		UserID: pending.UserID, DeviceID: device.ID, SessionID: session.ID, Peer: req.Peer,
 		Detail: pending.ID,
 	})
 	return Redemption{
-		PairingID:          pending.ID,
-		DeviceID:           device.ID,
-		Tokens:             tokens,
-		VerificationNumber: number,
+		PairingID: pending.ID,
+		DeviceID:  device.ID,
+		Tokens:    tokens,
 	}, ReasonNone
 }
 
@@ -450,13 +508,17 @@ func (s *Sessions) enrollmentFor(presented DeviceProof) (deviceEnrollment, Reaso
 	return deviceEnrollment{thumbprint: parsed.thumbprint, kind: ProofSignedKey}, ReasonNone
 }
 
-// resolveRedeemingDevice finds or creates the device row for a presented
-// key. See RedeemPairing for why an existing key is adopted and a revoked
-// one is refused.
-func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req RedemptionRequest, enrollment deviceEnrollment) (store.Device, Reason) {
-	label := strings.TrimSpace(req.Label)
+// resolveDevice finds the device row for a presented key, relabeled to what
+// the device now reports, or builds a new one of class for userID; newDevice
+// says which. It writes nothing: the row is written with the session it was
+// resolved for (newDeviceSession). Pairing redemption and passkey sign-in
+// both resolve here, so one rule answers "is this the same device". See
+// RedeemPairing for why an existing key is adopted and a revoked one is
+// refused.
+func (s *Sessions) resolveDevice(userID string, class DeviceClass, label, platform string, enrollment deviceEnrollment) (device store.Device, newDevice bool, reason Reason) {
+	label = strings.TrimSpace(label)
 	if label == "" {
-		label = defaultDeviceLabel(DeviceClass(link.DeviceClass))
+		label = defaultDeviceLabel(class)
 	}
 	existing, err := s.store.DeviceByKeyThumbprint(enrollment.thumbprint)
 	switch {
@@ -471,73 +533,128 @@ func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req Redemption
 			// rows. The other direction cannot occur: a key thumbprint is
 			// the hash of a public key, so a bearer row's opaque
 			// identifier does not collide with one.
-			return store.Device{}, ReasonProofDowngraded
+			return store.Device{}, false, ReasonProofDowngraded
 		}
 		if existing.RevokedAt != 0 {
 			// The owner withdrew this device; a fresh link must not undo
 			// that by itself. The reason names the remedy: restore the
 			// device on the owner surface, then redeem a NEW link.
-			return store.Device{}, ReasonRevokedDevice
+			return store.Device{}, false, ReasonRevokedDevice
 		}
-		if existing.UserID != link.UserID {
-			return store.Device{}, ReasonKeyMismatch
+		if existing.UserID != userID {
+			return store.Device{}, false, ReasonKeyMismatch
 		}
-		if err := s.store.RelabelDevice(existing.ID, label, req.Platform); err != nil {
-			log.Printf("identity: relabel device %s: %v", existing.ID, err)
-		}
-		existing.Label, existing.Platform = label, req.Platform
-		return existing, ReasonNone
+		existing.Label, existing.Platform = label, platform
+		return existing, false, ReasonNone
 	case !errors.Is(err, sql.ErrNoRows):
 		log.Printf("identity: read device by thumbprint: %v", err)
-		return store.Device{}, ReasonKeyMismatch
+		return store.Device{}, false, ReasonKeyMismatch
 	}
-	device, err := s.store.CreatePairedDevice(
-		link.UserID, label, link.DeviceClass, req.Platform,
+	device, err = store.NewPairedDevice(
+		userID, label, string(class), platform,
 		enrollment.thumbprint, string(enrollment.kind))
 	if err != nil {
-		log.Printf("identity: create paired device: %v", err)
-		return store.Device{}, ReasonKeyMismatch
+		log.Printf("identity: build device: %v", err)
+		return store.Device{}, false, ReasonKeyMismatch
 	}
-	return device, ReasonNone
+	return device, true, ReasonNone
 }
 
-// mintPendingSession issues the unactivated session and its first
-// credential pair. The window is the confirmation window, not the device
-// class's access TTL: an unconfirmed credential must not outlive the
-// decision it is waiting on. Confirm replaces it with the real one.
-func (s *Sessions) mintPendingSession(link store.PairingLink, device store.Device, now int64) (store.Session, TokenSet, error) {
+// newDeviceSession builds the session req describes on device and its first
+// credential pair, for the caller to write together with the device row
+// (store.DeviceSession) before it hands the pair out, so a device never
+// holds an access credential whose renewal row does not exist.
+func (s *Sessions) newDeviceSession(req MintRequest, device store.Device, newDevice bool, now int64) (store.DeviceSession, TokenSet, error) {
+	session, err := s.newSession(req, device.ID)
+	if err != nil {
+		return store.DeviceSession{}, TokenSet{}, err
+	}
+	tokens, grant, err := s.newTokens(session, device, now)
+	if err != nil {
+		return store.DeviceSession{}, TokenSet{}, err
+	}
+	return store.DeviceSession{Device: device, NewDevice: newDevice, Session: session, Refresh: grant}, tokens, nil
+}
+
+// mintRedemptionSession issues the unactivated session and its first
+// credential pair, written with the device row (created or relabeled) and
+// the link that names them in one store transaction. The window is the
+// confirmation window, not the device class's access TTL: an unconfirmed
+// credential must not outlive the decision it is waiting on. Confirm
+// replaces it with the real one.
+//
+// An own-device introduction has no owner to confirm it, so the same
+// transaction confirms it: the session is activated with the device class's
+// access window and the membership admitted.
+func (s *Sessions) mintRedemptionSession(link store.PairingLink, device store.Device, newDevice bool, now int64) (store.Session, TokenSet, error) {
 	scopes := make([]Scope, 0, len(link.Scopes))
 	for _, name := range link.Scopes {
 		scopes = append(scopes, Scope(name))
 	}
-	session, _, err := s.Mint(MintRequest{
+	written, tokens, err := s.newDeviceSession(MintRequest{
 		UserID:            link.UserID,
-		DeviceID:          device.ID,
 		BindingClass:      BindingClass(link.BindingClass),
 		Scopes:            scopes,
 		TTL:               PairingConfirmWindow,
 		AwaitConfirmation: true,
-	})
+	}, device, newDevice, now)
 	if err != nil {
 		return store.Session{}, TokenSet{}, err
 	}
-	// Mint's own credential is discarded: it carries no refresh secret,
-	// and issuing the pair through one path keeps a device from ever
-	// holding an access credential whose renewal row does not exist.
-	tokens, err := s.issueFor(session, device, now)
-	if err != nil {
+	redemption := store.PairingRedemption{LinkID: link.ID, DeviceSession: written}
+	introduction := link.Purpose == "own-introduction"
+	if introduction {
+		redemption.ConfirmedAt = now
+		redemption.AccessExpiresAt = now + RenewablePolicyFor(DeviceClass(device.Class)).Access.Milliseconds()
+	}
+	if err := s.store.CompletePairingRedemption(redemption); err != nil {
 		return store.Session{}, TokenSet{}, err
 	}
-	return session, tokens, nil
+	s.auditMinted(written.Session)
+	if introduction {
+		tokens.AwaitingConfirmation = false
+		s.auditPairing(AuditPairingConfirmed, link.UserID, device.ID, written.Session.ID, link.ID)
+	}
+	return written.Session, tokens, nil
 }
 
 // cancelRedeemedLink settles a link whose redemption could not complete, so
-// the spent link cannot be presented again by anything.
-func (s *Sessions) cancelRedeemedLink(linkID string) {
-	if _, err := s.store.CancelPairingLink(linkID, s.now().UnixMilli()); err != nil &&
-		!errors.Is(err, sql.ErrNoRows) {
-		log.Printf("identity: cancel pairing link %s: %v", linkID, err)
+// the spent link cannot be presented again by anything. With record set, a
+// cancellation this call committed is audited as the owner-visible
+// cancellation of deviceID's pairing; one another path settled first is
+// that path's to record. A cancellation that fails is audited as refused,
+// so the access audit shows a spent link left unsettled.
+func (s *Sessions) cancelRedeemedLink(link store.PairingLink, deviceID string, record bool) {
+	_, err := s.cancelLink(link.ID)
+	switch {
+	case errors.Is(err, ErrPairingRefused):
+	case err != nil:
+		log.Printf("identity: cancel pairing link %s: %v", link.ID, err)
+		s.audit(store.AuthAuditEntry{
+			Event: string(AuditPairingCanceled), Outcome: store.AuthAuditOutcomeRefused,
+			Reason: ReasonTemporarilyUnavailable.Code(), UserID: link.UserID, DeviceID: deviceID,
+			Detail: link.ID + ": the spent link could not be canceled: " + err.Error(),
+		})
+	case record:
+		s.auditPairing(AuditPairingCanceled, link.UserID, deviceID, "", link.ID)
 	}
+}
+
+// cancelLink ends a link and its redemption's pending session in one store
+// transaction, then tears down what the revocation ended at runtime. Only
+// a committed cancellation reaches the teardown.
+func (s *Sessions) cancelLink(linkID string) (store.PairingLink, error) {
+	canceled, err := s.store.CancelPairingLink(linkID, s.now().UnixMilli())
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.PairingLink{}, ErrPairingRefused
+	}
+	if err != nil {
+		return store.PairingLink{}, err
+	}
+	if canceled.Link.SessionID != "" {
+		s.sessionRevoked(canceled.Link.SessionID, canceled.SessionRevoked, canceled.Released)
+	}
+	return canceled.Link, nil
 }
 
 // ConfirmPairing activates the session a redemption created, after the
@@ -554,98 +671,116 @@ func (s *Sessions) ConfirmPairing(linkID string) (store.PairingLink, error) {
 	defer s.ownMu.Unlock()
 	return s.confirmPairing(linkID)
 }
+
+// confirmPairing is ConfirmPairing with ownMu held.
+//
+// The confirmation, the session's activation and a personal pairing's
+// membership commit together (store.ConfirmRedeemedPairing). A session that
+// can no longer be activated, because it or its device was revoked or it
+// lapsed, or a membership no longer admissible, cancels the link and
+// revokes the session instead and answers ErrPairingNotCompleted. A
+// storage failure changes nothing, so the owner can try again. The write runs
+// inside the pairing gate, and a link the gate refuses answers
+// ErrPairingRefused with nothing written. A link an earlier confirmation
+// admitted answers ErrPairingAlreadyConfirmed while its device can use its
+// access, and ErrPairingAccessEnded or ErrPairingDeviceRemoved once it
+// cannot, as the store decides (store.PairingAccessOf); a gate refusal asks
+// the store the same question.
 func (s *Sessions) confirmPairing(linkID string) (store.PairingLink, error) {
-	if e := s.store.PrepareOwnPairing(linkID); e != nil {
-		return store.PairingLink{}, e
-	}
-	now := s.now().UnixMilli()
-	link, err := s.store.ConfirmPairingLink(linkID, now)
+	var confirmation store.PairingConfirmation
+	// The mark is written at mint and never changes, so it is read here,
+	// before the gate.
+	marked, err := s.store.GetPairingLink(linkID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.PairingLink{}, ErrPairingRefused
 	}
 	if err != nil {
 		return store.PairingLink{}, err
 	}
-	device, err := s.store.GetDevice(link.DeviceID)
-	if err != nil {
-		return store.PairingLink{}, fmt.Errorf("identity: confirm pairing: read device: %w", err)
+	if gated := s.admitPairing(linkID, marked.Bootstrap, func() error {
+		now := s.now().UnixMilli()
+		confirmation, err = s.store.ConfirmRedeemedPairing(linkID, now, func(class string) int64 {
+			return now + RenewablePolicyFor(DeviceClass(class)).Access.Milliseconds()
+		})
+		return nil
+	}); gated != nil {
+		if !errors.Is(gated, ErrPairingRefused) {
+			return store.PairingLink{}, gated
+		}
+		access, err := s.store.PairingAccessOf(linkID, s.now().UnixMilli())
+		if err != nil {
+			return store.PairingLink{}, err
+		}
+		switch access {
+		case store.PairingNotConfirmed:
+			return store.PairingLink{}, gated
+		case store.PairingUsable:
+			return store.PairingLink{}, ErrPairingAlreadyConfirmed
+		case store.PairingAccessEnded:
+			return store.PairingLink{}, ErrPairingAccessEnded
+		case store.PairingDeviceRemoved:
+			return store.PairingLink{}, ErrPairingDeviceRemoved
+		}
+		return store.PairingLink{}, fmt.Errorf("identity: unknown pairing access %d", access)
 	}
-	policy := RenewablePolicyFor(DeviceClass(device.Class))
-	moved, err := s.store.ActivateSession(link.SessionID, now, now+policy.Access.Milliseconds())
-	if err != nil {
-		return store.PairingLink{}, err
-	}
-	if !moved {
-		// The session was revoked or expired between redemption and
-		// confirmation, or its DEVICE was — ActivateSession's predicate
-		// covers all three, so a confirmation cannot turn an inert row into
-		// a live credential for a device the owner withdrew in the
-		// meantime. The link is settled either way; say so rather than
-		// reporting a pairing that admits nothing as complete.
+	switch {
+	case errors.Is(err, store.ErrPairingAlreadyConfirmed):
+		return store.PairingLink{}, ErrPairingAlreadyConfirmed
+	case errors.Is(err, store.ErrPairingAccessEnded):
+		return store.PairingLink{}, ErrPairingAccessEnded
+	case errors.Is(err, store.ErrPairingDeviceRemoved):
+		return store.PairingLink{}, ErrPairingDeviceRemoved
+	case errors.Is(err, sql.ErrNoRows):
 		return store.PairingLink{}, ErrPairingRefused
-	}
-	if err := s.store.AdmitOwnPairing(link); err != nil {
-		s.RevokeSession(link.SessionID)
+	case errors.Is(err, store.ErrPairingIncomplete):
+		canceled := confirmation.Canceled
+		s.sessionRevoked(canceled.Link.SessionID, canceled.SessionRevoked, canceled.Released)
+		s.auditPairing(AuditPairingCanceled, canceled.Link.UserID, canceled.Link.DeviceID, canceled.Link.SessionID, canceled.Link.ID)
+		return store.PairingLink{}, fmt.Errorf("%w: %v", ErrPairingNotCompleted, err)
+	case err != nil:
 		return store.PairingLink{}, err
 	}
-
-	s.audit(store.AuthAuditEntry{
-		Event: string(AuditPairingConfirmed), Outcome: store.AuthAuditOutcomeAllowed,
-		UserID: link.UserID, DeviceID: link.DeviceID, SessionID: link.SessionID,
-		Detail: link.ID,
-	})
+	link := confirmation.Link
+	s.auditPairing(AuditPairingConfirmed, link.UserID, link.DeviceID, link.SessionID, link.ID)
 	return link, nil
+}
+
+// auditPairing records an owner-side decision on a pairing link.
+func (s *Sessions) auditPairing(event AuditEvent, userID, deviceID, sessionID, linkID string) {
+	s.audit(store.AuthAuditEntry{
+		Event: string(event), Outcome: store.AuthAuditOutcomeAllowed,
+		UserID: userID, DeviceID: deviceID, SessionID: sessionID,
+		Detail: linkID,
+	})
 }
 
 // CancelPairing refuses a link — the verification number did not match, or
 // it was minted by mistake — and revokes whatever a redemption already
 // created.
 //
-// Revoking after cancelling, in that order, for the same reason
-// RevokeSession orders its own three steps: the link must stop admitting
-// anything before the session it created is torn down, or a redemption in
-// flight could mint a second one behind the teardown.
+// The link and its pending session end in one transaction, so a failure
+// leaves both for a retry and an answer of ErrPairingRefused means both
+// are settled. The link stops admitting anything in the same commit that
+// revokes the session it created, so no redemption in flight can mint a
+// second one behind the teardown.
 func (s *Sessions) CancelPairing(linkID string) (store.PairingLink, error) {
-	link, err := s.store.CancelPairingLink(linkID, s.now().UnixMilli())
-	if errors.Is(err, sql.ErrNoRows) {
-		return store.PairingLink{}, ErrPairingRefused
-	}
+	link, err := s.cancelLink(linkID)
 	if err != nil {
 		return store.PairingLink{}, err
 	}
-	if link.SessionID != "" {
-		if _, err := s.RevokeSession(link.SessionID); err != nil {
-			return store.PairingLink{}, err
-		}
-	}
-	s.audit(store.AuthAuditEntry{
-		Event: string(AuditPairingCanceled), Outcome: store.AuthAuditOutcomeAllowed,
-		UserID: link.UserID, DeviceID: link.DeviceID, SessionID: link.SessionID,
-		Detail: link.ID,
-	})
+	s.auditPairing(AuditPairingCanceled, link.UserID, link.DeviceID, link.SessionID, link.ID)
 	return link, nil
 }
 
-// PairingStatus reads one link, for the minting surface to poll while it
+// PairingLink reads one link, for the minting surface to poll while it
 // waits for a device to redeem. It carries no secret: the token is not
-// stored, and the verification number is derived on demand from the
-// thumbprint the redemption recorded.
-func (s *Sessions) PairingStatus(linkID string) (store.PairingLink, string, error) {
+// stored. ErrPairingRefused when no such link exists.
+func (s *Sessions) PairingLink(linkID string) (store.PairingLink, error) {
 	link, err := s.store.GetPairingLink(linkID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return store.PairingLink{}, "", ErrPairingRefused
+		return store.PairingLink{}, ErrPairingRefused
 	}
-	if err != nil {
-		return store.PairingLink{}, "", err
-	}
-	if !link.Redeemed() {
-		return link, "", nil
-	}
-	number, err := s.VerificationNumber(link.ID, link.KeyThumbprint)
-	if err != nil {
-		return store.PairingLink{}, "", err
-	}
-	return link, number, nil
+	return link, err
 }
 
 // VerificationNumber derives the digits the owner compares between the two

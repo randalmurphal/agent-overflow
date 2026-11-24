@@ -44,6 +44,10 @@ const refreshHashDomain = "agent-overflow/refresh-secret/v1\x00"
 // from a teardown.
 const reuseDetectedDetail = "reuse-detected"
 
+// errRenewalNotReady is what a renewal whose new credential cannot be signed
+// hands the rotation, which refuses with it where it would have committed.
+var errRenewalNotReady = errors.New("identity: the renewal's credential cannot be signed")
+
 // TokenSet is one issuance: the short-lived access credential and the
 // single-use secret that renews it.
 //
@@ -151,10 +155,9 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 	}
 	if !recoverable {
 		if held.Spent() {
-			s.revokeFamilyForReuse(held, req.Peer)
-			return TokenSet{}, ReasonRevokedSession
+			return s.revokeFamilyForReuse(held, req.Peer)
 		}
-		if held.ExpiresAt <= now {
+		if held.Expired(now) {
 			s.audit(store.AuthAuditEntry{Event: string(AuditRefreshRefused), Outcome: store.AuthAuditOutcomeRefused, Reason: ReasonExpiredSession.Code(), SessionID: held.SessionID, Peer: req.Peer})
 			return TokenSet{}, ReasonExpiredSession
 		}
@@ -170,16 +173,35 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 	if session.BindingClass == string(BindingLoopbackOnly) {
 		return TokenSet{}, ReasonMalformedProof
 	}
+	// Everything the new credential needs is resolved before the rotation
+	// commits: a rotation that committed and then failed to sign would leave
+	// the device holding a spent secret, which its next renewal presents as
+	// reuse. A signer that is not ready does not decide the answer, though:
+	// the rotation still classifies the presentation (reuse, superseded,
+	// expired) and refuses with the signer's failure only where it would
+	// have committed.
+	signer, signErr := s.accessSignerFor(session, device)
+	var notReady error
+	if signErr != nil {
+		notReady = errRenewalNotReady
+	}
 	policy := RenewablePolicyFor(DeviceClass(device.Class))
 	generation := s.generationNow()
 	rotated, err := s.store.RotateRefreshSecret(context.Background(), store.RefreshRotation{
 		SessionID: session.ID, DeviceID: session.DeviceID, OldHash: digest[:], NextHash: nextDigest[:],
 		Now: now, AccessUntil: now + policy.Access.Milliseconds(), RefreshUntil: now + policy.Refresh.Milliseconds(), Recoverable: recoverable,
+		NotReady: notReady,
 	})
 	switch {
+	case errors.Is(err, errRenewalNotReady):
+		if errors.Is(signErr, store.ErrDeviceRevoked) {
+			if _, reason := s.confirmedSession(session.ID, now); reason.Refused() {
+				return TokenSet{}, reason
+			}
+		}
+		return s.refreshUnavailable("prepare renewal", signErr)
 	case errors.Is(err, store.ErrRefreshReuse):
-		s.revokeFamilyForReuse(held, req.Peer)
-		return TokenSet{}, ReasonRevokedSession
+		return s.revokeFamilyForReuse(held, req.Peer)
 	case errors.Is(err, store.ErrRefreshSuperseded):
 		return TokenSet{}, ReasonRefreshSuperseded
 	case errors.Is(err, store.ErrRefreshSuccessorTaken):
@@ -196,10 +218,7 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 		return s.refreshUnavailable("commit renewal", err)
 	}
 	s.rememberAt(generation, rotated.Session)
-	tokens, err := s.accessTokensFor(rotated.Session, device, now)
-	if err != nil {
-		return s.refreshUnavailable("sign renewal", err)
-	}
+	tokens := signer.signAccess(rotated.Session, now)
 	tokens.RefreshSecret = nextSecret
 	tokens.RefreshExpiresAtMillis = rotated.Secret.ExpiresAt
 	if !rotated.Replayed {
@@ -214,21 +233,24 @@ func (s *Sessions) refreshUnavailable(step string, err error) (TokenSet, Reason)
 	return TokenSet{}, ReasonTemporarilyUnavailable
 }
 
-func (s *Sessions) revokeFamilyForReuse(secret store.RefreshSecret, peer string) {
-	now := s.now().UnixMilli()
-	outstanding, err := s.store.SpendRefreshSecretsForSession(secret.SessionID, now, reuseDetectedDetail)
+// revokeFamilyForReuse answers a detected reuse: the family's outstanding
+// secrets are spent and its session revoked in one store transaction, and
+// only a committed end is audited and torn down at runtime. A storage
+// failure answers temporarily unavailable and changes nothing, so the next
+// presentation of the same spent secret detects the reuse again.
+func (s *Sessions) revokeFamilyForReuse(secret store.RefreshSecret, peer string) (TokenSet, Reason) {
+	ended, err := s.store.EndRefreshFamily(secret.SessionID, s.now().UnixMilli(), reuseDetectedDetail)
 	if err != nil {
-		log.Printf("identity: spend refresh family %s: %v", secret.SessionID, err)
+		return s.refreshUnavailable("end the refresh family of session "+secret.SessionID+" after reuse", err)
 	}
-	if _, err := s.RevokeSession(secret.SessionID); err != nil {
-		log.Printf("identity: revoke session %s after refresh reuse: %v", secret.SessionID, err)
-	}
+	s.sessionRevoked(secret.SessionID, ended.Revoked, ended.Released)
 	s.audit(store.AuthAuditEntry{
 		Event: string(AuditRefreshReuseDetected), Outcome: store.AuthAuditOutcomeRefused,
 		Reason: ReasonRevokedSession.Code(), SessionID: secret.SessionID, Peer: peer,
 		Detail: fmt.Sprintf("spent secret %s presented again; %d outstanding secrets invalidated",
-			secret.ID, outstanding),
+			secret.ID, ended.Outstanding),
 	})
+	return TokenSet{}, ReasonRevokedSession
 }
 
 // CheckDeviceProof enforces "refresh binds to the device key on every
@@ -344,79 +366,88 @@ func (s *Sessions) verifyDeviceProof(thumbprint string, presented DeviceProof) R
 	return s.admitProof(parsed, presented)
 }
 
-// issueFor signs the access credential for a session row and, when the
-// policy is renewable, mints the next refresh secret.
+// newTokens signs session's credential pair and returns the refresh secret
+// the caller must write, together with the session (newDeviceSession), before
+// handing the pair out. A device class that does not renew gets no secret
+// and a zero grant.
 //
-// The refresh secret is written BEFORE the credential is returned, so a
-// device never holds a credential whose renewal path does not exist yet.
+// It is the ONE function in this package that builds a first TokenSet,
+// which is what makes it the place the device half of the conjunction is
+// enforced at issuance (docs/specs/remote-access.md §2). Two consequences of
+// that shape are deliberate:
 //
-// It is the ONE function in this package that builds a TokenSet, which is
-// what makes it the place the device half of the conjunction is enforced
-// at issuance (docs/specs/remote-access.md §2). Two consequences of that
-// shape are deliberate:
-//
-//   - it takes the DEVICE ROW, not a policy. Every caller derived the
-//     policy from the same two values anyway, and passing the row means a
-//     caller cannot hand this function a policy from one device and a
-//     session from another — nor issue without having read a device at all.
+//   - it takes the DEVICE ROW, not a policy. Passing the row means a caller
+//     cannot hand this function a policy from one device and a session from
+//     another, nor issue without having read a device at all.
 //   - the refusal is hygiene, not the enforcement. A revocation can land
 //     the instant after this check, so what actually makes such a
 //     credential worthless is that every consult re-asks (Sessions.Live).
 //     Refusing here is what stops one being HANDED OUT in the first place.
-func (s *Sessions) issueFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
+func (s *Sessions) newTokens(session store.Session, device store.Device, now int64) (TokenSet, store.RefreshGrant, error) {
 	if session.BindingClass == string(BindingLoopbackOnly) {
-		return TokenSet{}, fmt.Errorf("identity: local sessions cannot issue renewable credentials")
+		return TokenSet{}, store.RefreshGrant{}, fmt.Errorf("identity: local sessions cannot issue renewable credentials")
 	}
-	tokens, err := s.accessTokensFor(session, device, now)
+	signer, err := s.accessSignerFor(session, device)
 	if err != nil {
-		return TokenSet{}, err
+		return TokenSet{}, store.RefreshGrant{}, err
 	}
+	tokens := signer.signAccess(session, now)
 	policy := RenewablePolicyFor(DeviceClass(device.Class))
 	if !policy.Renewable() {
-		return tokens, nil
+		return tokens, store.RefreshGrant{}, nil
 	}
 	secret, digest, err := newRefreshSecret()
 	if err != nil {
-		return TokenSet{}, err
+		return TokenSet{}, store.RefreshGrant{}, err
 	}
 	refreshExpiry := now + policy.Refresh.Milliseconds()
-	if _, err := s.store.CreateRefreshSecret(session.ID, digest[:], now, refreshExpiry); err != nil {
-		return TokenSet{}, err
-	}
 	tokens.RefreshSecret = secret
 	tokens.RefreshExpiresAtMillis = refreshExpiry
-	return tokens, nil
+	return tokens, store.RefreshGrant{Hash: digest[:], CreatedAt: now, ExpiresAt: refreshExpiry}, nil
 }
 
-// accessTokensFor signs the access half for already persisted session state.
-func (s *Sessions) accessTokensFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
+// accessSigner signs one session's access credentials. accessSignerFor runs
+// every check and read the signing needs, so a caller that must not move
+// anything durable before the credential exists (Refresh) resolves it first
+// and signs after, with nothing left to fail.
+type accessSigner struct {
+	payload   [claimsPayloadLen]byte
+	secret    []byte
+	backendID string
+}
+
+func (s *Sessions) accessSignerFor(session store.Session, device store.Device) (accessSigner, error) {
 	if session.ProcessBound() {
-		return TokenSet{}, fmt.Errorf("identity: process-bound sessions cannot issue timed claims")
+		return accessSigner{}, fmt.Errorf("identity: process-bound sessions cannot issue timed claims")
 	}
 	if device.RevokedAt != 0 {
-		return TokenSet{}, fmt.Errorf("identity: issue for session %s: %w",
+		return accessSigner{}, fmt.Errorf("identity: issue for session %s: %w",
 			session.ID, store.ErrDeviceRevoked)
 	}
 	key, err := s.signingKeyByID(session.SigningKeyID)
 	if err != nil {
-		return TokenSet{}, err
+		return accessSigner{}, err
 	}
-	credential, err := signClaims(Claims{
-		KeyID:     key.ID,
-		SessionID: session.ID,
-		IssuedAt:  now,
-		ExpiresAt: session.ExpiresAt,
-	}, key.Secret.Reveal(), s.backendID)
+	payload, err := encodeClaims(Claims{KeyID: key.ID, SessionID: session.ID})
 	if err != nil {
-		return TokenSet{}, err
+		return accessSigner{}, err
 	}
+	return accessSigner{payload: payload, secret: key.Secret.Reveal(), backendID: s.backendID}, nil
+}
+
+// signAccess signs session's access credential issued at now, valid until the
+// session's expiry. session is the row the signer was resolved for, as it
+// stands after any write that moved its expiry.
+func (a accessSigner) signAccess(session store.Session, now int64) TokenSet {
+	payload := a.payload
+	stampClaimsWindow(&payload, now, session.ExpiresAt)
 	return TokenSet{
 		SessionID:            session.ID,
-		Credential:           credential,
+		Credential:           renderClaims(payload, a.secret, a.backendID),
 		ExpiresAtMillis:      session.ExpiresAt,
 		AwaitingConfirmation: session.AwaitingConfirmation(),
 		Scopes:               session.Scopes,
-	}, nil
+	}
 }
 
 // signingKeyByID resolves a key row through the same cache Verify uses,

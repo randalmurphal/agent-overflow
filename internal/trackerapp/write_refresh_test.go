@@ -83,7 +83,7 @@ func TestARefreshReadsEveryResourceKind(t *testing.T) {
 	}
 	stored := cs.take()
 	wantStore := map[string]int{"ReadMirrorRefreshTargets": 1, "ReplaceMirrorStructure": 1, "WriteMirrorRows": 2,
-		"UpsertMirrorCards": 1, "StoreMirrorDetails": 1, "ReplaceMirrorWorklogs": 2, "ListMirrorCards": 1, "GetMirrorCatalog": 1}
+		"UpsertMirrorCards": 1, "StoreMirrorTickets": 1, "ReplaceMirrorWorklogs": 2, "ListMirrorCards": 1, "GetMirrorCatalog": 1}
 	if !maps.Equal(stored, wantStore) {
 		t.Errorf("store calls %s, want %s", describeCounts(stored), describeCounts(wantStore))
 	}
@@ -168,7 +168,7 @@ func TestRefreshTargetsReadWhatEachResourceNeeds(t *testing.T) {
 	if got := ts.takeRead(); !slices.Equal(got, []string{"rows 2 kept 1 details 1 boards 0"}) {
 		t.Errorf("an edit's targets: %v", got)
 	}
-	if got := describeCounts(ts.take()); got != "ReadMirrorRefreshTargets:2 StoreMirrorDetails:2 WriteMirrorRows:2" {
+	if got := describeCounts(ts.take()); got != "ReadMirrorRefreshTargets:2 StoreMirrorTickets:2 WriteMirrorRows:2" {
 		t.Errorf("store calls %s", got)
 	}
 }
@@ -227,14 +227,14 @@ func TestWriteCosts(t *testing.T) {
 			func() (WriteView, error) {
 				return f.svc.AddComment(ctx, id, CommentRequest{Issue: "10002", Markdown: "New comment"})
 			}),
-			costOf{map[string]int{"AddComment": 1, "Details": 1}, map[string]int{"ReadMirrorRefreshTargets": 1, "StoreMirrorDetails": 1}}},
+			costOf{map[string]int{"AddComment": 1, "Details": 1}, map[string]int{"ReadMirrorRefreshTargets": 1, "StoreMirrorTickets": 1}}},
 		{"comment on an open ticket", write(tracker.Result{Parts: []tracker.Part{appliedPart("10003", tracker.StepComment, tracker.DetailOf("10003"))}},
 			func() { f.state.comment("10003", "New comment") },
 			func() (WriteView, error) {
 				return f.svc.AddComment(ctx, id, CommentRequest{Issue: "10003", Markdown: "New comment"})
 			}),
 			costOf{map[string]int{"AddComment": 1, "Details": 1},
-				map[string]int{"ReadMirrorRefreshTargets": 1, "StoreMirrorDetails": 1, "ListMirrorCards": 1, "GetMirrorCatalog": 1}}},
+				map[string]int{"ReadMirrorRefreshTargets": 1, "StoreMirrorTickets": 1, "ListMirrorCards": 1, "GetMirrorCatalog": 1}}},
 		{"comment on an issue neither open nor cached", write(tracker.Result{Parts: []tracker.Part{appliedPart("10001", tracker.StepComment, tracker.DetailOf("10001"))}}, nil,
 			func() (WriteView, error) {
 				return f.svc.AddComment(ctx, id, CommentRequest{Issue: "10001", Markdown: "New comment"})
@@ -263,4 +263,29 @@ func TestWriteCosts(t *testing.T) {
 			}),
 			costOf{map[string]int{"Create": 1, "ChangedRows": 1}, map[string]int{"GetMirrorSync": 1, "WriteMirrorRowPage": 1, "RecordMirrorSyncAttempt": 1}}},
 	})
+}
+
+// A refresh of an open ticket whose bind the store refuses does not
+// refresh the ticket: the write reports its detail stale with the bind's
+// failure, which the tracker did not cause.
+func TestARefreshWhoseTicketBindFailsReportsItStale(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.refuseKeeps()
+	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10003"))
+	f.events.issueEvents(t, 1)
+	f.settledTickets(t)
+	f.answer(tracker.Result{Parts: []tracker.Part{appliedPart("10003", tracker.StepComment, tracker.DetailOf("10003"))}})
+	v, err := f.svc.AddComment(t.Context(), f.conn.ID, CommentRequest{Issue: "10003", Markdown: "New comment"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := slices.ContainsFunc(v.Stale, func(sv StaleView) bool {
+		return sv.Failure.Kind == string(FailureInternal) && slices.ContainsFunc(sv.Resources, func(r ResourceView) bool {
+			return r.Kind == "detail" && r.Issue == "10003"
+		})
+	})
+	if !stale {
+		t.Fatalf("the write after a refused bind = %+v; want the ticket's detail stale with the bind's failure", v)
+	}
 }

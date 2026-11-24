@@ -71,7 +71,7 @@ func accountProvider(t *testing.T, budget map[string]int) (*accountSite, tracker
 		t.Fatal(err)
 	}
 	t.Cleanup(c.Close)
-	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net"})
+	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net", SprintsFrom: allSprints})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestNewRowsUnderOneCredential(t *testing.T) {
 	s.on("POST", matchPath, func(string, *http.Request) string {
 		return `{"matches":[{"matchedIssues":[10005],"errors":[]},{"matchedIssues":[10005],"errors":[]}]}`
 	})
-	s.on("POST", bulkFetchPath, func(string, *http.Request) string { return page("", listedIssue("api/3")) })
+	s.on("POST", bulkFetchPath, func(string, *http.Request) string { return bulk(listedIssue("api/3")) })
 	got, err := p.NewRows(t.Context(), "10005", []tracker.BoardID{"3", "4"})
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestNewRowsUnderOneCredential(t *testing.T) {
 func TestBoardRowsUnderOneCredential(t *testing.T) {
 	// a answers the board, the catalog and the first rows.
 	_, p, ids := twoChunkRows(t, map[string]int{"a": 3})
-	rows, err := p.BoardRows(t.Context(), "3", ids)
+	rows, err := p.BoardRows(t.Context(), "3", ids, tracker.Eligibility{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestBoardRowsUnderOneCredential(t *testing.T) {
 // error asking again resolves.
 func TestBoardRowsFailWhenTheCredentialChangesAgain(t *testing.T) {
 	_, p, ids := twoChunkRows(t, map[string]int{"a": 3, "b": 4})
-	rows, err := p.BoardRows(t.Context(), "3", ids)
+	rows, err := p.BoardRows(t.Context(), "3", ids, tracker.Eligibility{})
 	if !errors.Is(err, trackerapi.ErrCredentialChanged) || len(rows.Rows) != 0 {
 		t.Fatalf("got %d rows, %v; want none and ErrCredentialChanged", len(rows.Rows), err)
 	}

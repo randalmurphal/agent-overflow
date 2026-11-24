@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -63,14 +64,19 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 			return true, nil
 		}
 		q := tracker.DeltaQuery{Board: board, From: cursor, Start: r.window()}
-		read := r.readAt()
+		read, err := r.beginRead()
+		if err != nil {
+			return false, err
+		}
 		r.calls++
 		page, err := r.p.ChangedRows(r.ctx, q)
 		if err != nil && pages == 0 && cursor != nil && errors.Is(err, tracker.ErrInvalidInput) {
 			// A cursor of an encoding the provider no longer reads: the walk
 			// starts over from the history window.
 			q.From, cursor = nil, nil
-			read = r.readAt()
+			if read, err = r.beginRead(); err != nil {
+				return false, err
+			}
 			r.calls++
 			page, err = r.p.ChangedRows(r.ctx, q)
 		}
@@ -88,6 +94,7 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 				return false, fmt.Errorf("trackerapp: store a page of board %s: %w", board, err)
 			}
 			r.markStructureDue(stored)
+			r.told(board, changesOf(stored))
 			log.add(changesOf(stored))
 			if stored.CursorRefused {
 				return true, nil
@@ -101,9 +108,10 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 }
 
 // reconcile is the reconcile unit of board (syncBoard). A pass lists the
-// board, removes the unlisted rows read more than tracker.DeltaOverlap
-// before the listing began, and reads by ID the listed issues with no
-// row and the unlisted rows read since: its candidates, each attempted
+// board and reads by ID the listed issues with no row and the unlisted
+// rows, which the read removes when the board no longer holds them (a
+// listing may show an issue late, so it removes none on its own word):
+// its candidates, each attempted
 // once, up to reconcileBatches batches a tick. The pass is the board
 // pump's (run.pass), open from the reconcile that begins it in a board
 // lifetime, an ID the store never reuses, until every candidate was
@@ -115,9 +123,41 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 // the walk delivers the rows a listing would find missing, so a first
 // sync longer than one tick's pages reads each row once and lists the
 // board once, after the walk. A listing that fails leaves the pass open
-// and not listed. An open pass is due at the pump's next tick whatever
-// the interval (boardDue), so one a refresh began goes on at once.
+// and not listed. A rows read that refuses the listing's rule
+// (tracker.ErrRuleRefused, the tracker refusing the query that carried
+// it) ends the pass, the rows stored before it standing, and is the
+// reconcile's failure: the store holds it, refused, and the board lists
+// again a reconcile interval after it (Service.refusalWaits), or at a
+// person's refresh. Every other failed rows read keeps the pass's
+// candidates. An open pass is due at the pump's next tick whatever the
+// interval (boardDue), so a pass a refresh began goes on at once. The
+// reconcile's outcome is explicit
+// (run.reconciled): completed when the pass attempted every candidate of
+// its listing, failed with the read its failing call began and the time
+// that call returned, and neither while it goes on (More).
 func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
+	out, err := r.reconcileUnit(board)
+	switch {
+	case err != nil:
+		r.reconciled = reconcileOutcome{failed: true, read: r.lastRead, returned: millis(r.s.now())}
+	case !out.More:
+		r.reconciled = reconcileOutcome{completed: true}
+	}
+	return out, err
+}
+
+// reconcileOutcome is how a tick's reconcile ended (run.reconciled): the
+// zero outcome is one that did not run or goes on.
+type reconcileOutcome struct {
+	completed, failed bool
+	// read is the read the failing call began, and returned when it
+	// returned, in Unix ms, set when failed.
+	read     store.MirrorRead
+	returned int64
+}
+
+// reconcileUnit is the reconcile's pass: its reads and the cascade.
+func (r *run) reconcileUnit(board tracker.BoardID) (UnitResult, error) {
 	lifetime, err := r.lifetime(board)
 	if err != nil {
 		return UnitResult{}, err
@@ -131,6 +171,9 @@ func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	}
 	var log changeLog
 	err = r.reconcileReads(board, pass, &log)
+	if errors.Is(err, tracker.ErrRuleRefused) {
+		*pass = reconcilePass{}
+	}
 	out := UnitResult{More: len(pass.left) > 0}
 	if err == nil {
 		err = r.cascade(board, &out)
@@ -146,6 +189,9 @@ func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 type reconcilePass struct {
 	lifetime int64
 	left     []tracker.IssueID
+	// rule is what the pass's listing listed by, which the reads by ID
+	// of its candidates judge by too (tracker.Listing.Rule).
+	rule tracker.Eligibility
 }
 
 // openIn reports whether p is open in board lifetime lifetime.
@@ -163,29 +209,34 @@ func (r *run) reconcileReads(board tracker.BoardID, pass *reconcilePass, log *ch
 		return err
 	}
 	if len(pass.left) == 0 {
-		read := r.readAt()
+		read, err := r.beginRead()
+		if err != nil {
+			return err
+		}
 		r.calls++
 		listing, err := r.p.BoardIssues(r.ctx, board, r.window())
 		if err != nil {
 			return fmt.Errorf("trackerapp: list the issues of board %s: %w", board, call(err))
 		}
-		// A tracker may list an issue up to DeltaOverlap late (a search
-		// index), so the listing judges only the rows read before that; an
-		// unlisted row read since is read by ID, which removes it only when
-		// the board no longer holds it.
-		settled := read - tracker.DeltaOverlap.Milliseconds()
-		result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), pass.lifetime, idStrings(listing.IDs), listing.Complete, read, settled)
-		// A reconcile that failed part way removed what it reports.
-		log.add(Changes{Removed: issueIDs(result.Removed)})
+		result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), pass.lifetime, idStrings(listing.IDs), listing.Complete, read)
 		if err != nil {
 			return fmt.Errorf("trackerapp: reconcile board %s: %w", board, err)
 		}
 		pass.left = append(issueIDsInOrder(result.Missing), issueIDsInOrder(result.Unsettled)...)
+		pass.rule = listing.Rule
 	}
 	for i := 0; i < reconcileBatches && len(pass.left) > 0; i++ {
 		batch := pass.left[:min(readBatch, len(pass.left))]
-		ch, _, unread, err := r.boardRows(board, batch)
+		ch, _, unread, err := r.boardRows(board, batch, pass.rule)
 		log.add(ch)
+		if errors.Is(err, tracker.ErrRuleRefused) {
+			// The tracker refused the query that carried the listing's rule
+			// (a sprint deleted since, or a refusal of its own): no candidate
+			// is judged by it, so the pass, still open in its lifetime, awaits
+			// a listing (reconcile). The rows stored before the refusal stand.
+			pass.left, pass.rule = nil, tracker.Eligibility{}
+			return err
+		}
 		if err != nil {
 			// The batch's issues a stored write settled were attempted; the
 			// pass keeps the rest of it, moved up against the batches after.

@@ -13,7 +13,6 @@
   import Button from '../primitives/Button.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
-  import { presentAuthReason } from '../../transport/authReason';
   import { PasskeyAbandonedError, passkeysUsable } from '../../transport/passkey';
   import { userFacingError } from '../../utils/userFacingError';
   import { clientDeviceName, saveClientDeviceName } from '../../stores/clientDeviceName.svelte';
@@ -110,7 +109,7 @@
       scheduleProbe(Date.now() + PROBE_DEADLINE_MS);
     } catch (err) {
       if (err instanceof PairingRefusedError) {
-        const shown = presentAuthReason(err.reason);
+        const { shown } = err;
         stage = { at: 'failed', title: shown.title, hint: shown.hint, retryable: shown.retryable };
       } else {
         // Nothing was spent: the request never got an answer.
@@ -153,7 +152,7 @@
         return;
       }
       if (err instanceof PairingRefusedError) {
-        const shown = presentAuthReason(err.reason);
+        const { shown } = err;
         stage = { at: 'failed', title: shown.title, hint: shown.hint, retryable: shown.retryable };
         return;
       }

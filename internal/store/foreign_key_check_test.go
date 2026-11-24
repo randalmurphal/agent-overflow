@@ -177,7 +177,12 @@ func insertForeignKeyRow(t *testing.T, tx *sql.Tx, table string, foreignKeyColum
 		case slices.Contains(null, column.name):
 			value = nil
 		case slices.Contains(missing, column.name):
+			// An integer column holds no parent's value as an integer: a
+			// rowid key (INTEGER PRIMARY KEY) takes nothing else.
 			value = fmt.Sprintf("fk-missing-%d", serial)
+			if strings.Contains(strings.ToUpper(column.declType), "INT") {
+				value = -(1_000_000 + serial)
+			}
 		case slices.Contains(foreignKeyColumns, column.name) && !column.notNull:
 			value = nil
 		case column.notNull && !column.hasDefault || slices.Contains(foreignKeyColumns, column.name):

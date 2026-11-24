@@ -43,6 +43,11 @@ type ticketRound struct {
 	// hold when a rate limit lifts: no round starts before it.
 	delay         time.Duration
 	retryAt, hold time.Time
+	// reading reports a read of the round's tickets in progress with the
+	// history read that follows it (runTicketRound), whose writes the
+	// tickets are told after they settled; the tests wait for it to end
+	// before they compare what was told with what the mirror holds.
+	reading bool
 }
 
 // followRoundLocked starts connection conn's round when a ticket of it is
@@ -114,7 +119,15 @@ func (s *Service) runTicketRound(rd *ticketRound) {
 			return
 		case <-rd.wake:
 		case <-timer.C:
-			s.roundRead(rd, at, false)
+			s.subMu.Lock()
+			rd.reading = true
+			s.subMu.Unlock()
+			if res := s.roundRead(rd, at, false); res.historyWanted {
+				s.roundHistory(rd, res.unsettled)
+			}
+			s.subMu.Lock()
+			rd.reading = false
+			s.subMu.Unlock()
 		}
 	}
 }
@@ -139,7 +152,11 @@ func (s *Service) roundAt(rd *ticketRound) (at time.Time, ok bool) {
 // roundRead reads the connection's shown tickets due at at (the timer's
 // time, which counts as now when the clock reads earlier), or every shown
 // ticket when all is set, together. One whose first read has not settled
-// is its pump's to read.
+// is its pump's to read. The result's historyWanted reports a read that
+// found an issue of the connection due a history read while the record of
+// a ticket it read holds a status time no final read decided
+// (ticketsResult.unsettled), for which the round runs the history unit
+// after it, those tickets' issues first (roundHistory).
 func (s *Service) roundRead(rd *ticketRound, at time.Time, all bool) ticketsResult {
 	s.subMu.Lock()
 	now := s.now()
@@ -157,11 +174,32 @@ func (s *Service) roundRead(rd *ticketRound, at time.Time, all bool) ticketsResu
 		return ticketsResult{}
 	}
 	slices.SortFunc(members, func(a, b *ticketPump) int { return cmp.Compare(a.key.issue, b.key.issue) })
-	return s.readTickets(rd.ctx, rd.conn, members, Background, false, false)
+	res := s.readTickets(rd.ctx, rd.conn, members, Background, false, false)
+	res.historyWanted = res.historyDue && !res.failed && len(res.unsettled) > 0
+	return res
 }
 
-// readNowLocked makes tp due a read at once, a full one (a stored card
-// of its issue changed, or nothing holds its document), and wakes its
+// roundHistory runs the linked history unit of rd's connection
+// (syncLinked) after a round whose read wants one (roundRead), the issues
+// of first (the shown tickets whose status times no final read decided)
+// read first: an open ticket's issue is due a history read once its first
+// card is stored, so a ticket whose read did not decide its status time
+// has it decided within a round of the opening when the history read is
+// final, and a round after its settle margin when it was not
+// (sync_history.go). It costs no statement of its own when no issue is
+// due: the read's sync state says so. The unit reads every issue of the
+// connection that is due, those first, as the linked loop would; the next
+// tick of a board or loop finds those read. It records its outcome as the
+// linked loop's does; an error the outcome does not hold is logged.
+func (s *Service) roundHistory(rd *ticketRound, first []string) {
+	if _, err := s.syncLinked(rd.ctx, rd.conn, LinkedDue{History: true}, Background, first); err != nil && rd.ctx.Err() == nil {
+		s.logf("trackerapp: the history of the open tickets of %s: %v", rd.conn, err)
+	}
+}
+
+// readNowLocked makes tp due a read at once (a stored card of its issue
+// changed, or nothing holds its document), in full when that card is newer
+// than the pump's document and else checked (mirrorMoved), and wakes its
 // connection's round. A read that began before this does not undo it. The
 // caller holds subMu.
 func (s *Service) readNowLocked(tp *ticketPump) {

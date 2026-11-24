@@ -115,25 +115,22 @@ func (p *Provider) History(ctx context.Context, q tracker.HistoryQuery) (tracker
 // of the others those a bulk fetch returns.
 func (p *Provider) visible(ctx context.Context, ids []tracker.IssueID, byIssue map[string][]jira.ChangeEntry) (map[tracker.IssueID]bool, error) {
 	out := map[tracker.IssueID]bool{}
-	var absent []string
+	var absent []tracker.IssueID
 	for _, id := range ids {
 		if _, ok := byIssue[string(id)]; ok {
 			out[id] = true
 		} else {
-			absent = append(absent, string(id))
+			absent = append(absent, id)
 		}
 	}
 	if len(absent) == 0 {
 		return out, nil
 	}
-	res, err := p.jira.BulkFetch(ctx, absent, "status")
+	read, err := p.issuesByID(ctx, absent, []string{"status"})
 	if err != nil {
 		return nil, fmt.Errorf("jiraprovider: history: which issues without changes exist: %w", err)
 	}
-	if len(res.Failed) > 0 {
-		return nil, fmt.Errorf("jiraprovider: history: Jira could not read issue %s: %s", res.Failed[0].ID, res.Failed[0].Message)
-	}
-	for _, is := range res.Issues {
+	for _, is := range read {
 		out[tracker.IssueID(is.ID)] = true
 	}
 	return out, nil

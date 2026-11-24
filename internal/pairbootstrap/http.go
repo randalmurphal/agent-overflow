@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/authlimit"
 )
 
 const Path = "/auth/pair/nearby"
@@ -145,11 +147,20 @@ func exchange(ctx context.Context, hc *http.Client, endpoint string, body Reques
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// A refused begin left the window free, so the same connect works
+		// after the wait; a refused reveal left it holding this commitment.
+		limited := authlimit.By(resp.Header, "pairing attempts")
+		if body.Op == "reveal" {
+			limited.Then = RestartHint
+		}
+		return limited
+	}
 	if resp.StatusCode == http.StatusNotFound {
 		return errors.New("This computer does not support direct pairing. Update Agent Overflow there, or use its pairing link")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Pairing request failed (HTTP %d). On the other computer, open Allow device access → Allow a device to connect, then try again", resp.StatusCode)
+		return fmt.Errorf("Pairing request failed (HTTP %d). %s", resp.StatusCode, openWindowHint) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
 	b, err = io.ReadAll(io.LimitReader(resp.Body, 16385))
 	if err != nil {

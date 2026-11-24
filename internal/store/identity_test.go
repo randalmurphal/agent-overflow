@@ -215,6 +215,16 @@ func TestTouchDeviceReportsWhetherItMoved(t *testing.T) {
 	}
 }
 
+// seedLiveSession writes session, live, on its existing device through the
+// transaction production writes a live session with.
+func seedLiveSession(s *Store, session Session) error {
+	device, err := s.GetDevice(session.DeviceID)
+	if err != nil {
+		return err
+	}
+	return s.CreateDeviceSession(DeviceSession{Device: device, Session: session})
+}
+
 func newTestSession(id string, owner User, device Device, key SigningKey, expires int64) Session {
 	return Session{
 		ID: id, UserID: owner.ID, DeviceID: device.ID,
@@ -226,13 +236,13 @@ func newTestSession(id string, owner User, device Device, key SigningKey, expire
 	}
 }
 
-func TestCreateSessionRoundTrips(t *testing.T) {
+func TestCreateDeviceSessionRoundTrips(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 	want := newTestSession("sess-1", owner, device, key, 9000)
 	want.Scopes = []string{"threads:read", "files:read"}
-	if err := s.CreateSession(want); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, want); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	got, err := s.GetSession("sess-1")
 	if err != nil {
@@ -255,7 +265,7 @@ func TestCreateSessionRoundTrips(t *testing.T) {
 	}
 }
 
-func TestCreateSessionRefusesUnusableRows(t *testing.T) {
+func TestCreateDeviceSessionRefusesUnusableRows(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 	base := newTestSession("sess-1", owner, device, key, 9000)
@@ -270,11 +280,11 @@ func TestCreateSessionRefusesUnusableRows(t *testing.T) {
 		"expiry at mint":       func(v Session) Session { v.ExpiresAt = v.CreatedAt; return v },
 	}
 	for name, mutate := range cases {
-		if err := s.CreateSession(mutate(base)); err == nil {
-			t.Fatalf("%s: CreateSession accepted an unusable row", name)
+		if err := seedLiveSession(s, mutate(base)); err == nil {
+			t.Fatalf("%s: CreateDeviceSession accepted an unusable row", name)
 		}
 	}
-	if err := s.CreateSession(func(v Session) Session { v.BindingClass = "sort-of-bound"; return v }(base)); err == nil {
+	if err := seedLiveSession(s, func(v Session) Session { v.BindingClass = "sort-of-bound"; return v }(base)); err == nil {
 		t.Fatal("schema accepted an undeclared binding class")
 	}
 }
@@ -284,8 +294,8 @@ func TestSessionScopesEncodeEmptyAsAnArray(t *testing.T) {
 	key := seedSigningKey(t, s)
 	session := newTestSession("sess-empty", owner, device, key, 9000)
 	session.Scopes = nil
-	if err := s.CreateSession(session); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, session); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	var raw string
 	if err := s.db.QueryRow(`SELECT scopes FROM sessions WHERE id = 'sess-empty'`).Scan(&raw); err != nil {
@@ -309,8 +319,8 @@ func TestSessionScopesEncodeEmptyAsAnArray(t *testing.T) {
 func TestSessionScopesReadIsStrict(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
-	if err := s.CreateSession(newTestSession("sess-1", owner, device, key, 9000)); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, newTestSession("sess-1", owner, device, key, 9000)); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	if _, err := s.db.Exec(`UPDATE sessions SET scopes = '{"not":"an array"}' WHERE id = 'sess-1'`); err != nil {
 		t.Fatalf("corrupt scopes: %v", err)
@@ -326,8 +336,8 @@ func TestSessionScopesReadIsStrict(t *testing.T) {
 func TestRevokeSessionReportsWhetherItMovedAndKeepsTheFirstStamp(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
-	if err := s.CreateSession(newTestSession("sess-1", owner, device, key, 9000)); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, newTestSession("sess-1", owner, device, key, 9000)); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	moved, _, err := s.RevokeSession("sess-1", 2000)
 	if err != nil || !moved {
@@ -356,8 +366,8 @@ func TestRevokeSessionReportsWhetherItMovedAndKeepsTheFirstStamp(t *testing.T) {
 func TestTouchSessionSkipsRevokedRows(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
-	if err := s.CreateSession(newTestSession("sess-1", owner, device, key, 9000)); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, newTestSession("sess-1", owner, device, key, 9000)); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	if moved, err := s.TouchSession("sess-1", 1500); err != nil || !moved {
 		t.Fatalf("touch live session: moved=%v err=%v", moved, err)
@@ -385,8 +395,8 @@ func TestRevokeDeviceClosesItsSessionsInOneWrite(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 	for _, id := range []string{"sess-a", "sess-b"} {
-		if err := s.CreateSession(newTestSession(id, owner, device, key, 9000)); err != nil {
-			t.Fatalf("CreateSession(%s): %v", id, err)
+		if err := seedLiveSession(s, newTestSession(id, owner, device, key, 9000)); err != nil {
+			t.Fatalf("seed session(%s): %v", id, err)
 		}
 	}
 	// A session on a second device must be untouched.
@@ -394,8 +404,8 @@ func TestRevokeDeviceClosesItsSessionsInOneWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDevice: %v", err)
 	}
-	if err := s.CreateSession(newTestSession("sess-other", owner, otherDevice, key, 9000)); err != nil {
-		t.Fatalf("CreateSession(other): %v", err)
+	if err := seedLiveSession(s, newTestSession("sess-other", owner, otherDevice, key, 9000)); err != nil {
+		t.Fatalf("seed session(other): %v", err)
 	}
 	// One of this device's sessions is already revoked; it must not be
 	// reported again, because it was closed by whoever revoked it.
@@ -442,14 +452,14 @@ func TestRevokeDeviceClosesItsSessionsInOneWrite(t *testing.T) {
 func TestListLiveSessionsExcludesExpiredAndRevoked(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
-	if err := s.CreateSession(newTestSession("live", owner, device, key, 9000)); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, newTestSession("live", owner, device, key, 9000)); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
-	if err := s.CreateSession(newTestSession("expired", owner, device, key, 1500)); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, newTestSession("expired", owner, device, key, 1500)); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
-	if err := s.CreateSession(newTestSession("revoked", owner, device, key, 9000)); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, newTestSession("revoked", owner, device, key, 9000)); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	if _, _, err := s.RevokeSession("revoked", 1600); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
@@ -506,8 +516,8 @@ func TestSigningKeysAndTheirCascade(t *testing.T) {
 	}
 
 	// Dropping a key retires everything it minted.
-	if err := s.CreateSession(newTestSession("sess-old", owner, device, older, 9000)); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, newTestSession("sess-old", owner, device, older, 9000)); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	if _, err := s.db.Exec(`DELETE FROM signing_keys WHERE id = 'key-old'`); err != nil {
 		t.Fatalf("delete signing key: %v", err)
@@ -797,8 +807,8 @@ func TestIdentityWritesRefuseMissingRequiredFields(t *testing.T) {
 func TestDeviceAndSessionCascadeWithTheirUser(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
-	if err := s.CreateSession(newTestSession("sess-1", owner, device, key, 9000)); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := seedLiveSession(s, newTestSession("sess-1", owner, device, key, 9000)); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	if _, err := s.db.Exec(`DELETE FROM users WHERE id = ?`, owner.ID); err != nil {
 		t.Fatalf("delete user: %v", err)

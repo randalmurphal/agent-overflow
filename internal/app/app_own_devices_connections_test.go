@@ -61,7 +61,7 @@ func pairOwnConnection(t *testing.T, target ownConnectionHost, source *attachedb
 		}
 		purpose = "own-device"
 	}
-	invite, err := target.app.mintDevicePairingPurpose(string(identity.DeviceDesktop), "full", "", purpose)
+	invite, err := target.app.mintDevicePairingPurpose(string(identity.DeviceDesktop), "full", "", purpose, false)
 	if err != nil {
 		t.Fatal(err)
 	}

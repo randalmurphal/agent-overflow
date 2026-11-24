@@ -108,8 +108,8 @@ type Session struct {
 	// session carries the moment it was created, because nothing gates it.
 	ActivatedAt int64 `json:"activatedAt,omitempty"`
 	// DeviceRevokedAt is the DEVICE row's revocation stamp, joined in by
-	// every read (sessionSelect). Derived, never written: CreateSession
-	// ignores whatever a caller puts here.
+	// every read (sessionSelect). Derived, never written: the session
+	// write ignores whatever a caller puts here.
 	//
 	// It rides on the session because "live" is the conjunction of both
 	// rows and one predicate has to be able to answer it. A session whose
@@ -134,7 +134,21 @@ type Session struct {
 // that outlives its device's revocation is inert by definition rather than
 // a standing credential, whatever produced it.
 func (s Session) Live(now int64) bool {
-	return s.ActivatedAt != 0 && s.RevokedAt == 0 && s.DeviceRevokedAt == 0 && !s.Expired(now)
+	return s.admitted() && !s.Expired(now)
+}
+
+// Usable reports whether this row lets its device in at now by either way
+// a device has: presenting its access (Live), or, once that access ran
+// out, renewing it, which renewable says the session can (an unspent,
+// unexpired refresh secret, the secret identity's renewal rotates).
+func (s Session) Usable(renewable bool, now int64) bool {
+	return s.Live(now) || (s.admitted() && renewable)
+}
+
+// admitted is Live without the expiry: activated, and neither the session
+// nor its device revoked.
+func (s Session) admitted() bool {
+	return s.ActivatedAt != 0 && s.RevokedAt == 0 && s.DeviceRevokedAt == 0
 }
 
 // ProcessBound reports whether the session uses the local boot credential.
@@ -422,14 +436,12 @@ func (s *Store) deviceByChannel(channel string) (Device, error) {
 		`SELECT `+deviceColumns+` FROM devices WHERE channel = ? AND channel <> ''`, channel))
 }
 
-// CreatePairedDevice registers a device that already holds a key, writing
-// the thumbprint in the SAME statement as the row.
-//
-// Separate from CreateDevice + SetDeviceKeyThumbprint because those two are
-// two writes with no transaction around them: a thumbprint that loses the
-// unique index to a concurrent redemption would leave a device row nothing
-// created it for. One INSERT means the conflict refuses the whole thing.
-func (s *Store) CreatePairedDevice(userID, label, class, platform, thumbprint, proofKind string) (Device, error) {
+// NewPairedDevice builds the row of a device that already holds a key, for
+// the transaction that writes it together with the session it was created
+// for (DeviceSession). The thumbprint is in the same INSERT as the row, so a
+// thumbprint that loses the unique index to a concurrent redemption refuses
+// the whole write.
+func NewPairedDevice(userID, label, class, platform, thumbprint, proofKind string) (Device, error) {
 	if strings.TrimSpace(userID) == "" {
 		return Device{}, fmt.Errorf("%w: device user id", ErrIdentityFieldRequired)
 	}
@@ -452,16 +464,20 @@ func (s *Store) CreatePairedDevice(userID, label, class, platform, thumbprint, p
 		ProofKind:     proofKind,
 		CreatedAt:     nowMillis(),
 	}
-	if _, err := s.db.Exec(
+	return device, nil
+}
+
+func insertPairedDevice(db sqlExecutor, device Device) error {
+	if _, err := db.Exec(
 		`INSERT INTO devices (id, user_id, label, class, platform, key_thumbprint,
 			passkey_credential_id, channel, created_at, last_seen_at, revoked_at, proof_kind)
 		 VALUES (?, ?, ?, ?, ?, ?, NULL, '', ?, 0, NULL, ?)`,
 		device.ID, device.UserID, device.Label, device.Class, device.Platform,
 		device.KeyThumbprint, device.CreatedAt, device.ProofKind,
 	); err != nil {
-		return Device{}, fmt.Errorf("store: create paired device: %w", err)
+		return fmt.Errorf("store: create paired device: %w", err)
 	}
-	return device, nil
+	return nil
 }
 
 // DeviceByKeyThumbprint resolves a device from the public key it presented.
@@ -481,10 +497,14 @@ func (s *Store) DeviceByKeyThumbprint(thumbprint string) (Device, error) {
 // renamed or moved to another OS since, and the row should say what the
 // device says.
 func (s *Store) RelabelDevice(deviceID, label, platform string) error {
+	return relabelDevice(s.db, deviceID, label, platform)
+}
+
+func relabelDevice(db sqlExecutor, deviceID, label, platform string) error {
 	if strings.TrimSpace(label) == "" {
 		return fmt.Errorf("%w: device label", ErrIdentityFieldRequired)
 	}
-	result, err := s.db.Exec(
+	result, err := db.Exec(
 		`UPDATE devices SET label = ?, platform = ? WHERE id = ?`,
 		strings.TrimSpace(label), platform, deviceID)
 	if err != nil {

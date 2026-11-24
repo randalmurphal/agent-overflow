@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
@@ -67,9 +68,10 @@ func (s *Service) providerLocked(row store.TrackerConnection) (tracker.Provider,
 }
 
 // buildProvider is the provider over c, the client of connection row, and
-// for a Jira connection tempo, its Tempo connection's client or nil. Each
-// of its reads is one credential's view (tracker.OneCredential).
-func buildProvider(row store.TrackerConnection, c *clients, tempo *clients) (tracker.Provider, error) {
+// for a Jira connection tempo, its Tempo connection's client or nil, and
+// window the start of the history window now (Service.window). Each of
+// its reads is one credential's view (tracker.OneCredential).
+func buildProvider(row store.TrackerConnection, c *clients, tempo *clients, window func() time.Time) (tracker.Provider, error) {
 	if row.Kind == store.TrackerKindLinear {
 		p, err := linearprovider.New(c.linear)
 		if err != nil {
@@ -77,7 +79,7 @@ func buildProvider(row store.TrackerConnection, c *clients, tempo *clients) (tra
 		}
 		return tracker.OneCredential(p), nil
 	}
-	opts := jiraprovider.Options{Jira: c.jira, Site: row.Site}
+	opts := jiraprovider.Options{Jira: c.jira, Site: row.Site, SprintsFrom: window}
 	if tempo != nil {
 		opts.Tempo = tempo.tempo
 	}

@@ -221,7 +221,7 @@ func (mt *modelTracker) write(rows []tracker.Row, missing []tracker.IssueID) []t
 	for _, id := range missing {
 		delete(mt.rows, id)
 	}
-	page := must[store.MirrorRowPage](mt.t)(mirrorRows(testBoard, rows, missing, webStructure(testBoard).Catalog, mt.readAt))
+	page := must[store.MirrorRowPage](mt.t)(mirrorRows(testBoard, rows, missing, webStructure(testBoard).Catalog, beginReadAt(mt.t, mt.m.st, mt.root, mt.readAt)))
 	page.Lifetime = mt.lifetime
 	ch := changesOf(must[store.MirrorChanges](mt.t)(mt.m.st.WriteMirrorRows(mt.root, page)))
 	return unite(unite(slices.Clone(ch.Rows), ch.Cards), ch.Removed)

@@ -22,9 +22,11 @@ import (
 
 // cardsHold holds the next view build at its read of the mirror's cards,
 // once armed, after the read returned: the build has its snapshot of the
-// linked card and has not installed its view.
+// linked card and has not installed its view. A hold ends with the test
+// (ended), so a failure before the release leaves no build waiting.
 type cardsHold struct {
 	*store.Store
+	ended   chan struct{}
 	mu      sync.Mutex
 	armed   *heldCall
 	pending bool
@@ -47,14 +49,17 @@ func (h *cardsHold) ListMirrorCards(root int64, ids []string) ([]store.MirrorCar
 	h.mu.Unlock()
 	if held {
 		close(c.arrived)
-		<-c.release
+		select {
+		case <-c.release:
+		case <-h.ended:
+		}
 	}
 	return cards, err
 }
 
-// crossFixture is an open ticket, 10001, that the mirror does not keep, so
-// its pump holds its content, linking 10002, which the mirror keeps, on a
-// tracker that reads every ticket in full. rename stores a new title of
+// crossFixture is an open ticket, 10001, that the mirror does not keep
+// (keepsLost), so its pump holds its content, linking 10002,
+// which the mirror keeps, on a tracker that reads every ticket in full. rename stores a new title of
 // 10002 as a board read does; describe sets the description the tracker
 // answers for 10001; failing fails its reads.
 type crossFixture struct {
@@ -80,15 +85,22 @@ func newCrossFixture(t *testing.T) *crossFixture {
 			if f.failing.Load() {
 				return tracker.Detail{}, errors.New("test: the tracker refused")
 			}
-			d := detailOfCard(card("10001", 1_799_000_000_000))
+			// A history final for the card's update: the ticket shows the
+			// time in its status from its document, so no round reads the
+			// mirror's histories for it (roundHistory).
+			d := enteredAtStatusBegan(detailOfCard(card("10001", 1_799_000_000_000)))
+			d.HistoryTo = d.Card.Updated
 			d.Description = f.desc.Load().(string)
 			return d, nil
 		}
 	})
+	answerCardsFromDetails(m.p)
+	m.loseKeeps()
 	f.sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
 	m.events.issueEvents(t, 1)
 	m.settledTickets(t)
-	f.hold = &cardsHold{Store: m.st}
+	f.hold = &cardsHold{Store: m.st, ended: make(chan struct{})}
+	t.Cleanup(func() { close(f.hold.ended) })
 	m.svc.store = f.hold
 	f.before = m.issueEventCount()
 	return f

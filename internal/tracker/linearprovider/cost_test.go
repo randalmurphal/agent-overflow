@@ -75,8 +75,8 @@ func TestRequestCost(t *testing.T) {
 		}
 		return err
 	})
-	r.measure("BoardRows (100)", func() error { _, err := p.BoardRows(ctx, board, costIDs(0, 100)); return err })
-	r.measure("BoardRows (500)", func() error { _, err := p.BoardRows(ctx, board, costIDs(0, 500)); return err })
+	r.measure("BoardRows (100)", func() error { _, err := p.BoardRows(ctx, board, costIDs(0, 100), tracker.Eligibility{}); return err })
+	r.measure("BoardRows (500)", func() error { _, err := p.BoardRows(ctx, board, costIDs(0, 500), tracker.Eligibility{}); return err })
 	// A new issue on its team's board and off another team's: one request.
 	r.measure("NewRows (2 boards)", func() error {
 		pl, err := p.NewRows(ctx, tracker.IssueID(costIssueID(0)), []tracker.BoardID{board, tracker.BoardID(sid(9999))})

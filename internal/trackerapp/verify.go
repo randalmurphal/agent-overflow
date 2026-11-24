@@ -90,7 +90,7 @@ func (s *Service) identity(ctx context.Context, row store.TrackerConnection, c *
 	defer stop()
 	switch row.Kind {
 	case store.TrackerKindJira:
-		p, err := jiraprovider.New(jiraprovider.Options{Jira: c.jira, Site: row.Site})
+		p, err := jiraprovider.New(jiraprovider.Options{Jira: c.jira, Site: row.Site, SprintsFrom: s.window})
 		if err != nil {
 			return store.TrackerVerification{}, err
 		}

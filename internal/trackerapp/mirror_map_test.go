@@ -132,13 +132,10 @@ func TestCatalogAndStructureRoundTrip(t *testing.T) {
 		same(t, name+" catalog", catalogOf(must[store.MirrorCatalog](t)(mirrorCatalog(c))), c)
 	}
 	st := filled[tracker.Structure]()
-	m := must[store.MirrorStructure](t)(mirrorStructure(st, 5))
-	if m.ReadAt != 5 {
-		t.Errorf("structure read at %d", m.ReadAt)
-	}
+	m := must[store.MirrorStructure](t)(mirrorStructure(st, store.MirrorRead{}))
 	same(t, "structure", structureOf(m, catalogOf(m.Catalog)), st)
 	zero := tracker.Structure{}
-	mz := must[store.MirrorStructure](t)(mirrorStructure(zero, 5))
+	mz := must[store.MirrorStructure](t)(mirrorStructure(zero, store.MirrorRead{}))
 	same(t, "zero structure", structureOf(mz, tracker.Catalog{}), zero)
 }
 
@@ -183,15 +180,61 @@ func TestHistoryAndWorklogRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDetailRoundTrip(t *testing.T) {
+// A body holds the detail without its card, which the record holds, and
+// without HistoryTo and StatusChanged, which the status evidence took:
+// read back with the record's card it is the detail, and the same detail
+// read at another time, or with another card, is the same bytes.
+func TestBodyRoundTrip(t *testing.T) {
 	t.Parallel()
-	for name, d := range map[string]tracker.Detail{"filled": filled[tracker.Detail](), "zero": {}} {
-		m := store.MirrorDetail{IssueID: string(d.Card.ID), Data: must[[]byte](t)(mirrorDetail(d))}
-		got, ok := detailOf(m)
+	final, early := filled[tracker.Detail](), filled[tracker.Detail]()
+	final.HistoryTo = final.Card.Updated.Add(time.Hour)
+	early.HistoryTo = early.Card.Updated.Add(-time.Millisecond)
+	for name, d := range map[string]tracker.Detail{"final": final, "not final": early, "zero": {}} {
+		data := must[[]byte](t)(mirrorBody(d))
+		b := store.MirrorBody{IssueID: string(d.Card.ID), Card: must[store.MirrorCard](t)(mirrorCard(d.Card)), Data: data, UpdatedAt: 7}
+		got, ok := bodyOf(b)
 		if !ok {
 			t.Fatalf("%s: the blob was a miss", name)
 		}
-		same(t, name+" detail", got, d)
+		d.HistoryTo, d.StatusChanged = time.Time{}, tracker.StatusChange{}
+		same(t, name+" body", got.d, d)
+		if got.version != 7 || got.status != nil {
+			t.Fatalf("%s: version %d, evidence %v; want the body's version and none", name, got.version, got.status)
+		}
+		other := d
+		other.Card.Title, other.HistoryTo = "Renamed", time.Now()
+		if again := must[[]byte](t)(mirrorBody(other)); string(again) != string(data) {
+			t.Fatalf("%s: the same body with another card is other bytes", name)
+		}
+	}
+}
+
+// The evidence of a detail's status time is what its read found: final
+// when its history is final through the card's update, complete when it
+// starts at the creation, with the latest status change it holds; a
+// history bounded later than the creation (boundHistory, or Linear's
+// folded opening) is not complete.
+func TestStatusEvidence(t *testing.T) {
+	t.Parallel()
+	c := card("10001", 1_799_000_000_000)
+	c.Status, c.Created = "s1", time.UnixMilli(1_798_000_000_000).UTC()
+	latest := tracker.StatusChange{Change: tracker.Change{At: time.UnixMilli(1_798_500_000_000).UTC()}, From: "s0", To: "s1"}
+	for name, tc := range map[string]struct {
+		to, from        time.Time
+		final, complete bool
+	}{
+		"final through the update": {c.Updated, time.Time{}, true, true},
+		"final past the update":    {c.Updated.Add(time.Minute), time.Time{}, true, true},
+		"short of the update":      {c.Updated.Add(-time.Millisecond), time.Time{}, false, true},
+		"no time named":            {time.Time{}, time.Time{}, false, true},
+		"starting after creation":  {c.Updated, c.Created.Add(time.Second), true, false},
+	} {
+		d := tracker.Detail{Card: c, HistoryTo: tc.to, HistoryFrom: tc.from, StatusChanged: latest}
+		want := store.MirrorStatusEvidence{Status: "s1", CreatedAt: 1_798_000_000_000, UpdatedAt: 1_799_000_000_000,
+			LatestTo: "s1", LatestAt: 1_798_500_000_000, Final: tc.final, Complete: tc.complete, Settle: 60_000}
+		if got := statusEvidence(d, time.Minute); got != want {
+			t.Errorf("%s: %+v; want %+v", name, got, want)
+		}
 	}
 }
 
@@ -226,14 +269,14 @@ func TestBlobMisses(t *testing.T) {
 		if st.Estimate.Unit != tracker.UnitPoints || st.Estimate.Choices != nil {
 			t.Errorf("board blob %s: %+v", name, st.Estimate)
 		}
-		if _, ok := detailOf(store.MirrorDetail{IssueID: "10001", Data: []byte(data)}); ok {
-			t.Errorf("detail blob %s read", name)
+		if _, ok := bodyOf(store.MirrorBody{IssueID: "10001", Card: must[store.MirrorCard](t)(mirrorCard(c)), Data: []byte(data)}); ok {
+			t.Errorf("body blob %s read", name)
 		}
 	}
-	// A detail stored under another issue's ID is a miss.
-	d := store.MirrorDetail{IssueID: "10002", Data: must[[]byte](t)(mirrorDetail(tracker.Detail{Card: c}))}
-	if _, ok := detailOf(d); ok {
-		t.Error("a detail of another issue read")
+	// A body read with another issue's card is a miss.
+	b := store.MirrorBody{IssueID: "10002", Card: must[store.MirrorCard](t)(mirrorCard(c)), Data: must[[]byte](t)(mirrorBody(tracker.Detail{Card: c}))}
+	if _, ok := bodyOf(b); ok {
+		t.Error("a body of another issue read")
 	}
 }
 
@@ -289,17 +332,17 @@ func shapeOf(t reflect.Type) string {
 	return k.String()
 }
 
-// wantDetailShape is tracker.Detail's shape that detailBlobVersion 1
+// wantDetailShape is tracker.Detail's shape that bodyBlobVersion 1
 // encodes.
-const wantDetailShape = `{Card:{ID:string,Key:string,Project:string,Type:{ID:string,Name:string,Level:int},Title:string,Status:string,Assignee:string,Priority:{ID:string,Name:string},Labels:[]{ID:string,Name:string},Parent:string,Sprints:[]string,Created:time.Time,Updated:time.Time,Resolved:time.Time},URL:string,Description:string,Fields:[]{ID:string,Name:string,Kind:uint8,List:bool,Required:bool,Editable:bool,Value:tracker.Value},Comments:{Comments:[]{ID:string,Author:string,Body:string,Created:time.Time,Updated:time.Time,Internal:bool},Next:string,Catalog:{Users:[]{ID:string,Name:string,Email:string,AvatarURL:string,Active:bool},Statuses:[]{ID:string,Name:string,Group:uint8}}},Links:[]{ID:string,Type:{ID:string,Name:string,Outward:string,Inward:string},Outward:bool,Issue:{ID:string,Key:string,Title:string,Status:string}},Attachments:[]{ID:string,Name:string,MimeType:string,Size:int64,Created:time.Time,Author:string},History:[]{At:time.Time,Author:string,Field:string,From:string,To:string},HistoryFrom:time.Time,Moves:[]{ID:string,Name:string,To:string,Fields:[]{ID:string,Name:string,Kind:uint8,List:bool,Required:bool,Editable:bool,Value:tracker.Value}},Catalog:{Users:[]{ID:string,Name:string,Email:string,AvatarURL:string,Active:bool},Statuses:[]{ID:string,Name:string,Group:uint8}}}`
+const wantDetailShape = `{Card:{ID:string,Key:string,Project:string,Type:{ID:string,Name:string,Level:int},Title:string,Status:string,Assignee:string,Priority:{ID:string,Name:string},Labels:[]{ID:string,Name:string},Parent:string,Sprints:[]string,Created:time.Time,Updated:time.Time,Resolved:time.Time,URL:string},Description:string,Fields:[]{ID:string,Name:string,Kind:uint8,List:bool,Required:bool,Editable:bool,Value:tracker.Value},Comments:{Comments:[]{ID:string,Author:string,Body:string,Created:time.Time,Updated:time.Time,Internal:bool},Next:string,Catalog:{Users:[]{ID:string,Name:string,Email:string,AvatarURL:string,Active:bool},Statuses:[]{ID:string,Name:string,Group:uint8}}},Links:[]{ID:string,Type:{ID:string,Name:string,Outward:string,Inward:string},Outward:bool,Issue:{ID:string,Key:string,Title:string,Status:string}},Attachments:[]{ID:string,Name:string,MimeType:string,Size:int64,Created:time.Time,Author:string},History:[]{At:time.Time,Author:string,Field:string,From:string,To:string},HistoryFrom:time.Time,HistoryTo:time.Time,StatusChanged:{Change:{At:time.Time,Author:string},From:string,To:string},Moves:[]{ID:string,Name:string,To:string,Fields:[]{ID:string,Name:string,Kind:uint8,List:bool,Required:bool,Editable:bool,Value:tracker.Value}},Catalog:{Users:[]{ID:string,Name:string,Email:string,AvatarURL:string,Active:bool},Statuses:[]{ID:string,Name:string,Group:uint8}}}`
 
-// A change to tracker.Detail changes what a stored detail blob means: a
+// A change to tracker.Detail changes what a stored body blob means: a
 // member added would read as empty from every blob stored before it.
-// Bump detailBlobVersion, so those read as misses, and update
+// Bump bodyBlobVersion, so those read as misses, and update
 // wantDetailShape.
-func TestDetailBlobShape(t *testing.T) {
+func TestBodyBlobShape(t *testing.T) {
 	t.Parallel()
 	if got := shapeOf(reflect.TypeFor[tracker.Detail]()); got != wantDetailShape {
-		t.Fatalf("tracker.Detail changed shape; bump detailBlobVersion and set wantDetailShape to\n%s", got)
+		t.Fatalf("tracker.Detail changed shape; bump bodyBlobVersion and set wantDetailShape to\n%s", got)
 	}
 }

@@ -59,7 +59,7 @@ const mirrorShownBoardRow = `bl.retired = 0 AND bl.read_at > 0 AND EXISTS (SELEC
 // ?2, the details of the JSON list ?3 and the boards of the JSON list ?4:
 // the live root's sweep, the rows of the cards on shown boards with each
 // board's lifetime (each issue probed by its key prefix), the cards kept,
-// the details stored, and the boards shown with their lifetimes.
+// the bodies stored, and the boards shown with their lifetimes.
 var mirrorRefreshTargetsSQL = `SELECT 0, '', '', r.sweep FROM tracker_cache_roots r
 	WHERE r.id = ?1 AND r.connection_id IS NOT NULL
 	UNION ALL
@@ -72,9 +72,9 @@ var mirrorRefreshTargetsSQL = `SELECT 0, '', '', r.sweep FROM tracker_cache_root
 	CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = l.value
 	WHERE ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
 	UNION ALL
-	SELECT 3, d.issue_id, '', 0 FROM json_each(?3) l
-	CROSS JOIN tracker_cache_issue_details d ON d.root_id = ?1 AND d.issue_id = l.value
-	WHERE d.data IS NOT NULL AND ` + mirrorIssueKept("d.root_id", "d.issue_id") + `
+	SELECT 3, i.issue_id, '', 0 FROM json_each(?3) l
+	CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = l.value
+	WHERE i.body_read_at > 0 AND ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
 	UNION ALL
 	SELECT 4, '', bl.board_id, bl.lifetime FROM json_each(?4) l
 	CROSS JOIN tracker_cache_boards bl ON bl.root_id = ?1 AND bl.board_id = l.value

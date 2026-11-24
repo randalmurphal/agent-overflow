@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/jiraprovider"
 )
 
 // FieldValueView is a field's value: its kind (tracker.Kind's name) and
@@ -92,12 +93,17 @@ type MoveView struct {
 	Fields []FieldView `json:"fields,omitempty"`
 }
 
-// DetailView is one ticket as its view shows it. Comments is the first
-// page, newest first; MoreComments is the token of the next page, empty
-// when there is none. History is complete from HistoryFrom (Unix
-// milliseconds, 0 for from creation).
+// DetailView is one ticket as its view shows it: the issue record's card
+// (the one every view of the issue shows) with its body. Comments is the
+// first page, newest first; MoreComments is the token of the next page,
+// empty when there is none. History is complete from HistoryFrom (Unix
+// milliseconds, 0 for from creation). BodyBehind reports a body read for
+// an older version of the issue than its card: a read of the card found a
+// change the body does not show yet, and the next read of the ticket
+// reads it.
 type DetailView struct {
 	Card         CardView         `json:"card"`
+	BodyBehind   bool             `json:"body_behind,omitempty"`
 	URL          string           `json:"url"`
 	Description  string           `json:"description"`
 	Fields       []FieldView      `json:"fields"`
@@ -155,11 +161,10 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 		return DetailView{}, Changes{}, fmt.Errorf("%w: no issue named", ErrInvalidRequest)
 	}
 	rd := &ticketRead{issue: issue, full: full}
-	res, err := s.readDetails(ctx, id, []*ticketRead{rd}, u, millis(s.now()))
-	ch := res.ch
 	// An open ticket of the issue, or one whose view shows it, is told what
-	// the read stored.
-	s.publish(res.root, res.gen, id, ch, nil, nil)
+	// each write of the read stored as it commits.
+	res, err := s.readDetails(ctx, id, []*ticketRead{rd}, u, true, nil)
+	ch := res.ch
 	switch {
 	case err != nil:
 		return DetailView{}, ch, err
@@ -175,7 +180,7 @@ func (s *Service) issueDetail(ctx context.Context, id string, issue tracker.Issu
 
 // MirroredDetail is issue's detail on connection id as the mirror holds
 // it, for a first paint before IssueDetail answers, with when its read
-// began (Unix milliseconds). It builds no client and makes no tracker
+// began (Unix milliseconds by this computer's wall clock). It builds no client and makes no tracker
 // call, and marks the detail opened now. It fails wrapping ErrNotMirrored
 // when the mirror holds no detail of the issue that this version reads. A
 // detail another read rewrote, or a sweep reached, between its read and
@@ -190,63 +195,115 @@ func (s *Service) MirroredDetail(id string, issue tracker.IssueID) (DetailView, 
 		return DetailView{}, 0, err
 	}
 	defer s.leave()
+	row, err := s.viewRow(id)
+	if err != nil {
+		return DetailView{}, 0, err
+	}
+	opening, err := s.store.BeginMirrorRead(root, millis(s.now()))
+	switch {
+	case errors.Is(err, store.ErrTrackerCacheGone):
+		return DetailView{}, 0, fmt.Errorf("%w: the mirror of issue %s went while it was read", ErrNotMirrored, issue)
+	case err != nil:
+		return DetailView{}, 0, fmt.Errorf("trackerapp: begin the opening of %s: %w", issue, err)
+	}
 	for {
-		m, d, ok, err := s.storedDetail(root, issue)
+		b, doc, ok, err := s.storedDetail(root, issue)
 		switch {
 		case err != nil:
 			return DetailView{}, 0, err
 		case !ok:
-			return DetailView{}, 0, fmt.Errorf("%w: the detail of issue %s", ErrNotMirrored, issue)
+			return DetailView{}, 0, fmt.Errorf("%w: the body of issue %s", ErrNotMirrored, issue)
 		}
-		confirmed, err := s.store.ConfirmMirrorDetail(root, m, millis(s.now()))
+		confirmed, err := s.store.ConfirmMirrorBody(root, b, opening)
 		switch {
 		case errors.Is(err, store.ErrTrackerCacheGone):
 			return DetailView{}, 0, fmt.Errorf("%w: the mirror of issue %s went while it was read", ErrNotMirrored, issue)
 		case err != nil:
-			return DetailView{}, 0, fmt.Errorf("trackerapp: mark the detail of %s opened: %w", issue, err)
-		case confirmed.Stored:
-			v, err := s.detailView(root, d)
-			return v, m.ReadAt, err
+			return DetailView{}, 0, fmt.Errorf("trackerapp: mark the body of %s opened: %w", issue, err)
+		case confirmed:
+			v, _, err := s.detailView(root, row, doc)
+			return v, b.Wall, err
 		}
 	}
 }
 
-// storedDetail is issue's detail as the mirror holds it, stored and
-// decoded; ok is false when the mirror holds none this version reads.
-func (s *Service) storedDetail(root int64, issue tracker.IssueID) (store.MirrorDetail, tracker.Detail, bool, error) {
-	m, ok, err := s.store.GetMirrorDetail(root, string(issue))
+// ticketDoc is a ticket's document: its detail, the update time of the
+// read that brought its body (version), and the evidence of its status
+// time when the detail was read and is held in memory (status; nil for a
+// body the mirror holds, whose record decides it).
+type ticketDoc struct {
+	d       tracker.Detail
+	version int64
+	status  *store.MirrorStatusEvidence
+}
+
+// storedDetail is issue's body as the mirror holds it, stored and decoded
+// with its record's card; ok is false when the mirror holds none this
+// version reads.
+func (s *Service) storedDetail(root int64, issue tracker.IssueID) (store.MirrorBody, ticketDoc, bool, error) {
+	b, ok, err := s.store.GetMirrorBody(root, string(issue))
 	if err != nil {
-		return store.MirrorDetail{}, tracker.Detail{}, false, fmt.Errorf("trackerapp: read the detail of %s from the mirror: %w", issue, err)
+		return store.MirrorBody{}, ticketDoc{}, false, fmt.Errorf("trackerapp: read the body of %s from the mirror: %w", issue, err)
 	}
 	if !ok {
-		return store.MirrorDetail{}, tracker.Detail{}, false, nil
+		return store.MirrorBody{}, ticketDoc{}, false, nil
 	}
-	d, ok := detailOf(m)
-	return m, d, ok, nil
+	doc, ok := bodyOf(b)
+	return b, doc, ok, nil
 }
 
-// detailView is d as a view (detailViews).
-func (s *Service) detailView(root int64, d tracker.Detail) (DetailView, error) {
-	views, err := s.detailViews(root, []tracker.Detail{d})
+// viewRow is connection id's row as its views read it (urlOf): the hold's
+// while the connection's client is in use, else read.
+func (s *Service) viewRow(id string) (store.TrackerConnection, error) {
+	s.opMu.Lock()
+	h := s.heldLocked(id)
+	s.opMu.Unlock()
+	if h != nil {
+		return h.row, nil
+	}
+	return s.get(id)
+}
+
+// urlOf is the web address of c on connection row: the card's own
+// (Linear), or its site and key (Jira, jiraprovider.IssueURL), so a key a
+// project's rename changed shows in the address as in the card.
+func urlOf(row store.TrackerConnection, c tracker.Card) string {
+	if c.URL != "" || row.Kind != store.TrackerKindJira {
+		return c.URL
+	}
+	return jiraprovider.IssueURL(row.Site, c.Key)
+}
+
+// detailView is doc as a view of connection row, with the other issues
+// it shows (detailViews).
+func (s *Service) detailView(root int64, row store.TrackerConnection, doc ticketDoc) (DetailView, []tracker.IssueID, error) {
+	views, shows, err := s.detailViews(root, row, []ticketDoc{doc})
 	if err != nil {
-		return DetailView{}, err
+		return DetailView{}, nil, err
 	}
-	return views[0], nil
+	return views[0], shows[0], nil
 }
 
-// detailViews is each of ds as a view, its names from its own catalog and,
-// for the IDs that leaves out, the mirror's, with when its status began
-// (only when the mirror's card describes the version it shows,
-// statusSinceOf), its parent's key and title, and each linked issue's key,
-// title and status from the mirror's card of it when the mirror keeps one
-// (else from the detail). The cards of every detail are read in one
-// lookup, and then the names of every detail in one, a store lookup's
-// bound at a time; a detail linking more than that bound shows the rest
-// as it has them.
-func (s *Service) detailViews(root int64, ds []tracker.Detail) ([]DetailView, error) {
-	wants := make([][]string, len(ds))
+// detailViews is each of docs as a view of connection row. The card is
+// the issue record's when the mirror keeps the issue, with the time its
+// status began as the record decided it; else the document's own, with
+// that time from the read's evidence (store.MirrorStatusSince). Its names
+// are the mirror's shared catalog's and, for the IDs that leaves out (a
+// comment's author no card names), its own catalog's; its parent's key
+// and title, and each linked issue's key, title and status, from the
+// mirror's card of it when the mirror keeps one (else from the detail).
+// The parent is the shown card's, so a parent another read changed since
+// the body's is looked up too. The cards of every document are read in
+// one lookup (and the parents only the record names in a second), and
+// then the names of every document in one, a store lookup's bound at a
+// time; a document linking more than that bound shows the rest as it has
+// them. It returns each view with the other issues it shows (showsOf of
+// the card it rendered), the dependencies its pump watches.
+func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ticketDoc) ([]DetailView, [][]tracker.IssueID, error) {
+	wants := make([][]string, len(docs))
 	var all idSet
-	for i, d := range ds {
+	for i, doc := range docs {
+		d := doc.d
 		wants[i] = append(wants[i], string(d.Card.ID))
 		for _, id := range showsOf(d) {
 			if len(wants[i]) == readBatch {
@@ -259,52 +316,103 @@ func (s *Service) detailViews(root int64, ds []tracker.Detail) ([]DetailView, er
 		}
 	}
 	mirrored := make(map[string]store.MirrorCard, len(all.ids))
-	for batch := range slices.Chunk(all.ids, readBatch) {
-		cards, err := s.store.ListMirrorCards(root, batch)
-		if err != nil {
-			return nil, fmt.Errorf("trackerapp: read the cards %d details show from the mirror: %w", len(ds), err)
+	lookup := func(ids []string) error {
+		for batch := range slices.Chunk(ids, readBatch) {
+			cards, err := s.store.ListMirrorCards(root, batch)
+			if err != nil {
+				return fmt.Errorf("trackerapp: read the cards %d tickets show from the mirror: %w", len(docs), err)
+			}
+			for _, m := range cards {
+				mirrored[m.IssueID] = m
+			}
 		}
-		for _, m := range cards {
-			mirrored[m.IssueID] = m
+		return nil
+	}
+	if err := lookup(all.ids); err != nil {
+		return nil, nil, err
+	}
+	shown := make([]shownDetail, len(docs))
+	var later idSet
+	for i, doc := range docs {
+		// The parent shown is the shown card's (recordCard).
+		p := string(doc.d.Card.Parent)
+		if m, ok := recordCard(doc, mirrored); ok {
+			p = m.ParentID
+		}
+		if p != "" && !slices.Contains(wants[i], p) {
+			wants[i] = append(wants[i], p)
+			if !all.seen[p] {
+				later.add(p)
+			}
 		}
 	}
-	shown := make([]shownDetail, len(ds))
+	if len(later.ids) > 0 {
+		if err := lookup(later.ids); err != nil {
+			return nil, nil, err
+		}
+	}
 	var users, statuses idSet
-	for i, d := range ds {
-		shown[i] = shownDetailOf(d, wants[i], mirrored)
+	shows := make([][]tracker.IssueID, len(docs))
+	for i, doc := range docs {
+		shown[i] = shownDetailOf(doc, wants[i], mirrored)
 		shown[i].names(&users, &statuses)
+		shows[i] = showsOf(shown[i].d)
 	}
 	names, err := s.names(root, users.ids, statuses.ids)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	views := make([]DetailView, len(ds))
-	for i := range ds {
-		views[i] = shown[i].view(names)
+	views := make([]DetailView, len(docs))
+	for i := range docs {
+		views[i] = shown[i].view(names, row)
 	}
-	return views, nil
+	return views, shows, nil
 }
 
-// shownDetail is a detail with what the mirror's cards show of it: its
-// links named from them, its parent's card and its own.
+// shownDetail is a document with what the mirror's cards show of it: its
+// card, the time its status began, its links named from the cards, its
+// parent's card, and whether its body is of an older version than its
+// card (behind).
 type shownDetail struct {
 	d      tracker.Detail
+	since  int64
+	behind bool
 	links  []tracker.Link
 	parent *tracker.Card
-	own    *store.MirrorCard
 }
 
-// shownDetailOf is d shown from the cards of mirrored that want names: its
-// own issue first, then the others it shows.
-func shownDetailOf(d tracker.Detail, want []string, mirrored map[string]store.MirrorCard) shownDetail {
+// recordCard is the issue record's card of doc when the view shows it:
+// the mirror keeps one, of doc's version or later. It holds every field a
+// card holds as the latest read of any path found it (a project key or a
+// label renamed at an unchanged update time included), and the time its
+// status began as the record decided it. A record card older than the
+// document (a board read of an earlier answer stored the issue's first
+// keep after a direct read of it) is not shown: the document's own card
+// is, so a view never renders a card older than its document.
+func recordCard(doc ticketDoc, mirrored map[string]store.MirrorCard) (store.MirrorCard, bool) {
+	m, ok := mirrored[string(doc.d.Card.ID)]
+	return m, ok && m.UpdatedAt >= doc.version
+}
+
+// shownDetailOf is doc shown from the cards of mirrored that want names:
+// its own card (recordCard, else the document's), then the others it
+// shows. The body is behind when the card shown is of a later version
+// than the body.
+func shownDetailOf(doc ticketDoc, want []string, mirrored map[string]store.MirrorCard) shownDetail {
+	d := doc.d
 	out := shownDetail{d: d, links: slices.Clone(d.Links)}
+	if doc.status != nil {
+		out.since, _ = store.MirrorStatusSince(*doc.status)
+	}
+	if m, ok := recordCard(doc, mirrored); ok {
+		out.d.Card, _ = cardOf(m)
+		out.since = m.StatusSince
+	}
 	cards := make(map[tracker.IssueID]tracker.Card, len(want))
 	for _, id := range want {
 		m, ok := mirrored[id]
 		switch {
-		case !ok:
-		case id == string(d.Card.ID):
-			out.own = &m
+		case !ok, id == string(d.Card.ID):
 		default:
 			if c, ok := cardOf(m); ok {
 				cards[c.ID] = c
@@ -317,9 +425,13 @@ func shownDetailOf(d tracker.Detail, want []string, mirrored map[string]store.Mi
 			ref.Key, ref.Title, ref.Status = c.Key, c.Title, c.Status
 		}
 	}
-	if p, ok := cards[d.Card.Parent]; ok && d.Card.Parent != "" {
+	if p, ok := cards[out.d.Card.Parent]; ok && out.d.Card.Parent != "" {
 		out.parent = &p
 	}
+	// Judged from the card rendered, wherever it came from: a body's own
+	// card is the record's at its read (bodyOf), which may be newer than
+	// the body when the mirror stopped keeping the issue since.
+	out.behind = millis(out.d.Card.Updated) > doc.version
 	return out
 }
 
@@ -345,24 +457,28 @@ func (sd shownDetail) names(users, statuses *idSet) {
 	}
 }
 
-// view is the detail's view, named from its own catalog over mirrored, the
-// mirror's names.
-func (sd shownDetail) view(mirrored catalogNames) DetailView {
+// view is the document's view on connection row, named from mirrored,
+// the mirror's shared names, and its own catalog for the IDs mirrored
+// lacks: a user or status renamed with no issue update shows its new name
+// on the ticket as on the board.
+func (sd shownDetail) view(mirrored catalogNames, row store.TrackerConnection) DetailView {
 	d := sd.d
 	names := mirrored
 	if len(d.Users)+len(d.Statuses) > 0 {
 		names = catalogNames{users: maps.Clone(mirrored.users), statuses: maps.Clone(mirrored.statuses)}
 		for _, u := range d.Users {
-			names.users[string(u.ID)] = u
+			if _, ok := names.users[string(u.ID)]; !ok {
+				names.users[string(u.ID)] = u
+			}
 		}
 		for _, st := range d.Statuses {
-			names.statuses[string(st.ID)] = st
+			if _, ok := names.statuses[string(st.ID)]; !ok {
+				names.statuses[string(st.ID)] = st
+			}
 		}
 	}
 	card := cardView(d.Card, names)
-	if sd.own != nil {
-		card.StatusSince = statusSinceOf(*sd.own, d.Card)
-	}
+	card.StatusSince = sd.since
 	if d.Card.Parent != "" {
 		card.Parent = &ParentView{ID: string(d.Card.Parent)}
 		if p := sd.parent; p != nil {
@@ -370,7 +486,7 @@ func (sd shownDetail) view(mirrored catalogNames) DetailView {
 		}
 	}
 	v := DetailView{
-		Card: card, URL: d.URL, Description: d.Description, Fields: fieldViews(d.Fields),
+		Card: card, BodyBehind: sd.behind, URL: urlOf(row, d.Card), Description: d.Description, Fields: fieldViews(d.Fields),
 		Comments: []CommentView{}, MoreComments: string(d.Comments.Next), Links: []LinkView{},
 		Attachments: []AttachmentView{}, History: []EventView{}, HistoryFrom: millis(d.HistoryFrom), Moves: []MoveView{},
 	}
@@ -406,20 +522,6 @@ func (sd shownDetail) view(mirrored catalogNames) DetailView {
 		v.Moves = append(v.Moves, MoveView{ID: string(m.ID), Name: m.Name, To: names.status(string(m.To)), Fields: fieldViews(m.Fields)})
 	}
 	return v
-}
-
-// statusSinceOf is when c's status began, from m, the mirror's card of
-// the same issue, when m is the version c shows: the same update time and
-// status. Otherwise it is unknown (0): the mirror's time belongs to
-// another status, or to an earlier or a later stay in this one. The store
-// alone decides the time a card keeps (mirrorStatusSinceSQL); a document
-// read ahead of the mirror's card shows none until a card read stores
-// that version.
-func statusSinceOf(m store.MirrorCard, c tracker.Card) int64 {
-	if m.StatusID != string(c.Status) || m.UpdatedAt != millis(c.Updated) {
-		return 0
-	}
-	return m.StatusSince
 }
 
 func fieldViews(fields []tracker.Field) []FieldView {

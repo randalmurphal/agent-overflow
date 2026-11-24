@@ -48,7 +48,7 @@ var ErrTrackerCacheNoBoard = errors.New("store: tracker mirror has no such board
 var ErrTrackerCacheUnlisted = errors.New("store: no project lists the tracker board")
 
 // ErrTrackerCacheSwept is returned by a write of content read outside a
-// board (UpsertMirrorCards, StoreMirrorDetail, ReplaceMirrorHistories)
+// board (UpsertMirrorCards, StoreMirrorTickets, ReplaceMirrorHistories)
 // naming a root sweep earlier than the root's: a sweep deleted issues
 // since the caller captured MirrorSync.Sweep, so the read may describe an
 // issue's earlier lifetime. The caller reads the sync state and the
@@ -127,14 +127,18 @@ func (s *Store) GetMirrorRoot(connectionID string) (rootID int64, ok bool, err e
 // fails with ErrTrackerCacheGone, and so do GetMirrorSync and
 // ReadMirrorRefreshTargets; every other read of it is empty, and
 // GetOrCreateMirrorRoot makes a new root. FinishMirrorCleanup deletes the
-// detached root's rows. A connection's removal detaches its root the same
-// way, through the schema.
+// detached root's rows. The root's read clock is removed, and no read of it
+// begins again (BeginMirrorRead). A connection's removal detaches its root
+// the same way, through the schema (DeleteTrackerConnection).
 func (s *Store) DetachMirror(connectionID string) (detached bool, err error) {
-	detached, err = execChangedTx(s.db, `UPDATE tracker_cache_roots SET connection_id = NULL WHERE connection_id = ? RETURNING id`, connectionID)
+	roots, err := queryInt64s(s.db, `UPDATE tracker_cache_roots SET connection_id = NULL WHERE connection_id = ? RETURNING id`, connectionID)
 	if err != nil {
 		return false, fmt.Errorf("store: detach tracker mirror of connection %s: %w", connectionID, err)
 	}
-	return detached, nil
+	for _, root := range roots {
+		s.forgetMirrorRead(root)
+	}
+	return len(roots) > 0, nil
 }
 
 // mirrorWrite runs fn in one write transaction after checking that rootID
@@ -290,14 +294,18 @@ func mirrorLinksSQL(root string) string {
 
 // mirrorIssueKept is the rule for which issues a mirror keeps, in one
 // place: an issue with a row on a board the mirror shows
-// (mirrorBoardShown), or one a link names (mirrorLinksSQL). An issue the
-// rule does not keep is absent to every read and write and the cleanup
-// sweep removes it. root and issue are SQL expressions naming it.
+// (mirrorBoardShown), one a link names (mirrorLinksSQL), or one a person
+// has open as a ticket (tracker_cache_open_tickets, KeepMirrorTicket). An
+// issue the rule does not keep is absent to every read and write and the
+// cleanup sweep removes it. root and issue are SQL expressions naming it.
 func mirrorIssueKept(root, issue string) string {
 	return `(EXISTS (SELECT 1 FROM tracker_cache_board_issues kept_row
 	          WHERE kept_row.root_id = ` + root + ` AND kept_row.issue_id = ` + issue + `
 	            AND ` + mirrorBoardShown("kept_row.root_id", "kept_row.board_id") + `)
-	  OR EXISTS (SELECT 1 FROM ` + mirrorLinksSQL(root) + ` AND link_ticket.issue_id = ` + issue + `))`
+	  OR EXISTS (SELECT 1 FROM ` + mirrorLinksSQL(root) + ` AND link_ticket.issue_id = ` + issue + `)
+	  OR EXISTS (SELECT 1 FROM tracker_cache_open_tickets kept_open
+	          JOIN tracker_cache_roots open_root ON open_root.id = kept_open.root_id AND open_root.connection_id IS NOT NULL
+	          WHERE kept_open.root_id = ` + root + ` AND kept_open.issue_id = ` + issue + `))`
 }
 
 // mirrorData is a data column's value: never NULL.

@@ -3,6 +3,8 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import PairDeviceModal from './PairDeviceModal.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { TransportError } from '../../transport/wsClient';
+import { getToasts } from '../../stores/toast.svelte';
 
 const INVITE = {
   linkId: 'link-1',
@@ -273,6 +275,318 @@ it('opens discovery pairing for another computer while preserving QR pairing for
   await fireEvent.click(view.getByRole('button', { name: /Phone or tablet/ }));
   await view.findByLabelText('Pairing QR code');
   expect(mint).toHaveBeenCalledExactlyOnceWith('phone', 'full', 'lan');
+});
+
+// Each completion applies only to the opening and the link it started in.
+// The tests close and reopen the modal between a call and its reply, then
+// release the reply.
+describe('<PairDeviceModal> across a reopen', () => {
+  const PROPS = { remoteReachable: true, canEnrollOwnDevice: true, onChanged: () => {} };
+  beforeEach(() => {
+    __setTransportHelloForTest(LEGACY_HELLO);
+  });
+  afterEach(() => {
+    __setTransportHelloForTest(null);
+    vi.useRealTimers();
+  });
+
+  async function reopen(view: ReturnType<typeof renderModal>, onClose: () => void = () => {}): Promise<void> {
+    await view.rerender({ ...PROPS, open: false, onClose });
+    await view.rerender({ ...PROPS, open: true, onClose });
+    await view.findByRole('button', { name: /Phone or tablet/ });
+  }
+
+  async function verifyStage(view: ReturnType<typeof renderModal>): Promise<void> {
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    await vi.advanceTimersByTimeAsync(2_100);
+    await view.findByText('135 791');
+  }
+
+  it('mints again from New link after a link ran out', async () => {
+    vi.useFakeTimers();
+    const minted = setBindingMock('MintDevicePairing', async () => INVITE);
+    setBindingMock('DevicePairingStatus', async () => ({ state: 'expired', expiresAtMs: INVITE.expiresAtMs }));
+    const view = renderModal();
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    await vi.advanceTimersByTimeAsync(2_100);
+    await view.findByText(/ran out before a device opened it/);
+    await fireEvent.click(view.getByRole('button', { name: 'New link' }));
+    const phone = await view.findByRole('button', { name: /Phone or tablet/ });
+    expect(phone).toBeEnabled();
+    await fireEvent.click(phone);
+    expect(minted).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves a link minted for an earlier opening on the pending row', async () => {
+    vi.useFakeTimers();
+    let resolve!: (invite: typeof INVITE) => void;
+    setBindingMock('MintDevicePairing', () => new Promise<typeof INVITE>((done) => { resolve = done; }));
+    const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    const changed = vi.fn();
+    const view = renderModal({ onChanged: changed });
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await reopen(view);
+    resolve(INVITE);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(view.queryByLabelText('Pairing link')).toBeNull();
+    expect(view.getByRole('button', { name: /Phone or tablet/ })).toBeEnabled();
+    expect(poll).not.toHaveBeenCalled();
+  });
+
+  it('shows a device another owner view already approved as paired', async () => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+    setBindingMock('ConfirmDevicePairing', async () => { throw new TransportError('pairing_already_allowed', 'this device is already allowed'); });
+    const view = renderModal();
+    await verifyStage(view);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    await view.findByText('Device paired');
+  });
+
+  it.each([
+    ['accessEnded', 'This device was paired, and its access has since ended or expired. Choose New link to pair it again.'],
+    ['deviceRemoved', 'This device was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose New link.'],
+  ])('says the access was lost, not paired, when the poll finds an approval that is %s', async (state, text) => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+    const view = renderModal();
+    await verifyStage(view);
+    poll.mockResolvedValue({ state, expiresAtMs: INVITE.expiresAtMs });
+    await vi.advanceTimersByTimeAsync(2_100);
+    await view.findByText(text);
+    expect(view.queryByText('Device paired')).toBeNull();
+    expect(view.queryByText(/Nothing was enrolled/)).toBeNull();
+    expect(view.getByRole('button', { name: 'New link' })).toBeEnabled();
+  });
+
+  // Answers can arrive out of the host's order; what the modal shows never
+  // moves backward. A confirmation that lost its access stays ended.
+  // Another owner view approves while this Allow is in flight, a poll reads
+  // it confirmed, and the device then loses its access: the Allow's refusal
+  // names that, and the modal shows it, not "Device paired".
+  it.each([
+    ['pairing_access_ended', 'This device was paired, and its access has since ended or expired. Choose New link to pair it again.'],
+    ['pairing_device_removed', 'This device was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose New link.'],
+  ])('shows the lost access an approval names after a poll said confirmed: %s', async (code, text) => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+    let refuse!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((_, reject) => {
+      refuse = () => reject(new TransportError(code, 'this device was allowed, and has since lost its access'));
+    }));
+    const view = renderModal();
+    await verifyStage(view);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    poll.mockResolvedValue({ state: 'confirmed', expiresAtMs: INVITE.expiresAtMs });
+    await vi.advanceTimersByTimeAsync(2_100);
+    await view.findByText('Device paired');
+    refuse();
+    await view.findByText(text);
+    expect(view.queryByText('Device paired')).toBeNull();
+  });
+
+  // A refusal that names the link's state shows on the modal only while the
+  // modal follows the link and holds that same state; otherwise it is a toast.
+  describe('a refusal the modal does not show', () => {
+    const REMOVED = 'this device was allowed, and its access was removed in Devices';
+    function refusingApproval() {
+      let refuse!: (code: string) => void;
+      setBindingMock('ConfirmDevicePairing', () => new Promise<void>((_, reject) => {
+        refuse = (code) => reject(new TransportError(code, REMOVED));
+      }));
+      return (code: string) => refuse(code);
+    }
+    const toasts = () => getToasts().map((toast) => toast.message);
+
+    it.each(['pairing_access_ended', 'pairing_device_removed'])('is a toast after Escape dismissed the modal: %s', async (code) => {
+      vi.useFakeTimers();
+      setBindingMock('MintDevicePairing', async () => INVITE);
+      setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+      const refuse = refusingApproval();
+      const onClose = vi.fn();
+      const view = renderModal({ onClose });
+      await verifyStage(view);
+      await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+      await fireEvent.keyDown(document, { key: 'Escape' });
+      expect(onClose).toHaveBeenCalledOnce();
+      await view.rerender({ ...PROPS, open: false, onClose });
+      refuse(code);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(toasts()).toEqual([`Failed to allow the device: ${REMOVED}`]);
+    });
+
+    it('is a toast after Done dismissed the modal that a poll showed as paired', async () => {
+      vi.useFakeTimers();
+      setBindingMock('MintDevicePairing', async () => INVITE);
+      const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+      const refuse = refusingApproval();
+      const onClose = vi.fn();
+      const view = renderModal({ onClose });
+      await verifyStage(view);
+      await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+      poll.mockResolvedValue({ state: 'confirmed', expiresAtMs: INVITE.expiresAtMs });
+      await vi.advanceTimersByTimeAsync(2_100);
+      await fireEvent.click(await view.findByRole('button', { name: 'Done' }));
+      expect(onClose).toHaveBeenCalledOnce();
+      await view.rerender({ ...PROPS, open: false, onClose });
+      refuse('pairing_device_removed');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(toasts()).toEqual([`Failed to allow the device: ${REMOVED}`]);
+    });
+
+    it('is a toast after Close dismissed the modal that showed the same ending', async () => {
+      vi.useFakeTimers();
+      setBindingMock('MintDevicePairing', async () => INVITE);
+      const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+      const refuse = refusingApproval();
+      const onClose = vi.fn();
+      const view = renderModal({ onClose });
+      await verifyStage(view);
+      await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+      poll.mockResolvedValue({ state: 'deviceRemoved', expiresAtMs: INVITE.expiresAtMs });
+      await vi.advanceTimersByTimeAsync(2_100);
+      await fireEvent.click(await view.findByRole('button', { name: 'Close' }));
+      expect(onClose).toHaveBeenCalledOnce();
+      await view.rerender({ ...PROPS, open: false, onClose });
+      refuse('pairing_device_removed');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(toasts()).toEqual([`Failed to allow the device: ${REMOVED}`]);
+    });
+
+    // The device's access ended, and it was then removed: the ended screen
+    // says New link, which a removed device cannot use.
+    it('is a toast when the modal holds another ending of the same tier', async () => {
+      vi.useFakeTimers();
+      setBindingMock('MintDevicePairing', async () => INVITE);
+      const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+      const refuse = refusingApproval();
+      const view = renderModal();
+      await verifyStage(view);
+      await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+      poll.mockResolvedValue({ state: 'accessEnded', expiresAtMs: INVITE.expiresAtMs });
+      await vi.advanceTimersByTimeAsync(2_100);
+      await view.findByText('This device was paired, and its access has since ended or expired. Choose New link to pair it again.');
+      refuse('pairing_device_removed');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(toasts()).toEqual([`Failed to allow the device: ${REMOVED}`]);
+    });
+
+    it('is not a toast when the modal shows the refusal\'s own ending', async () => {
+      vi.useFakeTimers();
+      setBindingMock('MintDevicePairing', async () => INVITE);
+      setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+      const refuse = refusingApproval();
+      const view = renderModal();
+      await verifyStage(view);
+      await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+      refuse('pairing_device_removed');
+      await view.findByText('This device was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose New link.');
+      expect(toasts()).toEqual([]);
+    });
+  });
+
+  it('keeps the ended access when a late poll or a late approval reply says confirmed', async () => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    const REDEEMED = { state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs };
+    const poll = setBindingMock('DevicePairingStatus', async () => REDEEMED);
+    let approve!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { approve = done; }));
+    const view = renderModal();
+    await verifyStage(view);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    // A poll that read the link while it was confirmed is still in flight
+    // when a later one finds its access removed.
+    let late!: (value: unknown) => void;
+    poll.mockImplementationOnce(() => new Promise((done) => { late = done; }));
+    await vi.advanceTimersByTimeAsync(2_000);
+    poll.mockResolvedValue({ state: 'accessEnded', expiresAtMs: INVITE.expiresAtMs });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const ended = 'This device was paired, and its access has since ended or expired. Choose New link to pair it again.';
+    await view.findByText(ended);
+    late({ state: 'confirmed', expiresAtMs: INVITE.expiresAtMs });
+    approve();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(view.getByText(ended)).toBeTruthy();
+    expect(view.queryByText('Device paired')).toBeNull();
+  });
+
+  // The share stage follows every answer, not only a redemption.
+  it.each([
+    ['confirmed', 'Device paired'],
+    ['accessEnded', 'This device was paired, and its access has since ended or expired. Choose New link to pair it again.'],
+    ['deviceRemoved', 'This device was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose New link.'],
+  ])('leaves the shared link when the poll says %s', async (state, text) => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    const view = renderModal();
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    poll.mockResolvedValue({ state, expiresAtMs: INVITE.expiresAtMs });
+    await vi.advanceTimersByTimeAsync(2_100);
+    await view.findByText(text);
+    expect(view.queryByLabelText('Pairing link')).toBeNull();
+    const calls = poll.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(poll.mock.calls).toHaveLength(calls);
+  });
+
+  it('does not complete a reopened modal with an approval sent before it closed', async () => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+    let resolve!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((done) => { resolve = done; }));
+    const view = renderModal();
+    await verifyStage(view);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    await reopen(view);
+    resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(view.queryByText('Device paired')).toBeNull();
+    expect(view.getByRole('button', { name: /Phone or tablet/ })).toBeEnabled();
+  });
+
+  it('does not close a reopened modal with a cancellation sent before it closed', async () => {
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    setBindingMock('DevicePairingStatus', async () => ({ state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    let resolve!: () => void;
+    setBindingMock('CancelDevicePairing', () => new Promise<void>((done) => { resolve = done; }));
+    const onClose = vi.fn();
+    const view = renderModal({ onClose });
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    await fireEvent.click(view.getByRole('button', { name: 'Cancel link' }));
+    await reopen(view, onClose);
+    resolve();
+    await new Promise((done) => setTimeout(done, 0));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('does not move a newer link to the comparison with a poll of the previous one', async () => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    let resolve!: (status: { state: string; verificationNumber: string; expiresAtMs: number }) => void;
+    const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'pending', expiresAtMs: INVITE.expiresAtMs }));
+    poll.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const view = renderModal();
+    await fireEvent.click(await view.findByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    await vi.advanceTimersByTimeAsync(2_100);
+    await reopen(view);
+    await fireEvent.click(view.getByRole('button', { name: /Phone or tablet/ }));
+    await view.findByLabelText('Pairing link');
+    resolve({ state: 'redeemed', verificationNumber: '999 999', expiresAtMs: INVITE.expiresAtMs });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(view.queryByText('999 999')).toBeNull();
+    expect(view.getByLabelText('Pairing link')).toBeTruthy();
+  });
 });
 
 describe('<PairDeviceModal> across a hello refresh', () => {

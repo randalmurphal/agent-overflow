@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -25,8 +26,7 @@ var mirrorPoolReads = map[string]int{
 	"ListMirrorWorklogs":      1, // a page of an author's days
 	"ListMirrorIssueWorklogs": 1, // a page of one issue's worklogs
 	"GetMirrorSync":           1, // one board's state
-	"GetMirrorDetail":         1, // one issue's detail
-	"ListMirrorDetailStates":  1, // at most mirrorMaxLookup details without their documents, each by key
+	"GetMirrorBody":           1, // one issue's body
 	// At most mirrorMaxLookup cards, details and boards, each by key: the
 	// cards' rows (one per board holding the issue) and kept issues, the
 	// details, and the boards.
@@ -144,7 +144,7 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 		read{"CountMirrorSections", func() error { _, err := s.CountMirrorSections(root, "10"); return err }},
 		read{"GetMirrorBoard", func() error { _, _, err := s.GetMirrorBoard(root, "10"); return err }},
 		read{"ListMirrorOffBoardLinkedIssues", func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err }},
-		read{"FinishMirrorCleanup", func() error { return s.FinishMirrorCleanup(nil) }},
+		read{"FinishMirrorCleanup", func() error { return s.FinishMirrorCleanup(context.Background(), nil) }},
 	)
 	done := make([]chan error, len(reads))
 	for i, r := range reads {

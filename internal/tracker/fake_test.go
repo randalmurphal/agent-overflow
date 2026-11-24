@@ -32,7 +32,7 @@ func (fakeProvider) ChangedRows(context.Context, DeltaQuery) (RowPage, error) {
 func (fakeProvider) BoardIssues(context.Context, BoardID, time.Time) (Listing, error) {
 	return Listing{}, nil
 }
-func (fakeProvider) BoardRows(context.Context, BoardID, []IssueID) (Rows, error) {
+func (fakeProvider) BoardRows(context.Context, BoardID, []IssueID, Eligibility) (Rows, error) {
 	return Rows{}, nil
 }
 func (fakeProvider) NewRows(context.Context, IssueID, []BoardID) (Placement, error) {

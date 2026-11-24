@@ -54,7 +54,7 @@ func TestMirrorIssueGainingABoardIsHistoryDue(t *testing.T) {
 	early := webHistory("10001")
 	early.BoardsRev = 1
 	early = listedAt(s, root, early, receiptOf(t, s, root, "10001"))
-	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}, MirrorCatalog{}, 0); err != nil || results[0].Changed {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}, MirrorCatalog{}, nextMirrorRead(s, root)); err != nil || results[0].Changed {
 		t.Fatalf("a history read for the earlier boards = %+v, %v", results, err)
 	}
 	if due := mirrorDue(t, s, root); due != "[{10001 [10 11] 2}]" {
@@ -62,15 +62,16 @@ func TestMirrorIssueGainingABoardIsHistoryDue(t *testing.T) {
 	}
 	full := webHistory("10001")
 	full.BoardsRev = 2
-	mustReplaceHistory(t, s, root, full, MirrorWrite{Changed: true})
+	// The same changes, read for both boards: nothing shown changes.
+	mustReplaceHistory(t, s, root, full, MirrorWrite{})
 	if due := mirrorDue(t, s, root); due != "[]" {
 		t.Fatalf("due after the history for both boards = %s", due)
 	}
-	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}, MirrorCatalog{}, 0); err != nil || !results[0].Superseded {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}, MirrorCatalog{}, nextMirrorRead(s, root)); err != nil || !results[0].Superseded {
 		t.Fatalf("a history listed before the stored one = %+v, %v; want superseded", results, err)
 	}
 	// Losing a board does not make it due.
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "11", Missing: []string{"10001"}, ReadAt: 5})); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "11", Missing: []string{"10001"}, ReadAt: mirrorReadAt(5)})); err != nil {
 		t.Fatal(err)
 	}
 	if due := mirrorDue(t, s, root); due != "[]" {
@@ -80,7 +81,8 @@ func TestMirrorIssueGainingABoardIsHistoryDue(t *testing.T) {
 
 // A staged (long) history records the boards revision it was read for and
 // its wait as the batch does, and an identical one read for a later
-// revision records it with no change written.
+// revision, or only its wait differing, records it and reports no change:
+// nothing a view shows changed.
 func TestMirrorLongHistoryRecordsItsBoards(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -92,7 +94,7 @@ func TestMirrorLongHistoryRecordsItsBoards(t *testing.T) {
 		t.Fatalf("due after the issue gained board 11 = %s", due)
 	}
 	long.BoardsRev = 2
-	mustReplaceHistory(t, s, root, long, MirrorWrite{Changed: true})
+	mustReplaceHistory(t, s, root, long, MirrorWrite{})
 	if due := mirrorDue(t, s, root); due != "[]" {
 		t.Fatalf("due after the same long history read for both boards = %s", due)
 	}
@@ -100,7 +102,7 @@ func TestMirrorLongHistoryRecordsItsBoards(t *testing.T) {
 	// differs from the stored one or it is staged whole: each issue is due
 	// once its wait is over.
 	long.Wait = 60_000
-	mustReplaceHistory(t, s, root, long, MirrorWrite{Changed: true})
+	mustReplaceHistory(t, s, root, long, MirrorWrite{})
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10002", 5, "b")), nil)
 	staged := statusHistory("10002", clearMirrorChunk+100)
 	staged.Wait = 60_000
@@ -124,7 +126,7 @@ func TestMirrorHistoryAheadOfItsBoardsIsRefused(t *testing.T) {
 		ahead.BoardsRev = 2
 		valid := webHistory("10002")
 		valid.BoardsRev = 1
-		_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{valid, ahead}), MirrorCatalog{}, 0)
+		_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{valid, ahead}), MirrorCatalog{}, nextMirrorRead(s, root))
 		if !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Fatalf("%s: a history ahead of its issue's boards: %v; want invalid", name, err)
 		}
@@ -174,12 +176,15 @@ func TestMirrorHistoryWaitsUntilAReadCanBeFinal(t *testing.T) {
 			t.Fatalf("%s: due at %d = %s; want %s", what, now, got, want)
 		}
 	}
-	read := func(at, wait int64) {
+	// shown is whether the read changes what a view shows: a history with
+	// no changes gives the card no status time until a final read finds it
+	// complete from the creation.
+	read := func(at, wait int64, shown bool) {
 		t.Helper()
-		mustReplaceHistory(t, s, root, MirrorHistory{IssueID: "10001", AnsweredAt: at, Wait: wait}, MirrorWrite{Changed: true})
+		mustReplaceHistory(t, s, root, MirrorHistory{IssueID: "10001", AnsweredAt: at, Wait: wait}, MirrorWrite{Changed: shown})
 	}
 	expect("never read", 1, "[10001 at 100000 read for 0 answered 0 wait 0]")
-	read(answered, wait)
+	read(answered, wait, false)
 	expect("just answered", answered, "[]")
 	expect("inside the wait", answered+wait-1, "[]")
 	expect("the wait over", answered+wait, "[10001 at 100000 read for 100000 answered 7000000 wait 60000]")
@@ -188,18 +193,18 @@ func TestMirrorHistoryWaitsUntilAReadCanBeFinal(t *testing.T) {
 	// the new board were never read.
 	writeMirrorBoard(t, s, root, "12", []MirrorRow{webRow("10001", 100_000, "a")})
 	expect("a board gained in the wait", answered+1, "[10001 at 100000 read for 100000 answered 7000000 wait 60000]")
-	read(answered+1, wait)
+	read(answered+1, wait, false)
 	expect("the board's history read", answered+1, "[]")
 	// Updated after the answer, within the same second of the tracker's
 	// clock: a later version, due at once, and the read of it waits for
 	// its own answer's wait.
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 100_500, "a")), nil)
 	expect("updated in the wait", answered+2, "[10001 at 100500 read for 100000 answered 7000001 wait 60000]")
-	read(answered+2, wait)
+	read(answered+2, wait, false)
 	expect("inside the new wait", answered+2+wait-1, "[]")
 	expect("the new wait over", answered+2+wait, "[10001 at 100500 read for 100500 answered 7000002 wait 60000]")
 	// Final: never due again, whatever the clock says.
-	read(answered+70_000, 0)
+	read(answered+70_000, 0, true)
 	expect("final", answered+70_000, "[]")
 	expect("final, the clock stepped back", 1, "[]")
 	expect("final, much later", answered+1_000_000_000, "[]")
@@ -237,7 +242,7 @@ func seedHistoryDue(t *testing.T, w, d int) (*Store, int64) {
 func historyDueCosts(t *testing.T, w, d int, now int64) (probe, list int) {
 	t.Helper()
 	s, root := seedHistoryDue(t, w, d)
-	return statementVMSteps(t, s, mirrorSyncStateSQL, root, "10", now), statementVMSteps(t, s, mirrorHistoryDueSQL, root, now)
+	return statementVMSteps(t, s, mirrorSyncStateSQL, root, "10", now), statementVMSteps(t, s, mirrorHistoryDueSQL, root, now, "[]")
 }
 
 // Neither read of the due rule grows with the issues waiting out their
@@ -286,7 +291,8 @@ func TestMirrorHistoryDueReadsCostAPage(t *testing.T) {
 		query   string
 		indexes []string
 	}{
-		"listing": {mirrorHistoryDueSQL, []string{"SEARCH i USING INDEX idx_tracker_cache_issues_history_waiting (root_id=? AND <expr><?)",
+		"listing": {mirrorHistoryDueSQL, []string{"SCAN f VIRTUAL TABLE INDEX 1:\nSEARCH i USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=? AND issue_id=?)",
+			"SEARCH i USING INDEX idx_tracker_cache_issues_history_waiting (root_id=? AND <expr><?)",
 			"SEARCH i USING INDEX idx_tracker_cache_issues_history_answered (root_id=? AND history_answered_at>?)",
 			"SEARCH i USING INDEX idx_tracker_cache_issues_history_due (root_id=?)"}},
 		"probe": {mirrorSyncStateSQL, []string{"SEARCH hd USING INDEX idx_tracker_cache_issues_history_waiting (root_id=? AND <expr><?)",
@@ -345,10 +351,10 @@ func TestMirrorHistoryDueListsThePageInArmOrder(t *testing.T) {
 	}
 	// Another read of the first issue lands first: this read's history of
 	// it is superseded, and the other's cleared it.
-	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories[:1], MirrorCatalog{}, 0); err != nil {
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories[:1], MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 		t.Fatal(err)
 	}
-	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories, MirrorCatalog{}, 0); err != nil || !results[0].Superseded {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories, MirrorCatalog{}, nextMirrorRead(s, root)); err != nil || !results[0].Superseded {
 		t.Fatalf("the listed issues' reads: %+v, %v; want the first superseded", results, err)
 	}
 	if list, more, err := s.ListMirrorHistoryDue(root, now); err != nil || more || len(list) != 0 {
@@ -376,12 +382,22 @@ func TestListMirrorHistoryDue(t *testing.T) {
 	if err != nil || !more || len(first) != mirrorHistoryDuePage || first[0].IssueID != "10001" || first[1].IssueID != "10003" {
 		t.Fatalf("first page = %d IDs from %v, more %v, %v; want %d from 10001, 10003", len(first), first[:2], more, err, mirrorHistoryDuePage)
 	}
+	// Issues asked first lead the page when due, each once; one not due is
+	// not listed.
+	asked, more, err := s.ListMirrorHistoryDue(root, testNow, "10201", "10000", "10202")
+	if err != nil || !more || len(asked) != mirrorHistoryDuePage || asked[0].IssueID != "10201" || asked[1].IssueID != "10202" ||
+		asked[2].IssueID != "10001" || slices.ContainsFunc(asked[2:], func(d MirrorHistoryDue) bool { return d.IssueID > "10200" }) {
+		t.Fatalf("asked first = %d IDs from %v, more %v, %v; want 10201, 10202 then 10001", len(asked), asked[:3], more, err)
+	}
+	if _, _, err := s.ListMirrorHistoryDue(root, testNow, make([]string, mirrorHistoryDuePage+1)...); !errors.Is(err, ErrInvalidTrackerCache) {
+		t.Fatalf("over a page asked first: %v", err)
+	}
 	for batch := range slices.Chunk(first, mirrorHistoryBatch) {
 		histories := make([]MirrorHistory, len(batch))
 		for i, d := range batch {
 			histories[i] = MirrorHistory{IssueID: d.IssueID, For: d.UpdatedAt, AnsweredAt: testNow, BoardsRev: d.BoardsRev, Receipt: d.Receipt}
 		}
-		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories, MirrorCatalog{}, 0); err != nil {
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories, MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -390,7 +406,7 @@ func TestListMirrorHistoryDue(t *testing.T) {
 		t.Fatalf("second page = %v, %v, %v", rest, more, err)
 	}
 	// An unkept issue is not due; an update after the history makes one due.
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10202"}, ReadAt: 2})); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10202"}, ReadAt: mirrorReadAt(2)})); err != nil {
 		t.Fatal(err)
 	}
 	if due, more, err := s.ListMirrorHistoryDue(root, testNow); err != nil || more || len(due) != 0 {
@@ -412,7 +428,7 @@ func TestMirrorHistoryDueCarriesItsBoards(t *testing.T) {
 	}
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "12")
 	linkIssue(t, s, "linked", "10005")
-	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10005", 9)}, MirrorCatalog{}, 1); err != nil {
+	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10005", 9)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {
 		t.Fatal(err)
 	}
 	due, more, err := s.ListMirrorHistoryDue(root, testNow)

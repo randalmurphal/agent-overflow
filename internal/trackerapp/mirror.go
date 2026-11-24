@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -27,28 +28,38 @@ import (
 // issues, and where a board's first delta walk starts.
 const HistoryWindow = 180 * 24 * time.Hour
 
+// window is the start of the history window now: the closed sprints a
+// board keeps (Provider.Structure) and a Jira card names
+// (jiraprovider.Options.SprintsFrom) closed at or after it.
+func (s *Service) window() time.Time { return s.now().Add(-HistoryWindow) }
+
 // MirrorStore is the mirror accessors the service uses.
 type MirrorStore interface {
 	GetOrCreateMirrorRoot(connectionID string) (int64, bool, error)
 	GetMirrorRoot(connectionID string) (int64, bool, error)
 	DetachMirror(connectionID string) (bool, error)
-	FinishMirrorCleanup(pause store.ChunkPause) error
+	FinishMirrorCleanup(ctx context.Context, pause store.ChunkPause) error
+	KeepMirrorTicket(rootID int64, issueID string, session, pump int64, opened store.MirrorRead) (store.MirrorBind, bool, error)
+	ActivateMirrorBind(b store.MirrorBind) bool
+	EndMirrorBind(b store.MirrorBind)
+	DropMirrorTicket(session, pump int64) (bool, error)
+	DropMirrorTicketsOfOtherSessions(session int64) (int64, error)
 
+	BeginMirrorRead(rootID, now int64) (store.MirrorRead, error)
 	GetMirrorSync(rootID int64, boardID string, now int64) (store.MirrorSync, bool, error)
-	RecordMirrorSyncAttempt(rootID int64, boardID string, a store.MirrorSyncAttempt) (bool, error)
+	RecordMirrorSyncAttempt(rootID int64, boardID string, a store.MirrorSyncAttempt) (store.MirrorSyncOutcome, bool, error)
 
 	WriteMirrorRowPage(rootID int64, page store.MirrorRowPage, cursor []byte) (store.MirrorChanges, error)
 	WriteMirrorRows(rootID int64, page store.MirrorRowPage) (store.MirrorChanges, error)
-	UpsertMirrorCards(rootID, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, readAt int64) (store.MirrorChanges, error)
-	ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (store.MirrorReconcile, error)
+	UpsertMirrorCards(rootID, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, read store.MirrorRead) (store.MirrorChanges, error)
+	ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, read store.MirrorRead) (store.MirrorReconcile, error)
 	ReplaceMirrorStructure(rootID int64, st store.MirrorStructure) (store.MirrorStructureWrite, error)
-	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, readAt int64) ([]store.MirrorHistoryResult, bool, error)
-	ListMirrorHistoryDue(rootID int64, now int64) ([]store.MirrorHistoryDue, bool, error)
-	StoreMirrorDetails(rootID, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error)
-	ConfirmMirrorDetail(rootID int64, d store.MirrorDetail, openedAt int64) (store.MirrorDetailWrite, error)
+	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error)
+	ListMirrorHistoryDue(rootID int64, now int64, first ...string) ([]store.MirrorHistoryDue, bool, error)
+	StoreMirrorTickets(rootID, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog, opened, read store.MirrorRead) (store.MirrorTicketsWrite, error)
+	ConfirmMirrorBody(rootID int64, b store.MirrorBody, opened store.MirrorRead) (bool, error)
 
-	GetMirrorDetail(rootID int64, issueID string) (store.MirrorDetail, bool, error)
-	ListMirrorDetailStates(rootID int64, issueIDs []string) ([]store.MirrorDetail, error)
+	GetMirrorBody(rootID int64, issueID string) (store.MirrorBody, bool, error)
 	GetMirrorBoard(rootID int64, boardID string) (store.MirrorStructure, bool, error)
 	GetMirrorCatalog(rootID int64, users, statuses []string) (store.MirrorCatalog, error)
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)
@@ -60,7 +71,7 @@ type MirrorStore interface {
 	ListMirrorIssueBoards(rootID int64, issueIDs, parentIDs []string) ([]store.MirrorIssueBoard, error)
 	ReadMirrorRefreshTargets(rootID int64, cardIDs, detailIDs, boardIDs []string) (store.MirrorRefreshTargets, error)
 
-	ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay string, readAt int64, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
+	ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
 	ListMirrorWorklogs(rootID int64, authorID, fromDay, toDay string) ([]store.MirrorWorklog, bool, error)
 }
 
@@ -203,17 +214,26 @@ type Changes struct {
 	// estimate, sprints, or the users and statuses read with them (which
 	// Catalog reports too).
 	Structure bool `json:"structure,omitempty"`
-	// History are the issues whose stored changes were replaced.
+	// History are the issues whose stored changes were replaced, or whose
+	// record's status time a ticket read moved.
 	History []tracker.IssueID `json:"history,omitempty"`
-	// Details are the issues whose stored detail changed, and Dropped
-	// those whose detail left the mirror to keep the most recently opened.
+	// Details are the issues whose stored ticket body changed or moved to
+	// another version, and Dropped those whose body left the mirror to keep
+	// the open tickets' and the most recently opened.
 	Details []tracker.IssueID `json:"details,omitempty"`
 	Dropped []tracker.IssueID `json:"dropped,omitempty"`
+	// Visibility are the issues whose record reads began or stopped
+	// serving with no write of it: the last open ticket that kept one
+	// closed (store DropMirrorTicket), or a ticket opened again before the
+	// cleanup removed it kept it again (store KeepMirrorTicket). A view
+	// that shows one as another's parent or link shows it without or with
+	// its card.
+	Visibility []tracker.IssueID `json:"visibility,omitempty"`
 }
 
 // Empty reports changes that name nothing.
 func (c Changes) Empty() bool {
-	return len(c.Cards)+len(c.Rows)+len(c.Removed)+len(c.History)+len(c.Details)+len(c.Dropped) == 0 &&
+	return len(c.Cards)+len(c.Rows)+len(c.Removed)+len(c.History)+len(c.Details)+len(c.Dropped)+len(c.Visibility) == 0 &&
 		!c.Catalog && !c.Structure
 }
 
@@ -227,6 +247,7 @@ func (c *Changes) add(o Changes) {
 	c.History = unite(c.History, o.History)
 	c.Details = unite(c.Details, o.Details)
 	c.Dropped = unite(c.Dropped, o.Dropped)
+	c.Visibility = unite(c.Visibility, o.Visibility)
 	c.Catalog = c.Catalog || o.Catalog
 	c.Structure = c.Structure || o.Structure
 }
@@ -246,6 +267,7 @@ func (l *changeLog) add(o Changes) {
 	l.c.History = append(l.c.History, o.History...)
 	l.c.Details = append(l.c.Details, o.Details...)
 	l.c.Dropped = append(l.c.Dropped, o.Dropped...)
+	l.c.Visibility = append(l.c.Visibility, o.Visibility...)
 	l.c.Catalog = l.c.Catalog || o.Catalog
 	l.c.Structure = l.c.Structure || o.Structure
 }
@@ -254,7 +276,7 @@ func (l *changeLog) add(o Changes) {
 func (l *changeLog) changes() Changes {
 	c := &l.c
 	c.Cards, c.Rows, c.Added, c.Removed = ordered(c.Cards), ordered(c.Rows), ordered(c.Added), ordered(c.Removed)
-	c.History, c.Details, c.Dropped = ordered(c.History), ordered(c.Details), ordered(c.Dropped)
+	c.History, c.Details, c.Dropped, c.Visibility = ordered(c.History), ordered(c.Details), ordered(c.Dropped), ordered(c.Visibility)
 	return *c
 }
 

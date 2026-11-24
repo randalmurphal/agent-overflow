@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -133,7 +134,10 @@ type mirrorChangeRow struct {
 
 // mirrorHistoryRow is one issue's history as the history statements read
 // it: its change count per kind (index kind-1), the generation it is
-// written to, and its times. Changes reports that a statement before the
+// written to, its times, and the status result it gives the issue's card
+// (Status, a mirrorStatusResult, giving Since; zero for none), decided by
+// the writer from the issue's state (statusOf), with the order time of the
+// read it came from (Read). Changes reports that a statement before the
 // times' changed its changes, so the times' advances its receipt too.
 type mirrorHistoryRow struct {
 	Issue     string `json:"i"`
@@ -144,6 +148,10 @@ type mirrorHistoryRow struct {
 	Answered  int64  `json:"a"`
 	Wait      int64  `json:"w"`
 	BoardsRev int64  `json:"b"`
+	Status    int    `json:"x"`
+	Since     int64  `json:"s"`
+	Of        string `json:"t"`
+	Read      int64  `json:"r"`
 	Changes   bool   `json:"c,omitempty"`
 }
 
@@ -154,48 +162,6 @@ type mirrorHistoryRow struct {
 type MirrorHistoryResult struct {
 	IssueID                     string
 	Changed, Superseded, Unkept bool
-}
-
-// mirrorStatusSinceOf names, as SQL expressions, what the time an issue's
-// status began derives from: the card (issue, status, update and creation
-// times) and the stored history (the time it is complete from, the update
-// time it was read for and its wait, and its generation). kept is the time
-// the row holds while the history does not cover the card: mirrorStatusKept
-// or, for a write that brings a card, mirrorStatusKeptBy.
-type mirrorStatusSinceOf struct {
-	issue, status, updatedAt, createdAt, from, readFor, wait, gen, kept string
-}
-
-// mirrorStatusKept keeps the stored time: the write leaves the card as it
-// is.
-const mirrorStatusKept = "tracker_cache_issues.status_since"
-
-// mirrorStatusKeptBy keeps the stored time when the card the write brings
-// has the stored card's status, and holds zero when it has another: the
-// stored time is that of a status the issue left.
-func mirrorStatusKeptBy(status string) string {
-	return `iif(` + status + ` IS tracker_cache_issues.status_id, tracker_cache_issues.status_since, 0)`
-}
-
-// mirrorStatusSinceSQL is the one rule for when a card's status began, in
-// statements whose ?1 is the root. When the history was read for the
-// card's update time or a later one and is final for it (no wait), it is
-// the time of the history's last status change when that change led to
-// the card's status, zero when it led elsewhere, and the issue's creation
-// when the history is complete from creation and holds no status change.
-// Until then it is of.kept: the last time so derived while the card keeps
-// its status, so an edit that changes no status leaves the time standing,
-// and zero once the status changes. An issue that left its status and
-// came back between two reads of its card keeps the earlier stay's time
-// until the history read for the newer card is stored. Every writer of
-// either side applies the rule (the card upsert, the history writes). The
-// last status change is one key probe, newest first.
-func mirrorStatusSinceSQL(of mirrorStatusSinceOf) string {
-	return `CASE WHEN ` + of.updatedAt + ` > ` + of.readFor + ` OR ` + of.wait + ` > 0 THEN ` + of.kept + ` ELSE coalesce(
-	  (SELECT iif(sc.to_value = ` + of.status + `, sc.at, 0) FROM tracker_cache_changes sc
-	    WHERE sc.root_id = ?1 AND sc.issue_id = ` + of.issue + ` AND sc.gen = ` + of.gen + ` AND sc.kind = 1
-	    ORDER BY sc.seq DESC LIMIT 1),
-	  iif(` + of.from + ` = 0, ` + of.createdAt + `, 0)) END`
 }
 
 // mirrorRemovalsSQL counts, capped at a chunk and one, the stored changes
@@ -220,7 +186,8 @@ var (
 	// many stored changes the history would remove.
 	mirrorHistoryStateSQL = `SELECT h.value ->> 'i', i.history_from, i.history_for, i.history_answered_at, i.history_wait,
 		i.history_boards_rev, i.history_receipt, i.boards_rev, i.updated_at, i.history_gen, i.history_dirty, ` +
-		mirrorIssueKept("i.root_id", "i.issue_id") + `, ` + mirrorRemovalsSQL + `
+		mirrorIssueKept("i.root_id", "i.issue_id") + `, ` + mirrorRemovalsSQL + `, i.status_id, i.created_at, i.status_since,
+		i.status_final_for
 		FROM json_each(?2) h CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = h.value ->> 'i'`
 	mirrorChangesUpsertSQL = `INSERT INTO tracker_cache_changes(root_id, issue_id, gen, kind, seq, at, author_id, board_id,
 		        from_value, to_value, from_number, to_number)
@@ -238,28 +205,60 @@ var (
 		  CROSS JOIN tracker_cache_changes c ON c.root_id = ?1 AND c.issue_id = h.value ->> 'i' AND c.gen = h.value ->> 'g'
 		 WHERE c.seq >= h.value -> 'n' ->> (c.kind - 1))
 		RETURNING issue_id`
-	// mirrorHistoryTimesSQL writes each listed issue's times, derives its
-	// status time from its stored history and advances its receipt when
-	// they or its changes changed, finding each issue by key from the
-	// list; an UPDATE FROM the list would walk the root's issues.
-	mirrorHistoryTimesSQL = `UPDATE tracker_cache_issues
-		SET (history_from, history_for, history_answered_at, history_wait, history_boards_rev, status_since, history_receipt) = (` +
-		mirrorHistoryTimesOf(", tracker_cache_issues.history_receipt + 1") + `)
-		WHERE root_id = ?1 AND issue_id IN (SELECT value ->> 'i' FROM json_each(?2))
-		  AND ((history_from, history_for, history_answered_at, history_wait, history_boards_rev, status_since) IS NOT (` +
-		mirrorHistoryTimesOf("") + `)
-		    OR coalesce((SELECT h.value ->> 'c' FROM json_each(?2) h WHERE h.value ->> 'i' = tracker_cache_issues.issue_id), 0))
-		RETURNING issue_id`
+	// mirrorHistoryTimesSQL writes each listed issue's times and the
+	// status result they give its card (mirrorStatusWriteSQL), and
+	// advances its receipt when they or its changes changed. It returns
+	// each issue it wrote with the status time and finality it left, which
+	// the writer compares with those it read (writeMirrorHistoryTimesTx).
+	// The list, materialized, drives the join and finds each issue by its
+	// primary key (as the ticket move does, mirrorTicketMoveSQL); it names
+	// an issue once.
+	mirrorHistoryTimesSQL = `WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))
+		UPDATE tracker_cache_issues
+		SET (history_from, history_for, history_answered_at, history_wait, history_boards_rev, status_since, status_final_for,
+		     status_read_at, history_receipt) = (` + mirrorHistoryTimesOf(", tracker_cache_issues.history_receipt + 1") + `)
+		FROM h
+		WHERE root_id = ?1 AND issue_id = h.value ->> 'i'
+		  AND ((history_from, history_for, history_answered_at, history_wait, history_boards_rev, status_since, status_final_for,
+		        status_read_at) IS NOT (` + mirrorHistoryTimesOf("") + `)
+		    OR coalesce(h.value ->> 'c', 0))
+		RETURNING issue_id, status_since, status_final_for >= updated_at`
 )
 
-// mirrorHistoryTimesOf reads the times the list holds for the issue being
-// updated, the status time they give its card, and then extra.
+// mirrorHistoryTimesOf lists the times the list's entry h holds for the
+// issue being updated, the status time, its finality and its read order
+// their result gives its card, and then extra.
 func mirrorHistoryTimesOf(extra string) string {
-	return `SELECT h.value ->> 'f', h.value ->> 'v', h.value ->> 'a', h.value ->> 'w', h.value ->> 'b', ` +
-		mirrorStatusSinceSQL(mirrorStatusSinceOf{
-			issue: "tracker_cache_issues.issue_id", status: "tracker_cache_issues.status_id", updatedAt: "tracker_cache_issues.updated_at",
-			createdAt: "tracker_cache_issues.created_at", from: "(h.value ->> 'f')", readFor: "(h.value ->> 'v')", wait: "(h.value ->> 'w')",
-			gen: "tracker_cache_issues.history_gen", kept: mirrorStatusKept}) + extra + ` FROM json_each(?2) h WHERE h.value ->> 'i' = tracker_cache_issues.issue_id`
+	since, finalFor, read := mirrorStatusWriteSQL("(h.value ->> 'x')", "(h.value ->> 's')", "(h.value ->> 'v')", "(h.value ->> 't')",
+		"(h.value ->> 'r')")
+	return `h.value ->> 'f', h.value ->> 'v', h.value ->> 'a', h.value ->> 'w', h.value ->> 'b', ` + since + `, ` + finalFor + `, ` + read + extra
+}
+
+// writeMirrorHistoryTimesTx runs mirrorHistoryTimesSQL over listed and
+// returns the issues whose shown status changed: its time or whether a
+// final read decided it, against states, the issues' state the same
+// transaction read before. A write that moved only the history's times or
+// the order of its status evidence (a newer read of the same provisional
+// result) changed nothing a view shows of the issue's status.
+func writeMirrorHistoryTimesTx(tx *sql.Tx, rootID int64, listed string, states map[string]mirrorHistoryState) ([]string, error) {
+	var changed []string
+	err := scanMirrorRows(tx, mirrorHistoryTimesSQL, []any{rootID, listed}, func(r rowScanner) error {
+		var id string
+		var since int64
+		var final bool
+		if err := r.Scan(&id, &since, &final); err != nil {
+			return err
+		}
+		st, ok := states[id]
+		if !ok {
+			return fmt.Errorf("issue %s written with no state read", id)
+		}
+		if since != st.since || final != st.final() {
+			changed = append(changed, id)
+		}
+		return nil
+	})
+	return changed, err
 }
 
 // mirrorHistoryInput is one checked history, encoded at generation 0; a
@@ -295,13 +294,15 @@ func (in mirrorHistoryInput) setGen(gen int64) {
 	}
 }
 
-func newMirrorHistoryInput(h MirrorHistory) (mirrorHistoryInput, error) {
+// newMirrorHistoryInput checks h, read by the read that began at readAt
+// (an order time, which ReplaceMirrorHistories checks), and encodes it.
+func newMirrorHistoryInput(h MirrorHistory, readAt int64) (mirrorHistoryInput, error) {
 	if h.IssueID == "" || h.For <= 0 || h.CompleteFrom < 0 || h.BoardsRev < 0 || h.AnsweredAt <= 0 || h.Wait < 0 || h.Receipt < 0 {
 		return mirrorHistoryInput{}, fmt.Errorf("%w: a history needs its issue, the update time it was read for, "+
 			"the time its answer arrived, a wait of zero or more and its receipt", ErrInvalidTrackerCache)
 	}
 	in := mirrorHistoryInput{h: h, row: mirrorHistoryRow{Issue: h.IssueID, From: h.CompleteFrom, For: h.For, Answered: h.AnsweredAt,
-		Wait: h.Wait, BoardsRev: h.BoardsRev},
+		Wait: h.Wait, BoardsRev: h.BoardsRev, Read: readAt},
 		changes: make([]mirrorChangeRow, len(h.Changes))}
 	for i, c := range h.Changes {
 		if err := c.check(); err != nil {

@@ -127,7 +127,8 @@ func TestAWriteReachesTheFunnelOnce(t *testing.T) {
 }
 
 // A refresh that could not read an open ticket tells the ticket the
-// failure, and the connection's round retries the read on its schedule
+// failure, then its view with the card the refresh stored over the body
+// it held, and the connection's round retries the read on its schedule
 // with no round due: the ticket recovers on its own.
 func TestAFailedRefreshOfAnOpenTicketIsRetried(t *testing.T) {
 	t.Parallel()
@@ -152,8 +153,9 @@ func TestAFailedRefreshOfAnOpenTicketIsRetried(t *testing.T) {
 	if _, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"New"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	got := f.events.issueEvents(t, 3)[1:]
-	if got[0].Failure == nil || got[0].Failure.Kind != string(FailureTransient) || got[1].Failure != nil || !got[1].Changed {
+	got := f.events.issueEvents(t, 4)[1:]
+	if got[0].Failure == nil || got[0].Failure.Kind != string(FailureTransient) || got[0].Changed ||
+		got[1].Failure == nil || !got[1].Changed || got[2].Failure != nil || !got[2].Changed {
 		t.Fatalf("events %+v", got)
 	}
 }
@@ -169,16 +171,16 @@ type crossingStore struct {
 	release chan struct{}
 }
 
-func (s *crossingStore) GetMirrorDetail(root int64, issue string) (store.MirrorDetail, bool, error) {
+func (s *crossingStore) GetMirrorBody(root int64, issue string) (store.MirrorBody, bool, error) {
 	if s.armed.Load() {
 		<-s.stored
 	}
-	return s.Store.GetMirrorDetail(root, issue)
+	return s.Store.GetMirrorBody(root, issue)
 }
 
-func (s *crossingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error) {
-	out, err := s.Store.StoreMirrorDetails(root, sweep, docs, openedAt, readAt)
-	if s.armed.Load() {
+func (s *crossingStore) StoreMirrorTickets(root, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog, opened, read store.MirrorRead) (store.MirrorTicketsWrite, error) {
+	out, err := s.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
+	if s.armed.Load() && slices.ContainsFunc(tickets, func(t store.MirrorTicket) bool { return t.Body != nil }) {
 		close(s.stored)
 		<-s.release
 	}

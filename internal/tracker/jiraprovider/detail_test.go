@@ -140,8 +140,9 @@ func TestDetail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.URL != "https://example.atlassian.net/browse/WEB-1" || d.Card.Key != "WEB-1" || d.Description != adf.ToMarkdown(adf.Doc(para("The description"))) {
-		t.Errorf("detail %s %q", d.URL, d.Description)
+	if u := IssueURL("https://example.atlassian.net/", d.Card.Key); u != "https://example.atlassian.net/browse/WEB-1" || d.Card.URL != "" ||
+		d.Description != adf.ToMarkdown(adf.Doc(para("The description"))) {
+		t.Errorf("detail %s, card URL %q, %q", u, d.Card.URL, d.Description)
 	}
 	byID := map[tracker.FieldID]tracker.Field{}
 	var ids []string

@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+// signClaims renders claims the way an accessSigner does, for tests that
+// need a credential production would not issue (a foreign key, a future
+// issue time, a session that does not exist).
+func signClaims(claims Claims, secret []byte, backendID string) (string, error) {
+	payload, err := encodeClaims(claims)
+	if err != nil {
+		return "", err
+	}
+	return renderClaims(payload, secret, backendID), nil
+}
+
 func TestClaimsRoundTrip(t *testing.T) {
 	secret := []byte("a 32 byte secret for the mac....")
 	want := Claims{

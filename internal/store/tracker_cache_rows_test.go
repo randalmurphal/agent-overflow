@@ -2,8 +2,9 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
-	"strings"
+	"slices"
 	"testing"
 )
 
@@ -88,7 +89,7 @@ func TestMirrorRowsFollowTheirReadOrder(t *testing.T) {
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	at := func(readAt int64, rows ...MirrorRow) MirrorRowPage {
 		p := webPage("10", rows...)
-		p.ReadAt = readAt
+		p.ReadAt = mirrorReadAt(readAt)
 		return p
 	}
 	mustWriteRowPage(t, s, root, at(20, webRow("10001", 5, "late"), webRow("10002", 5, "b")), nil)
@@ -100,11 +101,11 @@ func TestMirrorRowsFollowTheirReadOrder(t *testing.T) {
 	assertMirrorChanges(t, "earlier read of the same row", mustWriteRowPage(t, s, root, at(10, webRow("10001", 5, "late")), nil), MirrorChanges{})
 
 	// A removal by a read that began before the row was stored leaves it.
-	removal, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001", "10009"}, ReadAt: 15}))
+	removal, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001", "10009"}, ReadAt: mirrorReadAt(15)}))
 	if err != nil || !reflect.DeepEqual(removal, MirrorChanges{Superseded: []string{"10001"}}) {
 		t.Fatalf("early removal = %+v, %v", removal, err)
 	}
-	removal, err = s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: 30}))
+	removal, err = s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: mirrorReadAt(30)}))
 	if err != nil || !reflect.DeepEqual(removal, MirrorChanges{Removed: []string{"10002"}}) {
 		t.Fatalf("removal = %+v, %v", removal, err)
 	}
@@ -118,7 +119,7 @@ func TestMirrorRowsFollowTheirReadOrder(t *testing.T) {
 
 	// A removal by a read that began before the latest removal keeps the
 	// latest removal's time.
-	removal, err = s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001"}, ReadAt: 28}))
+	removal, err = s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001"}, ReadAt: mirrorReadAt(28)}))
 	if err != nil || !reflect.DeepEqual(removal, MirrorChanges{Removed: []string{"10001"}}) {
 		t.Fatalf("earlier removal = %+v, %v", removal, err)
 	}
@@ -133,9 +134,9 @@ func TestMirrorCursorFollowsItsReadOrder(t *testing.T) {
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	page := webPage("10")
-	page.ReadAt = 20
+	page.ReadAt = mirrorReadAt(20)
 	mustWriteRowPage(t, s, root, page, []byte("c2"))
-	page.ReadAt = 10
+	page.ReadAt = mirrorReadAt(10)
 	mustWriteRowPage(t, s, root, page, []byte("c1"))
 	mustWriteRowPage(t, s, root, page, nil)
 	if cursor := mustMirrorCursor(t, s, root, "10"); string(cursor) != "c2" {
@@ -147,7 +148,7 @@ func TestMirrorCursorFollowsItsReadOrder(t *testing.T) {
 	// recorded as succeeded, which wrote no page.
 	cursor := func(readAt int64, c string, want string) {
 		t.Helper()
-		page.ReadAt = readAt
+		page.ReadAt = mirrorReadAt(readAt)
 		mustWriteRowPage(t, s, root, page, []byte(c))
 		if got := mustMirrorCursor(t, s, root, "10"); string(got) != want {
 			t.Fatalf("cursor %s read at %d: stored %q; want %q", c, readAt, got, want)
@@ -156,7 +157,7 @@ func TestMirrorCursorFollowsItsReadOrder(t *testing.T) {
 	cursor(30, "c2", "c2")
 	assertRows(t, s.db, `SELECT cursor_read_at FROM tracker_cache_sync WHERE board_id = '10'`, "30")
 	cursor(25, "c3", "c2")
-	if _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: 40})); err != nil {
+	if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: mirrorReadAt(40)})); err != nil {
 		t.Fatal(err)
 	}
 	cursor(35, "c4", "c2")
@@ -224,110 +225,101 @@ func TestWriteMirrorRowsRefusesInvalidPages(t *testing.T) {
 	if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, webPage("13", webRow("10001", 5, "a"))), nil); !errors.Is(err, ErrTrackerCacheUnlisted) {
 		t.Fatalf("rows of an unlisted board: %v", err)
 	}
-	tooMany := webRow("10001", 5, "a")
-	for i := range mirrorMaxCardSprints + 1 {
-		tooMany.Card.Sprints = append(tooMany.Card.Sprints, strings.Repeat("s", i+1))
-	}
 	for name, page := range map[string]MirrorRowPage{
-		"no board":         {Rows: []MirrorRow{webRow("10001", 5, "a")}, ReadAt: 1},
+		"no board":         {Rows: []MirrorRow{webRow("10001", 5, "a")}, ReadAt: mirrorReadAt(1)},
 		"no read time":     {BoardID: "10", Rows: []MirrorRow{webRow("10001", 5, "a")}},
 		"too many rows":    webPage("10", mirrorRows(20000, mirrorMaxPageRows+1, "a")...),
-		"too many sprints": webPage("10", tooMany),
 		"no key":           webPage("10", MirrorRow{Card: MirrorCard{IssueID: "10001", UpdatedAt: 5}}),
 		"no update time":   webPage("10", webRow("10001", 0, "a")),
 		"issue twice":      webPage("10", webRow("10001", 5, "a"), webRow("10001", 6, "b")),
 		"sprint twice":     webPage("10", webRow("10001", 5, "a", "21", "21")),
 		"empty sprint":     webPage("10", webRow("10001", 5, "a", "")),
-		"missing as read":  {BoardID: "10", Rows: []MirrorRow{webRow("10001", 5, "a")}, Missing: []string{"10001"}, ReadAt: 1},
-		"bad catalog":      {BoardID: "10", Catalog: MirrorCatalog{Statuses: []MirrorStatus{{ID: "1"}}}, ReadAt: 1},
+		"missing as read":  {BoardID: "10", Rows: []MirrorRow{webRow("10001", 5, "a")}, Missing: []string{"10001"}, ReadAt: mirrorReadAt(1)},
+		"bad catalog":      {BoardID: "10", Catalog: MirrorCatalog{Statuses: []MirrorStatus{{ID: "1"}}}, ReadAt: mirrorReadAt(1)},
 		"no issue ID":      webPage("10", MirrorRow{Card: MirrorCard{Key: "WEB-1", UpdatedAt: 5}}),
 		"negative create":  webPage("10", MirrorRow{Card: MirrorCard{IssueID: "10001", Key: "WEB-1", UpdatedAt: 5, CreatedAt: -1}}),
 		"negative resolve": webPage("10", MirrorRow{Card: MirrorCard{IssueID: "10001", Key: "WEB-1", UpdatedAt: 5, ResolvedAt: -1}}),
-		"empty missing":    {BoardID: "10", Missing: []string{""}, ReadAt: 1},
-		"missing twice":    {BoardID: "10", Missing: []string{"10002", "10002"}, ReadAt: 1},
+		"empty missing":    {BoardID: "10", Missing: []string{""}, ReadAt: mirrorReadAt(1)},
+		"missing twice":    {BoardID: "10", Missing: []string{"10002", "10002"}, ReadAt: mirrorReadAt(1)},
 	} {
 		if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, page), nil); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{}, 0); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{}, mirrorReadAt(0)); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Errorf("cards with no read time: %v", err)
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issues`, "0")
 }
 
 // A reconcile returns the listed issues with no row; a complete listing
-// removes, a chunk per transaction, the unlisted rows stored by reads that
-// began no later than it, and the issues it leaves with no row become
-// unkept. An incomplete listing removes nothing.
+// returns the unlisted rows stored by reads that began no later than it,
+// which it removes none of, and an incomplete listing returns none.
 func TestReconcileMirrorBoard(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", mirrorRows(20000, clearMirrorChunk+3, "a"))
 	late := webPage("10", webRow("10001", 5, "a"))
-	late.ReadAt = 9
+	late.ReadAt = mirrorReadAt(9)
 	mustWriteRowPage(t, s, root, late, nil)
 
-	got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"20000", "10006", "10005"}, false, 5, 5)
+	got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"20000", "10006", "10005"}, false, mirrorReadAt(5))
 	if err != nil || !reflect.DeepEqual(got, MirrorReconcile{Missing: []string{"10006", "10005"}}) {
 		t.Fatalf("incomplete listing = %+v, %v", got, err)
 	}
 	recorder := recordMirrorWrites(t, s)
-	got, err = s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10006", "20000"}, true, 5, 5)
-	if err != nil || !reflect.DeepEqual(got.Missing, []string{"10006"}) || len(got.Removed) != clearMirrorChunk+2 {
-		t.Fatalf("complete listing = %d missing %v and %d removed, %v", len(got.Missing), got.Missing, len(got.Removed), err)
+	got, err = s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10006", "20000"}, true, mirrorReadAt(5))
+	if err != nil || !reflect.DeepEqual(got.Missing, []string{"10006"}) || len(got.Unsettled) != clearMirrorChunk+2 ||
+		got.Unsettled[0] != "20001" || slices.Contains(got.Unsettled, "10001") {
+		t.Fatalf("complete listing = %d missing %v and %d unsettled, %v", len(got.Missing), got.Missing, len(got.Unsettled), err)
 	}
-	if most, _ := recorder.mostDeletedInATransaction(); most > clearMirrorChunk {
+	if most, _ := recorder.mostDeletedInATransaction(); most > 0 {
 		t.Fatalf("a reconcile transaction deleted %d rows", most)
 	}
-	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_board_issues ORDER BY 1`, "10001,20000")
-	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issues`, "504")
-	if got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10006", "20000"}, true, 5, 5); err != nil ||
-		!reflect.DeepEqual(got, MirrorReconcile{Missing: []string{"10006"}}) {
-		t.Fatalf("same listing again = %+v, %v", got, err)
+	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_issues`, fmt.Sprint(clearMirrorChunk+4))
+	if again, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10006", "20000"}, true, mirrorReadAt(5)); err != nil ||
+		!reflect.DeepEqual(again, got) {
+		t.Fatalf("same listing again = %+v, %v; want what the first found", again, err)
 	}
-	if _, err := s.ReconcileMirrorBoard(root, "11", currentLifetime(s, root, "11"), nil, true, 5, 5); !errors.Is(err, ErrTrackerCacheNoBoard) {
+	if _, err := s.ReconcileMirrorBoard(root, "11", currentLifetime(s, root, "11"), nil, true, mirrorReadAt(5)); !errors.Is(err, ErrTrackerCacheNoBoard) {
 		t.Fatalf("board with no structure: %v", err)
 	}
-	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"20000", "20000"}, true, 5, 5); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"20000", "20000"}, true, mirrorReadAt(5)); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("repeated listing: %v", err)
 	}
-	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 0, 0); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, mirrorReadAt(0)); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("listing with no read time: %v", err)
-	}
-	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 5, 6); !errors.Is(err, ErrInvalidTrackerCache) {
-		t.Fatalf("a settled bound after the read: %v", err)
 	}
 }
 
-// A complete listing judges only the rows read at or before its settled
-// bound: an unlisted row read after it and no later than the listing is
-// kept and returned as unsettled, one read after the listing is neither,
-// and an incomplete listing returns none.
+// A complete listing returns, unsettled, every row it leaves out that a
+// read begun no later than it stored, however long ago, and removes none;
+// one read after the listing is not its to judge, and an incomplete
+// listing returns none. The read by ID removes the one it finds gone.
 func TestReconcileMirrorBoardUnsettled(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", nil)
 	for id, at := range map[string]int64{"10001": 2, "10002": 4, "10003": 6, "10004": 9} {
 		page := webPage("10", webRow(id, 5, "a"+id))
-		page.ReadAt = at
+		page.ReadAt = mirrorReadAt(at)
 		mustWriteRowPage(t, s, root, page, nil)
 	}
 	lifetime := currentLifetime(s, root, "10")
-	got, err := s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10005"}, false, 8, 3)
+	got, err := s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10005"}, false, mirrorReadAt(8))
 	if err != nil || !reflect.DeepEqual(got, MirrorReconcile{Missing: []string{"10005"}}) {
 		t.Fatalf("incomplete listing = %+v, %v", got, err)
 	}
-	got, err = s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10005"}, true, 8, 3)
-	if err != nil || !reflect.DeepEqual(got, MirrorReconcile{Missing: []string{"10005"}, Removed: []string{"10001"}, Unsettled: []string{"10002", "10003"}}) {
+	got, err = s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10005"}, true, mirrorReadAt(8))
+	if err != nil || !reflect.DeepEqual(got, MirrorReconcile{Missing: []string{"10005"}, Unsettled: []string{"10001", "10002", "10003"}}) {
 		t.Fatalf("complete listing = %+v, %v", got, err)
 	}
-	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_board_issues ORDER BY 1`, "10002,10003,10004")
+	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_board_issues ORDER BY 1`, "10001,10002,10003,10004")
 	// A read by ID after the listing settles them: the one it finds gone
 	// is removed.
 	gone := webPage("10", webRow("10002", 5, "a10002"))
-	gone.Missing, gone.ReadAt, gone.Lifetime = []string{"10003"}, 10, lifetime
-	if ch, err := s.WriteMirrorRows(root, gone); err != nil || !reflect.DeepEqual(ch.Removed, []string{"10003"}) {
+	gone.Missing, gone.ReadAt, gone.Lifetime = []string{"10001", "10003"}, mirrorReadAt(10), lifetime
+	if ch, err := s.WriteMirrorRows(root, gone); err != nil || !reflect.DeepEqual(ch.Removed, []string{"10001", "10003"}) {
 		t.Fatalf("read by ID = %+v, %v", ch, err)
 	}
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_board_issues ORDER BY 1`, "10002,10004")
@@ -343,11 +335,11 @@ func TestAFencedNewRowHoldsItsPagesCursor(t *testing.T) {
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	at := func(readAt int64, rows ...MirrorRow) MirrorRowPage {
 		p := webPage("10", rows...)
-		p.ReadAt = readAt
+		p.ReadAt = mirrorReadAt(readAt)
 		return p
 	}
 	mustWriteRowPage(t, s, root, at(10, webRow("10001", 5, "a"), webRow("10002", 5, "b")), []byte("c1"))
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: 30})); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: mirrorReadAt(30)})); err != nil {
 		t.Fatal(err)
 	}
 	page := at(20, webRow("10001", 6, "a"), webRow("10003", 6, "c"))
@@ -361,7 +353,7 @@ func TestAFencedNewRowHoldsItsPagesCursor(t *testing.T) {
 	if cursor := mustMirrorCursor(t, s, root, "10"); string(cursor) != "c1" {
 		t.Fatalf("cursor = %q; want the page's start", cursor)
 	}
-	page.ReadAt = 31
+	page.ReadAt = mirrorReadAt(31)
 	got = mustWriteRowPage(t, s, root, page, []byte("c2"))
 	if got.CursorRefused || !reflect.DeepEqual(got.Added, []string{"10003"}) || string(mustMirrorCursor(t, s, root, "10")) != "c2" {
 		t.Fatalf("the page read again = %+v, cursor %q; want 10003 added and c2 stored", got, mustMirrorCursor(t, s, root, "10"))

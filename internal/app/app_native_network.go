@@ -77,7 +77,7 @@ func ExpectNativeNetwork(a *App) {
 }
 
 // invalidateNativeNetwork runs inside the network settings apply, which
-// publishes the routes once for the whole change.
+// publishes the routes right after it.
 func (a *App) invalidateNativeNetwork() {
 	s := &a.nativeNetwork
 	s.mu.Lock()
@@ -101,7 +101,6 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 		// never becomes this backend's LAN ingress (nativeLANStatus stays nil).
 		return nativenetwork.Config{}, nil
 	}
-	defer a.publishComputerRoutes()
 	srv := a.transportServer.Load()
 	if srv == nil {
 		return nativenetwork.Config{}, errors.New("network listener is unavailable")
@@ -112,6 +111,7 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 	// section that ties it, so its end finds itself the owner however soon
 	// it comes. Binding is keyed: each connection binds once for its life.
 	if _, err := conn.Bind("native-network", func() {
+		// Runs right after the state lock below is released.
 		defer a.publishComputerRoutes()
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -135,6 +135,9 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 	}
 	generation := s.generation
 	s.mu.Unlock()
+	// A new launcher connection dropped the old one's addresses; publish that
+	// before anything else runs.
+	a.publishComputerRoutes()
 	id, _ := a.backendIdentity()
 	cfg := nativenetwork.Config{Enabled: a.currentSettings().Network.BindAll, BackendID: id, Name: a.backendDisplayName(), ScanID: scanID, Generation: generation}
 	cfg.Enabled = cfg.Enabled && nativeLANListenerError(srv.Addr()) == ""
@@ -154,6 +157,8 @@ func (a *App) ReportNativeNetworkState(ctx context.Context, report nativenetwork
 	if a.netReach.LoopbackOnly() {
 		return errNativeNetworkIsolated
 	}
+	// Deferred first, so it runs right after the state lock below is
+	// released: the report's addresses are published with nothing between.
 	defer a.publishComputerRoutes()
 	srv := a.transportServer.Load()
 	if srv == nil {

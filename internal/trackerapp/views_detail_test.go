@@ -15,7 +15,7 @@ import (
 
 func detailOfCard(c tracker.Card) tracker.Detail {
 	return tracker.Detail{
-		Card: c, URL: "https://example.atlassian.net/browse/" + c.Key, Description: "Body",
+		Card: c, Description: "Body",
 		Fields:   []tracker.Field{{ID: "customfield_10001", Name: "Team", Kind: tracker.KindOption, Editable: true, Value: tracker.OptionValue(tracker.Choice{ID: "o1", Name: "Web"})}},
 		Comments: tracker.CommentPage{Comments: []tracker.Comment{{ID: "c1", Author: "acc-user2", Body: "Looks good", Created: c.Created}}, Next: "p2"},
 		Links: []tracker.Link{{ID: "l1", Type: tracker.LinkType{ID: "10000", Name: "Blocks", Outward: "blocks", Inward: "is blocked by"},
@@ -24,6 +24,21 @@ func detailOfCard(c tracker.Card) tracker.Detail {
 		Moves:   []tracker.Move{{ID: "11", Name: "Done", To: "s3"}},
 		Catalog: tracker.Catalog{Users: []tracker.User{user2}},
 	}
+}
+
+// statusBegan is when the tests' status histories have an issue enter
+// its status (a history read's StatusChange into s1).
+var statusBegan = time.UnixMilli(1_798_500_000_000).UTC()
+
+// enteredAtStatusBegan is d with its history's latest status change, into
+// its card's status at statusBegan, as a document of an issue whose
+// history the tests read holds it; with no HistoryTo, the history is not
+// final, so the read's result is provisional (store MirrorStatusSince):
+// unknown unless the card's update is within the settle margin after
+// statusBegan.
+func enteredAtStatusBegan(d tracker.Detail) tracker.Detail {
+	d.StatusChanged = tracker.StatusChange{Change: tracker.Change{At: statusBegan}, From: "s2", To: d.Card.Status}
+	return d
 }
 
 // openDetail opens issue's detail through IssueDetail and fails on an
@@ -39,6 +54,27 @@ func (m *mirrorFixture) openDetail(t *testing.T, issue tracker.IssueID) (DetailV
 
 // cardsAnswering answers a card read with *c for the issues asked that it
 // is.
+// answerCardsFromDetails makes p's cards read answer each issue's card as
+// its detail read would show it now: a tracker whose two reads agree.
+func answerCardsFromDetails(p *scripted) {
+	p.set(func(p *scripted) {
+		p.cards = func(asked []tracker.IssueID) (tracker.Cards, error) {
+			p.mu.Lock()
+			detail := p.detail
+			p.mu.Unlock()
+			var out tracker.Cards
+			for _, id := range asked {
+				d, err := detail(id)
+				if err != nil {
+					return tracker.Cards{}, err
+				}
+				out.Cards = append(out.Cards, d.Card)
+			}
+			return out, nil
+		}
+	})
+}
+
 func cardsAnswering(c *tracker.Card) func([]tracker.IssueID) (tracker.Cards, error) {
 	return func(asked []tracker.IssueID) (tracker.Cards, error) {
 		var out tracker.Cards
@@ -81,7 +117,8 @@ func TestIssueDetail(t *testing.T) {
 	}
 	// The card moved: the detail is read again, ten minutes later (within
 	// detailMaxAge), which marks it opened then, and the mirror's card is
-	// the one the check read.
+	// the one the check read. Only the card changed: the body the read
+	// stored is the same bytes, now of the new version.
 	later := m.now().Add(10 * time.Minute)
 	m.svc.now = func() time.Time { return later }
 	c.Updated, c.Title = c.Updated.Add(500*time.Millisecond), "Renamed"
@@ -93,8 +130,11 @@ func TestIssueDetail(t *testing.T) {
 	if held := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); held.Card.Updated != millis(c.Updated) || held.Card.Title != "Renamed" {
 		t.Fatalf("the mirror's card %+v", held.Card)
 	}
-	if d, ok, err := m.st.GetMirrorDetail(m.root(), "10001"); err != nil || !ok || d.OpenedAt != later.UnixMilli() || d.ReadAt != later.UnixMilli() {
-		t.Fatalf("the detail read again: opened %d, read %d, want %d: %v", d.OpenedAt, d.ReadAt, later.UnixMilli(), err)
+	// The opening began at later, the check's read a millisecond after it
+	// and the detail's read one more on the frozen clock (store
+	// BeginMirrorRead); the opening is recorded as the read that served it.
+	if d, ok, err := m.st.GetMirrorBody(m.root(), "10001"); err != nil || !ok || d.OpenedAt != later.UnixMilli()+2 || d.ReadAt != later.UnixMilli()+2 {
+		t.Fatalf("the detail read again: opened %d, read %d, want %d: %v", d.OpenedAt, d.ReadAt, later.UnixMilli()+2, err)
 	}
 	// A card the tracker does not return is no check: the detail is read.
 	m.p.set(func(p *scripted) {
@@ -183,7 +223,7 @@ func TestIssueDetailFailure(t *testing.T) {
 	if _, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err == nil {
 		t.Fatal("a detail of another issue was accepted")
 	}
-	if _, ok, _ := m.st.GetMirrorDetail(m.root(), "10002"); ok {
+	if _, ok, _ := m.st.GetMirrorBody(m.root(), "10002"); ok {
 		t.Fatal("the other issue's detail was stored")
 	}
 	if _, err := m.svc.SetEnabled(m.conn.ID, false); err != nil {
@@ -227,7 +267,7 @@ func TestAFailedCheckKeepsTheStoredDetail(t *testing.T) {
 				t.Fatalf("the stored detail changed: read %d, was %d", after.ReadAt, before.ReadAt)
 			}
 			v, readAt, err := m.svc.MirroredDetail(m.conn.ID, "10001")
-			if err != nil || readAt != before.ReadAt || v.Description != "Body" {
+			if err != nil || readAt != before.Wall || v.Description != "Body" {
 				t.Fatalf("the mirror's copy: read %d, %q, %v", readAt, v.Description, err)
 			}
 		})
@@ -299,8 +339,8 @@ func TestMirroredDetailBuildsNoClient(t *testing.T) {
 	}
 	stored, _, _ := m.storedDetail(t, "10001")
 	v, readAt, err := svc.MirroredDetail(m.conn.ID, "10001")
-	if err != nil || v.Card.ID != "10001" || readAt != stored.ReadAt {
-		t.Fatalf("the mirror's copy %+v read at %d (stored %d): %v", v.Card, readAt, stored.ReadAt, err)
+	if err != nil || v.Card.ID != "10001" || readAt != stored.Wall {
+		t.Fatalf("the mirror's copy %+v read at %d (stored %d): %v", v.Card, readAt, stored.Wall, err)
 	}
 	if opened, _, _ := m.storedDetail(t, "10001"); opened.OpenedAt != later.UnixMilli() {
 		t.Fatalf("the mirror's copy left the detail opened at %d", opened.OpenedAt)
@@ -358,6 +398,9 @@ func TestDetailHistoryIsBounded(t *testing.T) {
 }
 
 // A detail read through keeps and shows at most maxDetailEvents events.
+// Its status time comes from the history as read, which starts at the
+// creation, so the record holds the creation as final although the kept
+// events start later.
 func TestDetailReadBoundsItsHistory(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -365,7 +408,8 @@ func TestDetailReadBoundsItsHistory(t *testing.T) {
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
 	base := time.UnixMilli(1_798_000_000_000).UTC()
 	m.p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
-		d := tracker.Detail{Card: card("10001", 1_799_000_000_000)}
+		c := card("10001", 1_799_000_000_000)
+		d := tracker.Detail{Card: c, HistoryTo: c.Updated}
 		for i := range maxDetailEvents + 10 {
 			d.History = append(d.History, tracker.Event{At: base.Add(time.Duration(i) * time.Minute), Field: "status"})
 		}
@@ -382,5 +426,9 @@ func TestDetailReadBoundsItsHistory(t *testing.T) {
 		if err != nil || len(v.History) != maxDetailEvents || v.HistoryFrom != millis(base.Add(10*time.Minute)) {
 			t.Fatalf("mirror's copy %v: %d events from %d, %v", mirrored, len(v.History), v.HistoryFrom, err)
 		}
+	}
+	created := millis(card("10001", 0).Created)
+	if r := m.recordOf(t, "10001"); r.StatusSince != created || !r.StatusFinal {
+		t.Fatalf("the record holds status since %d, final %v; want the creation %d, final", r.StatusSince, r.StatusFinal, created)
 	}
 }

@@ -2,6 +2,7 @@ package jira
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 
 	"agent-overflow/internal/tracker/trackerapi"
@@ -218,4 +219,28 @@ type UnprovenMatchError struct {
 
 func (e *UnprovenMatchError) Error() string {
 	return fmt.Sprintf("jira: %q matches more than the %d %s candidates Jira lists, so it cannot be shown to name one; name it by ID", e.Input, e.Limit, e.What)
+}
+
+// QueryRefusedError is Jira's 400 to the request that carried a query's
+// JQL: an issue list narrowed by JQL, or a JQL match. Jira refused the
+// query as sent; why is not judged. It holds that request's own
+// *trackerapi.StatusError, never the failure of another request the
+// operation made (a sign-in check that proves an answer).
+type QueryRefusedError struct {
+	Err *trackerapi.StatusError
+}
+
+func (e *QueryRefusedError) Error() string {
+	return fmt.Sprintf("jira: the query was refused: %v", e.Err)
+}
+
+func (e *QueryRefusedError) Unwrap() error { return e.Err }
+
+// refusedQuery is err, the failure of the request that carried a query's
+// JQL, as a *QueryRefusedError when that request's own answer was a 400.
+func refusedQuery(err error) error {
+	if se, ok := outcomeOf(err).(*trackerapi.StatusError); ok && se.Status == http.StatusBadRequest {
+		return &QueryRefusedError{Err: se}
+	}
+	return err
 }

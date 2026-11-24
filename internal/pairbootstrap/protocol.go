@@ -18,8 +18,17 @@ import (
 
 const Version = 1
 
+// openWindowHint tells a requester how to open the pairing window it needs, in
+// the menu path the setup guide uses.
+const openWindowHint = "On the other computer, open Remote access → Allow device access → Allow a device to connect → Another computer, then try again"
+
+// RestartHint is what a requester does once its exchange reached the
+// window's reveal and its pairing did not finish: a window admits one
+// requester until it ends (Book.Begin), so connecting again needs a new one.
+const RestartHint = "close the pairing dialog on the other computer, open Remote access → Allow device access → Allow a device to connect → Another computer there again, and connect again"
+
 var (
-	ErrClosed  = errors.New("On the other computer, open Remote access → Allow device access → Allow a device to connect, then try again")
+	ErrClosed  = errors.New(openWindowHint) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	ErrBusy    = errors.New("Another device is pairing; finish or cancel it on the other computer")
 	ErrInvalid = errors.New("Pairing verification failed; cancel and try again")
 )

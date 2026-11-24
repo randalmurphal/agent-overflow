@@ -90,7 +90,7 @@ func TestMirrorStatusGroupBumpsOnlyTheBoardsUsingIt(t *testing.T) {
 		before := revisions()
 		recorder.reset()
 		readAt := int64(10 + i)
-		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, step.catalog, readAt); err != nil {
+		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, step.catalog, mirrorReadAt(readAt)); err != nil {
 			t.Fatalf("%s: %v", step.name, err)
 		}
 		after := revisions()
@@ -113,7 +113,7 @@ func TestMirrorStatusGroupBumpsOnlyTheBoardsUsingIt(t *testing.T) {
 		}
 		// The same read again moves no watermark and bumps nothing.
 		recorder.reset()
-		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, step.catalog, readAt); err != nil || len(recorder.rowWrites()) > 0 {
+		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, step.catalog, mirrorReadAt(readAt)); err != nil || len(recorder.rowWrites()) > 0 {
 			t.Errorf("%s again: wrote %v, %v", step.name, recorder.rowWrites(), err)
 		}
 	}

@@ -2,6 +2,7 @@ package identity
 
 import (
 	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -171,20 +172,36 @@ func TestRevokeDeviceReportsWhatItDid(t *testing.T) {
 // package that can produce or renew a credential. The gate is inside the
 // chokepoints each of them goes through (store.CreateSession's INSERT
 // predicate, ActivateSession's and ExtendSession's UPDATE predicates,
-// RotateRefreshSecret's transaction and accessTokensFor's device argument), never in these callers — which is what
+// RotateRefreshSecret's transaction and newTokens' device argument), never in these callers — which is what
 // TestEveryCredentialProducingCallGoesThroughAChokepoint pins.
 func TestNoMintPathAdmitsARevokedDevice(t *testing.T) {
-	t.Run("Mint", func(t *testing.T) {
+	// The device row as a sign-in read it before the revocation landed: the
+	// write itself refuses.
+	t.Run("a live session written with its device", func(t *testing.T) {
 		sessions, st, _, owner, device := newFixture(t)
 		if _, err := st.RevokeDevice(device.ID, sessions.Now()); err != nil {
 			t.Fatalf("RevokeDevice: %v", err)
 		}
-		if _, _, err := sessions.Mint(MintRequest{
-			UserID: owner.ID, DeviceID: device.ID,
+		if _, _, err := mintOn(sessions, device, MintRequest{
+			UserID:       owner.ID,
 			BindingClass: BindingDeviceBound, Scopes: []Scope{ScopeThreadsRead},
 			TTL: time.Hour,
-		}); err == nil {
-			t.Fatal("Mint issued a session for a revoked device")
+		}); !errors.Is(err, store.ErrDeviceRevoked) {
+			t.Fatalf("a session written for a revoked device = %v, want ErrDeviceRevoked", err)
+		}
+	})
+
+	t.Run("FinishPasskeySignIn", func(t *testing.T) {
+		sessions, _, _, owner, _ := newFixture(t)
+		sessions.SetRelyingParty(testRelyingParty)
+		auth := newSoftAuthenticator(t)
+		enroll(t, sessions, owner.ID, auth)
+		first := signedInSession(t, sessions, auth)
+		if _, err := sessions.RevokeDevice(first.DeviceID); err != nil {
+			t.Fatalf("RevokeDevice: %v", err)
+		}
+		if _, reason := signIn(t, sessions, auth, "thumb-laptop"); reason != ReasonRevokedDevice {
+			t.Fatalf("a passkey sign-in for a revoked device = %s, want revoked_device", reason)
 		}
 	})
 

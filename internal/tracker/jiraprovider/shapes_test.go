@@ -216,7 +216,7 @@ func TestHistoryWithoutBoards(t *testing.T) {
 		}
 		jiratest.Reply(200, `{"issueChangeLogs":[]}`)(w, r, b)
 	})
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", issue("10001", "WEB-1", updatedAt, nil))))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(issue("10001", "WEB-1", updatedAt, nil))))
 	h, err := p.History(t.Context(), tracker.HistoryQuery{Issues: []tracker.IssueID{"10001"}})
 	if err != nil || len(h.Issues) != 1 || h.Issues[0].Issue != "10001" {
 		t.Errorf("got %+v %v", h, err)

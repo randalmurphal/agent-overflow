@@ -118,6 +118,7 @@ func TestRedeliveredRowsTellNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.events.issueEvents(t, 1)
+	quiet(t, m.svc)
 	reads := 0
 	m.p.set(func(p *scripted) {
 		p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {

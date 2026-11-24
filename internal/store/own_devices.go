@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 )
 
@@ -104,21 +105,32 @@ func (s *Store) MergeOwnDevices(in []owndevices.Member, at int64, backendID stri
 		}
 		hostingRemoved = removed && !active
 	}
+	var canceled []pairingCancellations
 	if hostingRemoved {
-		if _, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-device' AND confirmed_at IS NULL AND canceled_at IS NULL`, at); e != nil {
+		personal, e := cancelPairingLinksTx(tx, at, `purpose='own-device' AND confirmed_at IS NULL`)
+		if e != nil {
 			return false, nil, nil, e
 		}
+		canceled = append(canceled, personal)
 	}
-	_, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-introduction' AND canceled_at IS NULL AND (? OR sponsor_key IN(SELECT key_thumbprint FROM own_devices WHERE removed=1) OR EXISTS(SELECT 1 FROM own_devices d WHERE d.key_thumbprint=expected_key AND (d.removed=1 OR d.generation<>member_generation))) AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, at, hostingRemoved)
+	// An introduction its device never renewed with (unredeemed, or admitted
+	// without a first renewal) is withdrawn with its sponsor or its target.
+	// An admitted one keeps its session here unless the statement below
+	// ends it.
+	introductions, e := cancelPairingLinksTx(tx, at, `purpose='own-introduction' AND (? OR sponsor_key IN(SELECT key_thumbprint FROM own_devices WHERE removed=1) OR EXISTS(SELECT 1 FROM own_devices d WHERE d.key_thumbprint=expected_key AND (d.removed=1 OR d.generation<>member_generation))) AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, hostingRemoved)
 	if e != nil {
 		return false, nil, nil, e
 	}
+	canceled = append(canceled, introductions)
 	ids, released, e = endSessionsTx(tx, revokeSessions, at, nil, `id IN (SELECT o.session_id FROM own_device_sessions o JOIN own_devices d ON d.key_thumbprint=o.key_thumbprint WHERE ? OR d.removed=1 OR d.generation<>o.generation)`, hostingRemoved)
 	if e != nil {
 		return false, nil, nil, e
 	}
 	if e = tx.Commit(); e != nil {
 		return false, nil, nil, e
+	}
+	for _, c := range canceled {
+		ids, released = append(ids, c.revoked...), append(released, c.released...)
 	}
 	return true, ids, released, nil
 }
@@ -179,8 +191,23 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 		return e
 	}
 	defer tx.Rollback()
+	if e = admitOwnPairingTx(tx, link); e != nil {
+		return e
+	}
+	return tx.Commit()
+}
+
+// ErrOwnAdmissionRefused reports a personal pairing whose membership is no
+// longer admissible; a retry cannot change that answer.
+var ErrOwnAdmissionRefused = errors.New("store: personal pairing admission refused")
+
+// admitOwnPairingTx is AdmitOwnPairing's statements, in tx.
+func admitOwnPairingTx(tx *sql.Tx, link PairingLink) error {
+	if link.Purpose == "" {
+		return nil
+	}
 	var confirmed int64
-	e = tx.QueryRow(`SELECT confirmed_at FROM pairing_links WHERE id=? AND confirmed_at IS NOT NULL AND canceled_at IS NULL`, link.ID).Scan(&confirmed)
+	e := tx.QueryRow(`SELECT confirmed_at FROM pairing_links WHERE id=? AND confirmed_at IS NOT NULL AND canceled_at IS NULL`, link.ID).Scan(&confirmed)
 	if e != nil {
 		return e
 	}
@@ -202,7 +229,7 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 	}
 	if link.Purpose == "own-introduction" {
 		if m.Removed || m.Generation != link.MemberGeneration {
-			return errors.New("own-device introduction is no longer authorized")
+			return fmt.Errorf("%w: own-device introduction is no longer authorized", ErrOwnAdmissionRefused)
 		}
 		var active int
 		e = tx.QueryRow(`SELECT count(*) FROM own_devices WHERE key_thumbprint=? AND removed=0`, link.SponsorKey).Scan(&active)
@@ -210,7 +237,7 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 			return e
 		}
 		if active != 1 {
-			return errors.New("own-device sponsor was removed")
+			return fmt.Errorf("%w: own-device sponsor was removed", ErrOwnAdmissionRefused)
 		}
 	} else {
 		if m.KeyThumbprint == "" {
@@ -219,7 +246,7 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 				return e
 			}
 			if count >= owndevices.MaxMembers {
-				return errors.New("too many own devices")
+				return fmt.Errorf("%w: too many own devices", ErrOwnAdmissionRefused)
 			}
 			m = owndevices.Member{KeyThumbprint: link.KeyThumbprint, Generation: 1}
 			if e = tx.QueryRow(`SELECT label,class FROM devices WHERE id=?`, link.DeviceID).Scan(&m.Name, &m.DeviceClass); e != nil {
@@ -227,7 +254,7 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 			}
 		}
 		if link.MemberGeneration < 1 || m.Generation > link.MemberGeneration || (m.Removed && m.Generation >= link.MemberGeneration) {
-			return errors.New("personal pairing admission was superseded")
+			return fmt.Errorf("%w: personal pairing admission was superseded", ErrOwnAdmissionRefused)
 		}
 		m.Generation = link.MemberGeneration
 		m.Removed = false
@@ -236,10 +263,7 @@ func (s *Store) AdmitOwnPairing(link PairingLink) error {
 		}
 	}
 	_, e = tx.Exec(`INSERT INTO own_device_sessions(session_id,key_thumbprint,generation) VALUES(?,?,?)`, link.SessionID, link.KeyThumbprint, m.Generation)
-	if e != nil {
-		return e
-	}
-	return tx.Commit()
+	return e
 }
 
 func (s *Store) PairingLinkByTokenHash(hash []byte) (PairingLink, error) {
@@ -256,7 +280,7 @@ func (s *Store) RetireOwnIntroductions(key string, at int64) (ids, released []st
 		return nil, nil, e
 	}
 	defer tx.Rollback()
-	_, e = tx.Exec(`UPDATE pairing_links SET canceled_at=? WHERE purpose='own-introduction' AND expected_key=? AND canceled_at IS NULL AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, at, key)
+	canceled, e := cancelPairingLinksTx(tx, at, `purpose='own-introduction' AND expected_key=? AND NOT EXISTS(SELECT 1 FROM refresh_secrets r WHERE r.session_id=pairing_links.session_id AND r.consumed_at IS NOT NULL)`, key)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -267,13 +291,13 @@ func (s *Store) RetireOwnIntroductions(key string, at int64) (ids, released []st
 	if e = tx.Commit(); e != nil {
 		return nil, nil, e
 	}
-	return ids, released, nil
+	return append(ids, canceled.revoked...), append(released, canceled.released...), nil
 }
 
-// PrepareOwnPairing freezes the generation authorized by this human approval.
+// prepareOwnPairing freezes the generation authorized by this human approval.
 // Crash recovery may finish that admission, never invent a newer restoration.
-func (s *Store) PrepareOwnPairing(id string) error {
-	_, e := s.db.Exec(`UPDATE pairing_links SET member_generation=COALESCE((SELECT generation+removed FROM own_devices WHERE key_thumbprint=pairing_links.key_thumbprint),1) WHERE id=? AND purpose='own-device' AND confirmed_at IS NULL AND canceled_at IS NULL`, id)
+func prepareOwnPairing(db sqlExecutor, id string) error {
+	_, e := db.Exec(`UPDATE pairing_links SET member_generation=COALESCE((SELECT generation+removed FROM own_devices WHERE key_thumbprint=pairing_links.key_thumbprint),1) WHERE id=? AND purpose='own-device' AND confirmed_at IS NULL AND canceled_at IS NULL`, id)
 	return e
 }
 func (s *Store) IncompleteOwnAdmissions() ([]PairingLink, error) {

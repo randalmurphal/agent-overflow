@@ -1473,6 +1473,20 @@ export class ComputerPairingView {
      */
     "discoveryError": string;
 
+    /**
+     * Ended says why a window in state "expired" is no longer open, one of
+     * pairbootstrap's Ending values: "deadline", "closed", "canceled",
+     * "replaced", "networkChanged", "disconnected" or "stopped"; or
+     * "accessEnded" or "deviceRemoved" for a window whose invitation was
+     * approved and whose device can no longer use that access, open or not
+     * (PairingStatusView.State). Otherwise empty
+     * while the window is open, and when nothing records why it ended: a
+     * window from before this process started or older than the one before
+     * the last, or an invitation the store settled while its window was
+     * open.
+     */
+    "ended": string;
+
     /** Creates a new ComputerPairingView instance. */
     constructor($$source: Partial<ComputerPairingView> = {}) {
         if (!("state" in $$source)) {
@@ -1492,6 +1506,9 @@ export class ComputerPairingView {
         }
         if (!("discoveryError" in $$source)) {
             this["discoveryError"] = "";
+        }
+        if (!("ended" in $$source)) {
+            this["ended"] = "";
         }
 
         Object.assign(this, $$source);
@@ -5352,7 +5369,11 @@ export class PairingStatusView {
     "linkId": string;
 
     /**
-     * State is one of: pending, redeemed, confirmed, canceled, expired.
+     * State is one of: pending, redeemed, confirmed, accessEnded,
+     * deviceRemoved, canceled, expired. accessEnded is a link that was
+     * confirmed whose session no longer lets its device in: ended, or past
+     * its access and its renewal. deviceRemoved is one whose device the
+     * owner removed in Devices.
      */
     "state": string;
 

@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/linear"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Details reads its issues linear.MaxIssueDetails to a request, with the
@@ -58,5 +59,57 @@ func TestDetails(t *testing.T) {
 		if _, err := s.p.Details(s.ctx, bad); !errors.Is(err, tracker.ErrInvalidInput) {
 			t.Errorf("%v: %v", bad, err)
 		}
+	}
+}
+
+// A trashed issue is one the tracker no longer shows, to a detail read as
+// to a cards read: Details leaves it out as Missing, Detail fails as for
+// an issue Linear does not return, and Cards leaves it out too.
+func TestATrashedIssueHasNoDetail(t *testing.T) {
+	s := newScenario(t)
+	ws := scenarioWorkspace()
+	ws.Issues[1].Trashed = true
+	if err := s.e.Seed(trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{ws}}); err != nil {
+		t.Fatal(err)
+	}
+	trashed := tracker.IssueID(scIssue2)
+	got := scenarioMust[tracker.Details](t)(s.p.Details(s.ctx, []tracker.IssueID{tracker.IssueID(scIssue1), trashed}))
+	if len(got.Details) != 1 || got.Details[0].Card.ID != tracker.IssueID(scIssue1) || !slices.Equal(got.Missing, []tracker.IssueID{trashed}) {
+		t.Fatalf("details of a live and a trashed issue: %d details, missing %v", len(got.Details), got.Missing)
+	}
+	if _, err := s.p.Detail(s.ctx, trashed); !errors.Is(err, trackerapi.ErrNotFound) {
+		t.Fatalf("the detail of a trashed issue: %v", err)
+	}
+	cards := scenarioMust[tracker.Cards](t)(s.p.Cards(s.ctx, []tracker.IssueID{trashed}))
+	if len(cards.Cards) != 0 || !slices.Equal(cards.Missing, []tracker.IssueID{trashed}) {
+		t.Fatalf("cards of a trashed issue: %+v", cards)
+	}
+}
+
+// A detail's card names its labels as a cards read of the same version
+// does, from the issue's own labels: a history entry naming the label as
+// it was (a rename since) names it in the history alone.
+func TestADetailsCardNamesItsLabelsAsTheCardsReadDoes(t *testing.T) {
+	s := newScenario(t)
+	d, err := s.c.Issue(s.ctx, scIssue1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Labels) != 1 || d.Labels[0].Name != "Bug" {
+		t.Fatalf("the issue's labels %+v", d.Labels)
+	}
+	entry := linear.NamedEntry{HistoryEntry: linear.HistoryEntry{ID: sid(900), CreatedAt: scStart.Add(-time.Hour), ActorID: scUser1,
+		AddedLabelIDs: []string{scBug}}, AddedLabels: []linear.LabelRef{{ID: scBug, Name: "Defect"}}}
+	d.History.Items = append(d.History.Items, entry)
+	got, err := s.p.details(s.ctx, []*linear.IssueDetail{d})
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := scenarioMust[tracker.Cards](t)(s.p.Cards(s.ctx, []tracker.IssueID{tracker.IssueID(scIssue1)})).Cards[0]
+	if !reflect.DeepEqual(got[0].Card.Labels, card.Labels) || card.Labels[0].Name != "Bug" {
+		t.Fatalf("the detail's card labels %+v; the cards read's %+v", got[0].Card.Labels, card.Labels)
+	}
+	if !slices.ContainsFunc(got[0].History, func(e tracker.Event) bool { return e.To == "Defect" }) {
+		t.Fatalf("the history no longer names the label as its entry did: %+v", got[0].History)
 	}
 }

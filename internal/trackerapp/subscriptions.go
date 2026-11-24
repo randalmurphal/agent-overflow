@@ -110,6 +110,9 @@ type subscriptions struct {
 	stamps uint64
 	// gens is each connection's mirror generation (genLocked).
 	gens map[string]uint64
+	// pumps counts the ticket pumps made, numbering each
+	// (ticketPump.number).
+	pumps int64
 }
 
 // genLocked is connection conn's mirror generation: it moves when the
@@ -209,8 +212,8 @@ func (s *Service) ReleaseSubscription(id string) {
 	switch {
 	case last && h.board != nil && s.subs.boards[h.board.scope] == h.board:
 		delete(s.subs.boards, h.board.scope)
-	case last && h.ticket != nil && s.subs.tickets[h.ticket.key] == h.ticket:
-		delete(s.subs.tickets, h.ticket.key)
+	case last && h.ticket != nil:
+		s.retireTicketLocked(h.ticket)
 	}
 	if h.ticket != nil {
 		// A released handle that showed the ticket may leave none shown.
@@ -260,14 +263,13 @@ func (s *Service) haltSubscriptions() {
 		p.core.StopLocked()
 	}
 	for _, p := range s.subs.tickets {
-		p.core.StopLocked()
+		s.retireTicketLocked(p)
 	}
 	for conn := range s.subs.rounds {
 		s.stopRoundLocked(conn)
 	}
 	clear(s.subs.handles)
 	clear(s.subs.boards)
-	clear(s.subs.tickets)
 	s.subs.boardHandles, s.subs.ticketHandles = 0, 0
 	s.stopLoopLocked()
 }

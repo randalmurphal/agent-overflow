@@ -22,9 +22,9 @@ type failingStore struct {
 
 var errStoreDown = errors.New("test: the store failed")
 
-func (s *failingStore) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (bool, error) {
+func (s *failingStore) RecordMirrorSyncAttempt(root int64, board string, a store.MirrorSyncAttempt) (store.MirrorSyncOutcome, bool, error) {
 	if s.fail.Load() {
-		return false, errStoreDown
+		return store.MirrorSyncOutcome{}, false, errStoreDown
 	}
 	return s.Store.RecordMirrorSyncAttempt(root, board, a)
 }
@@ -129,57 +129,44 @@ func TestARenameDuringATicketReadStillTellsTheBoard(t *testing.T) {
 	}
 }
 
-// Which of the mirror and the pump holds an open ticket's content is
-// decided on every successful read: when the mirror stops keeping the
-// issue the ticket is told it is not loaded and read at once, its pump
-// holds what that read found, and it is told loaded again; a read that
-// finds the same document keeps the view and tells nothing.
-func TestAnOpenTicketKeepsItsViewWhenTheMirrorDropsTheIssue(t *testing.T) {
+// An open ticket whose bind names no row of the mirror (keepsLost) is not
+// the issue's current bind, so none of its reads stores a body, whatever
+// else keeps the issue: its pump holds the content it shows from its first
+// read, the issue leaving the mirror tells nothing, and kept again by a
+// board, the issue's refresh stores no body either and the view stays the
+// pump's.
+func TestAnOpenTicketWhoseBindIsNotTheIssuesStoresNoBody(t *testing.T) {
 	t.Parallel()
-	m, _, issues, subs := newRoundFixture(t, 1, false)
+	m, _, issues, subs := newRoundFixtureThen(t, 1, false, (*mirrorFixture).loseKeeps)
+	held := func() bool {
+		tp := m.svc.ticketPumpOf(m.conn.ID, issues[0])
+		m.svc.subMu.Lock()
+		defer m.svc.subMu.Unlock()
+		return tp.held != nil
+	}
+	if _, _, ok := m.storedDetail(t, string(issues[0])); ok || !held() {
+		t.Fatalf("after the first read the mirror holds the detail %v, the pump %v; want the pump alone", ok, held())
+	}
 	events := m.issueEventCount()
 	m.tracks(nil)
 	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
 	if err := m.svc.FinishMirrorCleanup(); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := m.storedDetail(t, string(issues[0])); ok {
-		t.Fatal("the mirror still holds the detail")
-	}
 	quiet(t, m.svc)
-	if got := m.issueEventsSince(events); len(got) != 2 || !got[0].Changed || !got[1].Changed {
+	if got := m.issueEventsSince(events); len(got) != 0 {
 		t.Fatalf("the issue leaving the mirror told %+v", got)
 	}
-	events = m.issueEventCount()
-	m.round(t)
-	if v := m.ticketView(t, subs[0].ID); !v.Loaded || v.Detail.Card.ID != string(issues[0]) {
-		t.Fatalf("the ticket's view after the mirror dropped it %+v", v)
-	}
-	if got := m.issueEventsSince(events); len(got) != 0 {
-		t.Fatalf("the same document told %+v", got)
-	}
-	// Kept again and refreshed, the mirror holds the document again and the
-	// pump lets its own copy go.
 	m.tracks([]tracker.Row{row(string(issues[0]), 1_799_000_000_000, "a000")})
 	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
-	// The stored card makes the ticket due a read at once, which is no
-	// opening and so starts no detail: the refresh begins after it settled,
-	// or a read that began later than the refresh keeps the pump's copy.
 	quiet(t, m.svc)
 	if err := m.svc.RefreshSubscription(t.Context(), subs[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := m.storedDetail(t, string(issues[0])); !ok {
-		t.Fatal("the refresh stored no detail")
+	if _, _, ok := m.storedDetail(t, string(issues[0])); ok || !held() {
+		t.Fatalf("after the refresh the mirror holds the detail %v, the pump %v; want the pump alone", ok, held())
 	}
-	tp := m.svc.ticketPumpOf(m.conn.ID, issues[0])
-	m.svc.subMu.Lock()
-	held := tp.held != nil
-	m.svc.subMu.Unlock()
-	if held {
-		t.Fatal("the pump still holds a copy of the document the mirror holds")
-	}
-	if v := m.ticketView(t, subs[0].ID); !v.Loaded {
-		t.Fatalf("the ticket's view from the mirror %+v", v)
+	if v := m.ticketView(t, subs[0].ID); !v.Loaded || v.Detail.Card.ID != string(issues[0]) {
+		t.Fatalf("the ticket's view %+v", v)
 	}
 }

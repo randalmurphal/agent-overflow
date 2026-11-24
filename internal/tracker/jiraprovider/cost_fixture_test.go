@@ -126,7 +126,7 @@ func costIssueID(i int) string { return decimal(int64(costFirstID + i)) }
 // month of worklogs on 20 issues in Tempo and in Jira.
 func costFixture(now time.Time) trackerfake.JiraSite {
 	day := now.Add(-48 * time.Hour)
-	window := now.Add(-180 * 24 * time.Hour)
+	window := now.Add(-scenarioWindow)
 	site := trackerfake.JiraSite{
 		Site: scenarioSite, Account: "acc-user1", Token: "scenario-jira-1",
 		Users: []trackerfake.JiraUser{
@@ -268,7 +268,7 @@ func newCostRunOf(t *testing.T, withTempo bool, edit func(*trackerfake.JiraSite)
 		t.Fatal(err)
 	}
 	t.Cleanup(jc.Close)
-	opts := Options{Jira: jc, Site: "https://" + scenarioSite}
+	opts := Options{Jira: jc, Site: "https://" + scenarioSite, SprintsFrom: func() time.Time { return clock.Now().Add(-scenarioWindow) }}
 	if withTempo {
 		th, err := e.Handler(trackerfake.Origin{Tracker: trackerfake.TrackerTempo})
 		if err != nil {

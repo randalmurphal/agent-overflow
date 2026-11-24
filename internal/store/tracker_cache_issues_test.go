@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -45,7 +46,7 @@ func TestMirrorCardIsNeverReplacedByAnOlderOne(t *testing.T) {
 	older := webRow("10001", 5, "z")
 	older.Card.StatusID = "1"
 	page := webPage("10", older)
-	page.ReadAt = 2
+	page.ReadAt = mirrorReadAt(2)
 	got := mustWriteRowPage(t, s, root, page, nil)
 	assertMirrorChanges(t, "older card", got, MirrorChanges{Rows: []string{"10001"}, Superseded: []string{"10001"}})
 	newer.Card.StatusSince = 9
@@ -55,7 +56,7 @@ func TestMirrorCardIsNeverReplacedByAnOlderOne(t *testing.T) {
 	if key := mustOrderKey(t, s, "10", "10001"); key != "z" {
 		t.Fatalf("order key = %s", key)
 	}
-	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{older.Card}, MirrorCatalog{}, 2); err != nil ||
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{older.Card}, MirrorCatalog{}, mirrorReadAt(2)); err != nil ||
 		!reflect.DeepEqual(changes, MirrorChanges{Superseded: []string{"10001"}}) {
 		t.Fatalf("older card with no board = %+v, %v", changes, err)
 	}
@@ -63,7 +64,7 @@ func TestMirrorCardIsNeverReplacedByAnOlderOne(t *testing.T) {
 	same := newer
 	same.Card.StatusID = "10001"
 	page = webPage("10", same)
-	page.ReadAt = 3
+	page.ReadAt = mirrorReadAt(3)
 	got = mustWriteRowPage(t, s, root, page, nil)
 	assertMirrorChanges(t, "card of the same time", got, MirrorChanges{Cards: []string{"10001"}, Rows: []string{"10001"}})
 	assertRows(t, s.db, `SELECT status_since FROM tracker_cache_issues`, "0")
@@ -90,7 +91,7 @@ func TestMirrorKeepsIssuesLinkedToOwnedThreads(t *testing.T) {
 		t.Fatalf("linked issues on a board = %v, %v, %v", linked, more, err)
 	}
 
-	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 5, 5); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001", "10002", "10003", "10004"}, ReadAt: mirrorReadAt(5)})); err != nil {
 		t.Fatal(err)
 	}
 	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); err != nil || more || !reflect.DeepEqual(linked, []string{"10001"}) {
@@ -99,19 +100,19 @@ func TestMirrorKeepsIssuesLinkedToOwnedThreads(t *testing.T) {
 	if cards := mustMirrorCards(t, s, root, "10001", "10002", "10003", "10004"); len(cards) != 1 || cards[0].IssueID != "10001" {
 		t.Fatalf("cards after the reconcile = %+v; want only the linked 10001", cards)
 	}
-	changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 7), webCard("10009", 7)}, MirrorCatalog{}, 1)
+	changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 7), webCard("10009", 7)}, MirrorCatalog{}, mirrorReadAt(1))
 	assertMirrorChanges(t, "linked cards", changes, MirrorChanges{Cards: []string{"10001"}, Unkept: []string{"10009"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 7)}, MirrorCatalog{}, 1); err != nil || !reflect.DeepEqual(changes, MirrorChanges{}) {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 7)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil || !reflect.DeepEqual(changes, MirrorChanges{}) {
 		t.Fatalf("same card again = %+v, %v", changes, err)
 	}
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues`, "10001")
-	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 7), webCard("10001", 8)}, MirrorCatalog{}, 1); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 7), webCard("10001", 8)}, MirrorCatalog{}, mirrorReadAt(1)); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Fatalf("card twice: %v", err)
 	}
 }
@@ -127,24 +128,24 @@ func TestATiedCardFollowsItsReadOrder(t *testing.T) {
 	renamed := webRow("10001", 5, "a", "22")
 	renamed.Card.Key = "APP-10001"
 	page := webPage("10", renamed)
-	page.ReadAt = 30
+	page.ReadAt = mirrorReadAt(30)
 	mustWriteRowPage(t, s, root, page, nil)
 	former := webRow("10001", 5, "a", "21")
 	page = webPage("10", former)
-	page.ReadAt = 20
+	page.ReadAt = mirrorReadAt(20)
 	got := mustWriteRowPage(t, s, root, page, nil)
 	if cards := mustMirrorCards(t, s, root, "10001"); len(cards) != 1 || cards[0].Key != "APP-10001" || !reflect.DeepEqual(cards[0].Sprints, []string{"22"}) {
 		t.Fatalf("after a late row read the card is %+v; want the later read's key and sprints", cards)
 	}
 	assertMirrorChanges(t, "late row read", got, MirrorChanges{Superseded: []string{"10001"}})
-	changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{former.Card}, MirrorCatalog{}, 25)
+	changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{former.Card}, MirrorCatalog{}, mirrorReadAt(25))
 	if err != nil || !reflect.DeepEqual(changes, MirrorChanges{Superseded: []string{"10001"}}) {
 		t.Fatalf("late card read = %+v, %v", changes, err)
 	}
 	if cards := mustMirrorCards(t, s, root, "10001"); cards[0].Key != "APP-10001" || !reflect.DeepEqual(cards[0].Sprints, []string{"22"}) {
 		t.Fatalf("after a late card read the card is %+v; want the later read's key and sprints", cards)
 	}
-	changes, err = s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{former.Card}, MirrorCatalog{}, 40)
+	changes, err = s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{former.Card}, MirrorCatalog{}, mirrorReadAt(40))
 	if err != nil || !reflect.DeepEqual(changes, MirrorChanges{Cards: []string{"10001"}}) {
 		t.Fatalf("a card read later = %+v, %v", changes, err)
 	}
@@ -155,10 +156,10 @@ func TestATiedCardFollowsItsReadOrder(t *testing.T) {
 	moved := former
 	moved.Card.Sprints = []string{"22"}
 	page = webPage("10", moved)
-	page.ReadAt = 50
+	page.ReadAt = mirrorReadAt(50)
 	assertMirrorChanges(t, "sprints moved", mustWriteRowPage(t, s, root, page, nil), MirrorChanges{Cards: []string{"10001"}})
 	page = webPage("10", former)
-	page.ReadAt = 45
+	page.ReadAt = mirrorReadAt(45)
 	assertMirrorChanges(t, "late read of the sprints", mustWriteRowPage(t, s, root, page, nil), MirrorChanges{Superseded: []string{"10001"}})
 	if cards := mustMirrorCards(t, s, root, "10001"); !reflect.DeepEqual(cards[0].Sprints, []string{"22"}) {
 		t.Fatalf("after a late read of the sprints the card is %+v", cards)
@@ -166,6 +167,6 @@ func TestATiedCardFollowsItsReadOrder(t *testing.T) {
 	// The same card from an earlier read loses nothing, so it reports
 	// nothing.
 	page = webPage("10", moved)
-	page.ReadAt = 45
+	page.ReadAt = mirrorReadAt(45)
 	assertMirrorChanges(t, "identical earlier read", mustWriteRowPage(t, s, root, page, nil), MirrorChanges{})
 }

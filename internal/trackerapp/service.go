@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/maphash"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/keyfile"
@@ -105,6 +105,12 @@ type Service struct {
 	steady     func() time.Time
 	steadyFrom int64
 	life       context.Context
+	// halting ends at Stop (halt) or with life: the mirror cleanup runs
+	// under it, so Stop ends a cleanup in flight before its next
+	// transaction rather than waiting for all of it. A run's calls end
+	// with life alone: one that Stop meets answers what it did.
+	halting context.Context
+	endHalt context.CancelFunc
 	// digestKey keys the token digests the credential sources keep. It is
 	// random per service and never leaves it.
 	digestKey []byte
@@ -155,8 +161,18 @@ type Service struct {
 	// digestSeed keys the digests an open ticket keeps of the view it last
 	// published (ticketPump.digest).
 	digestSeed maphash.Seed
-	// detailReadAt is the last time a detail read began (detailReadAtNext).
-	detailReadAt atomic.Int64
+	// session names this service's open tickets in the mirror, each a
+	// pump of it (bindTickets): the rows of another session were left by
+	// a process that ended, and the first run drops them; earlier.done
+	// reports that delete made (dropEarlierTickets).
+	session int64
+	earlier struct {
+		sync.Mutex
+		done bool
+	}
+	// owedDrops are the keeps of ended pumps whose drop failed, owed until
+	// one commits (dropKeep, payOwedDrops). Guarded by opMu.
+	owedDrops []owedDrop
 
 	// subMu is the one lock of the subscriptions, their pumps and the
 	// linked loop (subscriptions.go). It is held for map and flag work and
@@ -186,22 +202,28 @@ func New(deps Deps) (*Service, error) {
 	}
 	key := make([]byte, 32)
 	_, _ = rand.Read(key) // crypto/rand.Read never fails; it crashes instead
+	var session [8]byte
+	_, _ = rand.Read(session[:])
 	// time.Since reads the monotonic clock of mono, which deps.Now's value
 	// may not carry.
 	mono, wall := time.Now(), deps.Now()
-	return &Service{
+	halting, endHalt := context.WithCancel(deps.Life)
+	s := &Service{
 		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir,
-		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life,
+		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life, halting: halting, endHalt: endHalt,
 		steady: func() time.Time { return wall.Add(time.Since(mono)) }, steadyFrom: wall.UnixMilli(),
 		digestKey: key,
 		clients:   map[string]*clients{}, problems: map[string]Failure{},
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
-		makeProvider: buildProvider,
-		logf:         log.Printf,
-		emitBoard:    deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
+		logf:      log.Printf,
+		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
 		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, cadence: deps.Cadence.withDefaults(),
-		digestSeed: maphash.MakeSeed(),
-	}, nil
+		digestSeed: maphash.MakeSeed(), session: int64(binary.LittleEndian.Uint64(session[:]) >> 1),
+	}
+	s.makeProvider = func(row store.TrackerConnection, c, tempo *clients) (tracker.Provider, error) {
+		return buildProvider(row, c, tempo, s.window)
+	}
+	return s, nil
 }
 
 // Stop stops every pump and the linked loop, which cancels their ticks in
@@ -219,6 +241,7 @@ func (s *Service) Stop() {
 	s.opMu.Unlock()
 	s.inflight.Wait()
 	s.workers.Wait()
+	s.payOwedDrops("the next process drops it")
 }
 
 // halt marks the service stopped, forgets every problem and takes every
@@ -227,6 +250,7 @@ func (s *Service) halt() map[string]*clients {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopped = true
+	s.endHalt()
 	open := s.clients
 	s.clients = map[string]*clients{}
 	clear(s.problems)

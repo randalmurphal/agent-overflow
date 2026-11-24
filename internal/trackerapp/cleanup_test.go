@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -24,7 +25,7 @@ type cleanupStore struct {
 	calls            atomic.Int32
 }
 
-func (c *cleanupStore) FinishMirrorCleanup(pause store.ChunkPause) error {
+func (c *cleanupStore) FinishMirrorCleanup(ctx context.Context, pause store.ChunkPause) error {
 	c.calls.Add(1)
 	if c.arrived != nil {
 		c.once.Do(func() {
@@ -35,7 +36,7 @@ func (c *cleanupStore) FinishMirrorCleanup(pause store.ChunkPause) error {
 	if c.fail != nil {
 		return c.fail
 	}
-	return c.Store.FinishMirrorCleanup(pause)
+	return c.Store.FinishMirrorCleanup(ctx, pause)
 }
 
 // logs captures what the service logs.
@@ -150,7 +151,7 @@ func TestFinishMirrorCleanupDrainsAnInterruptedClear(t *testing.T) {
 		stopped := make(chan struct{})
 		go func() {
 			defer close(stopped)
-			_ = m.st.FinishMirrorCleanup(func() { pauses.Add(1); runtime.Goexit() })
+			_ = m.st.FinishMirrorCleanup(context.Background(), func() { pauses.Add(1); runtime.Goexit() })
 		}()
 		<-stopped
 		return int(pauses.Load())
@@ -166,6 +167,65 @@ func TestFinishMirrorCleanupDrainsAnInterruptedClear(t *testing.T) {
 	}
 	if err := m.svc.FinishMirrorCleanup(); err != nil {
 		t.Fatalf("a second cleanup: %v", err)
+	}
+}
+
+// pausingStore holds the cleanup at its first pause until the context the
+// service passed it ends, after closing arrived.
+type pausingStore struct {
+	*store.Store
+	arrived chan struct{}
+	once    sync.Once
+}
+
+func (p *pausingStore) FinishMirrorCleanup(ctx context.Context, pause store.ChunkPause) error {
+	return p.Store.FinishMirrorCleanup(ctx, func() {
+		p.once.Do(func() {
+			close(p.arrived)
+			<-ctx.Done()
+		})
+	})
+}
+
+// Stop ends a cleanup in flight before its next transaction: the cleanup
+// returns ErrStopped, Stop returns, and a later cleanup finishes what it
+// left, here the 1,200 memberships of an issue a thread no longer links.
+func TestStopEndsACleanupInFlight(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.linkThread("thread-1", "10005")
+	many := card("10005", 1_799_000_000_000)
+	for i := range 1200 {
+		many.Sprints = append(many.Sprints, tracker.SprintID(fmt.Sprint(100_000+i)))
+	}
+	m.p.cards = func([]tracker.IssueID) (tracker.Cards, error) { return tracker.Cards{Cards: []tracker.Card{many}}, nil }
+	must[Outcome](t)(m.svc.tickCards(t.Context(), m.conn.ID, Background))
+	if _, err := m.st.ClearThreadTicket("thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	ps := &pausingStore{Store: m.st, arrived: make(chan struct{})}
+	m.svc.store = ps
+	cleaned := make(chan error, 1)
+	go func() { cleaned <- m.svc.FinishMirrorCleanup() }()
+	<-ps.arrived
+	stopped := make(chan struct{})
+	go func() {
+		m.svc.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Stop waited on the cleanup in flight")
+	}
+	if err := <-cleaned; !errors.Is(err, ErrStopped) {
+		t.Fatalf("the stopped cleanup returned %v; want ErrStopped", err)
+	}
+	if cards, err := m.st.ListMirrorCards(m.root(), []string{"10005"}); err != nil || len(cards) != 0 {
+		t.Fatalf("the unlinked issue reads %+v, %v", cards, err)
+	}
+	if err := m.st.FinishMirrorCleanup(t.Context(), nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

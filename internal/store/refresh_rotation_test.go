@@ -10,14 +10,30 @@ import (
 
 func refreshRotationFixture(t *testing.T) (*Store, RefreshRotation) {
 	t.Helper()
-	s, session := seedRefreshSession(t)
+	s, session := seedRefreshSession(t, "old", 900000)
 	in := RefreshRotation{SessionID: session.ID, DeviceID: session.DeviceID,
-		OldHash: bytes.Repeat([]byte{1}, 32), NextHash: bytes.Repeat([]byte{2}, 32),
+		OldHash: refreshHash("old"), NextHash: bytes.Repeat([]byte{2}, 32),
 		Now: 2000, AccessUntil: 1000000, RefreshUntil: 2000000, Recoverable: true}
-	if _, err := s.CreateRefreshSecret(session.ID, in.OldHash, 1000, 900000); err != nil {
+	return s, in
+}
+
+// takeSuccessor gives another session of in's device the secret in proposes
+// as its successor.
+func takeSuccessor(t *testing.T, s *Store, in RefreshRotation) {
+	t.Helper()
+	session, err := s.GetSession(in.SessionID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return s, in
+	device, err := s.GetDevice(in.DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.ID = "sess-holding-the-successor"
+	if err := s.CreateDeviceSession(DeviceSession{Device: device, Session: session,
+		Refresh: RefreshGrant{Hash: in.NextHash, CreatedAt: 1000, ExpiresAt: 2000000}}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRefreshRotationRecoversTheSameCommittedOperation(t *testing.T) {
@@ -90,9 +106,7 @@ func TestRefreshRotationRefusesAnUnknownPredecessorWhateverTheSuccessor(t *testi
 
 func TestRefreshRotationRefusesATakenSuccessorTerminally(t *testing.T) {
 	s, in := refreshRotationFixture(t)
-	if _, err := s.CreateRefreshSecret(in.SessionID, in.NextHash, 1000, 2000000); err != nil {
-		t.Fatal(err)
-	}
+	takeSuccessor(t, s, in)
 	if _, err := s.RotateRefreshSecret(context.Background(), in); !errors.Is(err, ErrRefreshSuccessorTaken) {
 		t.Fatalf("taken successor: %v", err)
 	}
@@ -120,9 +134,7 @@ func TestRefreshRotationDistinguishesReuseFromASupersededReceipt(t *testing.T) {
 
 func TestRefreshRotationFailureDoesNotSpendItsPredecessor(t *testing.T) {
 	s, in := refreshRotationFixture(t)
-	if _, err := s.CreateRefreshSecret(in.SessionID, in.NextHash, 1000, 2000000); err != nil {
-		t.Fatal(err)
-	}
+	takeSuccessor(t, s, in)
 	if _, err := s.RotateRefreshSecret(context.Background(), in); err == nil {
 		t.Fatal("successor collision admitted")
 	}

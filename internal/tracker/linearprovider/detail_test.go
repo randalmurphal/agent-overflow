@@ -154,7 +154,7 @@ func detailHistory() []string {
 // checkDetail checks what TestDetail's script makes of its issue.
 func checkDetail(t *testing.T, d tracker.Detail) {
 	t.Helper()
-	if d.Card.Key != "WEB-1" || d.Card.Labels[0].Name != "Bug" || d.Description != "Steps" || d.URL == "" ||
+	if d.Card.Key != "WEB-1" || d.Card.Labels[0].Name != "Bug" || d.Description != "Steps" || d.Card.URL == "" ||
 		!d.HistoryFrom.Equal(time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC).Add(creationFold)) {
 		t.Errorf("detail %+v", d)
 	}

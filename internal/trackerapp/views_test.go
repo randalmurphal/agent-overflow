@@ -19,15 +19,22 @@ func (m *mirrorFixture) seedBoard(t *testing.T) {
 	t.Helper()
 	epic := row("10004", 1_799_000_000_000, "d")
 	epic.Card.Title, epic.Card.Type = "The epic", tracker.IssueType{ID: "t1", Name: "Epic", Level: 1}
-	inSprint := row("10001", 1_799_000_000_000, "a")
 	five := 5.0
-	inSprint.Card.Sprints, inSprint.Card.Parent, inSprint.Estimate = []tracker.SprintID{"1"}, "10004", &five
-	inSprint.Card.Priority = tracker.Choice{ID: "3", Name: "Medium"}
-	inSprint.Card.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}}
+	inSprint := tracker.Row{Card: seededCard(), Order: "a", Estimate: &five}
 	done := row("10003", 1_799_000_000_000, "c")
 	done.Card.Status = "s3"
 	m.p.changedRows = pagedDelta(t, []tracker.Row{inSprint, row("10002", 1_799_000_000_000, "b"), done, epic})
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+}
+
+// seededCard is issue 10001's card as seedBoard's board read finds it:
+// in sprint 1, a child of 10004, of medium priority, labeled frontend.
+func seededCard() tracker.Card {
+	c := card("10001", 1_799_000_000_000)
+	c.Sprints, c.Parent = []tracker.SprintID{"1"}, "10004"
+	c.Priority = tracker.Choice{ID: "3", Name: "Medium"}
+	c.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}}
+	return c
 }
 
 func TestBoardView(t *testing.T) {
@@ -199,10 +206,9 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 	if v := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); v.Card.StatusSince != want {
 		t.Fatalf("issue card status since %d", v.Card.StatusSince)
 	}
+	c := seededCard()
 	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) {
-		c := card("10001", 1_799_000_000_000)
-		c.Parent = "10004"
-		return tracker.Detail{Card: c}, nil
+		return enteredAtStatusBegan(tracker.Detail{Card: c}), nil
 	}
 	for _, path := range []string{"read through", "checked", "the mirror's copy"} {
 		var v DetailView
@@ -211,7 +217,7 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 		case "read through":
 			v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 		case "checked":
-			m.p.updatedMovesWithDetail(cardsOf)
+			m.p.updatedMovesWithDetail(cardsAnswering(&c))
 			v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 		default:
 			v, _, err = m.svc.MirroredDetail(m.conn.ID, "10001")
@@ -250,7 +256,7 @@ func TestAnEditThatKeepsTheStatusKeepsWhenItBegan(t *testing.T) {
 		edit(&edited.Card)
 		stored := must[store.MirrorRow](t)(mirrorRow(edited))
 		must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime,
-			Rows: []store.MirrorRow{stored}, ReadAt: m.now().UnixMilli() + updated}))
+			Rows: []store.MirrorRow{stored}, ReadAt: beginReadAt(t, m.st, m.root(), m.now().UnixMilli()+updated)}))
 		c := must[BoardView](t)(m.svc.Board(m.scope(), sprint)).Sections[0].Rows[0].Card
 		if c.Updated != updated || c.StatusSince != want {
 			t.Fatalf("%s: card updated %d shows its status since %d; want %d", what, c.Updated, c.StatusSince, want)
@@ -261,30 +267,34 @@ func TestAnEditThatKeepsTheStatusKeepsWhenItBegan(t *testing.T) {
 	shown("the first status again", func(c *tracker.Card) {}, 1_799_000_300_000, 0)
 }
 
-// A detail shows when its status began only when the mirror's time
-// describes that status and stay: a detail read before the delta and
-// history caught up shows it unknown, read through and as the mirror's
-// copy, and so does a detail read before a newer card was stored,
-// whatever its status. The view never keeps the mirror's time for a
-// version the mirror has not stored: that is the store's to decide.
-func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
+// A detail shows the issue record's card and status time, whichever
+// version its read found. A read of a later version whose history is not
+// final shows the time unknown whatever the status, as its latest change
+// is older than the settle margin before the update (the Monday case),
+// read through and as the mirror's copy. A read of an older version than
+// the record's card is stored as the body, ordered by its version, and
+// shows the record's card, its time and that the body is behind it.
+func TestDetailShowsTheRecordsCardAndStatusTime(t *testing.T) {
 	t.Parallel()
+	began := time.UnixMilli(1_798_500_000_000).UTC()
+	const record = 1_799_000_000_000
 	for name, tc := range map[string]struct {
-		updated int64
-		status  tracker.StatusID
+		updated      int64
+		status       tracker.StatusID
+		wantUpdated  int64
+		wantSince    int64
+		wantBehind   bool
+		wantStatusOf tracker.StatusID
 	}{
-		"another status":                  {updated: 1_799_000_100_000, status: "s2"},
-		"a later card of the same status": {updated: 1_799_000_100_000, status: "s1"},
-		"an older card of another status": {updated: 1_798_900_000_000, status: "s2"},
-		// The issue may have left the status and come back between the two
-		// versions, so the mirror's time is a later stay's.
-		"an older card of the same status": {updated: 1_798_900_000_000, status: "s1"},
+		"another status":                   {updated: 1_799_000_100_000, status: "s2", wantUpdated: 1_799_000_100_000, wantStatusOf: "s2"},
+		"a later card of the same status":  {updated: 1_799_000_100_000, status: "s1", wantUpdated: 1_799_000_100_000, wantStatusOf: "s1"},
+		"an older card of another status":  {updated: 1_798_900_000_000, status: "s2", wantUpdated: record, wantSince: began.UnixMilli(), wantBehind: true, wantStatusOf: "s1"},
+		"an older card of the same status": {updated: 1_798_900_000_000, status: "s1", wantUpdated: record, wantSince: began.UnixMilli(), wantBehind: true, wantStatusOf: "s1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			m := newMirrorFixture(t)
 			m.seedBoard(t)
-			began := time.UnixMilli(1_798_500_000_000).UTC()
 			m.p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
 				var h tracker.History
 				for _, id := range q.Issues {
@@ -303,8 +313,9 @@ func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 			m.p.detail = func(tracker.IssueID) (tracker.Detail, error) {
 				c := card("10001", tc.updated)
 				c.Status = tc.status
-				return tracker.Detail{Card: c}, nil
+				return enteredAtStatusBegan(tracker.Detail{Card: c}), nil
 			}
+			answerCardsFromDetails(m.p)
 			for _, mirrored := range []bool{false, true} {
 				var v DetailView
 				var err error
@@ -313,8 +324,10 @@ func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 				} else {
 					v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 				}
-				if err != nil || v.Card.StatusSince != 0 || v.Card.Updated != tc.updated {
-					t.Fatalf("detail (mirror's copy %v): status %s since %d, updated %d, %v", mirrored, v.Card.Status.ID, v.Card.StatusSince, v.Card.Updated, err)
+				if err != nil || v.Card.StatusSince != tc.wantSince || v.Card.Updated != tc.wantUpdated ||
+					v.Card.Status.ID != string(tc.wantStatusOf) || v.BodyBehind != tc.wantBehind {
+					t.Fatalf("detail (mirror's copy %v): status %s since %d, updated %d, body behind %v, %v; want %s since %d, updated %d, behind %v",
+						mirrored, v.Card.Status.ID, v.Card.StatusSince, v.Card.Updated, v.BodyBehind, err, tc.wantStatusOf, tc.wantSince, tc.wantUpdated, tc.wantBehind)
 				}
 			}
 		})
@@ -332,6 +345,7 @@ func TestATicketDoesNotShowAnEarlierStaysTime(t *testing.T) {
 			m := newMirrorFixture(t)
 			m.seedBoard(t)
 			m.p.caps.DetailMovesUpdated = refresh
+			answerCardsFromDetails(m.p)
 			began := time.UnixMilli(1_798_500_000_000).UTC()
 			m.p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
 				var h tracker.History
@@ -361,58 +375,51 @@ func TestATicketDoesNotShowAnEarlierStaysTime(t *testing.T) {
 	}
 }
 
-// A ticket takes when its status began from the mirror's card only when
-// that card is the version it shows.
-func TestStatusSinceOf(t *testing.T) {
+// An edit that keeps the issue's status makes a new version whose status
+// time no read has decided: the open ticket's read of it, whose history is
+// not final through the edit, cannot tell a stay the issue left and came
+// back to since, and its latest change is older than the settle margin
+// before the edit, so the ticket shows the time unknown (the Monday case),
+// on Jira after the check stored the card and on Linear from the full read
+// alone. The history read final through the edit decides it again.
+func TestAnEditOfAnOpenTicketShowsItsStatusTimeOnceAFinalReadDecidesIt(t *testing.T) {
 	t.Parallel()
-	m := store.MirrorCard{StatusID: "s1", UpdatedAt: 1_799_000_000_000, StatusSince: 7}
-	for name, tc := range map[string]struct {
-		updated int64
-		status  tracker.StatusID
-		want    int64
-	}{
-		"the mirror's version":      {m.UpdatedAt, "s1", 7},
-		"another status":            {m.UpdatedAt, "s2", 0},
-		"an earlier version":        {m.UpdatedAt - 1, "s1", 0},
-		"a version not stored yet":  {m.UpdatedAt + 1, "s1", 0},
-		"a later one, other status": {m.UpdatedAt + 1, "s2", 0},
-	} {
-		c := card("10001", tc.updated)
-		c.Status = tc.status
-		if got := statusSinceOf(m, c); got != tc.want {
-			t.Errorf("%s: %d; want %d", name, got, tc.want)
-		}
-	}
-}
-
-// A round's check stores a changed ticket's card before the ticket is read
-// in full, so an edit that keeps the issue's status leaves the time the
-// status began on the open ticket.
-func TestAnOpenTicketKeepsWhenItsStatusBeganAcrossAnEdit(t *testing.T) {
-	t.Parallel()
-	m, st, issues, subs := newRoundFixture(t, 1, true)
-	began := time.UnixMilli(1_798_500_000_000).UTC()
-	m.p.set(func(p *scripted) {
-		p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
-			var h tracker.History
-			for _, id := range q.Issues {
-				h.Issues = append(h.Issues, tracker.IssueHistory{Issue: id, CompleteTo: m.now(),
-					Status: []tracker.StatusChange{{Change: tracker.Change{At: began}, From: "s2", To: "s1"}}})
+	for _, jira := range []bool{true, false} {
+		t.Run(map[bool]string{true: "jira", false: "linear"}[jira], func(t *testing.T) {
+			t.Parallel()
+			m, st, issues, subs := newRoundFixture(t, 1, jira)
+			began := time.UnixMilli(1_798_500_000_000).UTC()
+			m.p.set(func(p *scripted) {
+				p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
+					var h tracker.History
+					for _, id := range q.Issues {
+						h.Issues = append(h.Issues, tracker.IssueHistory{Issue: id, CompleteTo: m.now(),
+							Status: []tracker.StatusChange{{Change: tracker.Change{At: began}, From: "s2", To: "s1"}}})
+					}
+					return h, nil
+				}
+			})
+			must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
+			quiet(t, m.svc)
+			if since := m.ticketView(t, subs[0].ID).Detail.Card.StatusSince; since != began.UnixMilli() {
+				t.Fatalf("the ticket shows its status since %d before the edit; want %d", since, began.UnixMilli())
 			}
-			return h, nil
-		}
-	})
-	must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
-	quiet(t, m.svc)
-	if since := m.ticketView(t, subs[0].ID).Detail.Card.StatusSince; since != began.UnixMilli() {
-		t.Fatalf("the ticket shows its status since %d before the edit; want %d", since, began.UnixMilli())
-	}
-	st.edit(issues[0], func(c *tracker.Card) { c.Title = "Renamed" })
-	if res := m.round(t); res.failed {
-		t.Fatalf("round %+v", res)
-	}
-	if c := m.ticketView(t, subs[0].ID).Detail.Card; c.Title != "Renamed" || c.StatusSince != began.UnixMilli() {
-		t.Fatalf("after the edit the ticket shows %q, in its status since %d; want %d", c.Title, c.StatusSince, began.UnixMilli())
+			st.edit(issues[0], func(c *tracker.Card) { c.Title = "Renamed" })
+			if res := m.round(t); res.failed {
+				t.Fatalf("round %+v", res)
+			}
+			if c := m.ticketView(t, subs[0].ID).Detail.Card; c.Title != "Renamed" || c.StatusSince != 0 {
+				t.Fatalf("after the edit the ticket shows %q, in its status since %d; want unknown", c.Title, c.StatusSince)
+			}
+			if r := m.recordOf(t, string(issues[0])); r.StatusFinal {
+				t.Fatal("the record's status time is final for the edit before any final read")
+			}
+			must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
+			quiet(t, m.svc)
+			if c := m.ticketView(t, subs[0].ID).Detail.Card; c.StatusSince != began.UnixMilli() {
+				t.Fatalf("after the history read the ticket shows its status since %d; want %d", c.StatusSince, began.UnixMilli())
+			}
+		})
 	}
 }
 
@@ -424,7 +431,7 @@ func TestAStaleCardShowsItsColumns(t *testing.T) {
 	m.seedBoard(t)
 	bad := must[store.MirrorRow](t)(mirrorRow(row("10002", 1_799_000_000_001, "b")))
 	bad.Card.Data = []byte(`{"v":0,"title":"old"}`)
-	must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime, Rows: []store.MirrorRow{bad}, ReadAt: m.now().UnixMilli() + 1}))
+	must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime, Rows: []store.MirrorRow{bad}, ReadAt: beginReadAt(t, m.st, m.root(), m.now().UnixMilli()+1)}))
 	page := must[SectionPage](t)(m.svc.SectionRows(m.scope(), Section{Kind: SectionBacklog}, nil))
 	if !slices.Equal(page.Stale, []string{"10002"}) || page.Rows[0].Card.Key != "WEB-2" || page.Rows[0].Card.Title != "" {
 		t.Fatalf("page %+v", page)
@@ -435,7 +442,7 @@ func TestAStaleCardShowsItsColumns(t *testing.T) {
 	// The next read of the row replaces it.
 	m.p.set(func(p *scripted) { p.boardRows = boardOf(row("10002", 1_799_000_000_002, "b")) })
 	r := m.begun(t, m.scope())
-	if _, _, _, err := r.boardRows(testBoard, ids("10002")); err != nil {
+	if _, _, _, err := r.boardRows(testBoard, ids("10002"), tracker.Eligibility{}); err != nil {
 		t.Fatal(err)
 	}
 	r.finish()

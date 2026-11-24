@@ -336,6 +336,9 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	if err := tx.Commit(); err != nil {
 		return Identity{}, fmt.Errorf("store: commit restore: %w", err)
 	}
+	// The mirror's roots went with its rows (restoreEmptiesTable), and so
+	// do their read clocks.
+	s.forgetMirrorReads()
 	for _, token := range changedSpawns {
 		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}

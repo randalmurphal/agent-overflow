@@ -20,10 +20,10 @@ func TestReadMirrorRefreshTargets(t *testing.T) {
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a"), webRow("10002", 5, "b")})
 	writeMirrorBoard(t, s, root, "11", []MirrorRow{webRow("10001", 5, "a")})
 	linkIssue(t, s, "thread-1", "10003")
-	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10003", 5)}, MirrorCatalog{}, 5); err != nil {
+	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10003", 5)}, MirrorCatalog{}, mirrorReadAt(5)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{{"10001", []byte(`{}`)}}, 10, 10); err != nil {
+	if _, err := storeTicket(t, s, root, currentSweep(s, root), "10001", 10, 10, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	read := func(cards, details []string) MirrorRefreshTargets {

@@ -117,6 +117,18 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 	// opened after the connection was turned off and on again is one of a
 	// later mirror, which the targets read then refuses.
 	open := r.s.openTickets(r.row.ID, p.details)
+	// The open tickets settle with everything the refresh stored
+	// (Service.write), so its writes are told to them as their own; a
+	// refresh that stops before its read of them (refreshDetails), which
+	// that settlement follows, tells them what it stored.
+	r.origin = &tickOrigin{tickets: open}
+	var stored Changes
+	r.tell = func(ch Changes) { stored.add(ch) }
+	defer func() {
+		if f.pumps == nil {
+			r.s.tellTickets(r.gen, open, stored)
+		}
+	}()
 	boards := slices.Concat(slices.Collect(maps.Keys(p.rows)), p.structures)
 	var place []tracker.BoardID
 	if p.created.issue != "" {
@@ -143,7 +155,7 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 			continue
 		}
 		ch, err := r.structure(b)
-		f.add(b, ch)
+		f.ch.add(ch)
 		switch {
 		case err == nil:
 			f.covered(tracker.StructureOf(b))
@@ -215,8 +227,8 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	returned := map[tracker.IssueID]bool{}
 	for _, b := range slices.Sorted(maps.Keys(asked)) {
 		ids := sortedUnique(asked[b])
-		ch, read, unread, err := r.boardRows(b, ids)
-		f.add(b, ch)
+		ch, read, unread, err := r.boardRows(b, ids, tracker.Eligibility{})
+		f.ch.add(ch)
 		for _, id := range read {
 			returned[id] = true
 		}
@@ -282,16 +294,24 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 	if len(f.reads) == 0 {
 		return nil
 	}
-	ch, err := r.verifiedDetails(f.reads, 0)
+	var ch Changes
+	r.tell = func(stored Changes) { ch.add(stored) }
+	err := r.boundDetails(f.reads, false)
 	f.ch.add(ch)
 	f.details = detailsRead{ch: ch, root: r.root, gen: r.gen, kind: r.row.Kind}
-	// A detail whose own read ended is refreshed however the others' did;
-	// the rest owe the read that failed.
+	// A detail whose own read succeeded is refreshed however the others'
+	// did, and one whose own read failed (its bind) is stale with that
+	// failure (ticketRead.failed); the rest owe the read that failed.
 	var owed []tracker.Resource
 	for _, rd := range f.reads {
-		if rd.answered {
+		switch {
+		case !rd.failed():
 			f.covered(tracker.DetailOf(rd.issue))
-		} else {
+		case rd.answered:
+			if stop := r.failedRead(f, rd.err, tracker.DetailOf(rd.issue)); stop != nil {
+				return stop
+			}
+		default:
 			owed = append(owed, tracker.DetailOf(rd.issue))
 		}
 	}
@@ -333,17 +353,6 @@ func rowResources(b tracker.BoardID, ids []tracker.IssueID) []tracker.Resource {
 		out[i] = tracker.RowOf(b, id)
 	}
 	return out
-}
-
-// add merges ch, stored by a read through board b.
-func (f *refreshed) add(b tracker.BoardID, ch Changes) {
-	f.ch.add(ch)
-	i := slices.IndexFunc(f.own, func(o boardChanges) bool { return o.board == b })
-	if i < 0 {
-		f.own = append(f.own, boardChanges{board: b})
-		i = len(f.own) - 1
-	}
-	f.own[i].ch.add(ch)
 }
 
 // refreshTargets reads where the mirror holds the cards, details and

@@ -32,6 +32,9 @@ func TestPollIntervalIsPerKind(t *testing.T) {
 					return tracker.Detail{Card: card(string(id), 1)}, nil
 				}
 			})
+			// A ticket opened before its board's first read is kept for the
+			// ticket, and its first document is owed its card.
+			answerCardsFromDetails(m.p)
 			linear := m.add(NewConnection{Kind: store.TrackerKindLinear, Site: "https://linear.app/example/"})
 			m.listBoards(linear.ID, testBoard)
 			for _, sc := range []struct {

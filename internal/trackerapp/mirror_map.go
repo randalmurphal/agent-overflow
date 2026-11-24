@@ -22,10 +22,10 @@ import (
 // read from the tracker replaces it. A blob is never an error a person
 // sees. Changing what a blob holds means bumping its version.
 const (
-	cardBlobVersion   = 1
-	userBlobVersion   = 1
-	boardBlobVersion  = 1
-	detailBlobVersion = 1
+	cardBlobVersion  = 1
+	userBlobVersion  = 1
+	boardBlobVersion = 1
+	bodyBlobVersion  = 1
 )
 
 // millis is t in Unix milliseconds, 0 for the zero time.
@@ -70,19 +70,23 @@ type choiceBlob struct {
 	Name string `json:"name,omitempty"`
 }
 
-// cardBlob is the part of a card no column holds.
+// cardBlob is the part of a card no column holds. URL is a member a card
+// of version 1 written before it existed lacks, which reads as no URL: a
+// ticket's view of such a card falls back to none until the card is read
+// again, so the version did not move and no stored card became a miss.
 type cardBlob struct {
 	V        int          `json:"v"`
 	Title    string       `json:"title,omitempty"`
 	TypeName string       `json:"type_name,omitempty"`
 	Priority string       `json:"priority_name,omitempty"`
 	Labels   []choiceBlob `json:"labels,omitempty"`
+	URL      string       `json:"url,omitempty"`
 }
 
 // mirrorCard is c as the store holds it. Its sprints are sorted, as the
 // store reads them back.
 func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
-	blob := cardBlob{V: cardBlobVersion, Title: c.Title, TypeName: c.Type.Name, Priority: c.Priority.Name}
+	blob := cardBlob{V: cardBlobVersion, Title: c.Title, TypeName: c.Type.Name, Priority: c.Priority.Name, URL: c.URL}
 	for _, l := range c.Labels {
 		blob.Labels = append(blob.Labels, choiceBlob(l))
 	}
@@ -120,7 +124,7 @@ func cardOf(m store.MirrorCard) (c tracker.Card, ok bool) {
 	if !decodeBlob(m.Data, cardBlobVersion, &blob, &blob.V) {
 		return c, false
 	}
-	c.Title, c.Type.Name, c.Priority.Name = blob.Title, blob.TypeName, blob.Priority
+	c.Title, c.Type.Name, c.Priority.Name, c.URL = blob.Title, blob.TypeName, blob.Priority, blob.URL
 	for _, l := range blob.Labels {
 		c.Labels = append(c.Labels, tracker.Choice(l))
 	}
@@ -231,8 +235,8 @@ type boardBlob struct {
 	Choices []estimateChoiceBlob `json:"choices,omitempty"`
 }
 
-// mirrorStructure is st, read from readAt, as the store holds it.
-func mirrorStructure(st tracker.Structure, readAt int64) (store.MirrorStructure, error) {
+// mirrorStructure is st, read from read, as the store holds it.
+func mirrorStructure(st tracker.Structure, read store.MirrorRead) (store.MirrorStructure, error) {
 	blob := boardBlob{V: boardBlobVersion}
 	for _, ch := range st.Estimate.Choices {
 		blob.Choices = append(blob.Choices, estimateChoiceBlob(ch))
@@ -251,7 +255,7 @@ func mirrorStructure(st tracker.Structure, readAt int64) (store.MirrorStructure,
 			PlansSprints: st.Board.Sprints, EstimateUnit: int(st.Estimate.Unit), EstimateField: st.Estimate.Field, Data: data,
 		},
 		Catalog: catalog,
-		ReadAt:  readAt,
+		ReadAt:  read,
 		// A structure read lists everything it reads to the end or fails:
 		// Jira's sprint listing has no limit (jira.SprintList.Complete is
 		// false only for a limited one) and Linear's cycles and users are

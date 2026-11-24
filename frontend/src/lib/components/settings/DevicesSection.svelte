@@ -49,6 +49,7 @@
   import PasskeysBlock from './PasskeysBlock.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { GHOST_BUTTON_CLASS } from './styles';
+  import { pairingAlreadyAllowed } from './pairingTurns';
 
   // The other axis, and the one a paired device lands on. Every RPC on
   // this screen carries `//ao:scope access:admin`, which full access holds and
@@ -271,7 +272,15 @@
   }
 
   function confirmPending(link: PendingPairing): void {
-    void act('Failed to allow the device', () => call(() => ConfirmDevicePairing(link.linkId)));
+    void act('Failed to allow the device', async () => {
+      try {
+        await call(() => ConfirmDevicePairing(link.linkId));
+      } catch (err) {
+        // Another owner view approved it first; the reload below shows it.
+        if (!pairingAlreadyAllowed(err)) throw err;
+        addToast('info', `${link.deviceLabel || 'This device'} is already allowed.`);
+      }
+    });
   }
 
   function cancelPending(link: PendingPairing): void {

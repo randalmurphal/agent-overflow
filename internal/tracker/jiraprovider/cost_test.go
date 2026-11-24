@@ -26,7 +26,7 @@ func TestRequestCost(t *testing.T) {
 	p := r.p
 	ctx := t.Context()
 	now := r.clock.Now()
-	window := now.Add(-180 * 24 * time.Hour)
+	window := now.Add(-scenarioWindow)
 
 	r.measure("Identity", func() error { _, err := p.Identity(ctx); return err })
 	r.measure("Projects", func() error { _, err := p.Projects(ctx); return err })
@@ -79,8 +79,14 @@ func TestRequestCost(t *testing.T) {
 		}
 		return err
 	})
-	r.measure("BoardRows (100)", func() error { _, err := p.BoardRows(ctx, costBoard, costIDs(0, 100)); return err })
-	r.measure("BoardRows (500)", func() error { _, err := p.BoardRows(ctx, costBoard, costIDs(0, 500)); return err })
+	r.measure("BoardRows (100)", func() error {
+		_, err := p.BoardRows(ctx, costBoard, costIDs(0, 100), tracker.Eligibility{})
+		return err
+	})
+	r.measure("BoardRows (500)", func() error {
+		_, err := p.BoardRows(ctx, costBoard, costIDs(0, 500), tracker.Eligibility{})
+		return err
+	})
 	r.measure("Cards (100)", func() error { _, err := p.Cards(ctx, costIDs(0, 100)); return err })
 	r.measure("Cards (250)", func() error { _, err := p.Cards(ctx, costIDs(0, 250)); return err })
 	r.measure("Cards (500)", func() error { _, err := p.Cards(ctx, costIDs(0, 500)); return err })
@@ -141,7 +147,7 @@ func TestRequestCost(t *testing.T) {
 		return err
 	})
 	r.measure("BoardRows (100, 1 not on the board)", func() error {
-		rows, err := p.BoardRows(ctx, costBoard, append(costIDs(0, 100), "99999999"))
+		rows, err := p.BoardRows(ctx, costBoard, append(costIDs(0, 100), "99999999"), tracker.Eligibility{})
 		if err == nil && (len(rows.Rows) != 100 || len(rows.Missing) != 1) {
 			err = fmt.Errorf("%d rows, missing %v", len(rows.Rows), rows.Missing)
 		}

@@ -60,7 +60,7 @@ func webStructure() MirrorStructure {
 				{ID: "6", Name: "Won't do", Group: MirrorGroupCanceled},
 			},
 		},
-		ReadAt: 1,
+		ReadAt: mirrorReadAt(1),
 	}
 }
 
@@ -73,9 +73,67 @@ func webRow(id string, updated int64, order string, sprints ...string) MirrorRow
 	return MirrorRow{Card: webCard(id, updated, sprints...), OrderKey: order}
 }
 
+// heldCard is the card the mirror keeps for issue, or webCard(issue, 1)
+// when it keeps none, so a ticket of it is of the record's version. It
+// reads the mirror: a test that counts a write's statements builds its
+// tickets before it counts.
+func heldCard(t *testing.T, s *Store, root int64, issue string) MirrorCard {
+	t.Helper()
+	cards, err := s.ListMirrorCards(root, []string{issue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) == 1 {
+		return cards[0]
+	}
+	return webCard(issue, 1)
+}
+
+// heldTicket is issue's ticket with body data and the card the mirror
+// keeps (heldCard).
+func heldTicket(t *testing.T, s *Store, root int64, issue string, data []byte) MirrorTicket {
+	t.Helper()
+	return MirrorTicket{Card: heldCard(t, s, root, issue), Body: data}
+}
+
+// heldTickets is heldTicket of each issue with data.
+func heldTickets(t *testing.T, s *Store, root int64, issues []string, data []byte) []MirrorTicket {
+	t.Helper()
+	out := make([]MirrorTicket, len(issues))
+	for i, id := range issues {
+		out[i] = heldTicket(t, s, root, id, data)
+	}
+	return out
+}
+
+// storeTicket stores issue's ticket with body data (heldTicket), opened
+// at openedAt (zero: no opening) by a read begun at readAt.
+func storeTicket(t *testing.T, s *Store, root, sweep int64, issue string, openedAt, readAt int64, data []byte) (MirrorTicketWrite, error) {
+	t.Helper()
+	w, err := s.StoreMirrorTickets(root, sweep, []MirrorTicket{heldTicket(t, s, root, issue, data)}, MirrorCatalog{},
+		mirrorReadOf(root, openedAt), mirrorReadOf(root, readAt))
+	if err != nil {
+		return MirrorTicketWrite{}, err
+	}
+	return w.Tickets[0], nil
+}
+
+// storeBoundTicket stores issue's ticket with body data (heldTicket), read
+// by the open ticket of bind with a read begun at readAt and no opening.
+func storeBoundTicket(t *testing.T, s *Store, root, sweep int64, issue string, bind MirrorBind, readAt int64, data []byte) MirrorTicketWrite {
+	t.Helper()
+	ticket := heldTicket(t, s, root, issue, data)
+	ticket.Bind = bind
+	w, err := s.StoreMirrorTickets(root, sweep, []MirrorTicket{ticket}, MirrorCatalog{}, MirrorRead{}, mirrorReadOf(root, readAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w.Tickets[0]
+}
+
 // webPage is a page of board's rows read at 1.
 func webPage(board string, rows ...MirrorRow) MirrorRowPage {
-	return MirrorRowPage{BoardID: board, Rows: rows, ReadAt: 1}
+	return MirrorRowPage{BoardID: board, Rows: rows, ReadAt: mirrorReadAt(1)}
 }
 
 // noMirrorLifetime is a lifetime no board has, for a board with none.
@@ -182,6 +240,7 @@ func currentStructure(s *Store, root int64, st MirrorStructure) MirrorStructure 
 	if st.Lifetime == 0 {
 		st.Lifetime = currentLifetime(s, root, st.Board.ID)
 	}
+	st.ReadAt = readOfRoot(st.ReadAt, root)
 	return st
 }
 
@@ -190,6 +249,7 @@ func currentPage(s *Store, root int64, p MirrorRowPage) MirrorRowPage {
 		p.Lifetime = currentLifetime(s, root, p.BoardID)
 		p.EstimateResetAt = currentEstimateReset(s, root, p.BoardID)
 	}
+	p.ReadAt = readOfRoot(p.ReadAt, root)
 	return p
 }
 
@@ -197,7 +257,18 @@ func currentAttempt(s *Store, root int64, board string, a MirrorSyncAttempt) Mir
 	if a.Lifetime == 0 && board != "" {
 		a.Lifetime = currentLifetime(s, root, board)
 	}
+	a.ReadAt, a.ReconciledAt, a.Failure.At = readOfRoot(a.ReadAt, root), readOfRoot(a.ReconciledAt, root), readOfRoot(a.Failure.At, root)
 	return a
+}
+
+// readOfRoot is read as a read of root when it is a fixture's read of
+// root 1 (mirrorReadAt), so the fixtures that capture a write's state for
+// another root (current*) write it there; any other read is left as it is.
+func readOfRoot(read MirrorRead, root int64) MirrorRead {
+	if read.root == 1 {
+		read.root = root
+	}
+	return read
 }
 
 func mustReplaceStructure(t *testing.T, s *Store, root int64, st MirrorStructure, want bool) {
@@ -247,15 +318,24 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	t.Helper()
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
+	// The board's sync row holds a reconcile failure, so each of its
+	// columns holds a value.
+	if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReconcileFailure: MirrorReconcileAttempt{
+		At: mirrorReadOf(root, 6), Returned: 6, Kind: MirrorFailureTracker, Message: "Jira refused the query.", Refused: true}})); err != nil {
+		t.Fatal(err)
+	}
 	mustExec(t, s.db, `INSERT INTO tracker_cache_board_unexplained(root_id, board_id, kind, ref_id, named_at) VALUES (?, '10', 3, '99', 0)`, root)
 	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: "10001", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
+	if _, err := storeTicket(t, s, root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", 1, []MirrorWorklog{
+	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(1), []MirrorWorklog{
 		{ID: "w1", IssueID: "10001", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 3600}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
 		t.Fatal(err)
 	}
 	for table, n := range countMirrorRows(t, s.db) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/jira"
@@ -25,13 +26,16 @@ var cardFieldIDs = []string{
 	"parent", "project", "created", "updated", "resolutiondate",
 }
 
-// site is what the field catalog says about the fields a read needs.
+// site is what the field catalog says about the fields a read needs, and
+// the start of the window of the closed sprints its cards name.
 type site struct {
 	// fields is the client's cached catalog, shared and read-only.
 	fields *jira.Catalog
 	// sprint is the sprint field's ID; empty on a site without Jira
 	// Software.
 	sprint string
+	// sprintsFrom is Options.SprintsFrom when the read began.
+	sprintsFrom time.Time
 }
 
 // site reads the field catalog, which the jira client caches, read again
@@ -43,7 +47,7 @@ func (p *Provider) site(ctx context.Context, named ...string) (site, error) {
 	if err != nil {
 		return site{}, fmt.Errorf("jiraprovider: field catalog: %w", err)
 	}
-	s := site{fields: fields}
+	s := site{fields: fields, sprintsFrom: p.sprintsFrom()}
 	if f, ok := fields.OfCustomType(sprintType); ok {
 		s.sprint = f.ID
 	}
@@ -172,6 +176,12 @@ func (s site) cardOf(is *jira.Issue, cat *catalog) (tracker.Card, error) {
 			return tracker.Card{}, fmt.Errorf("jiraprovider: issue %s: sprints: %w", is.Key, err)
 		}
 		for _, sp := range sprints {
+			// A sprint closed before the window is one no board keeps
+			// (Structure), so no reader uses the issue's membership of it:
+			// an issue carried through many sprints names them all.
+			if sp.State == jira.SprintClosed && closedAt(sp).Before(s.sprintsFrom) {
+				continue
+			}
 			c.Sprints = append(c.Sprints, tracker.SprintID(decimal(sp.ID)))
 		}
 	}

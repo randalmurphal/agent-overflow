@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"testing"
@@ -37,11 +38,14 @@ func mirrorHistoryShown(t *testing.T, s *Store) string {
 // A history has no length bound. One longer than a chunk is staged in
 // transactions of at most clearMirrorChunk changes and made the issue's
 // history in one more, so no read sees part of it and no transaction
-// writes or deletes more than a chunk; an identical one writes nothing; a
-// longer one that keeps the stored changes appends in place.
+// writes or deletes more than a chunk; an identical one writes nothing,
+// its status result checked in one transaction of its own
+// (writeIdenticalHistory); a longer one that keeps the stored changes
+// appends in place. A new one is compared with the stored generation
+// first (three reads: the removals and two chunks), as any is.
 func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 	s, _, root := newMirror(t)
-	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 10_000, "a")})
 	const n = 5000
 	recorder := recordMirrorWrites(t, s)
 	for _, step := range []struct {
@@ -51,17 +55,19 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 		statements, chunks int
 		shown              string
 	}{
-		{"new", longHistory("10001", n, 1), true, 31, n / clearMirrorChunk, "5000 answered 5001 since 5000 other 0 dirty 0"},
-		{"identical", longHistory("10001", n, 1), false, 14, 0, "5000 answered 5001 since 5000 other 0 dirty 0"},
-		{"appended", longHistory("10001", n+100, 1), true, 22, 1, "5100 answered 5101 since 5100 other 0 dirty 0"},
+		{"new", longHistory("10001", n, 1), true, 34, n / clearMirrorChunk, "5000 answered 5001 since 5000 other 0 dirty 0"},
+		{"identical", longHistory("10001", n, 1), false, 17, 0, "5000 answered 5001 since 5000 other 0 dirty 0"},
+		{"appended", longHistory("10001", n+100, 1), true, 23, 1, "5100 answered 5101 since 5100 other 0 dirty 0"},
 		{"shortened", longHistory("10001", 10, 6000), true, 34, 0, "10 answered 6010 since 10 other 0 dirty 0"},
 		{"grown again", longHistory("10001", n, 7000), true, 34, 0, "5000 answered 12000 since 5000 other 0 dirty 0"},
 	} {
 		recorder.reset()
 		var results []MirrorHistoryResult
 		var err error
-		sweep, histories := currentSweep(s, root), dueHistories(s, root, []MirrorHistory{step.history})
-		statements := countMirrorStatements(t, func() { results, _, err = s.ReplaceMirrorHistories(root, sweep, histories, MirrorCatalog{}, 0) })
+		sweep, histories, read := currentSweep(s, root), dueHistories(s, root, []MirrorHistory{step.history}), nextMirrorRead(s, root)
+		statements := countMirrorStatements(t, func() {
+			results, _, err = s.ReplaceMirrorHistories(root, sweep, histories, MirrorCatalog{}, read)
+		})
 		if err != nil || len(results) != 1 || results[0].Changed != step.changed {
 			t.Fatalf("%s: %+v, %v", step.name, results, err)
 		}
@@ -81,15 +87,63 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 	}
 }
 
-// A staged history that is not final for the card leaves the time the
-// card's status began standing, as a batch's does; the final one sets it.
-func TestMirrorStagedHistoryKeepsTheStatusTimeUntilFinal(t *testing.T) {
+// A card of the same update in another status makes the issue due a
+// history read again (history_for 0) and keeps its stored history. That
+// history read again, identical, writes no change, staged (longer than a
+// chunk) or batched: it is compared with the stored generation, not taken
+// for a first write. It reports a change only for the status result it
+// decides (final for the update the card write left undecided), as a
+// batch does, and the same history once more reports none.
+func TestAnIdenticalHistoryAfterASameUpdateStatusChangeWritesNoChange(t *testing.T) {
+	for _, n := range []int{20, 5000} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			s, _, root := newMirror(t)
+			writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 10_000, "a")})
+			mustReplaceHistory(t, s, root, longHistory("10001", n, 1), MirrorWrite{Changed: true})
+			moved := webCard("10001", 10_000)
+			moved.StatusID = "3"
+			if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{moved}, MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
+				t.Fatal(err)
+			}
+			var historyFor int64
+			if err := s.db.QueryRow(`SELECT history_for FROM tracker_cache_issues WHERE root_id = ? AND issue_id = '10001'`, root).Scan(&historyFor); err != nil || historyFor != 0 {
+				t.Fatalf("after the same-update status change history_for is %d (%v); want 0", historyFor, err)
+			}
+			recorder := recordMirrorWrites(t, s)
+			for i, changed := range []bool{true, false} {
+				recorder.reset()
+				sweep, histories, read := currentSweep(s, root), dueHistories(s, root, []MirrorHistory{longHistory("10001", n, 1)}), nextMirrorRead(s, root)
+				results, _, err := s.ReplaceMirrorHistories(root, sweep, histories, MirrorCatalog{}, read)
+				if err != nil || len(results) != 1 || results[0].Superseded || results[0].Unkept {
+					t.Fatalf("identical history %d: %+v, %v", i, results, err)
+				}
+				if results[0].Changed != changed {
+					t.Errorf("identical history %d reports changed %v; want %v", i, results[0].Changed, changed)
+				}
+				if got := recorder.rowWrites()["tracker_cache_changes"]; got != 0 {
+					t.Errorf("identical history %d wrote %d history rows; want none", i, got)
+				}
+				if got, want := mirrorHistoryShown(t, s), fmt.Sprintf("%d answered %d since 0 other 0 dirty 0", n, n+1); got != want {
+					t.Errorf("identical history %d: history %q; want %q", i, got, want)
+				}
+				if got := statusOf(t, s, root, "10001"); got != "0 true 10000" {
+					t.Errorf("identical history %d: status %s; want no time, final", i, got)
+				}
+			}
+		})
+	}
+}
+
+// A staged history that is not final for the card gives the card's status
+// time provisionally, as a batch's does (MirrorStatusSince); the final one
+// makes it final.
+func TestMirrorStagedHistoryIsProvisionalUntilFinal(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
-	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 10_000, "a")})
 	const n = 5000
 	mustReplaceHistory(t, s, root, longHistory("10001", n, 1), MirrorWrite{Changed: true})
-	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 6, "a")), nil)
+	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 10_001, "a")), nil)
 	// Every change a time unit later: no stored change is kept, so the
 	// history is staged as a new generation and switched to.
 	later := func(wait int64) MirrorHistory {
@@ -112,12 +166,50 @@ func TestMirrorStagedHistoryKeepsTheStatusTimeUntilFinal(t *testing.T) {
 	if gen() == before {
 		t.Fatal("the history was not staged as a new generation")
 	}
-	if got := mustStatusSince(t, s, root, "10001"); got != n {
-		t.Fatalf("after a staged history still waiting: %d; want the time it had, %d", got, n)
+	if got := statusOf(t, s, root, "10001"); got != fmt.Sprintf("%d false 10001", n+1) {
+		t.Fatalf("after a staged history still waiting: %s; want its change within the margin, %d, provisionally", got, n+1)
 	}
 	mustReplaceHistory(t, s, root, later(0), MirrorWrite{Changed: true})
-	if got := mustStatusSince(t, s, root, "10001"); got != n+1 {
-		t.Fatalf("after the final history: %d; want %d", got, n+1)
+	if got := statusOf(t, s, root, "10001"); got != fmt.Sprintf("%d true 10001", n+1) {
+		t.Fatalf("after the final history: %s; want %d, final", got, n+1)
+	}
+}
+
+// A history whose changes and times the stored history already holds
+// writes the status result it gives the card as any history write does:
+// a staged one (too long for a batch) and a batch one end the same, and
+// both report the change. Between the two, a ticket's final evidence of
+// the same version moved the time.
+func TestAnIdenticalHistoryWritesItsStatusResultStagedOrNot(t *testing.T) {
+	t.Parallel()
+	for name, n := range map[string]int{"batch": 10, "staged": 5000} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s, _, root := newMirror(t)
+			mustReplaceStructure(t, s, root, webStructure(), true)
+			mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 10_000, "a")), nil)
+			// The last change enters the card's status 1 at n.
+			h := longHistory("10001", n, 1)
+			mustReplaceHistory(t, s, root, h, MirrorWrite{Changed: true})
+			want := fmt.Sprintf("%d true 10000", n)
+			if got := statusOf(t, s, root, "10001"); got != want {
+				t.Fatalf("after the history: %s; want %s", got, want)
+			}
+			card := webCard("10001", 10_000)
+			e := MirrorStatusEvidence{Status: card.StatusID, CreatedAt: card.CreatedAt, UpdatedAt: 10_000, LatestTo: card.StatusID, LatestAt: 2, Final: true}
+			if _, err := s.StoreMirrorTickets(root, currentSweep(s, root), []MirrorTicket{{Card: card, Body: []byte(`{}`), Status: &e}},
+				MirrorCatalog{}, mirrorReadAt(20), mirrorReadAt(20)); err != nil {
+				t.Fatal(err)
+			}
+			if got := statusOf(t, s, root, "10001"); got != "2 true 10000" {
+				t.Fatalf("after the ticket's evidence: %s", got)
+			}
+			mustReplaceHistory(t, s, root, h, MirrorWrite{Changed: true})
+			if got := statusOf(t, s, root, "10001"); got != want {
+				t.Fatalf("after the same history again: %s; want %s, its result", got, want)
+			}
+			mustReplaceHistory(t, s, root, h, MirrorWrite{})
+		})
 	}
 }
 
@@ -133,16 +225,17 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 	}{
 		{"before the switch", `BEFORE INSERT ON tracker_cache_changes WHEN NEW.gen = 3 AND NEW.seq = 3000`,
 			"10 answered 6010 since 10 other 3000 dirty 1",
-			func(s *Store, _ int64) error { return s.FinishMirrorCleanup(nil) }},
+			func(s *Store, _ int64) error { return s.FinishMirrorCleanup(context.Background(), nil) }},
 		{"after the switch", `BEFORE DELETE ON tracker_cache_changes WHEN OLD.gen = 1 AND OLD.seq = 2000`,
 			"10 answered 6010 since 10 other 3000 dirty 1",
 			func(s *Store, root int64) error {
-				_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{longHistory("10001", 10, 9000)}), MirrorCatalog{}, 0)
+				_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{longHistory("10001", 10, 9000)}), MirrorCatalog{}, nextMirrorRead(s, root))
 				return err
 			}},
 	} {
 		s, _, root := newMirror(t)
-		writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+		// The card is of an update after every change the histories hold.
+		writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 20_000, "a")})
 		mustReplaceHistory(t, s, root, longHistory("10001", 5000, 1), MirrorWrite{Changed: true})
 		next := longHistory("10001", 10, 6000)
 		if stop.name == "before the switch" {
@@ -150,7 +243,7 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 			next = longHistory("10001", 5000, 7000)
 		}
 		mustExec(t, s.db, fmt.Sprintf(`CREATE TRIGGER test_stop_staging %s BEGIN SELECT RAISE(ABORT, 'stopped'); END`, stop.trigger))
-		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{next}), MirrorCatalog{}, 0); err == nil {
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{next}), MirrorCatalog{}, nextMirrorRead(s, root)); err == nil {
 			t.Fatalf("%s: the staging was not stopped", stop.name)
 		}
 		if got := mirrorHistoryShown(t, s); got != stop.shown {
@@ -184,7 +277,7 @@ func TestMirrorHistoryProbeStopsAtTheFirstDifference(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
 	mustReplaceHistory(t, s, root, longHistory("10001", 11, 1), MirrorWrite{Changed: true})
-	in, err := newMirrorHistoryInput(answeredHistory(longHistory("10001", 100000, 1)))
+	in, err := newMirrorHistoryInput(answeredHistory(longHistory("10001", 100000, 1)), nextMirrorRead(s, root).rootOrder)
 	if err != nil {
 		t.Fatal(err)
 	}

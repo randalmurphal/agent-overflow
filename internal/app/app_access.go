@@ -7,9 +7,11 @@ import (
 	"log"
 	"net/url"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/owndevices"
+	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 )
@@ -143,7 +145,7 @@ func (a *App) GetAccessOverview() (AccessOverview, error) {
 //ao:stepup
 //ao:remote
 func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, error) {
-	return a.mintDevicePairing(deviceClass, access, "")
+	return a.mintDevicePairingPurpose(deviceClass, access, "", "", false)
 }
 
 // MintDevicePairingOnNetwork creates an invitation for the chosen enabled
@@ -155,16 +157,24 @@ func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, erro
 //ao:stepup
 //ao:remote
 func (a *App) MintDevicePairingOnNetwork(deviceClass, access, networkChoice string) (PairingInvite, error) {
-	if networkChoice != "lan" && networkChoice != "tailnet" {
-		return PairingInvite{}, fmt.Errorf("choose Local network or Tailscale for this invitation")
+	if err := checkPairingNetwork(networkChoice); err != nil {
+		return PairingInvite{}, err
 	}
-	return a.mintDevicePairing(deviceClass, access, networkChoice)
+	return a.mintDevicePairingPurpose(deviceClass, access, networkChoice, "", false)
 }
 
-func (a *App) mintDevicePairing(deviceClass, access, networkChoice string) (PairingInvite, error) {
-	return a.mintDevicePairingPurpose(deviceClass, access, networkChoice, "")
+// mintDevicePairingPurpose mints one invitation for the page networkChoice
+// resolves to now. bootstrap marks one a computer pairing window mints,
+// whose comparison number is that window's.
+func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpose string, bootstrap bool) (PairingInvite, error) {
+	return a.mintDevicePairingOn(deviceClass, access, purpose, bootstrap, func() (string, string, string, error) {
+		return a.pairingPageURL(networkChoice)
+	})
 }
-func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpose string) (PairingInvite, error) {
+
+// mintDevicePairingOn mints one invitation for the page that page answers
+// (its URL, endpoint and certificate pin), read once the request is valid.
+func (a *App) mintDevicePairingOn(deviceClass, access, purpose string, bootstrap bool, page func() (pageURL, endpoint, fingerprint string, err error)) (PairingInvite, error) {
 	state, err := a.accessState()
 	if err != nil {
 		return PairingInvite{}, err
@@ -182,7 +192,7 @@ func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpo
 		return PairingInvite{}, err
 	}
 
-	pageURL, endpoint, fingerprint, err := a.pairingPageURL(networkChoice)
+	pageURL, endpoint, fingerprint, err := page()
 	if err != nil {
 		return PairingInvite{}, err
 	}
@@ -192,7 +202,7 @@ func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpo
 		// id, and a payload naming none would leave the device unable to
 		// say which backend offered to pair. Refuse rather than mint a
 		// link that resolves to an anonymous backend.
-		return PairingInvite{}, fmt.Errorf("access: the backend identity is not available yet")
+		return PairingInvite{}, errAccessStarting()
 	}
 
 	link, err := state.sessions.MintPairingLink(identity.PairingRequest{
@@ -213,6 +223,7 @@ func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpo
 		// Only the main listener's self-signed path carries a pin.
 		// Tailnet and canonical HTTPS certificates use WebPKI instead.
 		CertFingerprint: fingerprint,
+		Bootstrap:       bootstrap,
 	})
 	if err != nil {
 		return PairingInvite{}, err
@@ -246,21 +257,40 @@ func (a *App) mintDevicePairingPurpose(deviceClass, access, networkChoice, purpo
 //ao:scope access:admin
 //ao:route home
 func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
-	state, err := a.accessState()
+	var link store.PairingLink
+	var access store.PairingAccess
+	var standing pairbootstrap.Standing
+	var sessions *identity.Sessions
+	var now int64
+	err := a.readPairingStanding(func(st pairbootstrap.Standing, s *identity.Sessions) error {
+		standing, sessions, now = st, s, s.Now()
+		var err error
+		if link, err = s.PairingLink(linkID); err != nil {
+			return err
+		}
+		access, err = a.store.PairingAccessOf(linkID, now)
+		return err
+	})
 	if err != nil {
 		return PairingStatusView{}, err
 	}
-	link, number, err := state.sessions.PairingStatus(linkID)
-	if err != nil {
-		return PairingStatusView{}, err
+	view := PairingStatusView{
+		LinkID:      link.ID,
+		State:       pairingState(link, access, now, standing),
+		DeviceLabel: a.pairedDeviceLabel(link),
+		ExpiresAtMs: pairingDeadline(link),
 	}
-	return PairingStatusView{
-		LinkID:             link.ID,
-		State:              pairingState(link, state.sessions.Now()),
-		VerificationNumber: a.computerPairingNumber(link.ID, number),
-		DeviceLabel:        a.pairedDeviceLabel(link),
-		ExpiresAtMs:        pairingDeadline(link),
-	}, nil
+	// Digits are compared only while a redemption waits for the owner; a
+	// settled pairing shows none, so no surface reads digits the requester
+	// never saw.
+	if view.State == pairingStateRedeemed {
+		number, err := ownerPairingNumber(link, standing, sessions)
+		if err != nil {
+			return PairingStatusView{}, err
+		}
+		view.VerificationNumber = number
+	}
+	return view, nil
 }
 
 // ConfirmDevicePairing activates the session a redemption created, after
@@ -270,38 +300,55 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 //ao:route home
 //ao:remote
 func (a *App) ConfirmDevicePairing(linkID string) error {
-	// A fenced link whose bootstrap window is gone is refused here; the
-	// store's own settled-state guard decides every interleaving after that.
-	pairing := &a.computerPairing
-	pairing.mu.Lock()
-	fenced, book := pairing.linkID == linkID && linkID != "", pairing.book
-	pairing.mu.Unlock()
-	if fenced && (book == nil || book.Snapshot("").LinkID != linkID) {
-		return identity.ErrPairingRefused
-	}
 	state, err := a.accessState()
 	if err != nil {
 		return err
 	}
+	// A computer pairing window's invitation is refused once its window is
+	// gone, until its cancellation is durable: the identity pairing gate
+	// (computerPairingGate) admits the confirmation. The store's
+	// settled-state guard decides everything else.
 	_, err = state.sessions.ConfirmPairing(linkID)
-	if err == nil {
+	switch {
+	case err == nil:
 		NotifyOwnDevices(a)
+	case errors.Is(err, identity.ErrPairingAlreadyConfirmed):
+		err = errorsx.Public("pairing_already_allowed", "this device is already allowed", err)
+	case errors.Is(err, identity.ErrPairingAccessEnded):
+		err = errorsx.Public("pairing_access_ended", "this device was allowed, and its access has since ended or expired; pair it again", err)
+	case errors.Is(err, identity.ErrPairingDeviceRemoved):
+		err = errorsx.Public("pairing_device_removed", "this device was allowed, and has since been removed in Devices; choose Restore or Forget on it there, then pair it again", err)
+	case errors.Is(err, identity.ErrPairingRefused):
+		err = errorsx.Public("pairing_closed", "this pairing is no longer open; start pairing again", err)
+	case errors.Is(err, identity.ErrPairingNotCompleted):
+		err = errorsx.Public("pairing_not_completed", "the device could not finish pairing; pair it again", err)
 	}
 	return err
 }
 
 // CancelDevicePairing refuses a link and revokes whatever a redemption
 // already created — the number did not match, or the link was minted by
-// mistake.
+// mistake. Every owner cancellation goes through the computer pairing book
+// (Book.CancelLink), whose one cancellation (cancelComputerPairingLink)
+// answers it: a link a window minted retires that window, with its LAN
+// responders, and any other is canceled directly.
 //
 //ao:scope access:admin
 //ao:route home
 func (a *App) CancelDevicePairing(linkID string) error {
-	state, err := a.accessState()
-	if err != nil {
+	if _, err := a.accessState(); err != nil {
 		return err
 	}
-	_, err = state.sessions.CancelPairing(linkID)
+	windowID, err := a.computerPairingBook().CancelLink(linkID)
+	if windowID != "" {
+		a.endComputerPairingAdvertisement(windowID)
+	}
+	switch {
+	case errors.Is(err, identity.ErrPairingRefused):
+		err = errorsx.Public("pairing_settled", "this invitation was already used, canceled or expired, so there is nothing to cancel", err)
+	case err != nil && !errors.Is(err, pairbootstrap.ErrStopped):
+		err = errorsx.Public("pairing_cancel_failed", "this computer could not save the cancellation; try Cancel again", err)
+	}
 	return err
 }
 
@@ -479,17 +526,25 @@ func (a *App) RevokeAccessSession(sessionID string) error {
 	return err
 }
 
+// errAccessStarting is what a person is told when device access is asked
+// for before this computer has its store, session core, identity and
+// listener: every one is in place before the backend reports itself ready,
+// so the answer is to wait.
+func errAccessStarting() error {
+	return errorsx.Public("access_starting", "this computer is still starting; try again in a moment", nil)
+}
+
 // accessState resolves the session core and the owner account, with one
 // error every method in this file reports the same way. Identity not
 // being wired is a state, not a fault (app_identity.go), but it is one
 // this surface cannot answer anything from.
 func (a *App) accessState() (*identityState, error) {
 	if a.store == nil {
-		return nil, fmt.Errorf("access: store unavailable")
+		return nil, errAccessStarting()
 	}
 	state := a.identityState()
 	if state == nil {
-		return nil, fmt.Errorf("access: the session core is not running; device access is unavailable")
+		return nil, errAccessStarting()
 	}
 	return state, nil
 }
@@ -559,29 +614,40 @@ func survivedRevocation(session store.Session, now int64) bool {
 	return session.DeviceRevokedAt > 0 && session.RevokedAt == 0 && !session.Expired(now)
 }
 
-// pendingPairings lists the links the owner can still act on.
+// pendingPairings lists the links the owner can still act on. The links are
+// read once, with the book's standing, inside one book Read; numbers and
+// labels are derived after it.
 func (a *App) pendingPairings(state *identityState, now int64) ([]PendingPairing, error) {
-	links, err := a.store.ListPairingLinksForUser(state.owner.ID, accessAuditLimit)
+	var links []store.PairingLink
+	var standing pairbootstrap.Standing
+	err := a.readPairingStanding(func(st pairbootstrap.Standing, _ *identity.Sessions) error {
+		standing = st
+		var err error
+		links, err = a.store.ListPairingLinksForUser(state.owner.ID, accessAuditLimit)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("access: list pairing links: %w", err)
 	}
 	var out []PendingPairing
 	for _, link := range links {
-		if link.Settled() || pairingDeadline(link) <= now {
+		// Only an unconfirmed link is pending, and access decides nothing
+		// about one, so none is read.
+		if s := pairingState(link, store.PairingNotConfirmed, now, standing); s != pairingStatePending && s != pairingStateRedeemed {
 			continue
 		}
 		view := PendingPairing{
 			LinkID:      link.ID,
 			CreatedAtMs: link.CreatedAt,
 			ExpiresAtMs: pairingDeadline(link),
-			Redeemed:    link.Redeemed(),
+			Redeemed:    link.Ready(),
 		}
-		if link.Redeemed() {
-			number, err := state.sessions.VerificationNumber(link.ID, link.KeyThumbprint)
+		if link.Ready() {
+			number, err := ownerPairingNumber(link, standing, state.sessions)
 			if err != nil {
 				return nil, fmt.Errorf("access: derive verification number for %s: %w", link.ID, err)
 			}
-			view.VerificationNumber = a.computerPairingNumber(link.ID, number)
+			view.VerificationNumber = number
 			view.DeviceLabel = a.pairedDeviceLabel(link)
 		}
 		out = append(out, view)
@@ -604,22 +670,30 @@ func (a *App) pairedDeviceLabel(link store.PairingLink) string {
 	return device.Label
 }
 
-// pairingState names where a link stands.
+// pairingState names where a link stands for the owner.
+//
+// A computer pairing window's invitation the book refuses is canceled
+// whatever its row says: its window is gone and its cancellation is still
+// unfinished, so nothing can approve it. standing must be read together
+// with link (readPairingStanding).
 //
 // The order is the contract. Settled first, because confirmed and
-// canceled are terminal and outlive every window. Redeemed BEFORE
-// expired, because a redeemed link deliberately outlives its own
-// five-minute window: redemption mints the session with the confirmation
-// window (identity.PairingConfirmWindow), and reporting "expired" while
-// the owner still has minutes to match the number would take away the
-// step the exchange is waiting on.
-func pairingState(link store.PairingLink, now int64) string {
+// canceled are terminal and outlive every window; a confirmed link is
+// confirmed only while access (store.PairingAccessOf, read at now) says its
+// device can use its access, and accessEnded after. Ready BEFORE expired,
+// because a redeemed link deliberately outlives its own five-minute
+// window: redemption mints the session with the confirmation window
+// (identity.PairingConfirmWindow), and reporting "expired" while the owner
+// still has minutes to match the number would take away the step the
+// exchange is waiting on. A link spent but not yet naming its session is
+// still pending: there is nothing to approve yet.
+func pairingState(link store.PairingLink, access store.PairingAccess, now int64, standing pairbootstrap.Standing) string {
 	switch {
 	case link.ConfirmedAt != 0:
-		return pairingStateConfirmed
-	case link.CanceledAt != 0:
+		return confirmedPairingState(access)
+	case link.CanceledAt != 0 || standing.Refuses(link.ID):
 		return pairingStateCanceled
-	case link.Redeemed():
+	case link.Ready():
 		if pairingDeadline(link) <= now {
 			return pairingStateExpired
 		}
@@ -629,6 +703,18 @@ func pairingState(link store.PairingLink, now int64) string {
 	default:
 		return pairingStatePending
 	}
+}
+
+// confirmedPairingState names a confirmed link by its device's access.
+func confirmedPairingState(access store.PairingAccess) string {
+	switch access {
+	case store.PairingUsable:
+		return pairingStateConfirmed
+	case store.PairingDeviceRemoved:
+		return pairingStateDeviceRemoved
+	case store.PairingNotConfirmed, store.PairingAccessEnded:
+	}
+	return pairingStateAccessEnded
 }
 
 // pairingDeadline is when a link stops being actionable, which is not
@@ -657,7 +743,7 @@ func pairingDeadline(link store.PairingLink) int64 {
 func (a *App) pairingPageURL(networkChoice string) (pageURL, endpoint, fingerprint string, err error) {
 	srv := a.transportServer.Load()
 	if srv == nil {
-		return "", "", "", fmt.Errorf("access: transport server unavailable")
+		return "", "", "", errAccessStarting()
 	}
 	if networkChoice == "" {
 		pageURL, fingerprint = network.PairingURL(srv, a.persistedNetworkSettings(), a.netReach)
@@ -668,13 +754,27 @@ func (a *App) pairingPageURL(networkChoice string) (pageURL, endpoint, fingerpri
 		}
 	}
 	if pageURL == "" {
-		return "", "", "", fmt.Errorf("access: the transport has no page URL to pair against yet")
+		return "", "", "", errAccessStarting()
 	}
 	parsed, err := url.Parse(pageURL)
 	if err != nil {
 		return "", "", "", fmt.Errorf("access: parse the page URL: %w", err)
 	}
 	return pageURL, parsed.Scheme + "://" + parsed.Host, fingerprint, nil
+}
+
+// pairingPageAt is pairingPageURL for a page already resolved, as the
+// address publication holds it.
+func (a *App) pairingPageAt(page network.PairingPage) (pageURL, endpoint, fingerprint string, err error) {
+	srv := a.transportServer.Load()
+	if srv == nil {
+		return "", "", "", errAccessStarting()
+	}
+	pageURL, ok := page.URL(srv)
+	if !ok {
+		return "", "", "", errorsx.Public("pairing_link_unavailable", "this computer could not create a pairing link; try again", nil)
+	}
+	return pageURL, page.Scheme + "://" + page.Authority, page.Fingerprint, nil
 }
 
 // backendDisplayName is display metadata shared by pairing, hello and push.

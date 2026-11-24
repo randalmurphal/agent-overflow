@@ -1,6 +1,9 @@
 package tracker
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // Cursor is where a board's delta resumes, in the provider's own bytes.
 // The caller stores what a page returns, in the same transaction as that
@@ -66,11 +69,30 @@ type RowPage struct {
 // those not done, those done at or after the window's start, and those in
 // a sprint that is open or closed at or after it. Complete is false when
 // the tracker could not list them all; the caller then adds what it
-// lists and removes nothing.
+// lists and removes nothing. Rule is the rule it listed by, which a read
+// of rows by ID that confirms it is given (Provider.BoardRows).
 type Listing struct {
 	IDs      []IssueID
 	Complete bool
+	Rule     Eligibility
 }
+
+// Eligibility is the rule a board listing judged membership by: an issue
+// on the board is listed when it is not done, was updated at or after
+// Window, or is in one of Sprints (the sprints or cycles the listing kept,
+// as it captured them). The zero Eligibility judges by no rule: every
+// issue on the board.
+type Eligibility struct {
+	Window  time.Time
+	Sprints []SprintID
+}
+
+// ErrRuleRefused is a read by ID (Provider.BoardRows) whose query, which
+// carried the Eligibility it was given, the tracker refused. Why is not
+// known: a sprint the rule names may be gone, or the tracker may refuse
+// the query for another reason. The error wraps the tracker's answer. A
+// caller lists the board again for a rule the tracker holds now.
+var ErrRuleRefused = errors.New("tracker: the tracker refused the listing's rule")
 
 // Rows are a board's rows for a set of issues. Missing are the issues
 // asked for that the board does not list now: moved off it, deleted, or

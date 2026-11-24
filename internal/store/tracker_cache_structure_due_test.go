@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"testing"
 )
@@ -20,7 +21,7 @@ func structureDue(t *testing.T, s *Store, root int64) int64 {
 // count is the package's.
 func writeDuePage(t *testing.T, s *Store, root, readAt int64, rows ...MirrorRow) (MirrorChanges, int) {
 	t.Helper()
-	page := currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: rows, ReadAt: readAt})
+	page := currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: rows, ReadAt: mirrorReadAt(readAt)})
 	var changes MirrorChanges
 	var err error
 	statements := countMirrorStatements(t, func() { changes, err = s.WriteMirrorRowPage(root, page, []byte(fmt.Sprint("c", readAt))) })
@@ -33,35 +34,36 @@ func writeDuePage(t *testing.T, s *Store, root, readAt int64, rows ...MirrorRow)
 func replaceDueStructure(t *testing.T, s *Store, root, readAt int64, complete bool, sprints ...MirrorSprint) {
 	t.Helper()
 	st := webStructure()
-	st.ReadAt, st.Complete, st.Sprints = readAt, complete, append(st.Sprints, sprints...)
+	st.ReadAt, st.Complete, st.Sprints = mirrorReadAt(readAt), complete, append(st.Sprints, sprints...)
 	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // A row page that names a sprint the mirror lacks makes the board due a
-// structure read, durably and in the page's own transaction: one more
-// statement than a page naming only known references. A later delta, a
+// structure read, durably and in the page's own transaction, by the
+// statement that checks every card write's references (mirrorCardMarkSQL),
+// so it costs what a page naming only known references does. A later delta, a
 // failed structure read, a structure read that began before the page and
 // one that is not complete and began in its millisecond (not known to
 // follow it) leave it due; one that began after it clears it.
 func TestMirrorRowNamingAnUnknownSprintMakesTheStructureDue(t *testing.T) {
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	if changes, statements := writeDuePage(t, s, root, 2, webRow("10001", 5, "a", "21")); changes.StructureDue || statements != 7 {
-		t.Fatalf("a page naming known references = %+v in %d statements; want not due in 7", changes, statements)
+	if changes, statements := writeDuePage(t, s, root, 2, webRow("10001", 5, "a", "21")); changes.StructureDue || statements != 8 {
+		t.Fatalf("a page naming known references = %+v in %d statements; want not due in 8", changes, statements)
 	}
 	if changes, statements := writeDuePage(t, s, root, 5, webRow("10002", 5, "b", "23")); !changes.StructureDue || statements != 8 {
 		t.Fatalf("a page naming a new sprint = %+v in %d statements; want due in 8", changes, statements)
 	}
-	if changes, statements := writeDuePage(t, s, root, 6, webRow("10003", 5, "c", "21")); !changes.StructureDue || statements != 7 {
-		t.Fatalf("a later page naming known references = %+v in %d statements; want still due in 7", changes, statements)
+	if changes, statements := writeDuePage(t, s, root, 6, webRow("10003", 5, "c", "21")); !changes.StructureDue || statements != 8 {
+		t.Fatalf("a later page naming known references = %+v in %d statements; want still due in 8", changes, statements)
 	}
 	for name, attempt := range map[string]MirrorSyncAttempt{
-		"a delta that succeeded":   {ReadAt: 7},
-		"a structure read failure": {Failure: MirrorSyncFailure{At: 8, Kind: MirrorFailureTransient, Message: "timed out"}},
+		"a delta that succeeded":   {ReadAt: mirrorReadAt(7)},
+		"a structure read failure": {Failure: MirrorAttemptFailure{At: mirrorReadAt(8), Kind: MirrorFailureTransient, Message: "timed out"}},
 	} {
-		if _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", attempt)); err != nil {
+		if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", attempt)); err != nil {
 			t.Fatal(err)
 		}
 		if due := structureDue(t, s, root); due != 5 {
@@ -122,6 +124,7 @@ const mirrorMarksSQL = `SELECT coalesce(group_concat(kind || ':' || ref_id || ii
 // the sprint again a row naming it makes the board due; a mark no row
 // names any more stays until the board's drain removes it.
 func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
+	const cardSprints = 50
 	s, jira, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	odd := webRow("10001", 5, "a", "99")
@@ -140,14 +143,14 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 	assertRows(t, s.db, mirrorMarksSQL, "1:77,2:acc-gone,3:99")
 	// The page is the one read at 4 again: it moves its row's and its
 	// card's read time, one statement each.
-	if changes, statements := writeDuePage(t, s, root, 6, odd); changes.StructureDue || statements != 8 {
-		t.Fatalf("a page naming marked references = %+v in %d statements; want not due in 8", changes, statements)
+	if changes, statements := writeDuePage(t, s, root, 6, odd); changes.StructureDue || statements != 7 {
+		t.Fatalf("a page naming marked references = %+v in %d statements; want not due in 7", changes, statements)
 	}
 	var many []MirrorRow
 	for r := range 6 {
 		var sprints []string
-		for i := range mirrorMaxCardSprints {
-			sprints = append(sprints, fmt.Sprint(1000+r*mirrorMaxCardSprints+i))
+		for i := range cardSprints {
+			sprints = append(sprints, fmt.Sprint(1000+r*cardSprints+i))
 		}
 		many = append(many, webRow(fmt.Sprint(10100+r), 5, "m", sprints...))
 	}
@@ -161,7 +164,7 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 	for _, row := range many {
 		missing = append(missing, row.Card.IssueID)
 	}
-	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: missing, ReadAt: 10})); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: missing, ReadAt: mirrorReadAt(10)})); err != nil {
 		t.Fatal(err)
 	}
 	kept := []MirrorSprint{{ID: "99", OriginBoardID: "10", Name: "WEB Sprint 0", State: MirrorSprintClosed},
@@ -182,7 +185,7 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 		t.Fatalf("a sprint supplied and dropped again = %+v; want due", changes)
 	}
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "11", "12")
-	if err := s.FinishMirrorCleanup(nil); err != nil {
+	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_unexplained`, "0")
@@ -198,33 +201,34 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 // 4,000 unexplained marks or 8,000 (both deep enough that the indexes have
 // the same height).
 func TestMirrorMarksStayWithinAChunk(t *testing.T) {
+	const cardSprints = 50
 	pages := map[int][2]int{}
 	for _, cards := range []int{80, 160} {
 		s, _, root := newMirror(t)
 		mustReplaceStructure(t, s, root, webStructure(), true)
 		for r := range cards {
 			var sprints []string
-			for i := range mirrorMaxCardSprints {
-				sprints = append(sprints, fmt.Sprint(5000+r*mirrorMaxCardSprints+i))
+			for i := range cardSprints {
+				sprints = append(sprints, fmt.Sprint(5000+r*cardSprints+i))
 			}
 			writeDuePage(t, s, root, 2, webRow(fmt.Sprint(10100+r), 5, "m", sprints...))
 		}
 		recorder := recordMirrorWrites(t, s)
 		replaceDueStructure(t, s, root, 3, true)
 		most, transactions := recorder.mostMarksInATransaction()
-		if want := (cards*mirrorMaxCardSprints + clearMirrorChunk - 1) / clearMirrorChunk; most > clearMirrorChunk || transactions != want {
+		if want := (cards*cardSprints + clearMirrorChunk - 1) / clearMirrorChunk; most > clearMirrorChunk || transactions != want {
 			t.Fatalf("%d marks made unexplained: at most %d in one of %d transactions; want at most %d in %d",
-				cards*mirrorMaxCardSprints, most, transactions, clearMirrorChunk, want)
+				cards*cardSprints, most, transactions, clearMirrorChunk, want)
 		}
-		assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_unexplained WHERE named_at = 0`, fmt.Sprint(cards*mirrorMaxCardSprints))
+		assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_board_unexplained WHERE named_at = 0`, fmt.Sprint(cards*cardSprints))
 		recorder.reset()
 		page := storePageAccessesForTest(t, s, "page", func() error {
-			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10002", 5, "b", "24")}, ReadAt: 4}), nil)
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10002", 5, "b", "24")}, ReadAt: mirrorReadAt(4)}), nil)
 			return err
 		})
 		structure := storePageAccessesForTest(t, s, "structure", func() error {
 			st := webStructure()
-			st.ReadAt, st.Complete = 5, true
+			st.ReadAt, st.Complete = mirrorReadAt(5), true
 			_, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st))
 			return err
 		})

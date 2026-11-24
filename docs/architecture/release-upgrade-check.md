@@ -213,9 +213,14 @@ Each `recoveryRules` entry names one boot writer (the Go function), the
 table it writes, the old rows it selects (an SQL condition over the row
 `s` as the migrations left it, mirroring the writer's own selection), the
 columns or `meta` keys it may change, a condition the booted row `b` must
-meet, and whether it deletes rows. A rule reads the snapshot migrated
-alone, never the snapshot, so it names columns at the build's schema
-whatever release wrote the root. A rule that removes or rewrites a row
+meet, and whether it deletes rows. Several writers may settle one row, so
+every rule that selects a changed row must hold, and their columns
+together must cover every changed column: a broad rule never stands in
+for a narrower one. A removed row needs a selecting rule that deletes
+rows. A rule's condition on `b` constrains only its own columns, since
+another selecting rule may change the rest. A rule reads the
+snapshot migrated alone, never the snapshot, so it names columns at the
+build's schema whatever release wrote the root. A rule that removes or rewrites a row
 holding a person's words also checks where they went: a queued message, an
 unconfirmed one and a resend's recovery leave only when their thread's
 booted draft is exactly the draft the boot's restores compose from them

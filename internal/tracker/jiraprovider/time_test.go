@@ -193,7 +193,7 @@ func values(pairs ...string) url.Values {
 // the Tempo client is paced as in production.
 func tempoSite(t *testing.T) (*jiratest.Server, *tempotest.Server, *Provider) {
 	f, _ := newSite(t)
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", issue("10001", "WEB-1", updatedAt, nil))))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(issue("10001", "WEB-1", updatedAt, nil))))
 	ts := tempotest.NewServer(t, "fake-tempo-token")
 	jc := newJira(t, f)
 	tc, err := tempo.New(tempo.Options{
@@ -204,7 +204,7 @@ func tempoSite(t *testing.T) (*jiratest.Server, *tempotest.Server, *Provider) {
 		t.Fatal(err)
 	}
 	t.Cleanup(tc.Close)
-	p, err := New(Options{Jira: jc, Tempo: tc, Site: "https://example.atlassian.net"})
+	p, err := New(Options{Jira: jc, Tempo: tc, Site: "https://example.atlassian.net", SprintsFrom: allSprints})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestTempoIssues(t *testing.T) {
 	f.On("POST", bulkFetchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		jiratest.WantJSON(t, b, `{"issueIdsOrKeys":["web-1","WEB-5"],"fields":["status"]}`)
 		moved := issue("10005", "APP-5", updatedAt, nil)
-		jiratest.Reply(200, page("", issue("10001", "WEB-1", updatedAt, nil), moved))(w, r, b)
+		jiratest.Reply(200, bulk(issue("10001", "WEB-1", updatedAt, nil), moved))(w, r, b)
 	})
 	ti := TempoIssues(newJira(t, f))
 	ids, err := ti.IDs(t.Context(), []string{"web-1", "WEB-5", "not a key"})

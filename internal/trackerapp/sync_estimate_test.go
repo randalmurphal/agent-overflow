@@ -164,7 +164,7 @@ func TestADeltaStopsWhenAResetRefusesItsCursor(t *testing.T) {
 		}
 	})
 	m.svc.store = &resetAfterPage{Store: m.svc.store, reset: func() {
-		st, err := mirrorStructure(timeStructure(testBoard), m.now().UnixMilli())
+		st, err := mirrorStructure(timeStructure(testBoard), m.read())
 		if err != nil {
 			t.Error(err)
 			return
