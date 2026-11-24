@@ -33,7 +33,7 @@ func trackerWrite[T any](a *App, ctx context.Context, method, connectionID strin
 // CreateTrackerIssue makes an issue from a section of a board.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) CreateTrackerIssue(ctx context.Context, connectionID string, in trackerapp.CreateRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "CreateTrackerIssue", connectionID, in, (*trackerapp.Service).Create)
@@ -42,7 +42,7 @@ func (a *App) CreateTrackerIssue(ctx context.Context, connectionID string, in tr
 // EditTrackerIssue changes fields of an issue.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) EditTrackerIssue(ctx context.Context, connectionID string, in trackerapp.EditRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "EditTrackerIssue", connectionID, in, (*trackerapp.Service).Edit)
@@ -51,7 +51,7 @@ func (a *App) EditTrackerIssue(ctx context.Context, connectionID string, in trac
 // MoveTrackerIssue moves an issue to the status of one of its moves.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) MoveTrackerIssue(ctx context.Context, connectionID string, in trackerapp.MoveRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "MoveTrackerIssue", connectionID, in, (*trackerapp.Service).Move)
@@ -60,7 +60,7 @@ func (a *App) MoveTrackerIssue(ctx context.Context, connectionID string, in trac
 // SetTrackerEstimate sets an issue's estimate on a board.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) SetTrackerEstimate(ctx context.Context, connectionID string, in trackerapp.EstimateRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "SetTrackerEstimate", connectionID, in, (*trackerapp.Service).SetEstimate)
@@ -69,7 +69,7 @@ func (a *App) SetTrackerEstimate(ctx context.Context, connectionID string, in tr
 // RankTrackerIssues places issues between two neighbors on a board.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) RankTrackerIssues(ctx context.Context, connectionID string, in trackerapp.RankRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "RankTrackerIssues", connectionID, in, (*trackerapp.Service).Rank)
@@ -79,7 +79,7 @@ func (a *App) RankTrackerIssues(ctx context.Context, connectionID string, in tra
 // backlog.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) MoveTrackerIssuesToSprint(ctx context.Context, connectionID string, in trackerapp.SprintMoveRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "MoveTrackerIssuesToSprint", connectionID, in, (*trackerapp.Service).MoveToSprint)
@@ -88,7 +88,7 @@ func (a *App) MoveTrackerIssuesToSprint(ctx context.Context, connectionID string
 // CreateTrackerSprint makes a future sprint on a board.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) CreateTrackerSprint(ctx context.Context, connectionID string, in trackerapp.SprintRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "CreateTrackerSprint", connectionID, in, (*trackerapp.Service).CreateSprint)
@@ -97,7 +97,7 @@ func (a *App) CreateTrackerSprint(ctx context.Context, connectionID string, in t
 // StartTrackerSprint starts a future sprint.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) StartTrackerSprint(ctx context.Context, connectionID string, in trackerapp.SprintStartRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "StartTrackerSprint", connectionID, in, (*trackerapp.Service).StartSprint)
@@ -107,7 +107,7 @@ func (a *App) StartTrackerSprint(ctx context.Context, connectionID string, in tr
 // issues where the request says.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) CompleteTrackerSprint(ctx context.Context, connectionID string, in trackerapp.SprintCompleteRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "CompleteTrackerSprint", connectionID, in, (*trackerapp.Service).CompleteSprint)
@@ -116,7 +116,7 @@ func (a *App) CompleteTrackerSprint(ctx context.Context, connectionID string, in
 // AddTrackerComment adds a comment to an issue.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) AddTrackerComment(ctx context.Context, connectionID string, in trackerapp.CommentRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "AddTrackerComment", connectionID, in, (*trackerapp.Service).AddComment)
@@ -125,7 +125,7 @@ func (a *App) AddTrackerComment(ctx context.Context, connectionID string, in tra
 // EditTrackerComment replaces a comment's body.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) EditTrackerComment(ctx context.Context, connectionID string, in trackerapp.CommentEditRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "EditTrackerComment", connectionID, in, (*trackerapp.Service).EditComment)
@@ -134,7 +134,7 @@ func (a *App) EditTrackerComment(ctx context.Context, connectionID string, in tr
 // DeleteTrackerComment deletes a comment.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) DeleteTrackerComment(ctx context.Context, connectionID string, in trackerapp.CommentDeleteRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "DeleteTrackerComment", connectionID, in, (*trackerapp.Service).DeleteComment)
@@ -143,7 +143,7 @@ func (a *App) DeleteTrackerComment(ctx context.Context, connectionID string, in 
 // LinkTrackerIssues links two issues.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) LinkTrackerIssues(ctx context.Context, connectionID string, in trackerapp.LinkRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "LinkTrackerIssues", connectionID, in, (*trackerapp.Service).Link)
@@ -152,7 +152,7 @@ func (a *App) LinkTrackerIssues(ctx context.Context, connectionID string, in tra
 // UnlinkTrackerIssues removes one link between two issues.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) UnlinkTrackerIssues(ctx context.Context, connectionID string, in trackerapp.UnlinkRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "UnlinkTrackerIssues", connectionID, in, (*trackerapp.Service).Unlink)
@@ -161,7 +161,7 @@ func (a *App) UnlinkTrackerIssues(ctx context.Context, connectionID string, in t
 // AddTrackerWorklog logs time on an issue, as the person's own action.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 //ao:budget 3m
 func (a *App) AddTrackerWorklog(ctx context.Context, connectionID string, in trackerapp.WorklogRequest) (trackerapp.WriteView, error) {
 	return trackerWrite(a, ctx, "AddTrackerWorklog", connectionID, in, (*trackerapp.Service).AddWorklog)

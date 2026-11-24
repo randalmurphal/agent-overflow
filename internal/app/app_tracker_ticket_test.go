@@ -31,12 +31,14 @@ func TestTrackerTicketMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		budget      time.Duration
 	}
 	read, operate := transport.ScopeTrackerRead, transport.ScopeTrackerOperate
-	write := want{operate, transport.RouteSelected, false, 3 * time.Minute}
-	form := want{read, transport.RouteSelected, false, 0}
+	// A method that names a connection is routed by its client (family
+	// trackerConnection) and generated as home.
+	write := want{operate, transport.RouteHome, false, 3 * time.Minute}
+	form := want{read, transport.RouteHome, false, 0}
 	for name, w := range map[string]want{
-		"SubscribeTrackerTicket":              {read, transport.RouteSelected, true, 0},
+		"SubscribeTrackerTicket":              {read, transport.RouteHome, true, 0},
 		"TrackerTicket":                       {read, transport.RouteHome, false, 0},
-		"MintTrackerAttachmentUploadTicket":   {operate, transport.RouteSelected, false, 0},
+		"MintTrackerAttachmentUploadTicket":   {operate, transport.RouteHome, false, 0},
 		"MintTrackerAttachmentDownloadTicket": {read, transport.RouteHome, false, 0},
 		"TrackerIssueTypes":                   form,
 		"TrackerCreateFields":                 form,

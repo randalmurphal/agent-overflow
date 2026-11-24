@@ -30,7 +30,7 @@ import (
 // board's does.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 //ao:callerbound
 func (a *App) SubscribeTrackerTicket(ctx context.Context, connectionID, issue string) (trackerapp.TicketSubscription, error) {
 	conn, err := transport.CallerConnection(ctx)
@@ -67,7 +67,7 @@ func (a *App) TrackerTicket(ctx context.Context, subscriptionID string) (tracker
 // byte crosses the network.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 func (a *App) MintTrackerAttachmentUploadTicket(ctx context.Context, connectionID, issue, filename string, size int64) (string, error) {
 	switch {
 	case issue == "" || filename == "" || size < 0:
@@ -180,7 +180,7 @@ func (t trackerTransfer) DownloadTrackerAttachment(ctx context.Context, connecti
 // TrackerIssueTypes lists the issue types a project's create form offers.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerIssueTypes(ctx context.Context, connectionID, project string) ([]trackerapp.IssueTypeView, error) {
 	return trackerFormRead(a, ctx, "TrackerIssueTypes", "Listing the project's issue types", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.IssueTypeView, error) {
 		return svc.IssueTypes(ctx, connectionID, project)
@@ -191,7 +191,7 @@ func (a *App) TrackerIssueTypes(ctx context.Context, connectionID, project strin
 // takes.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerCreateFields(ctx context.Context, connectionID, project, issueType string) ([]trackerapp.FieldView, error) {
 	return trackerFormRead(a, ctx, "TrackerCreateFields", "Reading the create form's fields", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.FieldView, error) {
 		return svc.CreateFields(ctx, connectionID, project, issueType)
@@ -202,7 +202,7 @@ func (a *App) TrackerCreateFields(ctx context.Context, connectionID, project, is
 // fields each one's screen takes.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerMoves(ctx context.Context, connectionID, issue string) ([]trackerapp.MoveView, error) {
 	return trackerFormRead(a, ctx, "TrackerMoves", "Reading the ticket's moves", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.MoveView, error) {
 		return svc.Moves(ctx, connectionID, issue)
@@ -213,7 +213,7 @@ func (a *App) TrackerMoves(ctx context.Context, connectionID, issue string) ([]t
 // in scope.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerAssignableUsers(ctx context.Context, connectionID string, scope trackerapp.FieldScopeInput, text string) (trackerapp.UserListView, error) {
 	return trackerFormRead(a, ctx, "TrackerAssignableUsers", "Finding the people who may be assigned", func(ctx context.Context, svc *trackerapp.Service) (trackerapp.UserListView, error) {
 		return svc.AssignableUsers(ctx, connectionID, scope, text)
@@ -224,7 +224,7 @@ func (a *App) TrackerAssignableUsers(ctx context.Context, connectionID string, s
 // scope.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerChoices(ctx context.Context, connectionID string, scope trackerapp.FieldScopeInput, field, text string) (trackerapp.ChoiceListView, error) {
 	return trackerFormRead(a, ctx, "TrackerChoices", "Listing the field's values", func(ctx context.Context, svc *trackerapp.Service) (trackerapp.ChoiceListView, error) {
 		return svc.Choices(ctx, connectionID, scope, field, text)
@@ -234,7 +234,7 @@ func (a *App) TrackerChoices(ctx context.Context, connectionID string, scope tra
 // TrackerLinkTypes lists the tracker's link types.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerLinkTypes(ctx context.Context, connectionID string) ([]trackerapp.LinkTypeView, error) {
 	return trackerFormRead(a, ctx, "TrackerLinkTypes", "Listing the link types", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.LinkTypeView, error) {
 		return svc.LinkTypes(ctx, connectionID)
@@ -244,7 +244,7 @@ func (a *App) TrackerLinkTypes(ctx context.Context, connectionID string) ([]trac
 // TrackerLookup finds the issues keys name.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerLookup(ctx context.Context, connectionID string, keys []string) (trackerapp.LookupView, error) {
 	return trackerFormRead(a, ctx, "TrackerLookup", "Looking up the keys", func(ctx context.Context, svc *trackerapp.Service) (trackerapp.LookupView, error) {
 		return svc.Lookup(ctx, connectionID, keys)
@@ -254,7 +254,7 @@ func (a *App) TrackerLookup(ctx context.Context, connectionID string, keys []str
 // TrackerSearch is one page of the issues a search's text matches.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerSearch(ctx context.Context, connectionID string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error) {
 	return trackerFormRead(a, ctx, "TrackerSearch", "Searching the tracker", func(ctx context.Context, svc *trackerapp.Service) (trackerapp.SearchPageView, error) {
 		return svc.Search(ctx, connectionID, in)
@@ -265,7 +265,7 @@ func (a *App) TrackerSearch(ctx context.Context, connectionID string, in tracker
 // which the ticket holds.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerComments(ctx context.Context, connectionID, issue, page string) (trackerapp.CommentPageView, error) {
 	return trackerFormRead(a, ctx, "TrackerComments", "Reading earlier comments", func(ctx context.Context, svc *trackerapp.Service) (trackerapp.CommentPageView, error) {
 		return svc.Comments(ctx, connectionID, issue, page)

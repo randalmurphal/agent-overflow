@@ -28,7 +28,7 @@ import (
 // not caller-bound.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerProjects(ctx context.Context, connectionID string) ([]trackerapp.ProjectView, error) {
 	svc, err := a.trackerService()
 	if err != nil {
@@ -45,7 +45,7 @@ func (a *App) TrackerProjects(ctx context.Context, connectionID string) ([]track
 // TrackerProjects is.
 //
 //ao:scope tracker:read
-//ao:route selected
+//ao:route home
 func (a *App) TrackerBoards(ctx context.Context, connectionID, project string) ([]trackerapp.BoardInfoView, error) {
 	svc, err := a.trackerService()
 	if err != nil {

@@ -34,8 +34,8 @@ func TestTrackerBoardMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	}
 	read, operate := transport.ScopeTrackerRead, transport.ScopeTrackerOperate
 	for name, w := range map[string]want{
-		"TrackerProjects":               {read, transport.RouteSelected, false},
-		"TrackerBoards":                 {read, transport.RouteSelected, false},
+		"TrackerProjects":               {read, transport.RouteHome, false},
+		"TrackerBoards":                 {read, transport.RouteHome, false},
 		"ProjectTrackerBoards":          {read, transport.RouteProject, false},
 		"SetProjectTrackerBoards":       {operate, transport.RouteProject, false},
 		"SubscribeTrackerBoard":         {read, transport.RouteProject, true},

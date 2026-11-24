@@ -418,6 +418,9 @@ const FAMILY_NOTERS: Readonly<Record<IdFamily, (id: string, backendId: BackendKe
   // A subscription id names no computer: every caller pins the one that
   // minted it, so none is recorded.
   subscription: () => {},
+  // Nor does a tracker connection id: every caller pins the computer whose
+  // answer named it.
+  trackerConnection: () => {},
   threadGroup: noteThreadGroup,
   // A thread list names threads, which the thread registry already
   // notes; no call answers with one.
