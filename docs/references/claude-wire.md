@@ -1862,8 +1862,8 @@ overrides the socket location.
 
 **Discovery** is keyed on a SHARED `CLAUDE_CONFIG_DIR`: the registry is
 `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json` plus a keyfile, deleted on
-exit. AO's Claude sessions CLEAR that variable (`NewSession`'s
-`UnsetEnv`), so they land in the user's own `~/.claude` and can see, and
+exit. AO's Claude sessions CLEAR that variable (the command line's
+clears), so they land in the user's own `~/.claude` and can see, and
 be seen by, sessions the user ran in a terminal.
 
 **Name.** The peer-visible name comes from `--name` / `-n` at spawn or
@@ -4528,7 +4528,7 @@ about a second and takes the loopback listener with it.
 
 `CLAUDE_CONFIG_DIR` points at an isolated directory and
 `CLAUDE_SECURESTORAGE_CONFIG_DIR` is cleared, for the reasons
-`internal/provider/pinnedenv.go` gives for every other temporary-home spawn: a
+`internal/provider/envtable.go` gives for every other temporary-home spawn: a
 sign-in must not land in the canonical home before the adoption epilogue has
 decided which slot it belongs in. The rest of the environment is the user's
 configured one, because `ANTHROPIC_BASE_URL` decides which backend the person

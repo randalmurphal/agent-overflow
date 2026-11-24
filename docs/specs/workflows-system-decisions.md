@@ -976,9 +976,9 @@ verdict it now is, with what the first attempt got wrong.
   **Sessions find it on PATH, under a canonical-name symlink.** Boot
   writes `<configDir>/bin/agent-overflow` pointing at `os.Executable()`
   and `sessionProcessEnv` prepends that directory to every provider
-  session's environment (`provider.BuildEnvironment` already treats a
-  `PATH` override as additive, so the session keeps its own PATH behind
-  ours). The symlink exists because the running executable's *name* is
+  session's environment (`EnvInput.PathPrepend`, which
+  `provider.BuildEnvironment` puts in front of the inherited PATH, so the
+  session keeps its own PATH behind ours). The symlink exists because the running executable's *name* is
   not stable (`bin/agent-overflow` in a dev build, a temp binary under
   `wails3 dev`, `Agent Overflow.app/Contents/MacOS/Agent Overflow` in a
   bundle) while the name an agent types has to be exactly one thing.

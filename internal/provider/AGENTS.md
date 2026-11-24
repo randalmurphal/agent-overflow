@@ -8,12 +8,11 @@ package.
 
 ## Process and probe rules
 
-`BuildEnvironment`, `FilterEnvironment`, and version detection must apply
-`appimage.Scrub`. Build additive `PATH` values from the scrubbed base.
-The names a user's custom environment may not set live in one list, the
-settings deny-list (`deniedProviderEnvNames`, `internal/settings/providerenv.go`),
-and settings enforces it by refusing a write that names one. A spawn path that
-starts pinning or clearing a name adds it to that list in the same change.
+`BuildEnvironment` and version detection must apply `appimage.Scrub`. Build
+additive `PATH` values from the scrubbed base. Every variable a spawn path
+pins, defaults or clears is a `ReservedEnv` from the table in `envtable.go`;
+a spawn cannot name one outside it, and settings refuses a custom value from
+the same table.
 
 `Spawn` takes a required `Lifetime`: `Watched` for a process that runs until
 its owner closes it, `Bounded` for one that finishes within its context's
