@@ -742,7 +742,7 @@ describe('reviewPane store — PR scope', () => {
 
   it('selects a single PR commit and keys comments by its SHA', async () => {
     const sha = 'b'.repeat(40);
-    installPRMocks();
+    const { subscribe, unsubscribe } = installPRMocks();
     const list = setBindingMock('ListPRCommits', async () => commitList([
       { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
     ]));
@@ -752,6 +752,8 @@ describe('reviewPane store — PR scope', () => {
     await waitLoaded(state);
     await state.setScope('pr');
     const revision = { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' };
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision, false);
     expect(state.commits.map((commit) => commit.sha)).toEqual([sha]);
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
@@ -765,24 +767,6 @@ describe('reviewPane store — PR scope', () => {
     await state.selectCommit(null);
     expect(state.selectedCommitSHA).toBeNull();
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
-  });
-
-  it('commit selection reuses the live subscription and commit list (fast path)', async () => {
-    const sha = 'b'.repeat(40);
-    const { subscribe, unsubscribe } = installPRMocks();
-    const list = setBindingMock('ListPRCommits', async () => commitList([
-      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
-    ]));
-    setReviewDiffMock('OpenPRCommitDiff', async () => patchFor('src/app.ts', 2));
-
-    const state = reviewStateForPane('pane-1', prSubject());
-    await waitLoaded(state);
-    await state.setScope('pr');
-    expect(subscribe).toHaveBeenCalledTimes(1);
-    expect(list).toHaveBeenCalledTimes(1);
-
-    await state.selectCommit(sha);
-    await state.selectCommit(null);
     // Picking a commit only refetches the diff — no re-subscribe, no
     // commit-list round-trip, and the pump stays live throughout.
     expect(subscribe).toHaveBeenCalledTimes(1);
@@ -1780,9 +1764,9 @@ describe('reviewPane store — PR scope', () => {
     expect(state.ciPipeline).toBeNull();
   });
 
-  it('moves the open job\'s status and steps with the pipeline', async () => {
+  it('keeps the open job\'s view through pipeline moves, a log refresh and the pane\'s dispose', async () => {
     installCIMocks();
-    installLogFollows(1);
+    const follows = installLogFollows(1);
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
@@ -1800,6 +1784,25 @@ describe('reviewPane store — PR scope', () => {
     expect(state.ciLogView?.jobId).toBe('20');
     expect(state.ciLogView?.job.status).toBe('running');
     expect(state.ciLogView?.stageName).toBe('test');
+
+    // refreshCILog re-sends the follow, which refetches the log.
+    const again = setBindingMock('SetPRCILogFollows', async () => ({ logs: { 20: wireLog(2, 4, 9) } }));
+    state.refreshCILog();
+    await flushPane();
+    expect(follows).toHaveBeenCalledTimes(1);
+    expect(again).toHaveBeenCalledWith('sub-1', ['20']);
+    expect(state.ciLog).toMatchObject({ version: 2, totalLines: 4 });
+
+    // Disposing the pane clears the follow. A second pane on the same PR
+    // keeps the PR subscribed, so the clear has a live handle to reach.
+    const other = attachPR(PR_KEY, { ref: { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 } });
+    try {
+      disposeReviewStateForPane('pane-1', state);
+      await flushPane();
+      expect(again).toHaveBeenLastCalledWith('sub-1', []);
+    } finally {
+      other.release();
+    }
   });
 
   it('reads a GitHub job that is still running as unavailable', async () => {
@@ -1834,43 +1837,6 @@ describe('reviewPane store — PR scope', () => {
     finish();
     await pending;
     expect(state.ciRefreshing).toBe(false);
-  });
-
-  it('refreshCILog re-sends the follow, which refetches the log', async () => {
-    installCIMocks();
-    const follows = installLogFollows(1);
-    const state = reviewStateForPane('pane-1', prSubject());
-    await waitLoaded(state);
-    await state.setScope('pr');
-    state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
-    await flushPane();
-
-    const again = setBindingMock('SetPRCILogFollows', async () => ({ logs: { 20: wireLog(2, 4, 9) } }));
-    state.refreshCILog();
-    await flushPane();
-    expect(follows).toHaveBeenCalledTimes(1);
-    expect(again).toHaveBeenCalledWith('sub-1', ['20']);
-    expect(state.ciLog).toMatchObject({ version: 2, totalLines: 4 });
-  });
-
-  it('clears the follow when the pane is disposed', async () => {
-    installCIMocks();
-    const follows = installLogFollows(1);
-    const state = reviewStateForPane('pane-1', prSubject());
-    await waitLoaded(state);
-    await state.setScope('pr');
-    state.openCIJobLog('test', state.ciPipeline!.stages[0]!.jobs[0]!);
-    await flushPane();
-    // A second pane on the same PR keeps the PR subscribed, so the clear
-    // has a live handle to reach.
-    const other = attachPR(PR_KEY, { ref: { forge: 'github', host: 'github.com', namespace: 'owner', repo: 'repo', number: 5 } });
-    try {
-      disposeReviewStateForPane('pane-1', state);
-      await flushPane();
-      expect(follows).toHaveBeenLastCalledWith('sub-1', []);
-    } finally {
-      other.release();
-    }
   });
 
   it('drops a CI action it started when the pane is disposed', async () => {
@@ -5173,17 +5139,6 @@ describe('reviewPane store — open new-comment editors', () => {
     expect(state.draftBodyFor(next)).toBe('');
   });
 
-  it('keeps a failed save\'s editor open with the error', async () => {
-    const { state } = await workspaceWith(() => patchFor('src/app.ts', 1));
-    setBindingMock('CreateDiffReviewComment', async () => {
-      throw new Error('create failed');
-    });
-    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
-    await expect(state.createComment(id, 'Body')).rejects.toThrow('create failed');
-    expect(state.openEditors.map((editor) => editor.id)).toEqual([id]);
-    expect(state.error).toBe('create failed');
-  });
-
   it('saves an editor\'s draft once however often it is pressed while saving', async () => {
     const { state, rows } = await workspaceWith(() => patchFor('src/app.ts', 1));
     let release!: () => void;
@@ -5220,7 +5175,7 @@ describe('reviewPane store — open new-comment editors', () => {
     expect(getDiffReviewComments('thread-1', 'workspace', state.sourceKey)).toEqual([]);
   });
 
-  it('saves again after a failed save', async () => {
+  it('keeps a failed save\'s editor open with the error, and saves again', async () => {
     const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 1));
     const saveOne = create.getMockImplementation()!;
     create.mockImplementationOnce(async () => {
@@ -5228,6 +5183,8 @@ describe('reviewPane store — open new-comment editors', () => {
     });
     const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
     await expect(state.createComment(id, 'Body')).rejects.toThrow('create failed');
+    expect(state.openEditors.map((editor) => editor.id)).toEqual([id]);
+    expect(state.error).toBe('create failed');
     expect(state.editorSaving(id)).toBe(false);
     create.mockImplementation(saveOne);
     await state.createComment(id, 'Body');
@@ -5268,21 +5225,16 @@ describe('reviewPane store — open new-comment editors', () => {
       return { ...loaded, id };
     }
 
-    it('does not follow the primary handler\'s text onto the fallback handler', async () => {
+    it.each([
       // The primary block goes and the fallback now reports: the base is
       // unchanged and `report();` is on one row each time.
-      const { state, create, id } = await editorThen(changed('aaaaaaa..ccccccc', '@@ -1,2 +1,5 @@', [' top', '+if (fallback) {', '+  report();', '+}', ' bottom']));
+      ['does not follow the primary handler\'s text onto the fallback handler', changed('aaaaaaa..ccccccc', '@@ -1,2 +1,5 @@', [' top', '+if (fallback) {', '+  report();', '+}', ' bottom'])],
+      ['detaches an added line\'s editor when lines are added above it', changed('aaaaaaa..ddddddd', '@@ -1,2 +1,9 @@', [' top', '+inserted', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom'])],
+    ])('%s', async (_name, after) => {
+      const { state, create, id } = await editorThen(after);
       expect(state.openEditors).toMatchObject([{ id, filePath: 'src/app.ts', side: 'new', state: 'detached', anchor: null }]);
       expect(state.draftBodyFor(id)).toBe('Guard this.');
       await expect(state.createComment(id, 'Guard this.')).rejects.toEqual(refused('detached'));
-      expect(create).not.toHaveBeenCalled();
-    });
-
-    it('detaches an added line\'s editor when lines are added above it', async () => {
-      const { state, create, id } = await editorThen(changed('aaaaaaa..ddddddd', '@@ -1,2 +1,9 @@', [' top', '+inserted', '+if (primary) {', '+  report();', '+}', '+if (fallback) {', '+  retry();', '+}', ' bottom']));
-      expect(state.openEditors[0]).toMatchObject({ id, state: 'detached', anchor: null });
-      expect(state.draftBodyFor(id)).toBe('Guard this.');
-      await expect(state.createComment(id, 'x')).rejects.toEqual(refused('detached'));
       expect(create).not.toHaveBeenCalled();
     });
 

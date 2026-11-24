@@ -8,6 +8,7 @@ import {
   rateLimitWindowLabel,
   setProviderRateLimits,
 } from './rateLimitsInfo.svelte';
+import type { RateLimitEntry } from '../types/events';
 
 describe('rateLimitsInfo', () => {
   beforeEach(() => {
@@ -65,28 +66,45 @@ describe('rateLimitsInfo', () => {
     ).toEqual({ primary: null, secondary: null, limits: [] });
   });
 
-  // A partial reading (Claude's header fallback, a Codex notification)
-  // can carry one window. The store must merge new windows alongside
-  // existing ones rather than replacing; otherwise alternating 5h and
-  // 7d readings wipe the other window.
-  it('merges Claude single-window updates across separate calls', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 30, windowMins: 300, resetsAt: 1776283200 },
-      ],
-      updatedAt: 1776283000,
-    });
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'seven_day', limitName: '7d', usedPercent: 51, windowMins: 10080, resetsAt: 1776981600 },
-      ],
-      updatedAt: 1776283500,
-    });
-
-    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(30);
-    expect(getProviderRateLimitsForWindow('claude', 10080).primary?.usedPercent).toBe(51);
+  // Two readings in a row for one provider, then the primary of each listed
+  // window as [windowMins, usedPercent, resetsAt].
+  //
+  // A partial reading (Claude's header fallback, a Codex notification) can
+  // carry one window, so the store merges a reading's windows into the ones
+  // it holds; replacing them would let alternating 5h and 7d readings wipe
+  // the other window. An empty reading is a no-op: a defensive wipe would
+  // reintroduce the per-pane flicker bug at the global level.
+  //
+  // `resetsAt` versions a window. Around a reset boundary several sessions
+  // (Codex app-servers) emit partial readings independently, and a
+  // long-running one keeps emitting its pre-reset reading after a fresher
+  // one has seen the post-reset reading; without a guard the ring
+  // oscillates between the old high percent and the new low one. So an
+  // entry whose resetsAt is older than the stored one is dropped, per
+  // window. An equal resetsAt is the same window, where the newest reading
+  // wins in either direction: a LOWER reading is the server's current
+  // answer, not staleness, because the server can raise the limit or reset
+  // usage mid-window (2026-09-01: a manual server-side weekly reset under an
+  // unchanged boundary froze the meters at the stale maximum until the next
+  // app restart).
+  const fiveHour = (usedPercent: number, resetsAt: number) => ({ limitId: 'five_hour', limitName: '5h', usedPercent, windowMins: 300, resetsAt });
+  const sevenDay = (usedPercent: number) => ({ limitId: 'seven_day', limitName: '7d', usedPercent, windowMins: 10080, resetsAt: 1776981600 });
+  const codex = (usedPercent: number) => ({ limitId: 'codex', limitName: 'Codex', usedPercent, windowMins: 300, resetsAt: 1776300000 });
+  it.each<[string, 'claude' | 'codex', RateLimitEntry[], RateLimitEntry[], [number, number, number][]]>([
+    ['merges Claude single-window updates across separate calls', 'claude', [fiveHour(30, 1776283200)], [sevenDay(51)], [[300, 30, 1776283200], [10080, 51, 1776981600]]],
+    ['overwrites the same-window slot on a fresh update without disturbing the other window', 'claude', [fiveHour(30, 1776283200), sevenDay(51)], [fiveHour(95, 1776283200)], [[300, 95, 1776283200], [10080, 51, 1776981600]]],
+    ['treats empty-limits snapshots as no-ops (does not wipe last-known values)', 'claude', [fiveHour(42, 1776283200)], [], [[300, 42, 1776283200]]],
+    ['drops a stale pre-reset entry when a post-reset entry is already stored', 'claude', [fiveHour(5, 1776300000)], [fiveHour(95, 1776282000)], [[300, 5, 1776300000]]],
+    ['takes a post-reset entry when the existing entry is from before the boundary', 'claude', [fiveHour(95, 1776282000)], [fiveHour(5, 1776300000)], [[300, 5, 1776300000]]],
+    ['updates on a same-window higher-reading event', 'claude', [fiveHour(30, 1776300000)], [fiveHour(42, 1776300000)], [[300, 42, 1776300000]]],
+    ['accepts a same-window lower-reading event', 'codex', [codex(39)], [codex(9)], [[300, 9, 1776300000]]],
+    ['applies stale-event defense per window slot', 'claude', [fiveHour(5, 1776300000), sevenDay(51)], [fiveHour(95, 1776282000), sevenDay(60)], [[300, 5, 1776300000], [10080, 60, 1776981600]]],
+  ])('%s', (_name, provider, first, second, windows) => {
+    setProviderRateLimits({ provider, limits: first, updatedAt: 1776284000 });
+    setProviderRateLimits({ provider, limits: second, updatedAt: 1776285000 });
+    for (const [window, usedPercent, resetsAt] of windows) {
+      expect(getProviderRateLimitsForWindow(provider, window).primary, `${window}-minute window`).toMatchObject({ usedPercent, resetsAt });
+    }
   });
 
   // Codex pushes both windows together — the same merge path handles it.
@@ -102,29 +120,6 @@ describe('rateLimitsInfo', () => {
 
     expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(25);
     expect(getProviderRateLimitsForWindow('codex', 10080).primary?.usedPercent).toBe(60);
-  });
-
-  // A subsequent snapshot for the SAME window should overwrite that
-  // slot (latest reading wins) without disturbing the other window.
-  it('overwrites the same-window slot on a fresh update without disturbing the other window', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 30, windowMins: 300, resetsAt: 1776283200 },
-        { limitId: 'seven_day', limitName: '7d', usedPercent: 51, windowMins: 10080, resetsAt: 1776981600 },
-      ],
-      updatedAt: 1776283000,
-    });
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 95, windowMins: 300, resetsAt: 1776283200 },
-      ],
-      updatedAt: 1776284000,
-    });
-
-    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(95);
-    expect(getProviderRateLimitsForWindow('claude', 10080).primary?.usedPercent).toBe(51);
   });
 
   // Provider isolation: snapshots in different provider slots must not
@@ -165,110 +160,6 @@ describe('rateLimitsInfo', () => {
     expect(getProviderRateLimitsForWindow('claude', 0).primary).toBeNull();
     expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
     expect(getProviderRateLimits('claude').map((entry) => entry.limitId)).toContain('thirty_day');
-  });
-
-  // Empty snapshots are no-ops — the store is "last value wins until a
-  // non-empty update comes." A defensive wipe on empty would
-  // reintroduce the per-pane flicker bug at the global level.
-  it('treats empty-limits snapshots as no-ops (does not wipe last-known values)', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: 1776283200 },
-      ],
-      updatedAt: 1776283000,
-    });
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [],
-      updatedAt: 1776284000,
-    });
-
-    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
-  });
-
-  // The window-reset stale-event defense.
-  //
-  // Around a window-reset boundary, multiple sessions (Codex
-  // app-servers) emit partial readings independently. A long-running
-  // session can keep emitting its pre-reset reading for several
-  // requests after a fresher session has observed the post-reset
-  // reading. Without a guard
-  // these events overwrite each other and the ring visibly
-  // oscillates between the old high percent and the new low one.
-  //
-  // `resetsAt` is the natural version stamp: a pre-reset event's
-  // resetsAt is the boundary about to fire, a post-reset event's
-  // resetsAt is the boundary 5h/7d later. Drop incoming entries
-  // whose resetsAt is older than what's already stored.
-  it('drops a stale pre-reset entry when a post-reset entry is already stored', () => {
-    // Post-reset reading lands first.
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 5, windowMins: 300, resetsAt: 1776300000 },
-      ],
-      updatedAt: 1776284000,
-    });
-
-    // Stale pre-reset reading from a slow session arrives next —
-    // its resetsAt is the OLD boundary that has already fired.
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 95, windowMins: 300, resetsAt: 1776282000 },
-      ],
-      updatedAt: 1776285000,
-    });
-
-    // Post-reset value sticks; the stale event was dropped.
-    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(5);
-    expect(getProviderRateLimitsForWindow('claude', 300).primary?.resetsAt).toBe(1776300000);
-  });
-
-  // Window rollover from below: existing (pre-reset) is replaced by
-  // incoming (post-reset). This is the path the global store
-  // observes the boundary itself; the next test covers what happens
-  // afterwards when a stale session keeps emitting.
-  it('takes a post-reset entry when the existing entry is from before the boundary', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 95, windowMins: 300, resetsAt: 1776282000 },
-      ],
-      updatedAt: 1776280000,
-    });
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 5, windowMins: 300, resetsAt: 1776300000 },
-      ],
-      updatedAt: 1776284000,
-    });
-
-    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(5);
-    expect(getProviderRateLimitsForWindow('claude', 300).primary?.resetsAt).toBe(1776300000);
-  });
-
-  // Equal `resetsAt` = same window. The newest reading wins in either
-  // direction; rising is the common case.
-  it('updates on a same-window higher-reading event', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 30, windowMins: 300, resetsAt: 1776300000 },
-      ],
-      updatedAt: 1776284000,
-    });
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: 1776300000 },
-      ],
-      updatedAt: 1776285000,
-    });
-
-    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
   });
 
   it('accepts higher usage when the provider jitters a reset boundary by seconds', () => {
@@ -340,37 +231,18 @@ describe('rateLimitsInfo', () => {
     expect(lowerAfter?.resetsAt).toBe(1784841601);
   });
 
-  // A same-window reading with LOWER used-percent is the server's current
-  // answer, not staleness: the server can raise the limit or outright reset
-  // usage mid-window (2026-09-01: a manual server-side weekly reset under
-  // an unchanged boundary froze the meters at the stale maximum until the
-  // next app restart). The newest reading must win.
-  it('accepts a same-window lower-reading event', () => {
-    setProviderRateLimits({
-      provider: 'codex',
-      limits: [
-        { limitId: 'codex', limitName: 'Codex', usedPercent: 39, windowMins: 300, resetsAt: 1776300000 },
-      ],
-      updatedAt: 1776285000,
-    });
-    setProviderRateLimits({
-      provider: 'codex',
-      limits: [
-        { limitId: 'codex', limitName: 'Codex', usedPercent: 9, windowMins: 300, resetsAt: 1776300000 },
-      ],
-      updatedAt: 1776286000,
-    });
-
-    expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(9);
-    expect(getProviderRateLimitsForWindow('codex', 300).primary?.resetsAt).toBe(1776300000);
-  });
-
   // A provider drops a bucket from its answer once the bucket has no usage,
   // which is what a mid-window reset produces. Merging alone kept the
   // pre-reset figure for the rest of the window (2026-09-01: a Fable weekly
   // row stuck at 90% while session and all-models read 0%). MergeSnapshot in
-  // internal/providerlifecycleapp is this rule's twin.
-  it('drops a stored limit that a whole-answer reading omits', () => {
+  // internal/providerlifecycleapp is this rule's twin. The same omission
+  // from a partial reading proves nothing: a wire event carries one window
+  // and Claude's header fallback can never see a scoped bucket, so both
+  // leave the rest of the store alone.
+  it.each([
+    ['drops a stored limit that a whole-answer reading omits', true, ['weekly_all']],
+    ['keeps a stored limit that a partial reading omits', undefined, ['weekly_all', 'weekly_scoped:fable']],
+  ])('%s', (_name, complete, kept) => {
     setProviderRateLimits({
       provider: 'claude',
       limits: [
@@ -381,14 +253,14 @@ describe('rateLimitsInfo', () => {
     });
     setProviderRateLimits({
       provider: 'claude',
-      complete: true,
+      complete,
       limits: [
         { limitId: 'weekly_all', limitName: 'All models', usedPercent: 0, windowMins: 10080, resetsAt: 1776981600 },
       ],
       updatedAt: 1776285000,
     });
 
-    expect(getProviderRateLimits('claude').map((entry) => entry.limitId)).toEqual(['weekly_all']);
+    expect(getProviderRateLimits('claude').map((entry) => entry.limitId).sort()).toEqual(kept);
     expect(getProviderRateLimitsForWindow('claude', 10080).primary?.usedPercent).toBe(0);
   });
 
@@ -421,57 +293,6 @@ describe('rateLimitsInfo', () => {
     const limit = getProviderRateLimitsForWindow('claude', 10080, 'acct').primary;
     expect(limit?.usedPercent).toBe(100);
     expect(limit?.resetsAt).toBe(1776855600);
-  });
-
-  // The same omission from a partial reading proves nothing: a wire event
-  // carries one window and Claude's header fallback can never see a scoped
-  // bucket, so both leave the rest of the store alone.
-  it('keeps a stored limit that a partial reading omits', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 46, windowMins: 10080, resetsAt: 1776981600 },
-        { limitId: 'weekly_scoped:fable', limitName: 'Fable', usedPercent: 90, windowMins: 10080, resetsAt: 1776981600 },
-      ],
-      updatedAt: 1776284000,
-    });
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 0, windowMins: 10080, resetsAt: 1776981600 },
-      ],
-      updatedAt: 1776285000,
-    });
-
-    expect(getProviderRateLimits('claude').map((entry) => entry.limitId).sort())
-      .toEqual(['weekly_all', 'weekly_scoped:fable']);
-  });
-
-  // The defense applies per-window: a stale 5h event must not
-  // disturb a fresh 7d entry, and vice versa. Otherwise a snapshot
-  // carrying both windows where one is stale would taint the other.
-  it('applies stale-event defense per window slot', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 5, windowMins: 300, resetsAt: 1776300000 },
-        { limitId: 'seven_day', limitName: '7d', usedPercent: 51, windowMins: 10080, resetsAt: 1776981600 },
-      ],
-      updatedAt: 1776284000,
-    });
-
-    // Stale 5h, fresh 7d in the same snapshot.
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'five_hour', limitName: '5h', usedPercent: 95, windowMins: 300, resetsAt: 1776282000 },
-        { limitId: 'seven_day', limitName: '7d', usedPercent: 60, windowMins: 10080, resetsAt: 1776981600 },
-      ],
-      updatedAt: 1776285000,
-    });
-
-    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(5);
-    expect(getProviderRateLimitsForWindow('claude', 10080).primary?.usedPercent).toBe(60);
   });
 
   // Unknown providers (anything other than claude/codex) are dropped
@@ -554,74 +375,30 @@ describe('rateLimitsInfo', () => {
     expect(limits.map((entry) => entry.usedPercent)).toEqual([100, 46]);
   });
 
-  it('groups composer details by duration with the provider default first', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'weekly_scoped:fable', limitName: 'Fable', usedPercent: 99, windowMins: 10080, resetsAt: 1776981600 },
-        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 },
-        { limitId: 'monthly_other', limitName: 'Monthly other', usedPercent: 80, windowMins: 43200, resetsAt: 1779000000 },
-      ],
-      updatedAt: 1776283000,
-    });
+  // One Claude reading, then its weekly group: the provider-wide limit
+  // first, scoped limits in display-name order, each as [limitId,
+  // usedPercent], and the most-used scoped limit as secondary.
+  const weekly = (limitId: string, limitName: string, usedPercent: number) => ({ limitId, limitName, usedPercent, windowMins: 10080, resetsAt: 1776981600 });
+  const all = weekly('weekly_all', 'All models', 52);
+  it.each<[string, RateLimitEntry[], [string, number][], string | null]>([
+    ['groups composer details by duration with the provider default first', [
+      weekly('weekly_scoped:fable', 'Fable', 99), all,
+      { limitId: 'monthly_other', limitName: 'Monthly other', usedPercent: 80, windowMins: 43200, resetsAt: 1779000000 },
+    ], [['weekly_all', 52], ['weekly_scoped:fable', 99]], 'weekly_scoped:fable'],
+    ['picks the most-used scoped limit as secondary and keeps the list in name order', [
+      all, weekly('weekly_scoped:alpha', 'Alpha', 10), weekly('weekly_scoped:fable', 'Fable', 70), weekly('weekly_scoped:zeta', 'Zeta', 30),
+    ], [['weekly_all', 52], ['weekly_scoped:alpha', 10], ['weekly_scoped:fable', 70], ['weekly_scoped:zeta', 30]], 'weekly_scoped:fable'],
+    ['breaks a secondary tie by display name and ignores a non-finite reading', [
+      all, weekly('weekly_scoped:zeta', 'Zeta', 40), weekly('weekly_scoped:beta', 'Beta', 40), weekly('weekly_scoped:nan', 'Aardvark', NaN),
+    ], [['weekly_all', 52], ['weekly_scoped:nan', NaN], ['weekly_scoped:beta', 40], ['weekly_scoped:zeta', 40]], 'weekly_scoped:beta'],
+    ['reports no secondary when the account has only the provider-wide limit', [all], [['weekly_all', 52]], null],
+  ])('%s', (_name, limits, listed, secondary) => {
+    setProviderRateLimits({ provider: 'claude', limits, updatedAt: 1776283000 });
 
     const group = getProviderRateLimitsForWindow('claude', 10080);
     expect(group.primary?.limitId).toBe('weekly_all');
-    expect(group.limits.map((entry) => entry.limitId)).toEqual([
-      'weekly_all',
-      'weekly_scoped:fable',
-    ]);
-    expect(group.limits.map((entry) => entry.usedPercent)).toEqual([52, 99]);
-    expect(group.secondary?.limitId).toBe('weekly_scoped:fable');
-  });
-
-  it('picks the most-used scoped limit as secondary and keeps the list in name order', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 },
-        { limitId: 'weekly_scoped:alpha', limitName: 'Alpha', usedPercent: 10, windowMins: 10080, resetsAt: 1776981600 },
-        { limitId: 'weekly_scoped:fable', limitName: 'Fable', usedPercent: 70, windowMins: 10080, resetsAt: 1776981600 },
-        { limitId: 'weekly_scoped:zeta', limitName: 'Zeta', usedPercent: 30, windowMins: 10080, resetsAt: 1776981600 },
-      ],
-      updatedAt: 1776283000,
-    });
-
-    const group = getProviderRateLimitsForWindow('claude', 10080);
-    expect(group.secondary?.limitId).toBe('weekly_scoped:fable');
-    expect(group.limits.map((entry) => entry.limitId)).toEqual([
-      'weekly_all',
-      'weekly_scoped:alpha',
-      'weekly_scoped:fable',
-      'weekly_scoped:zeta',
-    ]);
-  });
-
-  it('breaks a secondary tie by display name and ignores a non-finite reading', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 },
-        { limitId: 'weekly_scoped:zeta', limitName: 'Zeta', usedPercent: 40, windowMins: 10080, resetsAt: 1776981600 },
-        { limitId: 'weekly_scoped:beta', limitName: 'Beta', usedPercent: 40, windowMins: 10080, resetsAt: 1776981600 },
-        { limitId: 'weekly_scoped:nan', limitName: 'Aardvark', usedPercent: NaN, windowMins: 10080, resetsAt: 1776981600 },
-      ],
-      updatedAt: 1776283000,
-    });
-
-    expect(getProviderRateLimitsForWindow('claude', 10080).secondary?.limitId).toBe('weekly_scoped:beta');
-  });
-
-  it('reports no secondary when the account has only the provider-wide limit', () => {
-    setProviderRateLimits({
-      provider: 'claude',
-      limits: [
-        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 },
-      ],
-      updatedAt: 1776283000,
-    });
-
-    expect(getProviderRateLimitsForWindow('claude', 10080).secondary).toBeNull();
+    expect(group.limits.map((entry) => [entry.limitId, entry.usedPercent])).toEqual(listed);
+    expect(group.secondary?.limitId ?? null).toBe(secondary);
   });
 
   it('gives the composer the weekly meter alone before an account has a reading', () => {

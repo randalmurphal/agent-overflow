@@ -110,43 +110,21 @@ describe('provider model catalog', () => {
     }
   });
 
-  it('preloads enabled provider model lists', async () => {
+  it.each([
+    ['preloads enabled provider model lists', true, ['claude']],
+    ['does not preload a provider whose parent is disabled', false, []],
+  ])('%s', async (_name, claudeEnabled, preloaded) => {
     const getModels = setBindingMock('GetModelsForProvider', async (provider) => modelCatalog([
       { slug: `${provider}-model`, name: '', provider: String(provider) },
     ]));
 
-    await preloadProviderModelsForSettings({
-      claudeEnabled: true,
-      codexEnabled: false,
-      claudeTuiEnabled: true,
-      agyEnabled: false,
-    });
+    await preloadProviderModelsForSettings({ claudeEnabled, codexEnabled: false, claudeTuiEnabled: true, agyEnabled: false });
 
-    expect(getModels).toHaveBeenCalledOnce();
-    expect(getModels).toHaveBeenCalledWith('claude');
-    expect(getProviderModels('claude')).toEqual([
-      { slug: 'claude-model', name: '', provider: 'claude' },
-    ]);
+    expect(getModels.mock.calls).toEqual(preloaded.map((provider) => [provider]));
+    expect(getProviderModels('claude')).toEqual(preloaded.map((provider) => ({ slug: `${provider}-model`, name: '', provider })));
     expect(getProviderModels('codex')).toEqual([]);
     // claude-tui shares claude's catalog, so it is never a preload target —
     // enabling it must not buy a second round trip for the same list.
-    expect(getProviderModels('claude-tui')).toEqual([]);
-  });
-
-  it('does not preload a provider whose parent is disabled', async () => {
-    const getModels = setBindingMock('GetModelsForProvider', async (provider) => modelCatalog([
-      { slug: `${provider}-model`, name: '', provider: String(provider) },
-    ]));
-
-    await preloadProviderModelsForSettings({
-      claudeEnabled: false,
-      codexEnabled: false,
-      claudeTuiEnabled: true,
-      agyEnabled: false,
-    });
-
-    expect(getModels).not.toHaveBeenCalled();
-    expect(getProviderModels('claude')).toEqual([]);
     expect(getProviderModels('claude-tui')).toEqual([]);
   });
 
