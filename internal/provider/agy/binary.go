@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"slices"
 	"strings"
 
 	"agent-overflow/internal/provider"
@@ -35,13 +34,11 @@ func LaunchArgs(geminiDir, appDataSubdir string) []string {
 
 // LaunchEnv adds what every `agy acp` process runs with to in: CLI
 // auto-update pinned off, so AO's providerupdate service owns upgrades, and
-// the ambient GCP/Gemini credentials a shell exports cleared unless the
-// user's custom environment names them, so they cannot hijack a Google OAuth
-// session.
+// the ambient GCP/Gemini credentials a shell exports cleared, so they cannot
+// hijack a Google OAuth session. A value the user's custom environment sets
+// for one of them still applies.
 func LaunchEnv(in provider.EnvInput) provider.EnvInput {
-	in = in.Pin(provider.AgyDisableAutoUpdateEnv, "1")
-	in.ClearUnlessCustom = append(slices.Clip(in.ClearUnlessCustom), provider.AgyAmbientCredentialEnvs...)
-	return in
+	return in.Pin(provider.AgyDisableAutoUpdateEnv, "1").Clear(provider.AgyAmbientCredentialEnvs...)
 }
 
 // WithFileStorage pins file-backed OAuth token storage, so a managed or

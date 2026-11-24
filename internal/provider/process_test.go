@@ -272,9 +272,9 @@ func envValues(env []string) map[string]string {
 }
 
 // One input of each kind against an inherited value of each name shows the
-// whole precedence: clears remove, defaults sit under the user's custom value
-// and over an inherited one, pins sit over both, and a clear-unless-custom
-// name survives only as the user's own value.
+// whole precedence: clears remove an inherited value but not the user's own,
+// defaults sit under the user's custom value and over an inherited one, and
+// pins sit over both. A name is its exact spelling.
 func TestBuildEnvironmentAppliesEachKindInPrecedenceOrder(t *testing.T) {
 	for name, value := range map[string]string{
 		CodexHomeEnv.Name():                 "/inherited/codex-home",
@@ -291,7 +291,7 @@ func TestBuildEnvironmentAppliesEachKindInPrecedenceOrder(t *testing.T) {
 	values := envValues(BuildEnvironment(EnvInput{
 		Custom: map[string]string{
 			ClaudeTodoReminderModeEnv.Name(): "user",
-			// A pin wins over a custom value spelled in another case.
+			// Another spelling is another variable, which the pin leaves alone.
 			"anthropic_base_url":               "user",
 			AgyAmbientCredentialEnvs[1].Name(): "user-key",
 		},
@@ -299,15 +299,15 @@ func TestBuildEnvironmentAppliesEachKindInPrecedenceOrder(t *testing.T) {
 			ClaudeTodoToolsEnv:        "default",
 			ClaudeTodoReminderModeEnv: "default",
 		},
-		Pins:              map[ReservedEnv]string{ClaudeBaseURLEnv: "pinned"},
-		Clears:            []ReservedEnv{CodexHomeEnv},
-		ClearUnlessCustom: AgyAmbientCredentialEnvs[:2],
+		Pins:   map[ReservedEnv]string{ClaudeBaseURLEnv: "pinned"},
+		Clears: []ReservedEnv{CodexHomeEnv, AgyAmbientCredentialEnvs[0], AgyAmbientCredentialEnvs[1]},
 	}))
 
 	want := map[string]string{
 		ClaudeTodoToolsEnv.Name():           "default",
 		ClaudeTodoReminderModeEnv.Name():    "user",
 		ClaudeBaseURLEnv.Name():             "pinned",
+		"anthropic_base_url":                "user",
 		AgyAmbientCredentialEnvs[1].Name():  "user-key",
 		"AGENT_OVERFLOW_ENV_TEST_INHERITED": "kept",
 	}
@@ -316,7 +316,7 @@ func TestBuildEnvironmentAppliesEachKindInPrecedenceOrder(t *testing.T) {
 			t.Errorf("%s = %q (present %v), want %q", name, got, ok, value)
 		}
 	}
-	for _, name := range []string{CodexHomeEnv.Name(), AgyAmbientCredentialEnvs[0].Name(), "anthropic_base_url"} {
+	for _, name := range []string{CodexHomeEnv.Name(), AgyAmbientCredentialEnvs[0].Name()} {
 		if got, ok := values[name]; ok {
 			t.Errorf("%s = %q, want it absent", name, got)
 		}
@@ -367,7 +367,6 @@ func TestEnvInputFingerprintSeparatesKinds(t *testing.T) {
 		"default": EnvInput{}.Default(ClaudeTodoToolsEnv, "1"),
 		"pin":     EnvInput{}.Pin(ClaudeTodoToolsEnv, "1"),
 		"clear":   EnvInput{}.Clear(ClaudeTodoToolsEnv),
-		"unless":  {ClearUnlessCustom: []ReservedEnv{ClaudeTodoToolsEnv}},
 		"path":    {PathPrepend: "/opt/ao/bin"},
 	}
 	seen := map[string]string{}
@@ -384,8 +383,8 @@ func TestEnvInputFingerprintSeparatesKinds(t *testing.T) {
 	}
 }
 
-// PathPrepend goes in front of whatever PATH the child would inherit, under
-// any spelling of the name. Serial: it sets the process environment.
+// PathPrepend goes in front of whatever PATH the child would inherit.
+// Serial: it sets the process environment.
 func TestBuildEnvironmentPrependsToTheInheritedPath(t *testing.T) {
 	separator := string(os.PathListSeparator)
 	unset := func(t *testing.T, name string) {
@@ -401,9 +400,8 @@ func TestBuildEnvironmentPrependsToTheInheritedPath(t *testing.T) {
 	}{
 		{name: "no inherited PATH gets one", want: "/cfg/bin"},
 		{name: "an inherited PATH keeps its entries behind ours", inherit: map[string]string{"PATH": "/usr/bin" + separator + "/bin"}, want: "/cfg/bin" + separator + "/usr/bin" + separator + "/bin"},
-		// A Windows-style environment spells it Path; the removal is
-		// case-insensitive, so the extended value is the only one left.
-		{name: "a differently cased PATH is the one extended", inherit: map[string]string{"Path": "/usr/bin"}, want: "/cfg/bin" + separator + "/usr/bin"},
+		// Path is another variable on every system a provider runs on.
+		{name: "a differently cased Path is left alone", inherit: map[string]string{"Path": "/usr/bin"}, want: "/cfg/bin"},
 		{name: "an empty PATH is replaced rather than left with a trailing separator", inherit: map[string]string{"PATH": ""}, want: "/cfg/bin"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -414,7 +412,7 @@ func TestBuildEnvironmentPrependsToTheInheritedPath(t *testing.T) {
 			}
 			var paths []string
 			for _, entry := range BuildEnvironment(EnvInput{PathPrepend: "/cfg/bin"}) {
-				if name, value, _ := strings.Cut(entry, "="); strings.EqualFold(name, "PATH") {
+				if name, value, _ := strings.Cut(entry, "="); name == "PATH" {
 					paths = append(paths, name+"="+value)
 				}
 			}
@@ -422,6 +420,68 @@ func TestBuildEnvironmentPrependsToTheInheritedPath(t *testing.T) {
 				t.Fatalf("PATH entries = %q, want only PATH=%s", paths, test.want)
 			}
 		})
+	}
+}
+
+// The environment a spawned child actually receives, read back by env(1) on
+// a case-sensitive system: two spellings of one name are two variables, each
+// set by its own kind, a clear removes only its exact name, and PATH arrives
+// once. Serial: it sets the process environment.
+func TestSpawnedChildReceivesEachNameOnce(t *testing.T) {
+	separator := string(os.PathListSeparator)
+	inheritedPath := "/usr/bin" + separator + "/bin"
+	t.Setenv("PATH", inheritedPath)
+	t.Setenv(ClaudeConfigDirEnv.Name(), "/inherited/claude")
+	t.Setenv("claude_config_dir", "/inherited/lowercase")
+
+	p, err := Spawn(context.Background(), testLifetime, SpawnConfig{
+		Binary: "env",
+		Env: EnvInput{
+			Custom:      map[string]string{"bash_max_timeout_ms": "1000"},
+			PathPrepend: "/opt/ao-test/bin",
+		}.
+			Default(ClaudeBashMaxTimeoutEnv, "600000").
+			Pin(AOEnv("AO_case_test"), "lower").
+			Pin(AOEnv("AO_CASE_TEST"), "upper").
+			Clear(ClaudeConfigDirEnv),
+	})
+	if err != nil {
+		t.Fatalf("spawn env: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Kill() })
+
+	want := map[string]string{
+		"bash_max_timeout_ms":          "1000",
+		ClaudeBashMaxTimeoutEnv.Name(): "600000",
+		"AO_case_test":                 "lower",
+		"AO_CASE_TEST":                 "upper",
+		"claude_config_dir":            "/inherited/lowercase",
+		"PATH":                         "/opt/ao-test/bin" + separator + inheritedPath,
+	}
+	absent := ClaudeConfigDirEnv.Name()
+	// Only these names are recorded, so a failure never prints the rest of
+	// the environment.
+	got := map[string][]string{}
+	for {
+		line, err := p.ReadLine()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read the child's environment: %v", err)
+		}
+		name, value, _ := strings.Cut(string(line), "=")
+		if _, tracked := want[name]; tracked || name == absent {
+			got[name] = append(got[name], value)
+		}
+	}
+	for name, value := range want {
+		if !slices.Equal(got[name], []string{value}) {
+			t.Errorf("child %s = %q, want exactly [%q]", name, got[name], value)
+		}
+	}
+	if values, present := got[absent]; present {
+		t.Errorf("child %s = %q, want it cleared", absent, values)
 	}
 }
 
@@ -445,11 +505,11 @@ func TestProviderEnvironmentAppliesTheAppImageScrub(t *testing.T) {
 				key, _, ok := strings.Cut(entry, "=")
 				return ok && key == marker
 			}) {
-				t.Errorf("%s retained the %s marker: %q", label, marker, env)
+				t.Errorf("%s retained the %s marker", label, marker)
 			}
 		}
-		if !slices.Contains(env, "PATH="+wantPath) {
-			t.Errorf("%s PATH is not %q: %q", label, wantPath, env)
+		if got := envValues(env)["PATH"]; got != wantPath {
+			t.Errorf("%s PATH = %q, want %q", label, got, wantPath)
 		}
 	}
 

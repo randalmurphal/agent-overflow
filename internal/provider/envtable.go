@@ -92,13 +92,17 @@ func AOPins(m map[string]string) map[ReservedEnv]string {
 	return out
 }
 
+// pathName is the variable EnvInput.PathPrepend extends.
+const pathName = "PATH"
+
 const settingsBlockRefusal = "delivered through `--settings` (whose flagSettings source outranks the subprocess environment), so a value here would be silently ignored"
 
 // Every provider.
 var (
-	// PathEnv is assembled by Agent Overflow: EnvInput.PathPrepend goes in
-	// front of the inherited PATH.
-	PathEnv = reserve("", "PATH", "PATH is assembled by Agent Overflow (the bundled `agent-overflow` CLI directory is prepended to the inherited PATH for every session); point at a different CLI with the provider's binary-path setting instead")
+	// PATH is assembled by Agent Overflow: EnvInput.PathPrepend goes in
+	// front of the inherited PATH. It has no handle, so no spawn can pin,
+	// default or clear it beside the prefix.
+	_ = reserve("", pathName, "PATH is assembled by Agent Overflow (the bundled `agent-overflow` CLI directory is prepended to the inherited PATH for every session); point at a different CLI with the provider's binary-path setting instead")
 )
 
 // Claude and claude-tui.
@@ -167,7 +171,7 @@ var (
 
 // ReservedEnvRefusal reports why the settings layer refuses name in the
 // custom environment stored under providerKey ("claude", "codex" or "agy").
-// Lookup is case-insensitive, matching BuildEnvironment's removal.
+// Lookup is case-insensitive: settings refuses a reserved name in any case.
 func ReservedEnvRefusal(providerKey, name string) (reason string, refused bool) {
 	upper := strings.ToUpper(strings.TrimSpace(name))
 	if strings.HasPrefix(upper, ReservedEnvPrefix) {

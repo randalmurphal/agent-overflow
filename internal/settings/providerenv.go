@@ -245,9 +245,9 @@ func validateProviderEnvVars(providerName string, vars []ProviderEnvVar) ([]Prov
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", field, err)
 		}
-		// Case-insensitive: provider.BuildEnvironment removes overridden keys
-		// case-insensitively, so `Proxy` and `PROXY` would fight over one slot
-		// in the assembled environment with the winner decided by map order.
+		// Case-insensitive, although the child receives `Proxy` and `PROXY`
+		// as two variables: a list whose names differ only in case is a
+		// mistake to show the user, not two settings to apply.
 		upper := strings.ToUpper(v.Name)
 		if first, dup := seen[upper]; dup {
 			if first == v.Name {
