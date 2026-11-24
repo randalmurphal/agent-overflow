@@ -662,6 +662,7 @@ describe('<Composer>', () => {
 
       pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
       await tick();
+      expect(view.queryByTestId('composer-send')).toBeNull();
       expect(view.queryByTestId('composer-session-menu')).toBeNull();
       expect(view.queryByRole('button', { name: 'Interrupt or end the session' })).toBeNull();
       await fireEvent.click(view.getByTestId('composer-interrupt'));
@@ -669,36 +670,12 @@ describe('<Composer>', () => {
     });
   }
 
-  it('uploads a pasted image on a claude thread (control for the claude-tui gate)', async () => {
-    const pane = await buildPane(makeTestThread({ provider: 'claude' }));
-    const draft = await buildDraft();
-    const upload = mockAttachmentUpload(async (
-      threadId: string,
-      filename: string,
-      mimeType: string,
-    ) => ({ ...makeAttachment('uploaded', filename), threadId, mimeType }));
-
-    const { getByLabelText } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    await fireEvent(textarea, makeClipboardPaste([
-      new File(['png'], 'shot.png', { type: 'image/png' }),
-    ]));
-
-    await waitFor(() => expect(upload).toHaveBeenCalledWith(
-      'thread-1',
-      'shot.png',
-      'image/png',
-      expect.any(Number),
-    ));
-  });
-
-  it('uploads a pasted image on a claude-tui thread', async () => {
-    // claude-tui ingests images by injecting the file path into the real TUI
-    // composer, so it accepts composer attachments like any other provider.
-    // Same setup as the claude control above; only the provider differs, so this
-    // fails if the claude-tui attachment capability regresses to false.
-    const pane = await buildPane(makeTestThread({ provider: 'claude-tui' }));
+  // claude-tui ingests images by injecting the file path into the real TUI
+  // composer, so it accepts composer attachments like any other provider.
+  // The claude row is the control: only the provider differs, so the
+  // claude-tui row fails if its attachment capability regresses to false.
+  it.each(['claude', 'claude-tui'] as const)('uploads a pasted image on a %s thread', async (provider) => {
+    const pane = await buildPane(makeTestThread({ provider }));
     const draft = await buildDraft();
     const upload = mockAttachmentUpload(async (
       threadId: string,
@@ -1745,6 +1722,7 @@ describe('<Composer>', () => {
       }));
     });
     expect(draft.content).toBe('');
+    expect(getQueueForThread('thread-1')).toEqual([]);
   });
 
   it('does not send while an IME composition is active', async () => {
@@ -2586,35 +2564,21 @@ describe('<Composer>', () => {
     expect(button.textContent?.trim()).toBe('Plan');
   });
 
-  it('does not attach runtime mode overrides to send options', async () => {
-    const pane = await buildPane(makeTestThread({ runtimeMode: 'auto-accept-edits' }));
+  it.each([
+    { name: 'does not attach runtime mode overrides to send options', runtimeMode: 'auto-accept-edits', served: 'auto-accept-edits', text: 'use persisted access' },
+    { name: 'does not synthesize a runtime override from a missing thread value', runtimeMode: undefined, served: 'approval-required', text: 'use persisted mode' },
+  ] as const)('$name', async ({ runtimeMode, served, text }) => {
+    const pane = await buildPane(makeTestThread({ runtimeMode }));
     const draft = await buildDraft();
     const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ runtimeMode: 'auto-accept-edits' }));
+      makeTestThread({ runtimeMode: served }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'use persisted access' } });
+    await fireEvent.input(getByLabelText('Message Input'), { target: { value: text } });
     await fireEvent.click(getByTestId('composer-send'));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted access', sentWith({
-        attachmentIds: [],
-      }));
-    });
-  });
-
-  it('does not synthesize a runtime override from a missing thread value', async () => {
-    const pane = await buildPane(makeTestThread({ runtimeMode: undefined }));
-    const draft = await buildDraft();
-    const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ runtimeMode: 'approval-required' }));
-
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'use persisted mode' } });
-    await fireEvent.click(getByTestId('composer-send'));
-
-    await waitFor(() => {
-      expect(send).toHaveBeenCalledWith('thread-1', 'use persisted mode', sentWith({
+      expect(send).toHaveBeenCalledWith('thread-1', text, sentWith({
         attachmentIds: [],
       }));
     });
@@ -2878,23 +2842,6 @@ describe('<Composer>', () => {
     expect(draft.content).toBe('[Image #1] [Image #2]');
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-1', 'att-3']);
     await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1', 'att-2'));
-  });
-
-  it('shows the interrupt affordance while a turn is active and interrupts on click', async () => {
-    const pane = await buildPane();
-    // Post-refactor, isTurnActive is wire-pushed — a streaming item no
-    // longer flips it on. Driving setActiveTurn directly simulates the
-    // `provider:turn_started` event the composer really depends on.
-    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
-    const draft = await buildDraft();
-    const interrupt = setBindingMock('InterruptTurn', async () => {});
-
-    const { getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
-
-    expect(queryByTestId('composer-send')).toBeNull();
-    await fireEvent.click(getByTestId('composer-interrupt'));
-
-    expect(interrupt).toHaveBeenCalledWith('thread-1', []);
   });
 
   it('keeps the sent message and leaves the composer empty when Stop interrupts its turn', async () => {
@@ -3382,12 +3329,15 @@ describe('<Composer>', () => {
     expect(pane.generalError).toBeFalsy();
   });
 
-  it('enqueues mid-turn when the Send button is clicked', async () => {
-    const pane = await buildPane();
+  // Both providers share the backend-owned queue: its dispatcher delivers
+  // each queued item (via Steer, with Send fallback, for Codex), and the
+  // Composer only enqueues.
+  it.each(['claude', 'codex'] as const)('enqueues mid-turn when the Send button is clicked on a %s thread', async (provider) => {
+    const pane = await buildPane(makeTestThread({ provider }));
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     const draft = await buildDraft();
     const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ runtimeMode: 'full-access' }));
+      makeTestThread({ provider, runtimeMode: 'full-access' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
@@ -3400,6 +3350,7 @@ describe('<Composer>', () => {
 
     expect(send).not.toHaveBeenCalled();
     expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue via click']);
+    expect(draft.content).toBe('');
   });
 
   // The backend runs a connection's RPCs concurrently, so a debounced
@@ -3523,21 +3474,6 @@ describe('<Composer>', () => {
     expect([...(item.revisionSourceCommentIds ?? [])]).toEqual(['comment-1']);
   });
 
-  it('still dispatches SendMessageWithOptions when no turn is active', async () => {
-    const pane = await buildPane();
-    // No setActiveTurn — pane is idle.
-    const draft = await buildDraft();
-    const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ runtimeMode: 'full-access' }));
-
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'idle send' } });
-    await fireEvent.click(getByTestId('composer-send'));
-
-    await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'idle send', sentWith({ attachmentIds: [] })));
-    expect(getQueueForThread('thread-1')).toEqual([]);
-  });
-
   // A direct send draws nothing itself: the message is on screen only once
   // the backend's row for it arrives, and the Send button says so until then.
   describe('a direct send awaiting its confirmation', () => {
@@ -3639,45 +3575,10 @@ describe('<Composer>', () => {
     expect(getQueueForThread('thread-1')).toEqual([]);
   });
 
-  it('routes Codex mid-turn sends through the unified backend queue', async () => {
-    // The Codex steer fast-path lives in the backend-owned queue both
-    // providers share: the dispatcher delivers each queued item via
-    // Steer (with Send fallback) for Codex, and the Composer only
-    // enqueues.
-    const pane = await buildPane(makeTestThread({ provider: 'codex' }));
-    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
-    const draft = await buildDraft();
-    const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ provider: 'codex', runtimeMode: 'full-access' }));
-
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    await fireEvent.input(textarea, { target: { value: 'queue me' } });
-    await fireEvent.click(getByTestId('composer-send'));
-    await tick();
-
-    expect(send).not.toHaveBeenCalled();
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue me']);
-    expect(draft.content).toBe('');
-  });
-
-  it('keeps the existing enqueue path for Claude mid-turn sends', async () => {
-    // Claude has no steer primitive — its per-thread queue + drain
-    // on provider:turn_completed remains the single mid-turn path.
-    const pane = await buildPane(makeTestThread({ provider: 'claude' }));
-    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
-    const draft = await buildDraft();
-
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'claude queue' } });
-    await fireEvent.click(getByTestId('composer-send'));
-    await tick();
-
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['claude queue']);
-  });
-
-  it('autosizes multiline input and clamps at the maximum composer height', async () => {
+  it.each([
+    { name: 'autosizes multiline input and clamps at the maximum composer height', value: 'one\ntwo\nthree\nfour', scrollHeight: 260, height: '200px' },
+    { name: 'autosizes multiline input below the maximum composer height', value: 'one\ntwo', scrollHeight: 96, height: '96px' },
+  ])('$name', async ({ value, scrollHeight, height }) => {
     const pane = await buildPane();
     const draft = await buildDraft();
 
@@ -3685,28 +3586,12 @@ describe('<Composer>', () => {
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
     Object.defineProperty(textarea, 'scrollHeight', {
       configurable: true,
-      get: () => 260,
+      get: () => scrollHeight,
     });
 
-    await fireEvent.input(textarea, { target: { value: 'one\ntwo\nthree\nfour' } });
+    await fireEvent.input(textarea, { target: { value } });
 
-    expect(textarea.style.height).toBe('200px');
-  });
-
-  it('autosizes multiline input below the maximum composer height', async () => {
-    const pane = await buildPane();
-    const draft = await buildDraft();
-
-    const { getByLabelText } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-    Object.defineProperty(textarea, 'scrollHeight', {
-      configurable: true,
-      get: () => 96,
-    });
-
-    await fireEvent.input(textarea, { target: { value: 'one\ntwo' } });
-
-    expect(textarea.style.height).toBe('96px');
+    expect(textarea.style.height).toBe(height);
   });
 
   it('autosizes restored draft content without waiting for a new input event', async () => {
@@ -3724,26 +3609,6 @@ describe('<Composer>', () => {
     await waitFor(() => {
       expect(textarea.style.height).toBe('144px');
     });
-  });
-
-  it('restores the draft and surfaces an error when send fails', async () => {
-    const pane = await buildPane();
-    const draft = await buildDraft();
-    setBindingMock('SendMessageWithOptions', async () => {
-      throw new Error('rpc down');
-    });
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    await fireEvent.input(textarea, { target: { value: 'fails' } });
-    await fireEvent.click(getByTestId('composer-send'));
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(draft.content).toBe('fails');
-    expect(pane.generalError).toMatch(/Failed to send message/);
-    consoleError.mockRestore();
   });
 
   it('keeps a pending user-input answer separate from the normal draft', async () => {
@@ -3873,10 +3738,13 @@ describe('<Composer>', () => {
     expect(document.activeElement).toBe(getByTestId('user-input-option-2'));
   });
 
-  it('focuses the textarea after draft hydrates with cursor at end of resumed content', async () => {
+  it.each([
+    { name: 'focuses the textarea after draft hydrates with cursor at end of resumed content', content: 'resumed text' },
+    { name: 'focuses with cursor at offset 0 when the draft is empty', content: '' },
+  ])('$name', async ({ content }) => {
     setBindingMock('GetDraft', async (threadId: string) => ({
       threadId,
-      content: 'resumed text',
+      content,
       attachmentIds: [],
       terminalChips: [],
       updatedAt: 0,
@@ -3889,22 +3757,8 @@ describe('<Composer>', () => {
 
     await waitFor(() => {
       expect(document.activeElement).toBe(textarea);
-      expect(textarea.selectionStart).toBe('resumed text'.length);
-      expect(textarea.selectionEnd).toBe('resumed text'.length);
-    });
-  });
-
-  it('focuses with cursor at offset 0 when the draft is empty', async () => {
-    const pane = await buildPane();
-    const draft = await buildDraft();
-
-    const { getByLabelText } = render(Composer, { props: { pane, draft } });
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    await waitFor(() => {
-      expect(document.activeElement).toBe(textarea);
-      expect(textarea.selectionStart).toBe(0);
-      expect(textarea.selectionEnd).toBe(0);
+      expect(textarea.selectionStart).toBe(content.length);
+      expect(textarea.selectionEnd).toBe(content.length);
     });
   });
 

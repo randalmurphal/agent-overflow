@@ -58,45 +58,39 @@ describe('<BackgroundTaskTrayRow>', () => {
     expect(getByTestId('command-output-status')).toHaveAttribute('data-state', 'backgrounded');
   });
 
-  it('strips shell wrappers from live Codex tray command summaries', () => {
+  it.each([
+    {
+      name: 'strips shell wrappers from live Codex tray command summaries',
+      summary: "Bash: /usr/bin/zsh -lc 'git status --short'",
+      meta: { source: 'unifiedExecStartup' },
+      command: 'git status --short',
+    },
+    {
+      name: 'strips shell wrappers from truncated live Codex tray command summaries',
+      summary: "Bash: /usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/uni…",
+      meta: {
+        source: 'unifiedExecStartup',
+        command: "/usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/unit/db/test_policy_steps.py'",
+      },
+      command: 'uv run pytest tests/unit/db/test_migration_steps.py tests/unit/db/test_policy_steps.py',
+    },
+  ])('$name', ({ summary, meta, command }) => {
     const launch = makeItem({
       id: 'bg-codex-live-command',
       kind: 'tool_call',
       toolName: 'command_execution',
-      summary: "Bash: /usr/bin/zsh -lc 'git status --short'",
+      summary,
       status: 'running',
       isBackground: true,
-      meta: JSON.stringify({ source: 'unifiedExecStartup' }),
+      meta: JSON.stringify(meta),
     });
 
-    const { getByTestId, getByRole } = renderTrayRow(taskFor(launch));
+    const { getByTestId, getByRole, queryByText } = renderTrayRow(taskFor(launch));
 
-    expect(getByTestId('command-output-command').textContent).toBe('git status --short');
-    expect(getByRole('button', { name: 'Toggle Command Output: git status --short' })).toBeInTheDocument();
-  });
-
-  it('strips shell wrappers from truncated live Codex tray command summaries', () => {
-    const fullCommand = "/usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/unit/db/test_policy_steps.py'";
-    const launch = makeItem({
-      id: 'bg-codex-truncated-command',
-      kind: 'tool_call',
-      toolName: 'command_execution',
-      summary: "Bash: /usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/uni…",
-      status: 'running',
-      isBackground: true,
-      meta: JSON.stringify({ source: 'unifiedExecStartup', command: fullCommand }),
-    });
-
-    const { getByTestId, queryByText } = renderTrayRow(taskFor(launch));
-
-    expect(getByTestId('command-output-command').textContent).toBe(
-      'uv run pytest tests/unit/db/test_migration_steps.py tests/unit/db/test_policy_steps.py',
-    );
-    expect(getByTestId('command-output-command')).toHaveAttribute(
-      'title',
-      'uv run pytest tests/unit/db/test_migration_steps.py tests/unit/db/test_policy_steps.py',
-    );
-    expect(queryByText("/usr/bin/zsh -lc 'uv run pytest tests/unit/db/test_migration_steps.py tests/uni…")).toBeNull();
+    expect(getByTestId('command-output-command').textContent).toBe(command);
+    expect(getByTestId('command-output-command')).toHaveAttribute('title', command);
+    expect(getByRole('button', { name: `Toggle Command Output: ${command}` })).toBeInTheDocument();
+    expect(queryByText(summary.slice('Bash: '.length))).toBeNull();
   });
 
   it('strips shell wrappers from completed Codex tray command payload metadata', () => {
@@ -605,48 +599,26 @@ describe('<BackgroundTaskTrayRow> agent run state', () => {
     expect(view.queryByTestId('background-task-tray-row-activity')).toBeNull();
   });
 
-  it('says the session ended when the completion sibling was written by session death, not "stopped"', () => {
+  // Session death and a dropped wake each get their own words, not the
+  // generic "stopped" or "failed" of their status.
+  it.each([
+    { status: 'killed', source: 'session_died', error: 'Session ended before the agent finished' },
+    { status: 'killed', source: 'host_exit', error: 'Agent stopped' },
+    { status: 'errored', source: 'wake_dropped', error: 'Claude could not resume the agent' },
+    { status: 'errored', source: 'task_updated', error: 'Agent failed' },
+  ] as const)('says "$error" when a $status completion sibling was written by $source', ({ status, source, error }) => {
     const launch = agentLaunch();
-    const sessionDied = makeItem({
+    const completion = makeItem({
       id: 'complete:bg-agent',
       threadId: 'thread-1',
       kind: 'tool_completion',
       toolName: 'Agent',
-      status: 'killed',
+      status,
       completionOf: launch.id,
-      meta: JSON.stringify({ task_id: 'task-agent', status_source: 'session_died' }),
+      meta: JSON.stringify({ task_id: 'task-agent', status_source: source }),
     });
-    const died = renderTrayRow(taskFor(launch, { completion: sessionDied, status: 'completed' }), 'claude');
-    expect(died.getByTestId('agent-row-error').textContent).toContain('Session ended before the agent finished');
-    expect(died.getByTestId('background-task-tray-row-status')).not.toHaveAttribute('data-run-state');
-    died.unmount();
-
-    const stopped = renderTrayRow(taskFor(launch, {
-      completion: { ...sessionDied, meta: JSON.stringify({ task_id: 'task-agent', status_source: 'host_exit' }) },
-      status: 'completed',
-    }), 'claude');
-    expect(stopped.getByTestId('agent-row-error').textContent).toContain('Agent stopped');
-  });
-
-  it('says Claude could not resume the agent when a dropped wake ended it, not "failed"', () => {
-    const launch = agentLaunch();
-    const dropped = makeItem({
-      id: 'complete:bg-agent',
-      threadId: 'thread-1',
-      kind: 'tool_completion',
-      toolName: 'Agent',
-      status: 'errored',
-      completionOf: launch.id,
-      meta: JSON.stringify({ task_id: 'task-agent', status_source: 'wake_dropped' }),
-    });
-    const view = renderTrayRow(taskFor(launch, { completion: dropped, status: 'completed' }), 'claude');
-    expect(view.getByTestId('agent-row-error').textContent).toContain('Claude could not resume the agent');
-    view.unmount();
-
-    const failed = renderTrayRow(taskFor(launch, {
-      completion: { ...dropped, meta: JSON.stringify({ task_id: 'task-agent', status_source: 'task_updated' }) },
-      status: 'completed',
-    }), 'claude');
-    expect(failed.getByTestId('agent-row-error').textContent).toContain('Agent failed');
+    const { getByTestId } = renderTrayRow(taskFor(launch, { completion, status: 'completed' }), 'claude');
+    expect(getByTestId('agent-row-error').textContent).toContain(error);
+    expect(getByTestId('background-task-tray-row-status')).not.toHaveAttribute('data-run-state');
   });
 });

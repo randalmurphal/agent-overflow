@@ -415,9 +415,12 @@ describe('<ComposerInputSurface>', () => {
 
   // ---- attachments ----
 
-  it('deletes the backing record when an attachment is removed, by default', async () => {
+  it.each([
+    { name: 'deletes the backing record when an attachment is removed, by default', options: {}, deletes: [['thread-1', 'att-1']] },
+    { name: 'shouldDeleteAttachmentRecord=false drops it from the draft but keeps the record', options: { shouldDeleteAttachmentRecord: () => false }, deletes: [] },
+  ])('$name', async ({ options, deletes }) => {
     const deleteAttachment = setBindingMock('DeleteAttachment', async () => {});
-    const { draft, getByLabelText, syncValue } = await mountSurface();
+    const { draft, getByLabelText, syncValue } = await mountSurface(options);
     draft.setContentAndAttachments('', [makeAttachment('att-1')]);
     await syncValue();
 
@@ -425,22 +428,7 @@ describe('<ComposerInputSurface>', () => {
     await tick();
 
     expect(draft.attachments).toHaveLength(0);
-    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith('thread-1', 'att-1'));
-  });
-
-  it('shouldDeleteAttachmentRecord=false drops it from the draft but keeps the record', async () => {
-    const deleteAttachment = setBindingMock('DeleteAttachment', async () => {});
-    const { draft, getByLabelText, syncValue } = await mountSurface({
-      shouldDeleteAttachmentRecord: () => false,
-    });
-    draft.setContentAndAttachments('', [makeAttachment('att-1')]);
-    await syncValue();
-
-    await fireEvent.click(getByLabelText('Remove att-1.png'));
-    await tick();
-
-    expect(draft.attachments).toHaveLength(0);
-    expect(deleteAttachment).not.toHaveBeenCalled();
+    await waitFor(() => expect(deleteAttachment.mock.calls).toEqual(deletes));
   });
 
   it('uploads a pasted image when the host has no objection', async () => {

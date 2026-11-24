@@ -438,13 +438,16 @@ describe('<ActivityRail>', () => {
     expect(preview.textContent?.trim()).toBe('rebalance loader windows');
   });
 
-  it('keeps the row single-line: fixed segments are shrink-0 and the preview ellipsizes via CSS', async () => {
+  it('keeps the row single-line and steps down a measured density ladder: the preview and verb go first, the segment names last', async () => {
     // jsdom has no layout engine, so assert the CSS contract directly.
     // The composer reserves exactly one row of height for this rail
     // (composer-activity-reserve in Composer.svelte), so the row must
     // never wrap; narrow panes squeeze the todos preview instead. The
     // preview must also not hide behind a viewport breakpoint (sm:) —
     // pane width and viewport width are independent in split layouts.
+    // The row carries the measured rung, and each word that a rung gives
+    // up is tagged for the rung's selector (ActivityRail.svelte's style
+    // block). The measured rung itself is covered by densityLadder.test.ts.
     const launch = backgroundLaunch();
     setBindingMock('ListLiveBackgroundTasks', async () => [launch]);
     const pane = await buildPane();
@@ -458,8 +461,9 @@ describe('<ActivityRail>', () => {
     await tick();
     await tick();
 
-    const row = (await findByTestId('activity-rail')).querySelector(':scope > div');
+    const row = (await findByTestId('activity-rail')).querySelector<HTMLElement>(':scope > div');
     expect(row).not.toBeNull();
+    expect(row!.hasAttribute('data-activity-rail-row')).toBe(true);
     expect(row!.classList.contains('flex')).toBe(true);
     expect(row!.classList.contains('flex-wrap')).toBe(false);
 
@@ -475,27 +479,10 @@ describe('<ActivityRail>', () => {
     const preview = await findByTestId('activity-rail-todos-preview');
     expect(preview.classList.contains('truncate')).toBe(true);
     expect(preview.classList.contains('hidden')).toBe(false);
-  });
 
-  it('steps down a measured density ladder: the preview and verb go first, the segment names last', async () => {
-    // jsdom has no layout engine, so assert the CSS contract: the row
-    // carries the measured rung, and each word that a rung gives up is
-    // tagged for the rung's selector (ActivityRail.svelte's style block).
-    // The measured rung itself is covered by densityLadder.test.ts.
-    const launch = backgroundLaunch();
-    setBindingMock('ListLiveBackgroundTasks', async () => [launch]);
-    const pane = await buildPane();
-    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
-    pane.setLiveTodo([{ step: 'rebalance loader windows', status: 'inProgress' }]);
-    pane.upsertItem(launch);
-    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
-    await tick();
-    await tick();
-    const row = (await findByTestId('activity-rail')).querySelector<HTMLElement>('[data-activity-rail-row]');
-    expect(row).not.toBeNull();
     expect(row!.dataset.density).toBe('full');
-    expect((await findByTestId('activity-rail-todos-preview')).hasAttribute('data-activity-rail-preview')).toBe(true);
-    expect((await findByTestId('activity-rail-todos-toggle')).hasAttribute('data-activity-rail-shrinker')).toBe(true);
+    expect(preview.hasAttribute('data-activity-rail-preview')).toBe(true);
+    expect(todosToggle.hasAttribute('data-activity-rail-shrinker')).toBe(true);
     expect((await findByTestId('activity-rail-working-label')).querySelector('[data-activity-rail-verb]')).not.toBeNull();
     const names = Array.from(row!.querySelectorAll('[data-activity-rail-name]')).map((el) => el.textContent);
     expect(names).toEqual(['Todos', 'Background']);
@@ -787,48 +774,36 @@ describe('<ActivityRail>', () => {
     expect(terminateCalls).toBe(0);
   });
 
-  it('surfaces terminated:false as state instead of swallowing it', async () => {
-    // `terminated:false` means the RPC matched no running process, so no
-    // item/completed follows and the row will not change on its own. A
-    // silent no-op would read as a broken button.
-    setBindingMock('TerminateCodexBackgroundTerminal', async () => false);
+  // `terminated:false` means the RPC matched no running process, so no
+  // item/completed follows and the row will not change on its own. A
+  // silent no-op would read as a broken button.
+  it.each([
+    {
+      name: 'surfaces terminated:false as state instead of swallowing it',
+      terminate: async () => false,
+      toasts: [{ type: 'info', message: expect.stringMatching(/already exited/i) }],
+    },
+    {
+      name: 'stays quiet when the terminate actually killed something',
+      terminate: async () => true,
+      toasts: [],
+    },
+    {
+      name: 'surfaces a failed Codex terminate as an error toast carrying the backend message',
+      terminate: async () => {
+        throw new Error('codex: thread/backgroundTerminals/terminate 1734029: thread not found');
+      },
+      toasts: [{ type: 'error', message: expect.stringContaining('thread not found') }],
+    },
+  ])('$name', async ({ terminate, toasts }) => {
+    setBindingMock('TerminateCodexBackgroundTerminal', terminate);
 
     const { findByTestId } = await openCodexBackgroundTray(codexBackgroundLaunch());
     const before = getToasts().length;
     await fireEvent.click(await findByTestId('background-task-tray-row-stop'));
     await tick();
 
-    const added = getToasts().slice(before);
-    expect(added).toHaveLength(1);
-    expect(added[0].type).toBe('info');
-    expect(added[0].message).toMatch(/already exited/i);
-  });
-
-  it('stays quiet when the terminate actually killed something', async () => {
-    setBindingMock('TerminateCodexBackgroundTerminal', async () => true);
-
-    const { findByTestId } = await openCodexBackgroundTray(codexBackgroundLaunch());
-    const before = getToasts().length;
-    await fireEvent.click(await findByTestId('background-task-tray-row-stop'));
-    await tick();
-
-    expect(getToasts().slice(before)).toHaveLength(0);
-  });
-
-  it('surfaces a failed Codex terminate as an error toast carrying the backend message', async () => {
-    setBindingMock('TerminateCodexBackgroundTerminal', async () => {
-      throw new Error('codex: thread/backgroundTerminals/terminate 1734029: thread not found');
-    });
-
-    const { findByTestId } = await openCodexBackgroundTray(codexBackgroundLaunch());
-    const before = getToasts().length;
-    await fireEvent.click(await findByTestId('background-task-tray-row-stop'));
-    await tick();
-
-    const added = getToasts().slice(before);
-    expect(added).toHaveLength(1);
-    expect(added[0].type).toBe('error');
-    expect(added[0].message).toContain('thread not found');
+    expect(getToasts().slice(before)).toEqual(toasts.map((t) => expect.objectContaining(t)));
   });
 
   it('stops active Codex subagents by launch id from the row and Stop All', async () => {

@@ -402,20 +402,6 @@ describe('composer command menu', () => {
       expect(start).toHaveBeenCalled();
     });
 
-    it('opens the model picker on a bare /model', async () => {
-      const open = vi.fn();
-      const pane = await buildPane(makeThread({ provider: 'claude' }));
-      const { textarea, getByTestId } = await mountComposer(pane);
-      // Registered after mount so it wins over the toolbar's own handle.
-      registerComposerPicker(pane.paneId, 'model', { isOpen: () => false, open, close: () => {} });
-
-      await typeInto(textarea, '/model');
-      await fireEvent.click(getByTestId('composer-send'));
-      await tick();
-
-      expect(open).toHaveBeenCalled();
-    });
-
     it('applies /model <arg> through the picker’s own path', async () => {
       const update = setBindingMock('UpdateThreadModelSelection', async () =>
         makeThread({ model: 'claude-opus-5' }),
@@ -455,6 +441,7 @@ describe('composer command menu', () => {
       const open = vi.fn();
       const pane = await buildPane(makeThread({ provider: 'claude' }));
       const { textarea, getAllByTestId, getByTestId } = await mountComposer(pane);
+      // Registered after mount so it wins over the toolbar's own handle.
       registerComposerPicker(pane.paneId, 'model', { isOpen: () => false, open, close: () => {} });
 
       await typeInto(textarea, '/mod');
