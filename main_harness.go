@@ -121,8 +121,13 @@ func runHarness(flags cliFlags) {
 	isolation := isolationOptionsFor(flags)
 	isolation.Timing = timing
 	isolation.OlderComputer = envTruthy(os.Getenv(diagenv.HarnessOlderComputer))
+	// The fake trackers, served once a spec seeds them; closed after the
+	// App has shut down.
+	trackers := harnessrpc.NewTrackerFake()
+	defer trackers.Close()
+	isolation.TrackerOrigin = trackers.Origin
 	appService, nativeWindow := newIsolatedProviderApp(paths, isolation)
-	h := newHarness(appService, paths, nativeWindow)
+	h := newHarness(appService, paths, nativeWindow, trackers)
 	// The control server must listen before App.Start: it publishes its
 	// address/token through App.providerExtraEnv (write-once before
 	// Start), and the first session start could spawn a mock that needs
@@ -385,6 +390,10 @@ type isolationOptions struct {
 	// sets it (diagenv.HarnessTiming); the zero value keeps every product
 	// interval.
 	Timing harnessTiming
+	// TrackerOrigin is where the App's tracker clients connect: a harness
+	// boot's fake trackers (harnessrpc.TrackerFake). Nil refuses every
+	// tracker.
+	TrackerOrigin func(kind, site string) (string, error)
 	// OlderComputer makes this computer answer as one on v0.0.19: its
 	// window's calls (olderComputerSurface) and a paired spawner's archive
 	// or delete of a worker here. Only a harness boot sets it
@@ -498,6 +507,7 @@ func isolationConfig(paths harnessPaths, opts isolationOptions) appservice.Isola
 	// Dev-server discovery; see internal/app/app_preview.go.
 	config.ScanScopePIDs = opts.ScanScopePIDs
 	config.OmitOwnerOps = opts.OlderComputer
+	config.TrackerOrigin = opts.TrackerOrigin
 	// v0.0.19 groups agent messages by the absorbed rule and never
 	// reads agentMessageMembers; bootTransport leaves the capability
 	// out of its hello for the same boot.
@@ -606,7 +616,7 @@ func (w *isolatedNativeWindow) Command(command harnessrpc.WindowCommand) error {
 
 var _ harnessrpc.WindowController = (*isolatedNativeWindow)(nil)
 
-func newHarness(app *App, paths harnessPaths, window harnessrpc.WindowController) *harnessrpc.Harness {
+func newHarness(app *App, paths harnessPaths, window harnessrpc.WindowController, trackers *harnessrpc.TrackerFake) *harnessrpc.Harness {
 	return appservice.NewHarness(app.App, appservice.HarnessPaths{
 		DataRoot:        paths.DataRoot,
 		DataDir:         paths.DataDir,
@@ -614,6 +624,7 @@ func newHarness(app *App, paths harnessPaths, window harnessrpc.WindowController
 		CredentialHome:  paths.CredentialHome,
 		MockProvider:    paths.MockProvider,
 		MockForge:       paths.MockForge,
+		Trackers:        trackers,
 		BuildStamp:      buildStamp(),
 		AssetsFreshness: paths.AssetsFreshness,
 		AssetsDigest:    paths.AssetsDigest,

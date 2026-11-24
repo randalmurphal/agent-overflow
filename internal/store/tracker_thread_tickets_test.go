@@ -202,7 +202,7 @@ func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 	jira := mustCreateTrackerConnection(t, st, jiraConnection("https://example.atlassian.net", "user1@example.com", 1))
 	tempo := mustCreateTrackerConnection(t, st, NewTrackerConnection{Kind: TrackerKindTempo, Site: "https://api.eu.tempo.io", ParentID: jira.ID, CreatedAt: 2})
 	boards := []ProjectTrackerBoard{{ConnectionID: jira.ID, BoardID: "10", OpensFirst: true}, {ConnectionID: jira.ID, BoardID: "11"}}
-	if _, err := st.ReplaceProjectTrackerBoards("p1", boards); err != nil {
+	if _, _, err := st.ReplaceProjectTrackerBoards("p1", boards); err != nil {
 		t.Fatal(err)
 	}
 	mustSetThreadTicket(t, st, webLink("t1"), true)

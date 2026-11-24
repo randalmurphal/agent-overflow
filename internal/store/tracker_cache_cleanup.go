@@ -80,6 +80,16 @@ var mirrorRootChunkSQL, mirrorBoardChunkSQL = func() (root, board map[string]str
 	return root, board
 }()
 
+// mirrorBoardRestartSQL deletes a retired board that its drain emptied:
+// one with a row left in a table its drain empties is kept.
+var mirrorBoardRestartSQL = func() string {
+	q := `DELETE FROM tracker_cache_boards WHERE root_id = ?1 AND board_id = ?2 AND retired = 1`
+	for _, table := range mirrorBoardTables {
+		q += ` AND NOT EXISTS (SELECT 1 FROM ` + table + ` WHERE root_id = ?1 AND board_id = ?2)`
+	}
+	return q + ` RETURNING lifetime`
+}()
+
 // mirrorCleanupPendingSQL reports, in one statement, whether any cleanup
 // is pending: a detached root, a retired board, an issue with generations
 // of changes to delete, or an unkept issue. Each probe walks an index
@@ -224,10 +234,54 @@ func (s *Store) drainMirrorRoot(rootID int64, between func() error) error {
 	return nil
 }
 
+// ReadyTrackerBoards gives each of boards whose stored copy is retired
+// its next lifetime, so a board a project lists again opens
+// (TrackerBoardListing.Relisted): its rows, sprints and columns are
+// drained in batches (drainMirrorBoard) and nothing else is. It does not
+// wait for a cleanup another caller runs: every statement of a board's
+// drain acts only on a retired board, so the two may drain one board at
+// once. When ctx ends it stops before the next transaction and returns
+// ctx's cause. The errors of the boards it could not ready are joined;
+// the next FinishMirrorCleanup readies them.
+func (s *Store) ReadyTrackerBoards(ctx context.Context, boards []TrackerBoardRef) error {
+	between := func() error {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: %w", errMirrorCleanupStopped, context.Cause(ctx))
+		}
+		return nil
+	}
+	var errs []error
+	for _, ref := range boards {
+		var root int64
+		err := s.db.QueryRow(`SELECT b.root_id FROM tracker_cache_roots r JOIN tracker_cache_boards b ON b.root_id = r.id
+			WHERE r.connection_id = ?1 AND b.board_id = ?2 AND b.retired = 1`, ref.ConnectionID, ref.BoardID).Scan(&root)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// Another drain readied it first.
+			continue
+		case err == nil:
+			err = s.drainMirrorBoard(root, ref.BoardID, between)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("board %s of connection %s: %w", ref.BoardID, ref.ConnectionID, err))
+		}
+		if errors.Is(err, errMirrorCleanupStopped) {
+			break
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("store: ready tracker boards listed again: %w", err)
+	}
+	return nil
+}
+
 // drainMirrorBoard deletes a retired board's rows, sprints and columns in
 // batches, then the board, in the transaction that starts the board's next
 // lifetime when a project lists it again. Its sync state went when it was
-// retired.
+// retired. The board is deleted only while retired and empty, so a drain
+// that another drain of the board overtook, after which the board lived
+// again, filled and was retired again, deletes nothing: its delete would
+// cascade through every row of the new lifetime in one transaction.
 func (s *Store) drainMirrorBoard(rootID int64, boardID string, between func() error) error {
 	for _, table := range mirrorBoardTables {
 		if err := s.drainMirrorChunks(mirrorBoardChunkSQL[table], between, rootID, boardID); err != nil {
@@ -239,8 +293,7 @@ func (s *Store) drainMirrorBoard(rootID int64, boardID string, between func() er
 	}
 	action := fmt.Sprintf("store: delete retired tracker mirror %d board %s", rootID, boardID)
 	return s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
-		deleted, err := execChangedTx(tx, `DELETE FROM tracker_cache_boards WHERE root_id = ?1 AND board_id = ?2 AND retired = 1
-			RETURNING lifetime`, rootID, boardID)
+		deleted, err := execChangedTx(tx, mirrorBoardRestartSQL, rootID, boardID)
 		if err != nil || !deleted {
 			return err
 		}

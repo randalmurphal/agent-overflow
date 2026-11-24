@@ -365,8 +365,8 @@ func TestRequestEndsWithACancelledCaller(t *testing.T) {
 		go func() { result <- core.Request(ctx, testRequest{}) }()
 		synctest.Wait()
 		cancel()
-		if err := <-result; !errors.Is(err, context.Canceled) {
-			t.Fatalf("Request = %v, want the caller's cancellation", err)
+		if err := <-result; !errors.Is(err, context.Canceled) || !errors.Is(err, ErrNotTaken) {
+			t.Fatalf("Request = %v, want the caller's cancellation of a request not taken", err)
 		}
 	})
 }
@@ -382,8 +382,8 @@ func TestRequestEndsWithACallerCancelledBeforeTheAnswer(t *testing.T) {
 		req := <-taken
 		synctest.Wait()
 		cancel()
-		if err := <-result; !errors.Is(err, context.Canceled) {
-			t.Fatalf("Request = %v, want the caller's cancellation", err)
+		if err := <-result; !errors.Is(err, context.Canceled) || errors.Is(err, ErrNotTaken) {
+			t.Fatalf("Request = %v, want the caller's cancellation of a request taken", err)
 		}
 		req.Finish(nil)
 	})

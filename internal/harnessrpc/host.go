@@ -96,6 +96,9 @@ type Host interface {
 	// waits for its process to exit so no shared server survives into the
 	// next test.
 	ResetProviderConnections() error
+	// ResetTrackerConnections removes every tracker connection, which
+	// ends its subscriptions and drops its mirror.
+	ResetTrackerConnections() error
 	// CancelProviderLogins ends every provider sign-in and leaves each
 	// provider idle.
 	CancelProviderLogins()

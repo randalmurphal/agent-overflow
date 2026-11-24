@@ -15,8 +15,8 @@ import (
 // at once and every Cadence.Linked: while a client is connected
 // (Deps.ClientConnected), each connection that is on syncs its linked
 // issues' cards and the history due (SyncLinked) until no unit reports
-// More, and the mirror's cleanup runs (FinishMirrorCleanup). A round with
-// no client connected is skipped whole. Every read of the connections, a
+// More, and then the mirror's cleanup runs (FinishMirrorCleanup). A round
+// with no client connected is skipped whole, its cleanup included. Every read of the connections, a
 // round's included, decides whether the loop runs (followLoopLocked). A
 // failure is reported to Deps.LoopFailed and logged, and the loop goes on.
 
@@ -136,7 +136,7 @@ func (s *Service) runLinkedLoop(ctx context.Context, done chan struct{}) {
 	}
 	next := time.NewTimer(0)
 	defer next.Stop()
-	for first := true; ; first = false {
+	for {
 		select {
 		case <-ctx.Done():
 			return
@@ -149,8 +149,9 @@ func (s *Service) runLinkedLoop(ctx context.Context, done chan struct{}) {
 		if ctx.Err() != nil {
 			return
 		}
-		// The cleanup runs once after the settle wait, and after each round.
-		if first || connected {
+		// The cleanup runs after each round; the one after the settle wait
+		// is the app's start (cleanup.go).
+		if connected {
 			if err := s.FinishMirrorCleanup(); err != nil && !errors.Is(err, ErrStopped) {
 				s.loopFailure(err)
 			}

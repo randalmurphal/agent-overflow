@@ -35,7 +35,7 @@ func (s settler) begin() stamp { return s.f.svc.begin(s.c) }
 func (s settler) settle(at stamp, callErr error) bool {
 	s.f.svc.opMu.Lock()
 	defer s.f.svc.opMu.Unlock()
-	applied, err := s.f.svc.settle(s.id, store.TrackerKindJira, at, callErr, nil)
+	applied, _, err := s.f.svc.settle(s.id, store.TrackerKindJira, at, callErr, nil)
 	if err != nil {
 		s.f.t.Fatal(err)
 	}

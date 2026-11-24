@@ -48,6 +48,10 @@ const (
 // token is test token n (a, b, c...) for a test that replaces the token
 // in a key file: long enough for the transport, which refuses a secret no
 // longer than secret.Redacted.
+// untied is a board subscribe's tie for a test with no client to tie
+// the handle to.
+func untied(string) (func(), error) { return nil, nil }
+
 func token(n string) string { return "token-" + n + "-0000000001" }
 
 // fixture is a Service over a cloned store, with loopback Jira, Tempo and
@@ -178,7 +182,7 @@ func listBoards(tb testing.TB, st *store.Store, id string, boards ...tracker.Boa
 	for i, b := range boards {
 		list[i] = store.ProjectTrackerBoard{ConnectionID: id, BoardID: string(b)}
 	}
-	if _, err := st.ReplaceProjectTrackerBoards(project.ID, list); err != nil {
+	if _, _, err := st.ReplaceProjectTrackerBoards(project.ID, list); err != nil {
 		tb.Fatalf("list boards %v: %v", boards, err)
 	}
 }

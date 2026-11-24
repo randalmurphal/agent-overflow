@@ -202,7 +202,7 @@ func TestDeleteTrackerConnectionTakesItsTempoConnection(t *testing.T) {
 	tempo := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindTempo, Site: "https://api.eu.tempo.io", ParentID: jira.ID, CreatedAt: 1})
 	other := mustCreateTrackerConnection(t, s, jiraConnection("https://other.example.com", "user1@example.com", 1))
 	otherTempo := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindTempo, Site: "https://api.eu.tempo.io", ParentID: other.ID, CreatedAt: 1})
-	if _, err := s.ReplaceProjectTrackerBoards(project, []ProjectTrackerBoard{
+	if _, _, err := s.ReplaceProjectTrackerBoards(project, []ProjectTrackerBoard{
 		{ConnectionID: jira.ID, BoardID: "10", OpensFirst: true},
 		{ConnectionID: other.ID, BoardID: "20"},
 	}); err != nil {
