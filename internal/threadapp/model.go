@@ -31,30 +31,6 @@ func (u ModelUpdate) SelectionChanged() bool {
 		u.Previous.RuntimeMode != u.Thread.RuntimeMode
 }
 
-func (s *Service) UpdateModel(threadID, model string) (ModelUpdate, error) {
-	database, err := s.database("update model")
-	if err != nil {
-		return ModelUpdate{}, err
-	}
-	trimmedModel := strings.TrimSpace(model)
-	if trimmedModel == "" {
-		return ModelUpdate{}, fmt.Errorf("thread model cannot be empty")
-	}
-	thread, err := database.GetThread(threadID)
-	if err != nil {
-		return ModelUpdate{}, err
-	}
-	normalizedModel := provider.NormalizeModelSlug(thread.Provider, trimmedModel)
-	if thread.Model == normalizedModel {
-		return ModelUpdate{Previous: thread, Thread: thread}, nil
-	}
-	profile, err := s.profileForSelection(thread.Provider, normalizedModel)
-	if err != nil {
-		return ModelUpdate{}, err
-	}
-	return s.applyModelProfile(thread, profile)
-}
-
 func (s *Service) UpdateModelSelection(threadID, providerName, model string) (ModelUpdate, error) {
 	database, err := s.database("update model selection")
 	if err != nil {

@@ -18,12 +18,12 @@ test('the run declaration names the harness test packages', () => {
 test('each change runs the suites that read it', () => {
   const cases = [
     [['docs/architecture/development.md', 'internal/app/AGENTS.md', 'frontend/CLAUDE.md', 'README.md'], none],
-    [['e2e/playwright.config.ts'], { ...none, e2e: true }],
-    [['e2e/package.json'], { ...none, e2e: true }],
-    [['e2e/tests/pane-find.spec.ts', 'e2e/src/harness.ts'], { ...none, e2e: true }],
-    [['e2e/tests/pane-find.spec.ts', 'docs/specs/x.md'], { ...none, e2e: true }],
+    [['e2e/playwright.config.ts'], { ...none, frontend: true, e2e: true }],
+    [['e2e/package.json'], { ...none, frontend: true, e2e: true }],
+    [['e2e/tests/pane-find.spec.ts', 'e2e/src/harness.ts'], { ...none, frontend: true, e2e: true }],
+    [['e2e/tests/pane-find.spec.ts', 'docs/specs/x.md'], { ...none, frontend: true, e2e: true }],
     [['frontend/src/lib/components/chat/AGENTS.md', 'internal/app/CLAUDE.md'], none],
-    [['e2e/tests/pane-find.spec.ts', 'e2e/scripts/android-smoke.sh'], { ...none, e2e: true }],
+    [['e2e/tests/pane-find.spec.ts', 'e2e/scripts/android-smoke.sh'], { ...none, frontend: true, e2e: true }],
     [['frontend/src/lib/a.test.ts', 'frontend/src/lib/b.browser.test.ts', 'frontend/src/test/setup.ts', 'frontend/src/lib/c.manual.ts'],
       { ...none, frontend: true, vitest: true }],
     [['frontend/src/lib/stores/x.svelte.ts'], { ...none, 'go-checks': true, frontend: true, vitest: true, e2e: true }],
@@ -34,7 +34,7 @@ test('each change runs the suites that read it', () => {
     [['internal/frontendclient/sub/x_test.go'], { ...none, 'go-checks': true, 'go-lint': true }],
     [['internal/app/app.go'], { ...none, 'go-checks': true, 'go-lint': true, vitest: true, e2e: true }],
     [['go.sum'], { ...none, 'go-checks': true, 'go-lint': true, vitest: true, e2e: true }],
-    [['e2e/tests/pane-find.spec.ts', 'internal/app/app.go'], { ...none, 'go-checks': true, 'go-lint': true, vitest: true, e2e: true }],
+    [['e2e/tests/pane-find.spec.ts', 'internal/app/app.go'], { ...none, 'go-checks': true, 'go-lint': true, frontend: true, vitest: true, e2e: true }],
     [[], none],
   ];
   for (const [paths, want] of cases) assert.deepEqual(run(paths), want, paths.join(' '));
@@ -189,4 +189,19 @@ test('no job a pull request can run holds actions: write', () => {
   assert.deepEqual(writers, ['ci.yml:cache-cleanup']);
   assert.equal(plan('pull_request', ['Makefile'], harness)['cache-cleanup'], false);
   assert.equal(plan('workflow_dispatch', undefined, harness)['cache-cleanup'], false);
+});
+
+// The whole-tree gates run on every run of their job: a change selects the
+// job, and the gate's finding need not be in the change.
+const wholeTreeGates = { frontend: ['make frontend-deadcode'], 'go-lint': ['make go-lint-whole-tree'] };
+
+test('each whole-tree gate is a step of its job with no condition of its own', () => {
+  const found = ciJobs();
+  for (const [id, targets] of Object.entries(wholeTreeGates)) {
+    for (const target of targets) {
+      const steps = found[id].steps.filter(step => new RegExp(`^\\s*(- )?run: ${target}$`, 'm').test(step));
+      assert.equal(steps.length, 1, `${id} runs ${target} once`);
+      assert.doesNotMatch(steps[0], /^\s*(- )?if:/m, `${id} runs ${target} on a condition`);
+    }
+  }
 });

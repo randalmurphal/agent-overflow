@@ -349,7 +349,6 @@ describe('<ModelProviderMenu>', () => {
       'codex',
       'gpt-5.4',
     ]);
-    expect(getBindingMock('UpdateThreadModel')?.mock.calls.length ?? 0).toBe(0);
   });
 
   // Regression: Escape inside a nested submenu must close ONLY the
@@ -442,7 +441,6 @@ describe('<ModelProviderMenu>', () => {
       'codex',
       'gpt-5.4',
     ]);
-    expect(getBindingMock('UpdateThreadModel')?.mock.calls.length ?? 0).toBe(0);
   });
 
   // Provider lock: once a thread has been used (any item persisted), the

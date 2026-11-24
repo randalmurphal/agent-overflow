@@ -1,14 +1,16 @@
 # golangci-lint configuration (v2 schema). `make go-lint` runs it; CI gates
 # new issues only (--new-from-patch) until the existing backlog is cleared,
-# then the gate widens to the whole tree. The default linter set is on:
+# then the gate widens to the whole tree. unused and exhaustive have no
+# backlog and also run over the whole tree (`make go-lint-whole-tree`). The
+# default linter set is on:
 # errcheck, govet, ineffassign, staticcheck and unused. No findings are
 # excluded here beyond forbidigo's scope below: an unchecked Close in this
 # repo is a real finding under its cleanup rule, not noise.
 #
 # exhaustive is on in its strict form: a switch over an enum names every
 # constant, and a default case does not stand in for one. It reports at the
-# switch, not at the constant, so CI also runs it alone over the whole tree
-# (it has no backlog): a constant added to an enum is reported at every
+# switch, not at the constant, so it also runs over the whole tree: a
+# constant added to an enum is reported at every
 # switch over it, touched by the change or not. Code that picks a few
 # constants out of an enum and treats the rest alike is therefore written
 # with `if`, not `switch`, which is why staticcheck's QF1003 ("could use

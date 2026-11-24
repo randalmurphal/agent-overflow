@@ -12,7 +12,6 @@ import {
 export {
   DEFAULT_MAX_ATTACHMENT_COUNT,
   DEFAULT_MAX_ATTACHMENT_SIZE,
-  DEFAULT_MAX_FILE_ATTACHMENT_SIZE,
 } from '../../types/attachment';
 
 /**

@@ -125,7 +125,7 @@ test('switching an auto session to a model without auto mode shows the mode Clau
   await harness.rpc('SendMessage', threadId, 'first', null);
   await expect(page.getByText('First answer.', { exact: true })).toBeVisible();
 
-  await harness.rpc('UpdateThreadModel', threadId, SONNET_46);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', SONNET_46);
   // The switch brings the model's remembered Auto, so the reconcile is a
   // bare set_model on the running auto session.
   expect(mock.mockId).toBe((await mockSessions(harness, 'claude', 1))[0].mockId);
@@ -144,7 +144,7 @@ test('switching an auto session to a model without auto mode shows the mode Clau
 
   // Back to the first model: its remembered Auto returns, and says so.
   const restoreNotice = `Auto is back on for ${firstModel}. This thread's access is Auto again.`;
-  await harness.rpc('UpdateThreadModel', threadId, firstModel);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', firstModel);
   await expect(notices.filter({ hasText: restoreNotice })).toHaveCount(1);
   await expect(access).toHaveAttribute('data-mode', 'auto');
   await expect(access).toHaveAttribute('aria-label', 'Runtime Access Mode: Auto');
@@ -189,7 +189,7 @@ test('switching models in plan drops Auto when plan ends and restores it, with o
   // A model switch in plan is not applied live: the session restarts on
   // the new model once the thread is quiet, started on auto, which the CLI
   // cannot run on this model. Nothing reports that until the next turn.
-  await harness.rpc('UpdateThreadModel', threadId, SONNET_46);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', SONNET_46);
   let restarted: { mockId: string; sessionConfig?: { permissionMode?: string } } | undefined;
   await expect
     .poll(async () => {
@@ -217,7 +217,7 @@ test('switching models in plan drops Auto when plan ends and restores it, with o
   // so the switch applies live; its remembered Auto comes back with its
   // notice, and plan returns to it.
   await harness.rpc('UpdateThreadMode', threadId, 'plan');
-  await harness.rpc('UpdateThreadModel', threadId, firstModel);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', firstModel);
   await expect(notices.filter({ hasText: restoreNotice })).toHaveCount(1);
   await expect(access).toHaveAttribute('data-mode', 'auto');
   await harness.rpc('UpdateThreadMode', threadId, 'chat');
@@ -247,7 +247,7 @@ test('switching back to an auto model in plan restores Auto through the restart,
   const [first] = await mockSessions(harness, 'claude', 1);
   await harness.rpc('SendMessage', threadId, 'first', null);
   await expect(page.getByText('First answer.', { exact: true })).toBeVisible();
-  await harness.rpc('UpdateThreadModel', threadId, SONNET_46);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', SONNET_46);
   await expect(notices.filter({ hasText: DROP_NOTICE })).toHaveCount(1);
   await expect(access).toHaveAttribute('data-mode', 'approval-required');
 
@@ -258,7 +258,7 @@ test('switching back to an auto model in plan restores Auto through the restart,
     scenario: { version: 1, name: 'auto-mode-back-restart', provider: 'claude', turns: answers('Back on Auto.'), afterTurns: 'silent' },
   });
   await harness.rpc('UpdateThreadMode', threadId, 'plan');
-  await harness.rpc('UpdateThreadModel', threadId, firstModel);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', firstModel);
   await expect(access).toHaveAttribute('data-mode', 'auto');
   await expect(notices.filter({ hasText: restoreNotice })).toHaveCount(1);
   let restarted: { mockId: string; sessionConfig?: { permissionMode?: string } } | undefined;
@@ -299,7 +299,7 @@ test('switching a supervised session to a model without auto mode that remembers
   // The switch brings Sonnet 4.6's remembered Auto, which the CLI refuses
   // for that model: the thread takes the drop and its notice, not the
   // restore notice, on the same process.
-  await harness.rpc('UpdateThreadModel', threadId, SONNET_46);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', SONNET_46);
   await expect(notices.filter({ hasText: DROP_NOTICE })).toHaveCount(1);
   await expect(access).toHaveAttribute('data-mode', 'approval-required');
   await expect.poll(() => runtimeMode(harness, threadId)).toBe('approval-required');

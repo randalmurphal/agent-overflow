@@ -52,19 +52,17 @@ function registryLine(key: string, call: string): string {
 `;
 }
 
-/** The line to append to `code`, the transformed module `key`: its
- * registration, or for a source module with nothing to register a notice
- * that it finished loading (a POSTURE step that waited on it may now run).
- * Null for a package with nothing to register. */
-export function registration(key: string, code: string): string | null {
+/** The exports of `code`, the transformed module `key`, that the registry
+ * calls by name: `auto`, the reset-named exports with a local binding that
+ * take no required argument and testResets.ts does not name, which run
+ * after every test; `passed`, those and the exports a step names. Each maps
+ * to its local binding. knip's filter (scripts/knipResetExports.ts) exempts
+ * exactly these. */
+export function calledByName(key: string, code: string): { auto: string[]; passed: Map<string, string> } {
   const named = NAMED.get(key);
   const steps = STEPS.get(key) ?? new Set<string>();
   const packaged = !key.startsWith('src/');
-  // Before the registry loads (the setup files' own imports) no POSTURE
-  // step can be waiting, so the notice needs no registry.
-  const settled = packaged ? null
-    : `\n;globalThis[Symbol.for(${JSON.stringify(RESET_REGISTRY_KEY)})]?.settled();\n`;
-  if (named === undefined && (packaged || !RESET_TEXT.test(code))) return settled;
+  if (named === undefined && (packaged || !RESET_TEXT.test(code))) return { auto: [], passed: new Map() };
   const program = parseAst(code) as unknown as { body: Node[] };
   // Top-level bindings: the function or initializer each name is bound to.
   const declared = new Map<string, Node>();
@@ -98,9 +96,22 @@ export function registration(key: string, code: string): string | null {
   for (const name of named ?? []) {
     if (!exported.has(name)) throw new Error(`testResets.ts names ${name} in ${key}, which does not export it`);
   }
-  const passed = [...new Set([...auto, ...steps])];
-  if (passed.length === 0) return settled;
-  const members = passed.map((name) => `${JSON.stringify(name)}: ${exported.get(name)}`).join(', ');
+  const passed = new Map([...new Set([...auto, ...steps])].map((name) => [name, exported.get(name)!]));
+  return { auto, passed };
+}
+
+/** The line to append to `code`, the transformed module `key`: its
+ * registration, or for a source module with nothing to register a notice
+ * that it finished loading (a POSTURE step that waited on it may now run).
+ * Null for a package with nothing to register. */
+export function registration(key: string, code: string): string | null {
+  // Before the registry loads (the setup files' own imports) no POSTURE
+  // step can be waiting, so the notice needs no registry.
+  const settled = !key.startsWith('src/') ? null
+    : `\n;globalThis[Symbol.for(${JSON.stringify(RESET_REGISTRY_KEY)})]?.settled();\n`;
+  const { auto, passed } = calledByName(key, code);
+  if (passed.size === 0) return settled;
+  const members = [...passed].map(([name, local]) => `${JSON.stringify(name)}: ${local}`).join(', ');
   return registryLine(key, `loaded(${JSON.stringify(key)}, { ${members} }, ${JSON.stringify(auto)})`);
 }
 

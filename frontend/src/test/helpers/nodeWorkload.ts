@@ -20,6 +20,14 @@ import { execFileSync } from 'node:child_process';
  * `entry` names an export that takes no argument and returns a string. */
 export type NodeWorkload = { readonly url: string; readonly entry: string };
 
+/** The descriptor of `entry`, the one export of the module at `url` that the
+ * child calls, passed as `{ measureX }` so the name is the export itself. */
+export function nodeWorkload(url: string, entry: Record<string, () => string | Promise<string>>): NodeWorkload {
+  const names = Object.keys(entry);
+  if (names.length !== 1) throw new Error(`a node workload names one entry export, not ${names.length}: ${names.join(', ')}`);
+  return { url, entry: names[0] };
+}
+
 function childSource(workload: NodeWorkload): string {
   return `
 import nodeModule from 'node:module';

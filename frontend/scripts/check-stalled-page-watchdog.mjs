@@ -81,6 +81,15 @@ const scenarios = [
   },
 ];
 
+// The child config includes the fixtures by name, which is what makes knip
+// report one no scenario runs; the scenarios run exactly those.
+const { default: childConfig } = await import(pathToFileURL(path.join(fixtures, 'vitest.config.ts')).href);
+const included = [...childConfig.test.include].map((file) => path.basename(file)).sort();
+const named = [...new Set(scenarios.flatMap((scenario) => scenario.files))].sort();
+if (included.join() !== named.join()) {
+  failures.push(`src/test/stalledPage/vitest.config.ts includes ${included.join(', ')}; the scenarios run ${named.join(', ')}`);
+}
+
 for (const scenario of scenarios) {
   const result = await run(scenario.files.map((file) => path.join('src/test/stalledPage', file)));
   const problems = scenario.expect(result).filter((check) => check !== true);

@@ -24,8 +24,8 @@ func TestModelInputsRefuseClaudeAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create(claude-opus-5): %v", err)
 	}
-	if _, err := service.UpdateModel(thread.ID, "sonnet[1m]"); !errors.Is(err, provider.ErrModelAlias) {
-		t.Fatalf("UpdateModel(sonnet[1m]) error = %v, want ErrModelAlias", err)
+	if _, err := service.UpdateModelSelection(thread.ID, "claude", "sonnet[1m]"); !errors.Is(err, provider.ErrModelAlias) {
+		t.Fatalf("UpdateModelSelection(claude, sonnet[1m]) error = %v, want ErrModelAlias", err)
 	}
 	if _, err := service.UpdateModelSelection(thread.ID, "claude", "haiku"); !errors.Is(err, provider.ErrModelAlias) {
 		t.Fatalf("UpdateModelSelection(claude, haiku) error = %v, want ErrModelAlias", err)
@@ -34,9 +34,9 @@ func TestModelInputsRefuseClaudeAliases(t *testing.T) {
 	if err != nil || stored.Model != "claude-opus-5" {
 		t.Fatalf("stored model = %q, %v; want the refused updates to leave claude-opus-5", stored.Model, err)
 	}
-	updated, err := service.UpdateModel(thread.ID, "claude-opus-5-5[1m]")
+	updated, err := service.UpdateModelSelection(thread.ID, "claude", "claude-opus-5-5[1m]")
 	if err != nil || updated.Thread.Model != "claude-opus-5-5" {
-		t.Fatalf("UpdateModel(claude-opus-5-5[1m]) = %q, %v; want claude-opus-5-5", updated.Thread.Model, err)
+		t.Fatalf("UpdateModelSelection(claude, claude-opus-5-5[1m]) = %q, %v; want claude-opus-5-5", updated.Thread.Model, err)
 	}
 
 	service.deps.NewID = func() string { return "codex-thread" }

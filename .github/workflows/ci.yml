@@ -179,16 +179,16 @@ jobs:
       - name: golangci-lint on the change
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: make go-lint GO_LINT_FLAGS="--new-from-patch=$RUNNER_TEMP/change/change.diff"
-      # exhaustive has no backlog, and a constant added to an enum is
-      # reported at the switches over it, which the change need not touch.
-      # The macOS job runs the linter for the files only macOS compiles.
-      - name: exhaustive on the whole tree
-        run: make go-lint-exhaustive
+      # unused and exhaustive report where a change need not touch; the
+      # Makefile recipe says why. The macOS job runs exhaustive for the
+      # files only macOS compiles.
+      - name: unused and exhaustive on the whole tree
+        run: make go-lint-whole-tree
       - run: make go-vuln
       - uses: ./.github/actions/cache-save
 
   frontend:
-    name: svelte-check, build and oxlint
+    name: svelte-check, build, knip and oxlint
     needs: toolchain
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['frontend']
     runs-on: ubuntu-latest
@@ -207,6 +207,7 @@ jobs:
           frontend-deps: "true"
       - run: pnpm --dir frontend run check
       - run: pnpm --dir frontend run build
+      - run: make frontend-deadcode
       - name: Resolve the change under test
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         env:

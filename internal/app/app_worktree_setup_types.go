@@ -1,7 +1,5 @@
 package app
 
-import "time"
-
 // The wire contract of the chat-thread worktree setup surface: the channel
 // name, the vocabularies a frame's `phase` / `state` fields draw from, and the
 // two payload shapes. Split out of app_worktree_setup.go because both halves
@@ -12,23 +10,6 @@ import "time"
 // The Wails binding generator picks these up wherever they live in the main
 // package; they stay here rather than in internal/worktreesetup because that
 // package has no frontend and no opinion about JSON.
-
-const (
-	// worktreeSetupOutputTailBytes bounds the output one run retains in
-	// memory for the snapshot RPC. Eight times the per-command tail the
-	// failure message quotes: the panel shows a whole run, and a failing
-	// install's useful end can be several screens.
-	worktreeSetupOutputTailBytes = 128 * 1024
-
-	// worktreeSetupFlushInterval bounds how long a partial line waits before
-	// it is pushed. Output is coalesced to whole lines where possible — one
-	// frame per byte would swamp the event ring on a chatty install.
-	worktreeSetupFlushInterval = 100 * time.Millisecond
-
-	// worktreeSetupFlushBytes forces a flush for output that never emits a
-	// newline (progress bars redrawing with \r), so the panel still moves.
-	worktreeSetupFlushBytes = 8 * 1024
-)
 
 // Run states, as the panel sees them. "succeeded" and "cancelled" are terminal
 // event states only — neither is ever retained, so a snapshot never reports

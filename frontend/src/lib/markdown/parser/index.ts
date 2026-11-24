@@ -24,16 +24,9 @@ export type { LexerOptions, Token, Tokens, TokensList } from './engine';
 export type {
   MathToken,
   AlertToken,
-  FootnoteToken,
   SubSupToken,
-  BrToken,
-  HrToken,
-  AlignToken,
   CitationToken,
   MdxToken,
-  DetailsToken,
-  DetailsSummaryToken,
-  HtmlInlineToken,
   HtmlRegionToken,
   TableToken,
   THead,
@@ -62,8 +55,7 @@ export { fenceLanguage } from './fenceLanguage';
 export type { Alignment } from './extensions/align';
 export type {
   ParseBlocksCache,
-  ParseBlocksLexPath,
-  ParseBlocksLexObserver
+  ParseBlocksLexPath
 } from './parseBlocks.cache';
 export { incrementalLex } from './incrementalLex';
 export { createIncrementalLexCache } from './incrementalLex.cache';
@@ -72,7 +64,7 @@ export type {
   IncrementalLexObserver,
   IncrementalLexPath
 } from './incrementalLex.cache';
-export { createDocumentContextCache, documentContextOf, headingSlug, mayNeedDocumentContext } from './documentContext';
+export { createDocumentContextCache, documentContextOf, mayNeedDocumentContext } from './documentContext';
 export type { DocumentContext, DocumentContextCache } from './documentContext';
-export { factDenied, readFact, readingFor, renderUnder, sameScopeReads } from './documentScope';
+export { factDenied, readFact, sameScopeReads } from './documentScope';
 export type { DocumentForge, DocumentReading, DocumentScope, ForgeFactReader, ForgeFactState } from './documentScope';

@@ -6828,17 +6828,6 @@ export function UpdateThreadMode(threadID: string, mode: string): $CancellablePr
 }
 
 /**
- * UpdateThreadModel changes a thread's model through live provider controls.
- * Launch-only profile changes wait for the session to be quiet before restart.
- * Threads without an active session use the new model on their next start.
- */
-export function UpdateThreadModel(threadID: string, model: string): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(4179686417, threadID, model).then(($result: any) => {
-        return $$createType11($result);
-    });
-}
-
-/**
  * UpdateThreadModelSelection changes provider + model as one atomic model-menu
  * selection. The selected provider/model's remembered profile is applied before
  * the thread row is persisted, so SQLite never sees an invalid intermediate

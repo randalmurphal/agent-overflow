@@ -2,7 +2,7 @@
 // `node --expose-gc` child (src/test/helpers/nodeWorkload.ts), because the
 // measurement is a whole-heap delta; the test imports this module for its
 // descriptor only.
-import type { NodeWorkload } from '../../test/helpers/nodeWorkload';
+import { nodeWorkload } from '../../test/helpers/nodeWorkload';
 import {
   createMaterializedProvenAppend,
   createParseBlocksCache,
@@ -41,4 +41,4 @@ export function measureParseBlockRetention(): string {
   return String(process.memoryUsage().heapUsed - before);
 }
 
-export const parseBlockRetentionWorkload: NodeWorkload = { url: import.meta.url, entry: 'measureParseBlockRetention' };
+export const parseBlockRetentionWorkload = nodeWorkload(import.meta.url, { measureParseBlockRetention });

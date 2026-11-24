@@ -259,8 +259,8 @@ func TestUpdateThreadModelRefusesAClaudeAlias(t *testing.T) {
 		t.Fatalf("createTestThread: %v", err)
 	}
 
-	if _, err := app.UpdateThreadModel(thread.ID, "opus"); !errors.Is(err, provider.ErrModelAlias) {
-		t.Fatalf("UpdateThreadModel(opus) error = %v, want ErrModelAlias", err)
+	if _, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "opus"); !errors.Is(err, provider.ErrModelAlias) {
+		t.Fatalf("UpdateThreadModelSelection(opus) error = %v, want ErrModelAlias", err)
 	}
 	stored, err := app.store.GetThread(thread.ID)
 	if err != nil || stored.Model != "claude-sonnet-4-6" {

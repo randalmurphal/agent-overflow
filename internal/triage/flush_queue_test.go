@@ -536,6 +536,46 @@ func TestFlushSettlementIsExactlyOnceAndCombinationPreservesBoth(t *testing.T) {
 	new(FlushSettlement).Settle("")
 }
 
+// TestNextFlushSequence_CountsThisTurnsFlushRows pins what the allocator
+// counts: the turn's persisted flush rows and its sends awaiting their
+// echo, not its seed or steer rows and not another turn's flush rows.
+func TestNextFlushSequence_CountsThisTurnsFlushRows(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	now := time.Now().UnixMilli()
+	row := func(id string, turnIndex int) store.Item {
+		return store.Item{ID: id, ThreadID: "t1", TurnIndex: turnIndex, Kind: "user_text", Role: "user",
+			Status: "completed", Summary: id, CreatedAt: now, UpdatedAt: now}
+	}
+	next := func(want int, after string) {
+		t.Helper()
+		got, err := router.NextFlushSequence("t1", 5)
+		if err != nil {
+			t.Fatalf("NextFlushSequence after %s: %v", after, err)
+		}
+		if got != want {
+			t.Fatalf("NextFlushSequence after %s = %d, want %d", after, got, want)
+		}
+	}
+
+	next(1, "nothing")
+	for _, item := range []store.Item{row("user:5", 5), row("user:5:steer:1", 5), row("user:5:steer:2", 5), row("user:6:flush:9", 6)} {
+		if _, err := st.AppendItem(item); err != nil {
+			t.Fatalf("persist %s: %v", item.ID, err)
+		}
+	}
+	next(1, "the seed, steer rows and another turn's flush row")
+	for _, id := range []string{"user:5:flush:1", "user:5:flush:3"} {
+		if _, err := st.AppendItem(row(id, 5)); err != nil {
+			t.Fatalf("persist %s: %v", id, err)
+		}
+	}
+	next(4, "persisted flush rows 1 and 3")
+	router.RegisterPendingFlushSendWithExpectation(
+		"t1", "queue:pending", row("user:5:flush:4", 5), 0, PendingSendExpectation{ByClientID: true})
+	next(5, "flush row 4 awaiting its echo")
+}
+
 // TestNextFlushSequence_SerializesWithDeferredEchoPersist pins the
 // allocation race behind the codex-steer e2e flake (2026-08-25): the
 // echo path pops a deferred entry and persists its row inside one

@@ -125,7 +125,6 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 				assertPreserved()
 				for i, selectModel := range []func() error{
 					func() error { _, err := app.UpdateThreadModelSelection(thread.ID, providerName, nextModel); return err },
-					func() error { _, err := app.UpdateThreadModel(thread.ID, nextModel); return err },
 				} {
 					meta, _ := json.Marshal(map[string]string{"fallbackModel": thread.Model})
 					if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventModelFallback, ThreadID: thread.ID, ItemID: string(rune('a' + i)), Meta: meta}); err != nil {
@@ -151,7 +150,8 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 						writes++
 					}
 				}
-				want := 3
+				// One write for the switch and one for the retry after a fallback.
+				want := 2
 				if providerName == "codex" && activeTurn {
 					want = 0
 				}

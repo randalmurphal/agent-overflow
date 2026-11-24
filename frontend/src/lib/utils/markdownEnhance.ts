@@ -31,10 +31,7 @@ import { hasScope } from '../transport/scopes';
 import { canPreviewFiles, openFilePreview } from '../stores/filePreviews';
 import { isHTMLFile } from './htmlFile';
 
-export {
-  ensureMarkdownCopyDelegate,
-  __resetMarkdownCopyDelegateForTest,
-} from './markdownCopyDelegate';
+export { ensureMarkdownCopyDelegate } from './markdownCopyDelegate';
 
 let pathLinkDelegateInstalled = false;
 let forgeAttachmentDelegateInstalled = false;

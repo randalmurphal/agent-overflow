@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 
 	"agent-overflow/internal/harness/instanceinfo"
 )
@@ -56,30 +54,4 @@ func snapshotProcessGroupOS(pgid int) ([]ownedGroupMember, error) {
 type processGroupListingEntry struct {
 	pid  int
 	pgid int
-}
-
-// Linux has a reliable /proc source. Other Unix hosts use the portable ps
-// listing. Both paths report only membership. Identity is captured through
-// instanceinfo immediately afterwards.
-func parseProcessGroupListing(text string) ([]processGroupListingEntry, error) {
-	var entries []processGroupListingEntry
-	for _, line := range strings.Split(text, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			return nil, fmt.Errorf("invalid process-group listing line %q", line)
-		}
-		pid, err := strconv.Atoi(fields[0])
-		if err != nil || pid <= 0 {
-			return nil, fmt.Errorf("invalid process-group pid %q", fields[0])
-		}
-		pgid, err := strconv.Atoi(fields[1])
-		if err != nil || pgid <= 0 {
-			return nil, fmt.Errorf("invalid process-group id %q", fields[1])
-		}
-		entries = append(entries, processGroupListingEntry{pid: pid, pgid: pgid})
-	}
-	return entries, nil
 }

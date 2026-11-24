@@ -77,7 +77,6 @@ export {
   RenameThread,
   RegenerateThreadTitle,
   SwitchThread,
-  UpdateThreadModel,
   UpdateThreadModelSelection,
   UpdateThreadMode,
   UpdateThreadReasoningEffort,
@@ -100,14 +99,11 @@ export {
   SetThreadPlacement,
 
   // Session management
-  StartSession,
   AutoResumeThread,
-  StopSession,
   ReconnectSession,
   DismissSessionBanner,
   DismissUnsavedThreadRows,
   GetThreadUnsavedRows,
-  SendMessage,
   InterruptTurn,
   GetConversationMutationState,
   GetThreadLiveState,
@@ -152,7 +148,6 @@ export {
   GetPayloadPreview,
   GetPayloadChunk,
   GetPayloadData,
-  ListItems,
 
   // Settings (GetSettings and UpdateSettings are below: answers as sent)
   GetClaudeTranscriptRetention,
@@ -286,7 +281,6 @@ export {
   ListPasskeys,
   DeletePasskey,
   BeginPasskeyStepUp,
-  FinishPasskeyStepUp,
 
   // WSL distro switcher — exposed only when the backend is running
   // inside a WSL distribution spawned by the Windows launcher. The
@@ -325,7 +319,6 @@ export {
   ListBackends,
   AddBackend,
   RemoveBackend,
-  RenameBackend,
   RepairBackendAddress,
   StartSSHConnection,
   GetSSHConnection,
@@ -446,7 +439,6 @@ export {
   SearchWorkspaceFiles,
   WriteWorkspaceFile,
   ListChatBarFavorites,
-  SetChatBarFavorite,
 
   // Message search
   SearchThreadMessages,
@@ -533,7 +525,6 @@ export {
   ListThreadProposedPlans,
   ListProposedPlanComments,
   CountRunningBackgroundTasks,
-  RunningBackgroundAgents,
   CreateProposedPlanComment,
   UpdateProposedPlanComment,
   DeleteProposedPlanComment,
@@ -663,7 +654,6 @@ export {
   ProjectDeletionPreview,
   ListProjects,
   RenameProject,
-  UnarchiveProject,
   UpdateProjectSortPositions,
 
   // Session import (provider session files → AO threads). All five ride
@@ -715,7 +705,6 @@ export {
 
   // Workflows
   WorkflowAnswerQuestion,
-  WorkflowBindThread,
   WorkflowCancelItem,
   WorkflowCompleteTakeover,
   WorkflowCreateItemPR,
@@ -743,7 +732,6 @@ export {
   WorkflowSetGlobalPause,
   WorkflowStartRun,
   WorkflowTakeOverUnit,
-  WorkflowUnbindThread,
 
   // Build-time stamped binary version (Settings footer).
   Version,
@@ -761,7 +749,7 @@ export {
 } from '../../../bindings/agent-overflow/internal/provider/models.js';
 
 // Structured response types surfaced to components.
-export type { PastThreadsCursor, PastThreadsPage } from '../../../bindings/agent-overflow/internal/store/models.js';
+export type { PastThreadsCursor } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
   ChatBarFavorite,
   ThreadFindSince,
@@ -778,7 +766,6 @@ export {
 } from '../../../bindings/agent-overflow/internal/provideraccountapp/models.js';
 export {
   UsageResetOption as ProviderAccountResetOption,
-  UsageResets as ProviderAccountResets,
 } from '../../../bindings/agent-overflow/internal/provideraccounts/models.js';
 export { EditorSettings } from '../../../bindings/agent-overflow/internal/settings/models.js';
 export {
@@ -788,7 +775,6 @@ export {
   ManagedProviderAccount,
   CodexAccountUsage,
   EditorInfo,
-  GitWorkspaceState,
   GitStatusSubscriptionResult,
   MCPAuthInitResult,
   ReleaseSummary,
@@ -797,14 +783,12 @@ export {
   ThreadMCPServer,
   BrowserCompanionAction,
   BrowserFindAction,
-  BackgroundKillAgent,
   BusyThread,
   WorkspaceActivity,
   WorktreeStatus,
   ThreadWakeRow,
   ThreadWakes,
   ThreadAgentRow,
-  PastAgentRows,
   ThreadAgentStop,
   StandingAgentWakes,
   ThreadWakeDetail,
@@ -824,7 +808,6 @@ export {
 } from '../../../bindings/agent-overflow/internal/keybindings/models.js';
 export {
   Appearance as ThemeAppearance,
-  File as ThemeFile,
   Files as ThemeFiles,
 } from '../../../bindings/agent-overflow/internal/theme/models.js';
 export {
@@ -861,7 +844,6 @@ export type {
   AccessOverview,
   AccessDevice,
   AccessSession,
-  AccessAuditEntry,
   PendingPairing,
   PairingInvite,
   PairingStatusView,
@@ -1046,16 +1028,6 @@ export function RegisterQueueItem(
 export function GetQueueState(threadId: string): Promise<WireQueuedItem[]> {
   return GetQueueStateRaw(threadId) as unknown as Promise<WireQueuedItem[]>;
 }
-
-// Turn lifecycle `Turn` model is re-exported from the generated
-// bindings. ListRecentTurns itself is re-exported in the main import
-// block above. The frontend treats `completedAt=null` as historical
-// in-flight (crash/interrupt); only a live `provider:turn_started`
-// push writes into the global active-turn registry
-// (threadStatuses.svelte.ts → getActiveTurn). See
-// docs/architecture/invariants.md #22 and turn-lifecycle.md §Frontend
-// state shape.
-export { Turn } from '../../../bindings/agent-overflow/internal/store/models.js';
 
 // Usage-accounting models. `GetUsageStats` takes a `UsageQuery` class
 // instance (construct with `new UsageQuery({...})` — omitted fields

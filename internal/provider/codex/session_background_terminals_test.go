@@ -11,11 +11,6 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// backgroundTerminalTestTimeout bounds every wait in this file. Generous
-// on purpose: a passing test never waits, and only a hang pays it — a
-// tighter bound just turns a slow `-race` build into a flake.
-const backgroundTerminalTestTimeout = 15 * time.Second
-
 // backgroundTerminalRequestFrame is the decoded outbound wire frame the
 // per-row background-terminal RPCs write. Only the fields the tests
 // assert on are modelled; decoding rather than string-matching keeps the

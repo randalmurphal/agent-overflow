@@ -75,7 +75,8 @@ export function classify(path, harnessPackages) {
 const reads = {
   'go-checks': ['go', 'go-test', 'frontend'],
   'go-lint': ['go', 'go-test'],
-  frontend: ['frontend', 'frontend-test'],
+  // knip reads the Playwright suite's imports of frontend source.
+  frontend: ['frontend', 'frontend-test', 'e2e'],
   vitest: ['frontend', 'frontend-test', 'go'],
   e2e: ['frontend', 'go', 'e2e'],
 };

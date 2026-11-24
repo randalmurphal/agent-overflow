@@ -1341,46 +1341,6 @@ func appendFileAttachmentLines(providerContent string, fileLines []string) strin
 	return b.String()
 }
 
-// nextSequenceForScope returns the next available sequence number for
-// `user:<turnIndex>:<scope>:<n>` ids on the given thread/turn. Used
-// by both the steer (`:steer:<n>`) and flush (`:flush:<n>`) paths to
-// allocate non-colliding mid-turn user-message ids without each
-// repeating the same MAX-by-suffix scan.
-//
-// Returns 1 on an empty turn (highest+1 with highest=0). Unparsable
-// suffixes are skipped so a future id-format extension doesn't crash
-// this counter.
-func (a *App) nextSequenceForScope(threadID string, turnIndex int, scope string) (int, error) {
-	prefix := fmt.Sprintf("user:%d:%s:", turnIndex, scope)
-	ids, err := a.store.TurnItemIDsWithPrefix(threadID, turnIndex, prefix)
-	if err != nil {
-		return 0, err
-	}
-	highest := 0
-	for _, id := range ids {
-		var n int
-		if _, scanErr := fmt.Sscanf(id[len(prefix):], "%d", &n); scanErr != nil {
-			continue
-		}
-		if n > highest {
-			highest = n
-		}
-	}
-	return highest + 1, nil
-}
-
-// nextSequencedUserItemID formats the next sequenced id for the given
-// scope (`steer` or `flush`). Wrapper around nextSequenceForScope so
-// callers that want the formatted id don't have to do their own
-// Sprintf.
-func (a *App) nextSequencedUserItemID(threadID string, turnIndex int, scope string) (string, error) {
-	seq, err := a.nextSequenceForScope(threadID, turnIndex, scope)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("user:%d:%s:%d", turnIndex, scope, seq), nil
-}
-
 // refusePRDraftSource refuses a send through the thread bindings that names
 // a PR's drafts: those are git:operate state, sent to a thread only by
 // SendPRDiffReviewComments.

@@ -41,7 +41,7 @@ func TestThreadTransferFencesUserMutationsUntilCopySeals(t *testing.T) {
 		"archive":            func() error { return archiveThread(a, thread.ID) },
 		"unarchive":          func() error { return mustErr(a.UnarchiveThread(thread.ID)) },
 		"rename":             func() error { return a.RenameThread(thread.ID, "changed") },
-		"model":              func() error { return mustErr(a.UpdateThreadModel(thread.ID, "changed")) },
+		"model":              func() error { return mustErr(a.UpdateThreadModelSelection(thread.ID, thread.Provider, "changed")) },
 		"effort":             func() error { return mustErr(a.UpdateThreadReasoningEffort(thread.ID, "high")) },
 		"fast mode":          func() error { return mustErr(a.UpdateThreadFastMode(thread.ID, true)) },
 		"mode":               func() error { return mustErr(a.UpdateThreadMode(thread.ID, "plan")) },

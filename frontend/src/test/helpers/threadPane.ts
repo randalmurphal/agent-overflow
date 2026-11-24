@@ -87,10 +87,6 @@ export function smoothingNewTailChars(prev: string, cur: string): number {
   return cur.length;
 }
 
-export function designFence(payload: unknown): string {
-  return ['```aoflow-design', JSON.stringify(payload), '```'].join('\n');
-}
-
 export function seedThreadPaneLayout(paneId: string): void {
   setPaneLayoutItemsForTest([{ id: paneId, paneId, kind: 'thread', widthPx: 1 }]);
 }

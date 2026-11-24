@@ -201,8 +201,6 @@ type sessionFixture struct {
 	dead map[string]bool
 	// credential is what PageSessionCredential hands the page.
 	credential string
-	// mutate adjusts the Config before New, for the knobs one test needs.
-	mutate func(*Config)
 }
 
 func newSessionFixture(t *testing.T) *sessionFixture {

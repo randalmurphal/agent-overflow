@@ -1333,9 +1333,9 @@ func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
 		t.Fatal("session not registered after StartSession")
 	}
 
-	updated, err := app.UpdateThreadModel(thread.ID, "claude-fable-5")
+	updated, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "claude-fable-5")
 	if err != nil {
-		t.Fatalf("UpdateThreadModel: %v", err)
+		t.Fatalf("UpdateThreadModelSelection: %v", err)
 	}
 	if updated.Model != "claude-fable-5" {
 		t.Fatalf("updated model = %q", updated.Model)
