@@ -2235,6 +2235,12 @@ func sendTaskNotification(t *testing.T, router *Router, threadID, itemID, taskID
 // envelope's own uuid supplies that identity while keeping the id
 // deterministic, which is what makes a replay an upsert rather than a
 // third row.
+//
+// The frontend's redundant-notification filter has to tell a watch
+// task's event history from an ordinary task's single bell at RENDER
+// time, when the launch row may be windowed out of the pane. Triage
+// therefore copies the launch's watch marker onto every notification row
+// it writes (W1b).
 func TestBackgroundTaskNotification_DistinctUUIDsProduceOneRowEachAndReplayIsIdempotent(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -2242,6 +2248,17 @@ func TestBackgroundTaskNotification_DistinctUUIDsProduceOneRowEachAndReplayIsIde
 	startMonitorLaunch(t, router, "t1", "bg-monitor", "task-monitor")
 
 	sendTaskNotification(t, router, "t1", "bg-monitor", "task-monitor", "uuid-1", "Monitor event 1")
+	first := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(first) != 1 {
+		t.Fatalf("expected 1 notification row, got %d", len(first))
+	}
+	meta := decodeItemMetaMap(t, first[0].Meta)
+	if meta["watch_task"] != true {
+		t.Fatalf("notification meta watch_task = %v, want true (meta=%s)", meta["watch_task"], first[0].Meta)
+	}
+	if meta["uuid"] != "uuid-1" {
+		t.Fatalf("notification meta uuid = %v, want uuid-1", meta["uuid"])
+	}
 	sendTaskNotification(t, router, "t1", "bg-monitor", "task-monitor", "uuid-2", "Monitor event 2")
 
 	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
@@ -2288,31 +2305,6 @@ func TestBackgroundTaskNotification_WithoutUUIDStillUpsertsOneRowPerTask(t *test
 	}
 	if notifications[0].Summary != "Legacy event 2" {
 		t.Fatalf("legacy notification summary = %q, want the latest", notifications[0].Summary)
-	}
-}
-
-// The frontend's redundant-notification filter has to tell a watch
-// task's event history from an ordinary task's single bell at RENDER
-// time, when the launch row may be windowed out of the pane. Triage
-// therefore copies the launch's watch marker onto every notification row
-// it writes (W1b).
-func TestBackgroundTaskNotification_StampsWatchTaskOntoNotificationMeta(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-	startMonitorLaunch(t, router, "t1", "bg-monitor", "task-monitor")
-	sendTaskNotification(t, router, "t1", "bg-monitor", "task-monitor", "uuid-1", "Monitor event 1")
-
-	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
-	if len(notifications) != 1 {
-		t.Fatalf("expected 1 notification row, got %d", len(notifications))
-	}
-	meta := decodeItemMetaMap(t, notifications[0].Meta)
-	if meta["watch_task"] != true {
-		t.Fatalf("notification meta watch_task = %v, want true (meta=%s)", meta["watch_task"], notifications[0].Meta)
-	}
-	if meta["uuid"] != "uuid-1" {
-		t.Fatalf("notification meta uuid = %v, want uuid-1", meta["uuid"])
 	}
 }
 

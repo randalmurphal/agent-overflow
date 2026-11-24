@@ -114,29 +114,13 @@ func TestHandleInit_PendingSendPresent_FiresHandleTurnStart(t *testing.T) {
 	if payload.ThreadID != "t1" {
 		t.Errorf("payload.ThreadID = %q, want t1", payload.ThreadID)
 	}
-}
 
-// TestHandleInit_PendingSendPresent_DoesNotConsumeIt locks in the
-// invariant that handleInit only GATES on the pending-send marker — it
-// does not pop it. The pop happens in handleUserText when the matching
-// replay envelope arrives. Popping here would race the wire user-text
-// envelope and either leave a stranded marker (if pop here) or leak a
-// double-consume into handleUserText (if the order swaps), breaking the
-// AO/wire correlation.
-func TestHandleInit_PendingSendPresent_DoesNotConsumeIt(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  "t1",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("handle init: %v", err)
-	}
-
+	// handleInit only GATES on the pending-send marker — it does not pop
+	// it. The pop happens in handleUserText when the matching replay
+	// envelope arrives. Popping here would race the wire user-text
+	// envelope and either leave a stranded marker (if pop here) or leak a
+	// double-consume into handleUserText (if the order swaps), breaking
+	// the AO/wire correlation.
 	if !router.HasPendingSendForThread("t1") {
 		t.Fatal("handleInit must NOT consume the pending-send marker — pop is owned by handleUserText")
 	}

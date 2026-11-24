@@ -157,24 +157,21 @@ func TestCommandOutputReplaceOverridesEarlierDeltas(t *testing.T) {
 	}
 }
 
-func TestCommandOutputMetaStoresCompactFailureMessage(t *testing.T) {
-	meta := ExtractCommandOutputMetaWithError(
-		"setup\npanic: boom\nstack trace line",
-		"go test",
-		1,
-		"\x1b[31mpermission denied\x1b[0m\nwhile opening file",
-	)
-
-	if meta.ErrorMessage != "permission denied while opening file" {
-		t.Fatalf("errorMessage = %q", meta.ErrorMessage)
-	}
-}
-
-func TestCommandOutputMetaFallsBackToOutputTailForNonZeroExit(t *testing.T) {
-	meta := ExtractCommandOutputMetaWithError("ok\nmissing file\n", "cat missing", 2, "")
-
-	if meta.ErrorMessage != "ok missing file" {
-		t.Fatalf("errorMessage = %q", meta.ErrorMessage)
+func TestCommandOutputMetaErrorMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name, output, command string
+		exitCode              int
+		stderr, want          string
+	}{
+		{"compact stderr failure message", "setup\npanic: boom\nstack trace line", "go test", 1,
+			"\x1b[31mpermission denied\x1b[0m\nwhile opening file", "permission denied while opening file"},
+		{"output tail for non-zero exit", "ok\nmissing file\n", "cat missing", 2, "", "ok missing file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExtractCommandOutputMetaWithError(tc.output, tc.command, tc.exitCode, tc.stderr).ErrorMessage; got != tc.want {
+				t.Fatalf("errorMessage = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
