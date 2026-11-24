@@ -262,6 +262,9 @@ go-test: netns-tool gocache-trim-tool
 # GO_TEST_FLAGS adds flags as for go-test, but not tags: this target owns
 # them, and a caller's tags would replace noremote.
 GO_FILE_SET := {{.ImportPath}} {{.GoFiles}} {{.CgoFiles}} {{.CFiles}} {{.CXXFiles}} {{.HFiles}} {{.SFiles}} {{.SysoFiles}} {{.EmbedFiles}} {{.TestGoFiles}} {{.XTestGoFiles}} {{.TestEmbedFiles}} {{.XTestEmbedFiles}}
+# GO_FILE_SETS_DIFFER reads two GO_FILE_SET listings of the same packages
+# and prints each package whose line is not in both.
+GO_FILE_SETS_DIFFER := sort | uniq -u | cut -d' ' -f1 | sort -u
 GO_TEST_MAINS := {{if eq .Name "main"}}{{.ImportPath}}{{range .Deps}}|{{.}}{{end}}{{"\n"}}{{end}}
 go-test-noremote:
 	@set -e; \
@@ -270,7 +273,7 @@ go-test-noremote:
 	plain=$$(go list -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS)); \
 	tagged=$$(go list -tags noremote -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS)); \
 	mains=$$(go list -tags noremote -test -f '$(GO_TEST_MAINS)' $(GO_PACKAGE_ROOTS)); \
-	differ=$$(printf '%s\n%s\n' "$$plain" "$$tagged" | sort | uniq -u | cut -d' ' -f1 | sort -u); \
+	differ=$$(printf '%s\n%s\n' "$$plain" "$$tagged" | $(GO_FILE_SETS_DIFFER)); \
 	packages=$$(printf '%s\n' "$$mains" | awk -F'|' -v differ="$$differ" ' \
 		BEGIN { n = split(differ, list, "\n"); for (i = 1; i <= n; i++) changed[list[i]] = 1 } \
 		$$1 ~ /^agent-overflow(\/.*)?\.test$$/ { \
@@ -333,23 +336,23 @@ go-lint-whole-tree: $(GOLANGCI_LINT_BUILD)
 	done
 
 # go-lint-host-files runs exhaustive over the files this host compiles and
-# Linux does not, which go-lint-whole-tree on Linux cannot read: CI's macOS
-# job runs it. It lints every package this host compiles whose file set
-# (GO_FILE_SET) differs from Linux's, so a package gains or loses the pass
-# with its files and the other packages are read as compiled dependencies,
-# not type-checked from source. A switch outside those packages over an enum
-# that gains a constant in a file only this host compiles is not read.
-GO_HAS_FILES := {{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles}}$(GO_FILE_SET){{end}}
+# the lint job's Linux does not, which go-lint-whole-tree there cannot read:
+# CI's macOS job runs it. It lints every package this host compiles whose
+# file set (GO_FILE_SET) differs from linux/amd64's, so a package gains or
+# loses the pass with its files. A switch outside those packages over an
+# enum that gains a constant in a file only this host compiles is not read;
+# TestNoFileOnlyMacOSCompilesAddsAnExportedEnumConstant fails for such a
+# constant.
+GO_HAS_FILES := {{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}
 go-lint-host-files: $(GOLANGCI_LINT_BUILD)
 	@set -e; \
-	host=$$(go list -f '$(GO_HAS_FILES)' $(GO_PACKAGE_ROOTS)); \
-	linux=$$(GOOS=linux CGO_ENABLED=1 go list -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS)); \
-	packages=$$({ printf '%s\n' "$$linux" | sed 's/^/linux /'; printf '%s\n' "$$host" | sed 's/^/host /'; } | awk ' \
-		$$1 == "linux" { sub(/^linux /, ""); onLinux[$$0] = 1; next } \
-		{ sub(/^host /, ""); if ($$0 != "" && !($$0 in onLinux)) print $$1 }' | \
-		sort -u | sed -e 's|^agent-overflow$$|.|' -e 's|^agent-overflow/|./|'); \
-	if [ -z "$$packages" ]; then echo "ERROR: no package's files differ between this host and Linux"; exit 1; fi; \
-	echo "go-lint-host-files: $$(echo "$$packages" | wc -l) packages:" $$packages; \
+	host=$$(go list -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS)); \
+	linux=$$(GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go list -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS)); \
+	compiled=$$(go list -f '$(GO_HAS_FILES)' $(GO_PACKAGE_ROOTS)); \
+	differ=$$(printf '%s\n%s\n' "$$host" "$$linux" | $(GO_FILE_SETS_DIFFER)); \
+	packages=$$(printf '%s\n%s\n' "$$differ" "$$compiled" | sort | uniq -d | sed -e 's|^agent-overflow$$|.|' -e 's|^agent-overflow/|./|'); \
+	if [ -z "$$packages" ]; then echo "ERROR: no package's files differ between this host and linux/amd64"; exit 1; fi; \
+	echo "go-lint-host-files:" $$(echo "$$packages" | wc -l) "packages:" $$packages; \
 	$(GO_LINT_WHOLE_TREE) --enable-only exhaustive $$packages
 
 go-vet:
