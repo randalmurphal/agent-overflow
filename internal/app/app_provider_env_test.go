@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/aocli"
+	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provideraccounts"
@@ -498,5 +499,31 @@ func TestASavedReservedProviderVariableIsReportedByTheBoot(t *testing.T) {
 	}
 	if len(reported) != 1 || !strings.HasPrefix(reported[0], want) || strings.Contains(reported[0], "/tmp/") {
 		t.Fatalf("boot failures = %q, want one starting %q and naming no value", progress.failures(), want)
+	}
+}
+
+// Model discovery runs the build a session runs, so it carries the person's
+// Codex environment. It is a probe, so the harness control credentials a
+// session gets stay out: a catalog app-server that registered as a mock
+// would be the mock a spec waits for, and it exits once the list is read.
+func TestCodexCatalogLaunchCarriesCustomEnvAndNoControlChannel(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "codex", "CODEX_PICK", "1", false); err != nil {
+		t.Fatal(err)
+	}
+	app.providerExtraEnv = map[string]string{control.EnvAddr: "127.0.0.1:1", control.EnvToken: "secret"}
+
+	launch := app.codexCatalogLaunch("/opt/codex")
+	if launch.Binary != "/opt/codex" || launch.WorkDir != providerProbeWorkDir() {
+		t.Fatalf("launch = %+v, want the binary in the probe home", launch)
+	}
+	if launch.Env["CODEX_PICK"] != "1" {
+		t.Fatalf("catalog env = %#v, want the custom Codex environment", launch.Env)
+	}
+	for _, name := range []string{control.EnvAddr, control.EnvToken} {
+		if _, ok := launch.Env[name]; ok {
+			t.Fatalf("catalog env carries %s: %#v", name, launch.Env)
+		}
 	}
 }

@@ -67,13 +67,7 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 				return a.ensureProviderAccountManager().CheckAgyTransferAccount(ctx, binary)
 			},
 			RememberClaudeCatalog: a.rememberClaudeCatalog,
-			CodexLaunch: func(binary string) codexmodels.Launch {
-				return codexmodels.Launch{
-					Binary:  binary,
-					WorkDir: providerProbeWorkDir(),
-					Env:     a.sessionProcessEnv(string(provider.Codex), nil),
-				}
-			},
+			CodexLaunch:           a.codexCatalogLaunch,
 			ProbeAgyModels: func(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
 				// One decision for both: a warm server on this home, or a
 				// temporary one started on it.
@@ -194,3 +188,16 @@ func (a *App) providerLifecycleService() *providerlifecycleapp.Service {
 }
 
 var _ provideraccountapp.UsageBackoff = (*providerlifecycleapp.Service)(nil)
+
+// codexCatalogLaunch is how model discovery starts Codex: the binary a
+// session runs, with the person's Codex environment, so a launcher that
+// picks a build from its environment picks the one a session gets. It is a
+// probe, so it leaves out providerExtraEnv: a harness control registration
+// for it would be a mock nothing addresses.
+func (a *App) codexCatalogLaunch(binary string) codexmodels.Launch {
+	return codexmodels.Launch{
+		Binary:  binary,
+		WorkDir: providerProbeWorkDir(),
+		Env:     a.providerCustomEnv(string(provider.Codex)),
+	}
+}

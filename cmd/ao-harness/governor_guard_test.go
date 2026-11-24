@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/harness/governor"
 	"agent-overflow/internal/harness/instanceinfo"
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 // testConfigBase is the private HOME and XDG_CONFIG_HOME TestMain sets for
@@ -24,6 +25,10 @@ var testConfigBase string
 // It also points the OS config lookup at a private temp tree for the whole
 // process, so no test can resolve the developer's real app data and
 // configRootFixture needs no per-test Setenv (which would forbid t.Parallel).
+//
+// The package links provider code (the scenario validator reads Codex
+// versions with the provider grammar), so the run is guarded by the
+// providerpath poison like every other such test binary.
 func TestMain(m *testing.M) {
 	configBase, err := os.MkdirTemp("", "ao-harness-test-config-")
 	testConfigBase = configBase
@@ -43,7 +48,7 @@ func TestMain(m *testing.M) {
 		reached.CompareAndSwap(nil, &stack)
 		return "", errors.New("test reached the host-wide harness governor directory")
 	}
-	code := m.Run()
+	code := providerpath.Guard(m.Run)
 	if stack := reached.Load(); stack != nil {
 		fmt.Fprintf(os.Stderr, "a test reached the host-wide harness governor directory:\n%s", *stack)
 		code = 1
