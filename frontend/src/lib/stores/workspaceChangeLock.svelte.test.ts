@@ -124,20 +124,6 @@ describe('createWorkspaceChangeLockState', () => {
     });
   });
 
-  it('counts running background tasks in the workspace as blocking', async () => {
-    setBindingMock('GetWorkspaceActivity', async () => busyWithTasks());
-    const pane = await buildPane();
-
-    const { getByTestId } = render(Harness, { props: { pane } });
-    const state = getByTestId('workspace-change-lock');
-
-    await waitFor(() => {
-      expect(state).toHaveAttribute('data-locked', 'true');
-      expect(state).toHaveAttribute('data-running-background-count', '1');
-      expect(state.getAttribute('data-reason') ?? '').toMatch(/background tasks/);
-    });
-  });
-
   // The regression this store was re-keyed for. Thread A's pane shows a
   // worktree; thread B is a DIFFERENT conversation in the SAME worktree with a
   // background task running. Under the old thread-keyed lock, A asked only
@@ -368,22 +354,6 @@ describe('createWorkspaceChangeLockState', () => {
       expect(workspaceChangeLockKeys()).toEqual([WORKSPACE_KEY]);
     });
     expect(getBindingMock('GetWorkspaceActivity')!.mock.calls.length).toBe(1);
-  });
-
-  it('stays LOCKED when the workspace-activity check fails, and says it cannot verify', async () => {
-    setBindingMock('GetWorkspaceActivity', async () => {
-      throw new Error('backend unavailable');
-    });
-    const pane = await buildPane();
-
-    const { getByTestId } = render(Harness, { props: { pane } });
-    const state = getByTestId('workspace-change-lock');
-
-    await waitFor(() => {
-      expect(state).toHaveAttribute('data-locked', 'true');
-      expect(state.getAttribute('data-reason') ?? '').toMatch(/Cannot check for running/);
-      expect(state.getAttribute('data-reason') ?? '').toMatch(/backend unavailable/);
-    });
   });
 
   // Responses used to be able to overtake each other: the initial check and

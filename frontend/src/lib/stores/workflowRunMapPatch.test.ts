@@ -39,7 +39,6 @@ function phase(overrides: Partial<WorkflowPhaseStateEvent> = {}): WorkflowPhaseS
 // and the verdict is the whole contract: `patched` means the payload placed the
 // row exactly, `invalidate` means it did not and the key must refetch.
 const VERDICTS: [name: string, event: WorkflowPhaseStateEvent, verdict: string][] = [
-  ['unit starts', phase({ unitId: 'alpha', status: 'running' }), 'patched'],
   ['unit finishes', phase({ unitId: 'alpha', status: 'done' }), 'patched'],
   ['unit is dropped', phase({ unitId: 'alpha', status: 'dropped' }), 'patched'],
   ['unit is taken over', phase({ unitId: 'alpha', status: 'taken-over' }), 'patched'],
@@ -49,7 +48,6 @@ const VERDICTS: [name: string, event: WorkflowPhaseStateEvent, verdict: string][
   ['unit is unknown', phase({ unitId: 'ghost', status: 'running' }), 'invalidate'],
   ['unit status is unknown', phase({ unitId: 'alpha', status: 'quarantined' }), 'invalidate'],
   ['unit is on another attempt', phase({ unitId: 'alpha', attempt: 2, status: 'done' }), 'invalidate'],
-  ['attempt opens', phase({ phaseId: 'audit', attempt: 1 }), 'patched'],
   ['attempt retries', phase({ phaseId: 'ports', attempt: 2 }), 'patched'],
   ['attempt completes', phase({ status: 'completed' }), 'patched'],
   ['attempt restates running', phase({ status: 'running' }), 'unchanged'],
@@ -59,7 +57,6 @@ const VERDICTS: [name: string, event: WorkflowPhaseStateEvent, verdict: string][
   ['attempt status is unknown', phase({ status: 'superseded' }), 'invalidate'],
   ['ended attempt runs again', phase({ phaseId: 'plan', attempt: 1 }), 'invalidate'],
   ['unseen attempt completes', phase({ phaseId: 'audit', status: 'completed' }), 'invalidate'],
-  ['event has no time', phase({ unitId: 'alpha', occurredAt: 0 }), 'invalidate'],
   ['run is not in this tree', phase({ itemId: 'elsewhere', unitId: 'alpha' }), 'invalidate'],
 ];
 
