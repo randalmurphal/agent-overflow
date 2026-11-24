@@ -208,7 +208,7 @@ func (m *Manager) emitUnauthenticatedIfNoLogin(r ProbeRequest, info provider.Acc
 // claudeIdentifier replaces a Claude probe's reported identity with the one
 // that belongs to credential: identifyClaudeCredential, or for a caller not
 // holding mu, identifyCanonicalClaudeCredential.
-type claudeIdentifier func(info provider.AccountInfo, credential []byte) (provider.AccountInfo, error)
+type claudeIdentifier func(ctx context.Context, info provider.AccountInfo, credential []byte) (provider.AccountInfo, error)
 
 // runStableAccountProbe pairs provider identity with one stable canonical
 // credential value. A provider may legitimately rotate credentials while its
@@ -270,7 +270,7 @@ func (m *Manager) runStableAccountProbe(
 			// its workspace id in the credential, and Claude's comes from the
 			// API for the credential's own access token.
 			if providerName == string(provider.Claude) {
-				info, err = identifyClaude(info, after.Bytes())
+				info, err = identifyClaude(m.context(), info, after.Bytes())
 				if err != nil {
 					return provider.AccountInfo{}, nil, err
 				}

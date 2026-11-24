@@ -193,6 +193,8 @@ func (a *App) startBeforeClients() []bootStep {
 		// Every prompt file here belongs to a process that exited without
 		// closing its sessions.
 		a.reportedBootStep("", "", func() error { return sweepClaudePromptFiles(a.configDir) }),
+		// Before any provider process starts without them.
+		a.reportedBootStep("settings.reserved_provider_env", "Applying saved provider environment variables", a.reportReservedProviderEnv),
 	}
 	steps = append(steps, a.providerAccountBootSteps()...)
 	return append(steps,

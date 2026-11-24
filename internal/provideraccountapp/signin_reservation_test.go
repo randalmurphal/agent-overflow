@@ -1,6 +1,7 @@
 package provideraccountapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"go/parser"
@@ -154,7 +155,7 @@ func TestEveryNewAccountIsReservedOnDiskBeforeItsSlotIsWritten(t *testing.T) {
 		run  func(t *testing.T, manager *Manager, store *provideraccounts.Store, credentials *provideraccounts.Credentials) string
 	}{
 		{name: "first sign-in", run: func(t *testing.T, manager *Manager, _ *provideraccounts.Store, credentials *provideraccounts.Credentials) string {
-			result, err := manager.adoptLogin(completedLogin(t, manager, credentials, claudeLoginAs("first@example.com", "first", sessionEnd)))
+			result, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, credentials, claudeLoginAs("first@example.com", "first", sessionEnd)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -162,7 +163,7 @@ func TestEveryNewAccountIsReservedOnDiskBeforeItsSlotIsWritten(t *testing.T) {
 		}},
 		{name: "sign-in beside the selected account", run: func(t *testing.T, manager *Manager, store *provideraccounts.Store, credentials *provideraccounts.Credentials) string {
 			seedClaudeAccounts(t, manager, store, credentials, claudeLogin("current", sessionEnd), "other", claudeLogin("other", sessionEnd))
-			result, err := manager.adoptLogin(completedLogin(t, manager, credentials, claudeLoginAs("new@example.com", "new", sessionEnd)))
+			result, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, credentials, claudeLoginAs("new@example.com", "new", sessionEnd)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -230,7 +231,7 @@ func TestAFailedSignInSettlesItsOwnReservation(t *testing.T) {
 	refused := errors.New("refused for the test")
 	store.GuardSelection(func(string, string, string) error { return refused })
 
-	_, err := manager.adoptLogin(completedLogin(t, manager, credentials, fresh))
+	_, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, credentials, fresh))
 	if !errors.Is(err, refused) {
 		t.Fatalf("adoptLogin error = %v, want the refused insert", err)
 	}
@@ -261,7 +262,7 @@ func TestASignInWhoseReservationCannotBeSavedWritesNoSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	_, err := manager.adoptLogin(attempt)
+	_, err := manager.adoptLogin(context.Background(), attempt)
 	if err == nil || !strings.Contains(err.Error(), "reserve a new claude account id") {
 		t.Fatalf("adoptLogin error = %v, want the reservation's failure", err)
 	}

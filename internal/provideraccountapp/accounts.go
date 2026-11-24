@@ -1,6 +1,7 @@
 package provideraccountapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -705,21 +706,24 @@ func describeLoginExpiry(providerName string, credential []byte) string {
 	return time.UnixMilli(expiresAt).Format(time.RFC3339)
 }
 
-func (m *Manager) probeProviderAccountAtHome(providerName, binary, home string) (provider.AccountInfo, error) {
+func (m *Manager) probeProviderAccountAtHome(ctx context.Context, providerName, binary, home string) (provider.AccountInfo, error) {
 	switch providerName {
 	case string(provider.Claude):
-		return claude.ProbeAccount(m.context(), m.claudeProbeConfig(
+		return claude.ProbeAccount(ctx, m.claudeProbeConfig(
 			binary,
 			map[string]string{"CLAUDE_CONFIG_DIR": home},
 		))
 	case string(provider.Codex):
-		return codex.ProbeAccount(m.context(), m.codexProbeConfig(
+		return codex.ProbeAccount(ctx, m.codexProbeConfig(
 			binary,
 			map[string]string{"CODEX_HOME": home},
 		))
 	case string(provider.Agy):
-		geminiDir, appDataSubdir := splitAgyEphemeralHome(home)
-		return agy.ProbeAccount(m.context(), m.agyProbeConfig(binary, geminiDir, appDataSubdir, nil))
+		isolated, err := agy.IsolatedHome(home)
+		if err != nil {
+			return provider.AccountInfo{}, err
+		}
+		return agy.ProbeAccount(ctx, m.agyProbeConfig(binary, isolated.Source(), m.providerCustomEnv(providerName)))
 	default:
 		return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
 	}

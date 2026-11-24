@@ -1,7 +1,7 @@
 # Standing agents
 
 Status: design signed off 2026-10-10; assistant identity and creation
-(rulings 22 to 29) signed off 2026-10-15. The build is split
+(rulings 22 to 28) signed off 2026-10-15. The build is split
 into the slices in [Slices and verification](#slices-and-verification);
 each lands as its own pull request against the `personal-assistant`
 branch and nothing merges without the user's review.
@@ -217,10 +217,6 @@ Rulings of 2026-10-15 (slice 14):
 28. **An assistant's workers open beside it.** An Agents row opens its
     thread in one companion pane beside the current pane, with that
     thread's own composer and Stop.
-29. **Interrupt and end session are two actions.** Wherever an assistant
-    thread or a workflow pause offers Stop, Interrupt stops the turn and
-    keeps the session, and End Session ends the process and its
-    background items.
 
 Rulings of 2026-10-16 (sidebar hierarchy):
 
@@ -1240,7 +1236,7 @@ thread:
    `cancelled: thread "<title>" stopped the thread`) and dismisses the
    remote completions its agent has not taken in, queued or not.
 3. Pauses every workflow run that reports to it (bound to it, whoever
-   started the run and whatever its source), with Pause and End Sessions ([Interrupt and end session](#interrupt-and-end-session)):
+   started the run and whatever its source), with Pause and End Sessions ([Workflow pause and end sessions](#workflow-pause-and-end-sessions)):
    the run reads paused, its members' sessions end, and it stays bound
    to the thread and resumable from the workflows view. The run's wakes
    to the thread are held from before anything moves it, so the rest the
@@ -1261,9 +1257,9 @@ thread:
    None is queued again.
 5. Under the action lock every send and start takes, cuts its turn with
    the stop row (`Stopped by user`, or `Stopped by thread "<title>"`)
-   and ends its session as End Session does, a thread with no session
-   included: the provider process and everything it runs (background
-   shells, subagents, terminals and provider timers) end, its background
+   and ends its session as `StopSession` does, a thread with no session
+   included: the session and everything it runs (background shells,
+   subagents, terminals and provider timers) end, its background
    items read as ended, its open prompts close and its unanswered async
    questions are dismissed, their wakes routed to its spawner withdrawn,
    and the messages the person queued in its composer are dropped with
@@ -1573,14 +1569,24 @@ instead and arrives once the thread is unarchived
 request's queued answer or reminder goes back to its request, owed and
 disarmed, as the archive leaves the thread's undelivered requests
 ([agent-thread-tools.md](agent-thread-tools.md)). An Interrupt stops the turn and leaves the queue, which is delivered
-after it. An End Session or a revert drops the whole queue, and returns
-these two kinds the same way once the queue is gone: an answer or reminder to its request, owed and
-disarmed, so `thread_status` still returns it; a remote job's
-completion to its watch, whose watcher delivers it again and starts the
-session for it, as for a completion that finishes after the session ended. Ending the
-session does not quiet later wakes. An End Session or an archive that
-ends a session holding such an answer or completion, handed to the provider
-and not confirmed, returns it too; a person's text joined with it stays
+after it. `StopSession` (which a workflow's Pause and End Sessions runs
+for each member with a live session; a member without one keeps its
+queue) drops the whole queue, and returns these
+two kinds the same way once the queue is gone: an answer or reminder to
+its request, owed and disarmed, so `thread_status` still returns it; a
+remote job's completion to its watch, whose watcher delivers it again
+and starts the session for it, as for a completion that finishes after
+the session ended. A rest dismisses the completion instead
+([At rest](#at-rest)). A revert runs `StopSession` first, except on
+Codex. A Codex revert drops what its dispatch had already taken from the
+queue and returns the answers and completions among it the same way. An
+answer, reminder or completion still waiting in the queue stays queued
+for the session a live in-place cut keeps, and is delivered after the
+cut; a cut that ends the session drops it through that `StopSession`,
+which returns it as above. Ending the session does not quiet later wakes.
+`StopSession` or an archive that ends a session holding such an answer
+or completion, handed to the provider and not confirmed, returns it
+too, and a rest returns the answer; a person's text joined with it stays
 dropped. A session that ends, or a Codex resend that fails, without
 taking in such an answer or completion, and a restart that finds one
 still queued or handed to the provider and never confirmed, return it
@@ -1592,10 +1598,13 @@ given back may already be in the conversation the next session resumes,
 so it can reach the agent twice. The confirmation is the app's own write
 after the provider's echo, while the provider records the message in its
 session file on its own, so a crash or a session death between the two
-leaves a message the agent holds reading unconfirmed. An End Session or
-an archive drops the unconfirmed sends before it closes the provider, which
-has three seconds to exit once its input closes, and an echo the
-provider sends in that window arrives after the drop and is discarded.
+leaves a message the agent holds reading unconfirmed. `StopSession`, a
+rest and an archive drop the unconfirmed sends and then close the
+session, so an echo the provider sends while the session closes arrives
+after the drop and is discarded. A close that ends the provider process
+(a Claude session; a Codex app-server once no other thread holds it
+and its idle grace has passed)
+gives it three seconds to exit once its input closes.
 That cost is accepted: a request that reads owed and a watch that reads
 pending, with nothing lost, outrank a line the agent may already have
 seen. A completion a
@@ -1604,9 +1613,9 @@ ladder a request's undelivered wake is retried on, doubling from half
 a minute towards ten minutes for eight attempts, so a session that keeps
 ending before it takes the completion in is not restarted every few
 seconds; after the last attempt the watch is dismissed with the reason,
-and `remote_jobs` still returns the result. One that an End Session, an
-archive, a revert or a restart returned is delivered at the watcher's
-next poll. A session teardown and a revert drop the queue under the
+and `remote_jobs` still returns the result. One that `StopSession`, a
+revert or a restart returned is delivered at the watcher's next poll.
+Every drop of the queue, a session teardown's or a revert's, runs under the
 thread's mutation lock, which every queue write takes, so a message queued
 during the drop is either dropped with it or queued after it.
 An archived thread takes none of these messages and starts no session
@@ -1641,8 +1650,8 @@ unconfirmed by a session that ended, is discarded and its row records
 (capped at 64 KiB), which `thread_status` shows, so the agent can
 recover the event at its next wake; a loop needs nothing beyond the
 row. An outside `thread send` message is handled the same way, with a
-`not delivered` row in the thread's timeline; so is one an End Session, an
-archive or a revert takes out of the queue. When Claude
+`not delivered` row in the thread's timeline; so is one `StopSession`,
+a rest, an archive or a revert takes out of the queue. When Claude
 received a wake or an outside send joined with a person's queued
 message and the session ended before taking it in, the join is split:
 the person's own text goes back to the composer, and the wake and send
@@ -2222,9 +2231,12 @@ closes up their spacing so the row holds at a phone width.
   read is not stopped. The Stops of rows
   here start at once, beside those that wait on a paired computer.
   Background's `Stop All` and Stop background work leave Agents rows
-  alone. The thread's own Interrupt leaves its requests and its queue,
-  the incoming rows with it; End Session clears the incoming rows with
-  the rest of the queue, given back as a queue drop does.
+  alone. The composer's Stop interrupts the turn and leaves the thread's
+  requests and its queue, the incoming rows with it. A rest settles the
+  requests on the thread ([At rest](#at-rest)). `StopSession` returns a
+  queued answer to its request ([Wake supervisor](#wake-supervisor)) and
+  queues again a request its session had not taken in, so that row stays
+  ([request recovery](agent-thread-tools.md#wakes-q7-q8-q15-q25)).
 - **Other computers.** A spawn on a paired computer lists and stops as a
   local one: the forwarded `agent_rows` and `agent_stop` calls
   ([reaching another computer](agent-thread-tools.md#reaching-another-computer)) nest that
@@ -2404,28 +2416,17 @@ so. An agent message's sender chip opens in the focused pane under the
 same rule. Under the compact layout the pane is a screen of the
 strip like any companion.
 
-#### Interrupt and end session
+#### Workflow pause and end sessions
 
-Ruling 29. In an assistant's current thread, wherever the thread offers
-Stop it offers two actions: Interrupt (`InterruptTurn`), which stops the
-turn and keeps the session, and End Session (`StopSession`), which ends
-the provider process with its background agents and shells. The
-composer's Stop is Interrupt with a menu beside it holding both; the
-working indicator's Stop is Interrupt; the menu stays beside Send while
-no turn runs, with Interrupt disabled and End Session available, since
-an idle session can still hold background work. End Session is
-disabled, titled "No session is running", while the thread has no
-session live or starting (`provider:session_live`, capability
-`session-live.v1`, restated by `ListThreadLiveActivity`'s
-`sessionLive`); against a computer that does not publish it, End
-Session stays enabled. A workflow run's Pause is Interrupt for its
-members (it keeps their sessions, as it did); Pause and End Sessions
-also ends the session of every member of the tree that has not ended,
-running or already parked, a running descendant of a parked root
-included, as the engine names them once the pause is made, and Resume
-starts them again on the same provider threads. A Stop that brings a thread to rest
-makes the same Pause and End Sessions of the runs that report to it. The Agents row's Stop on a spawned
-thread brings it to rest ([At rest](#at-rest)), which ends its session.
+A workflow run's Pause interrupts its members' turns and keeps their
+sessions. Pause and End Sessions also ends the session of every member
+of the tree that has not ended, running or already parked, a running
+descendant of a parked root included, as the engine names them once the
+pause is made, and Resume starts them again on the same provider
+threads. A Stop that brings a thread to rest makes the same Pause and
+End Sessions of the runs that report to it. The Agents row's Stop on a
+spawned thread brings it to rest ([At rest](#at-rest)), which ends its
+session.
 
 ### Workflows to MCP
 
@@ -2519,7 +2520,7 @@ ticket keys.
 | 8 | MR lead migration | 2, 3b, 5, 6, 14 | An assistant created for the lead read the old lead thread with `thread_show`, keeps the lead's notes in its home, set its own loop and watches, and ran a week | The user |
 | 9 | Agent home contents | 5, 6 | A standing agent's sessions on Claude, claude-tui and Codex carry the same block whatever the home files hold; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by`. Home file delivery moved to slice 15 | `standing-agent-home-contents.spec.ts` on both mock providers (the session block, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui |
 | 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave for Past, which counts them and pages them 8 and then 20 at a time and back to 8 on Show less, a click opens the target or the answer, Open in Agent Pane opens any row's thread beside and Show in Sidebar gives an owned worker its row; Stop cancels the request for the user with the caller's wake armed and brings a spawned thread to rest, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts`, `agents-tray-past.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (Past, its paging and an ask in it, Open in Agent Pane on a past and an archived worker, Show in Sidebar, a worker's prompt routed to an ordinary spawner, rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; workers owned on another computer (no row, Show in Sidebar and Remove from Sidebar on their own computer, a window attached only to the spawner's, the waiting line, the wake, archive and delete with that computer stopped or older) in `thread-tools-paired.spec.ts`, `thread-tools-three-computers.spec.ts` and `assistants-toggle-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
-| 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v155); promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; Interrupt and End Session are separate for assistant threads and workflow pauses | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff, the companion pane and the Stop menu, desktop and compact |
+| 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v155); promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; a workflow pause can keep or end its members' sessions | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff and the companion pane, desktop and compact |
 | 15 | Memory and assistants above projects | 9, 14 | No built-in skills or Skills page; memory scopes, facts, the built index, a whole delivery per start and compaction with the write rules, what changed at each prompt, nothing cut past the size limit, and maintenance warnings for assistants only ([memory](memory.md)); shared memory and the provider memory settings on Claude, claude-tui and Codex; assistants with projects and no project of their own, running in their home, helpers under the assistant and project work under its row in the project, delete and project removal as ruled (rulings 37 to 40); the Assistants and Projects sidebar sections | Unit tests named in [memory](memory.md#verification); `standing-agent-home-contents.spec.ts`, the standing-agent sidebar and spawn-placement specs and the assistant specs on both mock providers, desktop and compact; screenshots of the Assistants section, an assistant's row in a project and the Projects checklist |
 
 Slices 1 and 3a start together, with the slice 4 spike beside them.

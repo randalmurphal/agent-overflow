@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/mcpapp"
 	"agent-overflow/internal/mcpstatus"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 )
@@ -139,6 +140,9 @@ func (a *App) mcpDeps() mcpapp.Deps {
 		ProviderBinary: a.providerBinaryPath,
 		SessionProcessEnv: func(providerName string) map[string]string {
 			return a.sessionProcessEnv(providerName, nil)
+		},
+		AgyCanonicalHome: func(ctx context.Context) (agy.Home, error) {
+			return a.ensureProviderAccountManager().AgyCanonicalHome(ctx)
 		},
 		ClaudeRetention:      a.claudeRetention,
 		ReadClaudeCredential: a.readClaudeMCPCredential,

@@ -4,11 +4,8 @@
 package app
 
 import (
-	"fmt"
 	"log"
-	"path/filepath"
 
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
 )
@@ -34,27 +31,14 @@ type ClaudeTranscriptRetention struct {
 	Error string `json:"error,omitempty"`
 }
 
-// claudeProcessHome is the home directory a Claude process this backend
-// starts runs under, which holds the config home it sweeps and the user
-// settings file it reads: a HOME the Claude environment sets, else the
-// provider home.
-func (a *App) claudeProcessHome() (string, error) {
-	home, set := a.sessionProcessEnv(string(provider.Claude), nil)["HOME"]
-	if !set {
-		return a.providerHome()
-	}
-	if !filepath.IsAbs(home) {
-		return "", fmt.Errorf("the Claude environment sets HOME to %q, which is not an absolute path", home)
-	}
-	return home, nil
-}
-
 // claudeTranscriptRetention resolves retention against the Claude settings
 // files a process started in workDir reads; an empty workDir is the user
 // file alone. The returned error is a failure to locate the home Claude
 // processes run under; a file that cannot be read is reported in the result.
 func (a *App) claudeTranscriptRetention(retention settings.RetentionSettings, workDir string) (ClaudeTranscriptRetention, error) {
-	home, err := a.claudeProcessHome()
+	// Every Claude process this backend starts runs under the provider home:
+	// a custom environment cannot set HOME (settings.deniedProviderEnvNames).
+	home, err := a.providerHome()
 	if err != nil {
 		return ClaudeTranscriptRetention{}, err
 	}
