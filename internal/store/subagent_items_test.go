@@ -928,24 +928,23 @@ func TestDescendantsWalkTerminatesOnAParentCycle(t *testing.T) {
 	seedItem(t, s, "t", "b", 1, 0, "a")
 	seedItem(t, s, "t", "child", 5, 0, "a")
 
-	within := func(t *testing.T, read func() error) {
+	// The deadline belongs to the read itself, so a walk that never
+	// terminates is interrupted rather than left running past the test.
+	within := func(t *testing.T, read func(q sqlQueryer) error) {
 		t.Helper()
-		done := make(chan error, 1)
-		go func() { done <- read() }()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatal(err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("the descendant walk did not terminate on a parent cycle")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := readSnapshotContext(ctx, s.reader(), "cyclic walk", func(q sqlQueryer) (struct{}, error) {
+			return struct{}{}, read(q)
+		}); err != nil {
+			t.Fatalf("the descendant walk on a parent cycle: %v", err)
 		}
 	}
 
 	t.Run("anchor aggregates", func(t *testing.T) {
-		within(t, func() error {
+		within(t, func(q sqlQueryer) error {
 			roots := []string{"a"}
-			got, err := subagentAggregatesByRound(s.reader(), "t", roots, subagentRoundBoundsFor(roots, nil, nil))
+			got, err := subagentAggregatesByRound(q, "t", roots, subagentRoundBoundsFor(roots, nil, nil))
 			if err != nil {
 				return err
 			}
@@ -956,8 +955,8 @@ func TestDescendantsWalkTerminatesOnAParentCycle(t *testing.T) {
 		})
 	})
 	t.Run("fork subtree", func(t *testing.T) {
-		within(t, func() error {
-			ids, err := timelineSubtreeTx(s.reader(), "t", []string{"a"})
+		within(t, func(q sqlQueryer) error {
+			ids, err := timelineSubtreeTx(q, "t", []string{"a"})
 			if err != nil {
 				return err
 			}
@@ -972,7 +971,10 @@ func TestDescendantsWalkTerminatesOnAParentCycle(t *testing.T) {
 
 // The items key is (thread_id, id), so one id can exist on two threads. The
 // walk re-filters by thread at every hop: a collision on another thread must
-// neither count that thread's rows nor follow its children.
+// neither count that thread's rows nor follow its children. tb holds a row
+// named like ta's child, with a child of its own; ta's walk must not reach it.
+// The subtree read has no join after the walk, so it shows what the walk
+// itself followed.
 func TestDescendantsWalkStaysOnItsThread(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"ta", "tb"} {
@@ -987,14 +989,22 @@ func TestDescendantsWalkStaysOnItsThread(t *testing.T) {
 	seedItem(t, s, "tb", "child", 10, 2, "")
 	seedItem(t, s, "tb", "b-grandchild", 10, 3, "child")
 
-	for thread, want := range map[string]int{"ta": 1, "tb": 1} {
+	for thread, want := range map[string][]string{"ta": {"child", "parent"}, "tb": {"b-child", "parent"}} {
+		ids, err := timelineSubtreeTx(s.reader(), thread, []string{"parent"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(ids)
+		if !slices.Equal(ids, want) {
+			t.Errorf("%s subtree = %v, want %v", thread, ids, want)
+		}
 		roots := []string{"parent"}
 		got, err := subagentAggregatesByRound(s.reader(), thread, roots, subagentRoundBoundsFor(roots, nil, nil))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if count := got["parent"].descendantCount; count != want {
-			t.Errorf("%s descendant count = %d, want %d", thread, count, want)
+		if count := got["parent"].descendantCount; count != 1 {
+			t.Errorf("%s descendant count = %d, want 1", thread, count)
 		}
 	}
 }

@@ -79,7 +79,11 @@ func TestLateSpawnDrainsSameSessionChildFromTheConnection(t *testing.T) {
 
 // A spawn recovered from history records the child's ownership before it
 // emits the spawn row. A child frame that arrives between the two is held,
-// and reaches the thread only after the spawn row, under it.
+// and reaches the thread only after the spawn row, under it. The child's
+// deltas are held by the connection before any session sees them; its
+// thread/started names the root as its parent, so the connection hands it to
+// the session, and the session must hold it too although it already records
+// the child's ownership.
 func TestChildFrameBetweenRecoveredOwnershipAndItsSpawnWaitsForTheSpawn(t *testing.T) {
 	t.Parallel()
 	fx := newConnFixture(t)
@@ -122,13 +126,16 @@ func TestChildFrameBetweenRecoveredOwnershipAndItsSpawnWaitsForTheSpawn(t *testi
 		t.Fatal("recovery emitted the spawn before recording its ownership")
 	}
 	err := fx.pipe.deliver(childDelta("child-r", "second", "arrives mid-emission"))
+	if err == nil {
+		err = fx.pipe.deliver([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-r","parentThreadId":"root-provider-thread"}}}`))
+	}
 	held := fx.heldFrames("child-r")
 	releaseSpawn()
 	if err != nil {
-		t.Fatalf("the frame that arrived mid-emission was not handled: %v", err)
+		t.Fatalf("a frame that arrived mid-emission was not handled: %v", err)
 	}
-	if held != 2 {
-		t.Fatalf("connection held %d frames while the spawn was emitting, want 2", held)
+	if held != 3 {
+		t.Fatalf("connection held %d frames while the spawn was emitting, want 3", held)
 	}
 	if err := <-recovered; err != nil {
 		t.Fatal(err)
