@@ -59,6 +59,9 @@ func (a *App) initIdentity(backendID string) error {
 	// A paired computer's workers whose links a session end released have
 	// their sidebar rows from here on, announced to every window.
 	sessions.OnLinksReleased(a.announceReleasedWorkers)
+	// A computer pairing window's invitation is redeemed and confirmed only
+	// while its window's book admits it.
+	sessions.SetPairingGate(computerPairingGate{app: a})
 	if err := sessions.RecoverOwnAdmissions(); err != nil {
 		return fmt.Errorf("identity: recover own devices: %w", err)
 	}

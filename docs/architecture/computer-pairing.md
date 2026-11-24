@@ -51,12 +51,81 @@ independently matching digits. There is no new session type or alternate
 authorization path. One requester may occupy a window; replacing it requires
 an explicit owner action, preventing silent replacement or unlimited guesses.
 
-Owner connection loss, cancellation and listener-affecting network settings
-changes retire the window and its unfinished invitation. Expiry is the
-bootstrap book's own timer, which cancels the invitation; the LAN
+Owner connection loss, cancellation, a move of the address the window shows
+and shutdown retire the window and its unfinished invitation. Expiry is the
+bootstrap book's own timer, which cancels the invitation. The deadline is
+checked when an approval is admitted: an approval admitted before it
+completes even if its write lands after, and reads confirmed. The LAN
 advertisement lingers only until the dialog closes, and an expired window
-answers `open:false`, which discovery discards. Startup retires unfinished pairings in one
-store transaction because an ephemeral comparison cannot survive a restart.
+answers `open:false`, which discovery discards. `pairbootstrap.Book` owns that
+retirement: a window's invitation is refused confirmation, and shown to the
+owner as canceled, from the moment the window is removed until its
+cancellation is durable. Owner status reads the invitation's row inside the
+book's `Read`, so it never interleaves with a retirement. A close answers with
+its own invitation's cancellation result; a refused cancellation is retried by
+the book on a doubling schedule, by the next open and by a close of that
+window, and no window opens while one is unfinished. Shutdown stops the book
+before the store closes: no retry outlives it, and startup retires what it
+left unfinished.
+
+A window's invitation is redeemed and confirmed only while the book admits it:
+`Book.Admit` holds the book from its check to the store commit, and identity
+reaches it through `identity.PairingGate`, so an invitation the book refuses is
+never spent. Cancel on the Devices list goes through the book, which retires the
+window that minted the invitation. The book makes one cancellation for the
+link, and the owner's answer and the book's record both come from it: a link
+the store had already settled answers refused and leaves nothing pending, and
+a failure answers the failure and stays pending for the retry. The digits the owner sees for a window's
+invitation are the window's own: the invitation's row carries a mark
+(`pairing_links.bootstrap`) written at mint, and for a marked row the owner sees
+the window's digits while the window holds the invitation, and none otherwise.
+The book keeps the last window's invitation after the window is gone, so an
+approval that committed reads confirmed, and the dialog reads the host once
+more at its deadline and after a failed approval. Whatever ends a window names
+why (`pairbootstrap.Ending`: its deadline, a close, a cancel from Devices, a
+newer window, a change to this computer's pairing networks, its owner's connection ending, or shutdown);
+the book keeps the first reason for the last two windows, and the dialog says
+it, so only the deadline reads as "Pairing expired."
+
+The address publication (`publishComputerRoutes`) owns this computer's pairing
+set: on each pairing network, the address a window shows and the page an
+invitation sends the device to, with its certificate pin, and whether a window
+advertises on the LAN itself. Its serial moves only when that set changes. A
+window records the serial it was admitted under, and a publication with a newer
+serial refuses that window at once (`Book.Expire`), under the lock that moves
+the serial, then closes it, which waits for the window's LAN responders to
+finish starting. A reveal mints the invitation for the network the requester
+arrived on from the set the window was admitted under, never from live
+settings, so the invitation and the window's serial come from one set. For a
+person this means: if any of this computer's pairing addresses changes while a
+pairing is in progress, the pairing ends (`networkChanged`) and the dialog says
+so; the person starts it again with Try again. A settings
+rebind, a Windows launcher report and the launcher's loss each publish right
+after the move; a change that leaves the set alone, such as a domain
+certificate arriving or a second forwarded address, keeps the window. A window
+the publication refuses while the book is still admitting it is installed
+already expired. An open checks that its network has an address, closes the
+previous window, publishes (closing any window that publication retires), and
+reads last the network's address as published, the owner's connection and
+shutdown, with nothing after the first that waits before a personal open's
+enrollment. It is then admitted inside the book's open against the publication
+as it stands then, showing the address read there. A personal open's
+enrollment is left behind when the network loses its address, the owner's
+connection ends, or the app shuts down while that enrollment runs, or when the
+enrollment (`enableOwnDevices`) itself fails partway; every earlier failure
+changes no enrollment, registration or membership generation.
+
+Each step of the invitation's store state is one transaction: a redemption's
+new or relabeled device row, pending session, refresh secret and the link
+naming them, checked against the key, user, binding and scopes the spent link
+recorded; a confirmation's link, its device's check, session activation and
+personal membership; a cancellation's link and pending session, never an
+activated one. A confirmation that can no longer admit its device, including
+one revoked or removed, cancels the invitation instead, and the owner is told
+it was not completed. Startup retires unfinished pairings in one store
+transaction because an ephemeral comparison cannot survive a restart, and
+revokes every never-activated session a link names in one sweep that starts
+from those sessions (`idx_sessions_pending`, `idx_pairing_links_session`).
 Confirmed devices retain their existing sessions and renewal policy.
 
 ## Own devices

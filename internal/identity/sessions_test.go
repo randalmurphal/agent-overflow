@@ -30,27 +30,27 @@ func TestMintThenVerifyAdmitsTheSession(t *testing.T) {
 	}
 }
 
-func TestMintRefusesAnUndeclaredGrant(t *testing.T) {
+func TestASessionRefusesAnUndeclaredGrant(t *testing.T) {
 	sessions, _, _, owner, device := newFixture(t)
-	if _, _, err := sessions.Mint(MintRequest{
-		UserID: owner.ID, DeviceID: device.ID,
+	if _, _, err := mintOn(sessions, device, MintRequest{
+		UserID:       owner.ID,
 		BindingClass: BindingDeviceBound,
 		Scopes:       []Scope{"threads:reed"},
 		TTL:          time.Hour,
 	}); err == nil {
-		t.Fatal("Mint accepted a scope that is not declared")
+		t.Fatal("a session accepted a scope that is not declared")
 	}
-	if _, _, err := sessions.Mint(MintRequest{
-		UserID: owner.ID, DeviceID: device.ID,
+	if _, _, err := mintOn(sessions, device, MintRequest{
+		UserID:       owner.ID,
 		BindingClass: "sort-of-bound", TTL: time.Hour,
 	}); err == nil {
-		t.Fatal("Mint accepted an undeclared binding class")
+		t.Fatal("a session accepted an undeclared binding class")
 	}
-	if _, _, err := sessions.Mint(MintRequest{
-		UserID: owner.ID, DeviceID: device.ID,
+	if _, _, err := mintOn(sessions, device, MintRequest{
+		UserID:       owner.ID,
 		BindingClass: BindingDeviceBound, TTL: 0,
 	}); err == nil {
-		t.Fatal("Mint accepted a session with no expiry")
+		t.Fatal("a session accepted no expiry")
 	}
 }
 
@@ -394,9 +394,9 @@ func TestRefusalsAreRecordedWithPeerAttribution(t *testing.T) {
 }
 
 func TestMintAndRevokeAreAudited(t *testing.T) {
-	sessions, st, _, owner, device := newFixture(t)
-	session, _ := mustMint(t, sessions, owner, device, time.Hour)
-	if _, err := sessions.RevokeSession(session.ID); err != nil {
+	sessions, st, _, owner, _ := newFixture(t)
+	_, tokens := pairedDevice(t, sessions, owner, "thumb-audited")
+	if _, err := sessions.RevokeSession(tokens.SessionID); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
 	entries, err := st.ListRecentAuthAudit(50)

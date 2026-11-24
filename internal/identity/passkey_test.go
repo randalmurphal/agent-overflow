@@ -49,6 +49,21 @@ func signIn(t *testing.T, s *Sessions, auth *softAuthenticator, thumbprint strin
 	})
 }
 
+// signedInSession signs the browser presenting thumb-laptop in with auth, as
+// the owner's own browser would, and returns its session.
+func signedInSession(t *testing.T, s *Sessions, auth *softAuthenticator) store.Session {
+	t.Helper()
+	result, reason := signIn(t, s, auth, "thumb-laptop")
+	if reason.Refused() {
+		t.Fatalf("sign in: %s", reason)
+	}
+	session, err := s.store.GetSession(result.Tokens.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	return session
+}
+
 func TestPasskeyRegistrationRecordsWhatTheCeremonyReported(t *testing.T) {
 	sessions, _, _, owner := newPasskeyFixture(t)
 	auth := newSoftAuthenticator(t)
@@ -299,14 +314,9 @@ func TestAPasskeyCounterThatDoesNotAdvanceIsFlaggedAndAdmitted(t *testing.T) {
 // with verification would answer yes forever.
 func TestStepUpCeremonyDemandsVerificationOfThisTouch(t *testing.T) {
 	sessions, _, _, owner := newPasskeyFixture(t)
-	device, err := sessions.store.CreatePairedDevice(
-		owner.ID, "Laptop", string(DeviceBrowser), "linux", "thumb-laptop", string(ProofBearer))
-	if err != nil {
-		t.Fatalf("CreatePairedDevice: %v", err)
-	}
 	auth := newSoftAuthenticator(t)
 	enroll(t, sessions, owner.ID, auth)
-	session, _ := mustMint(t, sessions, owner, device, time.Hour)
+	session := signedInSession(t, sessions, auth)
 
 	challenge, reason := sessions.BeginPasskeyStepUp(session.ID)
 	if reason.Refused() {
@@ -326,12 +336,9 @@ func TestStepUpCeremonyDemandsVerificationOfThisTouch(t *testing.T) {
 // presence and nothing else changes.
 func TestEveryDiscoverableCeremonyRecordsThatVerificationIsRequired(t *testing.T) {
 	sessions, _, _, owner := newPasskeyFixture(t)
-	device, err := sessions.store.CreatePairedDevice(
-		owner.ID, "Laptop", string(DeviceBrowser), "linux", "thumb-laptop", string(ProofBearer))
-	if err != nil {
-		t.Fatalf("CreatePairedDevice: %v", err)
-	}
-	session, _ := mustMint(t, sessions, owner, device, time.Hour)
+	auth := newSoftAuthenticator(t)
+	enroll(t, sessions, owner.ID, auth)
+	session := signedInSession(t, sessions, auth)
 
 	signInChallenge, reason := sessions.BeginPasskeySignIn()
 	if reason.Refused() {
@@ -358,15 +365,10 @@ func TestEveryDiscoverableCeremonyRecordsThatVerificationIsRequired(t *testing.T
 
 func TestStepUpTokenIsSpentOnceAndBoundToItsSession(t *testing.T) {
 	sessions, _, _, owner := newPasskeyFixture(t)
-	device, err := sessions.store.CreatePairedDevice(
-		owner.ID, "Laptop", string(DeviceBrowser), "linux", "thumb-laptop", string(ProofBearer))
-	if err != nil {
-		t.Fatalf("CreatePairedDevice: %v", err)
-	}
 	auth := newSoftAuthenticator(t)
 	enroll(t, sessions, owner.ID, auth)
-	session, _ := mustMint(t, sessions, owner, device, time.Hour)
-	other, _ := mustMint(t, sessions, owner, device, time.Hour)
+	session := signedInSession(t, sessions, auth)
+	other := signedInSession(t, sessions, auth)
 
 	challenge, reason := sessions.BeginPasskeyStepUp(session.ID)
 	if reason.Refused() {
@@ -386,14 +388,9 @@ func TestStepUpTokenIsSpentOnceAndBoundToItsSession(t *testing.T) {
 
 func TestStepUpTokenProvesOneCall(t *testing.T) {
 	sessions, _, c, owner := newPasskeyFixture(t)
-	device, err := sessions.store.CreatePairedDevice(
-		owner.ID, "Laptop", string(DeviceBrowser), "linux", "thumb-laptop", string(ProofBearer))
-	if err != nil {
-		t.Fatalf("CreatePairedDevice: %v", err)
-	}
 	auth := newSoftAuthenticator(t)
 	enroll(t, sessions, owner.ID, auth)
-	session, _ := mustMint(t, sessions, owner, device, 24*time.Hour)
+	session := signedInSession(t, sessions, auth)
 
 	prove := func() StepUpGrant {
 		t.Helper()
@@ -428,14 +425,9 @@ func TestStepUpTokenProvesOneCall(t *testing.T) {
 // assertion shape.
 func TestAPasskeyChallengeCannotChangeItsPurpose(t *testing.T) {
 	sessions, _, _, owner := newPasskeyFixture(t)
-	device, err := sessions.store.CreatePairedDevice(
-		owner.ID, "Laptop", string(DeviceBrowser), "linux", "thumb-laptop", string(ProofBearer))
-	if err != nil {
-		t.Fatalf("CreatePairedDevice: %v", err)
-	}
 	auth := newSoftAuthenticator(t)
 	enroll(t, sessions, owner.ID, auth)
-	session, _ := mustMint(t, sessions, owner, device, time.Hour)
+	session := signedInSession(t, sessions, auth)
 
 	stepUp, reason := sessions.BeginPasskeyStepUp(session.ID)
 	if reason.Refused() {

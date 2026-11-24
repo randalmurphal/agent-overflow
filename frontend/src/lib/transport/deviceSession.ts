@@ -1,4 +1,4 @@
-import { isAuthReasonCode, presentAuthReason } from './authReason';
+import { isAuthReasonCode, presentAuthReason, presentRefusal, type AuthReasonPresentation, type RefusedOperation } from './authReason';
 import { certificatePin, pairingEndpoint, type PairingTrust } from '../native/networkTrust';
 import { isNativeShell } from '../native/platform';
 import { networkFetch } from './networkFetch';
@@ -171,11 +171,16 @@ export class PairingRefusedError extends Error {
   /** Reason code from the closed refusal set, '' when the response carried none. */
   reason: string;
   status: number;
-  constructor(status: number, reason: string) {
-    super(`pairing refused: HTTP ${status}${reason ? ` (${reason})` : ''}`);
+  /** What a person is shown, worded for the exchange (presentRefusal). */
+  shown: AuthReasonPresentation;
+  // The message is the sentence a person is shown.
+  constructor(operation: RefusedOperation, res: Response, reason: string) {
+    const shown = presentRefusal(operation, res.status, reason, res.headers.get('Retry-After'));
+    super(`${shown.title} ${shown.hint}`);
     this.name = 'PairingRefusedError';
-    this.status = status;
+    this.status = res.status;
     this.reason = reason;
+    this.shown = shown;
   }
 }
 
@@ -667,7 +672,7 @@ async function redeemPairingIntoSlot(
   const body = await readGrant(res);
   admit();
   if (!res.ok || !body.sessionId || !body.credential) {
-    throw new PairingRefusedError(res.status, body.reason ?? '');
+    throw new PairingRefusedError('pairing', res, body.reason ?? '');
   }
   // An automatic introduction must not leave a remembered connection after
   // a failed redemption. Commit its address with the admitted credential.
@@ -723,7 +728,7 @@ export async function signInWithPasskey(
     | (PasskeyChallenge & { reason?: string })
     | undefined;
   if (!begun.ok || !challenge?.ceremonyId) {
-    throw new PairingRefusedError(begun.status, challenge?.reason ?? '');
+    throw new PairingRefusedError('passkey', begun, challenge?.reason ?? '');
   }
   const response = await answerChallenge(challenge, 'get');
   // Enrolled AFTER the assertion, so a person who dismissed the prompt
@@ -750,7 +755,7 @@ export async function signInWithPasskey(
   });
   const body = await readGrant(res);
   if (!res.ok || !body.sessionId || !body.credential) {
-    throw new PairingRefusedError(res.status, body.reason ?? '');
+    throw new PairingRefusedError('passkey', res, body.reason ?? '');
   }
   storeSession({
     refreshRecovery: res.headers.get(REFRESH_RECOVERY_HEADER) === '1',

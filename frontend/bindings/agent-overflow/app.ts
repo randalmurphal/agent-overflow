@@ -610,7 +610,10 @@ export function BypassPRRequestedChanges(pr: git$0.PRReference): $CancellablePro
 /**
  * CancelDevicePairing refuses a link and revokes whatever a redemption
  * already created — the number did not match, or the link was minted by
- * mistake.
+ * mistake. Every owner cancellation goes through the computer pairing book
+ * (Book.CancelLink), whose one cancellation (cancelComputerPairingLink)
+ * answers it: a link a window minted retires that window, with its LAN
+ * responders, and any other is canceled directly.
  */
 export function CancelDevicePairing(linkID: string): $CancellablePromise<void> {
     return $Call.ByID(2608316491, linkID);
@@ -819,7 +822,9 @@ export function ClearPushSenderCredential(): $CancellablePromise<void> {
 }
 
 /**
- * CloseComputerPairing retires only the named window, never a replacement.
+ * CloseComputerPairing retires only the named window, never a replacement,
+ * and answers whether that window's invitation is durably cancelled. A
+ * window whose cancellation failed is tried again by closing it again.
  */
 export function CloseComputerPairing(id: string): $CancellablePromise<void> {
     return $Call.ByID(2321581502, id);
@@ -860,6 +865,15 @@ export function CompactCodexThread(threadID: string): $CancellablePromise<void> 
 /**
  * ComputerPairingStatus shows independently derived digits only on the owner
  * surface. Confirmation is enabled only after ordinary enrollment has completed.
+ * A window that is gone still answers for the invitation it published while
+ * the book names its ending (the window opened last or the one before it),
+ * from the invitation's row first: a confirmation admitted before the
+ * window's deadline whose write lands after it reads confirmed, so a dialog
+ * whose approval reply was lost reaches the durable result, and a confirmed
+ * pairing never reads as ended. Confirmed holds only while the device can
+ * use its access (store.PairingAccessOf); an approved invitation whose
+ * access has since ended reads expired with Ended "accessEnded" or
+ * "deviceRemoved", open window or not.
  */
 export function ComputerPairingStatus(id: string): $CancellablePromise<app$0.ComputerPairingView> {
     return $Call.ByID(2151872702, id).then(($result: any) => {

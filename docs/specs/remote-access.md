@@ -88,7 +88,8 @@ Rules:
   built: `store.sessionSelect` JOINs the device's revocation stamp
   onto every session read and `Session.Live` folds it in — one extra
   integer comparison per RPC, no second lookup or round trip;
-  `CreateSession` is an `INSERT ... WHERE EXISTS (device un-revoked)`
+  the session write every session transaction goes through
+  (`createSession`) is an `INSERT ... WHERE EXISTS (device un-revoked)`
   and Activate/Extend/Touch carry the same predicate inside their own
   statements, atomic against the single-transaction mark-and-sweep;
   `RevokeDevice` re-sweeps when already revoked and moves the
@@ -426,11 +427,13 @@ relying party resolved per ceremony (`internal/app/app_passkey.go`:
 canonical domain as the only RP ID candidate, origins =
 `https://domain` + `https://domain:port`, http only for the
 `.localhost` family the e2e rig uses). Sign-in mints through the same
-`Mint`/`accessTokensFor` chokepoints pairing uses, with a REQUIRED device-key
+`newDeviceSession`/`newTokens` chokepoints pairing uses, with a REQUIRED device-key
 proof: the passkey proves the PERSON, the device row is what
-revocation reaches, and `resolvePasskeyDevice` applies pairing's
+revocation reaches, and `resolveDevice` applies pairing's
 adoption rules (revoked refused, other-user key mismatch, class
-always `DeviceBrowser`). Step-up gained its second proof: a 2-minute
+always `DeviceBrowser`). The device row or its relabel, the session
+and its refresh secret commit in one transaction
+(`store.CreateDeviceSession`), so a failed sign-in leaves none of them. Step-up gained its second proof: a 2-minute
 single-use token bound to the asking session, spent by the transport
 ONCE per call (`CallerProof` resolved before the gate, carried in
 context; `ConnPrincipal.HostPresent` is gone, replaced by

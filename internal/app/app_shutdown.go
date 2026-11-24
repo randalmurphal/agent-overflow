@@ -72,7 +72,7 @@ const (
 func (a *App) Shutdown(ctx context.Context) error {
 	a.workAdmission.stopWaiting()
 	a.stopRestartUpdate()
-	a.closeComputerPairing()
+	a.stopComputerPairing()
 	// A trial's deferred boot steps run on the activation gate's goroutine
 	// and use everything below, the transport included. Stop them first: no
 	// further step begins, and the one running finishes before anything it

@@ -64,7 +64,7 @@ func reachable(t *testing.T, s *Store, device string) {
 		t.Fatal(err)
 	}
 	id := "reach-" + device + "-" + strconv.Itoa(ended)
-	if err := s.CreateSession(newTestSession(id, owner, Device{ID: device}, key, 1<<50)); err != nil {
+	if err := seedLiveSession(s, newTestSession(id, owner, Device{ID: device}, key, 1<<50)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -440,7 +440,7 @@ func TestAMergeKeepsTheLinksOfADeviceStillPairedHere(t *testing.T) {
 				}
 				if ordinary != "none" {
 					extra := newTestSession("ordinary-session", User{ID: session.UserID}, Device{ID: session.DeviceID}, SigningKey{ID: session.SigningKeyID}, 9000)
-					if err := s.CreateSession(extra); err != nil {
+					if err := seedLiveSession(s, extra); err != nil {
 						t.Fatal(err)
 					}
 					if ordinary == "revoked" {

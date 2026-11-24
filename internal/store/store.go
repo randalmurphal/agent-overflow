@@ -116,6 +116,10 @@ type Store struct {
 	// shared, runs in ListThreadAgentStopRows after each full page, so a
 	// test can write a request between two of its pages.
 	agentStopPageReadForTest func()
+	// pairingAccessReadForTest, set only by tests before the store is
+	// shared, wraps the reads of PairingAccessOf, so a test can write
+	// between two of them.
+	pairingAccessReadForTest func(sqlQueryer) sqlQueryer
 }
 
 // Options configures NewWithOptions.

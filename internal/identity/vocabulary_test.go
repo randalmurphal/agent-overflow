@@ -74,8 +74,8 @@ func TestEveryDeclaredValueIsWritable(t *testing.T) {
 				}
 				continue
 			}
-			if _, _, err := sessions.Mint(MintRequest{
-				UserID: owner.ID, DeviceID: device.ID,
+			if _, _, err := mintOn(sessions, device, MintRequest{
+				UserID:       owner.ID,
 				BindingClass: binding, Scopes: Scopes, TTL: time.Minute,
 			}); err != nil {
 				t.Fatalf("binding class %q is declared but refused: %v", binding, err)

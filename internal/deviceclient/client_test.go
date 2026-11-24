@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/authlimit"
 	"agent-overflow/internal/servercert"
 )
 
@@ -39,7 +40,9 @@ type backend struct {
 	ticketRefusals atomic.Int32
 	// ticketDrops counts down mints whose connection is closed without an
 	// answer, the way a rebound listener drops the ones it was serving.
-	ticketDrops   atomic.Int32
+	ticketDrops atomic.Int32
+	// ticketLimits counts down mints the auth rate limit answers.
+	ticketLimits  atomic.Int32
 	tickets       atomic.Int32
 	rotations     atomic.Int32
 	failureStatus atomic.Int32
@@ -91,6 +94,11 @@ func (b *backend) route(w http.ResponseWriter, r *http.Request) {
 		}
 		if b.ticketRefusals.Add(-1) >= 0 {
 			http.NotFound(w, r)
+			return
+		}
+		if b.ticketLimits.Add(-1) >= 0 {
+			w.Header().Set("Retry-After", "30")
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
 			return
 		}
 		b.tickets.Add(1)
@@ -518,6 +526,31 @@ func TestHTTPFailuresPreservePairingAndRecoverWithoutEnrollment(t *testing.T) {
 // was issued and nothing was decided, so the mint is repeated once on a
 // new connection, with the fresh proof a second attempt requires. A drop
 // is not a credential refusal and must not spend a rotation.
+// TestTicket_TellsAPersonToWaitWhenTheBackendLimitsIt — the auth rate limit
+// answers the mint before any credential is judged: the caller is told to
+// wait for the time the backend named, nothing rotates, and the next mint
+// after the wait works.
+func TestTicket_TellsAPersonToWaitWhenTheBackendLimitsIt(t *testing.T) {
+	be := newBackend(t)
+	be.ticketLimits.Store(1)
+	client, _ := openAgainst(t, be, nil)
+
+	_, err := client.Ticket(context.Background())
+	var limited *authlimit.RateLimited
+	if !errors.As(err, &limited) {
+		t.Fatalf("Ticket = %v, want a RateLimited answer", err)
+	}
+	if want := "this computer is limiting connections; wait 30 seconds, then try again"; err.Error() != want {
+		t.Fatalf("a person reads %q, want %q", err, want)
+	}
+	if be.rotations.Load() != 0 {
+		t.Fatalf("rotations = %d, want none: a rate limit says nothing about the credential", be.rotations.Load())
+	}
+	if _, err := client.Ticket(context.Background()); err != nil {
+		t.Fatalf("the mint after the wait: %v", err)
+	}
+}
+
 func TestTicket_RepeatsAMintWhoseConnectionWasDropped(t *testing.T) {
 	be := newBackend(t)
 	be.ticketDrops.Store(1)

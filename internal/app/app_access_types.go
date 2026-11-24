@@ -121,7 +121,11 @@ type PairingInvite struct {
 // waits for a device to redeem.
 type PairingStatusView struct {
 	LinkID string `json:"linkId"`
-	// State is one of: pending, redeemed, confirmed, canceled, expired.
+	// State is one of: pending, redeemed, confirmed, accessEnded,
+	// deviceRemoved, canceled, expired. accessEnded is a link that was
+	// confirmed whose session no longer lets its device in: ended, or past
+	// its access and its renewal. deviceRemoved is one whose device the
+	// owner removed in Devices.
 	State string `json:"state"`
 	// VerificationNumber and DeviceLabel are populated once a device has
 	// redeemed. The number is what the owner compares against the one the
@@ -140,7 +144,7 @@ func (v PairingStatusView) Redeemed() bool { return v.State == pairingStateRedee
 // poll loop can stop.
 func (v PairingStatusView) Settled() bool {
 	switch v.State {
-	case pairingStateConfirmed, pairingStateCanceled, pairingStateExpired:
+	case pairingStateConfirmed, pairingStateAccessEnded, pairingStateDeviceRemoved, pairingStateCanceled, pairingStateExpired:
 		return true
 	}
 	return false
@@ -191,4 +195,11 @@ const (
 	pairingStateConfirmed = "confirmed"
 	pairingStateCanceled  = "canceled"
 	pairingStateExpired   = "expired"
+	// pairingStateAccessEnded is a confirmed link whose device can no
+	// longer use its access (store.PairingAccessEnded): never "confirmed".
+	pairingStateAccessEnded = "accessEnded"
+	// pairingStateDeviceRemoved is a confirmed link whose device the owner
+	// removed (store.PairingDeviceRemoved): it pairs again only once the
+	// owner restores or forgets it.
+	pairingStateDeviceRemoved = "deviceRemoved"
 )

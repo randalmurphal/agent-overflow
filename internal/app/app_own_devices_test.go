@@ -3,10 +3,34 @@ package app
 import (
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/identity"
 	"context"
+	"database/sql"
 	"testing"
 )
+
+// An introduction whose target cannot be read from storage is this
+// computer's to retry; a target that is not a member is refused.
+func TestAnIntroductionWhoseTargetCannotBeReadSaysToTryAgain(t *testing.T) {
+	t.Parallel()
+	a, path := newTestAppWithStorePath(t)
+	raw, e := sql.Open("sqlite", path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+	if _, e := raw.Exec(`INSERT INTO own_devices (key_thumbprint, member, generation, removed) VALUES ('unreadable', '[]', 1, 0)`); e != nil {
+		t.Fatal(e)
+	}
+	_, e = a.mintOwnIntroduction(OwnDeviceMember{}, "unreadable")
+	if code, _, ok := errorsx.PublicDetails(e); !ok || code != identity.ReasonTemporarilyUnavailable.Code() {
+		t.Fatalf("an introduction whose target could not be read = %v, want %s", e, identity.ReasonTemporarilyUnavailable)
+	}
+	if _, e = a.mintOwnIntroduction(OwnDeviceMember{}, "absent"); e == nil || e.Error() != "target is not an active own device" {
+		t.Fatalf("an introduction of a device that is not a member = %v, want it refused", e)
+	}
+}
 
 func TestLegacyFullSessionCannotJoinOrIntroduceOwnDevices(t *testing.T) {
 	t.Parallel()
@@ -60,7 +84,7 @@ func TestPersonalPhoneEnrollmentReadsOwnCatalogOverRealTLS(t *testing.T) {
 	if e = b.app.enableOwnDevices(); e != nil {
 		t.Fatal(e)
 	}
-	invite, e := b.app.mintDevicePairingPurpose("phone", "full", "", "own-device")
+	invite, e := b.app.mintDevicePairingPurpose("phone", "full", "", "own-device", false)
 	if e != nil {
 		t.Fatal(e)
 	}
