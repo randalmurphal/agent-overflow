@@ -304,24 +304,30 @@
   // backend publishes only a failing status, so a provider that is ready
   // now is read from the call's answer: it records ready for that provider
   // on that computer and clears the pane's banner, as handleRecheckAuth
-  // does. A failing answer arrives as the provider:status event.
+  // does. A failing answer arrives as the provider:status event. The
+  // answer reads the computer as it was when the call ran, so it replaces
+  // only the warnings the person clicked on: a computer status or a pane
+  // banner that arrived meanwhile is newer and stays.
   async function handleRecheckBinary() {
     const status = providerStatus;
     if (!status || rechecking || accountsUngranted) return;
     const target = backend;
     const threadID = pane.threadId;
+    const cachedAtClick = getProviderStatus(status.provider, target);
+    const bannerAtClick = pane.providerBanner;
     rechecking = true;
     try {
       const statuses = await withBackendTarget(target, () => GetProviderStatuses());
       const current = statuses?.find((entry) => entry.provider === status.provider);
-      if (current?.status === 'ready') {
-        recordProviderStatus({
-          provider: status.provider,
-          status: 'ready',
-          message: '',
-          actionable: false,
-        }, target);
-        if (pane.threadId === threadID) pane.setProviderBanner(status.threadId ? null : undefined);
+      if (current?.status !== 'ready' || getProviderStatus(status.provider, target) !== cachedAtClick) return;
+      recordProviderStatus({
+        provider: status.provider,
+        status: 'ready',
+        message: '',
+        actionable: false,
+      }, target);
+      if (pane.threadId === threadID && pane.providerBanner === bannerAtClick) {
+        pane.setProviderBanner(status.threadId ? null : undefined);
       }
     } catch (err) {
       console.error('Failed to recheck provider status:', err);

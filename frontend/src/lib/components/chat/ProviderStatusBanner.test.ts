@@ -258,6 +258,65 @@ describe('<ProviderStatusBanner>', () => {
       });
     }
 
+    // The reply reads the computer as it was when the call ran. A warning
+    // that arrived while the call was pending is newer than that reading, so
+    // the ready answer leaves it, in the pane and in the computer's cache.
+    for (const where of ['this computer', 'a paired computer'] as const) {
+      it(`keeps a warning that arrived while the recheck was pending, on ${where}`, async () => {
+        let target: BackendKey = HOME_BACKEND;
+        if (where === 'a paired computer') {
+          stageBackend({ id: 'desk', backendId: REMOTE_BACKEND_UUID, name: 'Desk' });
+          setCarriedSessionScopes('desk', ['session', 'access:admin', 'threads:operate']);
+          noteThread('thread-1', 'desk');
+          target = 'desk';
+        }
+        const pane = await buildPane(makeThread({ provider: 'codex', model: 'gpt-5.4-mini' }));
+        let answer: (value: unknown[]) => void = () => {};
+        setBindingMock('GetProviderStatuses', () => new Promise<unknown[]>((resolve) => { answer = resolve; }));
+        recordProviderStatus(statusEvent({
+          provider: 'codex', status: 'version_too_old', message: 'clicked', actionUrl: '',
+        }), target);
+
+        const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+        await fireEvent.click(getByTestId('provider-status-recheck'));
+        const newer = statusEvent({ provider: 'codex', status: 'version_too_old', message: 'newer', actionUrl: '' });
+        recordProviderStatus(newer, target);
+        await tick();
+        answer(readyAnswer());
+        await waitFor(() => expect(getByTestId('provider-status-banner').textContent).not.toContain('Checking'));
+
+        expect(getByTestId('provider-status-banner').textContent).toContain('newer');
+        expect(getProviderStatus('codex', target)?.message).toBe('newer');
+      });
+    }
+
+    it('keeps a thread banner that arrived while the recheck was pending', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'codex', model: 'gpt-5.4-mini' }));
+      let answer: ((value: unknown[]) => void) | null = null;
+      setBindingMock('GetProviderStatuses', () => new Promise<unknown[]>((resolve) => { answer = resolve; }));
+      emitWailsEvent('provider:status', statusEvent({
+        provider: 'codex', status: 'version_too_old', message: 'clicked', actionUrl: '',
+      }));
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('provider-status-recheck'));
+      emitWailsEvent('provider:status', {
+        kind: 'version_incompatible',
+        provider: 'codex',
+        threadId: 'thread-1',
+        message: 'this session was refused',
+        actionable: false,
+      } as unknown as ProviderStatusEvent);
+      await tick();
+      expect(answer).not.toBeNull();
+      answer!(readyAnswer());
+      await waitFor(() => expect(getProviderStatus('codex', HOME_BACKEND)?.status).toBe('ready'));
+      await waitFor(() => expect(getByTestId('provider-status-banner').textContent).not.toContain('Checking'));
+
+      expect(getByTestId('provider-status-banner').textContent).toContain('this session was refused');
+      expect(getProviderStatus('codex', HOME_BACKEND)?.status).toBe('ready');
+    });
+
     it('keeps the banner when the recheck still answers a failure', async () => {
       const pane = await buildPane(makeThread({ provider: 'codex', model: 'gpt-5.4-mini' }));
       setBindingMock('GetProviderStatuses', async () => [
