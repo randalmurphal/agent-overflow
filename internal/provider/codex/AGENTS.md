@@ -47,9 +47,11 @@ Notification routing resolves identity and ownership before classification.
 The connection holds unknown-child notifications and requests in one bounded
 hold per thread until a spawn claims the thread, and rejects or drops them when
 the deadline expires. A session delivers a child's frame only when the
-connection routes that child to it, which happens after the spawn row is
-emitted and ends at close_agent; any other frame it receives goes back to the
-hold, and the session keeps nothing for it. Child
+connection routes that child to it. The route starts after the spawn row is
+emitted, stops at close_agent, and starts again after a completed resume_agent
+row; close_agent keeps the child's spawn identity. A frame the session receives
+for a thread routed to another session goes to that session, any other goes
+back to the hold, and the session keeps nothing for it. Child
 token usage may be re-scoped to the root; child lifecycle and content must not
 mutate root turn state.
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -641,6 +642,54 @@ func awaitSubagentNotification(t *testing.T, events <-chan provider.ProviderEven
 			}
 		case <-deadline:
 			return false
+		}
+	}
+}
+
+// A child that a reopened parent rebuilt from its spawn row, then closed and
+// resumed, arms the rollout tail at the resume, the first live registration.
+// The tail starts at the rollout's end: the child's completion recorded
+// before the resume is not delivered again, and the next one is.
+func TestResumingAClosedChildArmsTheRolloutTailAtItsEnd(t *testing.T) {
+	t.Parallel()
+	rollout := filepath.Join(t.TempDir(), "rollout-2026-08-25T00-00-00-root-provider-thread.jsonl")
+	before := append(rolloutUserSubagentNotificationLine(t, "child-a", map[string]any{"completed": "before the close"}), '\n')
+	if err := os.WriteFile(rollout, before, 0o644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	events := make(chan provider.ProviderEvent, 16)
+	s := newUnarmedRolloutTailSession(t, "root-provider-thread", rollout, events)
+	// Keep the reopen at the ownership boundary: no metadata reads.
+	s.collabAsyncMu.Lock()
+	s.collabAsyncClosing = true
+	s.collabAsyncMu.Unlock()
+	s.rehydrateCollabOwnership([]ResumeCollabLaunch{{
+		ItemID: "spawn-a",
+		Meta:   []byte(`{"input":{"tool":"spawn_agent","receiverThreadIds":["child-a"]}}`),
+	}})
+	feed(t, s, v1CollabLine("close-a", "closeAgent", "completed", "child-a"))
+	if rolloutTailStarted(s) {
+		t.Fatal("the tail armed before the resume")
+	}
+	feed(t, s, v1CollabLine("resume-a", "resumeAgent", "completed", "child-a"))
+	if !rolloutTailStarted(s) {
+		t.Fatal("resuming the closed child did not arm the rollout tail")
+	}
+
+	appendRolloutLine(t, rollout, rolloutUserSubagentNotificationLine(t, "child-a", map[string]any{"completed": "after the resume"}))
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case evt := <-events:
+			if evt.Kind != provider.EventSubagentNotification {
+				continue
+			}
+			if !strings.Contains(string(evt.Meta), "after the resume") {
+				t.Fatalf("the tail delivered a completion recorded before the resume: %s", evt.Meta)
+			}
+			return
+		case <-deadline:
+			t.Fatal("the armed tail did not deliver the completion recorded after the resume")
 		}
 	}
 }

@@ -495,13 +495,11 @@ func (s *Session) childTurnGenerationKeyLocked(id string) string {
 
 // advanceChildTurnGeneration counts one child turn boundary.
 //
-// One entry per child this session currently owns: the entry is dropped by the
-// same ownership teardown that drops the child's parent and path mappings
-// (deleteParentToolUseForProviderThread, which `close_agent` drives), and the
-// whole map goes with the session on close. Without that teardown a long v1
-// session that spawns and closes uniquely named children would grow this map
-// for the life of the process, which is exactly what the other collab maps are
-// cleaned to avoid.
+// One entry per child this session owns, closed children included: a child
+// that close_agent closed keeps its count, so after a resume_agent its turns
+// keep counting up and an answer it repeats from before the close is a new
+// delivery, not a duplicate. The map goes with the session on Close, and is
+// bounded like childParentByThread by the spawns the session saw.
 func (s *Session) advanceChildTurnGeneration(providerThreadID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -698,16 +696,22 @@ func (s *Session) observeSubAgentActivityOwnership(method string, params json.Ra
 	return s.rememberSubAgentActivityOwnership(providerThreadIDFromParams(params), activity)
 }
 
-func collabSpawnReceiverThreadIDs(method string, params json.RawMessage) []string {
+// collabRoutedReceiverThreadIDs names the receivers a completed V1 spawn_agent
+// or resume_agent item may have made deliverable. The drain routes only the
+// ones that maybeRememberCollabReceiverThreads left live.
+func collabRoutedReceiverThreadIDs(method string, params json.RawMessage) []string {
 	if method != "item/completed" {
 		return nil
 	}
 	item := readNestedObject(params, "item")
-	if item == nil || readRawString(item, "type") != "collabAgentToolCall" ||
-		normalizeCollabToolName(readRawString(item, "tool")) != "spawn_agent" {
+	if item == nil || readRawString(item, "type") != "collabAgentToolCall" {
 		return nil
 	}
-	return readRawStringArray(item, "receiverThreadIds")
+	switch normalizeCollabToolName(readRawString(item, "tool")) {
+	case "spawn_agent", "resume_agent":
+		return readRawStringArray(item, "receiverThreadIds")
+	}
+	return nil
 }
 
 func (s *Session) rememberRawSpawnAgentIDForSubagentNotifications(agentID, parentToolUseID string) {
@@ -719,40 +723,42 @@ func (s *Session) rememberRawSpawnAgentIDForSubagentNotifications(agentID, paren
 	s.setParentToolUseForProviderThread(strings.TrimSpace(agentID), strings.TrimSpace(parentToolUseID))
 }
 
-func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) {
+// closeChild ends a closed child's delivery and keeps its identity. The route
+// goes, so the child's later frames are held and expire, and the runtime entry
+// goes, which is what marks the child closed (childLiveLocked). The spawn card
+// it belongs to, its name, and its turn generation stay, so a resume_agent
+// restores delivery under the same card (resumeClosedChild) and a resumed
+// child that repeats an earlier answer still gets a second delivery.
+func (s *Session) closeChild(providerThreadID string) {
 	if providerThreadID == "" {
 		return
 	}
 	s.mu.Lock()
-	// Resolved BEFORE agentPathByThread is torn down: the counter is keyed the
-	// way childTurnGeneration reads it (canonical agent path where there is
-	// one, the thread id otherwise), and deleting the mapping first would leave
-	// the entry unreachable and permanent.
-	generationKey := s.childTurnGenerationKeyLocked(providerThreadID)
-	if agentPath := s.collab.agentPathByThread[providerThreadID]; agentPath != "" {
-		if s.collab.childThreadByAgentPath[agentPath] == providerThreadID {
-			delete(s.collab.childParentByAgentPath, agentPath)
-			delete(s.collab.childThreadByAgentPath, agentPath)
-			delete(s.collab.childPathOwnerLive, agentPath)
-		}
-		delete(s.collab.agentPathByThread, providerThreadID)
-	}
-	delete(s.collab.childParentByThread, providerThreadID)
 	delete(s.collab.childRuntimeByThread, providerThreadID)
-	delete(s.collab.agentMetaByThread, providerThreadID)
-	delete(s.collab.profileReadsByThread, providerThreadID)
-	// The generation counter goes with the ownership it counted. Zero — what a
-	// later delivery for this child would now read — is already the documented
-	// legal answer for a child this session never watched start, and after the
-	// teardown above there is no parent card left for such a delivery to reach
-	// anyway.
-	if generationKey != "" {
-		delete(s.collab.childTurnGenerations, generationKey)
-	}
-	// The route goes with the ownership, so the closed child's later frames
-	// are held and expire instead of reaching this session unowned.
 	s.conn.unregisterChildRoute(providerThreadID, s)
 	s.mu.Unlock()
+}
+
+// resumeClosedChild restores delivery for a child that close_agent closed,
+// under the spawn card it already has. It registers nothing for a child this
+// session never owned or one that is still live. The caller drains the child's
+// held frames once the resume row was emitted.
+func (s *Session) resumeClosedChild(sourceThreadID, providerThreadID string) {
+	s.mu.Lock()
+	parentToolUseID := s.collab.childParentByThread[providerThreadID]
+	closed := parentToolUseID != "" && !s.childLiveLocked(providerThreadID)
+	s.mu.Unlock()
+	if closed {
+		s.registerChildOwnership(sourceThreadID, providerThreadID, "", parentToolUseID)
+	}
+}
+
+// childLiveLocked reports whether providerThreadID is a child this session
+// owns that close_agent has not closed: ownership registration writes the
+// runtime entry and closeChild deletes it. The caller holds s.mu.
+func (s *Session) childLiveLocked(providerThreadID string) bool {
+	_, live := s.collab.childRuntimeByThread[providerThreadID]
+	return live
 }
 
 func (s *Session) emitCollabReceiverMetaUpdate(parentToolUseID string, meta collabReceiverMeta, launchMeta collabLaunchMeta) {
@@ -936,7 +942,16 @@ func (s *Session) maybeRememberCollabReceiverThreads(method string, params json.
 		}
 	case "close_agent":
 		for _, receiverThreadID := range receiverThreadIDs {
-			s.deleteParentToolUseForProviderThread(receiverThreadID)
+			s.closeChild(receiverThreadID)
+		}
+	case "resume_agent":
+		// Codex reports "failed" for a receiver it could not resume; such a
+		// child stays closed.
+		if readRawString(item, "status") != "completed" {
+			return
+		}
+		for _, receiverThreadID := range receiverThreadIDs {
+			s.resumeClosedChild(providerThreadIDFromParams(params), receiverThreadID)
 		}
 	}
 }
@@ -949,29 +964,16 @@ func (s *Session) maybeRewriteCollabControlItemID(evt *provider.ProviderEvent, p
 	if item == nil {
 		return
 	}
-	if readRawString(item, "type") == "subAgentActivity" &&
-		evt.Kind == provider.EventSubagentStatus {
-		kind := readRawString(item, "kind")
-		if kind != "interrupted" && kind != "completed" {
-			return
-		}
-		if parentToolUseID := s.parentToolUseForProviderThread(readRawString(item, "agentThreadId")); parentToolUseID != "" {
-			evt.ItemID = parentToolUseID
-			evt.ParentToolUseID = parentToolUseID
-		}
+	if readRawString(item, "type") != "subAgentActivity" || evt.Kind != provider.EventSubagentStatus {
 		return
 	}
-	if evt.ItemType != "collab_agent" || readRawString(item, "type") != "collabAgentToolCall" {
+	kind := readRawString(item, "kind")
+	if kind != "interrupted" && kind != "completed" {
 		return
 	}
-	switch normalizeCollabToolName(readRawString(item, "tool")) {
-	case "close_agent", "resume_agent":
-		for _, receiverThreadID := range readRawStringArray(item, "receiverThreadIds") {
-			if parentToolUseID := s.parentToolUseForProviderThread(receiverThreadID); parentToolUseID != "" {
-				evt.ItemID = parentToolUseID
-				return
-			}
-		}
+	if parentToolUseID := s.parentToolUseForProviderThread(readRawString(item, "agentThreadId")); parentToolUseID != "" {
+		evt.ItemID = parentToolUseID
+		evt.ParentToolUseID = parentToolUseID
 	}
 }
 

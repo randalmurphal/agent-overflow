@@ -1254,9 +1254,7 @@ counterpart "retry succeeded" wire signal from either provider.
   signal, not on "all tools done."
 - **Probing session liveness for turn state.** See §Non-goals.
 - **Rewriting tool_use_id between start and complete.** Breaks the
-  tool-lifecycle invariant. See `internal/provider/codex/session.go`'s
-  close_agent rewrite. It's symmetric (both start AND complete
-  rewrite), but even that pattern is a smell; prefer one-shot upserts.
+  tool-lifecycle invariant; prefer one-shot upserts.
 - **Consuming a tool's `tool_result` in another code path.** This
   was the TaskOutput bug's root cause. The standard completion path
   always runs; enrichments are additive.

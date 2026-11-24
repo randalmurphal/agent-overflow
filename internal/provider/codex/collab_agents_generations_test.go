@@ -1,92 +1,70 @@
 package codex
 
-import "testing"
+import (
+	"encoding/json"
+	"fmt"
+	"testing"
 
-// collab_agents_generations_test.go — the per-child resume-generation counter
-// is session-scoped state on a long-lived process, so it has to be bounded by
-// the same ownership teardown as every other collab map.
-//
-// The counter exists because a mailbox delivery's row identity mixes it in
-// (triage's codexMailboxCompletionID): a child that legitimately answers the
-// same thing twice needs two rows. It is keyed by the child's CANONICAL name,
-// which is why the teardown has to resolve that name before it drops the
-// mapping that resolves it.
+	"agent-overflow/internal/provider"
+)
 
-// TestClosingAChildDropsItsTurnGenerationCounter: `close_agent` tears the
-// child's ownership down, and the counter it minted ordinals from goes with
-// it. Without this a v1 session that spawns and closes uniquely named children
-// grows this map for the life of the process — the unbounded growth every
-// other collab map is cleaned to avoid, and a doc comment that promised a
-// boundedness the code did not provide.
-func TestClosingAChildDropsItsTurnGenerationCounter(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	ownChild(t, s, "root-thread", "child-1", "/root/reviewer", "spawn-1")
+// collab_agents_generations_test.go — the per-child turn-generation counter
+// separates two identical deliveries from one child (subagentNotificationDedupKey).
+// It is keyed by the child's canonical name and outlives close_agent with the
+// rest of the child's identity.
 
-	s.advanceChildTurnGeneration("child-1")
-	s.advanceChildTurnGeneration("child-1")
-	if got := s.childTurnGeneration("/root/reviewer"); got != 2 {
-		t.Fatalf("generation = %d, want 2 before the teardown", got)
-	}
-
-	s.deleteParentToolUseForProviderThread("child-1")
-
-	s.mu.Lock()
-	remaining := len(s.collab.childTurnGenerations)
-	s.mu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("childTurnGenerations retains %d entries after close_agent: %v",
-			remaining, s.collab.childTurnGenerations)
-	}
-	// Zero is the documented legal answer for a child this session never
-	// watched start, and after the teardown there is no parent card left for
-	// a later delivery to reach anyway.
-	if got := s.childTurnGeneration("/root/reviewer"); got != 0 {
-		t.Fatalf("generation = %d after the teardown, want 0", got)
-	}
+// v1RootSession is recordingRootSession with the metadata read a V1 spawn
+// schedules answered: every child is called Ada.
+func v1RootSession(t *testing.T) (*connFixture, *Session, func() []provider.ProviderEvent) {
+	t.Helper()
+	fx, s, events := recordingRootSession(t)
+	fx.answer("thread/read", func(params json.RawMessage) any {
+		return map[string]any{"thread": map[string]any{"id": readNestedString(params, "threadId"), "agentNickname": "Ada"}}
+	})
+	return fx, s, events
 }
 
-// The teardown has to resolve the counter's key BEFORE it drops
-// agentPathByThread. The counter is keyed on the canonical agent path where
-// there is one, so deleting the mapping first leaves the entry unreachable —
-// permanent, and invisible to any later lookup, which is the worst version of
-// the leak because nothing can ever name it again.
-func TestClosingAChildResolvesTheGenerationKeyBeforeDroppingItsPath(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	ownChild(t, s, "root-thread", "child-1", "/root/reviewer", "spawn-1")
-	s.advanceChildTurnGeneration("child-1")
-
-	s.mu.Lock()
-	_, keyedByPath := s.collab.childTurnGenerations["/root/reviewer"]
-	s.mu.Unlock()
-	if !keyedByPath {
-		t.Fatalf("counter is not keyed on the canonical agent path: %v", s.collab.childTurnGenerations)
-	}
-
-	s.deleteParentToolUseForProviderThread("child-1")
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, orphaned := s.collab.childTurnGenerations["/root/reviewer"]; orphaned {
-		t.Fatal("the path-keyed counter outlived the path mapping that names it")
-	}
+func v1CollabLine(itemID, tool, status, receiverThreadID string) []byte {
+	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"id":%q,"type":"collabAgentToolCall","tool":%q,"receiverThreadIds":[%q],"status":%q}}}`, itemID, tool, receiverThreadID, status))
 }
 
-// A child with no canonical agent path (older unnamed-agent builds name the
-// thread id in both places) has to be torn down too.
-func TestClosingAnUnnamedChildDropsItsTurnGenerationCounter(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	ownChild(t, s, "root-thread", "child-1", "", "spawn-1")
-	s.advanceChildTurnGeneration("child-1")
-	if got := s.childTurnGeneration("child-1"); got != 1 {
-		t.Fatalf("generation = %d, want 1", got)
-	}
+// v1Spawn feeds both legs of a V1 spawn_agent item, as Codex sends them.
+func v1Spawn(fx *connFixture, itemID, receiverThreadID string) {
+	fx.feed([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"id":%q,"type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":[],"status":"inProgress"}}}`, itemID)))
+	fx.feed(v1CollabLine(itemID, "spawnAgent", "completed", receiverThreadID))
+}
 
-	s.deleteParentToolUseForProviderThread("child-1")
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.collab.childTurnGenerations) != 0 {
-		t.Fatalf("childTurnGenerations retains %v for an unnamed child", s.collab.childTurnGenerations)
+func childTurnStarted(threadID, turnID string) []byte {
+	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":%q,"turn":{"id":%q}}}`, threadID, turnID))
+}
+
+func v1CompletionCarrier(itemID, childThreadID, answer string) []byte {
+	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"root-provider-thread","turnId":"root-turn","item":{"id":%q,"type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"%s\",\"status\":{\"completed\":\"%s\"}}</subagent_notification>"}]}}}`, itemID, childThreadID, answer))
+}
+
+// A V1 child that answers the same thing before a close and again after a
+// resume gets both deliveries. The turn after the resume counts on from the
+// child's turns before the close; a count that restarted at the close would
+// give the second answer the first one's dedup key and drop it.
+func TestAResumedChildsRepeatedAnswerIsDeliveredAgain(t *testing.T) {
+	t.Parallel()
+	fx, s, events := v1RootSession(t)
+	v1Spawn(fx, "spawn-a", "child-a")
+	fx.feed(childTurnStarted("child-a", "child-turn-1"))
+	fx.feed(v1CompletionCarrier("carrier-1", "child-a", "Done."))
+	fx.feed(v1CollabLine("close-a", "closeAgent", "completed", "child-a"))
+	fx.feed(v1CollabLine("resume-a", "resumeAgent", "completed", "child-a"))
+	fx.feed(childTurnStarted("child-a", "child-turn-2"))
+	fx.feed(v1CompletionCarrier("carrier-2", "child-a", "Done."))
+
+	s.collabAsyncWG.Wait()
+	deliveries := 0
+	for _, event := range events() {
+		if event.Kind == provider.EventSubagentNotification && event.ItemID == "spawn-a" {
+			deliveries++
+		}
+	}
+	if deliveries != 2 {
+		t.Fatalf("spawn-a received %d completion deliveries, want one before the close and one after the resume: %+v", deliveries, events())
 	}
 }

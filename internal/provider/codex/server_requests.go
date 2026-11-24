@@ -61,6 +61,7 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 	if providerThreadID == "" {
 		providerThreadID = s.rootThreadID()
 	}
+	// Cannot miss for a child's request; see dispatchesWireThread.
 	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
 	if parentToolUseID == "" {
 		parentToolUseID = s.reviewScopeForTurn(turnID)

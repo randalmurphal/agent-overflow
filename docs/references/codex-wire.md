@@ -761,8 +761,14 @@ names no root.
 The shared connection (`internal/provider/codex/conn.go`) holds every frame
 of a non-root provider thread it does not route, and replays it to the session
 whose typed ownership edge claims the thread. A session routes a child only
-after its spawn row was emitted, and close_agent removes the route, so a frame
-a session receives for a thread it does not route goes back to the same hold.
+after its spawn row was emitted. A frame a session receives for a thread it
+does not route goes to the session that routes it, or back to the hold.
+A V1 `close_agent` removes the child's route and keeps its spawn identity, so
+the closed child's frames are held and expire. A `resume_agent` item that
+completes with `status:"completed"` restores the route after the resume row,
+under the original spawn card, and the frames held since the close are
+delivered then. A `"failed"` resume restores nothing. V2 has no close or
+resume.
 Falling through to the AO root is forbidden: child turn starts reset root
 stream counters, and child turn completions falsely close the root round. The
 holds have per-thread, total-count, byte, and thread-id bounds, shared by every

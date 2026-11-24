@@ -134,6 +134,7 @@ func (s *Session) claimNotificationOwnership(
 	providerThreadID string,
 ) (parentToolUseID string, mappedChildThreadIDs []string, consumed bool) {
 	mappedChildThreadIDs = s.observeSubAgentActivityOwnership(method, params)
+	// Cannot miss for a child frame; see dispatchesWireThread.
 	parentToolUseID = s.parentToolUseForProviderThread(providerThreadID)
 	if s.emitSubagentNotificationsFromRawMailboxCarrier(method, params, providerThreadID, parentToolUseID) {
 		return "", nil, true
@@ -339,10 +340,11 @@ func (s *Session) classifyAndEmitNotification(
 	}
 
 	// V1 establishes ownership from collabAgentToolCall spawn completion in
-	// prepareNotificationEvent. V2 establishes it above from
-	// subAgentActivity. In both cases, drain only after the spawn row event has
-	// reached triage so fast child output cannot race ahead of its parent card.
-	mappedChildThreadIDs = append(mappedChildThreadIDs, collabSpawnReceiverThreadIDs(method, params)...)
+	// prepareNotificationEvent, and restores a closed child's on resume_agent
+	// completion there. V2 establishes it above from subAgentActivity. In every
+	// case, drain only after the spawn or resume row has reached triage so fast
+	// child output cannot race ahead of it.
+	mappedChildThreadIDs = append(mappedChildThreadIDs, collabRoutedReceiverThreadIDs(method, params)...)
 	s.drainDeferredChildWireEvents(mappedChildThreadIDs...)
 }
 
@@ -584,7 +586,7 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		s.turn.activeTurnID = ""
 		// Retire root calls without erasing still-running child calls.
 		for id, call := range s.rawCalls.byID {
-			if s.collab.childParentByThread[call.ProviderThreadID] == "" {
+			if !s.childLiveLocked(call.ProviderThreadID) {
 				delete(s.rawCalls.byID, id)
 				delete(s.rawCalls.waitReceiverIDsByCall, id)
 			}

@@ -208,7 +208,12 @@ type sessionSettingsState struct {
 //
 // childThreadByAgentPath identifies the current owner of a reusable path.
 // agentPathByThread retains each thread's canonical path so replay from a
-// superseded child can be rejected and close_agent can clean up safely.
+// superseded child can be rejected.
+//
+// close_agent ends a child's delivery and none of this identity: a closed
+// child keeps its spawn card, so a resume_agent restores delivery under it.
+// The identity maps therefore hold one entry per child the session saw, the
+// same children a resume of the parent rebuilds spawn cards for.
 //
 // No heuristic background-tool classifier runs here (invariant 25).
 // The wire-typed signals for a backgrounded item are
@@ -234,7 +239,8 @@ type sessionCollabState struct {
 	// childRuntimeByThread is the live-process turn state needed to target
 	// turn/interrupt at a child. Persisted ownership is intentionally separate:
 	// a historical child identity can survive an app-server restart while its
-	// work cannot.
+	// work cannot. An owned child with no entry is one close_agent closed
+	// (childLiveLocked).
 	childRuntimeByThread map[string]childRuntimeState
 	// profileReadsByThread coalesces repeated V2 activity delivery while one
 	// effective-profile request is in flight.
