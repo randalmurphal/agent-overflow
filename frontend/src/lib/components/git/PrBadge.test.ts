@@ -34,57 +34,26 @@ describe('<PrBadge>', () => {
     window.open = originalOpen;
   });
 
-  it('renders nothing when there is no open PR url', () => {
-    const { queryByTestId } = render(PrBadge, { props: { status: status({ openPrUrl: '' }) } });
+  it.each([
+    ['renders nothing when there is no open PR url', status({ openPrUrl: '' })],
+    ['renders nothing for a null status', null],
+    ['renders nothing when the url is not a valid http(s) url (defensive)', status({ openPrUrl: 'javascript:alert(1)', openPrNumber: 1 })],
+  ])('%s', (_name, observed) => {
+    const { queryByTestId } = render(PrBadge, { props: { status: observed } });
     expect(queryByTestId('chat-header-pr-badge')).toBeNull();
   });
 
-  it('renders nothing for a null status', () => {
-    const { queryByTestId } = render(PrBadge, { props: { status: null } });
-    expect(queryByTestId('chat-header-pr-badge')).toBeNull();
-  });
-
-  it('renders PR #<n> with the GitHub url for a github forge', () => {
+  it.each([
+    ['renders PR #<n> with the GitHub url for a github forge', 'github', 'https://github.com/o/r/pull/123', 123, 'PR #123'],
+    ['renders MR !<n> with the GitLab sigil for a gitlab forge', 'gitlab', 'https://gitlab.com/o/r/-/merge_requests/45', 45, 'MR !45'],
+    ['falls back to the bare noun when no PR number is present', 'github', 'https://github.com/o/r/pull/9', undefined, 'PR'],
+  ] as const)('%s', (_name, forge, url, number, label) => {
     const { getByTestId } = render(PrBadge, {
-      props: {
-        status: status({
-          forge: 'github',
-          openPrUrl: 'https://github.com/o/r/pull/123',
-          openPrNumber: 123,
-        }),
-      },
+      props: { status: status({ forge, openPrUrl: url, openPrNumber: number }) },
     });
     const link = getByTestId('chat-header-pr-badge');
-    expect(link.textContent?.trim()).toBe('PR #123');
-    expect(link.getAttribute('href')).toBe('https://github.com/o/r/pull/123');
-  });
-
-  it('renders MR !<n> with the GitLab sigil for a gitlab forge', () => {
-    const { getByTestId } = render(PrBadge, {
-      props: {
-        status: status({
-          forge: 'gitlab',
-          openPrUrl: 'https://gitlab.com/o/r/-/merge_requests/45',
-          openPrNumber: 45,
-        }),
-      },
-    });
-    const link = getByTestId('chat-header-pr-badge');
-    expect(link.textContent?.trim()).toBe('MR !45');
-    expect(link.getAttribute('href')).toBe('https://gitlab.com/o/r/-/merge_requests/45');
-  });
-
-  it('falls back to the bare noun when no PR number is present', () => {
-    const { getByTestId } = render(PrBadge, {
-      props: {
-        status: status({
-          forge: 'github',
-          openPrUrl: 'https://github.com/o/r/pull/9',
-          openPrNumber: undefined,
-        }),
-      },
-    });
-    expect(getByTestId('chat-header-pr-badge').textContent?.replace(/\s+/g, '')).toBe('PR');
+    expect(link.textContent?.trim()).toBe(label);
+    expect(link.getAttribute('href')).toBe(url);
   });
 
   it('plain click opens the review pane and suppresses the external link', () => {
@@ -153,12 +122,5 @@ describe('<PrBadge>', () => {
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     getByTestId('chat-header-pr-badge').dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
-  });
-
-  it('renders nothing when the url is not a valid http(s) url (defensive)', () => {
-    const { queryByTestId } = render(PrBadge, {
-      props: { status: status({ openPrUrl: 'javascript:alert(1)', openPrNumber: 1 }) },
-    });
-    expect(queryByTestId('chat-header-pr-badge')).toBeNull();
   });
 });

@@ -40,21 +40,6 @@ function renderDialog() {
 
 describe('<BranchPruneDialog>', () => {
 
-  it('pre-checks safe rows only and counts them in the confirm button', async () => {
-    setBindingMock('GitListBranchPruneCandidates', async () => ({
-      candidates: [SAFE, RISKY],
-    }));
-    const { findByTestId } = renderDialog();
-    await findByTestId('prune-dialog-list');
-
-    const safeBox = (await findByTestId(`prune-row-${SAFE.branch}`)).querySelector('input')!;
-    const riskyBox = (await findByTestId(`prune-row-${RISKY.branch}`)).querySelector('input')!;
-    expect(safeBox.checked).toBe(true);
-    expect(riskyBox.checked).toBe(false);
-    const confirm = await findByTestId('prune-dialog-confirm');
-    expect(confirm.textContent).toContain('Delete 1 branch');
-  });
-
   it('deletes exactly the checked (branch, tip) pairs and closes on full success', async () => {
     setBindingMock('GitListBranchPruneCandidates', async () => ({
       candidates: [SAFE, RISKY],
@@ -74,7 +59,7 @@ describe('<BranchPruneDialog>', () => {
     });
   });
 
-  it('lets the user opt a risky row in', async () => {
+  it('pre-checks safe rows only, counts them in the confirm button, and lets the user opt a risky row in', async () => {
     setBindingMock('GitListBranchPruneCandidates', async () => ({
       candidates: [SAFE, RISKY],
     }));
@@ -84,7 +69,12 @@ describe('<BranchPruneDialog>', () => {
 
     const { findByTestId } = renderDialog();
     await findByTestId('prune-dialog-list');
+    const safeBox = (await findByTestId(`prune-row-${SAFE.branch}`)).querySelector('input')!;
     const riskyBox = (await findByTestId(`prune-row-${RISKY.branch}`)).querySelector('input')!;
+    expect(safeBox.checked).toBe(true);
+    expect(riskyBox.checked).toBe(false);
+    expect((await findByTestId('prune-dialog-confirm')).textContent).toContain('Delete 1 branch');
+
     await fireEvent.click(riskyBox);
     const confirm = await findByTestId('prune-dialog-confirm');
     expect(confirm.textContent).toContain('Delete 2 branches');

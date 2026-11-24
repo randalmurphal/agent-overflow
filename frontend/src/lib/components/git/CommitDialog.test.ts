@@ -384,9 +384,12 @@ describe('<CommitDialog> — pending operation notice', () => {
     expect(commit).toHaveBeenCalledWith(m.pane.workspace, 'Merge', '', { all: true, files: [] }, expect.any(String));
   });
 
-  it('names a pending revert', async () => {
-    const m = await mount(listing(THREE, { wholeOnly: true }), status({ pendingOperation: 'revert' }));
-    expect(m.getByTestId('commit-dialog-pending-operation').textContent).toContain('A revert is in progress.');
+  it.each([
+    ['revert', 'A revert is in progress.'],
+    ['cherry-pick', 'A cherry-pick is in progress.'],
+  ])('names a pending %s', async (op, text) => {
+    const m = await mount(listing(THREE, { wholeOnly: true }), status({ pendingOperation: op }));
+    expect(m.getByTestId('commit-dialog-pending-operation').textContent).toContain(text);
   });
 
   it('shows why a commit of files that changed was refused and lists them again', async () => {
@@ -408,11 +411,6 @@ describe('<CommitDialog> — pending operation notice', () => {
     expect(m.row('src/a.ts').getAttribute('aria-selected')).toBe('true');
     expect((document.getElementById('commit-subject') as HTMLInputElement).value).toBe('Stale');
     expect(m.onClose).not.toHaveBeenCalled();
-  });
-
-  it('names a pending cherry-pick', async () => {
-    const m = await mount(listing(THREE, { wholeOnly: true }), status({ pendingOperation: 'cherry-pick' }));
-    expect(m.getByTestId('commit-dialog-pending-operation').textContent).toContain('A cherry-pick is in progress.');
   });
 
   it('lists again on each opening, with the selection of the last one gone', async () => {

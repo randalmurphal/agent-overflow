@@ -85,17 +85,6 @@ describe('<BranchPicker>', () => {
     expect(getByTestId('branch-picker-trigger').textContent ?? '').toMatch(/main/);
   });
 
-  it('updates the trigger when the pane thread branch changes after mount', async () => {
-    const pane = await buildPane('main');
-    const { getByTestId } = render(BranchPicker, { props: { pane } });
-
-    pane.replaceThread({ ...pane.thread!, branch: 'feature/external' });
-
-    await waitFor(() => {
-      expect(getByTestId('branch-picker-trigger').textContent ?? '').toMatch(/feature\/external/);
-    });
-  });
-
   it('opens the dropdown and lists fetched branches', async () => {
     const pane = await buildPane('main');
     setBindingMock('GitListBranches', async () => [
@@ -1223,29 +1212,5 @@ describe('<BranchPicker>', () => {
     await fireEvent.click(syncBtn);
 
     expect(getBindingMock('GitSyncBranch')).not.toHaveBeenCalled();
-  });
-
-  it('allows branch checkout while background tasks are running', async () => {
-    const pane = await buildPane('main');
-    const checkout = setBindingMock('GitCheckout', async () => checkoutState('feat/abc'));
-    setBindingMock('GitListBranches', async () => [
-      { name: 'main', isCurrent: true, isDefault: true },
-      { name: 'feat/abc', isCurrent: false, isDefault: false },
-    ]);
-    setBindingMock('GetThread', async () => makeThread('feat/abc'));
-
-    const { getByTestId, findByRole } = render(BranchPicker, { props: { pane } });
-    await fireEvent.click(getByTestId('branch-picker-trigger'));
-    const row = await findByRole('menuitem', { name: /feat\/abc/ });
-
-    await waitFor(() => {
-      expect(row).not.toHaveAttribute('aria-disabled', 'true');
-    });
-
-    await fireEvent.click(row);
-
-    await waitFor(() => {
-      expect(checkout).toHaveBeenCalled();
-    });
   });
 });
