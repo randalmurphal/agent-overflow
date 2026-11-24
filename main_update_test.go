@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -90,7 +91,48 @@ func (b *stubTrialBackend) start(ctx context.Context) error {
 	if b.mode == "fail" {
 		return errors.New("database schema 90 is newer than this build knows (88)")
 	}
+	if b.mode == stubHoldLock {
+		return b.checkpointAfterCollection(ctx)
+	}
 	return nil
+}
+
+// The hold-lock trial collects garbage, so a lock nothing keeps referenced
+// is closed by then, writes stubLockCheckpoint, and boots once the test
+// writes stubLockRelease.
+const (
+	stubHoldLock       = "hold-lock"
+	stubLockCheckpoint = "stub-lock-checkpoint"
+	stubLockRelease    = "stub-lock-release"
+)
+
+func (b *stubTrialBackend) checkpointAfterCollection(ctx context.Context) error {
+	runtime.GC()
+	// A finalizer queued after the first collection's runs after them: the
+	// one goroutine that runs finalizers runs them in order.
+	finalized := make(chan struct{})
+	sentinel := new([64]byte)
+	runtime.SetFinalizer(sentinel, func(*[64]byte) { close(finalized) })
+	sentinel = nil
+	runtime.GC()
+	select {
+	case <-finalized:
+	case <-time.After(10 * time.Second):
+		return errors.New("the forced collection ran no finalizer")
+	}
+	if err := os.WriteFile(filepath.Join(b.root, stubLockCheckpoint), nil, 0o600); err != nil {
+		return err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(b.root, stubLockRelease)); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 func (b *stubTrialBackend) shutdown() {
@@ -369,6 +411,94 @@ func TestWaitForBackendInstanceLock(t *testing.T) {
 	next, err := waitForBackendInstanceLock(context.Background(), root, 10*time.Second)
 	if err != nil {
 		t.Fatalf("the wait did not take a released lock: %v", err)
+	}
+	next.releaseForTest(t)
+}
+
+// The trial keeps the data root locked through its inherited descriptor
+// alone: after a collection in the trial, the parent's descriptor closes as
+// a dead parent's does, and an independent open cannot take the lock until
+// the trial exits.
+func TestUpdateTrialKeepsItsInheritedLockAfterACollection(t *testing.T) {
+	dataRoot := t.TempDir()
+	root := filepath.Join(dataRoot, appdirs.DirName)
+	parent, err := acquireBackendInstanceLock(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	// A failed run stops its trial before it ends, so the trial's log lines
+	// land inside the test.
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-finished
+	})
+	go func() {
+		defer close(finished)
+		done <- supervise.RunTrial(ctx, supervise.TrialConfig{
+			Binary:        executable,
+			Args:          []string{supervise.UpdateTrialCommand, "--data-dir", dataRoot},
+			Env:           append(os.Environ(), updateTrialStubEnv+"="+stubHoldLock),
+			Lock:          parent.file,
+			UpdateID:      "u1",
+			TargetVersion: "2.0.0",
+			Rule:          supervise.StallRule{Window: time.Minute, Ceiling: time.Minute},
+			LegacyBudget:  time.Minute,
+			StopTimeout:   10 * time.Second,
+			Log: func(format string, args ...any) {
+				t.Logf(format, args...)
+				if strings.HasPrefix(format, "supervise: started version") {
+					select {
+					case started <- struct{}{}:
+					default:
+					}
+				}
+			},
+		})
+	}()
+	checkpoint := filepath.Join(root, stubLockCheckpoint)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(checkpoint); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the trial wrote no checkpoint")
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the trial ended before its checkpoint: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	// RunTrial has passed the descriptor on once it logged the start.
+	<-started
+	// The parent's descriptor closes with no unlock, as a dead parent's does.
+	if err := parent.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := acquireBackendInstanceLock(root); err == nil {
+		held.releaseForTest(t)
+		t.Fatal("an independent open took the data root's lock while the trial ran")
+	}
+	if err := os.WriteFile(filepath.Join(root, stubLockRelease), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("RunTrial = %v", err)
+	}
+	// A fork elsewhere in this binary can hold a copy until its exec, so the
+	// lock is waited for.
+	next, err := waitForBackendInstanceLock(context.Background(), root, 5*time.Second)
+	if err != nil {
+		t.Fatalf("the data root stayed locked after the trial exited: %v", err)
 	}
 	next.releaseForTest(t)
 }

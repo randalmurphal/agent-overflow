@@ -137,7 +137,7 @@ and then `cache-cleanup`. A manual run runs every job but dependency review
 and `cache-cleanup`. The jobs are one Linux job for `fmt-check`,
 `tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile` and
 `bindings-check`, a macOS `go-build` and `exhaustive` pass, one job for
-`go-lint`, `go-lint-unused`, `go-lint-exhaustive` and `go-vuln`, the
+`go-lint`, `go-lint-whole-tree` and `go-vuln`, the
 frontend job (`check`, `build`, `frontend-deadcode`, `frontend-lint`),
 `go-test` in three shards by package weight
 (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus `make go-test-noremote`, the
@@ -247,10 +247,11 @@ checked by `scripts/test-ci-change.sh`) and `go-lint` runs with
 `--new-from-patch`, while
 `frontend-lint` runs `--deny-warnings` on the changed frontend files. Both
 widen to the whole tree once the existing backlog is cleared
-(`make go-lint` and `make frontend-lint` show it). The `exhaustive` linter
-has none, so the `go-lint` job also runs it alone over the whole tree
-(`make go-lint-exhaustive`): a constant added to an enum fails at every
-switch that does not name it. The target reaches every Go file its host
+(`make go-lint` and `make frontend-lint` show it). The `exhaustive` and
+`unused` linters have none, so the `go-lint` job also runs them over the
+whole tree (`make go-lint-whole-tree`), in one golangci-lint process for
+the untagged file set. `exhaustive` fails at every switch that does not
+name a constant added to an enum. It reaches every Go file its host
 compiles in two passes, one with no build tag and one with `nogui`,
 `noremote`, `providersmoke` and `linearlive` together
 (`TestExhaustiveLintPassesReachEveryFile` fails for a file no pass
@@ -260,20 +261,20 @@ over the default file set alone, which holds every file only macOS
 compiles. A Windows-only file outside the
 launcher's packages is compiled by no job and is not checked.
 
-Dead code fails two whole-tree gates, neither with a backlog. The
-`go-lint` job runs `unused` alone (`make go-lint-unused`) over the Linux
-file set with no build tag, test files included, after the change step,
-whose golangci-lint cache halves its time. It reports an unexported
-identifier nothing uses, which the new-issues gate misses when a change
-deletes the last use and not the identifier. A helper that only another
-platform or a build tag calls lives in that platform's or tag's files. The
-frontend job runs knip (`make frontend-deadcode`, rules in
-`frontend/knip.config.ts`): a file, export, type or dependency nothing
-uses, tests included, fails it. No gate reports an exported Go identifier
-nothing uses, or code that only tests reach: `golang.org/x/tools/cmd/deadcode`
-and knip's production mode find those, but on this tree each needs a long
-list of named exceptions for code reached through cgo, another platform or
-a test seam by design.
+Dead code fails two whole-tree gates, neither with a backlog. `unused`
+reads the Linux file set with no build tag, test files included, and
+reports an unexported identifier nothing uses, which the new-issues gate
+misses when a change deletes the last use and not the identifier. A helper
+that only another platform or a build tag calls lives in that platform's
+or tag's files. The frontend job runs knip (`make frontend-deadcode`,
+configured in `knip.config.ts` at the root with the frontend's rules in
+`frontend/knip.workspace.ts`): a file, export, type or dependency nothing
+uses, tests and the Playwright suite's imports included, fails it, so a
+change to `e2e/` runs the frontend job. No gate reports an exported Go
+identifier nothing uses, or code that only tests reach:
+`golang.org/x/tools/cmd/deadcode` and knip's production mode find those,
+but on this tree each needs a long list of named exceptions for code
+reached through cgo, another platform or a test seam by design.
 
 ## Releases
 

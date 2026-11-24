@@ -1341,32 +1341,6 @@ func appendFileAttachmentLines(providerContent string, fileLines []string) strin
 	return b.String()
 }
 
-// nextSequenceForScope returns the next available sequence number for
-// `user:<turnIndex>:<scope>:<n>` ids on the given thread/turn: the
-// flush path's count when no triage owns it (nextFlushSequenceForTurn).
-//
-// Returns 1 on an empty turn (highest+1 with highest=0). Unparsable
-// suffixes are skipped so a future id-format extension doesn't crash
-// this counter.
-func (a *App) nextSequenceForScope(threadID string, turnIndex int, scope string) (int, error) {
-	prefix := fmt.Sprintf("user:%d:%s:", turnIndex, scope)
-	ids, err := a.store.TurnItemIDsWithPrefix(threadID, turnIndex, prefix)
-	if err != nil {
-		return 0, err
-	}
-	highest := 0
-	for _, id := range ids {
-		var n int
-		if _, scanErr := fmt.Sscanf(id[len(prefix):], "%d", &n); scanErr != nil {
-			continue
-		}
-		if n > highest {
-			highest = n
-		}
-	}
-	return highest + 1, nil
-}
-
 // refusePRDraftSource refuses a send through the thread bindings that names
 // a PR's drafts: those are git:operate state, sent to a thread only by
 // SendPRDiffReviewComments.

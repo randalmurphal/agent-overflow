@@ -6,6 +6,5 @@ export {
   initReplica,
   putReplicaWindow,
   removeReplicaWindow,
-  __resetReplicaForTest,
 } from './session';
 export type { ReplicaBody } from './envelope';

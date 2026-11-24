@@ -460,8 +460,8 @@ func (r *Router) DeferredPendingFlushItemCount(threadID string) int {
 // echo upserts its own text over the consumed message's row. Observed
 // live as the codex-steer e2e flake (second of three queued steers
 // vanishing, 2026-08-25). The App's dispatch path
-// (nextFlushSequenceForTurn) is the one caller; it must not hold the
-// anchor already.
+// (nextFlushUserItemID) is the one caller and the one allocator of
+// flush ids; it must not hold the anchor already.
 func (r *Router) NextFlushSequence(threadID string, turnIndex int) (int, error) {
 	anchor := r.flushAnchor(threadID)
 	anchor.Lock()

@@ -14,7 +14,7 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "oxlint",
-    "deadcode": "knip",
+    "deadcode": "cd .. && knip",
     "check:file": "node scripts/check-file.mjs",
     "check:stall-watchdog": "node scripts/check-stalled-page-watchdog.mjs",
     "test": "vitest run --project unit --project unit-isolated",

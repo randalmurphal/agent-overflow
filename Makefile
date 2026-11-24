@@ -1,4 +1,4 @@
-.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen forge-schemas linear-schema go-lint go-lint-exhaustive go-lint-unused go-vet fmt-check go-vuln bindings-check frontend-lint frontend-deadcode install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build e2e-browsers harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen forge-schemas linear-schema go-lint go-lint-whole-tree go-vet fmt-check go-vuln bindings-check frontend-lint frontend-deadcode install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build e2e-browsers harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -9,7 +9,7 @@ help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
 		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=... | make go-test-noremote | make vitest-unit | make vitest-browser | make script-tests' \
-		'Static:  make fmt-check | make go-vet | make go-lint | make go-lint-exhaustive | make go-lint-unused | make frontend-lint | make frontend-deadcode | make bindings-check | make go-vuln' \
+		'Static:  make fmt-check | make go-vet | make go-lint | make go-lint-whole-tree | make frontend-lint | make frontend-deadcode | make bindings-check | make go-vuln' \
 		'Android: make apk | make apk-release | make e2e-android' \
 		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
 		'Harness: make harness | make harness-window | make harness-wsl' \
@@ -302,36 +302,35 @@ GO_LINT_FLAGS ?=
 go-lint: $(GOLANGCI_LINT_BUILD)
 	$(GOLANGCI_LINT) run --timeout 20m $(GO_LINT_FLAGS) ./...
 
-# go-lint-exhaustive runs the exhaustive linter alone over every Go file
-# this host compiles and over the Windows launcher's packages as Windows
-# compiles them. The linter reports at the switch, not at the constant a
-# change added, and has no backlog, so it is not limited to a change's
-# lines. Two passes reach every file here: one with no build tag and one
-# with every tag that selects files, because no file needs one of those
-# tags on and another off. TestExhaustiveLintPassesReachEveryFile reads
-# the passes from this recipe and fails for a file none of them compiles.
-# Every file only macOS compiles is in the untagged set, which CI's macOS
-# job lints with `make go-lint GO_LINT_FLAGS="--enable-only exhaustive"`.
-GO_LINT_EXHAUSTIVE = $(GOLANGCI_LINT) run --timeout 20m --enable-only exhaustive
-go-lint-exhaustive: $(GOLANGCI_LINT_BUILD)
-	$(GO_LINT_EXHAUSTIVE) ./...
-	$(GO_LINT_EXHAUSTIVE) --build-tags nogui,noremote,providersmoke,linearlive ./...
+# go-lint-whole-tree runs the two linters that have no backlog over the
+# whole tree, not only a change's lines: exhaustive reports at the switch,
+# not at the constant a change added, and unused at the identifier whose
+# last use a change deleted, whose own lines are not in the change. One
+# process runs both over the untagged file set, test files included; the
+# other passes run exhaustive alone.
+#
+# exhaustive reads every Go file this host compiles and the Windows
+# launcher's packages as Windows compiles them. Two passes reach every file
+# here: one with no build tag and one with every tag that selects files,
+# because no file needs one of those tags on and another off.
+# TestExhaustiveLintPassesReachEveryFile reads the passes from this recipe
+# and fails for a file none of them compiles. Every file only macOS
+# compiles is in the untagged set, which CI's macOS job lints with `make
+# go-lint GO_LINT_FLAGS="--enable-only exhaustive"`.
+#
+# unused reads one file set, the untagged Linux one: a helper that only
+# another platform or a build tag calls lives in that platform's or tag's
+# files, beside its callers.
+GO_LINT_WHOLE_TREE = $(GOLANGCI_LINT) run --timeout 20m
+go-lint-whole-tree: $(GOLANGCI_LINT_BUILD)
+	$(GO_LINT_WHOLE_TREE) --enable-only exhaustive,unused ./...
+	$(GO_LINT_WHOLE_TREE) --enable-only exhaustive --build-tags nogui,noremote,providersmoke,linearlive ./...
 	@set -e; for tags in "" noremote; do \
 		packages=$$(GOOS=windows CGO_ENABLED=0 go list -deps -tags "$$tags" ./cmd/agent-overflow-windows | sed -n 's|^agent-overflow/|./|p'); \
 		if [ -z "$$packages" ]; then echo "ERROR: no packages found for the Windows launcher"; exit 1; fi; \
 		echo "exhaustive: the Windows launcher's packages, tags '$$tags'"; \
-		GOOS=windows CGO_ENABLED=0 $(GO_LINT_EXHAUSTIVE) --build-tags "$$tags" $$packages; \
+		GOOS=windows CGO_ENABLED=0 $(GO_LINT_WHOLE_TREE) --enable-only exhaustive --build-tags "$$tags" $$packages; \
 	done
-
-# go-lint-unused runs the unused linter alone over every Go file this host
-# compiles with no build tag, test files included. The new-issues gate does
-# not report an identifier whose last use a change deleted, because the
-# identifier's own lines are not in the change; this pass has no backlog,
-# so it does. It reads one file set: a helper that only another platform or
-# a build tag calls lives in that platform's or tag's files, beside its
-# callers.
-go-lint-unused: $(GOLANGCI_LINT_BUILD)
-	$(GOLANGCI_LINT) run --timeout 20m --enable-only unused ./...
 
 go-vet:
 	go vet $(GO_PACKAGE_ROOTS)
@@ -362,6 +361,16 @@ bindings-check:
 	$(MAKE) methodgen
 	git diff --exit-code --stat -- frontend/bindings internal/transport/methods_gen.go frontend/src/lib/transport/methodRoutes.ts
 
+# The frontend build follows the lockfile. pnpm records the lockfile it
+# installed at node_modules/.pnpm/lock.yaml; when the checked-in lockfile is
+# newer (a merge, a branch switch), every target that runs the frontend
+# reinstalls first, and a current install costs one stat. `make install`
+# stays the first-time setup because it also fetches the Go tools and the
+# Playwright Chromium.
+FRONTEND_DEPS := frontend/node_modules/.pnpm/lock.yaml
+$(FRONTEND_DEPS): frontend/pnpm-lock.yaml
+	cd frontend && pnpm install --frozen-lockfile
+
 # frontend-lint runs oxlint over the frontend (frontend/.oxlintrc.json).
 # OXLINT_FLAGS carries extra flags; CI lints only the files a change touched
 # with --deny-warnings until the warning backlog is cleared.
@@ -369,8 +378,9 @@ OXLINT_FLAGS ?=
 frontend-lint: $(FRONTEND_DEPS)
 	cd frontend && pnpm exec oxlint $(OXLINT_FLAGS)
 
-# frontend-deadcode runs knip over the frontend (frontend/knip.config.ts): a
-# file, export, type or dependency nothing uses fails it.
+# frontend-deadcode runs knip over the frontend, counting the Playwright
+# suite's imports (knip.config.ts): a file, export, type or dependency
+# nothing uses fails it.
 frontend-deadcode: $(FRONTEND_DEPS)
 	cd frontend && pnpm run deadcode
 
@@ -490,16 +500,6 @@ install:
 	go install tool
 	cd frontend && pnpm install --frozen-lockfile
 	cd frontend && pnpm exec playwright install chromium
-
-# The frontend build follows the lockfile. pnpm records the lockfile it
-# installed at node_modules/.pnpm/lock.yaml; when the checked-in lockfile is
-# newer (a merge, a branch switch), every target that runs the frontend
-# reinstalls first, and a current install costs one stat. `make install`
-# stays the first-time setup because it also fetches the Go tools and the
-# Playwright Chromium.
-FRONTEND_DEPS := frontend/node_modules/.pnpm/lock.yaml
-$(FRONTEND_DEPS): frontend/pnpm-lock.yaml
-	cd frontend && pnpm install --frozen-lockfile
 
 # dev: one build of the dev bundle (frontend embedded, DEV=true), then one
 # launch. Nothing watches the tree: a code change needs another `make dev`,

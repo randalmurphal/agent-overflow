@@ -1603,21 +1603,6 @@ func (a *App) cleanupStaleFlushRows(threadID string, userItemIDs []string) error
 	return nil
 }
 
-// nextFlushSequenceForTurn returns the next available flush sequence
-// number for (threadID, turnIndex). It considers both persisted rows
-// and deferred pending rows waiting for provider echo, because queued
-// sends no longer persist the user_text row optimistically.
-func (a *App) nextFlushSequenceForTurn(threadID string, turnIndex int) (int, error) {
-	if a.triage != nil {
-		// Both reads (persisted rows + deferred registry) run under the
-		// thread's flush anchor: an unanchored pair here could land
-		// inside the echo path's pop->persist section and re-issue a
-		// consumed message's sequence (triage.NextFlushSequence doc).
-		return a.triage.NextFlushSequence(threadID, turnIndex)
-	}
-	return a.nextSequenceForScope(threadID, turnIndex, "flush")
-}
-
 // dispatchFlushToProvider routes the actual provider call based on
 // session type. A Codex drain STEERS (mid-turn pending_input); the caller
 // handles the no-active-turn fallback after it can re-register the pending
@@ -2174,13 +2159,14 @@ const queueMaxMessageBytes = 512 * 1024 // 512 KiB
 
 func maxQueueMessageBytes() int { return queueMaxMessageBytes }
 
-// nextFlushUserItemID formats the next flush-scope user item id
-// (nextFlushSequenceForTurn). Format: `user:<turnIndex>:flush:<n>`.
-// Sortable; never collides with the seed `user:<turnIndex>` row or
-// with `:steer:<n>` rows. Reads existing rows so a session reopen
-// sees the right next sequence even after a restart.
+// nextFlushUserItemID formats the next flush-scope user item id, whose
+// sequence the router allocates (triage.Router.NextFlushSequence) from
+// the persisted rows and the sends awaiting their echo. Format:
+// `user:<turnIndex>:flush:<n>`. Sortable; never collides with the seed
+// `user:<turnIndex>` row or with `:steer:<n>` rows. Its callers hold the
+// router already: they take its turn allocation lock first.
 func (a *App) nextFlushUserItemID(threadID string, turnIndex int) (string, error) {
-	seq, err := a.nextFlushSequenceForTurn(threadID, turnIndex)
+	seq, err := a.triage.NextFlushSequence(threadID, turnIndex)
 	if err != nil {
 		return "", err
 	}

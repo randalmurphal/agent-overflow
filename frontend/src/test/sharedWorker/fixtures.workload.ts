@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import type { NodeWorkload } from '../helpers/nodeWorkload';
+import { nodeWorkload } from '../helpers/nodeWorkload';
 import { COLLECT_FIXTURES, RETIREMENT_FAILURES, RUN_FIXTURES } from './fixtureOrder';
 import { FIXTURES_DONE_ENV } from './fixtureState';
 
@@ -101,4 +101,4 @@ export async function runSharedWorkerFixtures(): Promise<string> {
   return JSON.stringify(runs);
 }
 
-export const sharedWorkerFixturesWorkload: NodeWorkload = { url: import.meta.url, entry: 'runSharedWorkerFixtures' };
+export const sharedWorkerFixturesWorkload = nodeWorkload(import.meta.url, { runSharedWorkerFixtures });

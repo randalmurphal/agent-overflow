@@ -21,7 +21,9 @@ export default defineConfig({
   ],
   test: {
     reporters: [...configDefaults.reporters, new StalledPageWatchdog({ boundMs: CHECK_BOUND_MS, checkEveryMs: 1_000 })],
-    include: ['src/test/stalledPage/*.fixture.ts'],
+    // Each file a scenario of the check runs, which checks it names
+    // exactly these.
+    include: ['blocked-test', 'blocked-after-end', 'quick', 'live-long'].map((name) => `src/test/stalledPage/${name}.fixture.ts`),
     testTimeout: 5_000,
     hookTimeout: 5_000,
     browser: {

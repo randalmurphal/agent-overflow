@@ -27,7 +27,7 @@ type lintTarget struct {
 
 // The exhaustive linter sees only the files a pass compiles, so a file whose
 // build constraint no pass satisfies is never checked. `make
-// go-lint-exhaustive` runs few passes on the strength of one fact about the
+// go-lint-whole-tree` runs few passes on the strength of one fact about the
 // tree: no file needs one tag on and another off. This test holds that fact.
 // It fails for a file that some combination of build tags compiles on a
 // linted system and that no pass compiles. The Windows passes name only the
@@ -76,30 +76,30 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 	}
 	if len(unreached) > 0 {
 		t.Fatalf("no exhaustive lint pass compiles these files; add a pass to the "+
-			"go-lint-exhaustive recipe whose build tags satisfy them:\n%s",
+			"go-lint-whole-tree recipe whose build tags satisfy them:\n%s",
 			strings.Join(unreached, "\n"))
 	}
 }
 
 // exhaustiveLintTargets reads the passes from where they are run: this
-// host's and the Windows launcher's from the go-lint-exhaustive recipe, and
+// host's and the Windows launcher's from the go-lint-whole-tree recipe, and
 // the macOS job's from the CI workflow.
 func exhaustiveLintTargets(t *testing.T) []lintTarget {
 	t.Helper()
-	recipe := makefileRecipe(t, "go-lint-exhaustive")
+	recipe := makefileRecipe(t, "go-lint-whole-tree")
 
 	var host [][]string
-	hostPass := regexp.MustCompile(`(?m)^\t\$\(GO_LINT_EXHAUSTIVE\)(?: --build-tags (\S+))? \./\.\.\.$`)
+	hostPass := regexp.MustCompile(`(?m)^\t\$\(GO_LINT_WHOLE_TREE\) --enable-only exhaustive(?:,unused)?(?: --build-tags (\S+))? \./\.\.\.$`)
 	for _, match := range hostPass.FindAllStringSubmatch(recipe, -1) {
 		host = append(host, splitTags(match[1]))
 	}
 	if !slices.ContainsFunc(host, func(tags []string) bool { return len(tags) == 0 }) {
-		t.Fatalf("the go-lint-exhaustive recipe has no pass without build tags:\n%s", recipe)
+		t.Fatalf("the go-lint-whole-tree recipe has no exhaustive pass without build tags:\n%s", recipe)
 	}
 
 	windowsLoop := regexp.MustCompile(`for tags in ([^;]+); do`).FindStringSubmatch(recipe)
-	if windowsLoop == nil || !strings.Contains(recipe, "GOOS=windows CGO_ENABLED=0 $(GO_LINT_EXHAUSTIVE)") {
-		t.Fatalf("the go-lint-exhaustive recipe has no Windows launcher passes:\n%s", recipe)
+	if windowsLoop == nil || !strings.Contains(recipe, "GOOS=windows CGO_ENABLED=0 $(GO_LINT_WHOLE_TREE) --enable-only exhaustive") {
+		t.Fatalf("the go-lint-whole-tree recipe has no Windows launcher passes:\n%s", recipe)
 	}
 	var windows [][]string
 	for _, tags := range strings.Fields(windowsLoop[1]) {
