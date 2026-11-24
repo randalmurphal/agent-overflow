@@ -1,6 +1,7 @@
 package main
 
 import (
+	"go/ast"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
@@ -21,7 +22,9 @@ type lintTarget struct {
 	goos   string
 	cgo    bool
 	passes [][]string
-	// wholeTree is false for a target whose passes name only some packages.
+	// wholeTree is false for a target whose passes skip packages that hold
+	// files only it compiles. The macOS pass names packages, and names every
+	// one whose files differ from Linux's, so it skips none.
 	wholeTree bool
 }
 
@@ -41,8 +44,76 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 			wholeTree = append(wholeTree, target)
 		}
 	}
-	root := reporoot.Dir(t)
 	var unreached []string
+	eachConstrainedGoFile(t, func(rel, _ string, expr constraint.Expr) {
+		reach := targets
+		if compiledBySomeBuild(expr, wholeTree) {
+			reach = wholeTree
+		}
+		if compiledBySomeBuild(expr, reach) && !compiledBySomePass(expr, reach) {
+			unreached = append(unreached, rel+": "+expr.String())
+		}
+	})
+	if len(unreached) > 0 {
+		t.Fatalf("no exhaustive lint pass compiles these files; add a pass to the "+
+			"go-lint-whole-tree recipe whose build tags satisfy them:\n%s",
+			strings.Join(unreached, "\n"))
+	}
+}
+
+// The macOS pass lints only the packages whose files differ on macOS (`make
+// go-lint-host-files`). An exported constant in a file only macOS compiles
+// can be an enum member that a switch in another package has to name, in a
+// package neither that pass nor the Linux passes read as macOS compiles it:
+// the linter takes a constant's type from the compiler, whatever the
+// declaration spells. So no such file declares an exported constant.
+func TestNoFileOnlyMacOSCompilesDeclaresAnExportedConstant(t *testing.T) {
+	var linux, macOS []lintTarget
+	for _, target := range exhaustiveLintTargets(t) {
+		switch target.goos {
+		case "linux":
+			linux = append(linux, target)
+		case "darwin":
+			macOS = append(macOS, target)
+		}
+	}
+	var found []string
+	eachConstrainedGoFile(t, func(rel, path string, expr constraint.Expr) {
+		if strings.HasSuffix(rel, "_test.go") || !compiledBySomeBuild(expr, macOS) || compiledBySomeBuild(expr, linux) {
+			return
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, decl := range file.Decls {
+			group, ok := decl.(*ast.GenDecl)
+			if !ok || group.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range group.Specs {
+				for _, name := range spec.(*ast.ValueSpec).Names {
+					if name.IsExported() {
+						found = append(found, rel+": "+name.Name)
+					}
+				}
+			}
+		}
+	})
+	if len(found) > 0 {
+		t.Fatalf("these files only macOS compiles declare an exported constant, which a switch in a package "+
+			"`make go-lint-host-files` does not lint may have to name; unexport it, declare it in a file "+
+			"Linux compiles too, or widen that recipe to the packages that import these:\n%s",
+			strings.Join(found, "\n"))
+	}
+}
+
+// eachConstrainedGoFile calls visit for every Go file of the tree whose name
+// or //go:build line constrains where it compiles, with its path from the
+// repository root and its path on disk.
+func eachConstrainedGoFile(t *testing.T, visit func(rel, path string, expr constraint.Expr)) {
+	t.Helper()
+	root := reporoot.Dir(t)
 	walkErr := reporoot.Walk(t, ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -57,33 +128,20 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 		if !strings.HasSuffix(name, ".go") {
 			return nil
 		}
-		expr := fileConstraint(t, path)
-		if expr == nil {
-			return nil
-		}
-		reach := targets
-		if compiledBySomeBuild(expr, wholeTree) {
-			reach = wholeTree
-		}
-		if compiledBySomeBuild(expr, reach) && !compiledBySomePass(expr, reach) {
+		if expr := fileConstraint(t, path); expr != nil {
 			rel, _ := filepath.Rel(root, path)
-			unreached = append(unreached, filepath.ToSlash(rel)+": "+expr.String())
+			visit(filepath.ToSlash(rel), path, expr)
 		}
 		return nil
 	})
 	if walkErr != nil {
 		t.Fatalf("walk the tree: %v", walkErr)
 	}
-	if len(unreached) > 0 {
-		t.Fatalf("no exhaustive lint pass compiles these files; add a pass to the "+
-			"go-lint-whole-tree recipe whose build tags satisfy them:\n%s",
-			strings.Join(unreached, "\n"))
-	}
 }
 
 // exhaustiveLintTargets reads the passes from where they are run: this
 // host's and the Windows launcher's from the go-lint-whole-tree recipe, and
-// the macOS job's from the CI workflow.
+// the macOS job's from the CI workflow and the go-lint-host-files recipe.
 func exhaustiveLintTargets(t *testing.T) []lintTarget {
 	t.Helper()
 	recipe := makefileRecipe(t, "go-lint-whole-tree")
@@ -116,8 +174,11 @@ func exhaustiveLintTargets(t *testing.T) []lintTarget {
 		t.Fatalf("read the CI workflow: %v", err)
 	}
 	macOSJob, _, _ := strings.Cut(afterFirst(string(workflow), "\n  build-macos:\n"), "\n  go-lint:\n")
-	if !strings.Contains(macOSJob, `run: make go-lint GO_LINT_FLAGS="--enable-only exhaustive"`) {
-		t.Fatal("the CI workflow's macOS job no longer runs the exhaustive linter over the untagged file set")
+	if !strings.Contains(macOSJob, "run: make go-lint-host-files\n") {
+		t.Fatal("the CI workflow's macOS job no longer runs make go-lint-host-files")
+	}
+	if hostFiles := makefileRecipe(t, "go-lint-host-files"); !strings.Contains(hostFiles, "\t$(GO_LINT_WHOLE_TREE) --enable-only exhaustive $$packages\n") {
+		t.Fatalf("the go-lint-host-files recipe no longer runs exhaustive with no build tag over the packages it finds:\n%s", hostFiles)
 	}
 
 	return []lintTarget{
