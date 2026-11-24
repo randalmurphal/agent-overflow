@@ -3,12 +3,12 @@ package providerdiscoveryapp
 import (
 	"context"
 	"errors"
-	"fmt"
 	"runtime"
 	"testing"
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -59,39 +59,29 @@ func TestTransferReadinessChecksOnlySelectedProviderAndFreshAccount(t *testing.T
 	}
 }
 
-// TestTransferReadinessRefusesCodexBelowMinimum pins the receiver's refusal
-// at the start of a transfer: the real detection runs the binary, and a
-// Codex below the minimum is refused with the detection's message, before
-// the account probe and before any file lands. Output that names no version
-// reads as ready, as on main, so the account probe's handshake is what
-// admits or refuses that build.
-func TestTransferReadinessRefusesCodexBelowMinimum(t *testing.T) {
+// TestTransferReadinessLeavesTheCodexVersionToTheAccountHandshake pins
+// that `--version` output, which runs in AO's own environment, does not
+// decide an incoming Codex transfer: below the minimum, unreadable or
+// supported, the account probe runs, and its handshake (started with the
+// configured environment) admits or refuses the build.
+func TestTransferReadinessLeavesTheCodexVersionToTheAccountHandshake(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mock shell scripts require unix")
 	}
-	for _, tc := range []struct {
-		output, want string
-	}{
-		{"codex-cli 0.153.4", "This computer cannot receive the conversation yet. Codex v0.153.4 (%s) is installed; Agent Overflow needs v0.154.0 or newer. Update Codex."},
-		{"codex-cli dev", ""},
-		{"codex-cli 0.154.0", ""},
-	} {
-		t.Run(tc.output, func(t *testing.T) {
-			binary := mockexec.WriteIn(t, t.TempDir(), "codex", "#!/bin/sh\necho '"+tc.output+"'\n")
-			calls := 0
+	for _, output := range []string{"codex-cli 0.153.4", "codex-cli dev", "codex-cli 0.154.0"} {
+		t.Run(output, func(t *testing.T) {
+			binary := mockexec.WriteIn(t, t.TempDir(), "codex", "#!/bin/sh\necho '"+output+"'\n")
+			calls, emitted := 0, 0
+			refusal := errors.New("the handshake's answer")
 			s := New(Deps{Reaper: procutiltest.Reaper(), ProviderBinary: func(string) string { return binary },
 				DetectProvider:            provider.DetectProvider,
-				CheckCodexTransferAccount: func(context.Context, string) error { calls++; return nil },
+				CheckCodexTransferAccount: func(context.Context, string) error { calls++; return refusal },
+				EmitStatus:                func(providerstatus.Event) { emitted++ },
 			}, testCaches())
 			err := s.CheckTransferReadiness(context.Background(), "codex")
-			if tc.want == "" {
-				if err != nil || calls != 1 {
-					t.Fatalf("supported Codex: %v, probes=%d", err, calls)
-				}
-				return
-			}
-			if err == nil || err.Error() != fmt.Sprintf(tc.want, binary) || calls != 0 {
-				t.Fatalf("err = %v, probes=%d; want %q", err, calls, fmt.Sprintf(tc.want, binary))
+			if !errors.Is(err, refusal) || calls != 1 || emitted != 0 {
+				t.Fatalf("err = %v, probes = %d, status events = %d; want the account handshake's answer alone",
+					err, calls, emitted)
 			}
 		})
 	}

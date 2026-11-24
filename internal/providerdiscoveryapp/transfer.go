@@ -24,13 +24,18 @@ func (s *Service) CheckTransferReadiness(ctx context.Context, name string) error
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if status.Status != "ready" {
+	// A Codex version read from `--version` runs in AO's own environment,
+	// so it is display only here: the account handshake below starts Codex
+	// with the configured environment and admits or refuses the build that
+	// runs.
+	codexVersionOnly := name == string(provider.Codex) && status.Status == "version_too_old"
+	if status.Status != "ready" && !codexVersionOnly {
 		if s.deps.EmitStatus != nil {
 			s.deps.EmitStatus(providerstatus.EventFromDetect(status))
 		}
-		if name == string(provider.Codex) && (status.Status == "version_too_old" || status.Status == "error") && status.Message != "" {
-			// The detection message names the installed version, the
-			// minimum and the binary.
+		if name == string(provider.Codex) && status.Status == "error" && status.Message != "" {
+			// The detection message names the binary and why its version
+			// check failed.
 			return fmt.Errorf("This computer cannot receive the conversation yet. %s", status.Message) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		}
 		return fmt.Errorf("Set up %s on this computer before receiving the conversation (%s).", name, status.Status) //nolint:staticcheck // ST1005: the user sees this sentence as written.

@@ -79,9 +79,10 @@ checks share the managed rotation transaction. Codex reads `account/read` withou
 refreshing credentials or starting a thread, including custom endpoints that do
 not require an OpenAI login. Native-format admission reads every graph member's
 history mode and refuses an unknown one before preparation. The destination's
-Codex must meet AO's minimum, which reads both history modes; an older one fails
-the provider check with "This computer cannot receive the conversation yet."
-followed by the detection message. An isolated 0.153.4 → 0.148.0
+Codex must meet AO's minimum, which reads both history modes. The account
+check's `initialize`, started with the configured Codex environment, decides
+that; a `--version` result below the minimum does not stop the transfer, and an
+older build fails the account check with the version message. An isolated 0.153.4 → 0.148.0
 Go-export probe preserved Move/Copy history, model context and old-turn reverts;
 matching source and destination CLI versions is not required.
 

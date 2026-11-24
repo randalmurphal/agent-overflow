@@ -46,6 +46,8 @@ type versionedCodex struct {
 	// a version manager picks a build from its environment.
 	selectVar       string
 	selectedVersion string
+	// signedIn makes `account/read` answer a ChatGPT account.
+	signedIn bool
 }
 
 func (c versionedCodex) write(t *testing.T) {
@@ -83,6 +85,8 @@ while IFS= read -r line; do
     ` + unsubscribe + `
   elif /bin/echo "$line" | /usr/bin/grep -q '"method":"model/list"'; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"model":"gpt-5.5","displayName":"GPT-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high"}],"nextCursor":null}}\n' "$id"
+  elif ` + c.accountReadTest() + ` /bin/echo "$line" | /usr/bin/grep -q '"method":"account/read"'; then
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"account":{"type":"chatgpt"},"requiresOpenaiAuth":true}}\n' "$id"
   elif /bin/echo "$line" | /usr/bin/grep -q '"method":"skills/list"'; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[]}}\n' "$id"
   else
@@ -91,6 +95,15 @@ while IFS= read -r line; do
 done
 `
 	mockexec.WriteFile(t, c.path, []byte(script), 0o755)
+}
+
+// accountReadTest is the shell condition that guards the signed-in
+// `account/read` answer: true when signedIn, false otherwise.
+func (c versionedCodex) accountReadTest() string {
+	if c.signedIn {
+		return "true &&"
+	}
+	return "false &&"
 }
 
 // selectScript is the line that lets the environment pick the build.
@@ -458,6 +471,59 @@ func TestCodexCatalogStartsTheBuildASessionRuns(t *testing.T) {
 	}
 	if n := len(fake.launches(t)); n < 1 {
 		t.Fatalf("app-server launches = %d, want the catalog's", n)
+	}
+}
+
+// An incoming Codex transfer is admitted or refused for its version by the
+// account handshake, which starts Codex with the configured environment.
+// A launcher whose bare `--version` reports 0.153.4 in AO's own
+// environment and whose configured environment selects 0.154.0 receives the
+// conversation; a Codex whose handshake reports 0.153.4 is refused with the
+// version message.
+func TestCodexTransferReadinessIsDecidedByTheAccountHandshake(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		selects bool
+		want    string
+	}{
+		{name: "launcher selects a supported build", selects: true},
+		{name: "handshake reports an older build", want: "0.153.4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			fake := newVersionedCodex(t, "0.153.4")
+			fake.signedIn = true
+			fake.selectVar = "CODEX_TEST_SELECT"
+			fake.selectedVersion = provider.MinimumCodexCLIVersion
+			fake.write(t)
+			if _, err := f.app.settings.Update(map[string]any{"codexBinaryPath": fake.path}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.selects {
+				if _, err := f.app.providerDiscoveryService().SetProviderCustomEnvVar(
+					string(provider.Codex), fake.selectVar, "1", false,
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			err := f.app.providerDiscoveryService().CheckTransferReadiness(t.Context(), string(provider.Codex))
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("readiness on a launcher that runs %s under the configured environment: %v",
+						provider.MinimumCodexCLIVersion, err)
+				}
+				return
+			}
+			if want := wantCodexVersionMessage(fake.path, tc.want); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("readiness = %v, want the handshake's refusal %q", err, want)
+			}
+			if n := len(fake.launches(t)); n != 1 {
+				t.Fatalf("app-server launches = %d, want the account handshake's one", n)
+			}
+		})
 	}
 }
 
