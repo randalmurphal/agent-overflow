@@ -28,28 +28,27 @@ func (s stubProvider) Download(context.Context, *updater.Release, io.Writer, fun
 }
 
 func TestVerifiedProviderFailsClosedWithoutVerification(t *testing.T) {
-	// A release with no Verification block must be rejected: installing it
-	// would skip integrity checking entirely (the stock GitHub provider's
-	// silent fall-open when the checksum sidecar is missing).
-	p := verifiedProvider{inner: stubProvider{rel: &updater.Release{Version: "1.2.3"}}}
-	rel, err := p.Check(context.Background(), updater.CheckRequest{})
-	if err == nil {
-		t.Fatal("expected error for release without verification, got nil")
-	}
-	if rel != nil {
-		t.Fatalf("expected nil release on rejection, got %+v", rel)
-	}
-}
-
-func TestVerifiedProviderFailsClosedWithEmptyDigest(t *testing.T) {
-	// A Verification block present but carrying an empty digest is still
-	// unverifiable and must be rejected.
-	p := verifiedProvider{inner: stubProvider{rel: &updater.Release{
-		Version:      "1.2.3",
-		Verification: &updater.Verification{DigestAlgo: "sha256", Digest: nil},
-	}}}
-	if _, err := p.Check(context.Background(), updater.CheckRequest{}); err == nil {
-		t.Fatal("expected error for release with empty digest, got nil")
+	// A release with no Verification block, or one carrying an empty digest,
+	// must be rejected: installing it would skip integrity checking entirely
+	// (the stock GitHub provider's silent fall-open when the checksum sidecar
+	// is missing).
+	for _, tc := range []struct {
+		name         string
+		verification *updater.Verification
+	}{
+		{"no verification block", nil},
+		{"empty digest", &updater.Verification{DigestAlgo: "sha256", Digest: nil}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := verifiedProvider{inner: stubProvider{rel: &updater.Release{Version: "1.2.3", Verification: tc.verification}}}
+			rel, err := p.Check(context.Background(), updater.CheckRequest{})
+			if err == nil {
+				t.Fatal("expected error for an unverifiable release, got nil")
+			}
+			if rel != nil {
+				t.Fatalf("expected nil release on rejection, got %+v", rel)
+			}
+		})
 	}
 }
 

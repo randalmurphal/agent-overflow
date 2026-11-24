@@ -161,20 +161,28 @@ func TestReleaseSourceFetchRefusesBytesTheChecksumDoesNotCover(t *testing.T) {
 	}
 }
 
-// A release that ships no sidecar at all fails at the resolve, before a byte
-// is requested. Fail-closed is the property; "nothing was downloaded" is how
-// it is observed.
-func TestReleaseSourceFetchRefusesAReleaseWithNothingToVerifyAgainst(t *testing.T) {
-	source := newHeadlessSource(t, []relSpec{
-		{tag: "v0.9.0", name: "Nine", withHeadless: true},
-	}, sumsForHeadless, "0.8.0")
-
-	var got bytes.Buffer
-	if _, err := source.Fetch(context.Background(), "v0.9.0", &got, nil); err == nil {
-		t.Fatal("Fetch installed a release with no checksum")
-	}
-	if got.Len() != 0 {
-		t.Errorf("Fetch wrote %d bytes for a release it could not verify", got.Len())
+// A release that ships no sidecar at all, or nothing this host can install,
+// fails at the resolve, before a byte is requested, rather than resolving to
+// unverified bytes or the artifact of some other target. Fail-closed is the
+// property; "nothing was downloaded" is how it is observed.
+func TestReleaseSourceFetchRefusesAnUninstallableRelease(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec relSpec
+	}{
+		{"nothing to verify against", relSpec{tag: "v0.9.0", name: "Nine", withHeadless: true}},
+		{"no asset for this host", relSpec{tag: "v0.9.0", withBogus: true, withChecksum: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := newHeadlessSource(t, []relSpec{tc.spec}, sumsForHeadless, "0.8.0")
+			var got bytes.Buffer
+			if _, err := source.Fetch(context.Background(), "v0.9.0", &got, nil); err == nil {
+				t.Fatal("Fetch resolved a release it cannot install")
+			}
+			if got.Len() != 0 {
+				t.Errorf("Fetch wrote %d bytes for a release it cannot install", got.Len())
+			}
+		})
 	}
 }
 
@@ -222,19 +230,6 @@ func TestReleaseSourceFetchRefusesAnUnsafeTag(t *testing.T) {
 	}
 	if got.Len() != 0 {
 		t.Errorf("Fetch wrote %d bytes for a tag it refused", got.Len())
-	}
-}
-
-// A tag that exists but ships nothing this host can install is refused with
-// the reason, rather than resolving to the artifact of some other target.
-func TestReleaseSourceFetchRefusesAReleaseWithNoAssetForThisHost(t *testing.T) {
-	source := newHeadlessSource(t, []relSpec{
-		{tag: "v0.9.0", withBogus: true, withChecksum: true},
-	}, sumsForHeadless, "0.8.0")
-
-	var got bytes.Buffer
-	if _, err := source.Fetch(context.Background(), "v0.9.0", &got, nil); err == nil {
-		t.Fatal("Fetch resolved a release with no asset for this host")
 	}
 }
 
