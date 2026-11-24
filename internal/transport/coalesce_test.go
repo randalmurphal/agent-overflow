@@ -14,6 +14,8 @@ func makeEvent(channel string, seq uint64) Event {
 	}
 }
 
+// TestCoalesceBuffer_CountThreshold flushes at the count, and the batch
+// keeps each event's seq, channel and gap flag as they were added.
 func TestCoalesceBuffer_CountThreshold(t *testing.T) {
 	var batches [][]Event
 	buf := newCoalesceBuffer(3, time.Hour, func(batch []Event) {
@@ -22,12 +24,13 @@ func TestCoalesceBuffer_CountThreshold(t *testing.T) {
 		batches = append(batches, cp)
 	})
 
-	buf.add(makeEvent("a", 1))
-	buf.add(makeEvent("a", 2))
+	channels := []string{"provider:item_event", "provider:usage", "thread:updated"}
+	buf.add(Event{Channel: channels[0], Seq: 1, Data: json.RawMessage(`{}`), Gap: true})
+	buf.add(makeEvent(channels[1], 2))
 	if len(batches) != 0 {
 		t.Fatal("flushed before reaching count threshold")
 	}
-	buf.add(makeEvent("a", 3))
+	buf.add(makeEvent(channels[2], 3))
 	if len(batches) != 1 {
 		t.Fatalf("expected 1 batch after threshold, got %d", len(batches))
 	}
@@ -35,8 +38,9 @@ func TestCoalesceBuffer_CountThreshold(t *testing.T) {
 		t.Fatalf("expected 3 events in batch, got %d", len(batches[0]))
 	}
 	for i, e := range batches[0] {
-		if e.Seq != uint64(i+1) {
-			t.Fatalf("event %d: seq=%d, want %d", i, e.Seq, i+1)
+		if e.Seq != uint64(i+1) || e.Channel != channels[i] || e.Gap != (i == 0) {
+			t.Fatalf("event %d = seq %d channel %q gap %v, want seq %d channel %q gap %v",
+				i, e.Seq, e.Channel, e.Gap, i+1, channels[i], i == 0)
 		}
 	}
 }
@@ -127,51 +131,6 @@ func TestCoalesceBuffer_NilTimerCBlocks(t *testing.T) {
 	buf := newCoalesceBuffer(100, time.Hour, func(batch []Event) {})
 	if buf.timerC() != nil {
 		t.Fatal("timerC should be nil before any add")
-	}
-}
-
-func TestCoalesceBuffer_GapPreserved(t *testing.T) {
-	var batches [][]Event
-	buf := newCoalesceBuffer(2, time.Hour, func(batch []Event) {
-		cp := make([]Event, len(batch))
-		copy(cp, batch)
-		batches = append(batches, cp)
-	})
-
-	buf.add(Event{Channel: "a", Seq: 5, Data: json.RawMessage(`{}`), Gap: true})
-	buf.add(makeEvent("a", 6))
-
-	if len(batches) != 1 {
-		t.Fatal("expected flush")
-	}
-	if !batches[0][0].Gap {
-		t.Fatal("gap flag not preserved on first event")
-	}
-	if batches[0][1].Gap {
-		t.Fatal("gap should be false on second event")
-	}
-}
-
-func TestCoalesceBuffer_MultiChannelPreservesChannel(t *testing.T) {
-	var batches [][]Event
-	buf := newCoalesceBuffer(3, time.Hour, func(batch []Event) {
-		cp := make([]Event, len(batch))
-		copy(cp, batch)
-		batches = append(batches, cp)
-	})
-
-	buf.add(makeEvent("provider:item_event", 1))
-	buf.add(makeEvent("provider:usage", 2))
-	buf.add(makeEvent("thread:updated", 3))
-
-	if len(batches) != 1 {
-		t.Fatal("expected flush")
-	}
-	want := []string{"provider:item_event", "provider:usage", "thread:updated"}
-	for i, e := range batches[0] {
-		if e.Channel != want[i] {
-			t.Fatalf("event %d: channel=%q, want %q", i, e.Channel, want[i])
-		}
 	}
 }
 

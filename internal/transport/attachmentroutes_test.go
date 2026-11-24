@@ -210,7 +210,9 @@ func put(t *testing.T, addr, relative string, body io.Reader, contentLength int6
 
 // TestAttachmentDownloadServesTheTicketedBytes is the happy path, and it
 // pins the three response properties a caller depends on: the bytes, the
-// content type the seam declared, and no-store.
+// content type the seam declared, and no-store. Then the property the
+// whole mechanism rests on: the ticket is spent once, so a second
+// presentation is a 404 and never reaches the seam.
 func TestAttachmentDownloadServesTheTicketedBytes(t *testing.T) {
 	payload := pngPayload()
 	stub := &stubTransfer{content: payload, mime: "image/png"}
@@ -244,24 +246,8 @@ func TestAttachmentDownloadServesTheTicketedBytes(t *testing.T) {
 	if !bytes.Equal(body, payload) {
 		t.Fatalf("served %d bytes, stored %d", len(body), len(payload))
 	}
-}
 
-// TestAttachmentDownloadTicketIsSpentOnce is the property the whole
-// mechanism rests on. The second presentation is a 404 and never reaches
-// the seam.
-func TestAttachmentDownloadTicketIsSpentOnce(t *testing.T) {
-	stub := &stubTransfer{content: pngPayload()}
-	f := attachmentFixture(t, stub)
-
-	relative, err := f.srv.MintAttachmentDownloadTicket("thr-1", "att-1")
-	if err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-	if resp := get(t, f.srv.Addr(), relative, nil); resp.StatusCode != http.StatusOK {
-		t.Fatalf("first status = %d, want 200", resp.StatusCode)
-	}
-	resp := get(t, f.srv.Addr(), relative, nil)
-	if resp.StatusCode != http.StatusNotFound {
+	if resp := get(t, f.srv.Addr(), relative, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("replayed status = %d, want 404", resp.StatusCode)
 	}
 	stub.mu.Lock()
@@ -420,7 +406,9 @@ func TestAttachmentDownloadRefusesWithoutASeam(t *testing.T) {
 
 // TestAttachmentUploadStoresTheTicketedBody is the write happy path. The
 // metadata all comes from the SUBJECT, so the assertions are about what
-// the seam received rather than about what the request said.
+// the seam received rather than about what the request said. The ticket is
+// then spent: a retry re-mints, it does not replay, which is why a failed
+// upload is a fresh ticket rather than a resumable one.
 func TestAttachmentUploadStoresTheTicketedBody(t *testing.T) {
 	stub := &stubTransfer{}
 	f := attachmentFixture(t, stub)
@@ -463,25 +451,8 @@ func TestAttachmentUploadStoresTheTicketedBody(t *testing.T) {
 	if stored.req.Size != int64(len(payload)) || !bytes.Equal(stored.body, payload) {
 		t.Fatalf("delivered %d bytes for a declared %d", len(stored.body), stored.req.Size)
 	}
-}
 
-// TestAttachmentUploadTicketIsSpentOnce: a retry re-mints, it does not
-// replay. That is why a failed upload is a fresh ticket rather than a
-// resumable one.
-func TestAttachmentUploadTicketIsSpentOnce(t *testing.T) {
-	stub := &stubTransfer{}
-	f := attachmentFixture(t, stub)
-	payload := pngPayload()
-
-	relative, err := f.srv.MintAttachmentUploadTicket("thr-1", "shot.png", "image/png", int64(len(payload)))
-	if err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-	if resp := put(t, f.srv.Addr(), relative, bytes.NewReader(payload), int64(len(payload))); resp.StatusCode != http.StatusOK {
-		t.Fatalf("first status = %d, want 200", resp.StatusCode)
-	}
-	resp := put(t, f.srv.Addr(), relative, bytes.NewReader(payload), int64(len(payload)))
-	if resp.StatusCode != http.StatusNotFound {
+	if resp := put(t, f.srv.Addr(), relative, bytes.NewReader(payload), int64(len(payload))); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("replayed status = %d, want 404", resp.StatusCode)
 	}
 	stub.mu.Lock()

@@ -104,6 +104,13 @@ func TestConnWatchFrameNarrowsLiveDelivery(t *testing.T) {
 // caught up on its cursor, not on the entities it stopped watching. A
 // frame the filter drops produces no event and no gap marker, exactly like
 // the origin and channel filters beside it.
+//
+// It also pins the ordering the SPA depends on: the watch frame and the
+// replay request ride the same socket with no barrier between them (the
+// client's sequence in wsClient's open handler), and one read loop handles
+// them in order, so a watch written first is applied before the replay it
+// precedes. If that stopped holding, a reconnect would replay the whole
+// ring for every thread.
 func TestConnWatchFrameNarrowsReplay(t *testing.T) {
 	const filtered = "provider:item_event"
 	withEntityFilteredChannel(t, filtered)
@@ -128,33 +135,6 @@ func TestConnWatchFrameNarrowsReplay(t *testing.T) {
 	}
 	if replay.events[0].Gap {
 		t.Fatalf("a withheld replay entry announced a gap; withholding is not a loss")
-	}
-}
-
-// TestConnWatchFrameOrderedBeforeReplayIsWhatTheClientRelieson pins the
-// ordering the SPA depends on: the watch frame and the replay request ride
-// the same socket, and one read loop handles them in order, so a watch
-// written first is applied before the replay it precedes. If that stopped
-// holding, a reconnect would replay the whole ring for every thread.
-func TestConnWatchFrameOrderedBeforeReplayIsWhatTheClientReliesOn(t *testing.T) {
-	const filtered = "provider:item_event"
-	withEntityFilteredChannel(t, filtered)
-
-	f := newServerFixture(t)
-	for _, thread := range []string{"thread-B", "thread-C", "thread-A"} {
-		if _, err := f.bus.EmitEntity(filtered, thread, thread); err != nil {
-			t.Fatalf("emit %s: %v", thread, err)
-		}
-	}
-
-	conn := f.dial(t)
-	// Written back to back with no barrier between them — which is
-	// precisely the client's sequence in wsClient's open handler.
-	sendFrame(t, conn, ClientFrame{Type: frameTypeWatch, Threads: []string{"thread-A"}})
-	replay := requestReplay(t, conn, map[string]uint64{filtered: 0})
-
-	if len(replay.events) != 1 {
-		t.Fatalf("replay returned %d entries, want 1: %+v", len(replay.events), replay.events)
 	}
 }
 

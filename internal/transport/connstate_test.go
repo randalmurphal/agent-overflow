@@ -47,21 +47,6 @@ func TestCallerConnectionRefusesACallWithNoConnection(t *testing.T) {
 	tie.Untie()
 }
 
-func TestRunCleanupsLIFO(t *testing.T) {
-	t.Parallel()
-	_, state := WithConnState(context.Background(), ConnPrincipal{})
-	var order []int
-	for i := 1; i <= 3; i++ {
-		if _, err := state.Bind(fmt.Sprintf("sub-%d", i), func() { order = append(order, i) }); err != nil {
-			t.Fatal(err)
-		}
-	}
-	state.RunCleanups()
-	if got := order; len(got) != 3 || got[0] != 3 || got[1] != 2 || got[2] != 1 {
-		t.Fatalf("expected LIFO [3 2 1], got %v", got)
-	}
-}
-
 // TestUntiedReleasesDoNotRun unties releases before the connection ends:
 // they do not run, the rest still run last-bound first, and an untie
 // repeated, after teardown, or of the zero Tie does nothing.

@@ -302,27 +302,6 @@ func TestTheProxyRewritesHostAndOriginAndPreservesTheAddress(t *testing.T) {
 	}
 }
 
-// No Origin on the way in means none invented on the way out. Vite reads
-// the header's PRESENCE as "this came from a browser", which makes the
-// HMR token mandatory; adding one to a request that had none would be a
-// different request than the one that was made.
-func TestTheProxyDoesNotInventAnOrigin(t *testing.T) {
-	rig := newPreviewRig(t, helloHandler)
-	cookie := rig.open(t, "session-1", "/")
-
-	req, _ := http.NewRequest(http.MethodGet, rig.url("/"), nil)
-	req.AddCookie(cookie)
-	resp, err := noRedirectClient().Do(req)
-	if err != nil {
-		t.Fatalf("proxied get: %v", err)
-	}
-	_, _ = readAllAndClose(resp)
-
-	if origin := rig.seen.read().origin; origin != "" {
-		t.Fatalf("upstream saw Origin = %q on a request that carried none", origin)
-	}
-}
-
 // A dev server serving its app under a base path answers `/` with a
 // Location naming its own loopback address. Unrewritten, that would send
 // the browser to a localhost which is a different machine entirely.
@@ -350,6 +329,14 @@ func TestTheProxyRewritesALocationNamingTheUpstream(t *testing.T) {
 
 // Revoking a device ends its previews on the NEXT request. Nothing here
 // may cache the answer; re-asking is the whole mechanism.
+//
+// Before the revocation, the proxied answer to a request that carried no
+// Origin pins two more rules. None is invented on the way out: Vite reads
+// the header's PRESENCE as "this came from a browser", which makes the HMR
+// token mandatory, so adding one would be a different request than the one
+// that was made. And the route writes NO security headers, deliberately: a
+// policy this process invented would break somebody's application, and the
+// origin separation is what makes that safe rather than the headers.
 func TestARevokedSessionLosesItsPreviewOnTheNextRequest(t *testing.T) {
 	rig := newPreviewRig(t, helloHandler)
 	cookie := rig.open(t, "session-1", "/")
@@ -364,6 +351,14 @@ func TestARevokedSessionLosesItsPreviewOnTheNextRequest(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("first status = %d, want the page", resp.StatusCode)
 	}
+	if origin := rig.seen.read().origin; origin != "" {
+		t.Errorf("upstream saw Origin = %q on a request that carried none", origin)
+	}
+	for _, header := range []string{"Content-Security-Policy", "X-Frame-Options"} {
+		if got := resp.Header.Get(header); got != "" {
+			t.Errorf("proxied response carries %s = %q; the bytes are the dev server's", header, got)
+		}
+	}
 
 	rig.live = func(string) bool { return false }
 
@@ -376,28 +371,6 @@ func TestARevokedSessionLosesItsPreviewOnTheNextRequest(t *testing.T) {
 	body, _ := readAllAndClose(resp2)
 	if resp2.StatusCode != http.StatusUnauthorized || string(body) != previewEndedPage {
 		t.Fatalf("status = %d body = %q, want the ended-session page", resp2.StatusCode, body)
-	}
-}
-
-// The route writes NO security headers, deliberately. A policy this
-// process invented would break somebody's application, and the origin
-// separation is what makes that safe rather than the headers.
-func TestProxiedResponsesCarryNoPolicyOfOurs(t *testing.T) {
-	rig := newPreviewRig(t, helloHandler)
-	cookie := rig.open(t, "session-1", "/")
-
-	req, _ := http.NewRequest(http.MethodGet, rig.url("/"), nil)
-	req.AddCookie(cookie)
-	resp, err := noRedirectClient().Do(req)
-	if err != nil {
-		t.Fatalf("proxied get: %v", err)
-	}
-	_, _ = readAllAndClose(resp)
-
-	for _, header := range []string{"Content-Security-Policy", "X-Frame-Options"} {
-		if got := resp.Header.Get(header); got != "" {
-			t.Errorf("proxied response carries %s = %q; the bytes are the dev server's", header, got)
-		}
 	}
 }
 
