@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/coder/websocket"
@@ -94,6 +95,32 @@ func testEnv(registryDir string) (*env, *bytes.Buffer, *bytes.Buffer) {
 
 func startAttachableBackend(t *testing.T, token string) int {
 	t.Helper()
+	port, _ := startScriptedBackend(t, token, nil)
+	return port
+}
+
+// scriptedBackend records the method of every RPC an attached CLI makes.
+type scriptedBackend struct {
+	mu      sync.Mutex
+	methods []string
+}
+
+func (b *scriptedBackend) called() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.methods...)
+}
+
+// startScriptedBackend serves the attach endpoint and answers every RPC
+// with answer(method), or, for a nil answer, with a capabilities document
+// that names no capability, so attach's handshake settles instead of
+// waiting out its dial timeout.
+func startScriptedBackend(t *testing.T, token string, answer func(method string) any) (int, *scriptedBackend) {
+	t.Helper()
+	if answer == nil {
+		answer = func(string) any { return map[string]int{"protocolRevision": cliHarnessProtocolRevision} }
+	}
+	backend := &scriptedBackend{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("token") != token {
@@ -110,20 +137,18 @@ func startAttachableBackend(t *testing.T, token string) int {
 			if err != nil {
 				return
 			}
-			// Answer every RPC, so attach's capabilities handshake settles
-			// instead of waiting out its dial timeout.
 			var frame struct {
-				Type string `json:"type"`
-				ID   string `json:"id"`
+				Type   string `json:"type"`
+				ID     string `json:"id"`
+				Method string `json:"method"`
 			}
 			if json.Unmarshal(data, &frame) != nil || frame.Type != "rpc" {
 				continue
 			}
-			reply, err := json.Marshal(map[string]any{
-				"type":   "rpc",
-				"id":     frame.ID,
-				"result": map[string]int{"protocolRevision": cliHarnessProtocolRevision},
-			})
+			backend.mu.Lock()
+			backend.methods = append(backend.methods, frame.Method)
+			backend.mu.Unlock()
+			reply, err := json.Marshal(map[string]any{"type": "rpc", "id": frame.ID, "result": answer(frame.Method)})
 			if err != nil {
 				return
 			}
@@ -134,7 +159,7 @@ func startAttachableBackend(t *testing.T, token string) int {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return server.Listener.Addr().(*net.TCPAddr).Port
+	return server.Listener.Addr().(*net.TCPAddr).Port, backend
 }
 
 func TestResolveTargetPrefersTheNamedInstanceID(t *testing.T) {

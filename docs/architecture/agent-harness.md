@@ -309,8 +309,11 @@ Windows relay. Call methods **by name**
 A driver sends as the page's default send does: `SendMessageWithOptions`
 with the options `buildSendOptions` builds (a fresh `sendId`,
 `reconcileBySendId`, an empty `consumeDraft`), so a send to a working thread
-queues and the user row's id derives from the send id. `HarnessApp.send`
-(`e2e/src/harness-app.ts`) and `harnessclient.Client.Send` own that call;
+queues and the user row's id derives from the send id. Those options are
+`frontend/src/test/fixtures/pageDefaultSend.json`, which a frontend test holds
+to the builder: `HarnessApp.send` (`e2e/src/harness-app.ts`) sends them, and
+Go tests check `harnessclient.Client.Send`'s and the soak's against them.
+`HarnessApp.send` and `harnessclient.Client.Send` own that call;
 `HarnessApp.startSession`, `stopSession` and `items` own the other driver
 calls below.
 
@@ -329,7 +332,7 @@ every App plus Harness method. Use `ao-harness rpc --list` for that full list.
 | `HarnessWindowState()` | Read the isolated native window's outer DIP bounds, maximize/fullscreen/minimize flags, and its screen's DIP + physical work areas. Windowed boots only; headless instances refuse by name. This is the geometry assertion surface on hosts where OS accessibility automation is unavailable. |
 | `HarnessWindowCommand(command)` | Drive one native action (`maximize`, `unmaximize`, `fullscreen`, `unfullscreen`, `minimize`, `unminimize`, `reveal`) or set one outer DIP `bounds` rect. Exactly one is required. `reveal` is the production bring-forward path (`uiwindow.Reveal`, what an OS-notification click and a second launch call), so "a maximized window stays maximized after a reveal" is a scriptable assertion rather than a click on a real notification. Animated transitions return before settling; poll `HarnessWindowState`. Windowed boots only. On macOS the webview runs rAF only while the window is frontmost, so `reveal` right before any timing-sensitive send: a spring that shows `active` with no writes and a trace ring that stops growing is a backgrounded window, not a frozen glide. |
 | `HarnessStartSession(threadId)` | Brings a thread's provider session up without a message, through the start the workflow runner uses (`startSessionTakingLock`). No page starts a session this way: a send starts one by itself. |
-| `HarnessListItems(threadId, inlinePreviews)` | Every item of a thread in order, with the paged loads' byte backstop: the assertion read and `ao-harness items`. A page reads bounded slices instead. `inlinePreviews` asks for complete payload metadata rather than the wire projection's elided copy. |
+| `HarnessListItems(threadId, inlinePreviews)` | A thread's items in order, the assertion read and `ao-harness items`: the newest rows that fit the response budget, projected as the paged loads project them, so a long thread answers its tail only. A page reads bounded slices instead. `inlinePreviews` keeps payload previews inline where the projection's bounds allow. |
 | `HarnessListThreadRows()` | Every non-archived thread ROW, drafts included. `App.ListThreads` hides a row until it has an item or a content-carrying draft, so this is the only read that can prove a row was *not* created (or read back what a just-materialized one was bound to). |
 | `HarnessStoreStatus()` | The database's migration state: `schemaVersion` applied against `buildSchemaVersion`, the deferred watermark against the last deferred version, `deferredPending`, and `deferredFailure` (null when none). The release upgrade check polls it after a migrated boot until the deferred phases finish. |
 | `HarnessPrimeTransferTemplate()` | Build the process's migrated database image now. A received conversation transfer clones it while it validates the history, and the first build in a process runs every migration, which on a loaded machine outlasts a transfer wait. `e2e` calls it on the receiving backend (`primeTransferRecipient`) before it starts a transfer. Idempotent; a failed build is returned and the next call retries. |
@@ -1365,9 +1368,14 @@ endpoint; see the section below.
 sampling profile (100µs) of ONE scripted turn and writes
 `<dataDir>/profiles/profile-<timestamp>.cpuprofile`. It attaches the
 debugger, settles, opens the thread through the same `notification:activated`
-path `ui open` uses, settles again, arms the profiler, installs the
-scenario, sends, waits for `provider:turn_completed`, and stops. It never
-reloads the page: a reload would profile the mount instead of the turn.
+path `ui open` uses, settles again, refuses a thread that is working,
+arms the profiler, installs the scenario, sends, waits for the
+`provider:turn_completed` of the turn its message's row is in, and stops.
+It never reloads the page: a reload would profile the mount instead of the
+turn. `send --wait` waits the same way, through
+`harnessclient.Client.ThreadAtRest`: a message sent to a working thread
+queues behind that work, and nothing the backend publishes names the turn
+a queued message runs in.
 
 The rollup it prints splits sampled time three ways. FLUSH is Svelte
 running queued effects (`flush_queued_root_effects`, `flush_queued_effects`,

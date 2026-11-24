@@ -511,18 +511,25 @@ func (h *harnessHost) PublishStoreIdentity(identity store.Identity) {
 	h.app.storeIdentity.Store(&identity)
 }
 
-// SendMessage sends with the options the page's default send builds
-// (frontend/src/lib/utils/sendOptions.ts buildSendOptions): a fresh send
-// id, rows found by that id, and an empty draft snapshot, which consumes
-// no composer draft.
+// SendMessage sends with the options the page's default send builds, under
+// a fresh send id.
 func (h *harnessHost) SendMessage(threadID, message string) error {
-	_, err := h.app.SendMessageWithOptions(context.Background(), threadID, message, SendMessageOptions{
+	_, err := h.app.SendMessageWithOptions(context.Background(), threadID, message, pageSendOptions(uuid.NewString()))
+	return err
+}
+
+// pageSendOptions are the options of the page's default send under sendID
+// (frontend/src/lib/utils/sendOptions.ts buildSendOptions): rows found by
+// that id, and an empty draft snapshot, which consumes no composer draft.
+// frontend/src/test/fixtures/pageDefaultSend.json is the reference they are
+// checked against.
+func pageSendOptions(sendID string) SendMessageOptions {
+	return SendMessageOptions{
 		AttachmentIDs:     []string{},
 		ConsumeDraft:      &DraftSnapshot{AttachmentIDs: []string{}, TerminalChips: []TerminalChip{}},
-		SendID:            uuid.NewString(),
+		SendID:            sendID,
 		ReconcileBySendID: true,
-	})
-	return err
+	}
 }
 
 var _ harnessrpc.Host = (*harnessHost)(nil)

@@ -98,7 +98,7 @@ func runProfileContext(ctx context.Context, e *env, args []string) error {
 			return fmt.Errorf("profile requires an active memory watchdog: %w", err)
 		}
 		if err := requireHarnessProtocol(client, capabilityRequirements{
-			Methods: []string{"HarnessSetScenario", "HarnessUIQuery", "HarnessEmit", harnessclient.SendMethod},
+			Methods: []string{"HarnessSetScenario", "HarnessUIQuery", "HarnessEmit", harnessclient.SendMethod, harnessclient.ThreadWorkMethod},
 			Queries: []string{"element", "globals", "viewport"},
 		}); err != nil {
 			return err
@@ -180,7 +180,9 @@ type profileTurn struct {
 // scenario, drive one turn, stop. The scenario is installed AFTER the
 // profiler starts on purpose — installing it is an RPC that touches the
 // page not at all, and starting the profiler first means the very first
-// wire frame of the turn is already inside the sampled window.
+// wire frame of the turn is already inside the sampled window. A thread
+// that is working is refused before either: its turn would be in the
+// window, and the turn the message runs in could not be named.
 func profileOneTurn(
 	ctx context.Context,
 	e *env,
@@ -188,6 +190,10 @@ func profileOneTurn(
 	conn *cdpclient.Conn,
 	turn profileTurn,
 ) (json.RawMessage, error) {
+	resting, err := client.ThreadAtRest(ctx, turn.threadID)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := conn.Call(ctx, "Profiler.enable", nil); err != nil {
 		return nil, err
 	}
@@ -221,7 +227,7 @@ func profileOneTurn(
 	}
 	turnCtx, cancel := context.WithTimeout(ctx, turn.timeout)
 	defer cancel()
-	if _, err := awaitTurnAfterSend(turnCtx, client, turn.threadID, turn.message); err != nil {
+	if _, err := resting.SendAndAwaitTurn(turnCtx, turn.message); err != nil {
 		_, _ = stop()
 		return nil, err
 	}

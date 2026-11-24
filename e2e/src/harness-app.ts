@@ -11,6 +11,7 @@ import {
   type ProcessGroupMemberProof,
   type ProcessTreeProof,
 } from './harness-process.ts';
+import pageDefaultSend from '../../frontend/src/test/fixtures/pageDefaultSend.json' with { type: 'json' };
 import { HarnessWatchdog } from './harness-watchdog.ts';
 import { boundedCleanup } from './harness-cleanup.ts';
 import { BackendConsoleLog } from './harness-console-log.ts';
@@ -290,28 +291,6 @@ interface PendingRpc {
 }
 
 /** A live harness-mode backend plus one WS connection to it. */
-/**
- * Fields of the page's send options (`OutgoingSendOptions` in
- * frontend/src/lib/utils/sendOptions.ts) a spec replaces in `send`.
- */
-export interface SendOptions {
-  attachmentIds?: string[];
-  consumeDraft?: {
-    content: string;
-    attachmentIds: string[];
-    terminalChips: unknown[];
-    sourceProposedPlan: unknown;
-  };
-  runtimeMode?: string;
-  sourceProposedPlan?: unknown;
-  revisionSourceProposedPlan?: unknown;
-  revisionSourceCommentIds?: string[];
-  revisionSourceDiffReview?: unknown;
-  revisionSourceDiffCommentIds?: string[];
-  sendId?: string;
-  reconcileBySendId?: boolean;
-}
-
 export class HarnessApp {
   // A root launchHarness created belongs to its app until close() removes
   // it. One a spec leaves by ending on stop() or crash() is removed when
@@ -528,7 +507,7 @@ export class HarnessApp {
   /**
    * Invoke a backend method by exported name — Harness* RPCs and every
    * bound App method (CreateThread, ListThreads, ...) share the wire. A
-   * send, a session start or stop, and the full item read go through
+   * send, a session start or stop, and the item read go through
    * `send`, `startSession`, `stopSession` and `items`, which own the call.
    */
   async rpc<T = unknown>(method: string, ...params: unknown[]): Promise<T> {
@@ -548,21 +527,14 @@ export class HarnessApp {
   /**
    * Send `text` to a thread as the page's default send does: through
    * `SendMessageWithOptions`, the page's entry, with the options its
-   * `buildSendOptions` (frontend/src/lib/utils/sendOptions.ts) builds for a
-   * send that consumes no composer draft, under a fresh send id. A send to
-   * a working thread queues behind its turn, and its user row's id derives
-   * from the send id. `options` replaces fields of that argument for a spec
-   * about another shape: attachments, a runtime mode, a repeated send id.
-   * Its Go twin is `harnessclient.Client.Send`.
+   * `buildSendOptions` builds for a send that consumes no composer draft
+   * (frontend/src/test/fixtures/pageDefaultSend.json, which a frontend
+   * test holds to the builder), under a fresh send id. A send to a working
+   * thread queues behind its turn, and its user row's id derives from the
+   * send id. Its Go twin is `harnessclient.Client.Send`.
    */
-  async send(threadId: string, text: string, options: SendOptions = {}): Promise<void> {
-    await this.rpc('SendMessageWithOptions', threadId, text, {
-      attachmentIds: [],
-      consumeDraft: { content: '', attachmentIds: [], terminalChips: [], sourceProposedPlan: null },
-      sendId: randomUUID(),
-      reconcileBySendId: true,
-      ...options,
-    });
+  async send(threadId: string, text: string): Promise<void> {
+    await this.rpc('SendMessageWithOptions', threadId, text, { ...pageDefaultSend, sendId: randomUUID() });
   }
 
   /**
@@ -580,9 +552,11 @@ export class HarnessApp {
   }
 
   /**
-   * Every item of a thread in order (`HarnessListItems`), the assertion
-   * read; a page reads bounded slices instead. `inlinePreviews` asks for
-   * complete payload metadata rather than the wire projection's elided copy.
+   * A thread's items in order (`HarnessListItems`), the assertion read: the
+   * newest rows that fit the response budget, projected as the paged loads
+   * project them, so a long thread answers its tail only. A page reads
+   * bounded slices instead. `inlinePreviews` keeps payload previews inline
+   * where the projection's bounds allow.
    */
   async items<T = unknown>(threadId: string, inlinePreviews: boolean): Promise<T[]> {
     return await this.rpc<T[]>('HarnessListItems', threadId, inlinePreviews);

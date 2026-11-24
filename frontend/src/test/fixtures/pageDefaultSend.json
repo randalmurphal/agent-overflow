@@ -1,0 +1,10 @@
+{
+  "attachmentIds": [],
+  "consumeDraft": {
+    "content": "",
+    "attachmentIds": [],
+    "terminalChips": [],
+    "sourceProposedPlan": null
+  },
+  "reconcileBySendId": true
+}
