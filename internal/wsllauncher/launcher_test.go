@@ -343,8 +343,8 @@ func TestDrainStderr_ForwardsUntilEOF(t *testing.T) {
 func TestReadBootstrapLine_RejectsABadStdout(t *testing.T) {
 	for _, tc := range []struct{ name, stdout, want string }{
 		{"malformed JSON", "__AO_BOOTSTRAP__: not-json\n", "decode bootstrap"},
-		{"zero port", "__AO_BOOTSTRAP__: {\"port\":0,\"token\":\"abc\"}\n", "invalid bootstrap"},
-		{"empty token", "__AO_BOOTSTRAP__: {\"port\":1234,\"token\":\"\"}\n", "invalid bootstrap"},
+		{"zero port", "__AO_BOOTSTRAP__: {\"port\":0,\"token\":\"abc\",\"pageUrl\":\"http://127.0.0.1:1234/?t=tk\"}\n", "invalid bootstrap"},
+		{"empty token", "__AO_BOOTSTRAP__: {\"port\":1234,\"token\":\"\",\"pageUrl\":\"http://127.0.0.1:1234/?t=tk\"}\n", "invalid bootstrap"},
 		{"stdout closed before the bootstrap", "oops\n", "closed stdout"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

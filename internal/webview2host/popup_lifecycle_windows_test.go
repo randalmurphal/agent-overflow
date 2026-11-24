@@ -345,19 +345,34 @@ func TestAPopupHoldsEveryKindOfProcessFailure(t *testing.T) {
 }
 
 // A popup keeps a bounded address from its request, and none once it is
-// announced.
+// announced. The prefix is its own allocation: a 4 MiB address must not stay
+// pinned by the bytes the popup keeps.
 func TestAPopupKeepsABoundedAddressUntilItsAnnouncement(t *testing.T) {
 	r := newPopupRig(t)
 	_, opener := r.createPage("opener", "prof", false)
-	long := popupURL + "?" + strings.Repeat("a", 64<<10)
-	popup, controller := r.openPopup(opener, newFakeWindowArgs(long))
-	if n := len(popup.popup.uri); n > MaxPopupURLBytes || !strings.HasPrefix(long, popup.popup.uri) {
-		t.Fatalf("a popup keeps %d bytes of its address, want a prefix of at most %d", n, MaxPopupURLBytes)
+	retained := func() uint64 {
+		runtime.GC()
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		return stats.HeapAlloc
+	}
+	// The kept prefix, built without the long address so nothing here keeps
+	// that one alive.
+	prefix := (popupURL + "?" + strings.Repeat("a", MaxPopupURLBytes))[:MaxPopupURLBytes]
+	before := retained()
+	const uriSize = 4 << 20
+	popup, controller := r.openPopup(opener, newFakeWindowArgs(popupURL+"?"+strings.Repeat("a", uriSize)))
+	after := retained()
+	if popup.popup.uri != prefix {
+		t.Fatalf("a popup keeps %d bytes of its address, want its first %d", len(popup.popup.uri), MaxPopupURLBytes)
+	}
+	if after > before+uriSize/2 {
+		t.Errorf("live heap changed from %d to %d; the kept prefix must not pin a 4 MiB allocation", before, after)
 	}
 	answerTarget(t, controller, "T")
 	got := r.takeReports()
 	parsed, err := ParsePopupReport(got[0].detail)
-	if err != nil || !strings.HasPrefix(long, parsed.URL) || parsed.URL == "" {
+	if err != nil || !strings.HasPrefix(prefix, parsed.URL) || parsed.URL == "" {
 		t.Fatalf("the popup report's address %.80q: %v", parsed.URL, err)
 	}
 	if popup.popup.uri != "" {

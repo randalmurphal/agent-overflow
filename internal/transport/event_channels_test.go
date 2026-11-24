@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"sort"
 	"strings"
 	"testing"
 
@@ -27,8 +26,7 @@ func TestChannelPolicyHasNoDuplicates(t *testing.T) {
 }
 
 // TestChannelPolicyEveryRowHasAWhy: a row without a reason is a row nobody
-// can review. Rows still awaiting a decision must say so explicitly (see
-// unreviewedMarker).
+// can review.
 func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 	for _, policy := range channelPolicies {
 		if strings.TrimSpace(policy.Why) == "" {
@@ -273,28 +271,6 @@ func TestChannelPolicyFailsClosedForUnregisteredChannels(t *testing.T) {
 	}
 	if eventVisibleToOrigin(channel, false) {
 		t.Errorf("unregistered channel is visible to a non-loopback origin — the fail-closed default regressed")
-	}
-}
-
-// TestChannelPolicyUnreviewedWorklist never fails. It prints the rows
-// whose classification was inherited rather than decided, so the review
-// pass has a mechanical worklist:
-//
-//	go test ./internal/transport/ -run UnreviewedWorklist -v
-func TestChannelPolicyUnreviewedWorklist(t *testing.T) {
-	var unreviewed []string
-	for _, policy := range channelPolicies {
-		if strings.Contains(policy.Why, unreviewedMarker) {
-			unreviewed = append(unreviewed, string(policy.Channel))
-		}
-	}
-	sort.Strings(unreviewed)
-
-	t.Logf("event channels: %d registered, %d unreviewed, %d classified",
-		len(channelPolicies), len(unreviewed), len(channelPolicies)-len(unreviewed))
-	for _, channel := range unreviewed {
-		policy := channelPolicyIndex[channel]
-		t.Logf("  unreviewed: %-32s audience=%v retention=%v", channel, policy.Audience, policy.Retention)
 	}
 }
 

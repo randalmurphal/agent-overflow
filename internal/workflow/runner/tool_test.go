@@ -191,4 +191,7 @@ func TestAttemptPathsShareOneAttemptDirectory(t *testing.T) {
 	if _, err := EnvelopePath("/data", "item", "build", 0); err == nil {
 		t.Fatal("attempt 0 produced a path")
 	}
+	if _, err := NarrativePath("", "item", "build", 3); err == nil {
+		t.Fatal("NarrativePath accepted an empty root")
+	}
 }

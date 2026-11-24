@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -319,15 +320,48 @@ func TestDesktopHelperAppliesAnUpdateThroughTheRealTrial(t *testing.T) {
 		state     supervise.UpdateState
 		installed string
 		db        string
+		// The helper runs every step in its own process: its lock wait and
+		// the update's summary are in its log beside the steps' phases.
+		phases  []string
+		summary string
 	}{
-		{"prepared publishes", "prepare", supervise.UpdateCommitted, "new", "trial"},
-		{"failed rolls back", "fail", supervise.UpdateRolledBack, "old", "live"},
+		{"prepared publishes", "prepare", supervise.UpdateCommitted, "new", "trial",
+			[]string{"lock", "snapshot.copy", "trial.start", "trial.boot", "trial.stop", "settle", "publish"},
+			`^snapshot:[^,]+,record-attempt:[^,]+,trial\.1:[^,]+,settle:[^,]+,publish:[^,]+$`},
+		{"failed rolls back", "fail", supervise.UpdateRolledBack, "old", "live",
+			[]string{"lock", "snapshot.copy", "trial.start", "trial.boot", "restore.copy", "settle", "remove-staged"},
+			`^snapshot:[^,]+,record-attempt:[^,]+,trial\.1:[^,]+\(failed\),settle:[^,]+,discard:[^,]+,remove-staged:[^,]+$`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newDesktopApplyRig(t)
 			record, install := r.desktopUpdateFixture(id, 0)
 			flags := desktopApplyFlags{id: id, relaunch: []string{"--data-dir", r.root}}
-			r.applier(flags, tc.stub, nil).run(t.Context())
+			var mu sync.Mutex
+			var logged []string
+			logf := func(format string, args ...any) {
+				mu.Lock()
+				defer mu.Unlock()
+				logged = append(logged, fmt.Sprintf(format, args...))
+			}
+			applier := r.applier(flags, tc.stub, func(u *supervise.DesktopUpdate) { u.Logf = logf })
+			applier.logf = logf
+			applier.run(t.Context())
+			mu.Lock()
+			text := strings.Join(logged, "\n")
+			mu.Unlock()
+			wantPhasesOnce(t, text, tc.phases...)
+			// A trial that reports its failure also exits on its own, and
+			// one whose exit is read first needs no stop.
+			if timed, _ := phaseCounts(t, text); timed["trial.stop"] > 1 {
+				t.Fatalf("trial.stop logged %d times, want at most once\n%s", timed["trial.stop"], text)
+			}
+			if !strings.Contains(text, "updater: update "+id+": phase=lock duration=") {
+				t.Fatalf("the helper's lock wait is not logged as its own:\n%s", text)
+			}
+			summary := regexp.MustCompile(`updater: update `+id+`: summary total=\S+ phases=(\S+) outcome=`+string(tc.state)).FindAllStringSubmatch(text, -1)
+			if len(summary) != 1 || !regexp.MustCompile(tc.summary).MatchString(summary[0][1]) {
+				t.Fatalf("summary = %q\nlog:\n%s", summary, text)
+			}
 
 			if len(r.ui.pages) != 0 {
 				t.Fatalf("the helper showed %+v", r.ui.pages)

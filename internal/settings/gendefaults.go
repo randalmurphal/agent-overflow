@@ -32,9 +32,10 @@ const FrontendDefaultsRelPath = "../../frontend/src/lib/generated/settingsDefaul
 const FrontendDefaultsRegenCommand = "go generate ./internal/settings"
 
 // frontendDefaultsDenied lists the json field names that are NOT emitted,
-// each with the reason it stays out. The emitted set plus this set must
-// cover every field on the struct — TestFrontendDefaultsDenyListIsTotal
-// enforces that, so a new setting forces a conscious choice here.
+// each with the reason it stays out. The generator emits every field this
+// list does not name, so a new setting is emitted unless it is added here.
+// TestFrontendDefaultsDenyListIsTotal checks that every entry names a real
+// Settings json field.
 //
 // Two different reasons live in this list, and the difference matters:
 // a field that has no TypeScript counterpart at all, and a field the TS

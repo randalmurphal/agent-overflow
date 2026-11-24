@@ -83,70 +83,44 @@ func TestSelectPageTargetPicksTheInstancePage(t *testing.T) {
 	}
 }
 
-func TestSelectPageTargetRefusesAnUnmarkedOnlyPage(t *testing.T) {
-	targets := []Target{
-		{Type: "background_page", URL: "chrome://x", WebSocketDebuggerURL: "ws://bg"},
-		page("about:blank", "ws://only"),
-	}
-	if _, err := selectPageTarget(targets, "http://127.0.0.1:4321/?page=expected", ""); err == nil {
-		t.Fatal("an unmarked sole page must not be selected")
-	}
-}
-
-func TestSelectPageTargetRefusesAmbiguity(t *testing.T) {
-	targets := []Target{
-		page("http://example.com/a", "ws://a"),
-		page("http://example.org/b", "ws://b"),
-	}
-	_, err := selectPageTarget(targets, "http://127.0.0.1:4321/", "")
-	if err == nil {
-		t.Fatal("two unrelated pages should be an error, not a guess")
-	}
-	for _, want := range []string{"ws://a", "ws://b"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error does not list candidate %q: %v", want, err)
-		}
-	}
-}
-
-func TestSelectPageTargetRefusesTwoPagesOnTheSameOrigin(t *testing.T) {
-	targets := []Target{
-		page("http://127.0.0.1:4321/?token=a", "ws://a"),
-		page("http://127.0.0.1:4321/design/?token=a", "ws://b"),
-	}
-	_, err := selectPageTarget(targets, "http://127.0.0.1:4321/?token=a", "")
-	if err == nil {
-		t.Fatal("two pages on the instance origin should be an error, not a guess")
-	}
-	if !strings.Contains(err.Error(), "ws://b") {
-		t.Errorf("error does not list the candidates: %v", err)
-	}
-}
-
-// A page with no webSocketDebuggerUrl is one another debugger client
-// already holds. "No page target" is the wrong diagnosis for it: the page
-// is right there, and the fix is to close the other client.
-func TestSelectPageTargetNamesAClaimedPage(t *testing.T) {
-	targets := []Target{page("http://127.0.0.1:4321/", "")}
-	_, err := selectPageTarget(targets, "http://127.0.0.1:4321/", "")
-	if err == nil {
-		t.Fatal("a claimed page cannot be attached to")
-	}
-	if !strings.Contains(err.Error(), "already claimed") {
-		t.Errorf("error should name the claim: %v", err)
-	}
-}
-
-func TestSelectPageTargetWithNoPages(t *testing.T) {
-	_, err := selectPageTarget([]Target{{Type: "worker", URL: "x"}}, "", "")
-	if err == nil || !strings.Contains(err.Error(), "no page target") {
-		t.Fatalf("want a no-page-target error, got %v", err)
-	}
-}
-
-func TestSelectPageTargetRefusesWrongPageMarker(t *testing.T) {
-	targets := []Target{page("http://127.0.0.1:4321/?page=instance-marker", "ws://instance")}
-	if _, err := selectPageTarget(targets, "http://127.0.0.1:4321/?page=other-marker", ""); err == nil {
-		t.Fatal("a page with the wrong marker must not be selected")
+// selectPageTarget refuses to guess, and its error names what it saw. A page
+// with no webSocketDebuggerUrl is one another debugger client already holds:
+// "no page target" is the wrong diagnosis for it, since the page is right
+// there and the fix is to close the other client.
+func TestSelectPageTargetRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		targets     []Target
+		instanceURL string
+		want        []string
+	}{
+		{"an unmarked only page", []Target{
+			{Type: "background_page", URL: "chrome://x", WebSocketDebuggerURL: "ws://bg"},
+			page("about:blank", "ws://only"),
+		}, "http://127.0.0.1:4321/?page=expected", nil},
+		{"two unrelated pages", []Target{
+			page("http://example.com/a", "ws://a"),
+			page("http://example.org/b", "ws://b"),
+		}, "http://127.0.0.1:4321/", []string{"ws://a", "ws://b"}},
+		{"two pages on the instance origin", []Target{
+			page("http://127.0.0.1:4321/?token=a", "ws://a"),
+			page("http://127.0.0.1:4321/design/?token=a", "ws://b"),
+		}, "http://127.0.0.1:4321/?token=a", []string{"ws://b"}},
+		{"a claimed page", []Target{page("http://127.0.0.1:4321/", "")}, "http://127.0.0.1:4321/", []string{"already claimed"}},
+		{"no pages", []Target{{Type: "worker", URL: "x"}}, "", []string{"no page target"}},
+		{"the wrong page marker", []Target{page("http://127.0.0.1:4321/?page=instance-marker", "ws://instance")},
+			"http://127.0.0.1:4321/?page=other-marker", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := selectPageTarget(tc.targets, tc.instanceURL, "")
+			if err == nil {
+				t.Fatalf("selected %q; want a refusal", got.WebSocketDebuggerURL)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not name %q: %v", want, err)
+				}
+			}
+		})
 	}
 }

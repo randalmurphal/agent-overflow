@@ -638,7 +638,7 @@ type publicFailureApp struct{ err error }
 
 func (a *publicFailureApp) Fail() error { return fmt.Errorf("private wrapper: %w", a.err) }
 
-func TestDispatcherPublicErrorKeepsCodeAndHidesCauseOnEveryOrigin(t *testing.T) {
+func TestDispatcherPublicErrorKeepsCodeAndHidesCause(t *testing.T) {
 	cause := errors.New("secret /private/path?ticket=private-token")
 	d := NewDispatcher()
 	if _, err := d.Register(&publicFailureApp{errorsx.Public("remote_capacity", "All command slots are busy. Wait and retry.", cause)}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
@@ -662,8 +662,8 @@ func (e *rateLimitRefusal) Unwrap() error                       { return e.publi
 func (e *rateLimitRefusal) RateLimitRelease() (bool, time.Time) { return e.reserve, e.until }
 
 // A forge rate limit refusal says whether it kept the reserve and when it
-// lifts, on every origin and only under forge_rate_limited.
-func TestDispatcherForgeRateLimitCarriesItsReleaseOnEveryOrigin(t *testing.T) {
+// lifts, and only under forge_rate_limited.
+func TestDispatcherForgeRateLimitCarriesItsRelease(t *testing.T) {
 	until := time.Date(2026, 10, 21, 9, 30, 0, 0, time.FixedZone("x", 3600))
 	cases := []struct {
 		code     string
@@ -696,9 +696,9 @@ func (e *agentRefusal) Error() string                            { return e.publ
 func (e *agentRefusal) Unwrap() error                            { return e.public }
 func (e *agentRefusal) RefusedBackgroundAgents() json.RawMessage { return e.agents }
 
-// A refused stop's agents reach every origin as backgroundAgents, and only
+// A refused stop's agents reach the caller as backgroundAgents, and only
 // under background_agents_running: another public code never carries them.
-func TestDispatcherBackgroundAgentRefusalCarriesTheAgentsOnEveryOrigin(t *testing.T) {
+func TestDispatcherBackgroundAgentRefusalCarriesTheAgents(t *testing.T) {
 	agents := json.RawMessage(`[{"launchItemId":"a1","description":"Scan","runState":"parked","transcriptRootId":"a1"}]`)
 	cases := []struct {
 		code string

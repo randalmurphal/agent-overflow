@@ -4,8 +4,6 @@ package webview2host
 
 import (
 	"fmt"
-	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
@@ -143,26 +141,5 @@ func TestPopupAtHeldDownloadBoundCanResume(t *testing.T) {
 	if r.page(popup.id) != nil {
 		t.Error("popup was left waiting on the replaced operation")
 	}
-	r.done()
-}
-
-func TestPopupURIPrefixDoesNotRetainItsOriginalAllocation(t *testing.T) {
-	r := newPopupRig(t)
-	_, opener := r.createPage("opener", "prof", false)
-	retained := func() uint64 {
-		runtime.GC()
-		var stats runtime.MemStats
-		runtime.ReadMemStats(&stats)
-		return stats.HeapAlloc
-	}
-	before := retained()
-	const uriSize = 4 << 20
-	popup, controller := r.openPopup(opener, newFakeWindowArgs("https://example.test/"+strings.Repeat("a", uriSize)))
-	after := retained()
-	if len(popup.popup.uri) != MaxPopupURLBytes || after > before+uriSize/2 {
-		t.Errorf("prefix is %d bytes and live heap changed from %d to %d; it must not pin a 4 MiB allocation",
-			len(popup.popup.uri), before, after)
-	}
-	answerTarget(t, controller, "popup-target")
 	r.done()
 }

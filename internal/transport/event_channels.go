@@ -28,11 +28,6 @@ import "agent-overflow/internal/eventchan"
 // fail on either half missing. Adding a channel is therefore two edits:
 // a constant in internal/eventchan and a row here.
 //
-// A `Why` containing the substring "unreviewed" marks a row that inherited
-// a default rather than a decision anyone made. Every row was reviewed in
-// the 2026-08-25 classification pass, so the set should stay empty;
-// TestChannelPolicyUnreviewedWorklist prints any that reappear.
-//
 // # Dynamic channel families
 //
 // Three emit paths do not spell their channel as a constant at the call
@@ -227,18 +222,9 @@ type ChannelPolicy struct {
 	// row instead. A frame this column cannot attribute is a root-scope
 	// frame, which is the delivering direction.
 	TranscriptScopeFiltered bool
-	// Why records the decision. A Why containing "unreviewed" means the
-	// row was captured from an emit site, not decided.
+	// Why records the decision.
 	Why string
 }
-
-// unreviewedMarker is the substring that identifies an unreviewed row —
-// one whose Why records that a default was inherited rather than a
-// decision made. The 2026-08-25 classification pass emptied the set; the
-// marker (and its test) stay so a future captured-not-decided row is
-// still visible as such. Membership is a substring test, not equality,
-// so the marker can sit inside a longer sentence.
-const unreviewedMarker = "unreviewed"
 
 // channelPolicies is the authored table. Alphabetical by channel.
 //
@@ -1818,8 +1804,7 @@ var channelPolicyIndex = func() map[string]ChannelPolicy {
 // connections only, so a channel nobody classified can never reach a LAN
 // peer by omission — the forgotten registration degrades to "invisible to
 // remote clients", never to "leaked to remote clients". Local UX keeps
-// working, and TestChannelPolicyUnreviewedWorklist keeps the registered
-// table honest.
+// working.
 //
 // The two harness-only dynamic emit paths (HarnessEmit, harness.Replayer)
 // need no carve-out either, but not because their channels are

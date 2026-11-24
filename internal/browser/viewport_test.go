@@ -268,37 +268,8 @@ func TestPaneResizeAppliesTheLatestSize(t *testing.T) {
 	}
 }
 
-// A page that refuses the pane size is left at the old one while the pane
-// places it at the new one, which is visibly wrong: the failure names the
-// page and reaches the pane as an error event instead of vanishing in a
-// goroutine.
-func TestPaneSizeFailureReachesThePane(t *testing.T) {
-	f := newPaneFollowFixture(t)
-	f.pages[1].mu.Lock()
-	f.pages[1].viewportErr = errors.New("engine refused")
-	f.pages[1].mu.Unlock()
-	mount := f.attach(t)
-	if err := f.manager.SetPaneRect(MountID(mount), paneRect(800, 600)); err != nil {
-		t.Fatalf("set pane rect: %v", err)
-	}
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case event := <-f.events:
-			if event.Kind != "error" {
-				continue
-			}
-			if !strings.Contains(event.Error, "engine refused") || !strings.Contains(event.Error, "page ") {
-				t.Fatalf("error event must name the failure and the page: %q", event.Error)
-			}
-			return
-		case <-deadline:
-			t.Fatal("no error event reached the pane")
-		}
-	}
-}
-
-// The same failure on an explicit browser_viewport call is the call's error.
+// A page that refuses the size on an explicit browser_viewport call is the
+// call's error (the pane-rect path is TestAPageThatRefusesTheSizeIsStillShown).
 func TestViewportSetReportsAPageThatRefusesTheSize(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	f.pages[1].mu.Lock()

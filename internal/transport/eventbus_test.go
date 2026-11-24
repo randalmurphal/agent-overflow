@@ -1191,20 +1191,19 @@ func TestEventBus_MarkerThatDoesNotFitSurvivesForNextDelivery(t *testing.T) {
 	if got := drainEvents(t, sub, 1, time.Second); len(got) != 1 || got[0].Seq != 1 {
 		t.Fatalf("expected only the seq-1 event, got %+v", got)
 	}
-	// Room now exists: the next delivery flushes chB's marker, then the
-	// chA event rides with its own gap stamp.
+	// Room for one frame now exists: the next delivery flushes chB's
+	// marker into it, and the chA event behind it drops. Delivery runs
+	// synchronously inside Emit, so the buffer is settled when Emit returns.
 	if _, err := bus.Emit("test:chA", 3); err != nil {
 		t.Fatalf("emit a3: %v", err)
 	}
-	got := drainEvents(t, sub, 2, 2*time.Second)
-	if len(got) < 1 {
-		t.Fatalf("expected at least the chB marker, got none")
+	if got := drainEvents(t, sub, 1, time.Second); len(got) != 1 || !got[0].Gap || got[0].Channel != "test:chB" {
+		t.Fatalf("expected the chB marker, got %+v", got)
 	}
-	if !got[0].Gap || got[0].Channel != "test:chB" {
-		t.Fatalf("expected chB marker first, got %+v", got[0])
-	}
-	if len(got) > 1 && (!got[1].Gap || got[1].Channel != "test:chA") {
-		t.Fatalf("expected gap-stamped chA event second, got %+v", got[1])
+	select {
+	case e := <-sub.Events():
+		t.Fatalf("the chA event behind the marker was delivered: %+v", e)
+	default:
 	}
 }
 

@@ -16,7 +16,7 @@ func (a *missingRowApp) Read() (string, error) {
 	return "", sql.ErrNoRows
 }
 
-func TestDispatcherMissingRowsRemainApplicationStateOnEveryOrigin(t *testing.T) {
+func TestDispatcherMissingRowsRemainApplicationState(t *testing.T) {
 	for _, wrapped := range []bool{false, true} {
 		t.Run(fmt.Sprintf("wrapped=%v", wrapped), func(t *testing.T) {
 			dispatcher := NewDispatcher()
