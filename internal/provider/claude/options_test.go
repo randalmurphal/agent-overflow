@@ -2,6 +2,8 @@ package claude
 
 import (
 	"encoding/json"
+	"maps"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -169,62 +171,44 @@ func TestConfigFromOptionsUnsetContextWindowUsesModelDefault(t *testing.T) {
 	}
 }
 
-func TestConfigFromOptionsAutoCompactPercentExtendedTier(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:                   "claude",
-		Model:                      "claude-opus-4-7",
-		ContextWindow:              provider.ClaudeExtendedContextWindow,
-		AutoCompactExtendedPercent: 80,
-	})
-	if cfg.AutoCompactPercent != 80 {
-		t.Fatalf("AutoCompactPercent = %d, want 80 (extended tier)", cfg.AutoCompactPercent)
-	}
-}
-
-func TestConfigFromOptionsAutoCompactPercentStandardTier(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:                   "claude",
-		Model:                      "claude-opus-4-7",
-		ContextWindow:              provider.ClaudeStandardContextWindow,
-		AutoCompactStandardPercent: 50,
-	})
-	if cfg.AutoCompactPercent != 50 {
-		t.Fatalf("AutoCompactPercent = %d, want 50 (standard tier)", cfg.AutoCompactPercent)
-	}
-}
-
+// TestBuildArgsAutoCompactRendersThroughSettingsFlag pins the tier's percent
+// on the Config and the companion CLAUDE_CODE_AUTO_COMPACT_WINDOW value to the
+// thread's RESOLVED window: claude ≥2.1.201 refuses to auto-compact at all
+// unless an explicit auto-compact window resolves, so the pct override alone
+// is a no-op. The extended tier must send 1000000, not the 200k default.
 func TestBuildArgsAutoCompactRendersThroughSettingsFlag(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:                   "claude",
-		Model:                      "claude-opus-4-7",
-		ContextWindow:              provider.ClaudeStandardContextWindow,
-		AutoCompactStandardPercent: 50,
-	})
-	args := buildArgs(cfg, "", "")
-	joined := strings.Join(args, " ")
-	want := `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
-	if !strings.Contains(joined, want) {
-		t.Fatalf("args missing autocompact-via-flag-settings: got=%v\nwant substring=%q", args, want)
+	tests := []struct {
+		name         string
+		opts         provider.SessionOptions
+		wantPercent  int
+		wantSettings string
+	}{
+		{
+			name:         "standard tier",
+			opts:         provider.SessionOptions{ContextWindow: provider.ClaudeStandardContextWindow, AutoCompactStandardPercent: 50},
+			wantPercent:  50,
+			wantSettings: `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`,
+		},
+		{
+			name:         "extended tier",
+			opts:         provider.SessionOptions{ContextWindow: provider.ClaudeExtendedContextWindow, AutoCompactExtendedPercent: 40},
+			wantPercent:  40,
+			wantSettings: `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"1000000"}}`,
+		},
 	}
-}
-
-// TestBuildArgsAutoCompactSendsWindowForExtendedTier pins the companion
-// CLAUDE_CODE_AUTO_COMPACT_WINDOW value to the thread's RESOLVED window:
-// claude ≥2.1.201 refuses to auto-compact at all unless an explicit
-// auto-compact window resolves, so the pct override alone is a no-op.
-// The extended tier must send 1000000, not the 200k default.
-func TestBuildArgsAutoCompactSendsWindowForExtendedTier(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:                   "claude",
-		Model:                      "claude-opus-4-7",
-		ContextWindow:              provider.ClaudeExtendedContextWindow,
-		AutoCompactExtendedPercent: 40,
-	})
-	args := buildArgs(cfg, "", "")
-	joined := strings.Join(args, " ")
-	want := `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"1000000"}}`
-	if !strings.Contains(joined, want) {
-		t.Fatalf("args missing extended-tier autocompact settings: got=%v\nwant substring=%q", args, want)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.opts.Provider = "claude"
+			tc.opts.Model = "claude-opus-4-7"
+			cfg := ConfigFromOptions(tc.opts)
+			if cfg.AutoCompactPercent != tc.wantPercent {
+				t.Fatalf("AutoCompactPercent = %d, want %d", cfg.AutoCompactPercent, tc.wantPercent)
+			}
+			args := buildArgs(cfg, "", "")
+			if !strings.Contains(strings.Join(args, " "), tc.wantSettings) {
+				t.Fatalf("args missing autocompact settings: got=%v\nwant substring=%q", args, tc.wantSettings)
+			}
+		})
 	}
 }
 
@@ -443,70 +427,73 @@ func TestBuildArgsOmitsZeroSubagentLimits(t *testing.T) {
 	}
 }
 
-func TestConfigFromOptionsRuntimeModeFullAccessFlag(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:    "claude",
-		RuntimeMode: provider.RuntimeFullAccess,
-	})
-	want := []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}
-	if !slices.Equal(cfg.PermissionFlags, want) {
-		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, want)
+// TestConfigFromOptionsRuntimeMode pins each tier's launch config. Flags are
+// compared exactly, so a stray --allow-dangerously-skip-permissions on any
+// restricted tier fails here.
+func TestConfigFromOptionsRuntimeMode(t *testing.T) {
+	tests := []struct {
+		mode      provider.RuntimeMode
+		wantFlags []string
+		wantBase  string
+		wantTools []string
+	}{
+		{
+			mode:      provider.RuntimeFullAccess,
+			wantFlags: []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"},
+			wantBase:  "bypassPermissions",
+		},
+		// Approval-required sends no flag at all (nil, not empty).
+		{mode: provider.RuntimeApprovalRequired, wantBase: "default"},
+		{mode: provider.RuntimeAutoAcceptEdits, wantFlags: []string{"--permission-mode", "acceptEdits"}, wantBase: "acceptEdits"},
+		// Auto: `--permission-mode auto` and nothing else.
+		//
+		//   - No `--allow-dangerously-skip-permissions`. Auto is not a bypass;
+		//     the classifier can DENY, and pairing the two would hand the
+		//     session an escape hatch the tier does not promise.
+		//   - No `--disallowedTools`. Auto's reviewer needs to SEE a write to
+		//     rule on it; removing the write tools would replace review with a
+		//     blanket refusal and (per PlanLiveUpdate) force a restart on every
+		//     transition.
+		//
+		// Verified against claude 2.1.219: the CLI echoes
+		// `permissionMode:"auto"` on `system/init` for exactly this argv. See
+		// claudeAutoPermissionMode.
+		{mode: provider.RuntimeAuto, wantFlags: []string{"--permission-mode", "auto"}, wantBase: "auto"},
+		// Read-only: both halves are load-bearing and neither is sufficient
+		// alone:
+		//
+		//   - `--permission-mode dontAsk` turns every would-be prompt into an
+		//     immediate denial, so an unattended turn is refused rather than
+		//     left hanging on a CanUseTool control_request nobody answers.
+		//   - `--disallowedTools Write,Edit,NotebookEdit` removes the write
+		//     tools from the session outright. dontAsk only converts "ask" to
+		//     "deny", so an action a settings source already ALLOWS never
+		//     becomes an ask and would be permitted — a user's
+		//     `permissions.allow: ["Write"]` would otherwise let a read-only
+		//     session write files.
+		//
+		// Verified against claude 2.1.219; transcript in
+		// docs/references/claude-wire.md §"Permission modes for read-only sessions".
+		{
+			mode:      provider.RuntimeReadOnly,
+			wantFlags: []string{"--permission-mode", "dontAsk"},
+			wantBase:  "dontAsk",
+			wantTools: []string{"Write", "Edit", "NotebookEdit"},
+		},
 	}
-	if cfg.BasePermissionMode != "bypassPermissions" {
-		t.Errorf("BasePermissionMode = %q, want bypassPermissions", cfg.BasePermissionMode)
-	}
-}
-
-func TestConfigFromOptionsRuntimeModeApprovalRequiredNoFlag(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:    "claude",
-		RuntimeMode: provider.RuntimeApprovalRequired,
-	})
-	if cfg.PermissionFlags != nil {
-		t.Errorf("PermissionFlags = %v, want nil for approval-required", cfg.PermissionFlags)
-	}
-}
-
-func TestConfigFromOptionsRuntimeModeAutoAcceptEdits(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:    "claude",
-		RuntimeMode: provider.RuntimeAutoAcceptEdits,
-	})
-	want := []string{"--permission-mode", "acceptEdits"}
-	if !slices.Equal(cfg.PermissionFlags, want) {
-		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, want)
-	}
-}
-
-// TestConfigFromOptionsRuntimeModeAuto pins the auto tier's launch config.
-// The flag is the whole mapping: `--permission-mode auto` and nothing else.
-//
-//   - No `--allow-dangerously-skip-permissions`. Auto is not a bypass; the
-//     classifier can DENY, and pairing the two would hand the session an
-//     escape hatch the tier does not promise.
-//   - No `--disallowedTools`. Auto's reviewer needs to SEE a write to rule on
-//     it; removing the write tools would replace review with a blanket refusal
-//     and (per PlanLiveUpdate) force a restart on every transition.
-//
-// Verified against claude 2.1.219: the CLI echoes `permissionMode:"auto"` on
-// `system/init` for exactly this argv. See claudeAutoPermissionMode.
-func TestConfigFromOptionsRuntimeModeAuto(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:    "claude",
-		RuntimeMode: provider.RuntimeAuto,
-	})
-	want := []string{"--permission-mode", "auto"}
-	if !slices.Equal(cfg.PermissionFlags, want) {
-		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, want)
-	}
-	if cfg.BasePermissionMode != "auto" {
-		t.Errorf("BasePermissionMode = %q, want auto", cfg.BasePermissionMode)
-	}
-	if len(cfg.DisallowedTools) != 0 {
-		t.Errorf("DisallowedTools = %v, want none for auto", cfg.DisallowedTools)
-	}
-	if slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions") {
-		t.Error("auto must not carry --allow-dangerously-skip-permissions")
+	for _, tc := range tests {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", RuntimeMode: tc.mode})
+			if !reflect.DeepEqual(cfg.PermissionFlags, tc.wantFlags) {
+				t.Errorf("PermissionFlags = %#v, want %#v", cfg.PermissionFlags, tc.wantFlags)
+			}
+			if cfg.BasePermissionMode != tc.wantBase {
+				t.Errorf("BasePermissionMode = %q, want %q", cfg.BasePermissionMode, tc.wantBase)
+			}
+			if !slices.Equal(cfg.DisallowedTools, tc.wantTools) {
+				t.Errorf("DisallowedTools = %v, want %v", cfg.DisallowedTools, tc.wantTools)
+			}
+		})
 	}
 }
 
@@ -580,39 +567,40 @@ func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 	}
 }
 
-// TestMcpConfigForCLIBackfillsHTTPType pins the contract that lets the
+// TestMcpConfigForCLIBackfillsTransportType pins the contract that lets the
 // app layer share one MCPServer struct between Codex (untagged
 // {"url":...} via inline mcp_servers) and Claude (--mcp-config requires
 // `"type": "http"`). The shared shape is the canonical untagged one;
-// this helper is what makes Claude's CLI accept it.
-func TestMcpConfigForCLIBackfillsHTTPType(t *testing.T) {
-	cfg := Config{
-		Reaper: procutiltest.Reaper(),
-		MCPServers: map[string]any{
-			"browser": map[string]any{
-				"url": "http://127.0.0.1:1234/mcp/thread-A",
-			},
-		},
+// this helper is what makes Claude's CLI accept it. Every other field
+// passes through unchanged, and an explicit type is never clobbered.
+func TestMcpConfigForCLIBackfillsTransportType(t *testing.T) {
+	tests := []struct {
+		name     string
+		server   map[string]any
+		wantType string
+	}{
+		{name: "url backfills http", server: map[string]any{"url": "http://127.0.0.1:1234/mcp/thread-A"}, wantType: "http"},
+		{name: "explicit type preserved", server: map[string]any{"type": "sse", "url": "http://example.com/sse"}, wantType: "sse"},
+		{name: "command backfills stdio", server: map[string]any{"command": "/usr/local/bin/my-mcp", "args": []any{"--flag"}}, wantType: "stdio"},
 	}
-	out, ok := mcpConfigForCLI(cfg)
-	if !ok {
-		t.Fatal("mcpConfigForCLI returned ok=false for non-empty servers")
-	}
-	var payload struct {
-		MCPServers map[string]map[string]any `json:"mcpServers"`
-	}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("unmarshal: %v\nout: %s", err, out)
-	}
-	server := payload.MCPServers["browser"]
-	if server == nil {
-		t.Fatalf("browser server missing from %s", out)
-	}
-	if got := server["type"]; got != "http" {
-		t.Fatalf("server type = %v, want \"http\" — Claude CLI rejects http servers without it (%s)", got, out)
-	}
-	if got := server["url"]; got != "http://127.0.0.1:1234/mcp/thread-A" {
-		t.Fatalf("server url = %v, want unchanged passthrough", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, ok := mcpConfigForCLI(Config{Reaper: procutiltest.Reaper(), MCPServers: map[string]any{"srv": tc.server}})
+			if !ok {
+				t.Fatal("mcpConfigForCLI returned ok=false for non-empty servers")
+			}
+			var payload struct {
+				MCPServers map[string]map[string]any `json:"mcpServers"`
+			}
+			if err := json.Unmarshal([]byte(out), &payload); err != nil {
+				t.Fatalf("unmarshal: %v\nout: %s", err, out)
+			}
+			want := maps.Clone(tc.server)
+			want["type"] = tc.wantType
+			if got := payload.MCPServers["srv"]; !reflect.DeepEqual(got, want) {
+				t.Fatalf("server = %v, want %v (%s)", got, want, out)
+			}
+		})
 	}
 }
 
@@ -639,50 +627,6 @@ func TestBuildArgsCanMergeFirstPartyMCPWithNativeDiscovery(t *testing.T) {
 	}
 }
 
-func TestMcpConfigForCLIPreservesExplicitType(t *testing.T) {
-	cfg := Config{
-		Reaper: procutiltest.Reaper(),
-		MCPServers: map[string]any{
-			"sse-server": map[string]any{
-				"type": "sse",
-				"url":  "http://example.com/sse",
-			},
-		},
-	}
-	out, _ := mcpConfigForCLI(cfg)
-	var payload struct {
-		MCPServers map[string]map[string]any `json:"mcpServers"`
-	}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := payload.MCPServers["sse-server"]["type"]; got != "sse" {
-		t.Fatalf("explicit type clobbered: got %v, want \"sse\"", got)
-	}
-}
-
-func TestMcpConfigForCLIBackfillsStdioType(t *testing.T) {
-	cfg := Config{
-		Reaper: procutiltest.Reaper(),
-		MCPServers: map[string]any{
-			"local": map[string]any{
-				"command": "/usr/local/bin/my-mcp",
-				"args":    []any{"--flag"},
-			},
-		},
-	}
-	out, _ := mcpConfigForCLI(cfg)
-	var payload struct {
-		MCPServers map[string]map[string]any `json:"mcpServers"`
-	}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := payload.MCPServers["local"]["type"]; got != "stdio" {
-		t.Fatalf("stdio backfill missing: got %v, want \"stdio\"", got)
-	}
-}
-
 func TestBuildArgsAutoCompactClampsAbove90(t *testing.T) {
 	// Direct Config construction bypasses ConfigFromOptions's upstream
 	// normalizer so we exercise inlineSettingsForCLI's defensive clamp
@@ -697,43 +641,6 @@ func TestBuildArgsAutoCompactClampsAbove90(t *testing.T) {
 	}
 	if strings.Contains(joined, `"150"`) {
 		t.Fatalf("unclamped 150 leaked into --settings: %v", args)
-	}
-}
-
-// TestConfigFromOptionsRuntimeModeReadOnly pins the verified read-only
-// launch config. Both halves are load-bearing and neither is sufficient
-// alone:
-//
-//   - `--permission-mode dontAsk` turns every would-be prompt into an
-//     immediate denial, so an unattended turn is refused rather than left
-//     hanging on a CanUseTool control_request nobody answers.
-//   - `--disallowedTools Write,Edit,NotebookEdit` removes the write tools
-//     from the session outright. dontAsk only converts "ask" to "deny", so
-//     an action a settings source already ALLOWS never becomes an ask and
-//     would be permitted — a user's `permissions.allow: ["Write"]` would
-//     otherwise let a read-only session write files.
-//
-// Verified against claude 2.1.219; transcript in
-// docs/references/claude-wire.md §"Permission modes for read-only sessions".
-func TestConfigFromOptionsRuntimeModeReadOnly(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:    "claude",
-		RuntimeMode: provider.RuntimeReadOnly,
-	})
-	wantFlags := []string{"--permission-mode", "dontAsk"}
-	if !slices.Equal(cfg.PermissionFlags, wantFlags) {
-		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, wantFlags)
-	}
-	wantTools := []string{"Write", "Edit", "NotebookEdit"}
-	if !slices.Equal(cfg.DisallowedTools, wantTools) {
-		t.Errorf("DisallowedTools = %v, want %v", cfg.DisallowedTools, wantTools)
-	}
-	if cfg.BasePermissionMode != "dontAsk" {
-		t.Errorf("BasePermissionMode = %q, want dontAsk", cfg.BasePermissionMode)
-	}
-	// The bypass escape hatch must never ride along with a restricted mode.
-	if slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions") {
-		t.Error("read-only must not carry --allow-dangerously-skip-permissions")
 	}
 }
 

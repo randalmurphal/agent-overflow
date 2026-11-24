@@ -128,12 +128,19 @@ func (f *loginFake) requests(t *testing.T) []string {
 
 // The argv is the whole mechanism: --verbose is not optional under
 // stream-json output, and the config dir is what keeps a sign-in out of the
-// canonical home.
+// canonical home. Authenticate returns both URL forms the CLI answered with.
 func TestStartLoginUsesTheHeadlessControlChannelArgvAndIsolatedHome(t *testing.T) {
 	fake := newLoginFake(t)
 	session := fake.start(t)
-	if _, err := session.Authenticate(t.Context()); err != nil {
+	urls, err := session.Authenticate(t.Context())
+	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
+	}
+	if urls.ManualURL != "https://claude.ai/manual/1" {
+		t.Errorf("ManualURL = %q", urls.ManualURL)
+	}
+	if urls.AutomaticURL != "http://127.0.0.1:9999/callback/1" {
+		t.Errorf("AutomaticURL = %q", urls.AutomaticURL)
 	}
 
 	lines := fake.capture(t)
@@ -180,20 +187,6 @@ func TestStartLoginCarriesTheConfiguredEnvironmentUnderTheHomePin(t *testing.T) 
 	}
 	if lines[3] != "https://backend.example.test" {
 		t.Errorf("ANTHROPIC_BASE_URL = %q, want the configured value", lines[3])
-	}
-}
-
-func TestAuthenticateReturnsBothURLForms(t *testing.T) {
-	fake := newLoginFake(t)
-	urls, err := fake.start(t).Authenticate(t.Context())
-	if err != nil {
-		t.Fatalf("Authenticate: %v", err)
-	}
-	if urls.ManualURL != "https://claude.ai/manual/1" {
-		t.Errorf("ManualURL = %q", urls.ManualURL)
-	}
-	if urls.AutomaticURL != "http://127.0.0.1:9999/callback/1" {
-		t.Errorf("AutomaticURL = %q", urls.AutomaticURL)
 	}
 }
 
