@@ -215,47 +215,8 @@ func TestClaudeProjectDirName(t *testing.T) {
 			t.Errorf("%s: claudeProjectDirName() =\n  %q\nwant\n  %q", c.name, got, c.want)
 		}
 	}
-}
-
-// TestClaudeProjectDirNameOverLengthShape asserts the SHAPE the truncate-and-
-// hash branch hands back — `<200 sanitized chars>-<base36 hash>`, which means
-// LocateSessionFile's primary candidate HITS for a long workspace instead of
-// falling through to the scan. The hash VALUE is pinned against the CLI's own
-// JS in TestClaudeProjectDirName.
-func TestClaudeProjectDirNameOverLengthShape(t *testing.T) {
-	long := "/" + strings.Repeat("ab/", 200) // sanitizes to ~600 chars
-	got := claudeProjectDirName(long)
-	if len(got) <= MaxSanitizedSlugLen {
-		t.Fatalf("length = %d, want a hashed form longer than %d", len(got), MaxSanitizedSlugLen)
-	}
-	if !strings.HasPrefix(got, "-ab-ab-") {
-		t.Errorf("unexpected truncated prefix %q", got)
-	}
-	if got[MaxSanitizedSlugLen] != '-' {
-		t.Errorf("byte %d = %q, want the '-' joining prefix and hash", MaxSanitizedSlugLen, got[MaxSanitizedSlugLen])
-	}
-	if hash := got[MaxSanitizedSlugLen+1:]; hash == "" || strings.ContainsAny(hash, "-/") {
-		t.Errorf("want `<200 sanitized chars>-<base36 hash>`, got %q", got)
-	}
-}
-
-// TestClaudeProjectDirHashAbsIsUnsigned isolates the abs/base-36 rendering:
-// every suffix is a bare base-36 magnitude, never a signed value. The int32-min
-// input is the only one where int32 negation differs from int64 negation.
-func TestClaudeProjectDirHashAbsIsUnsigned(t *testing.T) {
-	cases := []struct{ name, in, want string }{
-		{"empty-is-zero", "", "0"},
-		{"negative-hash", "/" + strings.Repeat("a", 200), "b6ymvl"},
-		{"int32-min", "/" + strings.Repeat("a", 205) + "/004960700\ue4bb", "zik0zk"},
-	}
-	for _, c := range cases {
-		got := claudeProjectDirHash(c.in)
-		if got != c.want {
-			t.Errorf("%s: claudeProjectDirHash() = %q, want %q", c.name, got, c.want)
-		}
-		if strings.HasPrefix(got, "-") {
-			t.Errorf("%s: hash suffix must be an unsigned magnitude, got %q", c.name, got)
-		}
+	if got := claudeProjectDirHash(""); got != "0" {
+		t.Errorf(`claudeProjectDirHash("") = %q, want "0"`, got)
 	}
 }
 

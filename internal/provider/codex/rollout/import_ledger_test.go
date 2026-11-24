@@ -156,6 +156,7 @@ func TestReadExternalImportLedgerDegradesOnCorruption(t *testing.T) {
 		"not json":                `{"records": [`,
 		"wrong shape":             `["a", "b"]`,
 		"records is not an array": `{"records": 7}`,
+		"oversized":               string(make([]byte, externalImportLedgerMaxBytes+1)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			records, warnings := ReadExternalImportLedger(writeLedger(t, body))
@@ -166,21 +167,6 @@ func TestReadExternalImportLedgerDegradesOnCorruption(t *testing.T) {
 				t.Fatalf("warnings = %+v, want one %s", warnings, WarnImportLedgerUnreadable)
 			}
 		})
-	}
-}
-
-func TestReadExternalImportLedgerRefusesAnOversizedFile(t *testing.T) {
-	home := t.TempDir()
-	path := filepath.Join(home, ExternalImportLedgerFile)
-	if err := os.WriteFile(path, make([]byte, externalImportLedgerMaxBytes+1), 0o644); err != nil {
-		t.Fatalf("write oversized ledger: %v", err)
-	}
-	records, warnings := ReadExternalImportLedger(home)
-	if len(records) != 0 {
-		t.Errorf("records = %v, want none", records)
-	}
-	if len(warnings) != 1 || warnings[0].Code != WarnImportLedgerUnreadable {
-		t.Fatalf("warnings = %+v, want one %s", warnings, WarnImportLedgerUnreadable)
 	}
 }
 
