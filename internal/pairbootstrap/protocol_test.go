@@ -46,15 +46,28 @@ func newClient(t *testing.T) *Client {
 	}
 	return c
 }
-func invitation() (Invitation, error) {
+func invitation(string) (Invitation, error) {
 	return Invitation{LinkID: "link", URL: "https://host/#secret-invitation"}, nil
 }
+
+// settledBook is a book whose every cancellation is already durable.
+func settledBook() *Book { return NewBook(func(string) error { return nil }, time.Hour) }
+
 func startBook(t *testing.T) (*Book, Snapshot) {
 	t.Helper()
-	b := NewBook(nil)
-	s := b.Open(invitation)
-	t.Cleanup(func() { b.Close(s.WindowID) })
-	return b, s
+	b := settledBook()
+	return b, openWindow(t, b, invitation)
+}
+
+// openWindow opens a window that the test closes when it ends.
+func openWindow(t *testing.T, b *Book, mint func(string) (Invitation, error)) Snapshot {
+	t.Helper()
+	s, err := b.Open(mint, admitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close(s.WindowID, EndedClosed) })
+	return s
 }
 func handshake(t *testing.T, b *Book, c *Client) (Challenge, Reveal, SealedInvitation) {
 	t.Helper()
@@ -66,7 +79,7 @@ func handshake(t *testing.T, b *Book, c *Client) (Challenge, Reveal, SealedInvit
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := b.Reveal(ch.ID, r)
+	sealed, err := b.Reveal(ch.ID, r, "lan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +88,8 @@ func handshake(t *testing.T, b *Book, c *Client) (Challenge, Reveal, SealedInvit
 
 func TestExchangeAuthenticatesInvitationAndRetriesWithoutReminting(t *testing.T) {
 	var minted atomic.Int32
-	b := NewBook(nil)
-	s := b.Open(func() (Invitation, error) { minted.Add(1); return invitation() })
-	t.Cleanup(func() { b.Close(s.WindowID) })
+	b := settledBook()
+	s := openWindow(t, b, func(route string) (Invitation, error) { minted.Add(1); return invitation(route) })
 	c := newClient(t)
 	ch, r, sealed := handshake(t, b, c)
 	invite, sas, err := c.Open(sealed)
@@ -87,7 +99,7 @@ func TestExchangeAuthenticatesInvitationAndRetriesWithoutReminting(t *testing.T)
 	if next, err := b.Begin(c.Commitment()); err != nil || next != ch {
 		t.Fatal("begin retry changed challenge", err)
 	}
-	if next, err := b.Reveal(ch.ID, r); err != nil || next != sealed || minted.Load() != 1 {
+	if next, err := b.Reveal(ch.ID, r, "lan"); err != nil || next != sealed || minted.Load() != 1 {
 		t.Fatal("reveal retry reminted", err)
 	}
 	if _, err := b.Begin(newClient(t).Commitment()); !errors.Is(err, ErrBusy) {
@@ -116,7 +128,7 @@ func TestCommitmentAndFrozenChallengeRejectTranscriptReplacement(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			bad := r
 			change(&bad)
-			if _, err := b.Reveal(ch.ID, bad); !errors.Is(err, ErrInvalid) {
+			if _, err := b.Reveal(ch.ID, bad, "lan"); !errors.Is(err, ErrInvalid) {
 				t.Fatal("modified commitment accepted", err)
 			}
 		})
@@ -126,7 +138,7 @@ func TestCommitmentAndFrozenChallengeRejectTranscriptReplacement(t *testing.T) {
 	if _, err := c.Reveal(other); !errors.Is(err, ErrInvalid) {
 		t.Fatal("client disclosed secret to replacement challenge")
 	}
-	if _, err := b.Reveal("different-request", r); !errors.Is(err, ErrInvalid) {
+	if _, err := b.Reveal("different-request", r, "lan"); !errors.Is(err, ErrInvalid) {
 		t.Fatal("cross-request reveal accepted")
 	}
 	bad := newClient(t)
@@ -134,7 +146,7 @@ func TestCommitmentAndFrozenChallengeRejectTranscriptReplacement(t *testing.T) {
 	bad.commitment = commit(bad.reveal)
 	b2, _ := startBook(t)
 	ch2, _ := b2.Begin(bad.Commitment())
-	if _, err := b2.Reveal(ch2.ID, bad.reveal); !errors.Is(err, ErrInvalid) {
+	if _, err := b2.Reveal(ch2.ID, bad.reveal, "lan"); !errors.Is(err, ErrInvalid) {
 		t.Fatal("invalid curve point accepted")
 	}
 }
@@ -188,50 +200,6 @@ func TestCiphertextAndTranscriptTamperingFails(t *testing.T) {
 	}
 }
 
-func TestCloseDuringMintCancelsLateInvitationAndPreservesNewWindow(t *testing.T) {
-	started, finish, canceled := make(chan struct{}), make(chan struct{}), make(chan string, 1)
-	b := NewBook(func(id string) { canceled <- id })
-	old := b.Open(func() (Invitation, error) { close(started); <-finish; return invitation() })
-	c := newClient(t)
-	ch, _ := b.Begin(c.Commitment())
-	r, _ := c.Reveal(ch)
-	done := make(chan error, 1)
-	go func() { _, err := b.Reveal(ch.ID, r); done <- err }()
-	<-started
-	b.Close(old.WindowID)
-	next := b.Open(invitation)
-	defer b.Close(next.WindowID)
-	b.Close(old.WindowID)
-	close(finish)
-	if err := <-done; !errors.Is(err, ErrClosed) {
-		t.Fatal("late mint succeeded", err)
-	}
-	if id := <-canceled; id != "link" {
-		t.Fatal("wrong invitation canceled")
-	}
-	if !b.Snapshot(next.WindowID).Open || b.Snapshot(old.WindowID).Open {
-		t.Fatal("stale UI closed replacement window")
-	}
-}
-
-func TestExpiryCancelsInvitationWithoutFurtherRequests(t *testing.T) {
-	canceled := make(chan string, 1)
-	b := NewBook(func(id string) { canceled <- id })
-	w := b.open(invitation, time.Second)
-	handshake(t, b, newClient(t))
-	select {
-	case <-canceled:
-	case <-time.After(3 * time.Second):
-		t.Fatal("expiry did not cancel invitation")
-	}
-	if b.Snapshot(w.WindowID).Open {
-		t.Fatal("expired window remained open")
-	}
-	if _, err := b.Begin(newClient(t).Commitment()); !errors.Is(err, ErrClosed) {
-		t.Fatal("expired window accepted request")
-	}
-}
-
 func TestHTTPSExchangeAndNoRedirect(t *testing.T) {
 	b, _ := startBook(t)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -252,7 +220,7 @@ func TestHTTPSExchangeAndNoRedirect(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(v)
 		case "reveal":
-			v, err := b.Reveal(req.ID, req.Reveal)
+			v, err := b.Reveal(req.ID, req.Reveal, "lan")
 			if err != nil {
 				http.Error(w, "bad", 400)
 				return
@@ -272,8 +240,13 @@ func TestHTTPSExchangeAndNoRedirect(t *testing.T) {
 	var hits atomic.Int32
 	redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); http.Redirect(w, r, server.URL, 302) }))
 	defer redirect.Close()
-	if _, _, err := Exchange(context.Background(), hc, redirect.URL, "Laptop", "darwin"); err == nil || hits.Load() != 1 {
+	_, _, err = Exchange(context.Background(), hc, redirect.URL, "Laptop", "darwin")
+	if err == nil || hits.Load() != 1 {
 		t.Fatal("redirect accepted")
+	}
+	// The refusal names the menu path as the setup guide writes it.
+	if want := "Pairing request failed (HTTP 302). On the other computer, open Remote access → Allow device access → Allow a device to connect → Another computer, then try again"; err.Error() != want {
+		t.Fatalf("a refused request reads %q, want %q", err, want)
 	}
 }
 

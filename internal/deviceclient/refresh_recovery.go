@@ -123,7 +123,7 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 		return err
 	}
 	exchangeCtx, endExchange := c.rotationWait(ctx, support)
-	issued, exchangeErr := c.exchange(exchangeCtx, c.http, path, body, &held)
+	issued, exchangeErr := c.exchange(exchangeCtx, c.http, path, body, &held, "")
 	endExchange()
 	// Compare AFTER the network too. A suspended process's late grant/refusal
 	// cannot roll back a newer generation, delete a re-pairing, or lose a rename.

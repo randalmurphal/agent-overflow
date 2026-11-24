@@ -13,9 +13,10 @@ import (
 // interleaving this refusal closes.
 var ErrDeviceRevoked = errors.New("store: the device is revoked")
 
-// CreateSession writes a session row. The caller owns the id, because the
-// same id is signed into the claims that travel with it and the two must
-// be minted together.
+// createSession writes a session row inside the caller's transaction
+// (CreateDeviceSession, CompletePairingRedemption, EnsureLocalSession). The
+// caller owns the id, because the same id is signed into the claims that
+// travel with it and the two must be minted together.
 //
 // Refused rather than defaulted: an empty id, user, device, or binding
 // class, and an expiry at or before creation. A session that is already
@@ -31,17 +32,6 @@ var ErrDeviceRevoked = errors.New("store: the device is revoked")
 // written. A caller-side check could only ever be a read that the
 // revocation then invalidates — which is exactly how a paired browser
 // outlived its revocation (incident 2026-08-31).
-func (s *Store) CreateSession(session Session) error {
-	if session.BindingClass == "loopback-only" {
-		return fmt.Errorf("store: local sessions require EnsureLocalSession")
-	}
-	err := createSession(s.db, session)
-	if errors.Is(err, ErrDeviceRevoked) {
-		return s.diagnoseDeviceRefusal(session.DeviceID)
-	}
-	return err
-}
-
 func createSession(db sqlExecutor, session Session) error {
 	switch {
 	case strings.TrimSpace(session.ID) == "":
@@ -82,24 +72,22 @@ func createSession(db sqlExecutor, session Session) error {
 		return fmt.Errorf("store: create session: rows affected: %w", err)
 	}
 	if written == 0 {
-		// Diagnosed only on the refusal path, so the ordinary insert stays
-		// one statement. Both answers refuse; naming which one lets a
-		// caller tell "that device is gone" from "the owner revoked it".
 		return fmt.Errorf("store: create session for device %s: %w",
 			session.DeviceID, ErrDeviceRevoked)
 	}
 	return nil
 }
 
-// diagnoseDeviceRefusal names why a device-gated write matched no device.
-func (s *Store) diagnoseDeviceRefusal(deviceID string) error {
-	if _, err := s.GetDevice(deviceID); errors.Is(err, sql.ErrNoRows) {
-		return sql.ErrNoRows
-	}
-	return ErrDeviceRevoked
-}
+// sessionDeviceLive is the clause a write to one sessions row uses to require
+// that the row's device is unrevoked: a lookup of that one device by its
+// key, never a read of every device.
+const sessionDeviceLive = `EXISTS (SELECT 1 FROM devices d WHERE d.id = sessions.device_id AND d.revoked_at IS NULL)`
 
-// ActivateSession stamps the moment a session became presentable, which is
+const activateSessionSQL = `UPDATE sessions SET activated_at = ?, expires_at = ?
+	 WHERE id = ? AND activated_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+	   AND ` + sessionDeviceLive
+
+// activateSession stamps the moment a session became presentable, which is
 // the moment the owner confirmed the pairing verification number. Reports
 // whether it moved: a second confirmation keeps the first stamp, so the
 // log records when access actually began.
@@ -114,15 +102,11 @@ func (s *Store) diagnoseDeviceRefusal(deviceID string) error {
 // inert row into a live credential, and it is in the statement rather than
 // in front of it so a revocation cannot land between the check and the
 // write.
-func (s *Store) ActivateSession(sessionID string, at, expiresAt int64) (bool, error) {
+func activateSession(db sqlExecutor, sessionID string, at, expiresAt int64) (bool, error) {
 	if at == 0 {
 		return false, fmt.Errorf("%w: session activation stamp", ErrIdentityFieldRequired)
 	}
-	result, err := s.db.Exec(
-		`UPDATE sessions SET activated_at = ?, expires_at = ?
-		 WHERE id = ? AND activated_at IS NULL AND revoked_at IS NULL AND expires_at > ?
-		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,
-		at, expiresAt, sessionID, at)
+	result, err := db.Exec(activateSessionSQL, at, expiresAt, sessionID, at)
 	if err != nil {
 		return false, fmt.Errorf("store: activate session: %w", err)
 	}
@@ -145,7 +129,7 @@ func (s *Store) ExtendSession(sessionID string, expiresAt, now int64) (bool, err
 		`UPDATE sessions SET expires_at = ?
 		 WHERE id = ? AND revoked_at IS NULL AND activated_at IS NOT NULL
 		   AND expires_at < ? AND ? > ?
-		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,
+		   AND `+sessionDeviceLive,
 		expiresAt, sessionID, expiresAt, expiresAt, now)
 	if err != nil {
 		return false, fmt.Errorf("store: extend session: %w", err)
@@ -270,7 +254,7 @@ func (s *Store) TouchSession(sessionID string, at int64) (bool, error) {
 	result, err := s.db.Exec(
 		`UPDATE sessions SET last_seen_at = ?
 		 WHERE id = ? AND revoked_at IS NULL AND last_seen_at IS NOT ?
-		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,
+		   AND `+sessionDeviceLive,
 		at, sessionID, at)
 	if err != nil {
 		return false, fmt.Errorf("store: touch session: %w", err)

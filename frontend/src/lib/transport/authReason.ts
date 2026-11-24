@@ -228,6 +228,56 @@ export const UNKNOWN_AUTH_REASON: AuthReasonPresentation = {
   retryable: false,
 };
 
+/** The device-side exchange a refusal answered. */
+export type RefusedOperation = 'pairing' | 'passkey';
+
+/**
+ * Translate a refusal of one device-side exchange: a pairing redemption or a
+ * passkey sign-in. The answers whose meaning depends on the exchange are
+ * worded for it: the auth rate limit's 429 (plain text, no reason, its wait
+ * in `retryAfter`, the Retry-After header's seconds), a save that failed on
+ * the computer (`temporarily_unavailable`), a removed device's passkey
+ * sign-in (`revoked_device`), and an answer that named no reason. Every other reason reads as presentAuthReason has it.
+ */
+export function presentRefusal(operation: RefusedOperation, status: number, reason: string, retryAfter: string | null): AuthReasonPresentation {
+  const pairing = operation === 'pairing';
+  if (status === 429) {
+    return {
+      title: pairing ? 'This computer is limiting pairing attempts.' : 'This computer is limiting sign-in attempts.',
+      hint: `${waitFor(retryAfter)}, then try again.`,
+      retryable: true,
+    };
+  }
+  if (reason === 'temporarily_unavailable') {
+    return pairing
+      ? { title: 'This computer could not process this pairing link.', hint: 'Try the same link again in a moment.', retryable: true }
+      : { title: 'This computer could not save your sign-in.', hint: 'Try signing in again in a moment.', retryable: true };
+  }
+  // A passkey belongs to the person, not to this device: once the device
+  // is restored, or forgotten so this browser signs in as a new one, the
+  // same passkey signs in. No link is involved.
+  if (!pairing && reason === 'revoked_device') {
+    return {
+      title: "This device's access was removed.",
+      hint: 'Under Settings → Remote access → Devices on the computer, either restore this device or forget it, then sign in with your passkey again.',
+      retryable: false,
+    };
+  }
+  if (reason) return presentAuthReason(reason);
+  return pairing
+    ? { title: `The computer refused the request (HTTP ${status}).`, hint: 'Try again, and pair this device again if it keeps happening.', retryable: true }
+    : { title: `The computer refused the sign-in (HTTP ${status}).`, hint: 'Try signing in again.', retryable: true };
+}
+
+/** How long to wait, from a Retry-After header's whole seconds. */
+function waitFor(retryAfter: string | null): string {
+  const seconds = retryAfter !== null && /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : NaN;
+  if (!Number.isFinite(seconds) || seconds < 1) return 'Wait a moment';
+  if (seconds < 60) return `Wait ${seconds} ${seconds === 1 ? 'second' : 'seconds'}`;
+  const minutes = Math.ceil(seconds / 60);
+  return `Wait ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
+}
+
 /**
  * Is this a refusal code this build can explain?
  *

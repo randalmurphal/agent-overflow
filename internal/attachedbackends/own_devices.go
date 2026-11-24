@@ -186,7 +186,7 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 	link.Endpoint, link.CertFingerprint = route.Endpoint, route.CertFingerprint
 	// A saved introduction whose locks then failed to release still has its
 	// carrier: it is announced and acknowledged, and the error returned.
-	_, held, err := m.enroll(probe, link, introductionByPeer, false)
+	_, held, err := m.enroll(probe, link, introductionByPeer, false, "")
 	if errors.Is(err, errNotWanted) {
 		return false, nil
 	}

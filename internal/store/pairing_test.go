@@ -1,8 +1,11 @@
 package store
 
 import (
+	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 )
@@ -24,21 +27,54 @@ func seedPairingLink(t *testing.T, s *Store, owner User, hash []byte, expires in
 	return link
 }
 
+// seedPendingSession writes session, unactivated, the way a redemption does:
+// on its existing device, named by a redeemed link (link-1, which the test
+// must not have created).
+func seedPendingSession(t *testing.T, s *Store, owner User, session Session) PairingLink {
+	t.Helper()
+	seedPairingLink(t, s, owner, []byte("hash-pending"), session.ExpiresAt)
+	link, _ := redeemOnto(t, s, []byte("hash-pending"), session.CreatedAt, session)
+	return link
+}
+
+// redeemOnto spends the link hash names at at for session's existing device
+// and completes the redemption with session, unactivated, on the link's
+// terms. A device with no key is given one first, as a redemption needs.
+func redeemOnto(t *testing.T, s *Store, hash []byte, at int64, session Session) (PairingLink, Session) {
+	t.Helper()
+	device, err := s.GetDevice(session.DeviceID)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	if device.KeyThumbprint == "" {
+		device.KeyThumbprint = "thumb-" + device.ID
+		if err := s.SetDeviceKeyThumbprint(device.ID, device.KeyThumbprint); err != nil {
+			t.Fatalf("SetDeviceKeyThumbprint: %v", err)
+		}
+	}
+	link, err := s.RedeemPairingLink(hash, at, device.KeyThumbprint)
+	if err != nil {
+		t.Fatalf("RedeemPairingLink: %v", err)
+	}
+	session.UserID, session.BindingClass, session.Scopes, session.ActivatedAt = link.UserID, link.BindingClass, link.Scopes, 0
+	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: link.ID,
+		DeviceSession: DeviceSession{Device: device, Session: session}}); err != nil {
+		t.Fatalf("CompletePairingRedemption: %v", err)
+	}
+	link.DeviceID, link.SessionID = device.ID, session.ID
+	return link, session
+}
+
+// accessUntil is a confirmation's access expiry, the same for every class.
+func accessUntil(at int64) func(string) int64 {
+	return func(string) int64 { return at }
+}
+
 func TestRetirePendingPairingsRollsBackIfLinkRetirementFails(t *testing.T) {
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
-	link := seedPairingLink(t, s, owner, []byte("hash"), 9000)
-	session := newTestSession("pending", owner, device, key, 9000)
-	session.ActivatedAt = 0
-	if err := s.CreateSession(session); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.RedeemPairingLink([]byte("hash"), 2000, "key"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AttachPairingRedemption(link.ID, device.ID, session.ID); err != nil {
-		t.Fatal(err)
-	}
+	seedPairingLink(t, s, owner, []byte("hash"), 9000)
+	link, session := redeemOnto(t, s, []byte("hash"), 2000, newTestSession("pending", owner, device, key, 9000))
 	if _, err := s.db.Exec(`CREATE TRIGGER reject_pairing_retirement BEFORE UPDATE OF canceled_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'test failure'); END`); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +137,7 @@ func TestPairingLinkRedemptionIsSingleUse(t *testing.T) {
 	if first.KeyThumbprint != "thumb-a" {
 		t.Fatalf("redemption did not record the key: %+v", first)
 	}
-	if err := s.AttachPairingRedemption("link-1", "dev-a", "sess-a"); err != nil {
+	if err := attachPairingRedemption(s.db, "link-1", "dev-a", "sess-a"); err != nil {
 		t.Fatalf("AttachPairingRedemption: %v", err)
 	}
 	if !first.Redeemed() {
@@ -183,30 +219,209 @@ func (s *Store) mustRedeemErr(t *testing.T, hash []byte) error {
 	return err
 }
 
-func TestConfirmPairingLinkRequiresARedemptionAndHappensOnce(t *testing.T) {
-	s, owner, _ := seedOwnerDevice(t)
+func TestConfirmRedeemedPairingRequiresAnAttachedRedemptionAndHappensOnce(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
 	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
 
-	if _, err := s.ConfirmPairingLink("link-1", 2500); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.ConfirmRedeemedPairing("link-1", 2500, accessUntil(900000)); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("confirming an unredeemed link err = %v, want sql.ErrNoRows", err)
 	}
+	if err := s.SetDeviceKeyThumbprint(device.ID, "thumb"); err != nil {
+		t.Fatal(err)
+	}
+	device.KeyThumbprint = "thumb"
 	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
 		t.Fatalf("RedeemPairingLink: %v", err)
 	}
-	confirmed, err := s.ConfirmPairingLink("link-1", 2500)
-	if err != nil {
-		t.Fatalf("ConfirmPairingLink: %v", err)
+	// Spent, but no session attached yet: there is nothing to admit.
+	if _, err := s.ConfirmRedeemedPairing("link-1", 2500, accessUntil(900000)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("confirming a redemption with no session err = %v, want sql.ErrNoRows", err)
 	}
-	if confirmed.ConfirmedAt != 2500 || !confirmed.Settled() {
+	pending := newTestSession("sess-pending", owner, device, key, 9000)
+	pending.ActivatedAt, pending.Scopes = 0, []string{"threads:read", "files:read"}
+	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: "link-1", DeviceSession: DeviceSession{Device: device, Session: pending}}); err != nil {
+		t.Fatalf("CompletePairingRedemption: %v", err)
+	}
+	confirmed, err := s.ConfirmRedeemedPairing("link-1", 2500, accessUntil(900000))
+	if err != nil {
+		t.Fatalf("ConfirmRedeemedPairing: %v", err)
+	}
+	if confirmed.Link.ConfirmedAt != 2500 || !confirmed.Link.Settled() {
 		t.Fatalf("confirmation did not settle the link: %+v", confirmed)
 	}
-	if _, err := s.ConfirmPairingLink("link-1", 3000); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("second confirmation err = %v, want sql.ErrNoRows", err)
+	if session, err := s.GetSession(pending.ID); err != nil || session.ActivatedAt != 2500 || session.ExpiresAt != 900000 {
+		t.Fatalf("confirmation did not activate the session with its access window (%+v, %v)", session, err)
+	}
+	if _, err := s.ConfirmRedeemedPairing("link-1", 3000, accessUntil(900000)); !errors.Is(err, ErrPairingAlreadyConfirmed) {
+		t.Fatalf("second confirmation err = %v, want ErrPairingAlreadyConfirmed", err)
 	}
 	after, _ := s.GetPairingLink("link-1")
 	if after.ConfirmedAt != 2500 {
 		t.Fatalf("second confirmation moved the stamp to %d", after.ConfirmedAt)
 	}
+}
+
+// A repeat confirmation answers from whether the confirmed device can use
+// its access at that moment, by its access or by renewal: allowed while
+// either has time left and its renewal is unspent, ended once both expired,
+// its renewal was spent, or its session was revoked. Nothing is written.
+// seedConfirmedPairing writes link-1, redeemed at 2000 by a device whose
+// session holds the refresh secret refresh (created at 2000, renewing until
+// 50000) and confirmed at 2500 with access until 10000.
+func seedConfirmedPairing(t *testing.T, refresh []byte) (*Store, Device, Session) {
+	t.Helper()
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
+	if err := s.SetDeviceKeyThumbprint(device.ID, "thumb"); err != nil {
+		t.Fatal(err)
+	}
+	device.KeyThumbprint = "thumb"
+	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
+		t.Fatal(err)
+	}
+	pending := newTestSession("sess-pending", owner, device, key, 9000)
+	pending.ActivatedAt, pending.Scopes = 0, []string{"threads:read", "files:read"}
+	grant := RefreshGrant{Hash: refresh, CreatedAt: 2000, ExpiresAt: 50000}
+	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: "link-1", DeviceSession: DeviceSession{Device: device, Session: pending, Refresh: grant}}); err != nil {
+		t.Fatal(err)
+	}
+	if access, err := s.PairingAccessOf("link-1", 2400); err != nil || access != PairingNotConfirmed {
+		t.Fatalf("before confirmation the access = %v (%v), want PairingNotConfirmed", access, err)
+	}
+	if _, err := s.ConfirmRedeemedPairing("link-1", 2500, accessUntil(10000)); err != nil {
+		t.Fatal(err)
+	}
+	return s, device, pending
+}
+
+// requirePairingAccess checks what link-1's access reads at at, and what a
+// repeat confirmation of it answers.
+func requirePairingAccess(t *testing.T, s *Store, at int64, wantAccess PairingAccess, wantErr error, when string) {
+	t.Helper()
+	if access, err := s.PairingAccessOf("link-1", at); err != nil || access != wantAccess {
+		t.Fatalf("%s: the access = %v (%v), want %v", when, access, err, wantAccess)
+	}
+	if _, err := s.ConfirmRedeemedPairing("link-1", at, accessUntil(at+10000)); !errors.Is(err, wantErr) {
+		t.Fatalf("%s: a repeat confirmation = %v, want %v", when, err, wantErr)
+	}
+}
+
+// A renewal after the clock was set back writes its unspent successor with
+// an earlier creation time than the predecessor it spent; the device can
+// still renew. Removing the device reads as removed, and Restore leaves its
+// session ended.
+func TestAConfirmedPairingRenewsWhateverOrderItsSecretsWereWrittenIn(t *testing.T) {
+	first, next := sha256.Sum256([]byte("refresh-1")), sha256.Sum256([]byte("refresh-2"))
+	s, device, session := seedConfirmedPairing(t, first[:])
+	if _, err := s.RotateRefreshSecret(context.Background(), RefreshRotation{
+		SessionID: session.ID, DeviceID: device.ID, OldHash: first[:], NextHash: next[:],
+		Now: 1500, AccessUntil: 1600, RefreshUntil: 50000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requirePairingAccess(t, s, 20000, PairingUsable, ErrPairingAlreadyConfirmed, "past its access, its successor written before its predecessor")
+	if _, err := s.RevokeDevice(device.ID, 21000); err != nil {
+		t.Fatal(err)
+	}
+	requirePairingAccess(t, s, 22000, PairingDeviceRemoved, ErrPairingDeviceRemoved, "after its device was removed")
+	if _, err := s.RestoreDevice(device.ID); err != nil {
+		t.Fatal(err)
+	}
+	requirePairingAccess(t, s, 23000, PairingAccessEnded, ErrPairingAccessEnded, "after its device was restored")
+}
+
+// A removed device stays removed once the prune of expired sessions has
+// deleted its session; Restore then reads as ended, and so does Forget.
+func TestARemovedDeviceReadsRemovedAfterItsSessionIsPruned(t *testing.T) {
+	s, device, session := seedConfirmedPairing(t, []byte("refresh-1"))
+	if _, err := s.RevokeDevice(device.ID, 3000); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, _, err := s.DeleteSessionsExpiredBefore(60000); err != nil || deleted != 1 {
+		t.Fatalf("the prune deleted %d sessions (%v), want the removed device's one", deleted, err)
+	}
+	if _, err := s.GetSession(session.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("the pruned session reads %v, want it gone", err)
+	}
+	requirePairingAccess(t, s, 61000, PairingDeviceRemoved, ErrPairingDeviceRemoved, "after its session was pruned")
+	if _, err := s.RestoreDevice(device.ID); err != nil {
+		t.Fatal(err)
+	}
+	requirePairingAccess(t, s, 62000, PairingAccessEnded, ErrPairingAccessEnded, "after its device was restored")
+	if _, err := s.RevokeDevice(device.ID, 63000); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, _, err := s.DeleteDevice(device.ID); err != nil || !deleted {
+		t.Fatalf("forget = %v (%v), want the device deleted", deleted, err)
+	}
+	requirePairingAccess(t, s, 64000, PairingAccessEnded, ErrPairingAccessEnded, "after its device was forgotten")
+}
+
+// queryerBetween calls between before every read after the first.
+type queryerBetween struct {
+	sqlQueryer
+	reads   *int
+	between func()
+}
+
+func (q queryerBetween) QueryRow(query string, args ...any) *sql.Row {
+	if *q.reads++; *q.reads > 1 {
+		q.between()
+	}
+	return q.sqlQueryer.QueryRow(query, args...)
+}
+
+// A Remove that commits after the link's device was read, and before its
+// session is, takes the device straight from usable to removed.
+func TestAPairingRemovedBetweenItsReadsReadsAsOneMoment(t *testing.T) {
+	s, device, _ := seedConfirmedPairing(t, []byte("refresh-1"))
+	reads, removed := 0, false
+	s.pairingAccessReadForTest = func(q sqlQueryer) sqlQueryer {
+		return queryerBetween{sqlQueryer: q, reads: &reads, between: func() {
+			if removed {
+				return
+			}
+			removed = true
+			if _, err := s.RevokeDevice(device.ID, 3000); err != nil {
+				t.Fatal(err)
+			}
+		}}
+	}
+	if access, err := s.PairingAccessOf("link-1", 3100); err != nil || access != PairingUsable {
+		t.Fatalf("the access with a Remove between its reads = %v (%v), want PairingUsable, the moment before it", access, err)
+	}
+	if !removed {
+		t.Fatal("the read made one statement; the test needs the Remove between two")
+	}
+	if access, err := s.PairingAccessOf("link-1", 3200); err != nil || access != PairingDeviceRemoved {
+		t.Fatalf("the access after the Remove = %v (%v), want PairingDeviceRemoved", access, err)
+	}
+}
+
+func TestARepeatConfirmationAnswersFromWhetherTheDeviceCanUseItsAccess(t *testing.T) {
+	// Access until 10000 once confirmed; renewal until 50000.
+	s, _, pending := seedConfirmedPairing(t, []byte("refresh-1"))
+	repeat := func(at int64, wantAccess PairingAccess, wantErr error, when string) {
+		t.Helper()
+		requirePairingAccess(t, s, at, wantAccess, wantErr, when)
+	}
+	repeat(5000, PairingUsable, ErrPairingAlreadyConfirmed, "inside its access")
+	repeat(20000, PairingUsable, ErrPairingAlreadyConfirmed, "past its access, inside its renewal")
+	repeat(60000, PairingAccessEnded, ErrPairingAccessEnded, "past its access and its renewal")
+	if session, err := s.GetSession(pending.ID); err != nil || session.ExpiresAt != 10000 {
+		t.Fatalf("the repeat confirmations moved the session to %+v (%v)", session, err)
+	}
+	if _, err := s.db.Exec(`UPDATE refresh_secrets SET consumed_at = 3000 WHERE session_id = ?`, pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	repeat(20000, PairingAccessEnded, ErrPairingAccessEnded, "past its access, with its renewal spent")
+	repeat(5000, PairingUsable, ErrPairingAlreadyConfirmed, "inside its access, with its renewal spent")
+	if _, _, err := s.RevokeSession(pending.ID, 5000); err != nil {
+		t.Fatal(err)
+	}
+	repeat(5000, PairingAccessEnded, ErrPairingAccessEnded, "inside its access, with its session revoked")
 }
 
 // TestCancelPairingLinkWorksAfterRedemption — the refusal case the
@@ -219,18 +434,44 @@ func TestCancelPairingLinkWorksAfterRedemption(t *testing.T) {
 	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
 		t.Fatalf("RedeemPairingLink: %v", err)
 	}
-	if err := s.AttachPairingRedemption("link-1", "dev", "sess"); err != nil {
+	if err := attachPairingRedemption(s.db, "link-1", "dev", "sess"); err != nil {
 		t.Fatalf("AttachPairingRedemption: %v", err)
 	}
 	canceled, err := s.CancelPairingLink("link-1", 2600)
 	if err != nil {
 		t.Fatalf("CancelPairingLink: %v", err)
 	}
-	if canceled.SessionID != "sess" {
+	if canceled.Link.SessionID != "sess" {
 		t.Fatalf("cancel lost the session the redemption created: %+v", canceled)
 	}
-	if _, err := s.ConfirmPairingLink("link-1", 2700); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.ConfirmRedeemedPairing("link-1", 2700, accessUntil(900000)); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatal("a canceled link accepted a confirmation")
+	}
+}
+
+// A cancellation ends the link and its redemption's pending session
+// together: a failed session revocation leaves the link open for the
+// retry, and the retry ends both.
+func TestCancelPairingLinkEndsItsPendingSessionInTheSameTransaction(t *testing.T) {
+	s, owner, device := seedOwnerDevice(t)
+	key := seedSigningKey(t, s)
+	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
+	_, pending := redeemOnto(t, s, []byte("hash-1"), 2000, newTestSession("sess-pending", owner, device, key, 9000))
+	mustExec(t, s.db, `CREATE TRIGGER reject_session_revoke BEFORE UPDATE OF revoked_at ON sessions BEGIN SELECT RAISE(ABORT, 'test revocation failure'); END`)
+	if _, err := s.CancelPairingLink("link-1", 2600); err == nil {
+		t.Fatal("a cancellation whose session revocation failed reported success")
+	}
+	if link, err := s.GetPairingLink("link-1"); err != nil || link.CanceledAt != 0 {
+		t.Fatalf("a failed revocation left the link canceled (%+v, %v)", link, err)
+	}
+	mustExec(t, s.db, `DROP TRIGGER reject_session_revoke`)
+	canceled, err := s.CancelPairingLink("link-1", 2700)
+	if err != nil || !canceled.SessionRevoked {
+		t.Fatalf("retry = %+v, %v; want the link and its session ended", canceled, err)
+	}
+	session, err := s.GetSession(pending.ID)
+	if err != nil || session.RevokedAt != 2700 {
+		t.Fatalf("pending session after the retry = %+v, %v", session, err)
 	}
 }
 
@@ -271,32 +512,48 @@ func TestDeletePairingLinksKeepsRedeemedOnes(t *testing.T) {
 	}
 }
 
-func seedRefreshSession(t *testing.T) (*Store, Session) {
+// refreshHash is the digest a renewal stores for the secret named name.
+func refreshHash(name string) []byte {
+	digest := sha256.Sum256([]byte(name))
+	return digest[:]
+}
+
+// seedRefreshSession writes a live session with its first refresh secret,
+// hashed from name and valid until expires, in the transaction production
+// issues one with.
+func seedRefreshSession(t *testing.T, name string, expires int64) (*Store, Session) {
 	t.Helper()
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 	session := newTestSession("sess-1", owner, device, key, 900000)
-	if err := s.CreateSession(session); err != nil {
-		t.Fatalf("CreateSession: %v", err)
+	if err := s.CreateDeviceSession(DeviceSession{Device: device, Session: session,
+		Refresh: RefreshGrant{Hash: refreshHash(name), CreatedAt: 1000, ExpiresAt: expires}}); err != nil {
+		t.Fatalf("seed session: %v", err)
 	}
 	return s, session
 }
 
-func TestRefreshSecretRotationSpendsThePredecessor(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	first, err := s.CreateRefreshSecret(session.ID, []byte("secret-1"), 1000, 90000)
-	if err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+// renew spends session's secret old and issues next at at, as a renewal from
+// a client that lets the backend choose its next secret does.
+func renew(s *Store, session Session, old, next string, at int64) error {
+	_, err := s.RotateRefreshSecret(context.Background(), RefreshRotation{
+		SessionID: session.ID, DeviceID: session.DeviceID, OldHash: refreshHash(old), NextHash: refreshHash(next),
+		Now: at, AccessUntil: at + 1000000, RefreshUntil: at + 2000000,
+	})
+	return err
+}
+
+func TestRefreshRotationSpendsThePredecessor(t *testing.T) {
+	s, session := seedRefreshSession(t, "secret-1", 90000)
+	if err := renew(s, session, "secret-1", "secret-2", 2000); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
-	spent, err := s.ConsumeRefreshSecret([]byte("secret-1"), 2000, "thumb")
-	if err != nil {
-		t.Fatalf("ConsumeRefreshSecret: %v", err)
+	spent, err := s.GetRefreshSecretByHash(refreshHash("secret-1"))
+	if err != nil || !spent.Spent() || spent.ConsumedBy != session.DeviceID {
+		t.Fatalf("the renewal did not record the spend: %+v (%v)", spent, err)
 	}
-	if spent.ID != first.ID || !spent.Spent() || spent.ConsumedBy != "thumb" {
-		t.Fatalf("consumption did not record the spend: %+v", spent)
-	}
-	if _, err := s.ConsumeRefreshSecret([]byte("secret-1"), 2500, "thumb"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("second consumption err = %v, want sql.ErrNoRows", err)
+	if err := renew(s, session, "secret-1", "secret-3", 2500); !errors.Is(err, ErrRefreshReuse) {
+		t.Fatalf("a second renewal with the spent secret = %v, want ErrRefreshReuse", err)
 	}
 }
 
@@ -304,34 +561,28 @@ func TestRefreshSecretRotationSpendsThePredecessor(t *testing.T) {
 // row surviving its own consumption. If the spend deleted it, a replay
 // would read as a credential that never existed.
 func TestSpentRefreshSecretStaysReadable(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("secret-1"), 1000, 90000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+	s, session := seedRefreshSession(t, "secret-1", 90000)
+	if err := renew(s, session, "secret-1", "secret-2", 2000); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
-	if _, err := s.ConsumeRefreshSecret([]byte("secret-1"), 2000, "thumb"); err != nil {
-		t.Fatalf("ConsumeRefreshSecret: %v", err)
-	}
-	read, err := s.GetRefreshSecretByHash([]byte("secret-1"))
+	read, err := s.GetRefreshSecretByHash(refreshHash("secret-1"))
 	if err != nil {
 		t.Fatalf("GetRefreshSecretByHash: %v", err)
 	}
 	if !read.Spent() || read.SessionID != session.ID {
 		t.Fatalf("spent secret did not survive readable: %+v", read)
 	}
-	if _, err := s.GetRefreshSecretByHash([]byte("never-issued")); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.GetRefreshSecretByHash(refreshHash("never-issued")); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("an unissued hash read as %v, want sql.ErrNoRows", err)
 	}
 }
 
-func TestConsumeRefreshSecretRefusesAnExpiredOne(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("secret-1"), 1000, 3000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+func TestRefreshRotationRefusesAnExpiredSecret(t *testing.T) {
+	s, session := seedRefreshSession(t, "secret-1", 3000)
+	if err := renew(s, session, "secret-1", "secret-2", 3000); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("an expired refresh secret was exchanged: %v", err)
 	}
-	if _, err := s.ConsumeRefreshSecret([]byte("secret-1"), 3000, "thumb"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatal("an expired refresh secret was exchanged")
-	}
-	read, err := s.GetRefreshSecretByHash([]byte("secret-1"))
+	read, err := s.GetRefreshSecretByHash(refreshHash("secret-1"))
 	if err != nil {
 		t.Fatalf("GetRefreshSecretByHash: %v", err)
 	}
@@ -340,11 +591,8 @@ func TestConsumeRefreshSecretRefusesAnExpiredOne(t *testing.T) {
 	}
 }
 
-func TestConsumeRefreshSecretUnderConcurrency(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("secret-1"), 1000, 90000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
-	}
+func TestRefreshRotationUnderConcurrency(t *testing.T) {
+	s, session := seedRefreshSession(t, "secret-1", 90000)
 	const racers = 8
 	var wg sync.WaitGroup
 	won := make([]bool, racers)
@@ -352,8 +600,7 @@ func TestConsumeRefreshSecretUnderConcurrency(t *testing.T) {
 	for i := range racers {
 		go func() {
 			defer wg.Done()
-			_, err := s.ConsumeRefreshSecret([]byte("secret-1"), 2000, "thumb")
-			won[i] = err == nil
+			won[i] = renew(s, session, "secret-1", "next-"+strconv.Itoa(i), 2000) == nil
 		}()
 	}
 	wg.Wait()
@@ -368,22 +615,23 @@ func TestConsumeRefreshSecretUnderConcurrency(t *testing.T) {
 	}
 }
 
-func TestSpendRefreshSecretsForSessionClearsTheOutstandingChain(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	for _, hash := range [][]byte{[]byte("s-1"), []byte("s-2"), []byte("s-3")} {
-		if _, err := s.CreateRefreshSecret(session.ID, hash, 1000, 90000); err != nil {
-			t.Fatalf("CreateRefreshSecret: %v", err)
-		}
+func TestEndRefreshFamilyClearsTheOutstandingChain(t *testing.T) {
+	s, session := seedRefreshSession(t, "s-1", 90000)
+	if err := renew(s, session, "s-1", "s-2", 1500); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
-	if _, err := s.ConsumeRefreshSecret([]byte("s-1"), 1500, "thumb"); err != nil {
-		t.Fatalf("ConsumeRefreshSecret: %v", err)
+	if err := renew(s, session, "s-2", "s-3", 1600); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
-	moved, err := s.SpendRefreshSecretsForSession(session.ID, 2000, "reuse-detected")
+	ended, err := s.EndRefreshFamily(session.ID, 2000, "reuse-detected")
 	if err != nil {
-		t.Fatalf("SpendRefreshSecretsForSession: %v", err)
+		t.Fatalf("EndRefreshFamily: %v", err)
 	}
-	if moved != 2 {
-		t.Fatalf("spent %d secrets, want the 2 still outstanding", moved)
+	if ended.Outstanding != 1 || !ended.Revoked {
+		t.Fatalf("ended %+v, want the 1 outstanding secret spent and the session revoked", ended)
+	}
+	if after, err := s.GetSession(session.ID); err != nil || after.RevokedAt != 2000 {
+		t.Fatalf("the session after its family ended = %+v (%v), want revoked", after, err)
 	}
 	chain, err := s.ListRefreshSecretsForSession(session.ID)
 	if err != nil {
@@ -397,35 +645,52 @@ func TestSpendRefreshSecretsForSessionClearsTheOutstandingChain(t *testing.T) {
 			t.Fatalf("secret %s survived the family spend", secret.ID)
 		}
 	}
-	first, _ := s.GetRefreshSecretByHash([]byte("s-1"))
-	if first.ConsumedBy != "thumb" {
+	first, _ := s.GetRefreshSecretByHash(refreshHash("s-1"))
+	if first.ConsumedBy != session.DeviceID {
 		t.Fatalf("the family spend rewrote an earlier attribution to %q", first.ConsumedBy)
 	}
 }
 
-func TestRefreshSecretsCascadeWithTheirSession(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("secret-1"), 1000, 90000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+// A family end whose session revocation fails spends no secret either, so
+// the caller's retry or report starts from the family as it was.
+func TestEndRefreshFamilyWhoseRevocationFailsSpendsNothing(t *testing.T) {
+	s, session := seedRefreshSession(t, "s-1", 90000)
+	mustExec(t, s.db, `CREATE TRIGGER reject_revoke BEFORE UPDATE OF revoked_at ON sessions BEGIN SELECT RAISE(ABORT, 'test revocation failure'); END`)
+	if _, err := s.EndRefreshFamily(session.ID, 2000, "reuse-detected"); err == nil {
+		t.Fatal("a family end whose revocation failed reported success")
 	}
+	if held, err := s.GetRefreshSecretByHash(refreshHash("s-1")); err != nil || held.Spent() {
+		t.Fatalf("the secret after a failed family end = %+v (%v), want unspent", held, err)
+	}
+	if after, err := s.GetSession(session.ID); err != nil || after.RevokedAt != 0 {
+		t.Fatalf("the session after a failed family end = %+v (%v), want live", after, err)
+	}
+}
+
+func TestRefreshSecretsCascadeWithTheirSession(t *testing.T) {
+	s, session := seedRefreshSession(t, "secret-1", 90000)
 	if _, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, session.ID); err != nil {
 		t.Fatalf("delete session: %v", err)
 	}
-	if _, err := s.GetRefreshSecretByHash([]byte("secret-1")); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.GetRefreshSecretByHash(refreshHash("secret-1")); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatal("a refresh secret outlived the session it renews")
 	}
 }
 
 func TestDeleteRefreshSecretsKeepsSpentOnesInsideTheirWindow(t *testing.T) {
-	s, session := seedRefreshSession(t)
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("live"), 1000, 90000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+	s, session := seedRefreshSession(t, "live", 90000)
+	if err := renew(s, session, "live", "live-next", 2000); err != nil {
+		t.Fatalf("renew: %v", err)
 	}
-	if _, err := s.CreateRefreshSecret(session.ID, []byte("stale"), 1000, 3000); err != nil {
-		t.Fatalf("CreateRefreshSecret: %v", err)
+	device, err := s.GetDevice(session.DeviceID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := s.ConsumeRefreshSecret([]byte("live"), 2000, "thumb"); err != nil {
-		t.Fatalf("ConsumeRefreshSecret: %v", err)
+	other := session
+	other.ID = "sess-2"
+	if err := s.CreateDeviceSession(DeviceSession{Device: device, Session: other,
+		Refresh: RefreshGrant{Hash: refreshHash("stale"), CreatedAt: 1000, ExpiresAt: 3000}}); err != nil {
+		t.Fatalf("seed the second session: %v", err)
 	}
 	dropped, err := s.DeleteRefreshSecretsExpiredBefore(5000)
 	if err != nil {
@@ -434,7 +699,7 @@ func TestDeleteRefreshSecretsKeepsSpentOnesInsideTheirWindow(t *testing.T) {
 	if dropped != 1 {
 		t.Fatalf("dropped %d secrets, want only the expired one", dropped)
 	}
-	if _, err := s.GetRefreshSecretByHash([]byte("live")); err != nil {
+	if _, err := s.GetRefreshSecretByHash(refreshHash("live")); err != nil {
 		t.Fatalf("a spent secret inside its window was pruned, which would blind the reuse detector: %v", err)
 	}
 }
@@ -512,9 +777,7 @@ func TestSessionActivationGatesLiveness(t *testing.T) {
 	key := seedSigningKey(t, s)
 	pending := newTestSession("sess-pending", owner, device, key, 900000)
 	pending.ActivatedAt = 0
-	if err := s.CreateSession(pending); err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
+	seedPendingSession(t, s, owner, pending)
 	read, err := s.GetSession("sess-pending")
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
@@ -532,7 +795,7 @@ func TestSessionActivationGatesLiveness(t *testing.T) {
 	if len(live) != 0 {
 		t.Fatalf("ListLiveSessions returned %d unconfirmed rows", len(live))
 	}
-	moved, err := s.ActivateSession("sess-pending", 3000, 950000)
+	moved, err := activateSession(s.db, "sess-pending", 3000, 950000)
 	if err != nil {
 		t.Fatalf("ActivateSession: %v", err)
 	}
@@ -543,7 +806,7 @@ func TestSessionActivationGatesLiveness(t *testing.T) {
 	if !read.Live(3500) || read.ExpiresAt != 950000 {
 		t.Fatalf("activation did not open the window: %+v", read)
 	}
-	if again, _ := s.ActivateSession("sess-pending", 4000, 999999); again {
+	if again, _ := activateSession(s.db, "sess-pending", 4000, 999999); again {
 		t.Fatal("a second activation moved the stamp")
 	}
 }
@@ -553,13 +816,11 @@ func TestActivateSessionRefusesARevokedRow(t *testing.T) {
 	key := seedSigningKey(t, s)
 	pending := newTestSession("sess-pending", owner, device, key, 900000)
 	pending.ActivatedAt = 0
-	if err := s.CreateSession(pending); err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
+	seedPendingSession(t, s, owner, pending)
 	if _, _, err := s.RevokeSession("sess-pending", 2000); err != nil {
 		t.Fatalf("RevokeSession: %v", err)
 	}
-	moved, err := s.ActivateSession("sess-pending", 3000, 950000)
+	moved, err := activateSession(s.db, "sess-pending", 3000, 950000)
 	if err != nil {
 		t.Fatalf("ActivateSession: %v", err)
 	}
@@ -569,7 +830,7 @@ func TestActivateSessionRefusesARevokedRow(t *testing.T) {
 }
 
 func TestExtendSessionOnlyMovesALiveWindowForward(t *testing.T) {
-	s, session := seedRefreshSession(t)
+	s, session := seedRefreshSession(t, "secret-1", 90000)
 	moved, err := s.ExtendSession(session.ID, 950000, 2000)
 	if err != nil {
 		t.Fatalf("ExtendSession: %v", err)
@@ -601,8 +862,8 @@ func TestDeleteSessionsExpiredBeforeKeepsLiveAndRevokedRows(t *testing.T) {
 	key := seedSigningKey(t, s)
 	for id, expires := range map[string]int64{"old": 2000, "live": 900000, "revoked": 900000} {
 		session := newTestSession(id, owner, device, key, expires)
-		if err := s.CreateSession(session); err != nil {
-			t.Fatalf("CreateSession %s: %v", id, err)
+		if err := seedLiveSession(s, session); err != nil {
+			t.Fatalf("seed session %s: %v", id, err)
 		}
 	}
 	if _, _, err := s.RevokeSession("revoked", 2500); err != nil {
@@ -630,16 +891,16 @@ func TestAttachPairingRedemptionHappensOnce(t *testing.T) {
 	s, owner, _ := seedOwnerDevice(t)
 	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
 
-	if err := s.AttachPairingRedemption("link-1", "dev", "sess"); !errors.Is(err, sql.ErrNoRows) {
+	if err := attachPairingRedemption(s.db, "link-1", "dev", "sess"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("attaching to an unredeemed link err = %v, want sql.ErrNoRows", err)
 	}
 	if _, err := s.RedeemPairingLink([]byte("hash-1"), 2000, "thumb"); err != nil {
 		t.Fatalf("RedeemPairingLink: %v", err)
 	}
-	if err := s.AttachPairingRedemption("link-1", "dev", "sess"); err != nil {
+	if err := attachPairingRedemption(s.db, "link-1", "dev", "sess"); err != nil {
 		t.Fatalf("AttachPairingRedemption: %v", err)
 	}
-	if err := s.AttachPairingRedemption("link-1", "other-dev", "other-sess"); !errors.Is(err, sql.ErrNoRows) {
+	if err := attachPairingRedemption(s.db, "link-1", "other-dev", "other-sess"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("second attach err = %v, want sql.ErrNoRows", err)
 	}
 	link, _ := s.GetPairingLink("link-1")

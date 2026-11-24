@@ -102,7 +102,8 @@ func TestEverySessionEndThatReleasesALinkHandsItOver(t *testing.T) {
 		released := recordReleases(s)
 		mustMint(t, s, owner, device, time.Hour)
 		worker := linkThread(t, st, device.ID)
-		c.at = c.at.Add(48 * time.Hour)
+		// Past the session's refresh window too: until then it can still renew.
+		c.at = c.at.Add(RenewablePolicyFor(DeviceClass(device.Class)).Refresh + 48*time.Hour)
 		s.PruneCredentials(time.Hour)
 		if got := released(); !slices.Equal(got, []string{worker}) {
 			t.Fatalf("pruning the expired session released %v, want %s", got, worker)

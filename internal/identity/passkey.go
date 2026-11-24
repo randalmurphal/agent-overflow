@@ -3,7 +3,6 @@ package identity
 import (
 	"crypto/rand"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -42,8 +41,8 @@ import (
 //     not a way in; it is a way to make the next way in stronger.
 //   - SIGN-IN is an ordinary discoverable ("passkey") login. A valid
 //     assertion IS owner presence, so it mints a device row and a session
-//     through the same chokepoints pairing uses — Mint and issueFor, never
-//     store.CreateSession directly.
+//     through the same builders pairing uses (resolveDevice and
+//     newDeviceSession) and writes them in one store transaction.
 //   - STEP-UP is the same discoverable login with user verification
 //     REQUIRED, and it mints no session at all. It produces a single-use,
 //     short-lived token bound to the session that asked, which the
@@ -450,8 +449,10 @@ type PasskeySignInRequest struct {
 //     failure;
 //  3. the assertion verifies against a credential this backend holds, and
 //     the account is the one that credential belongs to;
-//  4. the device row is resolved or created, on pairing's adoption rules;
-//  5. only then is a session minted, through Mint and issueFor.
+//  4. the device row is resolved or built, on pairing's adoption rules
+//     (resolveDevice);
+//  5. only then is a session minted: the device row or its relabel, the
+//     session and its refresh secret are written in one transaction.
 //
 // A valid assertion mints a LIVE session — no confirmation step. Pairing
 // needs one because a link is a secret somebody could have read over a
@@ -476,16 +477,21 @@ func (s *Sessions) FinishPasskeySignIn(req PasskeySignInRequest) (PasskeySignIn,
 	if reason.Refused() {
 		return PasskeySignIn{}, reason
 	}
-	device, reason := s.resolvePasskeyDevice(verified.userID, req, enrollment)
+	// The class is decided here and not by the request, on pairing's rule:
+	// a device that could name its own class could name one whose policy it
+	// was never meant to inherit. Only a browser can run a WebAuthn
+	// ceremony against this backend today, and the browser class is the one
+	// with the shortest windows — the safe answer if that ever stops being
+	// true.
+	device, newDevice, reason := s.resolveDevice(verified.userID, DeviceBrowser, req.Label, req.Platform, enrollment)
 	if reason.Refused() {
 		s.auditPasskeyRefusal(reason, req.Peer, verified.row.ID)
 		return PasskeySignIn{}, reason
 	}
 	now := s.now().UnixMilli()
 	policy := RenewablePolicyFor(DeviceClass(device.Class))
-	session, _, err := s.Mint(MintRequest{
+	written, tokens, err := s.newDeviceSession(MintRequest{
 		UserID:       verified.userID,
-		DeviceID:     device.ID,
 		BindingClass: BindingDeviceBound,
 		// Full access. A registered passkey is the owner's own credential,
 		// enrolled from a surface that already held admin, so the grant is
@@ -493,22 +499,27 @@ func (s *Sessions) FinishPasskeySignIn(req PasskeySignInRequest) (PasskeySignIn,
 		// pairing link, which is where that choice is offered.
 		Scopes: Scopes,
 		TTL:    policy.Access,
-	})
+	}, device, newDevice, now)
 	if err != nil {
-		log.Printf("identity: mint passkey session for %s: %v", device.ID, err)
-		return PasskeySignIn{}, ReasonUnknownCredential
+		log.Printf("identity: build passkey session for %s: %v", device.ID, err)
+		return PasskeySignIn{}, ReasonTemporarilyUnavailable
 	}
-	// Mint's own credential is discarded for the same reason pairing
-	// discards it: issueFor is the ONE TokenSet builder, and a device must
-	// never hold an access credential whose renewal row does not exist.
-	tokens, err := s.issueFor(session, device, now)
-	if err != nil {
-		log.Printf("identity: issue passkey session %s: %v", session.ID, err)
-		if _, revokeErr := s.RevokeSession(session.ID); revokeErr != nil {
-			log.Printf("identity: revoke unissued passkey session %s: %v", session.ID, revokeErr)
+	// The device row or its relabel, the session and its refresh secret
+	// commit together, so a failed sign-in adds or renames no device and
+	// leaves no session.
+	if err := s.store.CreateDeviceSession(written); err != nil {
+		// The device can be removed between its check above and this write,
+		// which refuses it (store.ErrDeviceRevoked); only any other failure
+		// is this computer's to retry.
+		if errors.Is(err, store.ErrDeviceRevoked) {
+			s.auditPasskeyRefusal(ReasonRevokedDevice, req.Peer, verified.row.ID)
+			return PasskeySignIn{}, ReasonRevokedDevice
 		}
-		return PasskeySignIn{}, ReasonUnknownCredential
+		log.Printf("identity: write passkey session for %s: %v", device.ID, err)
+		return PasskeySignIn{}, ReasonTemporarilyUnavailable
 	}
+	session := written.Session
+	s.auditMinted(session)
 	s.audit(store.AuthAuditEntry{
 		Event: string(AuditPasskeySignedIn), Outcome: store.AuthAuditOutcomeAllowed,
 		UserID: verified.userID, DeviceID: device.ID, SessionID: session.ID, Peer: req.Peer,
@@ -725,56 +736,6 @@ func (s *Sessions) validateAssertion(ceremony passkeyCeremony, response []byte, 
 		userVerified: flags.HasUserVerified(),
 		cloneWarning: credential.Authenticator.CloneWarning,
 	}, ReasonNone
-}
-
-// resolvePasskeyDevice finds or creates the device row a sign-in binds to.
-//
-// The rules are pairing's, deliberately: this is the second path that
-// writes a device row, and two paths with different adoption rules would
-// be two answers to "is this the same phone". resolveRedeemingDevice
-// cannot be shared directly because it takes a pairing link — what it
-// reads off one is the user id and the device class, which a passkey
-// sign-in decides here instead.
-func (s *Sessions) resolvePasskeyDevice(userID string, req PasskeySignInRequest, enrollment deviceEnrollment) (store.Device, Reason) {
-	label := strings.TrimSpace(req.Label)
-	if label == "" {
-		label = defaultDeviceLabel(DeviceBrowser)
-	}
-	existing, err := s.store.DeviceByKeyThumbprint(enrollment.thumbprint)
-	switch {
-	case err == nil:
-		if proofKindOf(existing) != enrollment.kind {
-			return store.Device{}, ReasonProofDowngraded
-		}
-		if existing.RevokedAt != 0 {
-			return store.Device{}, ReasonRevokedDevice
-		}
-		if existing.UserID != userID {
-			return store.Device{}, ReasonKeyMismatch
-		}
-		if err := s.store.RelabelDevice(existing.ID, label, req.Platform); err != nil {
-			log.Printf("identity: relabel device %s: %v", existing.ID, err)
-		}
-		existing.Label, existing.Platform = label, req.Platform
-		return existing, ReasonNone
-	case !errors.Is(err, sql.ErrNoRows):
-		log.Printf("identity: read device by thumbprint: %v", err)
-		return store.Device{}, ReasonKeyMismatch
-	}
-	// The class is decided here and not by the request, on pairing's rule:
-	// a device that could name its own class could name one whose policy it
-	// was never meant to inherit. Only a browser can run a WebAuthn
-	// ceremony against this backend today, and the browser class is the one
-	// with the shortest windows — the safe answer if that ever stops being
-	// true.
-	device, err := s.store.CreatePairedDevice(
-		userID, label, string(DeviceBrowser), req.Platform,
-		enrollment.thumbprint, string(enrollment.kind))
-	if err != nil {
-		log.Printf("identity: create passkey device: %v", err)
-		return store.Device{}, ReasonKeyMismatch
-	}
-	return device, ReasonNone
 }
 
 // passkeyAccount adapts an account plus its credentials to the library's

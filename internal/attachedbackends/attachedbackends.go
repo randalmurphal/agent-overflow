@@ -37,6 +37,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/authlimit"
 	"agent-overflow/internal/backendproxy"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/keyedlock"
@@ -439,7 +440,7 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 		}
 		invite, number, exchangeErr := pairbootstrap.Exchange(ctx, hc, pairingLink, label, m.platform)
 		if exchangeErr != nil {
-			return Attachment{}, exchangeErr
+			return Attachment{}, waitForAddressConnect(exchangeErr)
 		}
 		link, err = deviceclient.DecodeLink(invite.URL)
 		comparison = number
@@ -450,8 +451,18 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	if m.selfID != nil && link.BackendID == m.selfID() {
 		return Attachment{}, errors.New("this is the computer you are already using")
 	}
-	attachment, _, err := m.enroll(ctx, link, pairingByPerson, addressPairing)
+	// The exchange's invitation is not kept, and the window that sealed it
+	// admits no other requester, so a redemption of it that the computer
+	// gave no verdict on pairs again only through a new window.
+	retry := ""
+	if addressPairing {
+		retry = pairbootstrap.RestartHint
+	}
+	attachment, _, err := m.enroll(ctx, link, pairingByPerson, addressPairing, retry)
 	if err != nil && attachment.ID == "" {
+		if addressPairing {
+			err = waitForAddressConnect(err)
+		}
 		return Attachment{}, err
 	}
 	if err != nil {
@@ -462,6 +473,31 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 		attachment.VerificationNumber = comparison
 	}
 	return attachment, nil
+}
+
+// addressConnectRequests is how many requests one connect by address (Add)
+// makes on the other computer's per-peer auth budget, which every /auth
+// route spends from one table (transport authRateLimit): the preflight
+// Info, Begin, Reveal, and the redemption.
+//
+// A limited answer's Retry-After is that budget's time to refill one
+// request (transport rateLimiter.retryAfter), and a refused request spends
+// nothing. So after addressConnectRequests times that wait, the budget holds
+// a whole connect: at authRateLimit's 1 request per second, Retry-After is
+// 1 second and the wait is 4 seconds, for Info, Begin, Reveal, and the
+// redemption. The activation check after it (deviceclient.AwaitActivation)
+// asks again on its own every 3 seconds.
+const addressConnectRequests = 4
+
+// waitForAddressConnect makes the wait of a connect by address that a
+// computer limited long enough for the next connect, which makes every
+// request of the sequence again.
+func waitForAddressConnect(err error) error {
+	var limited *authlimit.RateLimited
+	if errors.As(err, &limited) {
+		limited.RetryAfter *= addressConnectRequests
+	}
+	return err
 }
 
 // untilShutdown is ctx, ended also when shutdown begins (BeginClose), for

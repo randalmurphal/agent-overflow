@@ -120,7 +120,7 @@ provider-history reconstruction. A whole-store snapshot includes them.
 | `signing_keys` | HMAC claim-signing secrets. Older keys remain while credentials minted under them may be valid. |
 | `recovery_codes` | Hashed single-use recovery credentials. A conditional `UPDATE ... RETURNING` makes consumption atomic. |
 | `auth_audit` | Bounded append-only authentication audit. Attribution deliberately has no foreign keys so it can outlive deleted credentials. An update trigger rejects mutation. |
-| `pairing_links` | Hashed single-use invitations plus the exact grant, proof, purpose, membership generation, and redemption outcome. |
+| `pairing_links` | Hashed single-use invitations plus the exact grant, proof, purpose, membership generation, redemption outcome, and whether a computer pairing window minted it (`bootstrap`). |
 | `refresh_secrets` | Hashed rotating renewal chain. Spent rows remain until expiry because reuse revokes the session family. |
 | `passkeys` | WebAuthn credentials owned by an account, with unique credential ID, public key, relying-party identity, counters, and authenticator flags. |
 | `own_devices`, `own_device_sessions` | Personal device membership, removal tombstones, generations, and admitted-session attribution. Membership replacement and session revocation commit together. |

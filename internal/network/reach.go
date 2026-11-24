@@ -2,6 +2,7 @@ package network
 
 import (
 	"net"
+	"sync"
 
 	"agent-overflow/internal/netisolate"
 )
@@ -60,6 +61,17 @@ func (r Reach) LANIP() string {
 	default:
 		return DiscoverLocalLANIP()
 	}
+}
+
+// Pinned returns this Reach with its LAN address discovered at most once, on
+// first use, so every address one reading derives names the same LAN IP and
+// the interfaces are enumerated once for all of them.
+func (r Reach) Pinned() Reach {
+	if r.loopback {
+		return r
+	}
+	r.discover = sync.OnceValue(r.LANIP)
+	return r
 }
 
 // pairable reports whether ip may be published as this Reach's LAN

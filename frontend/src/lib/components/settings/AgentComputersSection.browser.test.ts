@@ -8,7 +8,7 @@ import { resetStagedBackends, stageBackend } from '../../../test/helpers/backend
 import { resetToLocalPage, grantBackendScopes } from '../../../test/helpers/scopes';
 import { __setTransportHelloForTest, __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { takePinnedBackend } from '../../transport/backends';
-import type { TransportHello } from '../../transport/wsClient';
+import { TransportError, type TransportHello } from '../../transport/wsClient';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 
 const mac = '11111111-1111-4111-8111-111111111111';
@@ -73,6 +73,33 @@ it('refuses a mismatched pairing and cancels its invitation', async () => {
   expect(view.getByRole('alert').textContent).toContain('could not be verified');
 });
 
+// A pairing whose access was lost by the time of the comparison says why and
+// how to pair again, never that it could not be verified.
+it.each([
+  ['accessEnded', 'This computer was paired, and its access has since ended or expired. Choose Connect again to pair it again.'],
+  ['deviceRemoved', 'This computer was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose Connect again.'],
+])('says the pairing is %s and offers to connect again', async (state, text) => {
+  stageBackend({ id: gpu, backendId: gpu, name: 'GPU', hello: hello(gpu) });
+  await grantBackendScopes(gpu, ['terminal:operate', 'access:admin']);
+  setBindingMock('ListAgentComputers', async () => []);
+  setBindingMock('MintDevicePairing', async () => ({ linkId: 'invite', url: 'private', expiresAtMs: Date.now() + 60_000 }));
+  setBindingMock('PairAgentComputer', async () => ({ id: gpu, verificationNumber: '123456' }));
+  setBindingMock('DevicePairingStatus', async () => ({ linkId: 'invite', state }));
+  const confirm = setBindingMock('ConfirmDevicePairing', async () => {});
+  const enable = setBindingMock('SetAgentComputerEnabled', async () => {});
+  const cancel = setBindingMock('CancelDevicePairing', async () => {});
+  const view = render(AgentComputersSection);
+  await tick();
+  const select = view.getByRole('combobox') as HTMLSelectElement;
+  for (const option of select.options) option.selected = option.value === gpu;
+  await fireEvent.change(select);
+  await fireEvent.click(view.getByRole('button', { name: 'Enable tools' }));
+  await waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+  expect(confirm).not.toHaveBeenCalled(); expect(enable).not.toHaveBeenCalled();
+  expect(view.getByRole('alert').textContent).toContain(text);
+  expect(view.getByRole('button', { name: 'Connect again' })).toBeTruthy();
+});
+
 it('keeps configuration writes on the settings computer', async () => {
   stageBackend({ id: gpu, backendId: gpu, name: 'GPU', hello: hello(gpu) });
   await grantBackendScopes(gpu, ['terminal:operate', 'access:admin']);
@@ -101,6 +128,31 @@ it('offers explicit repair for an incomplete pairing without duplicating the com
   await waitFor(() => expect(mint).toHaveBeenCalledOnce());
   await waitFor(() => expect(view.getByRole('alert').textContent).toContain('destination is offline'));
   expect(view.getByRole('button', { name: 'Connect again' })).toBeTruthy();
+});
+
+// The operator approved the same invitation in the destination's Devices
+// view after this comparison matched: the connection is enabled, and the
+// approved invitation is neither repaired nor canceled.
+it('enables the connection when the destination already allowed the invitation it compared', async () => {
+  stageBackend({ id: gpu, backendId: gpu, name: 'GPU', hello: hello(gpu) });
+  await grantBackendScopes(gpu, ['terminal:operate', 'access:admin']);
+  setBindingMock('ListAgentComputers', async () => []);
+  setBindingMock('MintDevicePairing', async () => ({ linkId: 'invite', url: 'private', expiresAtMs: Date.now() + 60_000 }));
+  setBindingMock('PairAgentComputer', async () => ({ id: gpu, verificationNumber: '123456', name: 'GPU', endpoint: 'https://gpu' }));
+  setBindingMock('DevicePairingStatus', async () => ({ linkId: 'invite', state: 'redeemed', verificationNumber: '123456' }));
+  setBindingMock('ConfirmDevicePairing', async () => { throw new TransportError('pairing_already_allowed', 'this device is already allowed'); });
+  const enable = setBindingMock('SetAgentComputerEnabled', async () => {});
+  const cancel = setBindingMock('CancelDevicePairing', async () => {});
+  const view = render(AgentComputersSection);
+  await tick();
+  const select = view.getByRole('combobox') as HTMLSelectElement;
+  for (const option of select.options) option.selected = option.value === gpu;
+  await fireEvent.change(select);
+  await fireEvent.click(view.getByRole('button', { name: 'Enable tools' }));
+  await waitFor(() => expect(enable).toHaveBeenCalledExactlyOnceWith(gpu, true));
+  expect(cancel).not.toHaveBeenCalled();
+  expect(view.queryByRole('alert')).toBeNull();
+  expect(view.queryByRole('button', { name: 'Connect again' })).toBeNull();
 });
 
 it('reloads rather than offering a second pairing when enabling fails after the pairing was confirmed', async () => {

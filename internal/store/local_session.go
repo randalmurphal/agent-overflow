@@ -48,7 +48,7 @@ func (s *Store) EnsureLocalSession(candidate Session) (Session, error) {
 	// The local channel always receives the current host policy, including
 	// scopes introduced by an upgrade. Keep its attribution row unchanged.
 	if _, err := tx.Exec(`UPDATE sessions SET scopes=? WHERE id=? AND scopes<>? AND revoked_at IS NULL
-		AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`, scopes, row.ID, scopes); err != nil {
+		AND `+sessionDeviceLive, scopes, row.ID, scopes); err != nil {
 		return Session{}, fmt.Errorf("store: update local session scopes: %w", err)
 	}
 	row, err = scanSession(tx.QueryRow(sessionSelect+` WHERE s.id=?`, row.ID))

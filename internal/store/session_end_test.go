@@ -40,7 +40,7 @@ func TestEndingADevicesLastSessionReleasesItsLinks(t *testing.T) {
 				if _, err := s.RedeemPairingLink(hash, 1100, introKey(i)); err != nil {
 					t.Fatal(err)
 				}
-				if err := s.AttachPairingRedemption(link.ID, session.DeviceID, session.ID); err != nil {
+				if err := attachPairingRedemption(s.db, link.ID, session.DeviceID, session.ID); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -71,14 +71,14 @@ func TestEndingADevicesLastSessionReleasesItsLinks(t *testing.T) {
 					expires = w.expires(i)
 				}
 				session := newTestSession(endSessionID(i), owner, device, key, expires)
-				if err := s.CreateSession(session); err != nil {
+				if err := seedLiveSession(s, session); err != nil {
 					t.Fatal(err)
 				}
 				if w.prepare != nil {
 					w.prepare(t, s, i, session)
 				}
 			}
-			if err := s.CreateSession(newTestSession("other-session", owner, other, key, 99000)); err != nil {
+			if err := seedLiveSession(s, newTestSession("other-session", owner, other, key, 99000)); err != nil {
 				t.Fatal(err)
 			}
 			mustCreateThread(t, s, "worker")

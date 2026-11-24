@@ -286,17 +286,17 @@ interface BootRow {
   /** The payload bytes a removed `payloads` or `payload_chunks` row held. */
   bytes: number;
   columns: string[];
-  /** The first snapshot-scoped rule that explains it. */
-  rule?: RecoveryRule;
-  /** The first snapshot-scoped rule that explains it once its thread's stamps may move too. */
-  stamped?: RecoveryRule;
+  /** The rules that explain it (explainedBy); none when nothing does. */
+  rules: RecoveryRule[];
+  /** The snapshot-scoped rules that explain it once its thread's stamps may move too. */
+  stamped: RecoveryRule[];
 }
 
 /**
  * classifyBootChanges names, for every old row the migrations kept and the
- * boot changed, the recovery rule that explains it, and fails on the rest.
- * A rule's selection runs on the row the migrations left (`s`, in M); its
- * allowed change on the booted row. 'thread-write' rules run last, over the threads the boot
+ * boot changed, the recovery rules that explain it (explainedBy), and fails
+ * on the rest. A rule's selection runs on the row the migrations left (`s`,
+ * in M); its allowed change on the booted row. 'thread-write' rules run last, over the threads the boot
  * wrote rows in.
  */
 async function classifyBootChanges(dbPath: string, schemas: Record<string, string>, boot: Compared[], out: Fingerprint): Promise<void> {
@@ -319,15 +319,15 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
     // What the boot changed: the row as the migrations left it (s) against the booted row (b).
     const flags = columns.map((column, i) => `NOT (${same(column, 's', 'b')}) AS c${i}`);
     const scoped = rules.filter((rule) => rule.rows !== 'thread-write');
-    // A row one rule settles in a thread the boot also wrote in carries that
-    // write's stamps as well: the rule may explain its columns plus them.
+    // A row the scoped rules settle in a thread the boot also wrote in
+    // carries that write's stamps as well: they may explain their columns
+    // plus them.
     const stamps = rules.filter((rule) => rule.rows === 'thread-write' && !rule.columns?.includes('*'))
       .flatMap((rule) => rule.columns ?? []);
-    const matches = scoped.flatMap((rule, i) => [
-      `(${ruleMatch(rule, columns, removed, restored)}) AS r${i}`,
-      `(${stamps.length > 0 && rule.columns && !rule.columns.includes('*')
-        ? ruleMatch({ ...rule, columns: [...rule.columns, ...stamps] }, columns, removed, restored) : '0'}) AS w${i}`,
-    ]);
+    const matches = scoped.flatMap((rule, i) => {
+      const { selects, holds, metaKept } = ruleParts(rule, removed, restored);
+      return [`(${selects}) AS s${i}`, `(${holds}) AS h${i}`, `(${metaKept}) AS m${i}`];
+    });
     const top = table === 'items' ? `s."parent_id" = ''` : '0';
     const bytes = table === 'payloads' || table === 'payload_chunks' ? 'length(s."data")' : '0';
     const sql = `SELECT ${key.map((name, i) => `s.${quote(name)} AS k${i}`).join(', ')}, ${thread} AS thread,
@@ -337,6 +337,9 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
       LEFT JOIN main.${quote(table)} b ON ${join('b', 's')}`;
     for (const row of await dbQuery<Record<string, unknown>>(dbPath, sql, schemas)) {
       const isRemoved = row.removed === 1;
+      const changed = isRemoved ? [] : columns.filter((_, i) => row[`c${i}`] === 1).map((column) => column.name);
+      const selecting = scoped.flatMap((rule, i) => row[`s${i}`] === 1
+        ? [{ rule, holds: row[`h${i}`] === 1, metaKept: row[`m${i}`] === 1 }] : []);
       rows.push({
         table,
         key: Object.fromEntries(key.map((name, i) => [name, row[`k${i}`]])),
@@ -344,9 +347,9 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
         removed: isRemoved,
         top: row.top === 1,
         bytes: Number(row.bytes ?? 0),
-        columns: isRemoved ? [] : columns.filter((_, i) => row[`c${i}`] === 1).map((column) => column.name),
-        rule: scoped.find((_, i) => row[`r${i}`] === 1),
-        stamped: scoped.find((_, i) => row[`w${i}`] === 1),
+        columns: changed,
+        rules: explainedBy(selecting, isRemoved, changed, []),
+        stamped: stamps.length > 0 ? explainedBy(selecting, isRemoved, changed, stamps) : [],
       });
     }
   }
@@ -355,9 +358,10 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
   // write. A write a rule explains, or a row the boot added, explains them;
   // the stamps of a write no rule explains are named with that write.
   const isWrite = (row: BootRow) => row.table === 'items' && (row.removed || row.columns.some((c) => c !== 'rev'));
-  const explainedWrites = new Set(rows.filter((row) => isWrite(row) && row.rule).map((row) => row.thread!));
-  const unexplainedWrites = new Set(rows.filter((row) => isWrite(row) && !row.rule).map((row) => row.thread!));
-  const pending = rows.filter((row) => !row.rule && row.thread && !row.removed
+  const explained = (row: BootRow) => row.rules.length > 0;
+  const explainedWrites = new Set(rows.filter((row) => isWrite(row) && explained(row)).map((row) => row.thread!));
+  const unexplainedWrites = new Set(rows.filter((row) => isWrite(row) && !explained(row)).map((row) => row.thread!));
+  const pending = rows.filter((row) => !explained(row) && row.thread && !row.removed
     && recoveryRules.some((rule) => rule.table === row.table && rule.rows === 'thread-write'));
   if (pending.some((row) => !explainedWrites.has(row.thread!))) {
     for (const { thread } of await dbQuery<{ thread: string }>(dbPath,
@@ -369,20 +373,26 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
   const threadWrite = (row: BootRow, writes: Set<string>) => recoveryRules.find((rule) => rule.table === row.table
     && rule.rows === 'thread-write' && writes.has(row.thread!)
     && (rule.columns?.includes('*') || row.columns.every((column) => rule.columns?.includes(column))));
-  for (const row of pending.filter((r) => r.table === 'subagent_aggregates')) row.rule = threadWrite(row, explainedWrites);
-  const cardWrites = rows.filter((row) => row.table === 'subagent_aggregates' && row.rule).map((row) => row.thread!);
+  const writeRule = (row: BootRow, writes: Set<string>) => {
+    const rule = threadWrite(row, writes);
+    return rule ? [rule] : [];
+  };
+  for (const row of pending.filter((r) => r.table === 'subagent_aggregates')) row.rules = writeRule(row, explainedWrites);
+  const cardWrites = rows.filter((row) => row.table === 'subagent_aggregates' && explained(row)).map((row) => row.thread!);
   const stampWrites = new Set([...explainedWrites, ...cardWrites]);
   const followers: BootRow[] = [];
   for (const row of pending.filter((r) => r.table !== 'subagent_aggregates')) {
-    row.rule = threadWrite(row, stampWrites) ?? (stampWrites.has(row.thread!) ? row.stamped : undefined);
-    if (!row.rule && threadWrite(row, unexplainedWrites)) followers.push(row);
+    row.rules = writeRule(row, stampWrites);
+    if (!explained(row) && stampWrites.has(row.thread!)) row.rules = row.stamped;
+    if (!explained(row) && threadWrite(row, unexplainedWrites)) followers.push(row);
   }
 
+  // A row counts once under every rule that explains it.
   const counts = new Map<RecoveryRule, number>();
   const removed = out.recoveryRemoved;
   for (const row of rows) {
-    if (!row.rule) continue;
-    counts.set(row.rule, (counts.get(row.rule) ?? 0) + 1);
+    if (!explained(row)) continue;
+    for (const rule of row.rules) counts.set(rule, (counts.get(rule) ?? 0) + 1);
     if (!row.removed) continue;
     removed.tables[row.table] = (removed.tables[row.table] ?? 0) + 1;
     if (row.top) removed.threadItems[row.thread!] = (removed.threadItems[row.thread!] ?? 0) + 1;
@@ -393,7 +403,7 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
   out.stampsOfUnexplained = Object.fromEntries([...new Set(followers.map((row) => row.table))]
     .map((table) => [table, followers.filter((row) => row.table === table).length]));
 
-  const unexplained = rows.filter((row) => !row.rule && !followers.includes(row));
+  const unexplained = rows.filter((row) => !explained(row) && !followers.includes(row));
   const byTable = new Map<string, BootRow[]>();
   for (const row of unexplained) byTable.set(row.table, [...(byTable.get(row.table) ?? []), row]);
   out.bootUnexplained = [...byTable.values()].flatMap((list) => list.slice(0, 50))
@@ -413,30 +423,56 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
 }
 
 /**
- * ruleMatch is the SQL for "rule explains this change": the migrated row
- * `s` is one it selects, and the booted row `b` is gone when it removes
- * rows, or differs from `s` only in its columns and meta keys, and meets
- * its `to`. Every rule is composed here, and none may read the snapshot:
- * a snapshot older than a column a rule names would abort the check.
- * `{restored}` in a rule is the threads restoredDraftThreads matched.
+ * explainedBy names the scoped rules that explain a row's change, none when
+ * they do not. Every rule that selects the row is a writer that ran on it, so
+ * a broader rule never stands in for a narrower one:
+ * - a removed row is explained when a selecting rule removes rows; the
+ *   removal leaves nothing for the others' changes to be checked on;
+ * - a changed row is explained when every selecting rule holds (it changes
+ *   columns and its `to` is met) and the selecting rules' columns, with
+ *   `extra`, cover every changed column. `meta` is covered by a rule that
+ *   names it, or by one whose metaKeys are all that changed in it.
  */
-function ruleMatch(rule: RecoveryRule, columns: Column[], removed: string, restored: string[]): string {
+function explainedBy(selecting: Array<{ rule: RecoveryRule; holds: boolean; metaKept: boolean }>,
+  removed: boolean, changed: string[], extra: string[]): RecoveryRule[] {
+  if (selecting.length === 0) return [];
+  if (removed) return selecting.some(({ rule }) => rule.removes) ? selecting.filter(({ rule }) => rule.removes).map(({ rule }) => rule) : [];
+  if (!selecting.every(({ holds }) => holds)) return [];
+  if (selecting.some(({ rule }) => rule.columns?.includes('*'))) return selecting.map(({ rule }) => rule);
+  const covered = new Set([...extra, ...selecting.flatMap(({ rule }) => rule.columns ?? [])]);
+  const metaCovered = covered.has('meta') || selecting.some(({ rule, metaKept }) => rule.metaKeys && metaKept);
+  const explained = changed.every((column) => covered.has(column) || (column === 'meta' && metaCovered));
+  return explained ? selecting.map(({ rule }) => rule) : [];
+}
+
+/**
+ * ruleParts is a rule's SQL over the migrated row `s` and the booted row
+ * `b`: whether it selects `s`; whether it holds, which for a removed row is
+ * whether it removes rows and for a kept one whether it changes columns and
+ * meets its `to`; and whether `meta` differs only in its metaKeys.
+ * explainedBy combines them. Every rule is composed here, and none may read
+ * the snapshot: a snapshot older than a column a rule names would abort the
+ * check. `{restored}` in a rule is the threads restoredDraftThreads matched.
+ */
+function ruleParts(rule: RecoveryRule, removed: string, restored: string[]): { selects: string; holds: string; metaKept: string } {
   if (/\bsnap\./.test(`${rule.rows} ${rule.to ?? ''}`)) {
     throw new Error(`recovery rule ${rule.name} reads the snapshot (snap.); a rule selects over the migrated store (mig.), whose schema is the build's`);
   }
   const threads = restored.length > 0 ? restored.map((id) => `'${id.replaceAll("'", "''")}'`).join(', ') : 'NULL';
-  rule = { ...rule, rows: rule.rows.replaceAll('{restored}', threads), to: rule.to?.replaceAll('{restored}', threads) };
-  const any = rule.columns?.includes('*') ?? false;
-  const allowed = new Set([...(rule.columns ?? []), ...(rule.metaKeys ? ['meta'] : [])]);
-  const kept = any ? [] : columns.filter((column) => !allowed.has(column.name)).map((column) => same(column, 's', 'b'));
+  const rows = rule.rows.replaceAll('{restored}', threads);
+  const to = rule.to?.replaceAll('{restored}', threads) ?? '1';
+  const changes = rule.columns !== undefined || rule.metaKeys !== undefined;
+  let metaKept = '0';
   if (rule.metaKeys) {
     const keys = rule.metaKeys.map((key) => `'$.${key}'`).join(', ');
-    kept.push(`(CASE WHEN json_valid(s.meta) AND json_valid(b.meta) THEN json_remove(s.meta, ${keys}) IS json_remove(b.meta, ${keys})
-      ELSE s.meta IS b.meta END)`);
+    metaKept = `CASE WHEN json_valid(s.meta) AND json_valid(b.meta) THEN json_remove(s.meta, ${keys}) IS json_remove(b.meta, ${keys})
+      ELSE s.meta IS b.meta END`;
   }
-  if (rule.to) kept.push(`(${rule.to})`);
-  const change = kept.length > 0 ? kept.join(' AND ') : '1';
-  return `(${rule.rows}) AND CASE WHEN ${removed} THEN ${rule.removes ? 1 : 0} ELSE ${rule.removes && !rule.columns ? 0 : `(${change})`} END`;
+  return {
+    selects: rows,
+    holds: `CASE WHEN ${removed} THEN ${rule.removes ? 1 : 0} ELSE ${changes ? `(${to})` : 0} END`,
+    metaKept: `CASE WHEN ${removed} THEN 0 ELSE ${metaKept} END`,
+  };
 }
 
 /** The characters Go's unicode.IsSpace accepts, which strings.TrimSpace strips. */

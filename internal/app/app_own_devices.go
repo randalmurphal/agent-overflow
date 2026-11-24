@@ -280,13 +280,13 @@ func (a *App) MintOwnDevicePairingOnNetwork(ctx context.Context, deviceClass, ne
 	if err := a.ownPairingAdmin(ctx); err != nil {
 		return PairingInvite{}, err
 	}
-	if networkChoice != "lan" && networkChoice != "tailnet" {
-		return PairingInvite{}, errors.New("choose Local network or Tailscale")
+	if err := checkPairingNetwork(networkChoice); err != nil {
+		return PairingInvite{}, err
 	}
 	if e := a.enableOwnDevices(); e != nil {
 		return PairingInvite{}, e
 	}
-	return a.mintDevicePairingPurpose(deviceClass, "full", networkChoice, "own-device")
+	return a.mintDevicePairingPurpose(deviceClass, "full", networkChoice, "own-device", false)
 }
 
 //ao:scope access:admin
@@ -318,6 +318,9 @@ func (a *App) MintOwnDeviceIntroduction(ctx context.Context, keyThumbprint strin
 }
 func (a *App) mintOwnIntroduction(caller OwnDeviceMember, key string) (PairingInvite, error) {
 	target, e := a.store.OwnDevice(key)
+	if e != nil && !errors.Is(e, sql.ErrNoRows) {
+		return PairingInvite{}, identity.OwnDevicesUnread(e)
+	}
 	if e != nil || target.Removed {
 		return PairingInvite{}, errors.New("target is not an active own device")
 	}
@@ -512,7 +515,7 @@ func (a *App) MintOwnDevicePairing(ctx context.Context, deviceClass string) (Pai
 	if e := a.enableOwnDevices(); e != nil {
 		return PairingInvite{}, e
 	}
-	return a.mintDevicePairingPurpose(deviceClass, "full", "", "own-device")
+	return a.mintDevicePairingPurpose(deviceClass, "full", "", "own-device", false)
 }
 
 func (a *App) mergeOwnDevicesAs(caller OwnDeviceMember, members []OwnDeviceMember) (bool, error) {

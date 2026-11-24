@@ -211,6 +211,15 @@ func (a *App) applyNetworkSettings(ctx context.Context, s network.Settings) (net
 		// in place. A domain edit must not drop every open socket.
 		srv.SetOriginPatterns(originPatterns(currentPort))
 	}
+	// The native relay forwards the main listener. Tailnet/domain changes only
+	// affect separate listeners; retiring the relay would kill healthy LAN sockets.
+	if prev.BindAll != stored.BindAll || currentPort != portFromAddr(srv.Addr()) {
+		a.invalidateNativeNetwork()
+	}
+	// Published as soon as the listener moved, before any follow-up work: a
+	// pairing window admitted under the old publication is retired here, and
+	// an open still in flight is admitted under the new one.
+	a.publishComputerRoutes()
 
 	// Keep the transport-port cache naming where this listener actually
 	// is, whenever the operator touched the port field. That file is a
@@ -236,15 +245,6 @@ func (a *App) applyNetworkSettings(ctx context.Context, s network.Settings) (net
 	// on" and "be on the tailnet" cannot be one call. The screen polls the
 	// status and shows the link.
 	a.kickTailnet()
-	// A changed listener invalidates the open invitation and its advertisement.
-	if prev.BindAll != stored.BindAll || prev.ListenPort != stored.ListenPort || prev.TailnetEnabled != stored.TailnetEnabled || prev.TailnetControlURL != stored.TailnetControlURL || prev.CanonicalDomain != stored.CanonicalDomain {
-		a.closeComputerPairing()
-	}
-	// The native relay forwards the main listener. Tailnet/domain changes only
-	// affect separate listeners; retiring the relay would kill healthy LAN sockets.
-	if prev.BindAll != stored.BindAll || currentPort != portFromAddr(srv.Addr()) {
-		a.invalidateNativeNetwork()
-	}
 
 	return a.networkSettingsForCallerWithLAN(ctx, srv, a.networkSettingsFrom(stored), lanIP), nil
 }

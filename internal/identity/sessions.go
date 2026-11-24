@@ -40,10 +40,13 @@ type Sessions struct {
 	localMu         sync.Mutex
 	localCredential string
 	localSessionID  string
-	ownMu           sync.Mutex
-	store           *store.Store
-	backendID       string
-	now             func() time.Time
+	// ownMu serializes the pairing and own-device membership writes. It is
+	// taken before the pairing gate's lock (PairingGate.Admit); the whole
+	// lock order is stated on pairbootstrap.Book.
+	ownMu     sync.Mutex
+	store     *store.Store
+	backendID string
+	now       func() time.Time
 
 	mu sync.RWMutex
 	// live is the per-RPC fast path: the in-memory session table the spec
@@ -90,6 +93,42 @@ type Sessions struct {
 
 	// releasedTo is the OnLinksReleased function.
 	releasedTo atomic.Pointer[func(threadIDs []string)]
+
+	// gate is the SetPairingGate gate; nil admits every link.
+	gate atomic.Pointer[PairingGate]
+}
+
+// PairingGate decides whether a pairing link may move forward, for a link
+// whose standing another owner decides (a computer pairing window's
+// invitation, internal/pairbootstrap). Admit runs write unless the gate
+// refuses linkID, holding the gate from its check until write returns, so a
+// retirement of the link either waits for write or comes first and is
+// refused by it. bootstrap is the link's mark (store.PairingLink.Bootstrap):
+// a marked link is admitted only while a live window holds it. A refusal
+// answers ErrPairingRefused and runs nothing. write must not take
+// Sessions.ownMu, which the caller already holds.
+type PairingGate interface {
+	Admit(linkID string, bootstrap bool, write func() error) error
+}
+
+// SetPairingGate sets the gate every redemption's spend and every owner
+// confirmation run inside. Set once at boot, before anything serves.
+func (s *Sessions) SetPairingGate(gate PairingGate) {
+	s.gate.Store(&gate)
+}
+
+// admitPairing runs write inside the pairing gate for linkID. Without a gate
+// a marked link is refused, since no window can hold it. The caller holds
+// ownMu.
+func (s *Sessions) admitPairing(linkID string, bootstrap bool, write func() error) error {
+	gate := s.gate.Load()
+	if gate == nil {
+		if bootstrap {
+			return ErrPairingRefused
+		}
+		return write()
+	}
+	return (*gate).Admit(linkID, bootstrap, write)
 }
 
 // liveSweepThreshold is when the fast path drops expired entries. Below it
@@ -186,90 +225,72 @@ func (s *Sessions) EnsureSigningKey() (store.SigningKey, error) {
 // MintRequest describes a session to issue.
 type MintRequest struct {
 	UserID       string
-	DeviceID     string
 	BindingClass BindingClass
 	Scopes       []Scope
 	// TTL bounds the session. Required: a credential with no expiry is one
 	// nothing but an explicit revocation can ever end, and this is the
 	// short-lived half of the access-token/refresh pair (§4).
 	TTL time.Duration
-	// AwaitConfirmation mints the session UNACTIVATED: the row and the
+	// AwaitConfirmation builds the session UNACTIVATED: the row and the
 	// credential both exist, and neither admits anything until Confirm
 	// stamps `sessions.activated_at`.
 	//
-	// Set only by pairing redemption. The credential is handed to the new
-	// device immediately so it can simply keep trying while the owner
-	// checks the verification number, rather than holding a second secret
-	// to poll with — the confirmation gate lives on the row, where one
-	// predicate covers every presentation path.
+	// Set only by pairing redemption, which writes the row together with
+	// the link naming it (store.CompletePairingRedemption). The credential is handed to the new device immediately so it can
+	// simply keep trying while the owner checks the verification number,
+	// rather than holding a second secret to poll with — the confirmation
+	// gate lives on the row, where one predicate covers every presentation
+	// path.
 	AwaitConfirmation bool
 }
 
-// Mint issues a session and returns the row plus the credential string.
-// The credential is returned exactly once and never stored — the row holds
-// no material that could reconstruct it.
-//
+// newSession builds the session row req describes on deviceID, for the
+// transaction that writes it together with its device (newDeviceSession).
 // The session id is minted here rather than by the store because the same
 // id is signed into the claims; two independent mints could not agree.
-//
-// It is the only caller of store.CreateSession, which is what makes it the
-// single mint chokepoint for a session ROW — and the device gate lives
-// inside that statement rather than as a read here (see CreateSession).
-// A revoked device therefore fails the write itself, so a mint path added
-// later inherits the refusal instead of having to restate it.
-func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
+func (s *Sessions) newSession(req MintRequest, deviceID string) (store.Session, error) {
 	if !req.BindingClass.Valid() {
-		return store.Session{}, "", fmt.Errorf("identity: %q is not a declared binding class", string(req.BindingClass))
+		return store.Session{}, fmt.Errorf("identity: %q is not a declared binding class", string(req.BindingClass))
 	}
 	if req.BindingClass == BindingLoopbackOnly {
-		return store.Session{}, "", fmt.Errorf("identity: local credentials require EnsureLocalChannelSession")
+		return store.Session{}, fmt.Errorf("identity: local credentials require EnsureLocalChannelSession")
 	}
 	if req.TTL <= 0 {
-		return store.Session{}, "", fmt.Errorf("identity: session ttl %s is not positive", req.TTL)
+		return store.Session{}, fmt.Errorf("identity: session ttl %s is not positive", req.TTL)
 	}
 	scopes, err := ValidateScopes(req.Scopes)
 	if err != nil {
-		return store.Session{}, "", err
+		return store.Session{}, err
 	}
 	key, err := s.EnsureSigningKey()
 	if err != nil {
-		return store.Session{}, "", err
+		return store.Session{}, err
 	}
 	now := s.now().UnixMilli()
 	activatedAt := now
 	if req.AwaitConfirmation {
 		activatedAt = 0
 	}
-	session := store.Session{
+	s.rememberKey(key)
+	return store.Session{
 		ID:           uuid.NewString(),
 		UserID:       req.UserID,
-		DeviceID:     req.DeviceID,
+		DeviceID:     deviceID,
 		BindingClass: string(req.BindingClass),
 		Scopes:       scopes,
 		SigningKeyID: key.ID,
 		CreatedAt:    now,
 		ExpiresAt:    now + req.TTL.Milliseconds(),
 		ActivatedAt:  activatedAt,
-	}
-	credential, err := signClaims(Claims{
-		KeyID:     key.ID,
-		SessionID: session.ID,
-		IssuedAt:  session.CreatedAt,
-		ExpiresAt: session.ExpiresAt,
-	}, key.Secret.Reveal(), s.backendID)
-	if err != nil {
-		return store.Session{}, "", err
-	}
-	if err := s.store.CreateSession(session); err != nil {
-		return store.Session{}, "", fmt.Errorf("identity: mint session: %w", err)
-	}
-	s.rememberKey(key)
+	}, nil
+}
+
+func (s *Sessions) auditMinted(session store.Session) {
 	s.audit(store.AuthAuditEntry{
 		Event: string(AuditSessionMinted), Outcome: store.AuthAuditOutcomeAllowed,
 		UserID: session.UserID, DeviceID: session.DeviceID, SessionID: session.ID,
 		Detail: session.BindingClass,
 	})
-	return session, credential, nil
 }
 
 // Verify checks a presented credential and returns the session it admits.
@@ -473,6 +494,13 @@ func (s *Sessions) RevokeSession(sessionID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	s.sessionRevoked(sessionID, moved, released)
+	return moved, nil
+}
+
+// sessionRevoked is the runtime half of a revocation the store committed:
+// the fast path, the sockets, the released spawn links and the audit row.
+func (s *Sessions) sessionRevoked(sessionID string, moved bool, released []string) {
 	s.forget(sessionID)
 	closed := s.closeConns(sessionID)
 	s.linksReleased(released)
@@ -482,7 +510,6 @@ func (s *Sessions) RevokeSession(sessionID string) (bool, error) {
 			SessionID: sessionID, Detail: fmt.Sprintf("closed %d connections", closed),
 		})
 	}
-	return moved, nil
 }
 
 // DeviceRevocation is what one RevokeDevice did, for a surface that has to

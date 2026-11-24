@@ -232,7 +232,9 @@ func (m *Manager) admitEnrollment(id string, e *enrollment, stored deviceclient.
 // bounds the wait for another enrollment with the same computer
 // (beginEnrollment), its end cancels the redemption, and a commit decided
 // after its end stores nothing (beginCommit). A person's pairing ignores it. The carrier is the one installed, nil after Close.
-func (m *Manager) enroll(ctx context.Context, link deviceclient.Link, purpose enrollmentPurpose, unpairedOnly bool) (Attachment, *carrier, error) {
+// retry, when set, is what a person does after a redemption the computer
+// gave no verdict on (deviceclient.WithRetryRemedy).
+func (m *Manager) enroll(ctx context.Context, link deviceclient.Link, purpose enrollmentPurpose, unpairedOnly bool, retry string) (Attachment, *carrier, error) {
 	e, err := m.beginEnrollment(ctx, link.BackendID, purpose, unpairedOnly)
 	if err != nil {
 		return Attachment{}, nil, err
@@ -256,7 +258,7 @@ func (m *Manager) enroll(ctx context.Context, link deviceclient.Link, purpose en
 		m.moveEnrollment(e, enrollmentRedeeming, enrollmentFailed)
 		return Attachment{}, nil, err
 	}
-	redeemed, err := deviceclient.Redeem(e.ctx, m.dir, link, label, m.platform, append(m.clientOptions(), deviceclient.WithRedemptionBound(m.pairingBound))...)
+	redeemed, err := deviceclient.Redeem(e.ctx, m.dir, link, label, m.platform, append(m.clientOptions(), deviceclient.WithRedemptionBound(m.pairingBound), deviceclient.WithRetryRemedy(retry))...)
 	if err != nil {
 		if !m.moveEnrollment(e, enrollmentRedeeming, enrollmentFailed) {
 			return Attachment{}, nil, errors.Join(context.Cause(e.ctx), err)
