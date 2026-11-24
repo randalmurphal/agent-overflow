@@ -67,20 +67,23 @@ type FileDiffChange struct {
 // NormalizedToolComplete holds normalized outputs for EventToolComplete and
 // companion heavy payload events (EventDiff, EventCommandOutput, EventProposedPlan).
 type NormalizedToolComplete struct {
-	ToolName     string
-	ItemType     string
-	Content      string
-	IsError      bool
-	ExitCode     *int
-	DurationMs   *int
-	ItemStatus   string
-	DiffPatch    string
-	DiffFilePath string
-	DiffChanges  []FileDiffChange
-	CommandOut   string
-	CommandLine  string
-	ProposedPlan string
-	ExtraMeta    map[string]any
+	ToolName         string
+	ItemType         string
+	Content          string
+	IsError          bool
+	IsBackground     bool
+	BackgroundTaskID string
+	OutputFile       string
+	ExitCode         *int
+	DurationMs       *int
+	ItemStatus       string
+	DiffPatch        string
+	DiffFilePath     string
+	DiffChanges      []FileDiffChange
+	CommandOut       string
+	CommandLine      string
+	ProposedPlan     string
+	ExtraMeta        map[string]any
 }
 
 // PromptOutcomeOverride lets a flavor override a prompt's stop outcome when a

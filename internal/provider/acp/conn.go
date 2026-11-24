@@ -207,6 +207,7 @@ type Conn struct {
 	pendingMu          sync.Mutex
 	pending            map[int64]chan json.RawMessage
 	pendingSessionOpen map[int64]*pendingOpenEntry
+	pendingOnResponse  map[int64]func()
 
 	routesMu sync.Mutex
 	sessions map[string]*Session
@@ -275,6 +276,7 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		terminalHandler:    cfg.TerminalHandler,
 		pending:            make(map[int64]chan json.RawMessage),
 		pendingSessionOpen: make(map[int64]*pendingOpenEntry),
+		pendingOnResponse:  make(map[int64]func()),
 		sessions:           make(map[string]*Session),
 		replays:            make(map[string]*replayCapture),
 		done:               make(chan struct{}),
@@ -570,10 +572,18 @@ func (c *Conn) sendSessionNewRequest(ctx context.Context, params SessionNewParam
 // A timeout <= 0 waits indefinitely until ctx cancels, the response arrives, or
 // the connection closes (used for long-running session/prompt RPCs).
 func (c *Conn) startRequestWithTimeout(method string, params any, timeout time.Duration) (func(context.Context) (json.RawMessage, error), error) {
-	return c.startRequestWithSessionOpen(method, params, timeout, nil, false)
+	return c.startRequestWithHooks(method, params, timeout, nil, false, nil)
+}
+
+func (c *Conn) startRequestWithOnResponse(method string, params any, timeout time.Duration, onResponse func()) (func(context.Context) (json.RawMessage, error), error) {
+	return c.startRequestWithHooks(method, params, timeout, nil, false, onResponse)
 }
 
 func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout time.Duration, openSess *Session, trackOrphanClose bool) (func(context.Context) (json.RawMessage, error), error) {
+	return c.startRequestWithHooks(method, params, timeout, openSess, trackOrphanClose, nil)
+}
+
+func (c *Conn) startRequestWithHooks(method string, params any, timeout time.Duration, openSess *Session, trackOrphanClose bool, onResponse func()) (func(context.Context) (json.RawMessage, error), error) {
 	id := c.nextID.Add(1)
 	ch := make(chan json.RawMessage, 1)
 
@@ -589,6 +599,9 @@ func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout ti
 	c.pending[id] = ch
 	if openEntry != nil {
 		c.pendingSessionOpen[id] = openEntry
+	}
+	if onResponse != nil {
+		c.pendingOnResponse[id] = onResponse
 	}
 	c.pendingMu.Unlock()
 
@@ -623,6 +636,7 @@ func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout ti
 		}
 		c.pendingMu.Lock()
 		delete(c.pending, id)
+		delete(c.pendingOnResponse, id)
 		// Keep openEntry in c.pendingSessionOpen until dispatchLine consumes
 		// the late session/new response (or readLoop tears down) so an orphaned
 		// remote session created after cancellation still gets closed.
@@ -789,6 +803,7 @@ func (c *Conn) readLoop() {
 		}
 		c.pending = nil
 		c.pendingSessionOpen = nil
+		c.pendingOnResponse = nil
 		c.pendingMu.Unlock()
 
 		c.routesMu.Lock()
@@ -869,7 +884,12 @@ func (c *Conn) dispatchLine(line []byte) {
 		ch, ok := c.pending[numericID]
 		openEntry := c.pendingSessionOpen[numericID]
 		delete(c.pendingSessionOpen, numericID)
+		onResp := c.pendingOnResponse[numericID]
+		delete(c.pendingOnResponse, numericID)
 		c.pendingMu.Unlock()
+		if onResp != nil {
+			onResp()
+		}
 		if openEntry != nil {
 			var openResp struct {
 				Result *struct {

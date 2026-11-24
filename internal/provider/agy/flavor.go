@@ -651,7 +651,47 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 		}
 	}
 
+	// Detect run_command transitioning to an asynchronous background task after
+	// WaitMsBeforeAsync expires so AO adds it to the background tray and tails
+	// its task log file while it runs.
+	if u.Status == "in_progress" && (rawName == "run_command" || started.ItemType == "command_execution") {
+		if taskID, logPath, ok := parseAgyBackgroundTaskOutput(firstNonEmpty(norm.CommandOut, norm.Content)); ok {
+			norm.IsBackground = true
+			norm.BackgroundTaskID = taskID
+			norm.OutputFile = logPath
+		}
+	}
+
 	return norm
+}
+
+func parseAgyBackgroundTaskOutput(text string) (taskID, logPath string, ok bool) {
+	const taskPrefix = "Tool is running as a background task with task id:"
+	idx := strings.Index(text, taskPrefix)
+	if idx < 0 {
+		return "", "", false
+	}
+	rest := text[idx+len(taskPrefix):]
+	if nl := strings.IndexAny(rest, "\r\n"); nl >= 0 {
+		rest = rest[:nl]
+	}
+	taskID = strings.TrimSpace(rest)
+
+	const logPrefix = "Task logs are available at:"
+	if logIdx := strings.Index(text, logPrefix); logIdx >= 0 {
+		rawLog := text[logIdx+len(logPrefix):]
+		if nl := strings.IndexAny(rawLog, "\r\n"); nl >= 0 {
+			rawLog = rawLog[:nl]
+		}
+		rawLog = strings.TrimSpace(rawLog)
+		if strings.HasPrefix(rawLog, "file://") {
+			rawLog = resolveTranscriptURI(rawLog, "")
+		}
+		if filepath.IsAbs(rawLog) {
+			logPath = filepath.Clean(rawLog)
+		}
+	}
+	return taskID, logPath, true
 }
 
 func normalizeMCPPrefix(name string) string {

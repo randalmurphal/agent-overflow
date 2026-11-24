@@ -1447,3 +1447,93 @@ func TestBuildPromptBlocksPreservesInlineImageOrderAndApprovalDiffPreview(t *tes
 		t.Fatalf("approval input missing path/diff preview: %s", string(cls.Approval.Input))
 	}
 }
+
+func TestSessionSteeredPromptConfirmsOnFirstUpdateAfterPredecessorEnds(t *testing.T) {
+	t.Parallel()
+	const steerConfirmScript = `#!/usr/bin/env python3
+import json, sys
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    msg = json.loads(raw)
+    mid = msg.get("id")
+    method = msg.get("method")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"agentInfo":{"name":"mock","version":"1.0"}}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"s-steer","modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"}]}}}), flush=True)
+    elif method == "session/prompt":
+        sid = params.get("sessionId")
+        prompt = params.get("prompt") or []
+        text = prompt[0].get("text", "") if prompt else ""
+        if text == "PROMPT_A":
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"from-a"}}}}), flush=True)
+            b_msg = json.loads(sys.stdin.readline().strip())
+            b_id = b_msg.get("id")
+            # Prompt A resolves when steered prompt B arrives, then B streams updates while staying open until cancelled.
+            print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn"}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking-b"}}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"from-b"}}}}), flush=True)
+            # Hold B open until session/cancel arrives so we prove B confirms BEFORE finishPrompt(B).
+            for next_raw in sys.stdin:
+                next_raw = next_raw.strip()
+                if not next_raw:
+                    continue
+                next_msg = json.loads(next_raw)
+                if next_msg.get("method") == "session/cancel":
+                    print(json.dumps({"jsonrpc":"2.0","id":b_id,"result":{"stopReason":"cancelled"}}), flush=True)
+                    break
+    elif method == "session/close":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{}}), flush=True)
+`
+	bin := writeFakeACPServer(t, steerConfirmScript)
+	conn, err := Dial(context.Background(), ConnConfig{
+		Binary:       bin,
+		WorkDir:      t.TempDir(),
+		Reaper:       procutiltest.Reaper(),
+		ProviderName: "agy",
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ev := newEventCollector()
+	sess, err := conn.Open(context.Background(), "t-steer-confirm", SessionConfig{
+		WorkDir:     t.TempDir(),
+		RuntimeMode: provider.RuntimeApprovalRequired,
+	}, ev.record)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.Send(context.Background(), "PROMPT_A", provider.SendOptions{UserMessageUUID: "uuid-a"}); err != nil {
+		t.Fatalf("Send PROMPT_A: %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventTextDelta && strings.Contains(e.Content, "from-a")
+	})
+
+	if err := sess.Send(context.Background(), "PROMPT_B", provider.SendOptions{UserMessageUUID: "uuid-b"}); err != nil {
+		t.Fatalf("Send PROMPT_B: %v", err)
+	}
+	// Steered prompt B must confirm while B is STILL running (before EventTurnComplete).
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventUserText && strings.Contains(string(e.Meta), "uuid-b")
+	})
+	for _, e := range ev.all() {
+		if e.Kind == provider.EventTurnComplete {
+			t.Fatalf("expected uuid-b confirmation before turn completion, but turn already completed")
+		}
+	}
+
+	if err := sess.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventTurnComplete
+	})
+}

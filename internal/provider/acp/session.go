@@ -143,6 +143,8 @@ type Session struct {
 	lastRequestedModeID    string
 	lastContextSize        int
 	inFlightPrompts        int
+	wireInFlightPrompts    int
+	inFlightConfirms       []*pendingPromptConfirm
 	solePromptConfirm      *pendingPromptConfirm
 	turnOpen               bool
 	spontaneousTurnOpen    bool
@@ -606,16 +608,16 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	return s.dispatchPrompt(ctx, blocks, hasOutputSchema, strings.TrimSpace(opts.UserMessageUUID), content, true)
 }
 
-func (s *Session) startPromptRequest(sessionID string, blocks []ContentBlock) (func(context.Context) (json.RawMessage, error), error) {
+func (s *Session) startPromptRequest(sessionID string, blocks []ContentBlock, onResponse func()) (func(context.Context) (json.RawMessage, error), error) {
 	if sessionID == "" {
 		return nil, errors.New("acp: session not initialized")
 	}
 
 	// No timeout on session/prompt: turns can run for minutes or hours.
-	wait, err := s.conn.startRequestWithTimeout("session/prompt", SessionPromptParams{
+	wait, err := s.conn.startRequestWithOnResponse("session/prompt", SessionPromptParams{
 		SessionID: sessionID,
 		Prompt:    blocks,
-	}, 0)
+	}, 0, onResponse)
 	if err != nil {
 		return nil, err
 	}
@@ -638,6 +640,49 @@ func (s *Session) emitPromptConfirmation(c *pendingPromptConfirm) {
 		Meta:      confirmMeta,
 		Timestamp: time.Now(),
 	})
+}
+
+func (s *Session) removeInFlightConfirmLocked(c *pendingPromptConfirm) {
+	if c == nil || len(s.inFlightConfirms) == 0 {
+		return
+	}
+	for i, entry := range s.inFlightConfirms {
+		if entry == c {
+			s.inFlightConfirms = append(s.inFlightConfirms[:i], s.inFlightConfirms[i+1:]...)
+			return
+		}
+	}
+}
+
+func (s *Session) rearmSolePromptConfirmLocked() {
+	if s.wireInFlightPrompts == 1 && len(s.inFlightConfirms) == 1 && !s.spontaneousTurnOpen {
+		c := s.inFlightConfirms[0]
+		if c != nil && !c.confirmed.Load() {
+			s.solePromptConfirm = c
+			return
+		}
+	}
+	if s.wireInFlightPrompts != 1 {
+		s.solePromptConfirm = nil
+	}
+}
+
+func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			s.removeInFlightConfirmLocked(confirm)
+			if s.solePromptConfirm == confirm {
+				s.solePromptConfirm = nil
+			}
+			if s.wireInFlightPrompts > 0 {
+				s.wireInFlightPrompts--
+			}
+			s.rearmSolePromptConfirmLocked()
+			s.mu.Unlock()
+		})
+	}
 }
 
 func (s *Session) confirmSolePrompt() {
@@ -701,6 +746,10 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	priorInFlight := s.inFlightPrompts
 	quiescent := priorInFlight == 0 && !s.spontaneousTurnOpen && len(s.startedTools) == 0 && len(s.trackedSubagents) == 0 && s.activeSubagentWatchers == 0
 	s.inFlightPrompts++
+	s.wireInFlightPrompts++
+	if confirm != nil {
+		s.inFlightConfirms = append(s.inFlightConfirms, confirm)
+	}
 	if !s.turnOpen {
 		s.turnSeq++
 		s.activeTurnID = s.nextTurnID("turn")
@@ -724,14 +773,13 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	}
 	s.mu.Unlock()
 
-	wait, err := s.startPromptRequest(sessionID, blocks)
+	settleWire := s.makeWirePromptSettler(confirm)
+	wait, err := s.startPromptRequest(sessionID, blocks, settleWire)
 	if err != nil {
+		settleWire()
 		s.mu.Lock()
 		if s.inFlightPrompts > 0 {
 			s.inFlightPrompts--
-		}
-		if s.solePromptConfirm == confirm {
-			s.solePromptConfirm = nil
 		}
 		if openTurnID != "" && s.inFlightPrompts == 0 {
 			s.turnOpen = false
@@ -771,6 +819,7 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	go func() {
 		defer s.promptWG.Done()
 		rawResp, waitErr := wait(s.sessionCtx)
+		settleWire()
 		s.finishPrompt(rawResp, waitErr, beforeToken, confirm)
 	}()
 
@@ -779,11 +828,6 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 
 func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeToken any, confirm *pendingPromptConfirm) {
 	if confirm != nil {
-		s.mu.Lock()
-		if s.solePromptConfirm == confirm {
-			s.solePromptConfirm = nil
-		}
-		s.mu.Unlock()
 		if waitErr == nil {
 			// Provider accepted and completed THIS prompt; confirm its own UUID
 			// without touching any other steered prompt.
@@ -1114,6 +1158,7 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 	// dispatched native prompt.
 	var (
 		followUpWait   func(context.Context) (json.RawMessage, error)
+		followUpSettle func()
 		followUpBefore any
 		replyText      string
 	)
@@ -1140,9 +1185,13 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 			// from the follow-up prompt cannot open a spontaneous wake turn.
 			s.mu.Lock()
 			s.inFlightPrompts++
+			s.wireInFlightPrompts++
+			s.solePromptConfirm = nil
 			s.mu.Unlock()
-			followUpWait, err = s.startPromptRequest(sessionID, []ContentBlock{{Type: "text", Text: replyText}})
+			followUpSettle = s.makeWirePromptSettler(nil)
+			followUpWait, err = s.startPromptRequest(sessionID, []ContentBlock{{Type: "text", Text: replyText}}, followUpSettle)
 			if err != nil {
+				followUpSettle()
 				s.mu.Lock()
 				if s.inFlightPrompts > 0 {
 					s.inFlightPrompts--
@@ -1163,6 +1212,9 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 			go func() {
 				defer s.promptWG.Done()
 				rawResp, waitErr := followUpWait(s.sessionCtx)
+				if followUpSettle != nil {
+					followUpSettle()
+				}
 				s.finishPrompt(rawResp, waitErr, followUpBefore, nil)
 			}()
 		}
@@ -1267,6 +1319,9 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		go func() {
 			defer s.promptWG.Done()
 			rawResp, waitErr := followUpWait(s.sessionCtx)
+			if followUpSettle != nil {
+				followUpSettle()
+			}
 			s.finishPrompt(rawResp, waitErr, followUpBefore, nil)
 		}()
 	}
@@ -1761,6 +1816,52 @@ func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate) {
 		return
 	}
 	norm := s.flavor.NormalizeToolComplete(tc, started)
+	if norm.IsBackground {
+		var emitBgMeta bool
+		s.mu.Lock()
+		cur, exists := s.startedTools[tc.ToolCallID]
+		if exists {
+			prevOut, _ := cur.ExtraMeta["output_file"].(string)
+			prevTask, _ := cur.ExtraMeta["task_id"].(string)
+			if !cur.IsBackground || (norm.OutputFile != "" && prevOut == "") || (norm.BackgroundTaskID != "" && prevTask == "") {
+				cur.IsBackground = true
+				if cur.ExtraMeta == nil {
+					cur.ExtraMeta = map[string]any{}
+				}
+				if norm.OutputFile != "" && prevOut == "" {
+					cur.ExtraMeta["output_file"] = norm.OutputFile
+				}
+				if norm.BackgroundTaskID != "" && prevTask == "" {
+					cur.ExtraMeta["task_id"] = norm.BackgroundTaskID
+				}
+				s.startedTools[tc.ToolCallID] = cur
+				emitBgMeta = true
+			}
+		}
+		s.mu.Unlock()
+		if emitBgMeta {
+			bgFields := map[string]any{
+				"meta_update_only": true,
+				"is_background":    true,
+			}
+			if norm.BackgroundTaskID != "" {
+				bgFields["task_id"] = norm.BackgroundTaskID
+			}
+			if norm.OutputFile != "" {
+				bgFields["output_file"] = norm.OutputFile
+			}
+			bgMeta, _ := json.Marshal(bgFields)
+			s.emitEvent(provider.ProviderEvent{
+				Kind:      provider.EventToolStart,
+				ThreadID:  s.threadID,
+				TurnID:    turnID,
+				ItemID:    tc.ToolCallID,
+				ItemType:  "command_execution",
+				Meta:      bgMeta,
+				Timestamp: time.Now(),
+			})
+		}
+	}
 	if norm.CommandOut == "" {
 		return
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -125,7 +127,7 @@ func (a *App) backgroundTaskTailer() *tasktail.Tailer {
 			Emit: func(evt tasktail.Event) {
 				a.emit(eventchan.ProviderBackgroundTaskOutput, evt)
 			},
-			Resolve: triage.ResolveClaudeTaskOutputPath,
+			Resolve: a.resolveBackgroundTaskOutputPath,
 			// A watch the tailer let go of (task ended, read failed) has
 			// nothing left for its connection cleanup to release.
 			Dropped: func(watchIDs []string) {
@@ -136,6 +138,56 @@ func (a *App) backgroundTaskTailer() *tasktail.Tailer {
 		}))
 	})
 	return a.taskOutput.tailer.Load()
+}
+
+func (a *App) resolveBackgroundTaskOutputPath(path string) (string, error) {
+	if resolved, err := triage.ResolveClaudeTaskOutputPath(path); err == nil {
+		return resolved, nil
+	} else if resolvedAgy, agyErr := a.resolveAgyTaskOutputPath(path); agyErr == nil {
+		return resolvedAgy, nil
+	} else {
+		return "", err
+	}
+}
+
+func (a *App) resolveAgyTaskOutputPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("empty output_file path")
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("output_file path must be absolute")
+	}
+	appDataDir := strings.TrimSpace(a.agyAppDataDir())
+	if appDataDir == "" {
+		return "", fmt.Errorf("agy app data dir unavailable")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("output_file path is not a regular file")
+	}
+	brainRoot := filepath.Join(appDataDir, "brain")
+	resolvedRoot, err := filepath.EvalSymlinks(brainRoot)
+	if err != nil {
+		resolvedRoot = filepath.Clean(brainRoot)
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolved)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return "", fmt.Errorf("output_file path is outside agy brain root")
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	// Expected layout: <sessionId>/.system_generated/tasks/<task>.log
+	if len(parts) != 4 || parts[0] == "" || parts[1] != ".system_generated" || parts[2] != "tasks" || parts[3] == "" {
+		return "", fmt.Errorf("output_file path is not an agy task log")
+	}
+	return resolved, nil
 }
 
 // closeBackgroundTaskTailer stops the follows and joins the poll loop. A
@@ -181,7 +233,7 @@ func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchIte
 	if err != nil {
 		return tasktail.Snapshot{}, fmt.Errorf("background task output: %w", err)
 	}
-	if thread.Provider != string(provider.Claude) {
+	if thread.Provider != string(provider.Claude) && thread.Provider != string(provider.Agy) {
 		return tasktail.Snapshot{}, ErrBackgroundTaskOutputProvider
 	}
 	launch, found, err := a.store.GetThreadItem(threadID, launchItemID)
@@ -212,6 +264,15 @@ func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchIte
 	}
 	if path == "" {
 		return tasktail.Snapshot{}, ErrBackgroundTaskOutputNoFile
+	}
+	if thread.Provider == string(provider.Claude) {
+		if _, err := triage.ResolveClaudeTaskOutputPath(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return tasktail.Snapshot{}, err
+		}
+	} else if thread.Provider == string(provider.Agy) {
+		if _, err := a.resolveAgyTaskOutputPath(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return tasktail.Snapshot{}, err
+		}
 	}
 	// A background launch keeps status running as immutable history; its
 	// completion sibling is what says it ended.

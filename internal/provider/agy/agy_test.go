@@ -957,3 +957,39 @@ func TestCatalogCacheGetOrProbeCoalescesConcurrentMisses(t *testing.T) {
 		t.Fatalf("post-Clear caller got (%+v, %v), want fresh-model", freshModels, freshErr)
 	}
 }
+
+func TestNormalizeToolCompleteDetectsBackgroundCommand(t *testing.T) {
+	t.Parallel()
+	f := NewFlavor("")
+	started := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		ToolCallID: "call-bg-1",
+		Name:       "run_command",
+		Kind:       "execute",
+		RawInput:   json.RawMessage(`{"CommandLine":"make go-test","WaitMsBeforeAsync":10000}`),
+	})
+	if started.IsBackground {
+		t.Fatal("foreground WaitMsBeforeAsync command should not start as is_background")
+	}
+
+	logPath := filepath.Join(t.TempDir(), "brain", "sess-1", ".system_generated", "tasks", "task-42.log")
+	rawOut, _ := json.Marshal(map[string]any{
+		"output": "Tool is running as a background task with task id: sess-1/task-42\n" +
+			"Task logs are available at: file://" + filepath.ToSlash(logPath) + "\nLog output:\nstarting\n",
+	})
+	inProg := f.NormalizeToolComplete(&acp.ToolCallUpdate{
+		ToolCallID: "call-bg-1",
+		Name:       "run_command",
+		Kind:       "execute",
+		Status:     "in_progress",
+		RawOutput:  rawOut,
+	}, started)
+	if !inProg.IsBackground {
+		t.Fatal("expected in_progress backgrounded run_command to set IsBackground=true")
+	}
+	if inProg.BackgroundTaskID != "sess-1/task-42" {
+		t.Fatalf("BackgroundTaskID = %q, want sess-1/task-42", inProg.BackgroundTaskID)
+	}
+	if inProg.OutputFile != filepath.Clean(logPath) {
+		t.Fatalf("OutputFile = %q, want %q", inProg.OutputFile, filepath.Clean(logPath))
+	}
+}
