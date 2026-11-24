@@ -357,8 +357,11 @@ func TestOwnerPaneReadsChangedDescendantsBeforeTheCachedTreeAges(t *testing.T) {
 	for _, i := range []int{1, 2} {
 		routeWorkerPromptsOn(c.apps[i], c.buses[i])
 	}
-	installChainLink(t, c.apps[1])
-	installChainLink(t, c.apps[2])
+	// The links' first turns are held open for the test; ending them before
+	// the teardown lets each mock CLI exit as its stdin closes, so the
+	// close does not wait out the CLI's shutdown grace.
+	t.Cleanup(installChainLink(t, c.apps[1]))
+	t.Cleanup(installChainLink(t, c.apps[2]))
 	c.spawnAlong(t, 0, "watch the release")
 	c.spawnAlong(t, 1, "stage the release")
 	for i := 1; i >= 0; i-- {

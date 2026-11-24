@@ -31,6 +31,16 @@ func TestAWorkerRowRefreshesAsItsCountsMove(t *testing.T) {
 		t.Helper()
 		f.app.threadRequestsWG.Wait()
 		before := f.callerAgentFrames(t, f.caller.ID)
+		// The worker's progress frames at most every
+		// threadAgentActivityEvery. Its last frame is aged to leave 50 ms of
+		// that window, so the change's frame is still the deferred one
+		// without the test waiting out the whole window.
+		e := &f.app.threadAgentEmits
+		e.mu.Lock()
+		if _, framed := e.lastActivity[worker.ID]; framed {
+			e.lastActivity[worker.ID] = time.Now().Add(-threadAgentActivityEvery + 50*time.Millisecond)
+		}
+		e.mu.Unlock()
 		change()
 		waitUntil(t, 10*time.Second, func() bool { return f.callerAgentFrames(t, f.caller.ID) > before })
 		_ = what
