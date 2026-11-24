@@ -117,10 +117,11 @@ func andRule(jql string, rule tracker.Eligibility) string {
 // since), the configuration is read again and the rows once more; a board
 // still unjudged fails the read, so that no issue reads as Missing on
 // the list's word alone. An issue the bulk fetch shows does not exist is
-// Missing and is not sent to the match. A refused query while rule names
-// sprints fails it with tracker.ErrRuleRefused only when the board's
-// sprints, read again, lack one of them (ruleRefused); any other 400 is
-// the tracker's answer.
+// Missing and is not sent to the match; a bulk answer holding an issue
+// that was not asked fails the read. A refused query while rule names
+// sprints fails it with tracker.ErrRuleRefused only when a lookup of a
+// sprint it names answers 404 (ruleRefused); any other 400 is the
+// tracker's answer.
 func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []tracker.IssueID, rule tracker.Eligibility) (tracker.Rows, error) {
 	if err := checkIssues(issues); err != nil {
 		return tracker.Rows{}, err
@@ -138,27 +139,33 @@ func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []t
 
 // ruleRefused is err, a failed rows read of board under rule, as
 // tracker.ErrRuleRefused when Jira refused a query (a 400, or a match that
-// could not judge) and the board's sprints, read again (one listing), lack
-// a sprint rule names: measured, a sprint ID that names nothing answers
-// 400 on the board issue list. Otherwise it is err, the refusal the
-// tracker's own; a failed read of the sprints is added to it.
+// could not judge) and a lookup of a sprint rule names answers 404:
+// measured, a sprint ID that names nothing answers 400 on the board issue
+// list and 404 on its own lookup. The lookups go in rule's order and stop
+// at the first 404, so the judgment costs at most one request per sprint
+// rule names. A lookup that fails otherwise is the error returned, with
+// err as its context; with every sprint found, err is the tracker's own.
 func (p *Provider) ruleRefused(ctx context.Context, id tracker.BoardID, rule tracker.Eligibility, err error) error {
 	if _, unjudged := isUnjudged(err); len(rule.Sprints) == 0 || !isStatus(err, http.StatusBadRequest) && !unjudged {
 		return err
 	}
-	b, berr := p.board(ctx, id)
-	if berr != nil {
-		return fmt.Errorf("%w (board %s, read to judge its sprints, failed: %v)", err, id, berr)
-	}
-	list, lerr := p.jira.Sprints(ctx, jira.SprintQuery{Board: b.cfg.BoardID})
-	if lerr != nil {
-		return fmt.Errorf("%w (the sprints of board %s, read to judge it, failed: %v)", err, id, lerr)
-	}
 	for _, sp := range rule.Sprints {
-		if !slices.ContainsFunc(list.Sprints, func(s jira.Sprint) bool { return decimal(s.ID) == string(sp) }) {
+		n, nerr := sprintNumber(sp)
+		if nerr != nil {
+			return fmt.Errorf("jiraprovider: rows of board %s refused (%v): %w", id, err, nerr)
+		}
+		_, serr := p.jira.Sprint(ctx, n)
+		switch {
+		case errors.Is(serr, trackerapi.ErrNotFound):
+			b, berr := boardNumber(id)
+			if berr != nil {
+				return berr
+			}
 			// The next listing reads the board's sprints again.
-			p.jira.ForgetBoard(b.cfg.BoardID)
-			return fmt.Errorf("%w: board %s no longer has sprint %s: %w", tracker.ErrRuleRefused, id, sp, err)
+			p.jira.ForgetBoard(b)
+			return fmt.Errorf("%w: sprint %s of board %s no longer exists: %w", tracker.ErrRuleRefused, sp, id, err)
+		case serr != nil:
+			return fmt.Errorf("jiraprovider: rows of board %s refused (%v), and the lookup of its sprint %s to judge why failed: %w", id, err, sp, serr)
 		}
 	}
 	return err
@@ -235,11 +242,14 @@ func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID,
 	if len(bulk.Failed) > 0 {
 		return nil, nil, fmt.Errorf("find which of %d issues exist after %w: Jira could not read %s: %s", len(ids), err, bulk.Failed[0].ID, bulk.Failed[0].Message)
 	}
+	// An issue not asked (or with no ID) is a malformed answer: read as
+	// absence, it would leave out an asked issue that exists.
 	var exist []tracker.IssueID
 	for _, is := range bulk.Issues {
-		if slices.Contains(ids, tracker.IssueID(is.ID)) {
-			exist = append(exist, tracker.IssueID(is.ID))
+		if !slices.Contains(ids, tracker.IssueID(is.ID)) {
+			return nil, nil, fmt.Errorf("find which of %d issues exist after %v: the bulk fetch answered issue %q, which was not asked", len(ids), err, is.ID)
 		}
+		exist = append(exist, tracker.IssueID(is.ID))
 	}
 	absent = slices.DeleteFunc(slices.Clone(ids), func(id tracker.IssueID) bool { return slices.Contains(exist, id) })
 	switch len(exist) {

@@ -684,11 +684,13 @@ and writes share:
   rule the tracker no longer holds ends the pass's candidates: Jira's board
   issue list answers 400 for a sprint ID that names nothing (a sprint
   deleted since the listing). After a refused list or match under a rule
-  naming sprints, Jira's rows read reads the board's sprints again (one
-  request) and returns `tracker.ErrRuleRefused` only when they lack a
-  sprint the rule names; any other 400 is returned as it is. An issue the
-  bulk fetch after a refused list shows does not exist is Missing and is
-  not sent to `jql/match`. On `tracker.ErrRuleRefused` from any provider the pass drops
+  naming sprints, Jira's rows read looks up each sprint the rule names,
+  one request each, stopping at the first that answers 404, and returns
+  `tracker.ErrRuleRefused` only on that 404; a lookup that fails
+  otherwise is the read's failure, and any other 400 is returned as it
+  is. An issue the bulk fetch after a refused list shows does not exist
+  is Missing and is not sent to `jql/match`; a bulk answer holding an
+  issue that was not asked fails the read. On `tracker.ErrRuleRefused` from any provider the pass drops
   its candidates and rule, stays open in its board lifetime, and its next
   tick, after the failure's retry delay, lists the board again
   (`TestARefusedRuleListsTheBoardAgain`). The rows stored before the
