@@ -39,20 +39,14 @@ describe('<SidebarSearch>', () => {
     vi.useRealTimers();
   });
 
-  it('renders the search input with no keybind affordance at rest', () => {
+  it('shows the keybind affordance while the modifier is held, and drops it on release', async () => {
     // A chord pill at rest is chrome the phone can never act on and the
     // desktop already knows; it appears while the modifier is held, the
     // same moment the thread rows show their jump numbers.
-    const { getByTestId, queryByTestId } = render(SidebarSearch, {
-      props: {},
-    });
+    const { getByTestId, queryByTestId } = render(SidebarSearch, { props: {} });
     expect(getByTestId('sidebar-thread-search')).toBeInTheDocument();
     expect(queryByTestId('sidebar-thread-search-kbd')).toBeNull();
     expect(queryByTestId('sidebar-thread-search-clear')).toBeNull();
-  });
-
-  it('shows the keybind affordance while the modifier is held, and drops it on release', async () => {
-    const { queryByTestId } = render(SidebarSearch, { props: {} });
     await holdModifier();
     expect(queryByTestId('sidebar-thread-search-kbd')).toBeInTheDocument();
     window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));

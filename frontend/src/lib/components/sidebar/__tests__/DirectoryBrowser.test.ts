@@ -259,37 +259,6 @@ describe('<DirectoryBrowser>', () => {
     vi.useRealTimers();
   });
 
-  it('reports onSelect("") when prefix-filtering so the parent modal can disable the Add button', async () => {
-    vi.useFakeTimers();
-    const onSelect = vi.fn();
-    setBindingMock('BrowseDirectory', async (path: string) => {
-      if (path === '~') return mkListing();
-      if (path === '/Users/me') {
-        return mkListing({
-          path: '/Users/me',
-          parent: '/Users',
-          entries: [{ name: 'repos', isDir: true, hidden: false, isRepo: false }],
-        });
-      }
-      return mkMissing(path);
-    });
-    const { getByTestId } = render(DirectoryBrowser, {
-      props: { initialPath: '~', onSelect },
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 3; i += 1) await tick();
-    onSelect.mockClear();
-
-    const input = getByTestId('directory-browser-path') as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: '/Users/me/rep' } });
-    await vi.advanceTimersByTimeAsync(120);
-    await Promise.resolve();
-    for (let i = 0; i < 4; i += 1) await tick();
-
-    expect(onSelect).toHaveBeenCalledWith('');
-    vi.useRealTimers();
-  });
-
   it('drilling into a prefix-filtered entry commits to the real path and updates onSelect', async () => {
     vi.useFakeTimers();
     const onSelect = vi.fn();
@@ -316,12 +285,16 @@ describe('<DirectoryBrowser>', () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 3; i += 1) await tick();
+    onSelect.mockClear();
 
     const input = getByTestId('directory-browser-path') as HTMLInputElement;
     await fireEvent.input(input, { target: { value: '/Users/me/rep' } });
     await vi.advanceTimersByTimeAsync(120);
     await Promise.resolve();
     for (let i = 0; i < 4; i += 1) await tick();
+    // Prefix-filtering reports no selection, so the parent modal can disable
+    // the Add button.
+    expect(onSelect).toHaveBeenCalledWith('');
     onSelect.mockClear();
 
     const entries = await findAllByTestId('directory-browser-entry');

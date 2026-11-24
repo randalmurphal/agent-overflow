@@ -82,14 +82,6 @@ describe('<UsageFooter>', () => {
     expect(rows[0].textContent).toContain('3.00');
   });
 
-  it('is hidden entirely when there is no usage', async () => {
-    setBindingMock('GetUsageStats', async () => []);
-    const { queryByTestId } = render(UsageFooter, { props: {} });
-    await waitFor(() => {
-      expect(queryByTestId('sidebar-usage-footer')).toBeNull();
-    });
-  });
-
   it('stays collapsed while a later query is pending, then shows its usage', async () => {
     setBindingMock('GetUsageStats', async () => []);
     const { queryByTestId, findAllByTestId } = render(UsageFooter);

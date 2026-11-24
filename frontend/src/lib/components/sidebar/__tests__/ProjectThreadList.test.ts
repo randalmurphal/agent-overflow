@@ -49,57 +49,18 @@ describe('<ProjectThreadList>', () => {
     expect([...container.querySelectorAll('button')].map((button) => normalizedTextContent(button))).toEqual(['New Thread']);
   });
 
-  it('empty-state button calls onNewThread with the projectId', async () => {
+  it.each([
+    ['empty-state button calls onNewThread with the projectId', {}, false],
+    ['ctrl-clicking the empty-state button requests a new pane', { ctrlKey: true }, true],
+    ['cmd-clicking the empty-state button requests a new pane', { metaKey: true }, true],
+  ])('%s', async (_name, modifiers, openInNewPane) => {
     const onNewThread = vi.fn();
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectThreadList, {
-      props: {
-        projectId: 'proj-42',
-        listKey: 'proj-42',
-        threads: [],
-        pane,
-        onNewThread,
-      },
+      props: { projectId: 'proj-42', listKey: 'proj-42', threads: [], pane, onNewThread },
     });
-    const btn = getByTestId('project-thread-list-empty');
-    await fireEvent.click(btn);
-    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane: false });
-  });
-
-  it('ctrl-clicking the empty-state button requests a new pane', async () => {
-    const onNewThread = vi.fn();
-    const pane = createThreadPane();
-    const { getByTestId } = render(ProjectThreadList, {
-      props: {
-        projectId: 'proj-42',
-        listKey: 'proj-42',
-        threads: [],
-        pane,
-        onNewThread,
-      },
-    });
-
-    await fireEvent.click(getByTestId('project-thread-list-empty'), { ctrlKey: true });
-
-    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane: true });
-  });
-
-  it('cmd-clicking the empty-state button requests a new pane', async () => {
-    const onNewThread = vi.fn();
-    const pane = createThreadPane();
-    const { getByTestId } = render(ProjectThreadList, {
-      props: {
-        projectId: 'proj-42',
-        listKey: 'proj-42',
-        threads: [],
-        pane,
-        onNewThread,
-      },
-    });
-
-    await fireEvent.click(getByTestId('project-thread-list-empty'), { metaKey: true });
-
-    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane: true });
+    await fireEvent.click(getByTestId('project-thread-list-empty'), modifiers);
+    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane });
   });
 
   it('renders thread rows when threads are present', () => {

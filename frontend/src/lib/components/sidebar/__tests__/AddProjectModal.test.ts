@@ -188,19 +188,6 @@ describe('<AddProjectModal>', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('adds the folder once registration accepts it', async () => {
-    const onCreated = vi.fn();
-    const created = { id: 'new-p', path: '/Users/me', name: 'me', sortPosition: 0, createdAt: 1, updatedAt: 1, archived: false };
-    setBindingMock('CreateProject', async () => created);
-    const { getByTestId } = render(AddProjectModal, {
-      props: { open: true, onClose: () => {}, onCreated },
-    });
-    await flushModalBoot();
-    await fireEvent.click(getByTestId('add-project-submit'));
-    for (let i = 0; i < 5; i += 1) await tick();
-    expect(onCreated).toHaveBeenCalledWith(created);
-  });
-
   it('warns when git could not read the identity of the folder it added', async () => {
     setBindingMock('CreateProject', async () => ({
       id: 'new-p', path: '/Users/me', name: 'me', sortPosition: 0, createdAt: 1, updatedAt: 1, archived: false,

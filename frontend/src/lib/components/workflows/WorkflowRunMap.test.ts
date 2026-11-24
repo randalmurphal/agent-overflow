@@ -218,6 +218,13 @@ describe('WorkflowRunMap — the surface', () => {
     expect(view.getAllByTestId('workflow-map-wave-card').map((card) => card.dataset.current))
       .toEqual(['false', 'false', 'true']);
     expect(view.getAllByTestId('workflow-map-wave-card')[2].className).toContain('border-border-strong');
+    // A live wave has no fold affordance — it is expanded in place.
+    const summaries = view.getAllByTestId('workflow-map-summary') as HTMLButtonElement[];
+    expect([summaries[0].disabled, summaries[2].disabled]).toEqual([false, true]);
+    // The lap counter and the budget line for a campaign with a loop foot.
+    const lap = view.getByTestId('workflow-map-lap');
+    expect(lap.textContent).toContain('lap 3 of ≤6');
+    expect(lap.textContent).toContain('$2.50 of $10.00');
     // Only the live wave draws nodes; the folded ones cost nothing.
     expect(view.getAllByTestId('workflow-map-node').length).toBeGreaterThan(0);
     expect(view.getAllByTestId('workflow-map-node').every((node) => node.closest('[data-wave-expanded="true"]') !== null))
@@ -250,6 +257,9 @@ describe('WorkflowRunMap — the surface', () => {
       'This campaign is too big to draw'],
     ['corrupt-linkage', 'The call linkage around run wave-1 does not describe a tree, so its map cannot be drawn.',
       'This run’s call linkage is broken'],
+    // A code this build has not learnt still gets a heading rather than a bare
+    // sentence — the honest one: the map cannot be drawn and we cannot say why.
+    ['from-the-future', 'Something new happened.', 'This run’s map cannot be drawn'],
   ])('renders the %s refusal as permanent state, not as a failed fetch', async (code, message, headline) => {
     setBindingMock('WorkflowGetRunMap', async () => refusedView(code, message));
     const view = renderMap('wave-1');
@@ -263,17 +273,6 @@ describe('WorkflowRunMap — the surface', () => {
     expect(view.queryByTestId('workflow-map-error')).toBeNull();
     expect(view.queryByTestId('workflow-map-empty')).toBeNull();
     expect(view.queryByTestId('workflow-map-waves')).toBeNull();
-  });
-
-  // A code this build has not learnt still gets a heading rather than a bare
-  // sentence — the honest one: the map cannot be drawn and we cannot say why.
-  it('heads an unrecognised refusal code without inventing a meaning for it', async () => {
-    setBindingMock('WorkflowGetRunMap', async () => refusedView('from-the-future', 'Something new happened.'));
-    const view = renderMap('wave-1');
-
-    const refusal = await waitFor(() => view.getByTestId('workflow-map-refusal'));
-    expect(refusal.textContent).toContain('This run’s map cannot be drawn');
-    expect(refusal.textContent).toContain('Something new happened.');
   });
 
   // The empty map is a different sentence from a refusal, and it is reachable:
@@ -299,13 +298,6 @@ describe('WorkflowRunMap — the surface', () => {
       expect(chip.className).toContain(part);
     }
     expect(view.getByTestId('workflow-map-resume').textContent).toContain('resumes in');
-  });
-
-  it('shows the lap counter and the budget line for a campaign with a loop foot', async () => {
-    const view = mountMap(campaignView());
-    const lap = await waitFor(() => view.getByTestId('workflow-map-lap'));
-    expect(lap.textContent).toContain('lap 3 of ≤6');
-    expect(lap.textContent).toContain('$2.50 of $10.00');
   });
 
   it('expands a folded wave through the workflows store, and keeps it across a remount', async () => {
@@ -376,13 +368,6 @@ describe('WorkflowRunMap — the surface', () => {
     expect(absent.queryByTestId('workflow-map-wave-skeleton-error')).toBeNull();
   });
 
-  it('leaves a live wave with no fold affordance — it is expanded in place', async () => {
-    const view = mountMap(campaignView());
-    await waitFor(() => expect(view.getAllByTestId('workflow-map-summary')).toHaveLength(3));
-    const rows = view.getAllByTestId('workflow-map-summary') as HTMLButtonElement[];
-    expect([rows[0].disabled, rows[2].disabled]).toEqual([false, true]);
-  });
-
   // §9.8. The pairing with §9.7 is the whole point: compensation is measured
   // ONCE, at the flush, so a fold that keeps changing height for 200ms
   // afterwards drifts the viewport of a reader who is not following. In view
@@ -449,9 +434,12 @@ describe('WorkflowRunMap — the surface', () => {
 describe('WorkflowRunMap — the follow chip', () => {
   it('offers the jump when a parked run opens with follow off, and engages on click', async () => {
     const view = mountMap(parkedView());
-    await waitFor(() => expect(view.getByTestId('workflow-map-follow')).toBeTruthy());
+    const chip = await waitFor(() => view.getByTestId('workflow-map-follow'));
+    // The chip sits outside the scrolled flow rather than inside the wave list.
+    expect(chip.closest('[data-testid="workflow-map-waves"]')).toBeNull();
+    expect(chip.parentElement?.className).toContain('sticky');
 
-    await fireEvent.click(view.getByTestId('workflow-map-follow'));
+    await fireEvent.click(chip);
     await waitFor(() => expect(view.queryByTestId('workflow-map-follow')).toBeNull());
   });
 
@@ -460,53 +448,45 @@ describe('WorkflowRunMap — the follow chip', () => {
     await waitFor(() => expect(view.getAllByTestId('workflow-map-wave')).toHaveLength(3));
     expect(view.queryByTestId('workflow-map-follow')).toBeNull();
   });
-
-  it('sits outside the scrolled flow rather than inside the wave list', async () => {
-    const view = mountMap(parkedView());
-    const chip = await waitFor(() => view.getByTestId('workflow-map-follow'));
-    expect(chip.closest('[data-testid="workflow-map-waves"]')).toBeNull();
-    expect(chip.parentElement?.className).toContain('sticky');
-  });
 });
 
 describe('WorkflowRunMapNode — the state table', () => {
-  it('draws the running node with the standing spinner and no pulse', () => {
+  it('the live wave draws each node state', () => {
     const view = mountWave(campaignView(), 'wave-3');
+    // The running node carries the standing spinner and no pulse.
     const running = view.container.querySelector('[data-signal="running"]');
     expect(running).not.toBeNull();
     expect(running?.querySelector('[data-testid="stepped-spinner"]')).not.toBeNull();
     expect(view.container.querySelector('.animate-pulse')).toBeNull();
-  });
 
-  it('marks the follow target with the one accent on the surface', () => {
-    const view = mountWave(campaignView(), 'wave-3');
+    // The follow target carries the one accent on the surface.
     const marked = view.container.querySelectorAll('[data-run-map-now="true"]');
     expect(marked).toHaveLength(1);
     expect(marked[0].textContent).toContain('now ▸');
     expect(marked[0].querySelector('.text-accent')).not.toBeNull();
-  });
 
-  // §2's surface hierarchy: the future is a bare quiet line on the spine —
-  // no box, no border — where a record is a filled box. Boxing the future at
-  // record weight buried the live minority of a real campaign under a wall
-  // of dashed rectangles.
-  it('draws what has not happened yet as a bare unboxed line', () => {
-    const view = mountWave(campaignView(), 'wave-3');
+    // §2's surface hierarchy: the future is a bare quiet line on the spine —
+    // no box, no border — where a record is a filled box. Boxing the future at
+    // record weight buried the live minority of a real campaign under a wall
+    // of dashed rectangles.
     const ghost = view.container.querySelector('[data-testid="workflow-map-node"][data-ghost="true"]');
     expect(ghost).not.toBeNull();
     expect(ghost?.querySelector('[class*="border"]')).toBeNull();
     expect(ghost?.querySelector('.text-fg-hint')).not.toBeNull();
-  });
 
-  // The colour hints (R1 amendment, §13 fourth pass): a done ✓ is green — the
-  // glyph only, never the label beside it — and a record's box carries a fill.
-  it('tints the done glyph green and fills the record boxes', () => {
-    const view = mountWave(campaignView(), 'wave-3');
+    // The colour hints (R1 amendment, §13 fourth pass): a done ✓ is green — the
+    // glyph only, never the label beside it — and a record's box carries a fill.
     const done = view.container.querySelector('[data-testid="workflow-map-node"][data-signal="done"]');
     expect(done?.querySelector('.text-success')).not.toBeNull();
     expect(done?.querySelector('[data-testid="workflow-map-node-label"]')?.className)
       .not.toContain('text-success');
     expect(done?.querySelector('[class*="bg-surface"]')).not.toBeNull();
+
+    // The loop foot draws its undecided outcome stubs.
+    const decision = view.getByTestId('workflow-map-decision');
+    expect(decision.textContent).toContain('lap 3 of ≤6');
+    expect(decision.textContent).toContain('issues → wave 4');
+    expect(decision.textContent).toContain('clean → done');
   });
 
   it('parks amber, clamps the cause to two lines, and expands it inline', async () => {
@@ -515,14 +495,11 @@ describe('WorkflowRunMapNode — the state table', () => {
     expect(cause.textContent).toContain(PARK_CAUSE);
     expect(cause.className).toContain('line-clamp-2');
     expect(cause.className).toContain('text-warning');
+    // The attempt someone touched by hand is marked.
+    expect(view.container.textContent).toContain('touched by hand');
 
     await fireEvent.click(cause);
     expect(view.getByTestId('workflow-map-node-cause').className).not.toContain('line-clamp-2');
-  });
-
-  it('marks an attempt someone touched by hand', () => {
-    const view = mountWave(parkedView());
-    expect(view.container.textContent).toContain('touched by hand');
   });
 
   it('renders a failed wave node in the failure hue', () => {
@@ -578,14 +555,6 @@ describe('WorkflowRunMapNode — the state table', () => {
     expect(note.className).toContain('text-fg-muted');
     expect(note.className).not.toContain('text-warning');
   });
-
-  it('draws the loop foot with its undecided outcome stubs', () => {
-    const view = mountWave(campaignView(), 'wave-3');
-    const decision = view.getByTestId('workflow-map-decision');
-    expect(decision.textContent).toContain('lap 3 of ≤6');
-    expect(decision.textContent).toContain('issues → wave 4');
-    expect(decision.textContent).toContain('clean → done');
-  });
 });
 
 describe('WorkflowRunMapFan', () => {
@@ -604,6 +573,22 @@ describe('WorkflowRunMapFan', () => {
     expect([...chips.querySelectorAll<HTMLElement>('[data-unit-id]')].map((node) => node.dataset.unitId))
       .toEqual(['port-a', 'port-e']);
     expect(view.getByTestId('workflow-map-join').textContent).toContain('port-join');
+    // The fan's two shapes carry their state on the element that drew it, so a
+    // regression that moves a unit between column, chip and group is caught as a
+    // WRONG STATE rather than as a count that happens to still add up.
+    expect(view.getAllByTestId('workflow-map-group').map((node) => node.dataset.groupKind))
+      .toEqual(['queued']);
+    // Columns first, then the inline done chips, then the join — the small
+    // done group rides in the flow rather than inside a closed fold.
+    expect([...view.container.querySelectorAll<HTMLElement>('[data-unit-signal]')]
+      .map((node) => [node.dataset.unitId, node.dataset.unitSignal]))
+      .toEqual([
+        ['port-b', 'running'],
+        ['port-c', 'failed'],
+        ['port-a', 'done'],
+        ['port-e', 'dropped'],
+        ['port-join', 'pending'],
+      ]);
   });
 
   // Lane headers are the mockup's small-caps names above each column, and they
@@ -648,16 +633,6 @@ describe('WorkflowRunMapFan', () => {
     expect(folded.getByTestId('workflow-map-lane-toggle').textContent?.trim()).toBe('1 run');
     // Collapsed is NOT BUILT: the child run's node is nowhere in the DOM.
     expect(folded.queryAllByTestId('workflow-map-composition')).toHaveLength(0);
-
-    // Queries are bound to the document, so the folded mount has to go before
-    // the opened one is asked about — two mounts of the same wave would
-    // otherwise answer with whichever rendered first.
-    cleanup();
-    const opened = mountWave(settledLaneView(), 'root',
-      { lanes: [branchKeyOf('root', 'port', 1, 'port-a')] });
-    expect(opened.getAllByTestId('workflow-map-branch')[0].dataset.collapsed).toBe('false');
-    expect(opened.getAllByTestId('workflow-map-composition')
-      .map((row) => row.dataset.compositionItemId)).toEqual(['port-a-child']);
   });
 
   /** `count` settled call-bound units beside one running lane. */
@@ -740,26 +715,6 @@ describe('WorkflowRunMapFan', () => {
     expect(queued?.querySelector('button')).toBeNull();
   });
 
-  // The fan's two shapes carry their state on the element that drew it, so a
-  // regression that moves a unit between column, chip and group is caught as a
-  // WRONG STATE rather than as a count that happens to still add up.
-  it('states each unit\'s signal and each group\'s kind on the element that drew it', () => {
-    const view = mountWave(fanView());
-    expect(view.getAllByTestId('workflow-map-group').map((node) => node.dataset.groupKind))
-      .toEqual(['queued']);
-    // Columns first, then the inline done chips, then the join — the small
-    // done group rides in the flow rather than inside a closed fold.
-    expect([...view.container.querySelectorAll<HTMLElement>('[data-unit-signal]')]
-      .map((node) => [node.dataset.unitId, node.dataset.unitSignal]))
-      .toEqual([
-        ['port-b', 'running'],
-        ['port-c', 'failed'],
-        ['port-a', 'done'],
-        ['port-e', 'dropped'],
-        ['port-join', 'pending'],
-      ]);
-  });
-
   // §7: at most `RUN_MAP_INLINE_DONE_MAX` done units render as chips in the
   // flow — no button, nothing to click — and a dropped entry rides among them
   // struck, because nothing else states it.
@@ -796,45 +751,20 @@ describe('WorkflowRunMapFan', () => {
       .find((node) => node.dataset.groupKind === 'done');
     expect(done?.textContent).toContain('9');
     expect(view.container.querySelector('[data-unit-id="port-s0"]')).toBeNull();
+    // Outside low power the column animates and the fold transitions; the
+    // low-power test below asserts both go.
+    expect(view.getAllByTestId('workflow-map-branch')[0].className).toContain('run-map-column');
+    expect(view.getAllByTestId('workflow-map-group-fold')[0].className).toContain('transition-');
 
     await fireEvent.click(done as HTMLElement);
     await waitFor(() => expect(view.container.querySelector('[data-unit-id="port-s0"]')).not.toBeNull());
   });
 
-  // §6: a column's resting width, its enter animation and its leaving
-  // transition are three renderings of two numbers, so the numbers live in one
-  // place (`workflowRunMapStyle.ts`) and the markup reads them.
-  it('declares the lane geometry once, on the fan container', () => {
-    const view = mountWave(fanView());
-    const fan = view.getByTestId('workflow-map-fan');
-    expect(fan.style.getPropertyValue('--run-map-lane-min')).toBe(RUN_MAP_LANE_MIN);
-    expect(fan.style.getPropertyValue('--run-map-lane-max')).toBe(RUN_MAP_LANE_MAX);
-
-    const column = view.getAllByTestId('workflow-map-branch')[0];
-    expect(column.className).toContain('min-w-[var(--run-map-lane-min)]');
-    expect(column.className).not.toMatch(/\[\d+px\]/);
-
-    // app.css declares the same values on `:root` as the resolution floor (an
-    // unresolved custom property silently invalidates its whole declaration),
-    // so the two sources must agree — this is the cross-check that keeps the
-    // floor from becoming a second opinion.
-    expect(appCss).toContain(`--run-map-lane-min: ${RUN_MAP_LANE_MIN};`);
-    expect(appCss).toContain(`--run-map-lane-max: ${RUN_MAP_LANE_MAX};`);
-  });
-
   // §10: every structural motion gates on `motionReduced()`, whose second half
   // — the app's low-power setting — no CSS reset can see.
   it('drops the column animation and the fold transition under low power', () => {
-    const lit = mountWave(scalarDoneView(9));
-    expect(lit.getAllByTestId('workflow-map-branch')[0].className).toContain('run-map-column');
-    expect(lit.getAllByTestId('workflow-map-group-fold')[0].className).toContain('transition-');
-
     getSettings().lowPowerMode = true;
     try {
-      // Queries are document-scoped, so the lit mount goes before the dark one
-      // is asked about — two mounts of the same wave would otherwise answer
-      // with whichever rendered first.
-      cleanup();
       const dark = mountWave(scalarDoneView(9));
       expect(dark.getAllByTestId('workflow-map-branch')[0].className).not.toContain('run-map-column');
       expect(dark.getAllByTestId('workflow-map-group-fold')[0].className).not.toContain('transition-');
@@ -849,7 +779,26 @@ describe('WorkflowRunMapFan', () => {
   it('wraps the lane row rather than scrolling it — nothing goes sideways', () => {
     const view = mountWave(fanView());
     expect(view.container.querySelector('.overflow-x-auto')).toBeNull();
-    expect(view.getByTestId('workflow-map-fan').querySelector('.run-map-lane-row')).not.toBeNull();
+    const fan = view.getByTestId('workflow-map-fan');
+    expect(fan.querySelector('.run-map-lane-row')).not.toBeNull();
+
+    // §6: a column's resting width, its enter animation and its leaving
+    // transition are three renderings of two numbers, so the numbers live in one
+    // place (`workflowRunMapStyle.ts`) and the markup reads them, declared once
+    // on the fan container.
+    expect(fan.style.getPropertyValue('--run-map-lane-min')).toBe(RUN_MAP_LANE_MIN);
+    expect(fan.style.getPropertyValue('--run-map-lane-max')).toBe(RUN_MAP_LANE_MAX);
+
+    const column = view.getAllByTestId('workflow-map-branch')[0];
+    expect(column.className).toContain('min-w-[var(--run-map-lane-min)]');
+    expect(column.className).not.toMatch(/\[\d+px\]/);
+
+    // app.css declares the same values on `:root` as the resolution floor (an
+    // unresolved custom property silently invalidates its whole declaration),
+    // so the two sources must agree — this is the cross-check that keeps the
+    // floor from becoming a second opinion.
+    expect(appCss).toContain(`--run-map-lane-min: ${RUN_MAP_LANE_MIN};`);
+    expect(appCss).toContain(`--run-map-lane-max: ${RUN_MAP_LANE_MAX};`);
   });
 
   // A fan inside a lane renders STACKED — full-width branch blocks, no fork
@@ -915,6 +864,9 @@ describe('WorkflowRunMapFan', () => {
   it('opens a settled lane\'s sole composition with the lane click alone', () => {
     const view = mountWave(settledLaneView(), 'root',
       { lanes: [branchKeyOf('root', 'port', 1, 'port-a')] });
+    expect(view.getAllByTestId('workflow-map-branch')[0].dataset.collapsed).toBe('false');
+    expect(view.getAllByTestId('workflow-map-composition')
+      .map((row) => row.dataset.compositionItemId)).toEqual(['port-a-child']);
     const composition = view.getAllByTestId('workflow-map-composition')[0];
     expect(composition.dataset.collapsed).toBe('false');
     // The child's own phase node is already in the DOM — nothing left to click.
@@ -1033,10 +985,7 @@ describe('composition — a called run inside its caller', () => {
     // `data-item-id` means three different things elsewhere in the app and is
     // walked app-wide as "a timeline row"; a called run is none of them.
     expect(rows[0].dataset.itemId).toBeUndefined();
-  });
-
-  it('draws the called run\'s own phases inline — no clicks to see what is running', () => {
-    const view = mountWave(compositionView());
+    // The called run's own phases draw inline — no clicks to see what is running.
     expect(view.getAllByTestId('workflow-map-node').map((node) => node.dataset.phaseId))
       .toEqual(['plan', 'sub', 'build']);
   });

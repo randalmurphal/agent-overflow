@@ -516,22 +516,6 @@ describe('<TakeControlTerminal>', () => {
     expect(mocks.ProviderTerminalInput).not.toHaveBeenCalled();
   });
 
-  it('detaches the provider terminal on destroy', async () => {
-    mocks.ProviderTerminalReplay.mockResolvedValue({
-      data: '',
-      fromSequence: 0,
-      throughSequence: 0,
-    });
-
-    const { unmount } = render(TakeControlTerminal, {
-      props: { paneId: 'tc-1', threadId: 'thread-1' },
-    });
-    await waitFor(() => expect(mocks.getLastTerminal()).not.toBeNull());
-
-    unmount();
-    expect(mocks.ProviderTerminalDetach).toHaveBeenCalledWith('thread-1');
-  });
-
   it('compensates when an acquire completes after the pane is destroyed', async () => {
     mocks.ProviderTerminalReplay.mockResolvedValue({
       data: '',

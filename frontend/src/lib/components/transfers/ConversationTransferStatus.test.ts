@@ -29,14 +29,12 @@ afterEach(() => {
 // A row's error is the host's text for a failed attempt: a reviewed sentence,
 // or a Go error string, which starts lowercase without closing punctuation.
 // The row shows either as the transfer dialog does.
-it('shows a Go error on the row as the sentence the dialog shows', () => {
-  const view = render(ConversationTransferStatus, { backend: 'tower', row: row({ error: 'this conversation still belongs to another workflow' }) });
-  expect(view.getByTestId('conversation-transfer-row-error').textContent).toBe('This conversation still belongs to another workflow.');
-});
-
-it('leaves a reviewed sentence on the row as written', () => {
-  const view = render(ConversationTransferStatus, { backend: 'tower', row: row({ error: 'Reconnect the destination computer to finish setup.' }) });
-  expect(view.getByTestId('conversation-transfer-row-error').textContent).toBe('Reconnect the destination computer to finish setup.');
+it.each([
+  ['shows a Go error on the row as the sentence the dialog shows', 'this conversation still belongs to another workflow', 'This conversation still belongs to another workflow.'],
+  ['leaves a reviewed sentence on the row as written', 'Reconnect the destination computer to finish setup.', 'Reconnect the destination computer to finish setup.'],
+])('%s', (_name, error, shown) => {
+  const view = render(ConversationTransferStatus, { backend: 'tower', row: row({ error }) });
+  expect(view.getByTestId('conversation-transfer-row-error').textContent).toBe(shown);
 });
 
 it('shows the recipient computer’s error for an outgoing transfer the same way', async () => {

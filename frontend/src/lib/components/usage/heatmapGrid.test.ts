@@ -173,10 +173,6 @@ describe('buildHeatmapGrid', () => {
     for (const column of labeled) {
       expect(column.cells.some((cell) => cell.dayOfMonth === 1)).toBe(true);
     }
-  });
-
-  it('month label: columns without a 1st-of-month day are unlabeled', () => {
-    const columns = buildHeatmapGrid([], NOW, 6);
     // Week of Sun Jun 7 - Sat Jun 13 2026 contains no 1st-of-month day.
     const midJune = columns.find((c) => c.weekStartKey === '2026-06-07');
     expect(midJune).toBeDefined();
