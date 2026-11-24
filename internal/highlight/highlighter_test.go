@@ -214,26 +214,38 @@ func TestPrimerSuffixFrom(t *testing.T) {
 		"",
 		"\n\n",
 	}
+	// Ascending, repeated, then descending (scan restart) requests.
+	starts := []int{1, 2, 3, 3, 10, 2}
 	for _, content := range contents {
+		fileLines := strings.Split(content, "\n")
+		wantPrime := func(at int) string {
+			if content == "" || at <= 1 {
+				return ""
+			}
+			return strings.Join(fileLines[:min(at-1, len(fileLines))], "\n")
+		}
+
+		// primeFor alone: each request advances from, or stays at, the
+		// cursor the previous primeFor left.
+		alone := primer{content: content}
+		for _, at := range starts {
+			if got := alone.primeFor(at); got != wantPrime(at) {
+				t.Errorf("primeFor(%d) alone on %q = %q, want %q", at, content, got, wantPrime(at))
+			}
+		}
+
+		// Interleaved prefix-then-suffix requests — the shape
+		// HighlightPatchTextPrimed drives per hunk.
 		pr := primer{content: content}
-		// Interleaved prefix-then-suffix requests in ascending order —
-		// the shape HighlightPatchTextPrimed drives per hunk — then a
-		// descending request (scan restart).
-		for _, at := range []int{1, 2, 3, 3, 10, 2} {
+		for _, at := range starts {
 			prime := pr.primeFor(at)
 			suffix := pr.suffixFrom(at + 1)
-			var wantPrime, wantSuffix string
-			if content != "" {
-				fileLines := strings.Split(content, "\n")
-				if at > 1 {
-					wantPrime = strings.Join(fileLines[:min(at-1, len(fileLines))], "\n")
-				}
-				if at < len(fileLines) {
-					wantSuffix = strings.Join(fileLines[at:], "\n")
-				}
+			var wantSuffix string
+			if content != "" && at < len(fileLines) {
+				wantSuffix = strings.Join(fileLines[at:], "\n")
 			}
-			if prime != wantPrime {
-				t.Errorf("primeFor(%d) on %q = %q, want %q", at, content, prime, wantPrime)
+			if prime != wantPrime(at) {
+				t.Errorf("primeFor(%d) on %q = %q, want %q", at, content, prime, wantPrime(at))
 			}
 			if suffix != wantSuffix {
 				t.Errorf("suffixFrom(%d) on %q = %q, want %q", at+1, content, suffix, wantSuffix)
