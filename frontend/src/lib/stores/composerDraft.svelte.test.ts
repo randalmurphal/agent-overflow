@@ -24,7 +24,6 @@ function installMocks(draft: {
     updatedAt: 1,
   }));
   setBindingMock('SaveDraft', async () => {});
-  setBindingMock('ClearDraft', async () => {});
   setBindingMock('ListAttachments', async () => [
     sampleAttachment('att-1'),
     sampleAttachment('att-2'),
@@ -185,7 +184,6 @@ describe('composerDraft store', () => {
     let persisted = { threadId: 'thread-1', content: 'send [Image #1]', attachmentIds: ['att-1'], terminalChips: [], updatedAt: 1 };
     setBindingMock('GetDraft', async () => persisted);
     setBindingMock('ListAttachments', async () => [sampleAttachment('att-1')]);
-    setBindingMock('ClearDraft', async () => { persisted = { ...persisted, content: '', attachmentIds: [] }; });
     const store = createStore({ debounceMs: 0 });
     await store.setThread('thread-1');
     store.clearLocalForSend();

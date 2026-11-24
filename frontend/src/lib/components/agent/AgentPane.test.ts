@@ -78,7 +78,6 @@ describe('<AgentPane>', () => {
     for (const toast of getToasts()) removeToast(toast.id);
     resetPaneLayoutForTest();
     setBindingMock('GetSettings', async () => null);
-    setBindingMock('ListSubagentDescendants', async () => []);
     setBindingMock('GetThreadUserMessageTicks', async () => []);
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     await loadSettings();
@@ -477,56 +476,6 @@ describe('<AgentPane>', () => {
     // The carrier and its completion are lifecycle rows, not transcript
     // rows: the scoped window never shows them.
     expect(timeline.textContent).not.toContain('Agent: exploring');
-  });
-
-  it('loads the whole transcript independently of round-one descendant counts', async () => {
-    // The store bounds the root's `subagentDescendantCount` to round one
-    // (each round is its own card) and stamps the all-rounds total as
-    // `subagentTranscriptDescendantCount`. Round one is fully loaded here,
-    // so gating on the round count would skip the fetch and the pane
-    // would open without round two.
-    // The third argument is the inline-previews flag (false on a loopback
-    // client; `wantsInlinePreviews` in stores/threadPaneShared.ts).
-    const listDescendants = vi.fn(async () => []);
-    setBindingMock('ListSubagentDescendants', listDescendants);
-    const { ctx } = await setup([
-      launchItem({
-        status: 'running',
-        isBackground: true,
-        meta: JSON.stringify({
-          task_id: 'task-round-1',
-          subagentDescendantCount: 1,
-          subagentTranscriptDescendantCount: 3,
-        }),
-      }),
-      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'round one work' }),
-      resumeCarrier(),
-    ]);
-    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-
-    await renderAgent({ props: { ctx } });
-
-    expect(listDescendants).not.toHaveBeenCalled();
-  });
-
-  it('does not re-fetch a round-one-only agent whose rows are all loaded', async () => {
-    const listDescendants = vi.fn(async () => []);
-    setBindingMock('ListSubagentDescendants', listDescendants);
-    const { ctx } = await setup([
-      launchItem({
-        status: 'running',
-        isBackground: true,
-        meta: JSON.stringify({ task_id: 'task-round-1', subagentDescendantCount: 1 }),
-      }),
-      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'round one work' }),
-    ]);
-    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-
-    await renderAgent({ props: { ctx } });
-    await tick();
-    await tick();
-
-    expect(listDescendants).not.toHaveBeenCalled();
   });
 
   // A Codex child's final answer is a NORMAL message in the transcript —

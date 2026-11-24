@@ -398,10 +398,8 @@ export const GetThreadUnsavedRows = async (threadId: unknown): Promise<unknown> 
 };
 export const SendMessage = dispatch('SendMessage');
 export const SendMessageWithOptions = dispatch('SendMessageWithOptions');
-export const SteerMessageWithOptions = dispatch('SteerMessageWithOptions');
 export const InterruptTurn = dispatch('InterruptTurn');
 export const GetConversationMutationState = dispatch('GetConversationMutationState');
-export const InterruptAndRevertIfClean = dispatch('InterruptAndRevertIfClean');
 export const GetThreadLiveState = dispatch('GetThreadLiveState');
 export const ListThreadLiveActivity = dispatch('ListThreadLiveActivity');
 export const ListUnsettledFlushes = dispatch('ListUnsettledFlushes');
@@ -414,7 +412,6 @@ export const SendPlanRevisionComments = dispatch('SendPlanRevisionComments');
 export const StopClaudeTask = dispatch('StopClaudeTask');
 export const TerminateCodexBackgroundTerminal = dispatch('TerminateCodexBackgroundTerminal');
 export const StopCodexSubagent = dispatch('StopCodexSubagent');
-export const CleanCodexBackgroundTerminals = dispatch('CleanCodexBackgroundTerminals');
 export const StopBackgroundTasks = dispatch('StopBackgroundTasks');
 export const BackgroundClaudeTask = dispatch('BackgroundClaudeTask');
 export const WatchBackgroundTaskOutput = dispatch('WatchBackgroundTaskOutput');
@@ -427,7 +424,6 @@ export const GetThreadContextUsage = dispatch('GetThreadContextUsage');
 // (previously hand-wrapped with Call.ByName; now re-exported through the
 // generated app.js). Tests stub these through setBindingMock by method name.
 export const UpdateThreadModel = dispatch('UpdateThreadModel');
-export const UpdateThreadProvider = dispatch('UpdateThreadProvider');
 export const UpdateThreadModelSelection = dispatch('UpdateThreadModelSelection');
 export const UpdateThreadMode = dispatch('UpdateThreadMode');
 export const UpdateThreadReasoningEffort = dispatch('UpdateThreadReasoningEffort');
@@ -544,12 +540,7 @@ export const WorkflowTakeOverUnit = dispatch('WorkflowTakeOverUnit');
 export const WorkflowUnbindThread = dispatch('WorkflowUnbindThread');
 
 // Per-provider/model context window + auto-compact thresholds.
-// GetContextSettings hydrates the form; the two updates persist either
-// the model default (UpdateContextSettingsProfile) or a thread-scoped
-// override (UpdateThreadContextSettings).
 export const GetContextSettings = dispatch('GetContextSettings');
-export const UpdateContextSettingsProfile = dispatch('UpdateContextSettingsProfile');
-export const UpdateThreadContextSettings = dispatch('UpdateThreadContextSettings');
 export const GetNetworkSettings = dispatch('GetNetworkSettings');
 export const SetNetworkSettings = dispatch('SetNetworkSettings');
 export const ForgetTailnetNode = dispatch('ForgetTailnetNode');
@@ -723,9 +714,6 @@ export const GetClaudeSlashCommands = dispatch('GetClaudeSlashCommands');
 export const GetClaudeSkills = dispatch('GetClaudeSkills');
 export const GetCodexSkills = dispatch('GetCodexSkills');
 export const CompactCodexThread = dispatch('CompactCodexThread');
-export const StartCodexReview = dispatch('StartCodexReview');
-export const ProbeClaudeAccount = dispatch('ProbeClaudeAccount');
-export const ProbeAgyAccount = dispatch('ProbeAgyAccount');
 export const RecheckClaudeAccount = dispatch('RecheckClaudeAccount');
 export const RecheckCodexAccount = dispatch('RecheckCodexAccount');
 export const RecheckAgyAccount = dispatch('RecheckAgyAccount');
@@ -758,7 +746,6 @@ export const GitFetchOrigin = dispatch('GitFetchOrigin');
 export const GitCheckout = dispatch('GitCheckout');
 export const GitCreateBranchFrom = dispatch('GitCreateBranchFrom');
 export const GitCreatePR = dispatch('GitCreatePR');
-export const GitCreateWorktree = dispatch('GitCreateWorktree');
 export const GitMaybeFetchRemotes = dispatch('GitMaybeFetchRemotes');
 export const GitListBranchPruneCandidates = dispatch('GitListBranchPruneCandidates');
 export const GitPruneBranches = dispatch('GitPruneBranches');
@@ -766,7 +753,6 @@ export const GitSyncBranch = dispatch('GitSyncBranch');
 export const GitWorktreeStatus = dispatch('GitWorktreeStatus');
 export const PrepareThreadWorktree = dispatch('PrepareThreadWorktree');
 export const AttachThreadWorktree = dispatch('AttachThreadWorktree');
-export const GitRemoveWorktree = dispatch('GitRemoveWorktree');
 export const RemoveOtherWorktree = dispatch('RemoveOtherWorktree');
 // WorktreeStatus mirrors the generated class; tests stub the binding
 // to return plain object literals, so the class shape is only here so
@@ -805,7 +791,6 @@ export const GetLocalImage = dispatch('GetLocalImage');
 export const SaveLocalImage = dispatch('SaveLocalImage');
 export const SaveDraft = dispatch('SaveDraft');
 export const GetDraft = dispatch('GetDraft');
-export const ClearDraft = dispatch('ClearDraft');
 export const DeleteEmptyDraftThread = dispatch('DeleteEmptyDraftThread');
 export const DictationSources = dispatch('DictationSources');
 export const BeginDictation = dispatch('BeginDictation');
@@ -860,13 +845,9 @@ export const HighlightEditPatchWithContext = dispatch('HighlightEditPatchWithCon
 export const ForkThreadFromMessage = dispatch('ForkThreadFromMessage');
 export const RevertConversationAndResendMessage = dispatch('RevertConversationAndResendMessage');
 
-// Thread runtime mode
-export const GetThreadRuntimeMode = dispatch('GetThreadRuntimeMode');
-
 // Dev-only UI render tracing
 export const AppendUIRenderTraceBatch = dispatch('AppendUIRenderTraceBatch');
 export const BookmarkUIRenderTrace = dispatch('BookmarkUIRenderTrace');
-export const GetUIRenderTracePath = dispatch('GetUIRenderTracePath');
 
 // Always-on frontend runtime-error log
 export const ReportFrontendErrorBatch = dispatch('ReportFrontendErrorBatch');
@@ -930,7 +911,6 @@ export const SyncThreadWindow = async (
 export const ListActivityRunMembers = dispatch('ListActivityRunMembers');
 export const ListItemsBeforeCursor = dispatch('ListItemsBeforeCursor');
 export const ListItemsAfterCursor = dispatch('ListItemsAfterCursor');
-export const ListSubagentDescendants = dispatch('ListSubagentDescendants');
 export const GetThreadItemProjectionSource = dispatch('GetThreadItemProjectionSource');
 export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
 export const ListProposedPlanComments = dispatch('ListProposedPlanComments');
@@ -1087,23 +1067,16 @@ export const DownloadUpdate = dispatch('DownloadUpdate');
 export const RestartToUpdate = dispatch('RestartToUpdate');
 export const CancelRestartToUpdate = dispatch('CancelRestartToUpdate');
 export const ListReleases = dispatch('ListReleases');
-export const ReconfigureObservability = dispatch('ReconfigureObservability');
-export const ProbeCodexAccount = dispatch('ProbeCodexAccount');
-export const SavePayloadToFile = dispatch('SavePayloadToFile');
 export const ListArchivedThreads = dispatch('ListArchivedThreads');
 export const UpdateProjectSortPositions = dispatch('UpdateProjectSortPositions');
 export const ProviderTerminalAttach = dispatch('ProviderTerminalAttach');
 export const ProviderTerminalDetach = dispatch('ProviderTerminalDetach');
 export const ProviderTerminalInput = dispatch('ProviderTerminalInput');
-export const ProviderTerminalRefresh = dispatch('ProviderTerminalRefresh');
 export const ProviderTerminalReplay = dispatch('ProviderTerminalReplay');
 export const ProviderTerminalResize = dispatch('ProviderTerminalResize');
 export const ProviderTerminalSetControl = dispatch('ProviderTerminalSetControl');
 export const NotificationActivated = dispatch('NotificationActivated');
 export const WorkflowScheduleResume = dispatch('WorkflowScheduleResume');
-export const ListMcpServerStatuses = dispatch('ListMcpServerStatuses');
-export const ListRunningBackgroundWork = dispatch('ListRunningBackgroundWork');
-export const StopThreadBackgroundWork = dispatch('StopThreadBackgroundWork');
 export const ReportUpdateInstallStatus = dispatch('ReportUpdateInstallStatus');
 export const GetServiceUpdateStatus = dispatch('GetServiceUpdateStatus');
 export const ListServiceReleases = dispatch('ListServiceReleases');
@@ -1120,8 +1093,6 @@ export const GetNativeNetworkConfig = dispatch('GetNativeNetworkConfig');
 export const MintOwnDevicePairing = dispatch('MintOwnDevicePairing');
 
 export const RegisterOwnDevice = dispatch('RegisterOwnDevice');
-
-export const RemoveOwnDevice = dispatch('RemoveOwnDevice');
 
 export const ReportNativeNetworkState = dispatch('ReportNativeNetworkState');
 

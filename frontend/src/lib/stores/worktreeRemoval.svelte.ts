@@ -11,7 +11,7 @@ import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
 import { workspaceRefForProject } from '../utils/workspaceKey';
 
-/** What `RemoveOtherWorktree` and `GitRemoveWorktree` answer (app.WorktreeRemoval). */
+/** What `RemoveOtherWorktree` answers (app.WorktreeRemoval). */
 export interface WorktreeRemovalResult {
   /** The caller's workspace after the removal. */
   workspace: GitWorkspaceState;

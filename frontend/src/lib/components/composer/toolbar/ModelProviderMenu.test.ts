@@ -349,7 +349,6 @@ describe('<ModelProviderMenu>', () => {
       'codex',
       'gpt-5.4',
     ]);
-    expect(getBindingMock('UpdateThreadProvider')?.mock.calls.length ?? 0).toBe(0);
     expect(getBindingMock('UpdateThreadModel')?.mock.calls.length ?? 0).toBe(0);
   });
 
@@ -443,7 +442,6 @@ describe('<ModelProviderMenu>', () => {
       'codex',
       'gpt-5.4',
     ]);
-    expect(getBindingMock('UpdateThreadProvider')?.mock.calls.length ?? 0).toBe(0);
     expect(getBindingMock('UpdateThreadModel')?.mock.calls.length ?? 0).toBe(0);
   });
 

@@ -52,7 +52,6 @@ function draftBindings() {
       terminalChips: [],
       updatedAt: 1,
     })),
-    clear: setBindingMock('ClearDraft', async () => {}),
     list: setBindingMock('ListAttachments', async () => []),
   };
 }
@@ -60,7 +59,6 @@ function draftBindings() {
 function expectSilent(bindings: ReturnType<typeof draftBindings>): void {
   expect(bindings.save).not.toHaveBeenCalled();
   expect(bindings.get).not.toHaveBeenCalled();
-  expect(bindings.clear).not.toHaveBeenCalled();
   expect(bindings.list).not.toHaveBeenCalled();
 }
 
@@ -140,7 +138,6 @@ describe('composerDraft store — persistence: none', () => {
 
     expect(composerDraft.content).toBe('what the user is typing');
     expect(getRememberedDraftSnapshot('thread-1')?.content).toBe('what the user is typing');
-    expect(bindings.clear).not.toHaveBeenCalled();
   });
 
   it('composes an outgoing message from local state', () => {

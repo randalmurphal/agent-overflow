@@ -85,7 +85,6 @@ describe('<BackgroundTaskTrayDigest>', () => {
     installTimelineScopeCapability();
     resetPaneLayoutForTest();
     setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
-    setBindingMock('ListSubagentDescendants', async () => []);
     await loadSettings();
   });
 
@@ -166,14 +165,11 @@ describe('<BackgroundTaskTrayDigest>', () => {
     await tick();
   });
 
-  it('loads tools without wholesale descendant hydration', async () => {
-    const listDescendants = vi.fn(async () => []);
-    setBindingMock('ListSubagentDescendants', listDescendants);
+  it('loads tools of a launch whose descendant count exceeds its loaded rows', async () => {
     const launch = claudeLaunch({ meta: JSON.stringify({ task_id: 'task-1', subagentDescendantCount: 9 }) });
     const pane = await setup([launch, ...children(launch.id)]);
     const view = render(BackgroundTaskTrayDigest, { props: { pane, task: taskFor(launch), id: 'digest-1' } });
     await waitFor(() => expect(view.getByTestId('background-task-tray-row-digest').querySelector('[data-item-id="read-1"]')).toBeTruthy());
-    expect(listDescendants).not.toHaveBeenCalled();
   });
 
   it('loads an out-of-window scope without changing the host window', async () => {

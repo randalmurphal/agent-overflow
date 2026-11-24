@@ -78,7 +78,6 @@ export {
   RegenerateThreadTitle,
   SwitchThread,
   UpdateThreadModel,
-  UpdateThreadProvider,
   UpdateThreadModelSelection,
   UpdateThreadMode,
   UpdateThreadReasoningEffort,
@@ -349,8 +348,6 @@ export {
   GetClaudeSlashCommands,
   GetClaudeSkills,
   GetCodexSkills,
-  ProbeClaudeAccount,
-  ProbeAgyAccount,
   RecheckClaudeAccount,
   RecheckCodexAccount,
   RecheckAgyAccount,
@@ -373,12 +370,10 @@ export {
   GitCheckout,
   GitCreateBranchFrom,
   GitCreatePR,
-  GitCreateWorktree,
   GitMaybeFetchRemotes,
   GitListBranchPruneCandidates,
   GitPruneBranches,
   GitSyncBranch,
-  GitRemoveWorktree,
   GitWorktreeStatus,
   PrepareThreadWorktree,
   AttachThreadWorktree,
@@ -401,7 +396,6 @@ export {
   ProviderTerminalReplay,
   ProviderTerminalInput,
   ProviderTerminalResize,
-  ProviderTerminalRefresh,
   ProviderTerminalSetControl,
 
   // Composer enhancements.
@@ -446,7 +440,6 @@ export {
   SaveLocalImage,
   SaveDraft,
   GetDraft,
-  ClearDraft,
   DeleteEmptyDraftThread,
   SearchWorkspaceFiles,
   WriteWorkspaceFile,
@@ -513,13 +506,9 @@ export {
   ResyncLiveCode,
   HighlightEditPatchWithContext,
 
-  // Thread runtime mode (three-tier approval axis)
-  GetThreadRuntimeMode,
-
   // Dev-only UI render tracing
   AppendUIRenderTraceBatch,
   BookmarkUIRenderTrace,
-  GetUIRenderTracePath,
 
   // Always-on frontend runtime-error log
   ReportFrontendErrorBatch,
@@ -533,7 +522,7 @@ export {
   // Windowed history + thread-wide aggregates. See /app_paging.go.
   // Active panes load a bounded slice and page by item-coordinate
   // cursor; there is no turn-based pager.
-  ListSubagentDescendants,
+  //
   // Recovery route out of the wire projection: returns the complete
   // stored `meta` / `payloadMeta` / `payloadPreviewSpans` for one item,
   // for a consumer that reached a projection marker and now needs the
@@ -914,14 +903,11 @@ import {
   GetThreadDefaults as GetThreadDefaultsRaw,
   SendMessageWithOptions as SendMessageWithOptionsRaw,
   StartTerminal as StartTerminalRaw,
-  UpdateContextSettingsProfile as UpdateContextSettingsProfileRaw,
   UpdateNewThreadDefaults as UpdateNewThreadDefaultsRaw,
-  UpdateThreadContextSettings as UpdateThreadContextSettingsRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import {
   CreateThreadOptions as CreateThreadOptionsClass,
   DraftSnapshot as DraftSnapshotClass,
-  ContextSettingsUpdate as ContextSettingsUpdateClass,
   NewThreadDefaultsUpdate as NewThreadDefaultsUpdateClass,
   SendMessageOptions as SendMessageOptionsClass,
   StartTerminalOptions as StartTerminalOptionsClass,
@@ -949,21 +935,6 @@ export interface CreateThreadOptions {
   workspaceOverride?: string;
   worktreePath?: string;
   branch?: string;
-}
-
-export type ContextSettingsUpdateInput = ConstructorParameters<
-  typeof ContextSettingsUpdateClass
->[0];
-
-export function UpdateContextSettingsProfile(update: ContextSettingsUpdateInput) {
-  return UpdateContextSettingsProfileRaw(new ContextSettingsUpdateClass(update));
-}
-
-export function UpdateThreadContextSettings(
-  threadId: string,
-  update: ContextSettingsUpdateInput,
-) {
-  return UpdateThreadContextSettingsRaw(threadId, new ContextSettingsUpdateClass(update));
 }
 
 export interface NewThreadDefaultsUpdateInput {
@@ -1122,47 +1093,6 @@ export type {
   Skill as CodexSkill,
 } from '../../../bindings/agent-overflow/internal/codexskills/models';
 export type { Skill as ClaudeSkill } from '../../../bindings/agent-overflow/internal/claudeconfig/models';
-
-// StartCodexReview wrapper. Same plain-object-in / class-wrap pattern as
-// CreateThread: the generated signature types the target as a class
-// instance, and every call site wants to hand a literal. The four
-// variants share one flat shape discriminated by `kind`; the backend
-// validates the per-variant required field and ignores the rest.
-import {
-  StartCodexReview as StartCodexReviewRaw,
-} from '../../../bindings/agent-overflow/app.js';
-import {
-  CodexReviewTarget as CodexReviewTargetClass,
-} from '../../../bindings/agent-overflow/internal/app/models.js';
-import type { CodexReviewStarted } from '../../../bindings/agent-overflow/internal/app/models';
-
-export type CodexReviewTargetKind =
-  | 'uncommittedChanges'
-  | 'baseBranch'
-  | 'commit'
-  | 'custom';
-
-export interface CodexReviewTargetInput {
-  kind: CodexReviewTargetKind;
-  /** Required for `baseBranch`. */
-  branch?: string;
-  /** Required for `commit`. */
-  sha?: string;
-  /** Optional human label for a `commit` target. */
-  title?: string;
-  /** Required for `custom`. */
-  instructions?: string;
-}
-
-export function StartCodexReview(
-  threadId: string,
-  target: CodexReviewTargetInput,
-): Promise<CodexReviewStarted> {
-  return StartCodexReviewRaw(
-    threadId,
-    new CodexReviewTargetClass(target),
-  ) as unknown as Promise<CodexReviewStarted>;
-}
 
 // SyncThreadWindow wrapper. Same plain-object-in / class-wrap pattern as
 // CreateThread: the generated signature types the request as a class

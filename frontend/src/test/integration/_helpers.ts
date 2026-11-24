@@ -287,7 +287,6 @@ export function installComposerDefaults(threadId: string): void {
     updatedAt: 0,
   }));
   setBindingMock('SaveDraft', async () => {});
-  setBindingMock('ClearDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('SearchWorkspaceFiles', async () => ({
     files: [],

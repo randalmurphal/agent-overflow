@@ -319,18 +319,15 @@ const SINGLE_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = 
   3112222989: 'thread', // SetThreadPinGroup
   4173453878: 'thread', // StartNextAssistantThread
   3009548683: 'thread', // StartTerminal
-  1698485705: 'thread', // SteerMessageWithOptions
   3897387725: 'thread', // SwitchThread
   2561521885: 'project', // UnarchiveProject
   3655125512: 'thread', // UnarchiveThread
   3175043037: 'thread', // UnpinThread
-  2621473242: 'thread', // UpdateThreadContextSettings
   2456875639: 'thread', // UpdateThreadContextWindow
   4175109385: 'thread', // UpdateThreadFastMode
   3609479719: 'thread', // UpdateThreadMode
   4179686417: 'thread', // UpdateThreadModel
   3140398729: 'thread', // UpdateThreadModelSelection
-  665741969: 'thread', // UpdateThreadProvider
   892204206: 'thread', // UpdateThreadReasoningEffort
   325190827: 'thread', // UpdateThreadRuntimeMode
   3875142865: 'thread', // UpdateThreadWorkspace

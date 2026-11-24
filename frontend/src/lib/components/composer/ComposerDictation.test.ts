@@ -37,7 +37,6 @@ function installComposerMocks(): void {
     threadId, content: '', attachmentIds: [], terminalChips: [], updatedAt: 0,
   }));
   setBindingMock('SaveDraft', async () => {});
-  setBindingMock('ClearDraft', async () => {});
   setBindingMock('DeleteEmptyDraftThread', async () => false);
   setBindingMock('ListAttachments', async () => []);
   mockAttachmentDownload();

@@ -91,14 +91,9 @@ describe('rollback of a failed seed from a source in a worktree', () => {
       removed.push(path);
       return { workspace: { workspacePath: '/repo', worktreePath: '', branch: 'main' }, reattached: [] };
     });
-    // A rollback names the path it cut; resolving the child's current
-    // attachment could name the source's worktree.
-    const removeAttached = setBindingMock('GitRemoveWorktree', async () => {
-      throw new Error('rollback resolved a mutable attachment');
-    });
     const deleted: string[] = [];
     setBindingMock('DeleteThread', async (threadId: string) => { deleted.push(threadId); });
-    return { source, removed, deleted, removeOther, removeAttached };
+    return { source, removed, deleted, removeOther };
   }
 
   it('leaves the inherited worktree of the source thread alone', async () => {
@@ -126,7 +121,7 @@ describe('rollback of a failed seed from a source in a worktree', () => {
   // cut answered and before the seed fails. The rollback still removes only
   // the worktree it cut, never the one the child sits on now.
   it('removes the cut worktree when the child was moved back before the rollback', async () => {
-    const { source, removed, removeAttached } = seedFailing('/repo-wt/child');
+    const { source, removed } = seedFailing('/repo-wt/child');
     setThreadEnvMode(source.thread!, 'new-worktree');
     setBindingMock('SaveDraft', async () => {
       applyThreadUpdated({ action: 'full', thread: makeThread({
@@ -138,7 +133,6 @@ describe('rollback of a failed seed from a source in a worktree', () => {
     try {
       expect(await implementProposedPlanInNewThread(source, { threadId: 'plan-wt-source', itemId: 'plan', payloadId: 'payload' })).toBe(false);
       expect(removed).toEqual(['/repo-wt/child']);
-      expect(removeAttached).not.toHaveBeenCalled();
     } finally { quiet.mockRestore(); clearWorktreeIntent('plan-wt-source'); source.clear(); }
   });
 

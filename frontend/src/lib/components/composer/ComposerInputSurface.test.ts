@@ -50,7 +50,6 @@ function installMocks() {
     updatedAt: 0,
   }));
   setBindingMock('SaveDraft', async () => {});
-  setBindingMock('ClearDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
   mockAttachmentDownload();
   setBindingMock('DeleteAttachment', async () => {});
@@ -777,7 +776,6 @@ describe('<ComposerInputSurface>', () => {
     // rather than something weaker.
     await new Promise((resolve) => setTimeout(resolve, 10));
     const save = setBindingMock('SaveDraft', async () => {});
-    const clear = setBindingMock('ClearDraft', async () => {});
     const get = setBindingMock('GetDraft', async () => ({
       threadId: 'thread-1',
       content: '',
@@ -803,7 +801,6 @@ describe('<ComposerInputSurface>', () => {
     expect(local.content).toBe('the message, edited again');
     expect(local.hasPendingSave).toBe(false);
     expect(save).not.toHaveBeenCalled();
-    expect(clear).not.toHaveBeenCalled();
     expect(get).not.toHaveBeenCalled();
   });
 });

@@ -102,7 +102,6 @@ function installDraftMocks() {
     updatedAt: 0,
   }));
   setBindingMock('SaveDraft', async () => {});
-  setBindingMock('ClearDraft', async () => {});
   setBindingMock('DeleteEmptyDraftThread', async () => false);
   setBindingMock('ListAttachments', async () => []);
   mockAttachmentDownload();
@@ -510,7 +509,6 @@ describe('<Composer>', () => {
     });
     const create = setBindingMock('CreateThread', async () => created);
     const save = setBindingMock('SaveDraft', async () => {});
-    const clear = setBindingMock('ClearDraft', async () => {});
     const send = setBindingMock('SendMessageWithOptions', async () => created);
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
@@ -533,7 +531,6 @@ describe('<Composer>', () => {
     expect(options.provider).toBeUndefined();
     expect(options.model).toBeUndefined();
     expect(save).toHaveBeenCalledWith('materialized-send', 'first send', [], [], null);
-    expect(clear).not.toHaveBeenCalled();
     expect(draft.threadId).toBe('materialized-send');
     expect(draft.content).toBe('');
   });
@@ -2765,7 +2762,6 @@ describe('<Composer>', () => {
     const draft = await buildDraft('thread-1');
     const pending = deferred<void>();
     const save = setBindingMock('SaveDraft', () => pending.promise);
-    const clear = setBindingMock('ClearDraft', async () => {});
     const send = setBindingMock('SendMessageWithOptions', async () => threadOne);
     const { getByTestId } = render(Composer, { props: { pane, draft } });
     draft.setContentAndAttachments('race send [Image #1]', [makeAttachment('att-1', 'first.png')]);
@@ -2781,7 +2777,6 @@ describe('<Composer>', () => {
     await waitFor(() => expect(send).toHaveBeenCalledWith('thread-1', 'race send [Image #1]', sentWith({
       attachmentIds: ['att-1'],
     })));
-    expect(clear).not.toHaveBeenCalled();
     expect(pane.thread?.id).toBe('thread-2');
     expect(draft.content).toBe('keep this [Image #1]');
     expect(draft.attachments.map((attachment) => attachment.id)).toEqual(['att-2']);
@@ -3688,19 +3683,14 @@ describe('<Composer>', () => {
   });
 
   it('routes Codex mid-turn sends through the unified backend queue', async () => {
-    // Phase G6 collapsed the Codex steer fast-path into the same
-    // backend-owned queue both providers now share. The dispatcher
-    // delivers each queued item via Steer (with Send fallback) for
-    // Codex; the Composer is provider-agnostic and never calls
-    // SteerMessageWithOptions directly. Pin so a future regression
-    // doesn't reintroduce a frontend-side steer dispatch that
-    // double-counts against the backend queue.
+    // The Codex steer fast-path lives in the backend-owned queue both
+    // providers share: the dispatcher delivers each queued item via
+    // Steer (with Send fallback) for Codex, and the Composer only
+    // enqueues.
     const pane = await buildPane(makeTestThread({ provider: 'codex' }));
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     const draft = await buildDraft();
     const send = setBindingMock('SendMessageWithOptions', async () =>
-      makeTestThread({ provider: 'codex', runtimeMode: 'full-access' }));
-    const steer = setBindingMock('SteerMessageWithOptions', async () =>
       makeTestThread({ provider: 'codex', runtimeMode: 'full-access' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
@@ -3711,7 +3701,6 @@ describe('<Composer>', () => {
     await tick();
 
     expect(send).not.toHaveBeenCalled();
-    expect(steer).not.toHaveBeenCalled();
     expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue me']);
     expect(draft.content).toBe('');
   });
@@ -3719,20 +3708,15 @@ describe('<Composer>', () => {
   it('keeps the existing enqueue path for Claude mid-turn sends', async () => {
     // Claude has no steer primitive — its per-thread queue + drain
     // on provider:turn_completed remains the single mid-turn path.
-    // Pin so Phase D doesn't accidentally start calling Steer for
-    // Claude threads.
     const pane = await buildPane(makeTestThread({ provider: 'claude' }));
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
     const draft = await buildDraft();
-    const steer = setBindingMock('SteerMessageWithOptions', async () =>
-      makeTestThread({ provider: 'claude', runtimeMode: 'full-access' }));
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
     await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'claude queue' } });
     await fireEvent.click(getByTestId('composer-send'));
     await tick();
 
-    expect(steer).not.toHaveBeenCalled();
     expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['claude queue']);
   });
 
