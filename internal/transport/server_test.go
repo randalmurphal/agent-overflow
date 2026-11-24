@@ -279,63 +279,6 @@ func TestWorkflowReadsAndPauseSplitOnScope(t *testing.T) {
 	}
 }
 
-func TestServer_BootstrapReadinessGate(t *testing.T) {
-	d := NewDispatcher()
-	bus := NewEventBus(20)
-	srv, err := New(Config{
-		Dispatcher:               d,
-		EventBus:                 bus,
-		Token:                    "test-token",
-		RequireReadyForBootstrap: true,
-	})
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	if err := srv.Start(); err != nil {
-		t.Fatalf("start server: %v", err)
-	}
-	t.Cleanup(func() {
-		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
-		defer c()
-		_ = srv.Shutdown(shutCtx)
-	})
-
-	resp := getBootstrap(t, srv.Addr())
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("bootstrap status before ready = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
-	}
-	if srv.Ready() {
-		t.Fatal("server reported ready before MarkReady")
-	}
-
-	refusedResp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=never-minted", srv.Addr()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = refusedResp.Body.Close()
-	if refusedResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("refused credential status before ready = %d, want %d", refusedResp.StatusCode, http.StatusNotFound)
-	}
-
-	srv.MarkReady()
-	if !srv.Ready() {
-		t.Fatal("server did not report ready after MarkReady")
-	}
-	resp = getBootstrap(t, srv.Addr())
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("bootstrap status after ready = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	var b Bootstrap
-	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
-		t.Fatal(err)
-	}
-	if b.WSURL == "" {
-		t.Fatal("bootstrap after ready carries no wsUrl")
-	}
-}
-
 func TestServer_BootstrapStartupFailureBeatsReadinessGate(t *testing.T) {
 	d := NewDispatcher()
 	bus := NewEventBus(20)

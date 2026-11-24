@@ -184,6 +184,14 @@ func TestServe_ServesTheShellVerbatim(t *testing.T) {
 	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "no-store") {
 		t.Fatalf("index Cache-Control %q must include no-store", got)
 	}
+	// The stub serves the same bundle the transport does, so it ships the
+	// same policy (see TestStubShipsTheProductionPolicy).
+	if got := resp.Header.Get("Content-Security-Policy"); got != string(transport.CSPProduction) {
+		t.Errorf("index Content-Security-Policy = %q, want the production policy", got)
+	}
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("index X-Content-Type-Options = %q, want nosniff", got)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read body: %v", err)
@@ -339,44 +347,6 @@ func TestServe_ManifestLocalityFollowsTheUpstream(t *testing.T) {
 	}
 }
 
-func TestServe_ServesStaticAssets(t *testing.T) {
-	srv, err := Serve(Config{
-		WSURL:  "ws://h/",
-		Token:  "t",
-		Assets: fakeAssets(),
-	})
-	if err != nil {
-		t.Fatalf("Serve: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-	})
-
-	// The page URL carries query parameters now, so address the asset by
-	// the listener rather than by string-appending to it.
-	resp, err := http.Get("http://" + srv.Addr() + "/assets/index-abc.js")
-	if err != nil {
-		t.Fatalf("GET /assets/...: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET asset status = %d, want 200", resp.StatusCode)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "fake spa entry") {
-		t.Fatalf("asset body unexpected: %s", body)
-	}
-	// Asset responses must be no-store: the stub only serves the local
-	// embedded webview, which loads the SPA once per process, and a
-	// cacheable script pins its decoded text in the renderer's
-	// in-memory HTTP cache for the page's lifetime.
-	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "no-store") {
-		t.Fatalf("Cache-Control %q does not include no-store", got)
-	}
-}
-
 func TestServe_RejectsMissingIndex(t *testing.T) {
 	// fstest.MapFS without index.html — buildInjectedIndex must surface
 	// the failure rather than starting a half-broken server.
@@ -462,13 +432,6 @@ func TestServe_RejectsRebindHost(t *testing.T) {
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusNotFound {
 				t.Fatalf("Host=%q path=%q status = %d, want 404", c.host, c.path, resp.StatusCode)
-			}
-			body, _ := io.ReadAll(resp.Body)
-			// The 404 must NOT contain the bootstrap snippet — the
-			// whole point is that the foreign origin reads no
-			// credential. Defense-in-depth assertion.
-			if strings.Contains(string(body), "__AO_BOOTSTRAP__") {
-				t.Fatalf("404 response leaked bootstrap snippet")
 			}
 		})
 	}

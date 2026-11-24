@@ -456,7 +456,10 @@ func (s *showSizes) record(handle string) {
 }
 
 // A page that refuses the size is shown anyway, under the error the refusal
-// raised, rather than held hidden and retried forever.
+// raised, rather than held hidden and retried forever. Left at the old size
+// while the pane places it at the new one, it is visibly wrong, so the
+// failure names the page and reaches the pane as an error event instead of
+// vanishing in a goroutine.
 func TestAPageThatRefusesTheSizeIsStillShown(t *testing.T) {
 	f := newPaneFollowFixture(t)
 	f.pages[1].mu.Lock()
@@ -481,6 +484,21 @@ func TestAPageThatRefusesTheSizeIsStillShown(t *testing.T) {
 	f.pages[1].mu.Unlock()
 	if later != attempts {
 		t.Fatalf("the refused size kept being retried: %d more attempts", later-attempts)
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case event := <-f.events:
+			if event.Kind != "error" {
+				continue
+			}
+			if !strings.Contains(event.Error, "engine refused") || !strings.Contains(event.Error, "page ") {
+				t.Fatalf("error event must name the failure and the page: %q", event.Error)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no error event reached the pane")
+		}
 	}
 }
 

@@ -64,7 +64,7 @@ func readStartupBody(t *testing.T, resp *http.Response) map[string]any {
 // TestServer_BootstrapReportsStartupProgress pins the readiness contract:
 // a bare 503 until the boot reports anything, the starting body with
 // no-store and Retry-After once it does, the credential check still in
-// front of it, and the manifest after MarkReady.
+// front of it, Ready false until MarkReady, and the manifest after it.
 func TestServer_BootstrapReportsStartupProgress(t *testing.T) {
 	srv := newGatedServer(t)
 
@@ -73,6 +73,9 @@ func TestServer_BootstrapReportsStartupProgress(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain") {
 		t.Fatalf("before any progress: %d %q %q, want the bare text 503", resp.StatusCode, resp.Header.Get("Content-Type"), raw)
+	}
+	if srv.Ready() {
+		t.Fatal("server reported ready before MarkReady")
 	}
 
 	srv.SetStartupProgress(startupprogress.Progress{
@@ -111,6 +114,9 @@ func TestServer_BootstrapReportsStartupProgress(t *testing.T) {
 	}
 
 	srv.MarkReady()
+	if !srv.Ready() {
+		t.Fatal("server did not report ready after MarkReady")
+	}
 	resp = getBootstrap(t, srv.Addr())
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
