@@ -334,9 +334,9 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 	shown := make([]shownDetail, len(docs))
 	var later idSet
 	for i, doc := range docs {
-		// The parent shown is the record's card's, when the mirror keeps one.
+		// The parent shown is the shown card's (recordCard).
 		p := string(doc.d.Card.Parent)
-		if m, ok := mirrored[string(doc.d.Card.ID)]; ok {
+		if m, ok := recordCard(doc, mirrored); ok {
 			p = m.ParentID
 		}
 		if p != "" && !slices.Contains(wants[i], p) {
@@ -381,27 +381,38 @@ type shownDetail struct {
 	parent *tracker.Card
 }
 
-// shownDetailOf is doc shown from the cards of mirrored that want names:
-// its own issue first, then the others it shows. The issue record's card,
-// when the mirror keeps one, is the card shown: it holds every field a
+// recordCard is the issue record's card of doc when the view shows it:
+// the mirror keeps one, of doc's version or later. It holds every field a
 // card holds as the latest read of any path found it (a project key or a
 // label renamed at an unchanged update time included), and the time its
-// status began as the record decided it. The body is behind when the card
-// shown is of a later version than the body.
+// status began as the record decided it. A record card older than the
+// document (a board read of an earlier answer stored the issue's first
+// keep after a direct read of it) is not shown: the document's own card
+// is, so a view never renders a card older than its document.
+func recordCard(doc ticketDoc, mirrored map[string]store.MirrorCard) (store.MirrorCard, bool) {
+	m, ok := mirrored[string(doc.d.Card.ID)]
+	return m, ok && m.UpdatedAt >= doc.version
+}
+
+// shownDetailOf is doc shown from the cards of mirrored that want names:
+// its own card (recordCard, else the document's), then the others it
+// shows. The body is behind when the card shown is of a later version
+// than the body.
 func shownDetailOf(doc ticketDoc, want []string, mirrored map[string]store.MirrorCard) shownDetail {
 	d := doc.d
 	out := shownDetail{d: d, links: slices.Clone(d.Links)}
 	if doc.status != nil {
 		out.since, _ = store.MirrorStatusSince(*doc.status)
 	}
+	if m, ok := recordCard(doc, mirrored); ok {
+		out.d.Card, _ = cardOf(m)
+		out.since = m.StatusSince
+	}
 	cards := make(map[tracker.IssueID]tracker.Card, len(want))
 	for _, id := range want {
 		m, ok := mirrored[id]
 		switch {
-		case !ok:
-		case id == string(d.Card.ID):
-			out.d.Card, _ = cardOf(m)
-			out.since = m.StatusSince
+		case !ok, id == string(d.Card.ID):
 		default:
 			if c, ok := cardOf(m); ok {
 				cards[c.ID] = c

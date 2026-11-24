@@ -60,6 +60,60 @@ func TestAFirstPaintWhoseKeepGoesIsMarkedBehindItsCard(t *testing.T) {
 	}
 }
 
+// beforeCards is a store that runs hook once, before the first card
+// lookup after it is armed: what lands between a read's write and its
+// view's lookup.
+type beforeCards struct {
+	*store.Store
+	mu   sync.Mutex
+	hook func()
+}
+
+func (s *beforeCards) ListMirrorCards(root int64, issues []string) ([]store.MirrorCard, error) {
+	s.mu.Lock()
+	hook := s.hook
+	s.hook = nil
+	s.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return s.Store.ListMirrorCards(root, issues)
+}
+
+// A direct read of an issue the mirror does not keep holds the version 2
+// document; before its view's card lookup a board read stores the issue's
+// first keep from an earlier answer, version 1. The view renders the
+// document's version 2 card, not the older record card, and is not
+// behind; the record keeps its version 1 card until a read moves it.
+func TestADirectReadNeverRendersACardOlderThanItsDocument(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	const v1, v2 = 1_799_000_000_000, 1_799_000_060_000
+	m.tracks([]tracker.Row{row("10001", v1, "a")})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	read := card("10050", v2)
+	read.Title = "Second"
+	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return enteredAtStatusBegan(detailOfCard(read)), nil }
+	old := row("10050", v1, "b")
+	old.Card.Title = "First"
+	gate := &beforeCards{Store: m.st}
+	gate.hook = func() {
+		m.tracks([]tracker.Row{row("10001", v1, "a"), old})
+		must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	}
+	m.svc.store = gate
+	v, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10050", Interactive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10050")); got.Card.Updated != v1 {
+		t.Fatalf("the board read stored the card of %d; want the earlier answer's", got.Card.Updated)
+	}
+	if v.Card.Updated != v2 || v.Card.Title != "Second" || v.BodyBehind {
+		t.Fatalf("the direct read shows the card of %d %q, behind %v; want its own version 2 card", v.Card.Updated, v.Card.Title, v.BodyBehind)
+	}
+}
+
 // detailGate holds the scripted provider's detail reads: the first, of
 // the tracker's state when it arrives, until release; every later one at
 // arrival until next.
