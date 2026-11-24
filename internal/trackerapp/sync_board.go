@@ -126,18 +126,28 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 // (tracker.ErrRuleRefused, the tracker refusing the query that carried
 // it) ends the pass, the rows stored before it standing, and the board
 // lists again at once unless the pump did so for a refusal within the
-// last reconcile interval (ruleRelist), after which the pass ends with the
-// refusal and the next listing waits for that interval (boardDue); every
-// other failed rows read keeps the pass's candidates. An open pass is due
-// at the pump's next tick whatever the interval (boardDue), so one a
-// refresh began goes on at once.
+// last reconcile interval (ruleRelist). Then the pass ends with the
+// refusal, which the pump holds: until that interval has passed each
+// reconcile answers with it, making no request, so the board's failure
+// stays shown, and the next one lists; a pass that completes, or another
+// board lifetime, clears it. Every other failed rows read keeps the
+// pass's candidates. An open pass, and a held refusal, are due at the
+// pump's next tick whatever the interval (boardDue), so a pass a refresh
+// began goes on at once.
 func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	lifetime, err := r.lifetime(board)
 	if err != nil {
 		return UnitResult{}, err
 	}
+	if r.relisted.lifetime != lifetime {
+		// Another board lifetime's listing again and refusal are none.
+		*r.relisted = ruleRelist{}
+	}
 	pass := r.pass
 	if !pass.openIn(lifetime) {
+		if r.relisted.refusal != nil && r.relisted.waits(r.s) {
+			return UnitResult{}, r.relisted.refusal
+		}
 		*pass = reconcilePass{lifetime: lifetime}
 	}
 	if r.walking {
@@ -145,12 +155,16 @@ func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	}
 	var log changeLog
 	err = r.reconcileReads(board, pass, &log)
-	if errors.Is(err, tracker.ErrRuleRefused) && !r.relisted.waits(r.s, lifetime) {
+	if errors.Is(err, tracker.ErrRuleRefused) && !r.relisted.waits(r.s) {
 		*r.relisted = ruleRelist{lifetime: lifetime, wall: millis(r.s.now())}
 		err = r.reconcileReads(board, pass, &log)
 	}
-	if errors.Is(err, tracker.ErrRuleRefused) {
+	switch {
+	case errors.Is(err, tracker.ErrRuleRefused):
 		*pass = reconcilePass{}
+		r.relisted.refusal = err
+	case err == nil && !pass.openIn(lifetime):
+		*r.relisted = ruleRelist{}
 	}
 	out := UnitResult{More: len(pass.left) > 0}
 	if err == nil {
@@ -179,23 +193,23 @@ func (p *reconcilePass) openIn(lifetime int64) bool { return p.lifetime == lifet
 // because a rows read refused the listing's rule (boardPump.relisted), by
 // the wall clock in Unix ms, and the board lifetime it listed in: a
 // listing again for a refusal waits a reconcile interval from it, so a
-// refusal that persists costs one more listing an interval. Another
-// lifetime's is none.
+// refusal that persists costs one more listing an interval. refusal is
+// the refusal that ended the pass after that listing, which each
+// reconcile answers with while the listing waits. A pass that completes
+// clears both, and so does a reconcile of another lifetime.
 type ruleRelist struct {
 	lifetime int64
 	wall     int64
+	refusal  error
 }
 
-// waits reports whether a listing again for a refusal in board lifetime
-// lifetime waits for l: l is of that lifetime and less than a reconcile
-// interval ago. A wall clock behind l waits for nothing, as an interval
-// whose start is unknown is due (sinceWall).
-func (l *ruleRelist) waits(s *Service, lifetime int64) bool {
-	if l.lifetime != lifetime || lifetime == 0 {
-		return false
-	}
+// waits reports whether a listing again for a refusal waits for l: it was
+// less than a reconcile interval ago. None never was, and a wall clock
+// behind l waits for nothing, as an interval whose start is unknown is
+// due (sinceWall).
+func (l *ruleRelist) waits(s *Service) bool {
 	since, known := s.sinceWall(l.wall)
-	return known && since < s.cadence.Reconcile
+	return l.wall != 0 && known && since < s.cadence.Reconcile
 }
 
 // reconcileReads lists board when pass, open in the run's lifetime of

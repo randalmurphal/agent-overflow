@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -86,7 +87,7 @@ func requestKind(r *http.Request) string {
 	switch p := r.URL.Path; {
 	case p == "/rest/software/1.0/board/1/issue" && strings.Contains(r.URL.Query().Get("jql"), "id in ("):
 		return reqRowRead
-	case p == "/rest/software/1.0/board/1/issue":
+	case p == "/rest/software/1.0/board/1/issue" && r.URL.Query().Get("fields") == "id":
 		return reqListing
 	case p == "/rest/api/3/jql/match":
 		return reqMatch
@@ -110,6 +111,37 @@ func (s *ruleScenario) count(kind string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.counts[kind]
+}
+
+// reconcileRequests are the requests since the counts were last reset
+// that a reconcile makes.
+func (s *ruleScenario) reconcileRequests() int {
+	return s.count(reqListing) + s.count(reqRowRead) + s.count(reqMatch) + s.count(reqBulk) + s.count(reqSprints)
+}
+
+// failed reports whether the board's stored sync state shows a failure.
+func (s *ruleScenario) failed(t *testing.T) bool {
+	t.Helper()
+	root, ok, err := s.st.GetMirrorRoot(s.conn.ID)
+	if err != nil || !ok {
+		t.Fatalf("the mirror root of %s: %v, %v", s.conn.ID, ok, err)
+	}
+	st, _, err := s.st.GetMirrorSync(root, string(s.scope.Board), s.svc.steady().UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st.Failure.Kind != ""
+}
+
+// pumpTick runs a tick of the board as its pump does, every unit its due
+// rule (boardDue) picks.
+func (s *ruleScenario) pumpTick(t *testing.T) Outcome {
+	t.Helper()
+	out, _, err := s.svc.syncBoard(t.Context(), s.pump, Background, s.svc.boardDue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 // tick runs a tick of the board's reconcile when its pump's due rule
@@ -162,18 +194,61 @@ func TestADeletedSprintListsTheBoardAgainAndThePassCompletes(t *testing.T) {
 	if n := s.count(reqListing); n < 2 {
 		t.Fatalf("%d listings; want the board listed again", n)
 	}
-	if s.pump.pass.openIn(s.lifetime(t)) {
-		t.Fatalf("the pass %+v is open", s.pump.pass)
+	if s.pump.pass.openIn(s.lifetime(t)) || s.failed(t) || s.pump.relisted != (ruleRelist{}) {
+		t.Fatalf("the pass %+v, the board failed %v, the relist %+v; want all clear", s.pump.pass, s.failed(t), s.pump.relisted)
+	}
+}
+
+// A sprint the listing's rule names is deleted as the match judges an
+// issue the list left out, and Jira answers the match with an error for
+// it (not judged, not a refusal of the rule): the rows read reads the
+// board's configuration again and the rows once more, whose list Jira
+// refuses with a 400 for the deleted sprint, so the reconcile lists the
+// board again in the same tick and the pass completes.
+func TestAMatchNotJudgedForADeletedSprintRecoversByTheList(t *testing.T) {
+	t.Parallel()
+	s := newRuleScenario(t)
+	var deleted atomic.Bool
+	s.answering(func(kind string, w http.ResponseWriter, r *http.Request, rp *httputil.ReverseProxy) bool {
+		if kind != reqMatch || deleted.Swap(true) {
+			return false
+		}
+		del := httptest.NewRequestWithContext(r.Context(), http.MethodDelete, "/rest/agile/1.0/sprint/1", nil)
+		del.Header = r.Header.Clone()
+		rec := httptest.NewRecorder()
+		rp.ServeHTTP(rec, del)
+		if rec.Code != http.StatusNoContent {
+			t.Errorf("the sprint's delete answered %d: %s", rec.Code, rec.Body)
+		}
+		return reply(w, http.StatusOK, `{"matches":[{"matchedIssues":[],"errors":["The value '1' does not exist for the field 'sprint'."]}]}`)
+	})
+	out := s.tick(t)
+	if out.Failure != nil || out.More() || fmt.Sprint(out.Changes().Removed) != "["+done+"]" {
+		t.Fatalf("the tick %+v; want the completed issue removed and the pass done", out)
+	}
+	if !deleted.Load() || s.count(reqListing) < 2 || s.count(reqMatch) < 2 {
+		t.Fatalf("deleted %v after %d listings and %d matches; want the board listed again and matched again", deleted.Load(), s.count(reqListing), s.count(reqMatch))
 	}
 }
 
 // Jira refuses every read by ID with a 400 while every sprint is valid:
-// the reconcile lists again once, then fails, with no sprint read; the
-// next ticks list nothing until the reconcile interval passed, and then
-// list once and once again.
+// the reconcile lists again once, then fails, with no sprint read. Every
+// tick of the pump until the reconcile interval passed, its delta
+// succeeding, fails with that refusal, the board's failure shown after
+// each, and its reconcile makes no request; then it lists once and once
+// again.
 func TestAPersistent400ListsTheBoardAgainOnceAnInterval(t *testing.T) {
 	t.Parallel()
 	s := newRuleScenario(t)
+	// The units other than the reconcile run first, so that the ticks
+	// below run each only when its interval has passed.
+	if _, _, err := s.svc.syncBoard(t.Context(), s.pump, Background, func(r *run) BoardDue {
+		d := s.svc.boardDue(r)
+		d.Reconcile = false
+		return d
+	}); err != nil {
+		t.Fatal(err)
+	}
 	s.answering(func(kind string, w http.ResponseWriter, _ *http.Request, _ *httputil.ReverseProxy) bool {
 		return kind == reqRowRead && reply(w, http.StatusBadRequest, badRequest)
 	})
@@ -183,14 +258,23 @@ func TestAPersistent400ListsTheBoardAgainOnceAnInterval(t *testing.T) {
 	if !s.rowStored(t, s.conn.ID, done) {
 		t.Fatal("the refusal removed the completed issue's row")
 	}
-	s.shift.Add(int64(s.svc.cadence.Reconcile - time.Second))
-	s.tick(t)
-	if n := s.count(reqListing); n != 2 {
-		t.Fatalf("%d listings before the interval passed; want 2", n)
+	for _, at := range []time.Duration{time.Second, s.svc.cadence.Reconcile / 2, s.svc.cadence.Reconcile - time.Second} {
+		s.answering(func(kind string, w http.ResponseWriter, _ *http.Request, _ *httputil.ReverseProxy) bool {
+			return kind == reqRowRead && reply(w, http.StatusBadRequest, badRequest)
+		})
+		s.shift.Store(int64(2*time.Hour + at))
+		out := s.pumpTick(t)
+		if out.Failure == nil || !s.failed(t) || s.reconcileRequests() != 0 {
+			t.Fatalf("the tick %v after the refusal %+v: the board failed %v after %d reconcile requests; want the refusal shown and none",
+				at, out, s.failed(t), s.reconcileRequests())
+		}
+		if !slices.ContainsFunc(out.Ran, func(u UnitResult) bool { return u.Unit == UnitDelta }) {
+			t.Fatalf("the tick %v after the refusal ran %+v; want its delta", at, out.Ran)
+		}
 	}
-	s.shift.Add(int64(time.Second))
-	if out := s.tick(t); out.Failure == nil || s.count(reqListing) != 4 || s.count(reqSprints) != 0 {
-		t.Fatalf("the tick once the interval passed %+v: %d listings, %d sprint reads; want a failure, 4 and 0", out, s.count(reqListing), s.count(reqSprints))
+	s.shift.Store(int64(2*time.Hour + s.svc.cadence.Reconcile))
+	if out := s.tick(t); out.Failure == nil || s.count(reqListing) != 2 || s.count(reqSprints) != 0 {
+		t.Fatalf("the tick once the interval passed %+v: %d listings, %d sprint reads; want a failure, 2 and 0", out, s.count(reqListing), s.count(reqSprints))
 	}
 }
 

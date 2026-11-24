@@ -46,7 +46,8 @@ type run struct {
 	// to read, which the tick's reconcile waits for (run.reconcile).
 	walking bool
 	// pass is the reconcile pass the tick goes on with, and relisted when
-	// its reconcile last listed again for a refused rule, both its pump's;
+	// its reconcile last listed again for a refused rule and the refusal
+	// that followed, both its pump's;
 	// nil for a run no pump makes, which does not reconcile (syncBoard).
 	pass     *reconcilePass
 	relisted *ruleRelist

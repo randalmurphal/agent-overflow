@@ -693,9 +693,11 @@ and writes share:
   sprint deleted since the listing answers 400 on the board issue list).
   On it the pass ends, the rows stored before it standing, and the board
   lists again in the same tick unless the pump listed again for a
-  refusal within the last reconcile interval, after which the tick fails
-  and the next listing waits until that interval has passed
-  (`TestAPersistentRefusalListsAgainOnceAnInterval`). Every other failed
+  refusal within the last reconcile interval; then the pump holds the
+  refusal, every reconcile until that interval has passed fails with it
+  and makes no request, so the board's failure stays shown, and the next
+  listing follows the interval; a pass that completes, or a new board
+  lifetime, clears it (`TestAPersistentRefusalListsAgainOnceAnInterval`). Every other failed
   rows read keeps the pass's candidates, a failed bulk read included, so
   a refusal costs at most one more listing a reconcile interval (about 4
   Jira pages at 20,000 issues) and no other request. Linear refuses no rule: its issue filter answers a cycle ID

@@ -97,10 +97,9 @@ func TestARefusedRuleListsTheBoardAgainAtOnce(t *testing.T) {
 }
 
 // A refusal that persists lists the board again once, then fails the
-// tick with the pass ended; the pump's next ticks list nothing until a
-// reconcile interval passed since that listing, and then list once and
-// once again. A refresh's reconcile meanwhile lists, and does not list
-// again.
+// tick with the pass ended; the pump's next ticks, and a refresh's
+// reconcile, fail with that refusal and list nothing until a reconcile
+// interval passed since that listing, and then list once and once again.
 func TestAPersistentRefusalListsAgainOnceAnInterval(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -113,18 +112,19 @@ func TestAPersistentRefusalListsAgainOnceAnInterval(t *testing.T) {
 	if holder.pass.openIn(m.sync(testBoard).Lifetime) {
 		t.Fatalf("the pass %+v is open after the refusal listed again", holder.pass)
 	}
-	if out := dueTick(t, m, holder); m.p.count("BoardIssues") != 2 || slices.ContainsFunc(out.Ran, func(u UnitResult) bool { return u.Unit == UnitReconcile }) {
-		t.Fatalf("the tick after %+v after %d listings; want no reconcile", out, m.p.count("BoardIssues"))
+	reads := b.read
+	if out := dueTick(t, m, holder); out.Failure == nil || m.p.count("BoardIssues") != 2 || b.read != reads {
+		t.Fatalf("the tick after %+v after %d listings and %d reads; want the refusal, 2 and %d", out, m.p.count("BoardIssues"), b.read, reads)
 	}
-	if out := passTick(t, m, holder, BoardDue{Reconcile: true}); out.Failure == nil || m.p.count("BoardIssues") != 3 {
-		t.Fatalf("a refresh's reconcile %+v after %d listings; want one more", out, m.p.count("BoardIssues"))
+	if out := passTick(t, m, holder, BoardDue{Reconcile: true}); out.Failure == nil || m.p.count("BoardIssues") != 2 {
+		t.Fatalf("a refresh's reconcile %+v after %d listings; want the refusal and none more", out, m.p.count("BoardIssues"))
 	}
 	m.pass(m.svc.cadence.Reconcile - time.Second)
-	if dueTick(t, m, holder); m.p.count("BoardIssues") != 3 {
-		t.Fatalf("%d listings before the interval passed; want 3", m.p.count("BoardIssues"))
+	if out := dueTick(t, m, holder); out.Failure == nil || m.p.count("BoardIssues") != 2 {
+		t.Fatalf("the tick before the interval passed %+v after %d listings; want the refusal and 2", out, m.p.count("BoardIssues"))
 	}
 	m.pass(time.Second)
-	if out := dueTick(t, m, holder); out.Failure == nil || m.p.count("BoardIssues") != 5 {
+	if out := dueTick(t, m, holder); out.Failure == nil || m.p.count("BoardIssues") != 4 {
 		t.Fatalf("the tick once the interval passed %+v after %d listings; want two more", out, m.p.count("BoardIssues"))
 	}
 }
@@ -147,6 +147,29 @@ func TestARefusedRuleShortlyAfterAReconcileListsAgainAtOnce(t *testing.T) {
 	b.fail = failAt(b.read+1, ruleRefused())
 	if out := passTick(t, m, holder, BoardDue{Reconcile: true}); out.Failure != nil || m.p.count("BoardIssues") != 3 || !rowsHeld(t, m, []tracker.IssueID{"30000"}) {
 		t.Fatalf("the refreshed reconcile %+v after %d listings; want the board listed again and the new issue held", out, m.p.count("BoardIssues"))
+	}
+}
+
+// A refresh shortly after a pass finished, its interval far from passed,
+// begins a pass whose rows read keeps refusing the rule: the refusal the
+// pump holds keeps the reconcile due, so the pump's next tick fails with
+// it, listing nothing, though the last pass is recent.
+func TestAHeldRefusalStaysDueAfterARecentPass(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureOn(t, newFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, Reconcile: time.Hour}))
+	b := newPassBoard(m, 2*readBatch, func(int) bool { return true })
+	holder := &boardPump{scope: m.scope()}
+	if out := dueTick(t, m, holder); out.Failure != nil || out.More() || m.sync(testBoard).ReconciledAt == 0 {
+		t.Fatalf("the first pass %+v", out)
+	}
+	b.listed = append(b.listed, "30000")
+	b.fail = func(int) error { return ruleRefused() }
+	if out := passTick(t, m, holder, BoardDue{Reconcile: true}); out.Failure == nil || m.p.count("BoardIssues") != 3 {
+		t.Fatalf("the refreshed reconcile %+v after %d listings; want the refusal after 3", out, m.p.count("BoardIssues"))
+	}
+	out := dueTick(t, m, holder)
+	if out.Failure == nil || m.p.count("BoardIssues") != 3 || !slices.ContainsFunc(out.Ran, func(u UnitResult) bool { return u.Unit == UnitReconcile }) {
+		t.Fatalf("the next tick %+v after %d listings; want its reconcile failing with the refusal and 3", out, m.p.count("BoardIssues"))
 	}
 }
 
