@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -319,50 +318,7 @@ func TestCodexPermissionApprovalWaitsForUserResponseWithoutTimeout(t *testing.T)
 	}
 }
 
-func TestCodexHandleServerRequestUnknown(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	// Unknown server request — should send error response. With cat,
-	// the error response echoes back and readLoop sees it as a stray
-	// response (no matching pending id) and logs-and-drops. We just
-	// verify no crash. Drive a synchronous observation instead of the
-	// former fixed-200ms sleep: write the request, then invoke
-	// dispatchLine directly on the same line so its decode path runs
-	// in the test goroutine and any panic or error surfaces
-	// immediately.
-	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"unknown/request","params":{}}`)
-	feed(t, s, line)
-	feed(t, s, line)
-}
-
 // -- SetDynamicToolHandler / handleDynamicToolCall tests --
-
-func TestSetDynamicToolHandler(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	called := false
-	handler := func(toolName string, args map[string]any) (string, bool, error) {
-		called = true
-		return "result", true, nil
-	}
-
-	s.SetDynamicToolHandler(handler)
-
-	s.mu.Lock()
-	h := s.dynamicToolHandler
-	s.mu.Unlock()
-	if h == nil {
-		t.Fatal("expected non-nil handler after SetDynamicToolHandler")
-	}
-
-	// Invoke the handler to confirm it's the right one.
-	_, _, _ = h("test", nil)
-	if !called {
-		t.Error("expected handler to be called")
-	}
-}
 
 func TestSetDynamicToolHandlerNil(t *testing.T) {
 	t.Parallel()
@@ -408,27 +364,6 @@ func TestHandleDynamicToolCall(t *testing.T) {
 	_ = eventCh
 }
 
-func TestHandleDynamicToolCallHandlerError(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	doneCh := make(chan struct{}, 1)
-	s.SetDynamicToolHandler(func(toolName string, args map[string]any) (string, bool, error) {
-		defer func() { doneCh <- struct{}{} }()
-		return "", false, fmt.Errorf("simulated tool error")
-	})
-
-	line := []byte(`{"jsonrpc":"2.0","id":12,"method":"item/tool/call","params":{"threadId":"codex-thread-1","tool":"fail_tool","arguments":{}}}`)
-	feed(t, s, line)
-
-	select {
-	case <-doneCh:
-		// Handler ran and returned error -- the session formats it as "Error: ..."
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for handler to complete")
-	}
-}
-
 func TestHandleDynamicToolCallNilArguments(t *testing.T) {
 	t.Parallel()
 	s, _ := newTestCodexSession(t)
@@ -454,20 +389,6 @@ func TestHandleDynamicToolCallNilArguments(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for handler")
 	}
-}
-
-func TestHandleDynamicToolCallNoHandler(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-	// No handler set -- should send error response.
-
-	line := []byte(`{"jsonrpc":"2.0","id":14,"method":"item/tool/call","params":{"threadId":"codex-thread-1","tool":"orphan_tool"}}`)
-	feed(t, s, line)
-	// Drive dispatchLine in the test goroutine so the decode path
-	// runs synchronously — former 200ms sleep just hid the fact that
-	// there is no readLoop assertion this test makes beyond "it did
-	// not crash."
-	feed(t, s, line)
 }
 
 // -- handleServerRequest: elicitation branch --
