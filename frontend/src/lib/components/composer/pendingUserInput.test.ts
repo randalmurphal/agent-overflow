@@ -55,18 +55,12 @@ describe('pendingUserInput', () => {
   });
 
   describe('toggleOptionAnswer', () => {
-    it('multi-select preserves an existing custom answer', () => {
+    it('multi-select toggles an option off without dropping the custom answer', () => {
       const q = multiSelect();
       let answers = setCustomAnswer(createUserInputAnswers(), q, 'custom');
       answers = toggleOptionAnswer(answers, q, 'A');
       expect(answers[q.id].customAnswer).toBe('custom');
       expect(answers[q.id].selectedOptionLabels).toEqual(['A']);
-    });
-
-    it('multi-select toggles an option off without dropping the custom answer', () => {
-      const q = multiSelect();
-      let answers = setCustomAnswer(createUserInputAnswers(), q, 'custom');
-      answers = toggleOptionAnswer(answers, q, 'A');
       answers = toggleOptionAnswer(answers, q, 'A');
       expect(answers[q.id].selectedOptionLabels ?? []).toEqual([]);
       expect(answers[q.id].customAnswer).toBe('custom');

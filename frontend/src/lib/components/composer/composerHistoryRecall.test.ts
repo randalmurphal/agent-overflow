@@ -263,10 +263,13 @@ describe('createComposerHistoryRecall', () => {
     expect(h.state.content).toBe('typed');
   });
 
-  it('drops a session start when the user typed while it fetched', async () => {
-    const h = makeHarness({ rows: twoRows, initialContent: 'ty' });
+  it.each([
+    { case: 'the user typed', initialContent: 'ty', change: { content: 'typed more' } },
+    { case: 'the thread switched', initialContent: 'typed', change: { threadId: 'thread-2' } },
+  ])('drops a session start when $case while it fetched', async ({ initialContent, change }) => {
+    const h = makeHarness({ rows: twoRows, initialContent });
     h.recall.arrowUp();
-    h.state.content = 'typed more';
+    Object.assign(h.state, change);
     await h.resolveFetch();
     expect(h.state.painted).toEqual([]);
     expect(h.recall.hasActiveSession()).toBe(false);
@@ -282,15 +285,6 @@ describe('createComposerHistoryRecall', () => {
     await h.resolveFetch();
     expect(h.state.painted).toEqual(['second']);
     expect(h.state.content).toBe('second');
-  });
-
-  it('drops a session start when the thread switched while it fetched', async () => {
-    const h = makeHarness({ rows: twoRows, initialContent: 'typed' });
-    h.recall.arrowUp();
-    h.state.threadId = 'thread-2';
-    await h.resolveFetch();
-    expect(h.state.painted).toEqual([]);
-    expect(h.recall.hasActiveSession()).toBe(false);
   });
 
   it('refuses to start over a draft holding attachments or chips', () => {
@@ -333,14 +327,12 @@ describe('recallArrowIntent', () => {
   const noMods = { shiftKey: false, ctrlKey: false, metaKey: false, altKey: false };
   const key = (k: string, mods: Partial<typeof noMods> = {}) => ({ key: k, ...noMods, ...mods });
 
-  it('claims ArrowUp only from the very first position', () => {
-    expect(recallArrowIntent(key('ArrowUp'), { start: 0, end: 0, valueLength: 5 })).toBe('up');
-    expect(recallArrowIntent(key('ArrowUp'), { start: 2, end: 2, valueLength: 5 })).toBeNull();
-  });
-
-  it('claims ArrowDown only from the very last position', () => {
-    expect(recallArrowIntent(key('ArrowDown'), { start: 5, end: 5, valueLength: 5 })).toBe('down');
-    expect(recallArrowIntent(key('ArrowDown'), { start: 2, end: 2, valueLength: 5 })).toBeNull();
+  it.each([
+    { k: 'ArrowUp', edge: 'first', at: 0, intent: 'up' },
+    { k: 'ArrowDown', edge: 'last', at: 5, intent: 'down' },
+  ])('claims $k only from the very $edge position', ({ k, at, intent }) => {
+    expect(recallArrowIntent(key(k), { start: at, end: at, valueLength: 5 })).toBe(intent);
+    expect(recallArrowIntent(key(k), { start: 2, end: 2, valueLength: 5 })).toBeNull();
   });
 
   it('declines a non-collapsed selection even at the boundary', () => {

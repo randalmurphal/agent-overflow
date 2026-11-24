@@ -14,7 +14,10 @@ describe('<UnsentMessageConfirmationHost>', () => {
     expect(queryByText('Unsent message')).toBeNull();
   });
 
-  it('asks the question in the words the ambiguity deserves', async () => {
+  it.each([
+    { case: 'asks the question in the words the ambiguity deserves', button: 'Leave it', restore: false },
+    { case: 'puts the message back when the person says so', button: 'Put it back', restore: true },
+  ])('$case', async ({ button, restore }) => {
     const { getByText, getByRole } = render(UnsentMessageConfirmationHost);
     const answer = confirmUnsentMessageRestore();
     await tick();
@@ -24,16 +27,7 @@ describe('<UnsentMessageConfirmationHost>', () => {
     // one does rather than reading as Yes/No to a question about failure.
     expect(getByText('This message may have reached the agent. Put it back in the composer?'))
       .not.toBeNull();
-    getByRole('button', { name: 'Leave it' }).click();
-    expect(await answer).toBe(false);
-  });
-
-  it('puts the message back when the person says so', async () => {
-    const { getByRole } = render(UnsentMessageConfirmationHost);
-    const answer = confirmUnsentMessageRestore();
-    await tick();
-
-    getByRole('button', { name: 'Put it back' }).click();
-    expect(await answer).toBe(true);
+    getByRole('button', { name: button }).click();
+    expect(await answer).toBe(restore);
   });
 });

@@ -144,40 +144,27 @@ describe('buildCommandSections', () => {
   // name can arrive twice. Two rows sharing a `label` is what the popover's
   // keyed `{#each}` throws `each_key_duplicate` on, and a throw inside an
   // update flush aborts the batch and freezes the pane (incident 2026-08-29).
-  it('emits one row when a session frame reports the same command name twice', () => {
-    const sections = buildCommandSections({
-      ...base,
-      sessionCommands: [cmd('review', 'Project scope'), cmd('review', 'User scope'), cmd('usage')],
-    });
-    const labels = flattenSections(sections).map((e) => e.label);
-    expect(labels.filter((label) => label === '/review')).toEqual(['/review']);
+  it.each([
+    {
+      case: 'a session frame reports the same command name twice',
+      sources: { sessionCommands: [cmd('review', 'Project scope'), cmd('review', 'User scope'), cmd('usage')] },
+      label: '/review',
+      first: 'Project scope',
+    },
+    { case: 'the probe list alone repeats a name', sources: { probeCommands: [cmd('context'), cmd('context')] }, label: '/context', first: undefined },
+    {
+      case: 'two Codex skills share a name',
+      sources: { provider: 'codex', skills: [{ name: 'review-code', description: 'workspace' }, { name: 'review-code', description: 'global' }] },
+      label: '$review-code',
+      first: 'workspace',
+    },
+  ])('emits one row when $case', ({ sources, label, first }) => {
+    const entries = flattenSections(buildCommandSections({ ...base, ...sources }));
+    const labels = entries.map((e) => e.label);
+    expect(labels.filter((l) => l === label)).toEqual([label]);
     expect(new Set(labels).size).toBe(labels.length);
     // First occurrence wins, so source order and the priority it encodes hold.
-    const review = flattenSections(sections).find((e) => e.label === '/review');
-    expect(review?.description).toBe('Project scope');
-  });
-
-  it('emits one row when the probe list alone repeats a name', () => {
-    const sections = buildCommandSections({
-      ...base,
-      probeCommands: [cmd('context'), cmd('context')],
-    });
-    const labels = flattenSections(sections).map((e) => e.label);
-    expect(new Set(labels).size).toBe(labels.length);
-  });
-
-  it('emits one row when two Codex skills share a name', () => {
-    const sections = buildCommandSections({
-      ...base,
-      provider: 'codex',
-      skills: [
-        { name: 'review-code', description: 'workspace' },
-        { name: 'review-code', description: 'global' },
-      ],
-    });
-    const labels = flattenSections(sections).map((e) => e.label);
-    expect(labels.filter((label) => label === '$review-code')).toEqual(['$review-code']);
-    expect(new Set(labels).size).toBe(labels.length);
+    expect(entries.find((e) => e.label === label)?.description).toBe(first);
   });
 
   // Static-data tripwire: nothing stops an AO command and an intercepted one
@@ -192,12 +179,11 @@ describe('buildCommandSections', () => {
     }
   });
 
-  it('shadows a provider command whose name AO intercepts', () => {
-    const sections = buildCommandSections({
-      ...base,
-      probeCommands: [cmd('model', 'Claude’s own model picker'), cmd('usage')],
-    });
-    const rows = flattenSections(sections).filter((e) => e.name === 'model');
+  it.each([
+    { source: 'provider command', sources: { probeCommands: [cmd('model', 'Claude’s own model picker'), cmd('usage')] } },
+    { source: 'skill', sources: { claudeSkills: [{ name: 'model', description: 'A skill unluckily named model' }] } },
+  ])('shadows a $source whose name AO intercepts', ({ sources }) => {
+    const rows = flattenSections(buildCommandSections({ ...base, ...sources })).filter((e) => e.name === 'model');
     // Exactly one `/model` row, and it is the app-side reroute.
     expect(rows).toHaveLength(1);
     expect(rows[0].kind).toBe('intercepted');
@@ -266,16 +252,6 @@ describe('buildCommandSections', () => {
     const names = flattenSections(sections).map((e) => e.name);
     expect(names).toContain('usage');
     expect(names).not.toContain('commit-helper');
-  });
-
-  it('shadows a skill whose name AO intercepts', () => {
-    const sections = buildCommandSections({
-      ...base,
-      claudeSkills: [{ name: 'model', description: 'A skill unluckily named model' }],
-    });
-    const rows = flattenSections(sections).filter((e) => e.name === 'model');
-    expect(rows).toHaveLength(1);
-    expect(rows[0].kind).toBe('intercepted');
   });
 
   it('never shows provider commands on a Codex thread', () => {
