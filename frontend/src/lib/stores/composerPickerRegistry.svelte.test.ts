@@ -133,21 +133,16 @@ describe('composerPickerRegistry', () => {
       const b = makeHandle();
       const cleanupA = registerComposerPicker('pane-main', 'model', a.handle);
       registerComposerPicker('pane-main', 'model', b.handle);
+      // Re-registering the same key overwrites the previous handle.
+      toggleComposerPicker('pane-main', 'model');
+      expect(b.open).toHaveBeenCalledTimes(1);
+      expect(a.open).not.toHaveBeenCalled();
       cleanupA();
-      // B should still be the active handle.
-      toggleComposerPicker('pane-main', 'model');
-      expect(b.open).toHaveBeenCalledTimes(1);
+      // B should still be the active handle: the toggle closes it.
+      expect(toggleComposerPicker('pane-main', 'model')).toBe(true);
+      expect(b.close).toHaveBeenCalledTimes(1);
       expect(a.open).not.toHaveBeenCalled();
-    });
-
-    it('re-registering the same key overwrites the previous handle', () => {
-      const a = makeHandle();
-      const b = makeHandle();
-      registerComposerPicker('pane-main', 'model', a.handle);
-      registerComposerPicker('pane-main', 'model', b.handle);
-      toggleComposerPicker('pane-main', 'model');
-      expect(b.open).toHaveBeenCalledTimes(1);
-      expect(a.open).not.toHaveBeenCalled();
+      expect(a.close).not.toHaveBeenCalled();
     });
   });
 

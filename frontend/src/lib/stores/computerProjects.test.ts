@@ -26,37 +26,23 @@ function inspectAs(answer: () => Promise<unknown>) {
 
 describe('checkoutRefusal', () => {
 
-  it('accepts a checkout of the same verified repository', async () => {
+  it.each([
+    ['accepts a checkout of the same verified repository',
+      { repository: true, repositoryID: 'github:github.com:1' }, null],
+    ['accepts an already verified checkout while the forge is offline',
+      { repository: true, repositoryID: 'github:github.com:1', identityError: 'Forge unavailable' }, null],
+    ['refuses an unverified checkout even when an older backend supplies matching URL and history',
+      { repository: true, remoteURL: 'https://github.com/me/app', rootCommit: 'abc', identityError: 'GitHub unavailable' },
+      'Could not verify that checkout: GitHub unavailable'],
+    ['refuses a checkout with a different verified ID',
+      { repository: true, repositoryID: 'github:github.com:2' }, "That folder isn't a verified checkout of app."],
+    ['refuses a folder that is not a repository',
+      { repository: false }, "That folder isn't a git repository, so it can't be app."],
+  ])('%s', async (_name, answer, refusal) => {
     await seed(makeProject({ repositoryID: 'github:github.com:1' }));
-    const inspect = inspectAs(async () => ({ repository: true, repositoryID: 'github:github.com:1' }));
-    expect(await checkoutRefusal('p', 'laptop', '/home/me/app')).toBeNull();
+    const inspect = inspectAs(async () => answer);
+    expect(await checkoutRefusal('p', 'laptop', '/home/me/app')).toBe(refusal);
     expect(inspect).toHaveBeenCalledTimes(1);
-  });
-
-  it('accepts an already verified checkout while the forge is offline', async () => {
-    await seed(makeProject({ repositoryID: 'github:github.com:1' }));
-    inspectAs(async () => ({ repository: true, repositoryID: 'github:github.com:1', identityError: 'Forge unavailable' }));
-    expect(await checkoutRefusal('p', 'laptop', '/home/me/app')).toBeNull();
-  });
-
-  it('refuses an unverified checkout even when an older backend supplies matching URL and history', async () => {
-    await seed(makeProject({ repositoryID: 'github:github.com:1' }));
-    inspectAs(async () => ({ repository: true, remoteURL: 'https://github.com/me/app', rootCommit: 'abc', identityError: 'GitHub unavailable' }));
-    expect(await checkoutRefusal('p', 'laptop', '/home/me/app')).toBe('Could not verify that checkout: GitHub unavailable');
-  });
-
-  it('refuses a checkout with a different verified ID', async () => {
-    await seed(makeProject({ repositoryID: 'github:github.com:1' }));
-    inspectAs(async () => ({ repository: true, repositoryID: 'github:github.com:2' }));
-    expect(await checkoutRefusal('p', 'laptop', '/home/me/app'))
-      .toBe("That folder isn't a verified checkout of app.");
-  });
-
-  it('refuses a folder that is not a repository', async () => {
-    await seed(makeProject({ repositoryID: 'github:github.com:1' }));
-    inspectAs(async () => ({ repository: false }));
-    expect(await checkoutRefusal('p', 'laptop', '/home/me/app'))
-      .toBe("That folder isn't a git repository, so it can't be app.");
   });
 
   it('refuses with git\'s reason when the folder cannot be read', async () => {
