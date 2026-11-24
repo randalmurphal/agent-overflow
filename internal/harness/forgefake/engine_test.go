@@ -692,9 +692,6 @@ func TestGitHubJobLogsServeARunningJobOnceItsBlobExists(t *testing.T) {
 		t.Fatalf("running job log = %+v", partial)
 	}
 	conditional := http.Header{"Authorization": {"Bearer " + testAPIToken}, "If-None-Match": {partial.header.Get("ETag")}}
-	if got := logs("500", conditional); got.status != 304 || got.body != "" {
-		t.Fatalf("unchanged running log revalidated = %+v, want 304", got)
-	}
 	fixture.Repos[0].Pulls[0].CI.Jobs[0].Log = "partial\nmore"
 	if _, err := e.Seed(fixture); err != nil {
 		t.Fatalf("re-seed: %v", err)

@@ -157,9 +157,17 @@ func (f *failingWriter) WriteHeader(int)           {}
 // HarnessMockCommand had already told its caller the command was
 // accepted, and the driving test waited forever on a gate nothing would
 // release. The response never left, so the mock did not receive it and a
-// requeue cannot duplicate.
+// requeue cannot duplicate. The lost-then-requeued batch is reported, or
+// a flaky control channel looks like a flaky app.
 func TestFailedDeliveryRequeuesTheBatch(t *testing.T) {
-	srv := bareServer(t)
+	var seen []Report
+	srv, err := NewServer(ServerConfig{
+		Resolve:  func(Registration) (Assignment, error) { return Assignment{}, nil },
+		OnReport: func(_ MockInfo, rep Report) { seen = append(seen, rep) },
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 	conn := srv.addMock("mock-1", 1, 0)
 
 	for _, name := range []string{"first", "second"} {
@@ -170,6 +178,9 @@ func TestFailedDeliveryRequeuesTheBatch(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/commands?mock=mock-1", nil)
 	srv.handleCommands(&failingWriter{}, req)
+	if len(seen) != 1 || seen[0].Kind != ReportFixtureError {
+		t.Fatalf("reports after a failed delivery = %+v, want one %s", seen, ReportFixtureError)
+	}
 
 	srv.mu.Lock()
 	front := append([]Command(nil), conn.front...)
@@ -197,28 +208,6 @@ func TestFailedDeliveryRequeuesTheBatch(t *testing.T) {
 	srv.mu.Unlock()
 	if remaining != 0 {
 		t.Fatalf("front buffer after a successful delivery = %d, want empty", remaining)
-	}
-}
-
-// TestFailedDeliveryReports: a lost-then-requeued batch has to be visible
-// somewhere, or a flaky control channel looks like a flaky app.
-func TestFailedDeliveryReports(t *testing.T) {
-	var seen []Report
-	srv, err := NewServer(ServerConfig{
-		Resolve:  func(Registration) (Assignment, error) { return Assignment{}, nil },
-		OnReport: func(_ MockInfo, rep Report) { seen = append(seen, rep) },
-	})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	srv.addMock("mock-1", 1, 0)
-	if err := srv.Command("mock-1", Command{Type: CommandAdvance}); err != nil {
-		t.Fatalf("Command: %v", err)
-	}
-	srv.handleCommands(&failingWriter{}, httptest.NewRequest(http.MethodGet, "/commands?mock=mock-1", nil))
-
-	if len(seen) != 1 || seen[0].Kind != ReportFixtureError {
-		t.Fatalf("reports after a failed delivery = %+v, want one %s", seen, ReportFixtureError)
 	}
 }
 

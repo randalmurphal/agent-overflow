@@ -200,57 +200,29 @@ func TestBuiltRequestCarriesNoCredential(t *testing.T) {
 	}
 }
 
-// GitLab answers a merge the login may not perform with 401, the status
-// an expired token gets. After the refresh, a live login (its own user
-// still reads) makes the 401 the forge's refusal of the action; a dead
-// one is still unauthenticated. A read's second 401 probes nothing.
-func TestMutationUnauthorizedIsARefusalWhileTheLoginReads(t *testing.T) {
+// Only a mutation's second 401 probes the login: a read's second 401,
+// after the refresh, is unauthenticated with no probe, even while the
+// login's own user still reads. TestMutationProbeFailureIsNotADeadLogin
+// covers the mutation's probe.
+func TestReadSecondUnauthorizedProbesNothing(t *testing.T) {
 	t.Parallel()
-	var userStatus atomic.Int32
-	userStatus.Store(http.StatusOK)
-	var userProbes, merges atomic.Int32
+	var userProbes atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/user"):
+		if strings.HasSuffix(r.URL.Path, "/user") {
 			userProbes.Add(1)
-			w.WriteHeader(int(userStatus.Load()))
 			_, _ = fmt.Fprint(w, `{"id":1}`)
-		case r.Method == http.MethodPut:
-			merges.Add(1)
-			http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
-		default:
-			http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
+			return
 		}
+		http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
 	}))
 	defer srv.Close()
 	src := &testSource{tokens: []string{testSecret}, info: SourceInfo{Header: AuthPrivateToken}}
 	s, _ := liveService(t, src, srv)
 	gl := s.client(ForgeGitLab, "gitlab.example")
 
-	_, err := gl.Do(t.Context(), Request{Method: http.MethodPut, Path: "projects/1/merge_requests/2/merge", Body: map[string]any{"sha": "abc"}})
-	var status *StatusError
-	if !errors.As(err, &status) || status.Status != http.StatusUnauthorized {
-		t.Fatalf("merge refusal = %v, want the 401 StatusError", err)
-	}
-	var setup *SetupError
-	if errors.As(err, &setup) {
-		t.Fatalf("a refused merge read as a login failure: %v", err)
-	}
-	if merges.Load() != 2 || userProbes.Load() != 1 {
-		t.Fatalf("merge attempts %d (want 2: one refresh), user probes %d (want 1)", merges.Load(), userProbes.Load())
-	}
-
-	userStatus.Store(http.StatusUnauthorized)
-	_, err = gl.Do(t.Context(), Request{Method: http.MethodPut, Path: "projects/1/merge_requests/2/merge", Body: map[string]any{"sha": "abc"}})
-	if !errors.As(err, &setup) || setup.Kind != SetupUnauthenticated {
-		t.Fatalf("merge with a dead login = %v, want unauthenticated", err)
-	}
-
-	userStatus.Store(http.StatusOK)
-	probesBefore := userProbes.Load()
-	_, err = gl.Do(t.Context(), Request{Path: "projects/1/merge_requests/2"})
-	if !errors.As(err, &setup) || userProbes.Load() != probesBefore {
-		t.Fatalf("a read's second 401 = %v with %d probes, want unauthenticated and no probe", err, userProbes.Load()-probesBefore)
+	_, err := gl.Do(t.Context(), Request{Path: "projects/1/merge_requests/2"})
+	if _, ok := errors.AsType[*SetupError](err); !ok || userProbes.Load() != 0 {
+		t.Fatalf("a read's second 401 = %v with %d probes, want unauthenticated and no probe", err, userProbes.Load())
 	}
 }
 

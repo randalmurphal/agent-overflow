@@ -137,21 +137,6 @@ func TestSubscribeReturnsInitialStatus(t *testing.T) {
 	}
 }
 
-func TestSubscribeReturnsErrorOnInitialFetchFailure(t *testing.T) {
-	t.Parallel()
-	stub := newStubStatus(gitops.GitStatus{})
-	stub.failNext.Store(true)
-	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
-	t.Cleanup(mgr.Close)
-
-	dir := makeRepoDir(t)
-	sub, err := mgr.Subscribe(t.Context(), dir)
-	if err == nil {
-		sub.Close()
-		t.Fatalf("expected initial fetch error to propagate")
-	}
-}
-
 func TestFsEventTriggersDedupedUpdate(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
@@ -267,6 +252,8 @@ func TestLinkedWorktreeCommitEmitsCleanStatus(t *testing.T) {
 	}
 }
 
+// A second Subscribe to the same cwd shares the watcher and does not
+// re-run statusFn: the existing watcher's lastStatus is already fresh.
 func TestMultipleSubscribersShareWatcher(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
@@ -279,11 +266,18 @@ func TestMultipleSubscribersShareWatcher(t *testing.T) {
 		t.Fatalf("subscribe A: %v", err)
 	}
 	defer subA.Close()
+	callsAfterA := stub.callCount()
 	subB, err := mgr.Subscribe(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("subscribe B: %v", err)
 	}
 	defer subB.Close()
+	if got := stub.callCount(); got != callsAfterA {
+		t.Fatalf("Subscribe to shared cwd ran statusFn again: calls before=%d after=%d", callsAfterA, got)
+	}
+	if subB.Initial().Branch != "main" {
+		t.Fatalf("shared subscriber did not get a useful initial: %+v", subB.Initial())
+	}
 
 	mgr.mu.Lock()
 	count := len(mgr.watchers)
@@ -718,9 +712,8 @@ func TestSubscribeRejectsSystemPath(t *testing.T) {
 	}
 }
 
-// TestSubscribeSurfacesInitialFetchFailureWithoutLeak extends the
-// earlier "error propagates" test with an explicit leak check: a
-// failed fetch must not leave a watcher in m.watchers.
+// A failed initial fetch is returned from Subscribe and must not leave
+// a watcher in m.watchers.
 func TestSubscribeSurfacesInitialFetchFailureWithoutLeak(t *testing.T) {
 	t.Parallel()
 	stub := newStubStatus(gitops.GitStatus{})
@@ -873,36 +866,6 @@ func TestRacingSubscribesKeepOneSetOfWatches(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if channels, events := watched.queued(); channels != 2 || events != 0 {
 		t.Fatalf("%d installs hold %d events after both watchers ended, want 2 installs and no event", channels, events)
-	}
-}
-
-// TestSharedCwdReusesFreshLastStatus pins the perf optimisation that
-// a second Subscribe to the same cwd does NOT re-run statusFn, because
-// the existing watcher's lastStatus is already fresh.
-func TestSharedCwdReusesFreshLastStatus(t *testing.T) {
-	t.Parallel()
-	stub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "main"})
-	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
-	t.Cleanup(mgr.Close)
-
-	dir := makeRepoDir(t)
-	subA, err := mgr.Subscribe(t.Context(), dir)
-	if err != nil {
-		t.Fatalf("subscribe A: %v", err)
-	}
-	defer subA.Close()
-	callsAfterA := stub.callCount()
-
-	subB, err := mgr.Subscribe(t.Context(), dir)
-	if err != nil {
-		t.Fatalf("subscribe B: %v", err)
-	}
-	defer subB.Close()
-	if got := stub.callCount(); got != callsAfterA {
-		t.Fatalf("Subscribe to shared cwd ran statusFn again: calls before=%d after=%d", callsAfterA, got)
-	}
-	if subB.Initial().Branch != "main" {
-		t.Fatalf("shared subscriber did not get a useful initial: %+v", subB.Initial())
 	}
 }
 

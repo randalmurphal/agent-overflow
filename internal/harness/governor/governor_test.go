@@ -395,71 +395,52 @@ func TestMonitorHostPressureWinsWhenRSSReadFails(t *testing.T) {
 	}
 }
 
-func TestMonitorDoesNotStormOnPersistentPressure(t *testing.T) {
-	now := time.Unix(100, 0)
-	mem := &fakeMemory{available: 500}
-	proc := &fakeProcesses{states: map[int]ProcessState{42: {Alive: true, BirthID: "boot-1"}}}
-	m := testManager(t, mem, proc, &now)
-	lease, err := m.Reserve(request())
-	if err != nil {
-		t.Fatal(err)
-	}
-	mem.mu.Lock()
-	mem.available = 99
-	mem.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	var mu sync.Mutex
-	count := 0
-	done := make(chan error, 1)
-	go func() {
-		done <- m.Monitor(ctx, lease, time.Millisecond, fakeRSS{rss: 1}, func(Event) {
+// Steady memory raises at most one event for the whole run: persistent
+// host pressure one, values at the thresholds none.
+func TestMonitorEventCountForSteadyMemory(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		available uint64
+		rss       uint64
+		timeout   time.Duration
+		want      int
+	}{
+		{name: "persistent pressure does not storm", available: 99, rss: 1, timeout: 30 * time.Millisecond, want: 1},
+		{name: "no false trigger at thresholds", available: 100, rss: 100, timeout: 20 * time.Millisecond, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Unix(100, 0)
+			mem := &fakeMemory{available: 500}
+			proc := &fakeProcesses{states: map[int]ProcessState{42: {Alive: true, BirthID: "boot-1"}}}
+			m := testManager(t, mem, proc, &now)
+			lease, err := m.Reserve(request())
+			if err != nil {
+				t.Fatal(err)
+			}
+			mem.mu.Lock()
+			mem.available = tc.available
+			mem.mu.Unlock()
+			ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
+			defer cancel()
+			var mu sync.Mutex
+			count := 0
+			done := make(chan error, 1)
+			go func() {
+				done <- m.Monitor(ctx, lease, time.Millisecond, fakeRSS{rss: tc.rss}, func(Event) {
+					mu.Lock()
+					count++
+					mu.Unlock()
+				})
+			}()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
 			mu.Lock()
-			count++
-			mu.Unlock()
+			defer mu.Unlock()
+			if count != tc.want {
+				t.Fatalf("available %d, RSS %d emitted %d events, want %d", tc.available, tc.rss, count, tc.want)
+			}
 		})
-	}()
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if count != 1 {
-		t.Fatalf("persistent host pressure emitted %d events, want 1", count)
-	}
-}
-
-func TestMonitorNoFalseTriggerAtThresholds(t *testing.T) {
-	now := time.Unix(100, 0)
-	mem := &fakeMemory{available: 500}
-	proc := &fakeProcesses{states: map[int]ProcessState{42: {Alive: true, BirthID: "boot-1"}}}
-	m := testManager(t, mem, proc, &now)
-	lease, err := m.Reserve(request())
-	if err != nil {
-		t.Fatal(err)
-	}
-	mem.mu.Lock()
-	mem.available = 100
-	mem.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	var mu sync.Mutex
-	count := 0
-	done := make(chan error, 1)
-	go func() {
-		done <- m.Monitor(ctx, lease, time.Millisecond, fakeRSS{rss: 100}, func(Event) {
-			mu.Lock()
-			count++
-			mu.Unlock()
-		})
-	}()
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if count != 0 {
-		t.Fatalf("threshold values emitted %d events, want 0", count)
 	}
 }
 

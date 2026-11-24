@@ -5,41 +5,40 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
+// TailFile returns a file's last n lines, or the whole file when it has
+// fewer.
 func TestTailFileReturnsTheLastLines(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "backend-stderr.log")
-	var b strings.Builder
+	var long strings.Builder
 	for i := 0; i < 500; i++ {
-		fmt.Fprintf(&b, "line %d\n", i)
+		fmt.Fprintf(&long, "line %d\n", i)
 	}
-	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	lines, err := TailFile(path, 3)
-	if err != nil {
-		t.Fatalf("TailFile: %v", err)
-	}
-	if len(lines) != 3 || lines[2] != "line 499" || lines[0] != "line 497" {
-		t.Fatalf("tail = %v", lines)
-	}
-}
-
-func TestTailFileReturnsAShortFileWhole(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "short.log")
-	if err := os.WriteFile(path, []byte("a\nb\n"), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	lines, err := TailFile(path, 50)
-	if err != nil {
-		t.Fatalf("TailFile: %v", err)
-	}
-	if len(lines) != 2 || lines[0] != "a" {
-		t.Fatalf("tail = %v", lines)
+	for _, tc := range []struct {
+		name, content string
+		n             int
+		want          []string
+	}{
+		{"the last lines", long.String(), 3, []string{"line 497", "line 498", "line 499"}},
+		{"a short file whole", "a\nb\n", 50, []string{"a", "b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "backend-stderr.log")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			lines, err := TailFile(path, tc.n)
+			if err != nil {
+				t.Fatalf("TailFile: %v", err)
+			}
+			if !slices.Equal(lines, tc.want) {
+				t.Fatalf("tail = %v, want %v", lines, tc.want)
+			}
+		})
 	}
 }
 

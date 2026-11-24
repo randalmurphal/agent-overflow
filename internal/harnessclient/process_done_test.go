@@ -40,28 +40,27 @@ func currentIdentity() instanceinfo.ProcessIdentity {
 	return instanceinfo.ProcessIdentity{StartTime: "1", Executable: "/bin/backend", Namespace: instanceinfo.CurrentPIDNamespace()}
 }
 
-// A kill refused because the process already exited proves it gone, even
-// when a probe of its pid, which another process may since hold, says
-// alive and the identity check passes, as they would for a pid reused by a
-// process that looks the same.
-func TestTerminateTreatsAKillOfAFinishedProcessAsStopped(t *testing.T) {
-	process := &fakeProcess{killAnswer: os.ErrProcessDone}
-	if err := terminateVerified(context.Background(), 4242, currentIdentity(), 0, process.control()); err != nil {
-		t.Fatalf("terminate of a process that exited = %v, want success", err)
-	}
-	if want := []string{"stop", "kill"}; !slices.Equal(process.signals, want) {
-		t.Fatalf("signals = %v, want %v", process.signals, want)
-	}
-}
-
-// A polite stop refused because the process already exited is a stop: no
-// kill follows it.
-func TestTerminateTreatsAStopOfAFinishedProcessAsStopped(t *testing.T) {
-	process := &fakeProcess{stopAnswer: os.ErrProcessDone}
-	if err := terminateVerified(context.Background(), 4242, currentIdentity(), 0, process.control()); err != nil {
-		t.Fatalf("terminate of a reaped process = %v, want success", err)
-	}
-	if want := []string{"stop"}; !slices.Equal(process.signals, want) {
-		t.Fatalf("signals = %v, want %v", process.signals, want)
+// A signal refused because the process already exited proves it gone.
+// A refused kill does so even when a probe of its pid, which another
+// process may since hold, says alive and the identity check passes, as
+// they would for a pid reused by a process that looks the same. A refused
+// polite stop is a stop: no kill follows it.
+func TestTerminateTreatsASignalToAFinishedProcessAsStopped(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		process *fakeProcess
+		want    []string
+	}{
+		{"kill of a finished process", &fakeProcess{killAnswer: os.ErrProcessDone}, []string{"stop", "kill"}},
+		{"stop of a finished process", &fakeProcess{stopAnswer: os.ErrProcessDone}, []string{"stop"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := terminateVerified(context.Background(), 4242, currentIdentity(), 0, tc.process.control()); err != nil {
+				t.Fatalf("terminate of a process that exited = %v, want success", err)
+			}
+			if !slices.Equal(tc.process.signals, tc.want) {
+				t.Fatalf("signals = %v, want %v", tc.process.signals, tc.want)
+			}
+		})
 	}
 }
