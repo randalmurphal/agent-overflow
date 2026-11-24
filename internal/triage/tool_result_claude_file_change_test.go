@@ -211,49 +211,41 @@ func TestExtractClaudeNotebookEdit_UnifiedDiffSynthesis(t *testing.T) {
 	}
 }
 
-func TestExtractClaudeNotebookEdit_IdenticalContent(t *testing.T) {
-	// No diff between original and updated → summary_only fallback.
-	content := "unchanged\n"
-	meta := claudeMeta(map[string]any{
-		"notebookPath":  "notebooks/same.ipynb",
-		"original_file": content,
-		"updated_file":  content,
-	})
-
-	result, diffData, ok := ExtractClaudeFileChangeToolResult(meta, "NotebookEdit", "", "")
-	if !ok {
-		t.Fatal("expected identical-content NotebookEdit to surface as summary_only")
-	}
-	if result.InlineDiff.Availability != "summary_only" {
-		t.Fatalf("availability = %q, want summary_only", result.InlineDiff.Availability)
-	}
-	if len(diffData) != 0 {
-		t.Fatalf("expected empty diff bytes for identical content, got %q", string(diffData))
-	}
-}
-
-func TestExtractClaude_IsErrorDropped(t *testing.T) {
-	envelope := map[string]any{
-		"is_error":    true,
-		"tool_result": map[string]any{"type": "tool_result", "tool_use_id": "tu_failed"},
-		"tool_use_result": map[string]any{
-			"filePath":        "src/app.ts",
-			"structuredPatch": []any{},
-		},
-	}
-	raw, err := json.Marshal(envelope)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if _, _, ok := ExtractClaudeFileChangeToolResult(raw, "Edit", "", ""); ok {
-		t.Fatal("expected is_error meta to drop the extraction")
+// A NotebookEdit with no diff to show still surfaces its row, as
+// summary_only with no diff bytes: identical content has no diff, and
+// input larger than notebookEditDiffInputCap must short-circuit rather
+// than invoke difflib (O(N²) expected, it would stall the per-thread
+// router on multi-MB notebooks).
+func TestExtractClaudeNotebookEdit_SummaryOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, original, updated string
+	}{
+		{"identical content", "notebooks/same.ipynb", "unchanged\n", "unchanged\n"},
+		// 200 KiB each → 400 KiB total, above the 256 KiB cap.
+		{"oversized input", "notebooks/big.ipynb", strings.Repeat("a\n", 100*1024), strings.Repeat("b\n", 100*1024)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := claudeMeta(map[string]any{
+				"notebookPath":  tc.path,
+				"original_file": tc.original,
+				"updated_file":  tc.updated,
+			})
+			result, diffData, ok := ExtractClaudeFileChangeToolResult(meta, "NotebookEdit", "", "")
+			if !ok {
+				t.Fatal("expected NotebookEdit to surface as summary_only, not drop")
+			}
+			if result.InlineDiff.Availability != "summary_only" {
+				t.Fatalf("availability = %q, want summary_only", result.InlineDiff.Availability)
+			}
+			if len(diffData) != 0 {
+				t.Fatalf("expected no diff bytes, got %d bytes", len(diffData))
+			}
+		})
 	}
 }
 
 // Pins the polarity of the is_error short-circuit: a successful-looking
 // payload must still be dropped when the wire said the tool failed.
-// Without this test, a regression flipping the predicate would still
-// pass the empty-payload IsErrorDropped case.
 func TestExtractClaude_IsErrorDropsSuccessfulShape(t *testing.T) {
 	envelope := map[string]any{
 		"is_error":    true,
@@ -278,159 +270,93 @@ func TestExtractClaude_IsErrorDropsSuccessfulShape(t *testing.T) {
 // tool_use_result wire shape variance — Claude's parser
 // (parse_user.go indexToolUseResults) accepts bare object, object
 // keyed by tool_use_id, or array. The extractor's
-// pickClaudeToolUseResultEntry handles all three; cover each.
-func TestExtractClaude_ToolUseResultArrayShape(t *testing.T) {
-	envelope := map[string]any{
-		"is_error":    false,
-		"tool_result": map[string]any{"type": "tool_result", "tool_use_id": "tu_array"},
-		"tool_use_result": []any{
-			map[string]any{
-				"filePath": "src/array.ts",
-				"structuredPatch": []map[string]any{{
-					"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
-					"lines": []string{"-old;", "+new;"},
-				}},
-			},
-		},
+// pickClaudeToolUseResultEntry handles all three; the bare object is
+// claudeMeta's shape, the wrappers are covered here.
+func TestExtractClaude_ToolUseResultWrapperShapes(t *testing.T) {
+	entry := func(path string) map[string]any {
+		return map[string]any{
+			"filePath": path,
+			"structuredPatch": []map[string]any{{
+				"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+				"lines": []string{"-old;", "+new;"},
+			}},
+		}
 	}
-	raw, err := json.Marshal(envelope)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	result, _, ok := ExtractClaudeFileChangeToolResult(raw, "Edit", "", "")
-	if !ok {
-		t.Fatal("expected array-shape tool_use_result to extract")
-	}
-	if result.InlineDiff.Files[0].Path != "src/array.ts" {
-		t.Fatalf("path = %q, want src/array.ts", result.InlineDiff.Files[0].Path)
-	}
-}
-
-func TestExtractClaude_ToolUseResultKeyedByID(t *testing.T) {
-	envelope := map[string]any{
-		"is_error":    false,
-		"tool_result": map[string]any{"type": "tool_result", "tool_use_id": "tu_keyed"},
-		"tool_use_result": map[string]any{
-			"tu_keyed": map[string]any{
-				"filePath": "src/keyed.ts",
-				"structuredPatch": []map[string]any{{
-					"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
-					"lines": []string{"-old;", "+new;"},
-				}},
-			},
-		},
-	}
-	raw, err := json.Marshal(envelope)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	result, _, ok := ExtractClaudeFileChangeToolResult(raw, "Edit", "", "")
-	if !ok {
-		t.Fatal("expected keyed-object tool_use_result to extract")
-	}
-	if result.InlineDiff.Files[0].Path != "src/keyed.ts" {
-		t.Fatalf("path = %q, want src/keyed.ts", result.InlineDiff.Files[0].Path)
+	for _, tc := range []struct {
+		name, toolUseID string
+		toolUseResult   any
+		wantPath        string
+	}{
+		{"array", "tu_array", []any{entry("src/array.ts")}, "src/array.ts"},
+		{"keyed by tool_use_id", "tu_keyed", map[string]any{"tu_keyed": entry("src/keyed.ts")}, "src/keyed.ts"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"is_error":        false,
+				"tool_result":     map[string]any{"type": "tool_result", "tool_use_id": tc.toolUseID},
+				"tool_use_result": tc.toolUseResult,
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			result, _, ok := ExtractClaudeFileChangeToolResult(raw, "Edit", "", "")
+			if !ok {
+				t.Fatalf("expected %s tool_use_result to extract", tc.name)
+			}
+			if result.InlineDiff.Files[0].Path != tc.wantPath {
+				t.Fatalf("path = %q, want %s", result.InlineDiff.Files[0].Path, tc.wantPath)
+			}
+		})
 	}
 }
 
-// NotebookEdit input larger than notebookEditDiffInputCap must
-// short-circuit to the summary-only path rather than invoking
-// difflib (which is O(N²) expected and would stall the per-thread
-// router on multi-MB notebooks).
-func TestExtractClaudeNotebookEdit_LargeInputSummaryOnly(t *testing.T) {
-	// 200 KiB each → 400 KiB total, above the 256 KiB cap.
-	bigOriginal := strings.Repeat("a\n", 100*1024)
-	bigUpdated := strings.Repeat("b\n", 100*1024)
-	meta := claudeMeta(map[string]any{
-		"notebookPath":  "notebooks/big.ipynb",
-		"original_file": bigOriginal,
-		"updated_file":  bigUpdated,
-	})
-	result, diffData, ok := ExtractClaudeFileChangeToolResult(meta, "NotebookEdit", "", "")
-	if !ok {
-		t.Fatal("expected large NotebookEdit to surface as summary-only, not drop")
-	}
-	if result.InlineDiff.Availability != "summary_only" {
-		t.Fatalf("availability = %q, want summary_only for oversized input", result.InlineDiff.Availability)
-	}
-	if len(diffData) != 0 {
-		t.Fatalf("expected no diff bytes for oversized input, got %d bytes", len(diffData))
-	}
-}
-
-func TestExtractClaude_AbsolutePathNormalized(t *testing.T) {
+// An Edit's displayed path: a workspace path is made relative, a path
+// outside the workspace stays absolute, and a tool_use_result without
+// filePath falls back to the launch row's input.file_path.
+// Regression (outside workspace): the original Claude extractor
+// inherited the strict `normalizeWorkspaceRelativePath` from the Codex
+// path, which silently rejected anything outside the workspace, so an
+// Edit on `/tmp/foo.txt` produced no diff in the UI.
+func TestExtractClaude_EditPathResolution(t *testing.T) {
 	workspace := t.TempDir()
-	abs := filepath.Join(workspace, "src", "deep.ts")
-
-	meta := claudeMeta(map[string]any{
-		"filePath": abs,
-		"structuredPatch": []map[string]any{{
-			"oldStart": 1,
-			"oldLines": 0,
-			"newStart": 1,
-			"newLines": 1,
-			"lines":    []string{"+only;"},
-		}},
-	})
-
-	result, _, ok := ExtractClaudeFileChangeToolResult(meta, "Edit", "", workspace)
-	if !ok {
-		t.Fatal("expected absolute-path normalization to succeed")
-	}
-	if result.InlineDiff.Files[0].Path != "src/deep.ts" {
-		t.Fatalf("normalized path = %q, want src/deep.ts", result.InlineDiff.Files[0].Path)
-	}
-}
-
-// Outside-workspace absolute paths (e.g. `/tmp/scratch.txt` the user
-// asked the agent to edit for testing) must still render a diff.
-// Regression: the original Claude extractor inherited the strict
-// `normalizeWorkspaceRelativePath` from the Codex path, which silently
-// rejected anything outside the workspace — Edit on `/tmp/foo.txt`
-// produced no diff in the UI.
-func TestExtractClaude_AbsolutePathOutsideWorkspacePreserved(t *testing.T) {
-	workspace := t.TempDir()
-	outsidePath := "/tmp/diff-test-scratch.txt"
-
-	meta := claudeMeta(map[string]any{
-		"filePath": outsidePath,
-		"structuredPatch": []map[string]any{{
-			"oldStart": 1,
-			"oldLines": 1,
-			"newStart": 1,
-			"newLines": 1,
-			"lines":    []string{"-old;", "+new;"},
-		}},
-	})
-
-	result, _, ok := ExtractClaudeFileChangeToolResult(meta, "Edit", "", workspace)
-	if !ok {
-		t.Fatal("expected outside-workspace Edit to extract a diff")
-	}
-	if got := result.InlineDiff.Files[0].Path; got != outsidePath {
-		t.Fatalf("path = %q, want %q (absolute path preserved for outside-workspace files)", got, outsidePath)
-	}
-}
-
-func TestExtractClaude_FallbackPathFromLaunchRow(t *testing.T) {
-	// tool_use_result without filePath — fallback should kick in
-	// from the launch row's input.file_path.
-	meta := claudeMeta(map[string]any{
-		"structuredPatch": []map[string]any{{
-			"oldStart": 1,
-			"oldLines": 1,
-			"newStart": 1,
-			"newLines": 1,
-			"lines":    []string{"-old;", "+new;"},
-		}},
-	})
-
-	result, _, ok := ExtractClaudeFileChangeToolResult(meta, "Edit", "src/from-launch.ts", "")
-	if !ok {
-		t.Fatal("expected fallback path to enable extraction")
-	}
-	if result.InlineDiff.Files[0].Path != "src/from-launch.ts" {
-		t.Fatalf("path = %q, want src/from-launch.ts", result.InlineDiff.Files[0].Path)
+	hunk := []map[string]any{{
+		"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+		"lines": []string{"-old;", "+new;"},
+	}}
+	for _, tc := range []struct {
+		name                    string
+		toolUseResult           map[string]any
+		fallbackPath, workspace string
+		wantPath                string
+	}{
+		{
+			name:          "absolute path in workspace normalized",
+			toolUseResult: map[string]any{"filePath": filepath.Join(workspace, "src", "deep.ts"), "structuredPatch": hunk},
+			workspace:     workspace,
+			wantPath:      "src/deep.ts",
+		},
+		{
+			name:          "absolute path outside workspace preserved",
+			toolUseResult: map[string]any{"filePath": "/tmp/diff-test-scratch.txt", "structuredPatch": hunk},
+			workspace:     workspace,
+			wantPath:      "/tmp/diff-test-scratch.txt",
+		},
+		{
+			name:          "fallback path from launch row",
+			toolUseResult: map[string]any{"structuredPatch": hunk},
+			fallbackPath:  "src/from-launch.ts",
+			wantPath:      "src/from-launch.ts",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, ok := ExtractClaudeFileChangeToolResult(claudeMeta(tc.toolUseResult), "Edit", tc.fallbackPath, tc.workspace)
+			if !ok {
+				t.Fatal("expected Edit extraction to succeed")
+			}
+			if got := result.InlineDiff.Files[0].Path; got != tc.wantPath {
+				t.Fatalf("path = %q, want %q", got, tc.wantPath)
+			}
+		})
 	}
 }
 
