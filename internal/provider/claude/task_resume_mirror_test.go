@@ -106,13 +106,14 @@ func noErrorEvents(t *testing.T, events []provider.ProviderEvent) {
 	}
 }
 
-// A resume the typed fork sends arrives as a projected call. Its ack is
-// the resumed round's background carrier, as a resume on stdout is, so
-// the round stays running until the agent's terminal.
-func TestReplay_TypedForkResumeCarrierIsBackgrounded(t *testing.T) {
+// One replay of the whole capture, checked for each rule it shows.
+func TestReplay_ResumedByTypedFork(t *testing.T) {
 	events := replayParser(t, resumeForkParser(nil), fixtureResumedByTypedFork)
 	noErrorEvents(t, events)
 
+	// A resume the typed fork sends arrives as a projected call. Its ack is
+	// the resumed round's background carrier, as a resume on stdout is, so
+	// the round stays running until the agent's terminal.
 	if completion := completionOf(t, events, resumeForkCarrier); completion["is_background"] != true {
 		t.Fatalf("the fork's resume ack settled in place: %+v", completion)
 	}
@@ -140,24 +141,18 @@ func TestReplay_TypedForkResumeCarrierIsBackgrounded(t *testing.T) {
 	if prompts := resumePrompts(t, events); len(prompts) != 2 {
 		t.Fatalf("resume prompts = %d, want one per resume: %+v", len(prompts), prompts)
 	}
-}
 
-// The typed fork's last message lands after its task_notification and must
-// still project under the command row.
-func TestReplay_TypedForkLastMessageFollowsItsTerminal(t *testing.T) {
-	events := replayParser(t, resumeForkParser(nil), fixtureResumedByTypedFork)
+	// The typed fork's last message lands after its task_notification and
+	// must still project under the command row.
 	if !hasRow(events, resumeForkForkTail, resumeForkCommandRow) {
 		t.Fatal("the fork's last message, written after its terminal, was dropped")
 	}
-}
 
-// The resumed fork has no launching tool_use, so its rows reach only the
-// mirror and return to the command row it first ran under.
-func TestReplay_ResumedTypedForkProjectsUnderItsCommandRow(t *testing.T) {
-	events := replayParser(t, resumeForkParser(nil), fixtureResumedByTypedFork)
-	resume := resumeFields(t, events, resumeForkForkCarrier)
-	if resume["transcript_root_id"] != resumeForkCommandRow {
-		t.Fatalf("the fork's resume names root %v, want %s", resume["transcript_root_id"], resumeForkCommandRow)
+	// The resumed fork has no launching tool_use, so its rows reach only the
+	// mirror and return to the command row it first ran under.
+	forkResume := resumeFields(t, events, resumeForkForkCarrier)
+	if forkResume["transcript_root_id"] != resumeForkCommandRow {
+		t.Fatalf("the fork's resume names root %v, want %s", forkResume["transcript_root_id"], resumeForkCommandRow)
 	}
 	if completion := completionOf(t, events, resumeForkForkCarrier); completion["is_background"] != true {
 		t.Fatalf("the fork's resume carrier settled in place: %+v", completion)

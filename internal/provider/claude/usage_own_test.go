@@ -21,6 +21,12 @@ func TestAResultsOwnUsageLeavesItsSubagentsOut(t *testing.T) {
 	if meta.Usage == nil || meta.Usage.Spend() != 36709 {
 		t.Fatalf("usage %+v; want the subagent-inclusive 36,709", meta.Usage)
 	}
+	if meta.Usage.InputTokens != 52 || meta.Usage.OutputTokens != 1260 || meta.Usage.CacheCreationInputTokens != 35397 {
+		t.Fatalf("aggregate must be subagent-inclusive modelUsage, got %+v", meta.Usage)
+	}
+	if len(meta.ModelUsage) != 1 {
+		t.Fatalf("perModel: %+v", meta.ModelUsage)
+	}
 	if meta.OwnUsage == nil || meta.OwnUsage.Spend() != 23369 || meta.OwnUsage.TotalCostUSD != 0 {
 		t.Fatalf("own usage %+v; want the parent-only 23,369 and no cost", meta.OwnUsage)
 	}
