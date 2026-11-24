@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/provider"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,42 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil"
 )
+
+// waitOutOtherParties gives app the test's budget (testutil.WaitBudget)
+// for each limit after which it stops waiting for another goroutine,
+// process or computer, in place of its product value: those parties run in
+// this test process, where a crowded machine can hold one past that value.
+// An App a fixture builds waits that long; a test of a limit sets the limit
+// itself after it builds the fixture.
+func waitOutOtherParties(t *testing.T, app *App) {
+	t.Helper()
+	budget := testutil.WaitBudget(t)
+	app.threadAgentPeerListOverride = budget
+	app.ownerOpReachOverride = budget
+	app.providerEvents.drainStall = budget
+}
+
+// stopSessionChecked stops threadID's session and fails t with the stop's
+// error. A test stops a session through it, in a cleanup or inline, so a
+// stop that fails or waits out a provider timeout (a fake app-server that
+// never answers thread/unsubscribe) fails the test that caused it.
+func stopSessionChecked(t testing.TB, a *App, threadID string) {
+	t.Helper()
+	if err := a.StopSession(threadID); err != nil {
+		t.Errorf("StopSession(%s): %v", threadID, err)
+	}
+}
+
+// closeSessionChecked is stopSessionChecked for a provider session the test
+// opened itself.
+func closeSessionChecked(t testing.TB, sess interface{ Close() error }) {
+	t.Helper()
+	if err := sess.Close(); err != nil {
+		t.Errorf("close provider session: %v", err)
+	}
+}
 
 // defaultTestProjectID is the stable project id that test-only helpers
 // seed into every test store so inline `store.Thread{}` literals satisfy
@@ -131,4 +167,18 @@ func migratedDatabaseAt(t *testing.T, path string) {
 	if err := os.Rename(storetest.ClonePath(t), path); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// NewApp is NewAppWithVersion for tests: an unstamped "dev" App.
+func NewApp() *App { return NewAppWithVersion("dev") }
+
+// waitMarkThreadReads blocks until every read-state stamp already
+// registered has landed, WITHOUT refusing later ones. It is the
+// observation point for tests that need the durable row.
+func (a *App) waitMarkThreadReads() {
+	a.markThreadRead.wg.Wait()
+}
+
+func (a *App) claudeProbeModelKey() provider.ProbeCacheKey {
+	return a.providerDiscoveryService().ClaudeProbeKey()
 }

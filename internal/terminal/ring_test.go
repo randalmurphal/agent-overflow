@@ -5,46 +5,36 @@ import (
 	"testing"
 )
 
-func TestRingBufferAppendWithinCapacity(t *testing.T) {
-	r := newRingBuffer(16)
-	r.append([]byte("hello"))
-	if got := string(r.snapshot()); got != "hello" {
-		t.Fatalf("got %q, want hello", got)
-	}
-	if r.Len() != 5 {
-		t.Fatalf("Len() = %d, want 5", r.Len())
-	}
-}
-
-func TestRingBufferAppendAtCapacity(t *testing.T) {
-	r := newRingBuffer(4)
-	r.append([]byte("abcd"))
-	r.append([]byte("ef"))
-	got := r.snapshot()
-	if !bytes.Equal(got, []byte("cdef")) {
-		t.Fatalf("got %q, want cdef", got)
-	}
-}
-
-func TestRingBufferAppendLargerThanCapacity(t *testing.T) {
-	r := newRingBuffer(4)
-	r.append([]byte("hello world"))
-	got := r.snapshot()
-	if !bytes.Equal(got, []byte("orld")) {
-		t.Fatalf("got %q, want orld", got)
-	}
-}
-
-func TestRingBufferAppendEviction(t *testing.T) {
-	r := newRingBuffer(5)
-	r.append([]byte("12345"))
-	r.append([]byte("67"))
-	got := r.snapshot()
-	if !bytes.Equal(got, []byte("34567")) {
-		t.Fatalf("got %q, want 34567", got)
-	}
-	if r.Len() != 5 {
-		t.Fatalf("Len() = %d, want 5", r.Len())
+// Each case appends in order and reads back the newest bytes up to the
+// capacity. "wraps across the end" takes the two-copy write path that splits
+// an append across the end of the backing array; "wraps repeatedly" keeps the
+// start pointer consistent after repeated overflowing writes.
+func TestRingBufferAppend(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		capacity int
+		appends  []string
+		want     string
+	}{
+		{"within capacity", 16, []string{"hello"}, "hello"},
+		{"at capacity", 4, []string{"abcd", "ef"}, "cdef"},
+		{"larger than capacity", 4, []string{"hello world"}, "orld"},
+		{"evicts the oldest", 5, []string{"12345", "67"}, "34567"},
+		{"wraps across the end", 8, []string{"abcd", "efghij"}, "cdefghij"},
+		{"wraps repeatedly", 4, []string{"ab", "cd", "ef", "gh"}, "efgh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRingBuffer(tc.capacity)
+			for _, chunk := range tc.appends {
+				r.append([]byte(chunk))
+			}
+			if got := string(r.snapshot()); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			if r.Len() != len(tc.want) {
+				t.Fatalf("Len() = %d, want %d", r.Len(), len(tc.want))
+			}
+		})
 	}
 }
 
@@ -56,31 +46,5 @@ func TestRingBufferSnapshotIsCopy(t *testing.T) {
 	s2 := r.snapshot()
 	if !bytes.Equal(s2, []byte("abc")) {
 		t.Fatalf("snapshot mutated internal state: got %q", s2)
-	}
-}
-
-// TestRingBufferAppendWrapAroundSplit exercises the two-copy write path that
-// splits an append across the end of the backing array.
-func TestRingBufferAppendWrapAroundSplit(t *testing.T) {
-	r := newRingBuffer(8)
-	r.append([]byte("abcd"))   // fills positions 0..3
-	r.append([]byte("efghij")) // last 2 bytes must wrap to positions 0..1
-	got := r.snapshot()
-	if !bytes.Equal(got, []byte("cdefghij")) {
-		t.Fatalf("got %q, want cdefghij", got)
-	}
-}
-
-// TestRingBufferMultipleWraps makes sure the start pointer stays consistent
-// after repeated overflowing writes.
-func TestRingBufferMultipleWraps(t *testing.T) {
-	r := newRingBuffer(4)
-	r.append([]byte("ab"))
-	r.append([]byte("cd"))
-	r.append([]byte("ef"))
-	r.append([]byte("gh"))
-	got := r.snapshot()
-	if !bytes.Equal(got, []byte("efgh")) {
-		t.Fatalf("got %q, want efgh", got)
 	}
 }

@@ -10,14 +10,6 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// trackPendingApproval registers an interactive request. Uses the numeric
-// JSON-RPC id rendered as a string so dedup (Bug B9) and response routing
-// both use the same key — and so writeDrainResponse can parse it back into
-// the id the JSON-RPC reply has to carry.
-func (s *Session) trackPendingApproval(rpcID int64, resolveKind provider.EventKind, decisions ...*[]json.RawMessage) {
-	s.trackPendingApprovalScoped(rpcID, resolveKind, s.rootThreadID(), decisions...)
-}
-
 func (s *Session) trackPendingApprovalScoped(rpcID int64, resolveKind provider.EventKind, scope string, decisions ...*[]json.RawMessage) {
 	requestID := strconv.FormatInt(rpcID, 10)
 	if resolveKind == provider.EventApprovalResolved && len(decisions) > 0 {

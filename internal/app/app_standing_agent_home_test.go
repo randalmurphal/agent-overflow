@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -47,7 +48,7 @@ func TestStartSession_StandingAgentCarriesItsHome(t *testing.T) {
 	}
 	row := testAssistant(t, app, thread.ID)
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	argv := spawnedClaudeArgv(t, argvPath)
@@ -69,7 +70,7 @@ func TestStartSession_StandingAgentCarriesItsHome(t *testing.T) {
 	if err := os.Remove(argvPath); err != nil {
 		t.Fatalf("reset argv: %v", err)
 	}
-	if err := app.StartSession(plain.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), plain.ID); err != nil {
 		t.Fatalf("StartSession of an ordinary thread: %v", err)
 	}
 	argv = spawnedClaudeArgv(t, argvPath)

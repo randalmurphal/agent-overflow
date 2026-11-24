@@ -11,8 +11,6 @@ import {
   formatElapsed,
   isCodexStoppableTask,
   isCodexSubagentTask,
-  statusClass,
-  statusLabel,
   trayRowStopTarget,
   trayTaskLabel,
   scopedTrayTasks,
@@ -349,31 +347,6 @@ describe('trayRowStopTarget', () => {
   });
 });
 
-describe('statusLabel / statusClass', () => {
-  it('labels active/error statuses in the compact tray style', () => {
-    expect(statusLabel('running')).toBe('running');
-    // Completed rows use Forge-style icon-only success chrome.
-    expect(statusLabel('completed')).toBe('');
-    expect(statusLabel('errored')).toBe('failed');
-    expect(statusLabel('declined')).toBe('declined');
-    // `killed` must NOT collapse into "Failed" — it's a user-initiated
-    // stop; the label difference is the whole point of the phase.
-    expect(statusLabel('killed')).toBe('stopped');
-  });
-
-  it('paints killed on muted-gray and keeps errored/declined on the error palette', () => {
-    expect(statusClass('running')).toBe('text-accent');
-    expect(statusClass('completed')).toContain('text-success');
-    expect(statusClass('completed')).toContain('bg-success/10');
-    expect(statusClass('errored')).toBe('text-error');
-    expect(statusClass('declined')).toBe('text-error');
-    // The phase spec calls for killed to read distinct from errored;
-    // the class MUST NOT be the error palette.
-    expect(statusClass('killed')).toBe('text-text-secondary');
-    expect(statusClass('killed')).not.toBe('text-error');
-  });
-});
-
 describe('formatElapsed', () => {
   it('formats sub-minute durations as whole seconds', () => {
     expect(formatElapsed(0)).toBe('0s');
@@ -452,11 +425,11 @@ describe('trayTaskLabel', () => {
 describe('deriveTrayTasks', () => {
   const RETENTION_MS = 2_000;
 
-  it('pairs launch with completion and emits the completion status', () => {
+  it.each(['completed', 'killed'] as const)('pairs launch with a %s completion and emits its status', (status) => {
     const launch = makeItem({ id: 'L', status: 'running', createdAt: 100, updatedAt: 100 });
     const completion = makeItem({
       id: 'C',
-      status: 'completed',
+      status,
       completionOf: 'L',
       createdAt: 500,
       updatedAt: 500,
@@ -465,25 +438,10 @@ describe('deriveTrayTasks', () => {
     const out = deriveTrayTasks([launch, completion], 600, RETENTION_MS);
     expect(out).toHaveLength(1);
     expect(out[0].rowId).toBe('L');
-    expect(out[0].status).toBe('completed');
+    expect(out[0].status).toBe(status);
     expect(out[0].launch?.id).toBe('L');
     expect(out[0].completion?.id).toBe('C');
     expect(out[0].elapsedMs).toBe(500);
-  });
-
-  it('maps a killed completion through to the killed status', () => {
-    const launch = makeItem({ id: 'L', status: 'running', createdAt: 100, updatedAt: 100 });
-    const completion = makeItem({
-      id: 'C',
-      status: 'killed',
-      completionOf: 'L',
-      createdAt: 500,
-      updatedAt: 500,
-      isBackground: false,
-    });
-    const out = deriveTrayTasks([launch, completion], 600, RETENTION_MS);
-    expect(out).toHaveLength(1);
-    expect(out[0].status).toBe('killed');
   });
 
   it('running launch without completion stays in the list and reports elapsed', () => {

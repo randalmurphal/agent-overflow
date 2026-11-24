@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 )
 
@@ -84,9 +86,14 @@ func TestHumanGateApprovalRoutesToDone(t *testing.T) {
 	requireItemState(t, h.store, item.ID, StateDone, "")
 }
 
+// A reject loops to its target carrying the note and the gate's values, and
+// the gate records the decision. A reject the route has no budget left for is
+// refused, not converted: the gate offered two verbs, and parking the run
+// `retries-exhausted` on the spent one would take the other away too, so
+// approve has to still be there afterwards, and the refusal has to name every
+// option that is.
 func TestHumanGateRejectPersistsFeedbackAndEnforcesBound(t *testing.T) {
-	workflow := humanWorkflow()
-	h := newHarness(t, Config{}, map[string]def.Workflow{"human": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"human": humanWorkflow()}, []string{"project"}, nil)
 	item := testItem("item", "project", "human", 0)
 	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
@@ -116,32 +123,7 @@ func TestHumanGateRejectPersistsFeedbackAndEnforcesBound(t *testing.T) {
 	}
 
 	parkAtHumanGate(t, h, item.ID)
-	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "again"); err == nil {
-		t.Fatal("a reject past its bound was taken")
-	}
-	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonGate)
-	if got := len(h.runner.started()); got != 4 {
-		t.Fatalf("exhausted human reject started another phase: %d starts", got)
-	}
-}
-
-// A reject the route has no budget left for is refused, not converted. The gate
-// offered two verbs; parking the run `retries-exhausted` on the spent one would
-// take the other away too, so approve has to still be there afterwards — and
-// the refusal has to name every option that is.
-func TestHumanRejectPastItsBoundIsRefusedAndLeavesTheGateDecidable(t *testing.T) {
-	h := newHarness(t, Config{}, map[string]def.Workflow{"human": humanWorkflow()}, []string{"project"}, nil)
-	item := testItem("item", "project", "human", 0)
-	if err := h.engine.StartItem(item); err != nil {
-		t.Fatal(err)
-	}
-	parkAtHumanGate(t, h, item.ID)
-	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "once"); err != nil {
-		t.Fatal(err)
-	}
-	parkAtHumanGate(t, h, item.ID)
-
-	err := h.engine.ResolveHumanGate(item.ID, HumanReject, "twice")
+	err = h.engine.ResolveHumanGate(item.ID, HumanReject, "again")
 	if err == nil {
 		t.Fatal("a reject past its bound was taken")
 	}
@@ -150,10 +132,13 @@ func TestHumanRejectPastItsBoundIsRefusedAndLeavesTheGateDecidable(t *testing.T)
 			t.Fatalf("over-budget reject refusal %q does not name %q", err, want)
 		}
 	}
+	if got := len(h.runner.started()); got != 4 {
+		t.Fatalf("exhausted human reject started another phase: %d starts", got)
+	}
 	// The run rests exactly where it was, on the trace the gate wrote: nothing
 	// about the refused decision was persisted.
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonGate)
-	phases, err := h.store.ListWorkItemPhases(item.ID)
+	phases, err = h.store.ListWorkItemPhases(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,6 +366,121 @@ func TestTakeoverFinalizeValidationFailureReparksAndResumeIsFresh(t *testing.T) 
 	last := starts[len(starts)-1]
 	if last.Launch.FinalizesTakeover() || last.Launch.ReusesThread() {
 		t.Fatalf("fresh resume start = %+v", last)
+	}
+}
+
+// TakeOverParked leaves an item the engine is driving as it is, while its
+// runner starts and once it runs: the runner keeps going and no intervention
+// is recorded. An ordinary takeover of a starting runner keeps its own error.
+// A parked item is taken over as TakeOver takes it.
+func TestTakeOverParkedRefusesARunningItem(t *testing.T) {
+	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	item := testItem("item", "project", "question", 0)
+	gate := make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+	h.runner.startWait[item.ID] = gate
+	if err := h.engine.StartItemDetachedStarts(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOverParked(item.ID); !errors.Is(err, ErrRunActive) {
+		t.Fatalf("TakeOverParked of a starting item = %v, want ErrRunActive", err)
+	}
+	if err := h.engine.TakeOver(item.ID); err == nil || !strings.Contains(err.Error(), "phase runner is still starting") {
+		t.Fatalf("TakeOver of a starting item = %v, want the starting error", err)
+	}
+	release()
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOverParked(item.ID); !errors.Is(err, ErrRunActive) {
+		t.Fatalf("TakeOverParked of a running item = %v, want ErrRunActive", err)
+	}
+	requireItemState(t, h.store, item.ID, StateRunning, "")
+	if takeovers := h.runner.takeovers(); len(takeovers) != 0 {
+		t.Fatalf("takeover stops = %+v, want none", takeovers)
+	}
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 1 || len(phases[0].Intervention) != 0 {
+		t.Fatalf("phases = %+v, want one attempt with no intervention", phases)
+	}
+
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOverParked(item.ID); err != nil {
+		t.Fatalf("TakeOverParked of a parked item: %v", err)
+	}
+	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
+}
+
+// A parked-only takeover frees no capacity, refused or not, so it runs no
+// scheduler pass: a run waiting for capacity raised in the profile since the
+// last pass is not started by it.
+func TestTakeOverParkedStartsNoWaitingRun(t *testing.T) {
+	writer := onePhaseWorkflow("writer", []string{"writer"}, []def.Route{{To: "done"}})
+	question := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{}, map[string]def.Workflow{"writer": writer, "question": question}, []string{"project"}, nil)
+	parked := testItem("parked", "project", "question", 0)
+	if err := h.engine.StartItem(parked); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, parked.ID, Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, parked.ID, StateNeedsHuman, ReasonQuestion)
+
+	h.profiles.setCapacity("project", "writer", 1)
+	running := testItem("running", "project", "writer", 1)
+	waiting := testItem("waiting", "project", "writer", 2)
+	for _, item := range []store.WorkItem{running, waiting} {
+		if err := h.engine.StartItem(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitingStarted := func() bool {
+		for _, start := range h.runner.started() {
+			if start.Key.ItemID == waiting.ID {
+				return true
+			}
+		}
+		return false
+	}
+	if waitingStarted() {
+		t.Fatal("the second writer started past a capacity of one")
+	}
+	h.profiles.setCapacity("project", "writer", 2)
+
+	// A scheduler pass starts its runs before the takeover's reply, so each
+	// check reads the runner as soon as the takeover returns.
+	if err := h.engine.TakeOverParked(running.ID); !errors.Is(err, ErrRunActive) {
+		t.Fatalf("TakeOverParked of a running item = %v, want ErrRunActive", err)
+	}
+	if waitingStarted() {
+		t.Fatal("a parked-only takeover refused for a running item started the waiting run")
+	}
+	if err := h.engine.TakeOverParked("no-such-item"); err == nil || errors.Is(err, ErrRunActive) {
+		t.Fatalf("TakeOverParked of an item that is not parked = %v, want its own refusal", err)
+	}
+	if waitingStarted() {
+		t.Fatal("a parked-only takeover refused for an item that is not parked started the waiting run")
+	}
+
+	if err := h.engine.TakeOverParked(parked.ID); err != nil {
+		t.Fatalf("TakeOverParked of a parked item: %v", err)
+	}
+	requireItemState(t, h.store, parked.ID, StateNeedsHuman, ReasonTakenOver)
+	if waitingStarted() {
+		t.Fatal("a parked-only takeover of a parked item started the waiting run")
 	}
 }
 

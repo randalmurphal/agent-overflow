@@ -77,13 +77,6 @@ type CommandResultRow struct {
 	Oversized bool
 }
 
-// BuildCommandResultRow shapes one provider-executed command's output
-// into the row fields both writers persist. Pure: text in, field values
-// out. The caller decides where the full bytes live when Oversized.
-func BuildCommandResultRow(text string) (CommandResultRow, error) {
-	return buildCommandResultRow(text, nil)
-}
-
 // BuildCommandResultRowWithAgentResult shapes provider command output whose
 // visible answer came from a child agent. Imports use this to preserve the
 // same durable attribution as the live router.

@@ -66,8 +66,7 @@ for (const provider of ['claude', 'codex'] as const) {
       echoUserMessage: true,
       turns: [{ steps: [{ call: { tool: 'thread_status', args: { tokens: [token] } } }], text: 'Read the late reply.' }],
     }));
-    await harness.rpc('StartSession', lead);
-    await harness.rpc('SendMessage', lead, 'check the worker', null);
+    await harness.send(lead, 'check the worker');
     const status = await awaitToolAnswer<{ requests: { delivered?: string; answer?: string }[] }>(harness, { tool: 'thread_status', cwd: project.path });
     expect(status.isError, status.text).toBe(false);
     expect(status.value?.requests[0]).toMatchObject({ delivered: 'inline', answer: 'Also ran the tests.' });

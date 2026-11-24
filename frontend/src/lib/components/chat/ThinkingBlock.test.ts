@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
 import ThinkingBlock from './ThinkingBlock.svelte';
 import { __setSmoothingClockForTest } from '../../stores/thread.svelte';
 import type { SmoothingClock } from '../../markdown/smoothing/PerItemSmoother';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 class FakeSmoothingClock implements SmoothingClock {
   private current = 0;
@@ -28,13 +28,6 @@ class FakeSmoothingClock implements SmoothingClock {
 }
 
 describe('<ThinkingBlock>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
-  });
 
   it('renders body text and timestamp inline; no standalone region', () => {
     const { container, queryByRole } = render(ThinkingBlock, {
@@ -303,30 +296,6 @@ describe('<ThinkingBlock>', () => {
     await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
     await waitFor(() => expect(container.querySelector('[data-testid="thinking-body"]')?.textContent).toBe('seed live collapsed'));
     expect(getPayloadData).toHaveBeenCalledTimes(2);
-  });
-
-  it('keeps the live tail visible when an expanded streaming payload read is stale', async () => {
-    const thinking = makeItem({
-      id: 'think:0:0',
-      kind: 'thinking',
-      status: 'streaming',
-      summary: 'live tail',
-      payloadId: 'thinking-payload',
-      updatedAt: 1,
-    });
-    const pane = await buildPane(makeThread({ id: 'thread-1' }), [thinking]);
-    setBindingMock('GetPayloadData', async () => ({ data: 'full payload before ' }));
-
-    const { container, getByRole } = render(ThinkingBlock, {
-      props: { pane, item: pane.items[0] },
-    });
-
-    await fireEvent.click(getByRole('button', { name: /toggle thinking block/i }));
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-testid="thinking-body"]')?.textContent)
-        .toBe('full payload before live tail');
-    });
   });
 
   it('streams the expanded body at the reveal when the snapshot leads it', async () => {

@@ -105,7 +105,7 @@ test('a subagent’s approval and denial rows nest under its card; the composer 
   await harness.open(page);
   await page.getByText('Subagent approval').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'write the spike file', null);
+  await harness.send(threadId, 'write the spike file');
 
   // --- Pending: the prompt is the composer's, the pill is the card's --
   await harness.waitForEvent(
@@ -222,7 +222,7 @@ test('backgrounding a running inline agent returns the turn and the mirror conti
   await harness.open(page);
   await page.getByText('Background button').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'sweep the corpus', null);
+  await harness.send(threadId, 'sweep the corpus');
 
   await waitForGate(harness, 'cut');
   const timeline = page.getByTestId('message-timeline-scroll');
@@ -254,11 +254,10 @@ test('backgrounding a running inline agent returns the turn and the mirror conti
   await spawnRow.hover();
   await spawnRow.getByTestId('agent-row-open-pane').click();
   const pane = page.getByTestId('companion-pane-agent-body');
+  // The session mirror continues a backgrounded pane live: it reads as
+  // working, and until the mock's mirror frame it holds what streamed
+  // pre-cut.
   await expect(pane.getByTestId('agent-pane-working')).toBeVisible();
-  // No paused marker: the session mirror continues a backgrounded pane
-  // live, so the "streaming paused" note was removed (ed6d2b40). Until
-  // the mock's mirror frame, the pane holds what streamed pre-cut.
-  await expect(pane.getByTestId('agent-pane-streaming-paused')).toHaveCount(0);
   const paneTimeline = pane.getByTestId('agent-pane-timeline');
   await expect(paneTimeline.getByText('Reading the first shard.')).toBeVisible();
   // Nothing arrived after the cut yet.

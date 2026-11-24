@@ -21,6 +21,9 @@ type perfBridge struct {
 	samples  []harnessPerfEvent
 	specs    []map[string]any
 	answerNo map[string]bool
+	// refuse answers a "<kind>/<op>" query with its error, as a page that
+	// refuses the query does.
+	refuse map[string]string
 }
 
 // samplesSeen snapshots the harness:perf events captured so far.
@@ -46,6 +49,21 @@ func (b *perfBridge) goSilentOn(op string) {
 		b.answerNo = map[string]bool{}
 	}
 	b.answerNo[op] = true
+}
+
+func (b *perfBridge) refuseQuery(kind, op, message string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.refuse == nil {
+		b.refuse = map[string]string{}
+	}
+	b.refuse[kind+"/"+op] = message
+}
+
+func (b *perfBridge) refusal(kind, op string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.refuse[kind+"/"+op]
 }
 
 func (b *perfBridge) silent(op string) bool {
@@ -76,10 +94,16 @@ func newPerfHarness(t *testing.T) (*Harness, *perfBridge) {
 				return
 			}
 			body := `{"ok":true}`
-			switch op {
-			case "collect":
+			kind, _ := spec["kind"].(string)
+			if refusal := bridge.refusal(kind, op); refusal != "" {
+				encoded, _ := json.Marshal(map[string]string{"error": refusal})
+				body = string(encoded)
+			}
+			switch {
+			case body != `{"ok":true}`:
+			case op == "collect":
 				body = `{"fps":58.5,"domNodes":1234}`
-			case "stop":
+			case op == "stop":
 				body = `{"v":1,"frames":{"count":120,"fps":59.1}}`
 			}
 			// Replying inline is safe: the waiter is registered before the
@@ -246,6 +270,7 @@ func TestHarnessResetDropsAPerfRunWithoutWaitingOutTheUIQueryTimeout(t *testing.
 	if status.Active {
 		t.Fatal("HarnessReset must leave no perf run armed")
 	}
+	h.stopPerfRunForReset() // idempotent
 }
 
 // finishPerfRun is reachable twice on one run (HarnessPerfStop racing the
@@ -371,6 +396,74 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 	}
 }
 
+// A leg only narrows the monitors a run arms, so one sent without
+// monitors would be accepted and ignored.
+func TestHarnessPerfStartRefusesALegWithNoMonitor(t *testing.T) {
+	h, _ := newPerfHarness(t)
+	_, err := h.HarnessPerfStart(HarnessPerfSpec{CompatibilityLeg: "functional"})
+	if err == nil || !strings.Contains(err.Error(), "selects no monitor") {
+		t.Fatalf("HarnessPerfStart = %v, want a refusal of the monitorless leg", err)
+	}
+	status, err := h.HarnessPerfStatus()
+	if err != nil {
+		t.Fatalf("HarnessPerfStatus: %v", err)
+	}
+	if status.Active {
+		t.Fatal("a refused start must arm no run")
+	}
+}
+
+// expireRun starts a run that its duration ceiling finishes and returns
+// the id of the report it parked.
+func expireRun(t *testing.T, h *Harness) string {
+	t.Helper()
+	expired := make(chan HarnessPerfReport, 1)
+	h.perf.expiredHook = func(report HarnessPerfReport) { expired <- report }
+	status, err := h.HarnessPerfStart(HarnessPerfSpec{SampleMs: harnessPerfMinSampleMs, MaxDurationMs: 1})
+	if err != nil {
+		t.Fatalf("HarnessPerfStart: %v", err)
+	}
+	select {
+	case <-expired:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run never hit its ceiling")
+	}
+	return status.RunID
+}
+
+// A start the page refuses arms nothing, so the uncollected report of the
+// run before it is still the one a stop collects.
+func TestHarnessPerfStartThatFailsKeepsTheExpiredReport(t *testing.T) {
+	h, bridge := newPerfHarness(t)
+	expired := expireRun(t, h)
+	bridge.refuseQuery("monitor", "start", "monitor frame-pacing belongs to clean-renderer")
+	if _, err := h.HarnessPerfStart(HarnessPerfSpec{Monitors: []string{"frame-pacing"}, CompatibilityLeg: "clean-renderer"}); err == nil || !strings.Contains(err.Error(), "belongs to clean-renderer") {
+		t.Fatalf("HarnessPerfStart = %v, want the page's refusal", err)
+	}
+	report, err := h.HarnessPerfStop()
+	if err != nil || report.RunID != expired {
+		t.Fatalf("HarnessPerfStop = %+v, %v, want the expired run %q", report, err, expired)
+	}
+}
+
+// A start that arms supersedes the uncollected report: the next stop
+// collects the new run, and the old report is gone.
+func TestHarnessPerfStartThatArmsSupersedesTheExpiredReport(t *testing.T) {
+	h, _ := newPerfHarness(t)
+	expired := expireRun(t, h)
+	status, err := h.HarnessPerfStart(HarnessPerfSpec{})
+	if err != nil {
+		t.Fatalf("HarnessPerfStart: %v", err)
+	}
+	report, err := h.HarnessPerfStop()
+	if err != nil || report.RunID != status.RunID || report.RunID == expired {
+		t.Fatalf("HarnessPerfStop = %+v, %v, want the new run %q", report, err, status.RunID)
+	}
+	if _, err := h.HarnessPerfStop(); err == nil {
+		t.Fatal("the superseded report was still collectable")
+	}
+}
+
 func TestHarnessPerfStartRefusesASecondRun(t *testing.T) {
 	h, _ := newPerfHarness(t)
 	if _, err := h.HarnessPerfStart(HarnessPerfSpec{}); err != nil {
@@ -380,45 +473,6 @@ func TestHarnessPerfStartRefusesASecondRun(t *testing.T) {
 	if _, err := h.HarnessPerfStart(HarnessPerfSpec{}); err == nil {
 		t.Fatal("a second concurrent run must be refused")
 	}
-}
-
-// With no bridge attached the arm query times out, and the refusal must
-// leave nothing armed — otherwise the next start would report a run whose
-// meters were never actually turned on.
-func TestHarnessPerfStartFailsWithNoBridgeAndArmsNothing(t *testing.T) {
-	h := New(Config{Host: &testHost{}})
-	h.perf.mu.Lock()
-	h.perf.mu.Unlock()
-	// Shrink the wait: the arm uses the caller-facing 10s timeout, so drive
-	// the query path directly to prove the message, then prove the state.
-	if _, err := h.queryUI(json.RawMessage(`{"v":1,"kind":"perf","op":"start"}`), 30*time.Millisecond); err == nil {
-		t.Fatal("arming with no bridge must fail")
-	} else if !strings.Contains(err.Error(), "harness bridge inactive") {
-		t.Errorf("error = %v", err)
-	}
-	status, err := h.HarnessPerfStatus()
-	if err != nil {
-		t.Fatalf("HarnessPerfStatus: %v", err)
-	}
-	if status.Active {
-		t.Error("no run may be armed after a failed arm")
-	}
-}
-
-func TestStopPerfRunForResetDropsAnArmedRun(t *testing.T) {
-	h, _ := newPerfHarness(t)
-	if _, err := h.HarnessPerfStart(HarnessPerfSpec{}); err != nil {
-		t.Fatalf("HarnessPerfStart: %v", err)
-	}
-	h.stopPerfRunForReset()
-	status, err := h.HarnessPerfStatus()
-	if err != nil {
-		t.Fatalf("HarnessPerfStatus: %v", err)
-	}
-	if status.Active {
-		t.Fatal("HarnessReset must leave no perf run armed")
-	}
-	h.stopPerfRunForReset() // idempotent
 }
 
 func TestEmptyMeterRunDoesNotQueryOrArmThePage(t *testing.T) {

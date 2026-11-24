@@ -1,7 +1,7 @@
 package app
 
 import (
-	"os"
+	"context"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -34,10 +34,7 @@ var coldResumeTranscripts = map[string]string{
 // resume filters, so no tail shape can make it reject the start.
 func TestColdClaudeResumePassesNoResumeCursor(t *testing.T) {
 	t.Parallel()
-	offBranch, err := os.ReadFile(filepath.FromSlash("docs/references/fixtures/claude/session_api_error_offbranch.jsonl"))
-	if err != nil {
-		t.Fatalf("read off-branch fixture: %v", err)
-	}
+	offBranch := wireCapture(t, "claude/session_api_error_offbranch.jsonl")
 	shapes := map[string]string{"api_error off-branch tail": string(offBranch)}
 	for name, jsonl := range coldResumeTranscripts {
 		shapes[name] = jsonl
@@ -59,10 +56,10 @@ func TestColdClaudeResumePassesNoResumeCursor(t *testing.T) {
 			if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeArgvRecordingClaude(t, argvPath)}); err != nil {
 				t.Fatal(err)
 			}
-			if err := app.StartSession(thread.ID); err != nil {
+			if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 			argv := spawnedClaudeArgv(t, argvPath)
 			if !hasArgPair(argv, "--resume", sessionID) {
@@ -96,10 +93,10 @@ func TestPinnedClaudeForkStartPassesItsResumeCursor(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeArgvRecordingClaude(t, argvPath)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.StartSession(fork.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), fork.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(fork.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, fork.ID) })
 
 	argv := spawnedClaudeArgv(t, argvPath)
 	if !hasArgPair(argv, "--resume", sourceID) || !hasArgPair(argv, "--resume-session-at", "a1") || !slices.Contains(argv, "--fork-session") {
@@ -122,10 +119,10 @@ func coldResumedMidTurnSource(t *testing.T, binary string) (*App, store.Thread, 
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.StartSession(source.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), source.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(source.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, source.ID) })
 	sess, ok := app.activeClaudeSession(source.ID)
 	if !ok {
 		t.Fatal("no live Claude session after StartSession")

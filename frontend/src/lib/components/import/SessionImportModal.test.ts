@@ -29,7 +29,6 @@ import {
   isSessionImportOpen,
   loadImportCatalog,
   openSessionImport,
-  resetSessionImportForTest,
   setProviderFilter,
   startImport,
   toggleRow,
@@ -111,7 +110,6 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
-  resetSessionImportForTest();
   // A terminal progress frame resyncs the sidebar through the real
   // projection path; give it empty answers rather than "no mock" throws.
   setBindingMock('ListThreads', async () => []);
@@ -120,7 +118,6 @@ beforeEach(() => {
 
 afterEach(() => {
   setPageGrantsFromBootstrap(false);
-  resetSessionImportForTest();
 });
 
 describe('empty and error states', () => {
@@ -231,22 +228,18 @@ describe('the project filter menu', () => {
     knownProject: false,
   });
 
-  it('lists one entry per project, whatever cwds its sessions ran in', async () => {
+  it('lists one entry per project, with a path only for an unknown one, and picking it keeps every cwd that resolves to it', async () => {
     const view = await mountWith([ALPHA_ROOT, ALPHA_SUB, ORPHAN]);
     await openMenu(view);
 
     // The bug this replaced: "alpha (1)" and "alpha (1)" as separate rows,
     // one per cwd, indistinguishable in the menu.
-    const alpha = view.getAllByRole('menuitem', { name: /alpha/ });
-    expect(alpha).toHaveLength(1);
-    expect(alpha[0].textContent).toContain('2');
+    const alphas = view.getAllByRole('menuitem', { name: /alpha/ });
+    expect(alphas).toHaveLength(1);
+    expect(alphas[0].textContent).toContain('2');
     expect(view.getByRole('menuitem', { name: /All projects/ })).toBeTruthy();
-  });
 
-  it('shows the path only for a project Agent Overflow does not have yet', async () => {
-    const view = await mountWith([ALPHA_ROOT, ALPHA_SUB, ORPHAN]);
-    await openMenu(view);
-
+    // The path shows only for a project Agent Overflow does not have yet.
     const orphan = view.getByRole('menuitem', { name: /one-off/ });
     expect(orphan.textContent).toContain('/tmp/one-off');
     expect(orphan.getAttribute('title')).toBe('/tmp/one-off');
@@ -254,13 +247,8 @@ describe('the project filter menu', () => {
     const alpha = view.getByRole('menuitem', { name: /alpha/ });
     expect(alpha.textContent).not.toContain('/repos/alpha');
     expect(alpha.getAttribute('title')).toBe('/repos/alpha');
-  });
 
-  it('picking a project keeps every cwd that resolves to it', async () => {
-    const view = await mountWith([ALPHA_ROOT, ALPHA_SUB, ORPHAN]);
-    await openMenu(view);
-
-    await fireEvent.click(view.getByRole('menuitem', { name: /alpha/ }));
+    await fireEvent.click(alpha);
     await settle();
 
     expect(view.getByTestId('session-import-row-claude:root')).toBeTruthy();
@@ -324,7 +312,7 @@ describe('sessions that already ran in Agent Overflow', () => {
   const AO_ONE = row('claude:ao-1', { ranInAgentOverflow: true, origin: 'agent-overflow' });
   const AO_TWO = row('codex:ao-2', { ranInAgentOverflow: true });
 
-  it('are hidden by default, and out of every count with them', async () => {
+  it('are hidden by default and out of every count, come back inline when asked for, and leave the selection when hidden again', async () => {
     const view = await mountWith([MINE, AO_ONE, AO_TWO]);
 
     expect(view.queryByTestId('session-import-row-claude:ao-1')).toBeNull();
@@ -338,12 +326,9 @@ describe('sessions that already ran in Agent Overflow', () => {
       'Show sessions that already ran in Agent Overflow',
     );
     expect(toggle.closest('label')?.textContent).toContain('(2)');
-  });
 
-  it('come back inline when asked for, and count like any other row', async () => {
-    const view = await mountWith([MINE, AO_ONE, AO_TWO]);
-
-    await fireEvent.click(view.getByTestId('session-import-show-already-ran'));
+    // Shown, they count like any other row.
+    await fireEvent.click(toggle);
     await settle();
 
     expect(view.getByTestId('session-import-row-claude:ao-1')).toBeTruthy();
@@ -353,14 +338,7 @@ describe('sessions that already ran in Agent Overflow', () => {
     expect(view.getByTestId('session-import-row-claude:ao-1').getAttribute('title')).toBe(
       'This session already ran in Agent Overflow (agent-overflow)',
     );
-  });
 
-  it('hiding them again retracts them from the selection', async () => {
-    const view = await mountWith([MINE, AO_ONE, AO_TWO]);
-    const toggle = view.getByTestId('session-import-show-already-ran');
-
-    await fireEvent.click(toggle);
-    await settle();
     await fireEvent.click(view.getByTestId('session-import-select-all'));
     await settle();
     expect(view.getByTestId('session-import-confirm').textContent).toContain('Import (3)');
@@ -662,7 +640,7 @@ describe('the progress strip', () => {
     return view;
   }
 
-  it('is absent until a run exists, then reports the run over a live list', async () => {
+  it('is absent until a run exists, reports the run over a live list, and stamps outcomes onto the rows they belong to', async () => {
     const view = await mountWith([row('claude:a'), row('codex:b')]);
     expect(view.queryByTestId('session-import-progress')).toBeNull();
 
@@ -674,11 +652,8 @@ describe('the progress strip', () => {
     // The list is never swapped out for a progress screen — per-row errors
     // have to be able to land on their own rows.
     expect(view.getByTestId('session-import-row-claude:a')).toBeTruthy();
-  });
 
-  it('stamps outcomes onto the rows they belong to and rolls the failures up', async () => {
-    const view = await mountAndStart();
-
+    // Outcomes land on their rows and the failures roll up.
     applyImportProgress(frame({ completed: 1, id: 'claude:a', status: 'imported', threadIds: ['t1'] }));
     applyImportProgress(frame({ completed: 2, id: 'codex:b', status: 'failed', error: 'unreadable rollout' }));
     await settle();

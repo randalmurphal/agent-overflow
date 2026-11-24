@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 
 import UsageChip from './UsageChip.svelte';
@@ -39,10 +39,6 @@ function modelBucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
 }
 
 describe('<UsageChip>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetUsageRefreshForTest();
-  });
 
   it('renders nothing when the thread has no usage yet', async () => {
     const pane = await buildPane(makeThread());
@@ -116,42 +112,16 @@ describe('<UsageChip>', () => {
     expect(trigger.title).toBe('');
   });
 
-  it('suppresses the cost when costUsd is 0 and some rows are unpriced', async () => {
+  it.each([
+    { case: 'suppresses the cost when costUsd is 0', costUsd: 0, text: '500' },
+    { case: 'shows the ≥ lower-bound marker when cost is nonzero', costUsd: 1.2, text: '500 · ≥$1.20' },
+  ])('$case and some rows are unpriced', async ({ costUsd, text }) => {
     const pane = await buildPane(makeThread());
-    setBindingMock('GetUsageStats', async () => [
-      lifetimeBucket({ costUsd: 0, unpricedRows: 2 }),
-    ]);
+    setBindingMock('GetUsageStats', async () => [lifetimeBucket({ costUsd, unpricedRows: 2 })]);
     const { findByTestId } = render(UsageChip, { props: { pane } });
 
     const trigger = await findByTestId('usage-chip-trigger');
-    expect(trigger.textContent?.trim()).toBe('500');
-  });
-
-  it('shows the ≥ lower-bound marker when cost is nonzero but some rows are unpriced', async () => {
-    const pane = await buildPane(makeThread());
-    setBindingMock('GetUsageStats', async () => [
-      lifetimeBucket({ costUsd: 1.2, unpricedRows: 2 }),
-    ]);
-    const { findByTestId } = render(UsageChip, { props: { pane } });
-
-    const trigger = await findByTestId('usage-chip-trigger');
-    expect(trigger.textContent?.trim()).toBe('500 · ≥$1.20');
-  });
-
-  it('refetches the lifetime bucket when its own thread usage refresh version bumps', async () => {
-    const pane = await buildPane(makeThread());
-    const getUsageStats = setBindingMock('GetUsageStats', async () => [lifetimeBucket()]);
-    render(UsageChip, { props: { pane } });
-
-    await waitFor(() => {
-      expect(getUsageStats).toHaveBeenCalledTimes(1);
-    });
-
-    bumpUsageRefresh(pane.threadId!);
-
-    await waitFor(() => {
-      expect(getUsageStats).toHaveBeenCalledTimes(2);
-    });
+    expect(trigger.textContent?.trim()).toBe(text);
   });
 
   it('does not refetch the lifetime bucket when a DIFFERENT thread bumps', async () => {
@@ -246,7 +216,6 @@ describe('<UsageChip>', () => {
   });
 });
 
-
 it('refreshes the chip and open model breakdown on reported progress without clearing context', async () => {
   const pane = await buildPane(makeThread());
   let output = 500;
@@ -286,7 +255,6 @@ it('preserves known totals and displays a failed refresh', async () => {
   applyUsageEvent({ action: 'progress', threadId: pane.threadId!, error: 'Reported usage could not be saved.' });
   await waitFor(() => expect(trigger.title).toBe('Reported usage could not be saved.'));
 });
-
 
 it('labels a Codex thread estimate in the popover', async () => {
   resetBindingMocks();

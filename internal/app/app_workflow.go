@@ -845,7 +845,7 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 	if err != nil {
 		return WorkflowItemDetailView{}, fmt.Errorf("workflow item %s snapshot: %w", itemID, err)
 	}
-	outputs, err := workflowNamedOutputs(item.Snapshot, phases)
+	outputs, err := workflowapp.NamedOutputs(item.Snapshot, phases)
 	if err != nil {
 		return WorkflowItemDetailView{}, fmt.Errorf("workflow item %s outputs: %w", itemID, err)
 	}
@@ -897,49 +897,6 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 			UnpricedRows:     priced.UnpricedRows,
 		},
 	}, nil
-}
-
-func workflowNamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseTimeline) (map[string]any, error) {
-	outputs := make(map[string]any)
-	if len(payload) == 0 {
-		return outputs, nil
-	}
-	var snapshot engine.Snapshot
-	if err := json.Unmarshal(payload, &snapshot); err != nil {
-		return nil, err
-	}
-	vars := make(map[string]any)
-	latestAttempts := make(map[string]int)
-	for _, phase := range phases {
-		if (phase.Status != "completed" && phase.Status != "failed") || len(phase.OutputEnvelope) == 0 || phase.Attempt < latestAttempts[phase.PhaseID] {
-			continue
-		}
-		var envelope struct {
-			Status  string         `json:"status"`
-			Outputs map[string]any `json:"outputs"`
-		}
-		if err := json.Unmarshal(phase.OutputEnvelope, &envelope); err != nil {
-			return nil, fmt.Errorf("decode phase %s attempt %d: %w", phase.PhaseID, phase.Attempt, err)
-		}
-		if envelope.Status != "done" {
-			continue
-		}
-		latestAttempts[phase.PhaseID] = phase.Attempt
-		for name, value := range envelope.Outputs {
-			if value != nil {
-				vars[phase.PhaseID+"."+name] = value
-			}
-		}
-	}
-	for name, declaration := range snapshot.Workflow.Outputs {
-		if declaration.Artifact {
-			continue
-		}
-		if value, ok := def.LookupVariable(vars, declaration.From); ok {
-			outputs[name] = value
-		}
-	}
-	return outputs, nil
 }
 
 // workflowSnapshotPhaseIDs projects the two phase classifications the detail

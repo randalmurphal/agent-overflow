@@ -7,18 +7,18 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// Live 2.1.284 captures (docs/references/fixtures/claude/README.md). A
+// Live 2.1.284 captures (internal/provider/wirecaptures/claude/README.md). A
 // forked skill runs as a local_agent task bound to its Skill call and
 // ends with a task_notification alone (claude-wire.md §E9).
 const (
-	fixtureForkedSkillTaskStarted        = "../../docs/references/fixtures/claude/forked_skill_task_started_20261014.ndjson"
-	fixtureForkedSkillStopTask           = "../../docs/references/fixtures/claude/forked_skill_stop_task_20261014.ndjson"
-	fixtureForkedSkillInterrupt          = "../../docs/references/fixtures/claude/forked_skill_interrupt_20261014.ndjson"
-	fixtureForkedSkillBackgroundChildren = "../../docs/references/fixtures/claude/forked_skill_background_children_20261014.ndjson"
-	fixtureAgentBackgroundedMidrun       = "../../docs/references/fixtures/claude/local_agent_backgrounded_midrun_20261014.ndjson"
-	fixtureForkedSkillInAgent            = "../../docs/references/fixtures/claude/forked_skill_in_agent_20261014.ndjson"
-	fixtureAwaitedAgentStopTask          = "../../docs/references/fixtures/claude/local_agent_foreground_stop_task_20261014.ndjson"
-	fixtureAwaitedAgentInterrupt         = "../../docs/references/fixtures/claude/local_agent_foreground_interrupt_20261014.ndjson"
+	fixtureForkedSkillTaskStarted        = "../provider/wirecaptures/claude/forked_skill_task_started_20261014.ndjson"
+	fixtureForkedSkillStopTask           = "../provider/wirecaptures/claude/forked_skill_stop_task_20261014.ndjson"
+	fixtureForkedSkillInterrupt          = "../provider/wirecaptures/claude/forked_skill_interrupt_20261014.ndjson"
+	fixtureForkedSkillBackgroundChildren = "../provider/wirecaptures/claude/forked_skill_background_children_20261014.ndjson"
+	fixtureAgentBackgroundedMidrun       = "../provider/wirecaptures/claude/local_agent_backgrounded_midrun_20261014.ndjson"
+	fixtureForkedSkillInAgent            = "../provider/wirecaptures/claude/forked_skill_in_agent_20261014.ndjson"
+	fixtureAwaitedAgentStopTask          = "../provider/wirecaptures/claude/local_agent_foreground_stop_task_20261014.ndjson"
+	fixtureAwaitedAgentInterrupt         = "../provider/wirecaptures/claude/local_agent_foreground_interrupt_20261014.ndjson"
 )
 
 func requireNoItem(t *testing.T, st *store.Store, id string) {

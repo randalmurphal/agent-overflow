@@ -1,13 +1,34 @@
-// The `test` every spec builds on: Playwright's, plus the stalled-page
-// capture (src/page-stall.ts), and nothing a spec could assert against.
-// tests/fixtures.ts extends it with the harness backend and the page-error
-// and CSP checks; a spec that wants neither imports this one.
-// tests/base-test-imports.spec.ts fails a spec that imports `test` from
-// '@playwright/test' instead.
-import { test as base, expect, type BrowserContext } from '@playwright/test';
+// The `test` every spec builds on: Playwright's, plus the gate's rules and
+// the stalled-page capture (src/page-stall.ts), and nothing a spec could
+// assert against. The gate's rules: a page sleep throws, and an event watch
+// ends with the test that made it. tests/fixtures.ts extends it with the
+// harness backend and the page-error and CSP checks; a spec that launches its
+// own harnesses imports this one. The wait scan (src/wait-scan.ts) fails any
+// other suite file that reaches Playwright's own `test`, so this file hands
+// the harness the running test's TestInfo.
+import { test as base, expect, type BrowserContext, type Page } from '@playwright/test';
+import { installTestInfoReader, openEventWatchScope } from '../src/harness.js';
 import { STALL_CAPTURE_TIMEOUT_MS, StalledPageCapture, StalledPageRegistry } from '../src/page-stall.js';
 
+installTestInfoReader(() => base.info());
+
+/** Makes `page.waitForTimeout` throw with the reason and the alternatives. */
+function banPageSleep(page: Page): void {
+  page.waitForTimeout = async (ms: number) => {
+    throw new Error(
+      `page.waitForTimeout(${ms}) is a sleep, which the gate does not run: give the product timer a knob ` +
+        '(harnessTiming), advance the page clock (page.clock), poll the condition (expect.poll), or end an ' +
+        'absence at a barrier (HarnessApp.watchEvents). See e2e/AGENTS.md "Writing specs".',
+    );
+  };
+}
+
 interface TestFixtures {
+  /**
+   * Ends every HarnessApp.watchEvents watch and cancels every
+   * HarnessApp.waitForEvent wait the test made, at its end.
+   */
+  eventWatches: void;
   /**
    * When the test fails, attaches a `stalled page` report for each page open
    * in the worker that does not answer (src/page-stall.ts).
@@ -27,10 +48,36 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     },
     { scope: 'worker', box: true },
   ],
-  // Every context, a `beforeAll`'s included, comes through here.
+  // A watch counts events for the test that made it; one the test never
+  // asserted on, or abandoned at a failure, ends here rather than counting
+  // into the next test. A wait still pending here was abandoned: by a
+  // failure before its await, which stands as the test's error, or by a
+  // test that never awaited it, which fails here.
+  eventWatches: [
+    async ({}, use, testInfo) => {
+      const scope = openEventWatchScope();
+      let pending: string[] = [];
+      try {
+        await use();
+      } finally {
+        pending = scope.end();
+      }
+      if (pending.length > 0 && testInfo.errors.length === 0) {
+        throw new Error(`the test ended without awaiting its event wait on ${pending.join(', ')}`);
+      }
+    },
+    { auto: true, box: true },
+  ],
+  // Every context, a `beforeAll`'s included, comes through here. No page
+  // sleeps: `waitForTimeout` on any page throws with the way to wait instead.
+  // The one timed hold the gate allows is src/pointer.ts pressToDragText,
+  // which needs no page.
   browser: [
     async ({ browser, stalledPageRegistry }, use) => {
-      const track = (context: BrowserContext) => stalledPageRegistry.trackContext(context);
+      const track = (context: BrowserContext) => {
+        stalledPageRegistry.trackContext(context);
+        context.on('page', banPageSleep);
+      };
       browser.on('context', track);
       try {
         await use(browser);

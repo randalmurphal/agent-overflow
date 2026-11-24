@@ -38,20 +38,14 @@ describe('<RowError>', () => {
     expect(msg.className).toContain('text-warning/90');
   });
 
-  it('omits the code chip when code is not provided', () => {
-    const { container } = render(RowError, {
-      props: { tone: 'error', msg: 'Generic failure' },
-    });
+  // An empty-string code renders no chip too: the guard is truthiness.
+  it.each([
+    { name: 'not provided', code: undefined, msg: 'Generic failure' },
+    { name: 'an empty string', code: '', msg: 'No code' },
+  ])('omits the code chip when code is $name', ({ code, msg }) => {
+    const { container } = render(RowError, { props: { tone: 'error', code, msg } });
     expect(container.querySelector('[data-testid="row-error-code"]')).toBeNull();
-    const msg = container.querySelector('[data-testid="row-error-msg"]')!;
-    expect(msg.textContent).toBe('Generic failure');
-  });
-
-  it('renders an empty-string code as no chip (truthy guard)', () => {
-    const { container } = render(RowError, {
-      props: { tone: 'error', code: '', msg: 'No code' },
-    });
-    expect(container.querySelector('[data-testid="row-error-code"]')).toBeNull();
+    expect(container.querySelector('[data-testid="row-error-msg"]')!.textContent).toBe(msg);
   });
 
   it('merges caller-supplied class onto the root', () => {

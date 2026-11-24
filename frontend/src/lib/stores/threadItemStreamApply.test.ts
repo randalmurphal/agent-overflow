@@ -113,51 +113,20 @@ describe('threadItemStreamApply', () => {
     }
   });
 
-  it('low power mode reveals a streamed delta whole on the next frame', async () => {
-    // Guards the revealImmediately wiring in threadStreamingReveal: with
-    // the setting on, a fat delta lands as ONE summary write on the next
-    // scheduled tick instead of animating across hundreds of frames.
+  // Guards both arms of threadStreamingReveal's revealImmediately: with
+  // either setting, a fat delta lands as ONE summary write on the next
+  // scheduled tick instead of animating across hundreds of frames.
+  // "Streaming enabled" is separate from low power: with it OFF the
+  // smoother passes received straight through, so ChatMarkdown's
+  // committed-block gate reflects wire arrival rather than a rate-limited
+  // crawl.
+  it.each([
+    ['low power mode reveals a streamed delta whole on the next frame', { lowPowerMode: true }],
+    ['disabling streaming reveals a streamed delta whole on the next frame', { streamingEnabled: false }],
+  ] as const)('%s', async (_name, setting) => {
     const clock = new FakeSmoothingClock();
     __setSmoothingClockForTest(clock);
-    getSettings().lowPowerMode = true;
-    try {
-      const pane = createThreadPane();
-      pane.upsertItem(
-        makeItem({
-          id: 'text:0:0',
-          kind: 'assistant_text',
-          status: 'streaming',
-          summary: 'seed',
-        }),
-      );
-
-      const delta = Array.from({ length: 200 }, (_, index) => `word${index}`).join(' ');
-      pane.applyItemDelta({
-        threadId: 'thread-1',
-        itemId: 'text:0:0',
-        kind: 'assistant_text',
-        delta,
-        updatedAt: 125,
-      });
-      clock.tickFrame(1);
-      expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe(
-        `seed${delta}`,
-      );
-    } finally {
-      __setSmoothingClockForTest(undefined);
-      resetSettingsForTest();
-    }
-  });
-
-  it('disabling streaming reveals a streamed delta whole on the next frame', async () => {
-    // The "Streaming enabled" setting is separate from low power: with it
-    // OFF the smoother must also pass received straight through (one
-    // summary write on the next tick), so ChatMarkdown's committed-block
-    // gate reflects wire arrival rather than a rate-limited crawl. Guards
-    // the streamingEnabled arm of threadStreamingReveal's revealImmediately.
-    const clock = new FakeSmoothingClock();
-    __setSmoothingClockForTest(clock);
-    getSettings().streamingEnabled = false;
+    Object.assign(getSettings(), setting);
     try {
       const pane = createThreadPane();
       pane.upsertItem(

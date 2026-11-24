@@ -18,14 +18,3 @@ export interface Draft {
 }
 
 export type DraftSnapshot = Omit<Draft, 'threadId' | 'updatedAt'>;
-
-export function emptyDraft(threadId = ''): Draft {
-  return {
-    threadId,
-    content: '',
-    attachmentIds: [],
-    terminalChips: [],
-    sourceProposedPlan: null,
-    updatedAt: 0,
-  };
-}

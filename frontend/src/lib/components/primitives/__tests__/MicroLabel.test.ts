@@ -8,18 +8,14 @@ import { render } from '@testing-library/svelte';
 import Harness from './MicroLabelHarness.svelte';
 
 describe('<MicroLabel>', () => {
-  it('defaults to rendering as a <span>', () => {
-    const { container } = render(Harness, { props: { label: 'Projects' } });
+  it.each([
+    { name: 'defaults to rendering as a <span>', props: { label: 'Projects' }, tag: 'SPAN' },
+    { name: 'renders as the tag passed via `as`', props: { as: 'h2' as const, label: 'Section' }, tag: 'H2' },
+  ])('$name', ({ props, tag }) => {
+    const { container } = render(Harness, { props });
     const el = container.firstElementChild!;
-    expect(el.tagName).toBe('SPAN');
-    expect(el.textContent).toContain('Projects');
-  });
-
-  it('renders as the tag passed via `as`', () => {
-    const { container } = render(Harness, { props: { as: 'h2', label: 'Section' } });
-    const el = container.firstElementChild!;
-    expect(el.tagName).toBe('H2');
-    expect(el.textContent).toContain('Section');
+    expect(el.tagName).toBe(tag);
+    expect(el.textContent).toContain(props.label);
   });
 
   it('applies the uppercase + tracked + muted-text treatment', () => {

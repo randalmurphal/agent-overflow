@@ -57,13 +57,12 @@
 // The known exceptions are recorded in the Print Doctrine; a new external
 // dependency rendered inside rows needs the same check by hand.
 
-import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import appCss from '../../../app.css?raw';
 
-const CHAT_DIR = dirname(fileURLToPath(import.meta.url));
-const APP_CSS = resolve(CHAT_DIR, '../../../app.css');
+// Read through an import so that `vitest --changed` selects this file when a
+// chat component changes.
+const CHAT_COMPONENTS = import.meta.glob<string>('./**/*.svelte', { query: '?raw', import: 'default', eager: true });
 
 /** Tailwind ships these `animate-*` utilities without an app.css
  * declaration. Each is armed unless @theme redefines or disarms it, and
@@ -88,7 +87,7 @@ const OUTSIDE_SCROLLER_ALLOWLIST: Record<string, Record<string, string>> = {
 };
 
 function readCss(): string {
-  return readFileSync(APP_CSS, 'utf8');
+  return appCss;
 }
 
 /** Every `@keyframes` block in app.css, mapped to the properties it
@@ -167,14 +166,6 @@ function animatedProperties(
   return matched ? properties : null;
 }
 
-function* walkSvelte(dir: string): Generator<string> {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) yield* walkSvelte(full);
-    else if (entry.name.endsWith('.svelte')) yield full;
-  }
-}
-
 /** Every chat component's animation hits: the label the allowlist keys
  * on, and the shorthand behind it. */
 function animationUsers(): Map<string, Map<string, string | null>> {
@@ -182,10 +173,10 @@ function animationUsers(): Map<string, Map<string, string | null>> {
   const users = new Map<string, Map<string, string | null>>();
   let scanned = 0;
 
-  for (const file of walkSvelte(CHAT_DIR)) {
+  for (const [file, source] of Object.entries(CHAT_COMPONENTS)) {
     scanned += 1;
     // HTML comments can quote a class while documenting why it is absent.
-    const text = readFileSync(file, 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+    const text = source.replace(/<!--[\s\S]*?-->/g, '');
     const hits = new Map<string, string | null>();
 
     for (const [cls, declaration] of armed) {
@@ -198,7 +189,7 @@ function animationUsers(): Map<string, Map<string, string | null>> {
       if (!declaration.startsWith('none')) hits.set(`animation: ${declaration}`, declaration);
     }
 
-    if (hits.size > 0) users.set(relative(CHAT_DIR, file).split(sep).join('/'), hits);
+    if (hits.size > 0) users.set(file.slice('./'.length), hits);
   }
 
   if (scanned === 0) throw new Error('no .svelte files found; the rule would pass vacuously');

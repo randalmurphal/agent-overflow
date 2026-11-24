@@ -1,3 +1,7 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 import { test, expect } from './fixtures.js';
 import {
   FunctionalFlowRunner,
@@ -100,6 +104,14 @@ test('requires explicit typed monitor identity and compatibility leg', async () 
     actions: [],
     monitors: [{ id: 'custom', target: { testId: 'x' }, compatibilityLeg: 'bogus', durationMs: 10 }],
   })).toThrow('compatibilityLeg requires an explicit monitorId');
+  for (const leg of ['platform', 'provider-source']) {
+    expect(() => parseFunctionalScenario({
+      v: 1,
+      id: `${leg}-leg`,
+      actions: [],
+      monitors: [{ id: 'frame-pacing', monitorId: 'frame-pacing', compatibilityLeg: leg, durationMs: 10 }],
+    })).toThrow(`unknown compatibility leg "${leg}"`);
+  }
 });
 
 test('hidden and absent semantic targets settle without a timeout', async ({ page }) => {
@@ -158,7 +170,16 @@ test('cancels and joins monitors when an action fails', async ({ page }) => {
     monitors: [{ id: 'status', target: { testId: 'status' }, durationMs: 1_000, intervalMs: 10 }],
   })).rejects.toThrow('exactly one');
   const last = runner.ui.lastObservations();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // A monitor of the same cadence, run after the failure, is the barrier:
+  // once it has observed three times, a monitor the failed run left going
+  // would have observed again too.
+  const control = new FunctionalFlowRunner(ownPage(page));
+  await control.run({
+    v: 1,
+    id: 'cancel-monitor-control',
+    actions: [],
+    monitors: [{ id: 'status', target: { testId: 'status' }, durationMs: 30, intervalMs: 10 }],
+  });
   expect(runner.ui.lastObservations()).toEqual(last);
 });
 
@@ -222,13 +243,8 @@ test('drives pointer, wheel and viewport input without page evaluation', async (
 
 test('selects a registered monitor and persists owned heartbeat evidence', async ({ harness, page }) => {
   await harness.open(page);
-  const deadline = Date.now() + 10_000;
   let pageID = '';
-  while (Date.now() < deadline && pageID === '') {
-    pageID = new URL(page.url()).searchParams.get('pageId')?.trim() ?? '';
-    if (pageID === '') await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  expect(pageID).not.toBe('');
+  await expect.poll(() => (pageID = new URL(page.url()).searchParams.get('pageId')?.trim() ?? ''), { timeout: 10_000, intervals: [25] }).not.toBe('');
   const runner = new FunctionalFlowRunner(ownPage(page), [], {
     runId: 'flow-owned',
     compatibilityLeg: 'functional',
@@ -244,4 +260,40 @@ test('selects a registered monitor and persists owned heartbeat evidence', async
   expect(report.monitors).toMatchObject([{ monitorId: 'semantic-dom-stability', runId: 'flow-owned/semantic-dom-stability', status: 'complete' }]);
   expect(report.monitors[0]?.typed).toMatchObject({ runId: 'flow-owned/semantic-dom-stability', status: 'complete' });
   expect(() => parseFunctionalScenario({ v: 1, id: 'wrong-leg', actions: [], monitors: [{ id: 'frame-pacing', monitorId: 'frame-pacing', compatibilityLeg: 'functional', durationMs: 10 }] })).toThrow('belongs to clean-renderer');
+});
+
+// A run's leg is checked against its scenario by the rule the harness
+// commands apply: it must select a typed monitor, and every typed monitor
+// must belong to it.
+test('refuses a run leg that selects no typed monitor or does not match one', async ({ page }) => {
+  const semanticOnly = { v: 1, id: 'semantic-only', actions: [], monitors: [{ id: 'status', target: { testId: 'status' }, durationMs: 10 }] };
+  await expect(new FunctionalFlowRunner(ownPage(page), [], { compatibilityLeg: 'functional' }).run(semanticOnly))
+    .rejects.toThrow('compatibilityLeg functional selects no monitor: scenario "semantic-only" has no typed monitor');
+  const cleanRenderer = { v: 1, id: 'clean', actions: [], monitors: [{ id: 'frame-pacing', monitorId: 'frame-pacing', compatibilityLeg: 'clean-renderer', durationMs: 10 }] };
+  await expect(new FunctionalFlowRunner(ownPage(page), [], { compatibilityLeg: 'functional' }).run(cleanRenderer))
+    .rejects.toThrow('compatibilityLeg functional: monitor "frame-pacing" belongs to clean-renderer');
+});
+
+// The script checks the leg after reading the scenario and before it
+// launches a browser or a backend: a missing backend binary would fail the
+// run later, with another message.
+test('the flow script refuses a mismatched --leg before launching anything', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'ao-flow-leg-'));
+  try {
+    const spec = path.join(dir, 'scenario.json');
+    const report = path.join(dir, 'report.json');
+    await writeFile(spec, JSON.stringify({ v: 1, id: 'semantic-only', actions: [], monitors: [{ id: 'status', target: { testId: 'status' }, durationMs: 10 }] }));
+    // As cmd/ao-harness-e2e runs it for `pnpm harness:flow`.
+    const script = path.resolve(import.meta.dirname, '../scripts/run-functional-flow.ts');
+    const result = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
+      execFile(process.execPath, ['--experimental-transform-types', script, '--spec', spec, '--report', report, '--leg', 'functional', '--binary', path.join(dir, 'no-backend')], { timeout: 60_000 }, (error, _stdout, stderr) => {
+        resolve({ code: error ? (typeof error.code === 'number' ? error.code : null) : 0, stderr });
+      });
+    });
+    expect(result.stderr).toContain('functional flow failed before execution: --leg functional selects no monitor: scenario "semantic-only" has no typed monitor');
+    expect(result.code).toBe(1);
+    expect(JSON.parse(await readFile(report, 'utf8'))).toMatchObject({ status: 'failed', ownership: null });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

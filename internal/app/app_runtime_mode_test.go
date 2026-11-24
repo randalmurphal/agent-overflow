@@ -11,6 +11,8 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+
+	"github.com/google/uuid"
 )
 
 // createRuntimeTestThread seeds a thread the runtime-mode bindings can
@@ -202,7 +204,9 @@ func TestSendRuntimeModeChangeReconnectsAfterInflightStart(t *testing.T) {
 	sendErr := make(chan error, 1)
 	go func() {
 		_, err := app.SendMessageWithOptions(context.Background(), id, "hello", SendMessageOptions{
-			RuntimeMode: string(provider.RuntimeFullAccess),
+			SendID:            uuid.NewString(),
+			ReconcileBySendID: true,
+			RuntimeMode:       string(provider.RuntimeFullAccess),
 		})
 		sendErr <- err
 	}()
@@ -234,10 +238,10 @@ func TestSendRuntimeModeChangeReconnectsAfterInflightStart(t *testing.T) {
 	}
 }
 
-// TestGetThreadRuntimeModeRoundTrips ensures the read side returns exactly
-// what UpdateThreadRuntimeMode persisted — the normalization path doesn't
-// clobber a valid mode on the way out.
-func TestGetThreadRuntimeModeRoundTrips(t *testing.T) {
+// TestUpdateThreadRuntimeModePersistsEveryMode ensures the stored row holds
+// exactly the mode UpdateThreadRuntimeMode was given — normalization doesn't
+// clobber a valid mode.
+func TestUpdateThreadRuntimeModePersistsEveryMode(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	id := createRuntimeTestThread(t, app, provider.RuntimeFullAccess)
@@ -246,11 +250,11 @@ func TestGetThreadRuntimeModeRoundTrips(t *testing.T) {
 		if _, err := app.UpdateThreadRuntimeMode(context.Background(), id, string(mode)); err != nil {
 			t.Fatalf("UpdateThreadRuntimeMode(%s): %v", mode, err)
 		}
-		got, err := app.GetThreadRuntimeMode(id)
+		thread, err := app.store.GetThread(id)
 		if err != nil {
-			t.Fatalf("GetThreadRuntimeMode(%s): %v", mode, err)
+			t.Fatalf("GetThread(%s): %v", mode, err)
 		}
-		if got != string(mode) {
+		if got := thread.RuntimeMode; got != string(mode) {
 			t.Errorf("round-trip %s: got %q, want %q", mode, got, mode)
 		}
 	}

@@ -18,6 +18,7 @@ import (
 // runs before the tests and another after them, whether they pass or fail,
 // and the target keeps the tests' outcome unless a pass fails it.
 func TestMakeGoTestTrimsBeforeAndAfterTheTests(t *testing.T) {
+	reporoot.Observe(t, "Makefile")
 	make, err := exec.LookPath("make")
 	if err != nil {
 		t.Fatal(err)

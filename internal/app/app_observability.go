@@ -35,18 +35,14 @@ func (a *App) ReplayManager() *replay.Manager {
 	return a.replay
 }
 
-// ReconfigureObservability reconciles the live observability stack with the
+// reconfigureObservability reconciles the live observability stack with the
 // current Settings snapshot. Tracing changes always require restart (we
 // don't hot-swap tracer providers — that path is too easy to break in
 // ways the user only sees when a trace goes missing). The replay toggle
 // is cheap to flip in place.
 //
-// This is the hook the UI calls after UpdateSettings persists a change —
-// see app_settings.go.
-//
-//ao:scope host
-//ao:route home
-func (a *App) ReconfigureObservability(prev, next settings.Settings) {
+// UpdateSettings calls it after it persists a change (app_settings.go).
+func (a *App) reconfigureObservability(prev, next settings.Settings) {
 	if a.replay != nil {
 		a.replay.SetEnabled(next.ObservabilityEventLogEnabled)
 	}
@@ -63,20 +59,6 @@ func (a *App) uiTrace() (*uitrace.Tracer, error) {
 		a.uiTracer, a.uiTraceErr = uitrace.New(a.configDir)
 	})
 	return a.uiTracer, a.uiTraceErr
-}
-
-// GetUIRenderTracePath returns the dev trace file path used by
-// AppendUIRenderTraceBatch. The frontend exposes it through the console trace
-// API so a debug run can be inspected after a visual glitch.
-//
-//ao:scope host
-//ao:route home
-func (a *App) GetUIRenderTracePath() (string, error) {
-	t, err := a.uiTrace()
-	if err != nil {
-		return "", err
-	}
-	return t.Path(), nil
 }
 
 // AppendUIRenderTraceBatch appends compact dev-only UI render trace records.

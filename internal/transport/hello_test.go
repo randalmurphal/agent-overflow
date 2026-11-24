@@ -80,7 +80,8 @@ func TestServer_HeartbeatProbeRepliesBeforePeriodicKeepalive(t *testing.T) {
 // The ordering is a contract, not an accident of goroutine scheduling: a
 // client that reads hello first can seed its compatibility state before
 // anything else lands, and needs no "have I been told yet" branch on
-// every other frame.
+// every other frame. The same frame from a backend with nothing configured
+// says "unknown" by omission, never by an empty value.
 func TestServer_HelloIsTheFirstFrameOnEveryConnection(t *testing.T) {
 	f := newServerFixture(t)
 	// Sampled before the DIAL, not before the read: the server stamps the
@@ -108,18 +109,33 @@ func TestServer_HelloIsTheFirstFrameOnEveryConnection(t *testing.T) {
 	if hello.ServerTimeMs < before || hello.ServerTimeMs > after {
 		t.Fatalf("serverTimeMs = %d, want within [%d, %d]", hello.ServerTimeMs, before, after)
 	}
-}
-
-// Capabilities must serialize as [] and never as null. A client reads an
-// empty list without a nil check, and "advertises nothing" has to stay
-// distinguishable from "too old to send this frame at all".
-func TestServer_HelloCapabilitiesAreAnArrayNeverNull(t *testing.T) {
-	f := newServerFixture(t)
-	conn := f.dial(t)
-
-	raw := string(readFirstFrame(t, conn))
-	if !strings.Contains(raw, `"capabilities":[`) {
-		t.Fatalf("capabilities not encoded as a JSON array: %s", raw)
+	// Capabilities must serialize as [] and never as null. A client reads an
+	// empty list without a nil check, and "advertises nothing" has to stay
+	// distinguishable from "too old to send this frame at all".
+	if !strings.Contains(string(raw), `"capabilities":[`) {
+		t.Errorf("capabilities not encoded as a JSON array: %s", raw)
+	}
+	// A backend whose store has not opened yet reports an empty id rather
+	// than inventing one. The client's rule is that empty means UNKNOWN and
+	// never a wildcard.
+	if hello.BackendID != "" {
+		t.Errorf("backendId = %q, want empty with no BackendIdentity configured", hello.BackendID)
+	}
+	// An unreadable hostname is an empty answer rather than a failure
+	// (internal/appidentity.HostDisplayName), and an omitted field has to
+	// stay distinguishable from a backend too old to send one: both mean
+	// "unknown", and a client falls back to the id for both. Emitting `""`
+	// would say the same thing in a second spelling every consumer would
+	// then owe a branch for.
+	//
+	// A backend that serves no bundle omits all three bundle fields rather
+	// than sending empty ones. Absent is what a shell reads as "this backend
+	// does not supply bundles", the same answer a backend too old to send
+	// them gives, and the one that leaves the phone running what it has.
+	for _, field := range []string{"backendName", "bundleId", "bundleVersion", "minShellBuild"} {
+		if strings.Contains(string(raw), field) {
+			t.Errorf("hello names %s with nothing configured: %s", field, raw)
+		}
 	}
 }
 
@@ -135,23 +151,6 @@ func TestServer_HelloOmitsAgentMessageRunMembersWhenConfigured(t *testing.T) {
 		if got := slices.Contains(hello.Capabilities, CapabilityAgentMessageRunMembers); got == omit {
 			t.Fatalf("omit=%v: hello advertises %s = %v", omit, CapabilityAgentMessageRunMembers, got)
 		}
-	}
-}
-
-func TestServer_HelloCarriesBackendIdentity(t *testing.T) {
-	f := newServerFixtureWith(t, func(cfg *Config) {
-		cfg.BackendIdentity = func() (string, string) {
-			return "backend-uuid-1", "generation-7"
-		}
-	})
-	conn := f.dial(t)
-
-	var hello helloFrame
-	if err := json.Unmarshal(readFirstFrame(t, conn), &hello); err != nil {
-		t.Fatalf("decode hello: %v", err)
-	}
-	if hello.BackendID != "backend-uuid-1" {
-		t.Fatalf("backendId = %q, want %q", hello.BackendID, "backend-uuid-1")
 	}
 }
 
@@ -189,22 +188,6 @@ func TestServer_HelloLaunchIDMatchesBootstrapAndChangesOnlyAcrossBoots(t *testin
 			conn.CloseNow()
 		}
 		previousLaunch = bootstrap.LaunchID
-	}
-}
-
-// A backend whose store has not opened yet reports an empty id rather
-// than inventing one. The client's rule is that empty means UNKNOWN and
-// never a wildcard, so the wire has to be able to say it.
-func TestServer_HelloOmitsBackendIDWhenIdentityIsUnknown(t *testing.T) {
-	f := newServerFixture(t)
-	conn := f.dial(t)
-
-	var hello helloFrame
-	if err := json.Unmarshal(readFirstFrame(t, conn), &hello); err != nil {
-		t.Fatalf("decode hello: %v", err)
-	}
-	if hello.BackendID != "" {
-		t.Fatalf("backendId = %q, want empty with no BackendIdentity configured", hello.BackendID)
 	}
 }
 
@@ -265,52 +248,44 @@ func TestFilePreviewCapabilityRequiresExecutionHostSupport(t *testing.T) {
 	}
 }
 
-// A subtraction the set allows, and the reason it exists: an
-// isolated boot standing in for a build that predates a thread peer
-// protocol generation, so an end-to-end test can reach what an older
-// destination answers. It takes that generation and every later one and
-// nothing else, in every deployment shape.
-func TestThreadToolsGenerationsCanBeOmittedForAnOlderPeerStandIn(t *testing.T) {
-	for _, browser := range []bool{false, true} {
-		for _, transfers := range []bool{false, true} {
-			for _, previews := range []bool{false, true} {
-				full := advertisedCapabilities(func() bool { return browser }, transfers, previews, "", false)
-				if !slices.Contains(full, CapabilityThreadTools) || !slices.Contains(full, CapabilityThreadToolsV2) {
-					t.Fatal("an ordinary backend did not advertise every thread tools generation")
-				}
-				for older, dropped := range map[string][]string{
-					CapabilityThreadTools:   {CapabilityThreadTools, CapabilityThreadToolsV2},
-					CapabilityThreadToolsV2: {CapabilityThreadToolsV2},
-				} {
-					want := slices.DeleteFunc(slices.Clone(full), func(name string) bool {
-						return slices.Contains(dropped, name)
-					})
-					assertCapabilities(t, advertisedCapabilities(func() bool { return browser }, transfers, previews, older, false), want)
-				}
-			}
-		}
-	}
-}
-
-// The other subtraction: an isolated boot standing in for a build before
-// the agent-message membership rule leaves that capability out, and only
-// it, in every deployment shape and beside an older thread peer protocol.
-func TestAgentMessageRunMembersCanBeOmittedForAnOlderBuildStandIn(t *testing.T) {
-	for _, browser := range []bool{false, true} {
-		for _, transfers := range []bool{false, true} {
-			for _, previews := range []bool{false, true} {
-				for _, older := range []string{"", CapabilityThreadToolsV2} {
-					full := advertisedCapabilities(func() bool { return browser }, transfers, previews, older, false)
-					if !slices.Contains(full, CapabilityAgentMessageRunMembers) {
-						t.Fatal("an ordinary backend did not advertise the agent-message membership rule")
+// The two subtractions the set allows, and the reason they exist: an
+// isolated boot standing in for an older build, so an end-to-end test can
+// reach what an older destination answers. One that predates a thread peer
+// protocol generation takes that generation and every later one; one that
+// predates the agent-message membership rule takes that capability, also
+// beside an older thread peer protocol. Each takes nothing else, in every
+// deployment shape.
+func TestCapabilitiesCanBeOmittedForAnOlderBuildStandIn(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		base     string // the thread peer generation of the backend compared against
+		standIn  string // the stand-in's thread peer generation
+		omitRule bool   // whether the stand-in omits the agent-message membership rule
+		dropped  []string
+	}{
+		{"thread tools v1", "", CapabilityThreadTools, false, []string{CapabilityThreadTools, CapabilityThreadToolsV2}},
+		{"thread tools v2", "", CapabilityThreadToolsV2, false, []string{CapabilityThreadToolsV2}},
+		{"agent-message members", "", "", true, []string{CapabilityAgentMessageRunMembers}},
+		{"agent-message members beside thread tools v2", CapabilityThreadToolsV2, CapabilityThreadToolsV2, true, []string{CapabilityAgentMessageRunMembers}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, browser := range []bool{false, true} {
+				for _, transfers := range []bool{false, true} {
+					for _, previews := range []bool{false, true} {
+						full := advertisedCapabilities(func() bool { return browser }, transfers, previews, tc.base, false)
+						for _, name := range tc.dropped {
+							if !slices.Contains(full, name) {
+								t.Fatalf("an ordinary backend did not advertise %s", name)
+							}
+						}
+						want := slices.DeleteFunc(slices.Clone(full), func(name string) bool {
+							return slices.Contains(tc.dropped, name)
+						})
+						assertCapabilities(t, advertisedCapabilities(func() bool { return browser }, transfers, previews, tc.standIn, tc.omitRule), want)
 					}
-					want := slices.DeleteFunc(slices.Clone(full), func(name string) bool {
-						return name == CapabilityAgentMessageRunMembers
-					})
-					assertCapabilities(t, advertisedCapabilities(func() bool { return browser }, transfers, previews, older, true), want)
 				}
 			}
-		}
+		})
 	}
 }
 
@@ -389,22 +364,6 @@ func TestServer_HelloCarriesTheBackendName(t *testing.T) {
 	}
 }
 
-// TestServer_HelloOmitsAnUnknownBackendName pins the absence.
-//
-// An unreadable hostname is an empty answer rather than a failure
-// (internal/appidentity.HostDisplayName), and an omitted field has to
-// stay distinguishable from a backend too old to send one — both mean
-// "unknown", and a client falls back to the id for both. Emitting `""`
-// would say the same thing in a second spelling every consumer would
-// then owe a branch for.
-func TestServer_HelloOmitsAnUnknownBackendName(t *testing.T) {
-	f := newServerFixture(t)
-	raw := readFirstFrame(t, f.dial(t))
-	if strings.Contains(string(raw), "backendName") {
-		t.Fatalf("hello names an unset backendName: %s", raw)
-	}
-}
-
 // TestServer_HelloCarriesTheBundleItServes pins the three additive
 // fields wave 6g-a put on this frame against the manifest they come
 // from (internal/bundle).
@@ -439,19 +398,5 @@ func TestServer_HelloCarriesTheBundleItServes(t *testing.T) {
 	}
 	if hello.MinShellBuild != bundle.MinShellBuild {
 		t.Errorf("minShellBuild = %d, want %d", hello.MinShellBuild, bundle.MinShellBuild)
-	}
-}
-
-// A backend that serves no bundle omits all three rather than sending
-// empty ones. Absent is what a shell reads as "this backend does not
-// supply bundles" — the same answer a backend too old to send them
-// gives, and the one that leaves the phone running what it has.
-func TestServer_HelloOmitsBundleFieldsWithoutABundle(t *testing.T) {
-	f := newServerFixture(t)
-	raw := string(readFirstFrame(t, f.dial(t)))
-	for _, field := range []string{"bundleId", "bundleVersion", "minShellBuild"} {
-		if strings.Contains(raw, field) {
-			t.Fatalf("hello names %s with no configured bundle: %s", field, raw)
-		}
 	}
 }

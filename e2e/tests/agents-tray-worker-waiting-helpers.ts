@@ -20,6 +20,7 @@ import type { Locator, Page } from '@playwright/test';
 
 import { expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
+import { STALE_CHECK_INTERVAL_MS, STALE_TRAFFIC_THRESHOLD_MS } from '../../frontend/src/lib/pageTiming.ts';
 import {
   FOOTER_TOKEN_PATTERN,
   advanceGate,
@@ -85,8 +86,7 @@ export async function runWorkerWaiting(harness: HarnessApp, page: Page, provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'watch the build and the board', null);
+  await harness.send(lead, 'watch the build and the board');
   const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd: loopP.path, timeoutMs: 60_000 });
   expect(loop.isError, loop.text).toBe(false);
   let spawns: ReturnType<typeof ledgerRequests> = [];
@@ -152,8 +152,7 @@ export async function runAncestorWaiting(harness: HarnessApp, page: Page, provid
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'run the board', null);
+  await harness.send(lead, 'run the board');
   const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd: grandP.path, timeoutMs: 60_000 });
   expect(loop.isError, loop.text).toBe(false);
   let spawn: ReturnType<typeof ledgerRequests>[number] | undefined;
@@ -191,8 +190,12 @@ const FACTS_WAITING = 'Tailing the build log.';
 const FACTS_ANSWER = 'The build is green.';
 const FACTS_SHELL = /tail -f build\.log|tail the build log/;
 const FACTS_READ = /cat build\.log/;
-/** How long a test leaves a worker between turns to see its runtime stand still. */
-const IDLE_MS = 2_500;
+/**
+ * How far the page clock moves on with a worker between turns to see its
+ * runtime stand still: well past a tick of its elapsed time, and a staleness
+ * check short of the silence the socket would read as a dead link.
+ */
+const IDLE_MS = STALE_TRAFFIC_THRESHOLD_MS - STALE_CHECK_INTERVAL_MS;
 
 /** A row's runtime as AgentTrayRow writes it (formatElapsed). */
 function ranFor(ms: number): string {
@@ -290,11 +293,15 @@ async function expectRuntimeRunning(row: Locator): Promise<void> {
   await expect(elapsed).not.toHaveText(before ?? '', { timeout: 5_000 });
 }
 
-/** The row's runtime stands still while its worker is between turns. */
+/**
+ * The row's runtime stands still while its worker is between turns:
+ * IDLE_MS of the page clock moves nothing. The page clock must have been
+ * installed before the page opened.
+ */
 async function expectRuntimeIdle(page: Page, row: Locator): Promise<void> {
   const elapsed = row.getByTestId('agent-tray-row-elapsed');
   const before = await elapsed.textContent();
-  await page.waitForTimeout(IDLE_MS);
+  await page.clock.runFor(IDLE_MS);
   await expect(elapsed).toHaveText(before ?? '');
 }
 
@@ -336,8 +343,7 @@ export async function runHeldWorkerFacts(harness: HarnessApp, page: Page, provid
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'run the build', null);
+  await harness.send(lead, 'run the build');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const { token, thread_id: worker } = spawn.value!;
@@ -345,7 +351,9 @@ export async function runHeldWorkerFacts(harness: HarnessApp, page: Page, provid
   const start = await awaitGate(harness, 'facts-start', workerP.path);
 
   // The rail is mounted before the worker does anything: every count below
-  // reaches it as a frame of the open row.
+  // reaches it as a frame of the open row. The page clock runs as the real
+  // one does until expectRuntimeIdle moves it on.
+  await page.clock.install();
   await harness.open(page);
   await openAgents(page, LEAD);
   const row = openAgentRow(page, token);
@@ -408,7 +416,7 @@ export async function runHeldWorkerFacts(harness: HarnessApp, page: Page, provid
   // The shell ends in its next turn: the spawn settles finished with that
   // turn's message, and the spawner is told.
   const told = awaitMockInput(harness, { cwd: leadP.path, includes: [token, FACTS_ANSWER] });
-  await harness.rpc('SendMessage', worker, 'is the build done?', null);
+  await harness.send(worker, 'is the build done?');
   await told;
   const span = Date.now() - started;
   expect(ledgerRow(harness, token)).toMatchObject({ state: 'finished', answer: FACTS_ANSWER });
@@ -418,12 +426,13 @@ export async function runHeldWorkerFacts(harness: HarnessApp, page: Page, provid
   await expect(past.getByTestId('agent-tray-row-tools')).toHaveText('3 tools');
   await expect(past.getByTestId('agent-tray-row-tokens')).toHaveText('3.0k tokens');
   await expect(past.getByTestId('agent-tray-row-activity')).toHaveCount(0);
-  // Its runtime is its turns' time, the time between them left out.
+  // Its runtime is its turns' time; that the time between them is left out
+  // is internal/app TestAWorkerRowsRuntimeIsItsTurnsTime.
   const settled = await listedPastRow(harness, lead, token);
   expect(settled).toMatchObject({ toolCalls: 3, tokens: 3000 });
   expect(settled!.turnOpen ?? false).toBe(false);
   expect(settled!.runtimeMs ?? 0).toBeGreaterThan(0);
-  expect(settled!.runtimeMs!, 'the time between its turns is not runtime').toBeLessThan(span - IDLE_MS);
+  expect(settled!.runtimeMs!).toBeLessThan(span);
   await expect(past.getByTestId('agent-tray-row-elapsed')).toHaveAttribute('title', ranFor(settled!.runtimeMs!));
 }
 
@@ -469,8 +478,7 @@ export async function runReplyThenRest(harness: HarnessApp, page: Page, provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'start the deploy', null);
+  await harness.send(lead, 'start the deploy');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   // The reply waits for the spawn to return, so it reaches the lead as a message.
   await releaseAfterBackgrounded(spawn, { harness, gate: 'reply-send', cwd: workerP.path });
@@ -541,8 +549,7 @@ export async function runHeldThenError(harness: HarnessApp, page: Page, provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'watch the board', null);
+  await harness.send(lead, 'watch the board');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const { token, thread_id: worker } = spawn.value!;
@@ -560,7 +567,7 @@ export async function runHeldThenError(harness: HarnessApp, page: Page, provider
 
   // A later turn fails: the spawn settles failed with its error, once.
   const told = awaitMockInput(harness, { cwd: leadP.path, includes: [token] });
-  await harness.rpc('SendMessage', worker, 'look at the board now', null);
+  await harness.send(worker, 'look at the board now');
   await told;
   expect(ledgerRow(harness, token)).toMatchObject({ state: 'errored' });
   expect(ledgerRow(harness, token)!.answer).toContain(HELD_FAILURE);

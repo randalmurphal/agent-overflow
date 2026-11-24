@@ -11,20 +11,24 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/reporoot"
 )
 
-// A request's work may start as the last one ends while shutdown, the
-// harness or a test waits on threadRequestsWG: the emit path starts a
-// drain from whatever goroutine emitted. The Wait returns at the moment
-// the count reached zero, and the new member is counted for the next one.
-// With one P the waiter cannot run between the Done and the Add, which is
-// the order a sync.WaitGroup panics on ("WaitGroup is reused before
-// previous Wait has returned"). Serial: it sets GOMAXPROCS.
-func TestThreadRequestWorkMayStartAsAWaitReturns(t *testing.T) {
+// Work may start as the last member ends while shutdown, the harness or a
+// test waits on the group: the emit path starts a request drain from
+// whatever goroutine emitted, a send, a stop or a delete starts notice work
+// from its own, a queued message's handoff starts a flush dispatch worker
+// from the triage callback, a subscribe or a CI action starts a PR update
+// pump from its RPC, and each group listed below the test starts its
+// members from a request, a PTY exit or the provider event worker. Each is
+// a workGroup, so this tests the one algorithm they share. The Wait returns
+// at the moment the count reached zero, and the new member is counted for
+// the next one. With one P the waiter cannot run between the Done and the
+// Add, which is the order a sync.WaitGroup panics on ("WaitGroup is reused
+// before previous Wait has returned"). Serial: it sets GOMAXPROCS.
+func TestWorkMayStartAsAWaitReturns(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
-	var a App
-	g := &a.threadRequestsWG
-
+	g := &workGroup{}
 	g.addMember(1)
 	waited := make(chan struct{})
 	go waitThreadRequestWork(g, waited)
@@ -53,6 +57,25 @@ func TestThreadRequestWorkMayStartAsAWaitReturns(t *testing.T) {
 		t.Fatal("Wait did not return once the member that started during the last one ended")
 	}
 	g.Wait()
+}
+
+// The App's groups whose members start from whatever goroutine does the
+// work. The listing stops compiling when one of them is anything but a
+// workGroup, whose Wait allows that (TestWorkMayStartAsAWaitReturns).
+var _ = func(a *App) []*workGroup {
+	return []*workGroup{
+		&a.threadRequestsWG,
+		&a.agentNoticeWork.wg,
+		&a.flushDispatch.wg,
+		&a.prUpdates.wg,
+		&a.terminalThreads.wg,
+		&a.reviewDiffFiles.pins,
+		&a.browser.applyWG,
+		&a.permissionModeFollowWG,
+		&a.markThreadRead.wg,
+		&a.memoryReports.wg,
+		&a.sendsPending.wg,
+	}
 }
 
 func waitThreadRequestWork(g interface{ Wait() }, done chan<- struct{}) {
@@ -120,16 +143,11 @@ func TestWorkGroupCloseJoinsAndRefuses(t *testing.T) {
 // the group.
 func TestWorkGroupMembersStartOnlyThroughGo(t *testing.T) {
 	t.Parallel()
-	// Application tests run from the repository root.
-	files, err := filepath.Glob(filepath.Join("internal", "app", "*.go"))
-	if err != nil || len(files) == 0 {
-		t.Fatalf("no package sources found: %v", err)
-	}
-	for _, file := range files {
+	for _, file := range reporoot.Files(t, "internal/app", "*.go") {
 		if strings.HasSuffix(file, "_test.go") || filepath.Base(file) == "app_work_group.go" {
 			continue
 		}
-		src, err := os.ReadFile(file)
+		src, err := os.ReadFile(reporoot.Path(t, file))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,4 +282,11 @@ func TestARefusedWakeGivesBackItsSlotAndIsDropped(t *testing.T) {
 	if delivered || !dropped || len(cancelled.threadWakeDeliverySlots()) != 0 {
 		t.Fatalf("cancelled: delivered %v dropped %v slots %d", delivered, dropped, len(cancelled.threadWakeDeliverySlots()))
 	}
+}
+
+// members is how many members run, for tests.
+func (g *workGroup) members() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.n
 }

@@ -31,7 +31,10 @@ func codexResetMock(t *testing.T) (codex.ProbeConfig, codexfake.Store) {
 		Reaper:  procutiltest.Reaper(),
 		Binary:  mockBin,
 		WorkDir: t.TempDir(),
-		Env:     map[string]string{"HOME": home, "CODEX_HOME": codexHome},
+		Env: provider.EnvInput{
+			Custom: map[string]string{"HOME": home},
+			Pins:   map[provider.ReservedEnv]string{provider.CodexHomeEnv: codexHome},
+		},
 	}, codexfake.Store{Home: home}
 }
 

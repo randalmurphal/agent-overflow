@@ -17,7 +17,10 @@ import (
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
+
+	"github.com/google/uuid"
 )
 
 // writeCodexMarkerBinary is a Codex that records each start in marker and
@@ -61,9 +64,9 @@ while IFS= read -r line; do
     printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-%%s","status":"completed"}}}\n' "$turn"
     continue
   fi
-  printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+%s  printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, accountJSON, providerThread, capture, providerThread, providerThread, providerThread)
+`, accountJSON, providerThread, capture, providerThread, providerThread, providerThread, testutil.MockCodexUnsubscribeShell)
 	path := filepath.Join(t.TempDir(), "codex-turns")
 	mockexec.Write(t, path, script)
 	return path
@@ -228,7 +231,7 @@ func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 			}
 
 			setBinary(writeCodexMarkerBinary(t, marker))
-			err = app.SendMessage(context.Background(), thread.ID, "hello", nil)
+			_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString()))
 			code, message, _ := errorsx.PublicDetails(err)
 			if code != "account_login_unresolved" || !strings.Contains(message, tc.want) ||
 				!strings.Contains(message, "Sign in from the app, or switch to another saved account") {
@@ -249,8 +252,8 @@ func TestASendUnderAnUnresolvedLoginIsRefusedUntilASwitch(t *testing.T) {
 			}
 			capture := filepath.Join(t.TempDir(), "turns")
 			setBinary(tc.turns(t, capture))
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
-			if err := app.SendMessage(context.Background(), thread.ID, "hello", nil); err != nil {
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
+			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("send after the switch = %v, want it sent", err)
 			}
 			waitForCondition(t, "the turn on the switched account", func() bool {
@@ -349,9 +352,9 @@ func TestASendWithNoSavedAccountGoesOutOnALoginThatNamesNobody(t *testing.T) {
 			if err := app.store.CreateThread(thread); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
-			if err := app.SendMessage(context.Background(), thread.ID, "hello", nil); err != nil {
+			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("send = %v, want it sent", err)
 			}
 			waitForCondition(t, "the turn on the nameless login", func() bool {
@@ -421,9 +424,9 @@ func TestASendOnAnAgyLoginWhoseLookupFailedIsRefusedWithTheFailure(t *testing.T)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
-	err = app.SendMessage(context.Background(), thread.ID, "hello", nil)
+	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString()))
 	if code, _, _ := errorsx.PublicDetails(err); code == "account_login_unresolved" || err == nil ||
 		!strings.Contains(err.Error(), "look up the Google account of the Antigravity login") {
 		t.Fatalf("send = %v (code %q), want the failed lookup named", err, code)

@@ -6,13 +6,15 @@
 // too). seedLeadWithWorker is the companion pane specs' one
 // assistant with one held worker. seedPastWithAsk, seedSettledWorkers,
 // seedAssistantWithHelper and failAgentReads set up the Past, paging,
-// helper and failed-read cases the desktop and compact specs share.
+// helper and failed-read cases the desktop and compact specs share. Their
+// `test` runs over a worker backend whose settled rows linger
+// AGENT_ROW_LINGER_MS.
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Locator, Page } from '@playwright/test';
 
-import { expect, type SeedResult } from './fixtures.js';
-import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
+import { HARNESS_WORKER_TIMEOUT_MS, expect, test as base, type SeedResult } from './fixtures.js';
+import { harnessTiming, launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import {
   assistantHome,
   awaitToolAnswer,
@@ -29,6 +31,25 @@ import {
   toolUseLine,
 } from './agent-visibility-helpers.js';
 import { methodIdByName } from './offhost-helpers.js';
+
+/**
+ * How long a settled Agents row lingers on these specs' backend: the
+ * tray's AGENT_ROW_SETTLED_LINGER_MS (8 s) through its harness knob, so a
+ * spec that waits a row out waits this instead.
+ */
+export const AGENT_ROW_LINGER_MS = 4_000;
+
+/** The gate's fixtures over a worker backend whose settled rows linger AGENT_ROW_LINGER_MS. */
+export const test = base.extend<object, { harnessWorker: HarnessApp }>({
+  harnessWorker: [
+    async ({}, use) => {
+      const app = await launchHarness({ env: harnessTiming({ 'agent-row-linger': `${AGENT_ROW_LINGER_MS}ms` }) });
+      await use(app);
+      await app.close();
+    },
+    { scope: 'worker', timeout: HARNESS_WORKER_TIMEOUT_MS },
+  ],
+});
 
 export const LEAD = 'Release lead';
 export const CHILD = 'Child worker';
@@ -162,8 +183,7 @@ export interface StartedTree {
 
 /** Starts the lead's turn and waits until every request is made. */
 export async function startTree(harness: HarnessApp, tree: AgentsTree): Promise<StartedTree> {
-  await harness.rpc('StartSession', tree.lead);
-  await harness.rpc('SendMessage', tree.lead, 'run the release', null);
+  await harness.send(tree.lead, 'run the release');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: tree.leadPath, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', cwd: tree.leadPath, timeoutMs: 60_000 });
@@ -224,8 +244,7 @@ export async function seedLeadWithWorker(
     turns: [{ steps: [{ gate: 'worker-hold' }], text: 'Written.' }, { text: 'Noted.' }],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'Get the changelog written.', null);
+  await harness.send(lead, 'Get the changelog written.');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   await awaitTurnCompleted(harness, lead);
@@ -407,8 +426,7 @@ export async function seedPastWithAsk(harness: HarnessApp, provider: ProviderNam
   // The asked thread runs a turn first, so its copy has a session to be
   // cut from; the copy's session reads the scenario set after it.
   await setScenario(harness, askedP.path, threadToolsScenario({ name: `${tag}-asked`, provider, turns: [{ text: 'Read the changelog.' }] }));
-  await harness.rpc('StartSession', asked);
-  await harness.rpc('SendMessage', asked, 'read the changelog', null);
+  await harness.send(asked, 'read the changelog');
   await awaitTurnCompleted(harness, asked);
   await setScenario(harness, askedP.path, threadToolsScenario({
     name: `${tag}-asked-copy`, provider, turns: [holdAsk ? { steps: [{ gate: 'ask-hold' }], text: ASK_ANSWER } : { text: ASK_ANSWER }],
@@ -425,8 +443,7 @@ export async function seedPastWithAsk(harness: HarnessApp, provider: ProviderNam
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'write the changelog and ask', null);
+  await harness.send(lead, 'write the changelog and ask');
   await awaitTurnCompleted(harness, lead);
   const [spawn, ask] = ledgerRequests(harness, lead);
   expect([spawn?.kind, ask?.kind]).toEqual(['spawn', 'ask']);
@@ -459,8 +476,7 @@ export async function seedSettledWorkers(harness: HarnessApp, provider: Provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'split the work', null);
+  await harness.send(lead, 'split the work');
   await awaitTurnCompleted(harness, lead);
   expect(ledgerRequests(harness, lead).map((r) => r.kind)).toEqual(Array(count).fill('spawn'));
   await expect.poll(() => pastTotal(harness, lead), { timeout: 90_000 }).toBe(count);
@@ -498,15 +514,14 @@ export async function seedAssistantWithHelper(harness: HarnessApp, provider: Pro
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'get ready', null);
+  await harness.send(lead, 'get ready');
   await awaitTurnCompleted(harness, lead);
   await setScenario(harness, home, threadToolsScenario({
     name: `${tag}-helper`, provider, echoUserMessage: true,
     turns: [{ steps: [{ gate: 'helper-hold' }], text: 'Notes kept.' }],
     afterTurns: 'silent',
   }));
-  await harness.rpc('SendMessage', lead, 'keep the release notes', null);
+  await harness.send(lead, 'keep the release notes');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   return { lead, home, token: spawn.value!.token, helper: spawn.value!.thread_id };

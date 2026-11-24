@@ -192,30 +192,21 @@ describe('images in review prose', () => {
     expect([box(first).width, box(first).height]).toEqual([40, 20]);
   });
 
-  it.each(PATHS)('resolves a percentage width against the line, through the %s path', async (path) => {
-    const image = await sizedImage(path, 'width="50%"', 320, { src: BADGE, width: 80, height: 20 });
-    expect([box(image).width, box(image).height]).toEqual([160, 40]);
-  });
-
-  it.each(PATHS)('keeps an authored ratio when the line narrows the width, through the %s path', async (path) => {
-    const image = await sizedImage(path, 'width="400" height="100"', 200, { src: BANNER, width: 400, height: 100 });
-    expect([box(image).width, box(image).height]).toEqual([200, 50]);
-  });
-
-  it.each(PATHS)('paints an authored width and height where the line has room, through the %s path', async (path) => {
-    const image = await sizedImage(path, 'width="120" height="60"', 600, { src: BANNER, width: 400, height: 100 });
-    expect([box(image).width, box(image).height]).toEqual([120, 60]);
-  });
-
-  it.each(PATHS)('derives the width of an authored height alone from the ratio, through the %s path', async (path) => {
-    const image = await sizedImage(path, 'height="10"', 600, { src: BADGE, width: 80, height: 20 });
-    expect([box(image).width, box(image).height]).toEqual([40, 10]);
-  });
-
-  it.each(PATHS)('derives the height of an authored width alone from the ratio, through the %s path', async (path) => {
-    const image = await sizedImage(path, 'width="40"', 600, { src: BADGE, width: 80, height: 20 });
-    expect([box(image).width, box(image).height]).toEqual([40, 10]);
-  });
+  const badge = { src: BADGE, width: 80, height: 20 };
+  const banner = { src: BANNER, width: 400, height: 100 };
+  it.each(([
+    ['resolves a percentage width against the line', 'width="50%"', 320, badge, [160, 40]],
+    ['keeps an authored ratio when the line narrows the width', 'width="400" height="100"', 200, banner, [200, 50]],
+    ['paints an authored width and height where the line has room', 'width="120" height="60"', 600, banner, [120, 60]],
+    ['derives the width of an authored height alone from the ratio', 'height="10"', 600, badge, [40, 10]],
+    ['derives the height of an authored width alone from the ratio', 'width="40"', 600, badge, [40, 10]],
+  ] as const).flatMap(([name, attrs, lineWidth, image, size]) => PATHS.map((path) => [name, path, attrs, lineWidth, image, size] as const)))(
+    '%s, through the %s path',
+    async (_name, path, attrs, lineWidth, image, size) => {
+      const painted = await sizedImage(path, attrs, lineWidth, image);
+      expect([box(painted).width, box(painted).height]).toEqual(size);
+    },
+  );
 
   it('paints a GitLab attribute list as the size and not as text', async () => {
     const host = gitlabProse(`![wide](${BADGE}){width=50%} ![small](${BADGE}){width=30}`);

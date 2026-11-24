@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 )
 
@@ -12,50 +11,8 @@ import (
 // It never projects unrelated transcript items or assigns a send call as a spawn.
 const maxOwnershipRecoveryPages = 32
 
-func (s *Session) scheduleChildOwnershipRecovery(childID string) {
-	if !s.appServerAtLeast("0.153.4") || s.closing.Load() || s.isUnrelatedProviderThread(childID) {
-		return
-	}
-	s.mu.Lock()
-	if s.childRouting.recoveryPending == nil {
-		s.childRouting.recoveryPending = make(map[string]bool)
-	}
-	if s.childRouting.recoveryPending[childID] || len(s.childRouting.recoveryQueue) >= 64 {
-		s.mu.Unlock()
-		return
-	}
-	s.childRouting.recoveryPending[childID] = true
-	s.childRouting.recoveryQueue = append(s.childRouting.recoveryQueue, childID)
-	if s.childRouting.recoveryRunning {
-		s.mu.Unlock()
-		return
-	}
-	s.childRouting.recoveryRunning = true
-	s.mu.Unlock()
-	s.startCollabAsync(func() {
-		for {
-			s.mu.Lock()
-			if len(s.childRouting.recoveryQueue) == 0 || s.closing.Load() {
-				s.childRouting.recoveryRunning = false
-				s.mu.Unlock()
-				return
-			}
-			id := s.childRouting.recoveryQueue[0]
-			s.childRouting.recoveryQueue = s.childRouting.recoveryQueue[1:]
-			s.mu.Unlock()
-			ctx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
-			err := s.recoverChildOwnership(ctx, id, make(map[string]bool))
-			cancel()
-
-			if err != nil {
-				log.Printf("codex: child %s ownership recovery: %v; awaiting canonical ownership until the routing deadline", id, err)
-			}
-		}
-	})
-}
-
 func (s *Session) recoverChildOwnership(ctx context.Context, childID string, seen map[string]bool) error {
-	if childID == s.rootThreadID() || s.parentToolUseForProviderThread(childID) != "" || s.isUnrelatedProviderThread(childID) {
+	if childID == s.rootThreadID() || s.parentToolUseForProviderThread(childID) != "" {
 		return nil
 	}
 	if seen[childID] || len(seen) >= 16 {

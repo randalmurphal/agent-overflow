@@ -9,7 +9,6 @@ export type {
   BranchPruneCandidate,
   BranchPruneCandidates,
   BranchPruneResult,
-  BranchPruneSelection,
 } from '../../../bindings/agent-overflow/internal/app/models';
 
 // The commit dialog's file list (`ListCommitFiles`): one uncommitted change
@@ -99,7 +98,7 @@ export interface GitBranch {
 
 // A tag the branch picker offers (`GitListTags` / `GitRefreshTags`), and
 // what moving a detached HEAD away from unreferenced commits reports.
-export type { GitTag, LeftBehind } from '../../../bindings/agent-overflow/internal/git/models';
+export type { GitTag } from '../../../bindings/agent-overflow/internal/git/models';
 
 export interface GitActionResult {
   action: string;

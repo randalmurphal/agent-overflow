@@ -8,7 +8,7 @@ import {
   PROMOTION_PRESENT_CEILING_MS,
   createThreadRowPromotions,
 } from './threadRowPromotions.svelte';
-import { getSettings, resetSettingsForTest } from './settings.svelte';
+import { getSettings } from './settings.svelte';
 
 class FakeSmoothingClock implements SmoothingClock {
   private nextHandle = 1;
@@ -193,7 +193,6 @@ function startHeldNarration() {
 
 afterEach(() => {
   __setSmoothingClockForTest(undefined);
-  resetSettingsForTest();
   vi.useRealTimers();
 });
 

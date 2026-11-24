@@ -1,8 +1,6 @@
 package app
 
 import (
-	"fmt"
-
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
@@ -20,19 +18,6 @@ type ThreadRuntimeModeChangedEvent struct {
 	ThreadID       string `json:"threadId"`
 	RuntimeMode    string `json:"runtimeMode"`
 	NeedsReconnect bool   `json:"needsReconnect"`
-}
-
-// GetThreadRuntimeMode returns the persisted runtime mode for a thread.
-// Exposed as a convenience binding so the frontend picker doesn't have to
-// round-trip the full Thread shape.
-//
-//ao:scope threads:read
-func (a *App) GetThreadRuntimeMode(threadID string) (string, error) {
-	t, err := a.store.GetThread(threadID)
-	if err != nil {
-		return "", fmt.Errorf("get runtime mode: %w", err)
-	}
-	return string(provider.NormalizeRuntimeMode(t.RuntimeMode)), nil
 }
 
 func (a *App) emitRuntimeModeChanged(threadID string, mode provider.RuntimeMode) {

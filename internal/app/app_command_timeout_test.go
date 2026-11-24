@@ -73,10 +73,10 @@ func startClaudeTUIRecordingTimeout(t *testing.T, app *App, id string) string {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set claude binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		data, err := os.ReadFile(record)
@@ -90,8 +90,8 @@ func startClaudeTUIRecordingTimeout(t *testing.T, app *App, id string) string {
 	}
 }
 
-// The claude-tui spawn composes a whole environment rather than an
-// override map, so its precedence is proven on the real process: the
+// The claude-tui spawn builds its environment itself rather than through
+// Spawn, so its precedence is proven on the real process: the
 // setting outranks a value inherited from the host, and a value in the
 // provider's custom environment outranks the setting. Serial: it sets the
 // process environment.

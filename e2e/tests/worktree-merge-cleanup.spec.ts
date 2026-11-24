@@ -53,13 +53,14 @@ import { basename, errorToasts, harnessGit, listWorktrees, openThread, samePath,
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { screenshot } from '../src/screenshot.js';
 
 const POLL_MS = 400;
 
 const test = base.extend<object, { harnessWorker: HarnessApp }>({
   harnessWorker: [
     async ({}, use) => {
-      const app = await launchHarness({ env: { AO_HARNESS_TIMING: mergePollTiming(`${POLL_MS}ms`) } });
+      const app = await launchHarness({ env: mergePollTiming(`${POLL_MS}ms`) });
       await use(app);
       await app.close();
     },
@@ -104,7 +105,7 @@ for (const forge of ['github', 'gitlab'] as Forge[]) {
     await expect(notice).toHaveClass(/text-fg-subtle/);
     await expect(notice).not.toHaveClass(/text-warning/);
     await expect(notice.locator('a, button')).toHaveCount(0);
-    if (forge === 'github') await notice.screenshot({ path: testInfo.outputPath('merged-notice-removed.png') });
+    if (forge === 'github') await screenshot(notice, { path: testInfo.outputPath('merged-notice-removed.png') });
 
     // Settled once: the repository is not read again.
     await expectNoMoreStateReads(harness, POLL_MS);
@@ -212,7 +213,7 @@ test('uncommitted changes keep the merged PR\'s worktree with one warning notice
   await expect(notice).toHaveText('MR !12 merged. Kept worktree dirty-branch: 2 uncommitted files.');
   await expect(notice).toHaveClass(/text-warning/);
   await expect(notice.locator('a, button')).toHaveCount(0);
-  await notice.screenshot({ path: testInfo.outputPath('merged-notice-kept.png') });
+  await screenshot(notice, { path: testInfo.outputPath('merged-notice-kept.png') });
   await expectWorktreeKept(harness, threadId, fixture);
 
   // Later polls neither read it again nor repeat the notice.
@@ -356,9 +357,11 @@ test('with background fetch off a merged PR no pane shows is not read, and turni
 
   await harness.rpc('UpdateSettings', { backgroundGitFetch: false });
   try {
+    // Off, no poll runs to read it (internal/app
+    // TestMergedPRPollFollowsTheBackgroundFetchSetting); turning it on
+    // below is what reads it.
     const before = await stateReads(harness);
     await mergePR(harness, fixture);
-    await expectNoMoreStateReads(harness, POLL_MS);
     expect(await stateReads(harness)).toBe(before);
     expect(trackedRow(harness, threadId)?.merged_at, 'the merge was read with the setting off').toBe(0);
     await expectWorktreeKept(harness, threadId, fixture);
@@ -391,14 +394,15 @@ test('a turn running when the PR merges delays the cleanup until it ends', async
 
   const mockId = await startMock(harness, threadId);
   const holding = waitForGate(harness, 'hold');
-  await harness.rpc('SendMessage', threadId, 'Start the long job.', []);
+  await harness.send(threadId, 'Start the long job.');
   await holding;
   await expect(page.getByText('Working on it.')).toBeVisible();
 
   await mergePR(harness, fixture);
   await expect.poll(() => trackedRow(harness, threadId)?.merged_at ?? 0).toBeGreaterThan(0);
-  // Several polls later the turn still runs and the worktree stays.
-  await new Promise((resolve) => setTimeout(resolve, POLL_MS * 4));
+  // Polls go on through one that came due for the merged pull request, the
+  // turn still runs and the worktree stays.
+  await expectNoMoreStateReads(harness, POLL_MS);
   expect(trackedRow(harness, threadId)?.handled_at).toBe(0);
   await expectWorktreeKept(harness, threadId, fixture);
 
@@ -431,7 +435,7 @@ test('a message the user sent after the merge keeps the worktree, with no notice
   // the merge only after.
   const mergedAt = new Date(Date.now() - 1_000);
   const completed = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
-  await harness.rpc('SendMessage', threadId, 'One more thing on this branch.', []);
+  await harness.send(threadId, 'One more thing on this branch.');
   await completed;
   await mergePR(harness, fixture, mergedAt);
 
@@ -519,7 +523,7 @@ test('a MR an agent\'s glab mr create opens is tracked when the command settles'
   const mockId = await startMock(harness, threadId);
   const creating = waitForGate(harness, 'creating');
   const completed = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
-  await harness.rpc('SendMessage', threadId, 'open an MR', []);
+  await harness.send(threadId, 'open an MR');
   await creating;
   // The MR exists on the forge from here on, as the command creates it.
   await movePR(harness, fixture, {});

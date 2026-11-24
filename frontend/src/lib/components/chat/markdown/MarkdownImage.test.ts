@@ -152,7 +152,6 @@ beforeEach(() => {
 
 afterEach(() => {
   closeImageLightbox();
-  __resetImageTiersForTest();
   vi.unstubAllGlobals();
 });
 

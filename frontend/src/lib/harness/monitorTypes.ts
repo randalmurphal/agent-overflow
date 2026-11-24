@@ -1,35 +1,19 @@
 /**
  * Stable types for app-feel monitors.
  *
- * A monitor is an observation contract, not a browser script. The probe
- * surface is deliberately finite, so a custom monitor cannot smuggle
- * arbitrary JavaScript evaluation or screenshots into a harness run.
+ * A monitor is an observation contract, not a browser script. Its context
+ * carries the page's capabilities, the run clock, and `observe` and `fail`,
+ * so a custom monitor cannot smuggle arbitrary JavaScript evaluation or
+ * screenshots into a harness run.
  */
 
 export const MONITOR_SPEC_VERSION = 1 as const;
 export type MonitorSpecVersion = typeof MONITOR_SPEC_VERSION;
 
-export type MonitorId =
-  | 'frame-pacing'
-  | 'skipped-frames'
-  | 'long-task'
-  | 'long-animation-frame'
-  | 'input-to-render'
-  | 'scroll-response'
-  | 'layout-shift'
-  | 'animation-continuity'
-  | 'source-rewind'
-  | 'parser-boundary'
-  | 'semantic-dom-stability'
-  | 'focus-clipping-settledness'
-  | 'compositor-counters';
-
 export type MonitorCompatibilityLeg =
   | 'clean-renderer'
   | 'instrumented-renderer'
-  | 'functional'
-  | 'provider-source'
-  | 'platform';
+  | 'functional';
 
 export type MeasurementPerturbation =
   | 'none'
@@ -37,9 +21,7 @@ export type MeasurementPerturbation =
   | 'performance-observer'
   | 'event-listener'
   | 'dom-observer'
-  | 'layout-read'
-  | 'source-instrumentation'
-  | 'platform-counter';
+  | 'layout-read';
 
 export type MonitorCapability =
   | 'animation-frame'
@@ -51,10 +33,7 @@ export type MonitorCapability =
   | 'input'
   | 'scroll'
   | 'semantic-dom'
-  | 'focus'
-  | 'source-rewind'
-  | 'parser-boundary'
-  | 'compositor-counters';
+  | 'focus';
 
 export const MONITOR_CAPABILITIES: readonly MonitorCapability[] = [
   'animation-frame',
@@ -67,69 +46,46 @@ export const MONITOR_CAPABILITIES: readonly MonitorCapability[] = [
   'scroll',
   'semantic-dom',
   'focus',
-  'source-rewind',
-  'parser-boundary',
-  'compositor-counters',
 ];
 
 export const MONITOR_COMPATIBILITY_LEGS: readonly MonitorCompatibilityLeg[] = [
-  'clean-renderer', 'instrumented-renderer', 'functional', 'provider-source', 'platform',
+  'clean-renderer', 'instrumented-renderer', 'functional',
 ];
 
 export const MONITOR_PERTURBATIONS: readonly MeasurementPerturbation[] = [
   'none', 'animation-frame', 'performance-observer', 'event-listener', 'dom-observer',
-  'layout-read', 'source-instrumentation', 'platform-counter',
+  'layout-read',
 ];
 
-export type MonitorProbeKind =
-  | 'frame'
-  | 'long-task'
-  | 'long-animation-frame'
-  | 'input-to-render'
-  | 'scroll'
-  | 'layout-shift'
-  | 'animation'
-  | 'source'
-  | 'parser'
-  | 'semantic-dom'
-  | 'focus-clipping-settledness'
-  | 'compositor';
+/** A monitor's contract without its host: what `monitor list` reports. */
+export type MonitorDescriptor = Omit<MonitorSpec, 'v' | 'create'>;
 
-export interface MonitorProbeRequest<K extends MonitorProbeKind = MonitorProbeKind> {
-  readonly kind: K;
-  readonly selector?: string;
-}
+/**
+ * The built-in monitors, the one list of them: the frontend catalog
+ * (monitorCatalog.ts) gives each its browser host, and the e2e functional
+ * flow (e2e/src/monitor-catalog.ts) validates a scenario's monitors
+ * against it. This module imports nothing, so e2e can load it.
+ */
+export const BUILTIN_MONITORS = [
+  { id: 'frame-pacing', title: 'Frame pacing', description: 'Measures frame callback cadence.', compatibilityLeg: 'clean-renderer', perturbation: 'animation-frame', requires: ['animation-frame'] },
+  { id: 'skipped-frames', title: 'Skipped frames', description: 'Counts missed frame opportunities.', compatibilityLeg: 'clean-renderer', perturbation: 'animation-frame', requires: ['animation-frame'] },
+  { id: 'long-task', title: 'Long tasks', description: 'Records main-thread long tasks.', compatibilityLeg: 'instrumented-renderer', perturbation: 'performance-observer', requires: ['performance:longtask'] },
+  { id: 'long-animation-frame', title: 'Long animation frames', description: 'Records long animation frame entries.', compatibilityLeg: 'instrumented-renderer', perturbation: 'performance-observer', requires: ['performance:long-animation-frame'] },
+  { id: 'input-to-render', title: 'Input to render', description: 'Measures input delivery through the next render.', compatibilityLeg: 'instrumented-renderer', perturbation: 'event-listener', requires: ['input', 'animation-frame'] },
+  { id: 'scroll-response', title: 'Scroll response', description: 'Measures scroll input and visual response.', compatibilityLeg: 'instrumented-renderer', perturbation: 'event-listener', requires: ['scroll', 'animation-frame'] },
+  { id: 'layout-shift', title: 'Layout shift', description: 'Records cumulative layout shift entries.', compatibilityLeg: 'instrumented-renderer', perturbation: 'performance-observer', requires: ['performance:layout-shift'] },
+  { id: 'animation-continuity', title: 'Animation continuity', description: 'Checks animation progress across frames.', compatibilityLeg: 'instrumented-renderer', perturbation: 'animation-frame', requires: ['animation-frame'] },
+  { id: 'semantic-dom-stability', title: 'Semantic DOM stability', description: 'Checks semantic row identity and mount stability.', compatibilityLeg: 'functional', perturbation: 'dom-observer', requires: ['dom', 'semantic-dom'] },
+  { id: 'focus-clipping-settledness', title: 'Focus, clipping and settledness', description: 'Checks focus ownership, clipping and post-mutation settling.', compatibilityLeg: 'functional', perturbation: 'layout-read', requires: ['dom', 'focus'] },
+] as const satisfies readonly MonitorDescriptor[];
 
-export interface MonitorProbeResult {
-  readonly atMs: number;
-  readonly kind: MonitorProbeKind;
-  readonly available: boolean;
-  readonly value?: unknown;
-  readonly error?: string;
-}
-
-export interface SourceMonitorSignal {
-  readonly cursor: number;
-  readonly rewinds?: number;
-  readonly parserBoundaries?: number;
-}
-
-export interface CompositorMonitorSignal {
-  readonly presentedFrames?: number;
-  readonly droppedFrames?: number;
-  readonly checkerboardFrames?: number;
-}
-
-export interface MonitorProbeReader {
-  read<K extends MonitorProbeKind>(request: MonitorProbeRequest<K>): MonitorProbeResult;
-}
+export type BuiltinMonitorId = (typeof BUILTIN_MONITORS)[number]['id'];
 
 export interface MonitorContext {
   readonly runId: string;
   readonly monitorId: string;
   readonly startedAtMs: number;
   readonly capabilities: ReadonlySet<MonitorCapability>;
-  readonly probes: MonitorProbeReader;
   now(): number;
   observe(value: unknown): void;
   fail(message: string): void;
@@ -165,8 +121,6 @@ export interface MonitorStartRequest {
   readonly capabilities: ReadonlySet<MonitorCapability>;
   readonly heartbeatTimeoutMs?: number;
   readonly atMs?: number;
-  /** Typed host probes only. There is no string-eval or screenshot escape hatch. */
-  readonly probes?: MonitorProbeReader;
   readonly compatibilityLeg?: MonitorCompatibilityLeg;
 }
 

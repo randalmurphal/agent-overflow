@@ -11,45 +11,39 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"agent-overflow/internal/fswatch"
 )
 
 // watcher is the shared core behind every flat client-asset directory
 // the app live-reloads: <configDir>/themes, <configDir>/spinners,
-// <configDir>/sounds and <configDir>/prompts. One fsnotify watch on one
-// directory, a debounce, a self-write suppression ledger, and a re-arm for
-// the directory itself being removed.
+// <configDir>/sounds and <configDir>/prompts, and the device-name file's
+// directory. One fsnotify watch on one directory, a self-write suppression
+// ledger, and a re-arm for the directory itself being removed; the debounce
+// and the event loop are fswatch's.
 //
 // The per-directory part is exactly one predicate — which BASE NAMES in
 // that directory are content this app reads — so that is the only thing
-// a caller supplies beyond the dir, the debounce and the emit callback.
+// a caller supplies beyond the dir and the loop's debounce and emit.
 // Everything else here is subtle enough that a second copy would drift:
 // the suppression window's direction of failure, the non-destructive
 // suppression consume, and the silent-death-on-directory-removal case
 // each have a comment below explaining a tradeoff that was chosen once.
 //
-// ThemeWatcher, SpinnerWatcher, SoundWatcher and PromptWatcher wrap this
-// core so their capabilities remain distinct while the event loop stays
-// single-sourced.
+// ThemeWatcher, SpinnerWatcher, SoundWatcher, PromptWatcher and
+// DeviceNameWatcher wrap this core so their capabilities remain distinct.
 type watcher struct {
 	// label prefixes every log line and error so a message names the
 	// watcher a reader is looking for ("theme watcher: ...").
-	label    string
-	dir      string
-	debounce time.Duration
-	// after starts one debounce wait. It is time.After in production;
-	// tests replace it before start so a burst's window stays open until
-	// they release it.
-	after func(time.Duration) <-chan time.Time
-	emit  func()
+	label string
+	dir   string
 	// relevantName answers whether one BASE NAME in dir is content this
-	// app reads. The dir check is the core's (see relevantInDir); the
+	// app reads. The dir check is the core's (see relevant); the
 	// predicate never sees a path.
 	relevantName func(name string) bool
 
-	watcher   *fsnotify.Watcher
-	done      chan struct{}
-	closeOnce sync.Once
-	waitGroup sync.WaitGroup
+	watcher *fsnotify.Watcher
+	loop    *fswatch.Loop
 
 	// suppressMu guards suppressed, which maps an absolute path to the
 	// instant after which events for it are no longer ours.
@@ -88,40 +82,20 @@ const (
 	rearmDelay    = 200 * time.Millisecond
 )
 
-// newWatcher arms a watch over dir and starts its goroutine.
-func newWatcher(
-	label, dir string,
-	debounce time.Duration,
-	relevantName func(name string) bool,
-	emit func(),
-) (*watcher, error) {
-	result, err := openWatcher(label, dir, debounce, relevantName, emit)
-	if err != nil {
+// newWatcher arms a watch over dir and starts its loop. config carries
+// the debounce and emit (and, in tests, a held clock); its label is set
+// here. source turns the armed fsnotify watcher into what the loop reads:
+// fswatch.FromWatcher in production, a relay in tests.
+func newWatcher(label, dir string, relevantName func(name string) bool, config fswatch.Config, source func(*fsnotify.Watcher) fswatch.Source) (*watcher, error) {
+	config.Label = label
+	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	result.start()
-	return result, nil
-}
-
-// openWatcher arms a watch over dir without starting its goroutine, so a
-// test can replace fields the loop reads before start.
-func openWatcher(
-	label, dir string,
-	debounce time.Duration,
-	relevantName func(name string) bool,
-	emit func(),
-) (*watcher, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, fmt.Errorf("%s: dir is required", label)
 	}
-	if debounce <= 0 {
-		return nil, fmt.Errorf("%s: debounce must be positive", label)
-	}
 	if relevantName == nil {
 		return nil, fmt.Errorf("%s: relevance predicate is required", label)
-	}
-	if emit == nil {
-		return nil, fmt.Errorf("%s: emit callback is required", label)
 	}
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -135,22 +109,18 @@ func openWatcher(
 		return nil, fmt.Errorf("%s: create watcher: %w", label, err)
 	}
 	result := &watcher{
-		label: label, dir: filepath.Clean(dir), debounce: debounce, after: time.After,
-		emit: emit, relevantName: relevantName, watcher: fsWatcher,
-		done: make(chan struct{}), suppressed: make(map[string]time.Time), now: time.Now,
+		label: label, dir: filepath.Clean(dir), relevantName: relevantName, watcher: fsWatcher,
+		suppressed: make(map[string]time.Time), now: time.Now,
 	}
 	// One directory, no recursion: these directories are flat by contract,
 	// and a user's subdirectory holds nothing this app reads.
 	if err := fsWatcher.Add(result.dir); err != nil {
 		return nil, errors.Join(fmt.Errorf("%s: watch %s: %w", label, result.dir, err), fsWatcher.Close())
 	}
+	if result.loop, err = fswatch.Start(config, source(fsWatcher), result.handle); err != nil {
+		return nil, err
+	}
 	return result, nil
-}
-
-// start runs the event loop. Call it once, after openWatcher.
-func (w *watcher) start() {
-	w.waitGroup.Add(1)
-	go w.loop()
 }
 
 // suppress marks path as written by this process, so the event it
@@ -201,24 +171,17 @@ func (w *watcher) nowOrDefault() time.Time {
 }
 
 // relevant reports whether an event path names content this watcher's
-// directory holds.
-func (w *watcher) relevant(path string) bool {
-	return relevantInDir(w.dir, path, w.relevantName)
-}
-
-// relevantInDir is the dir half of the relevance rule, split out so the
-// per-directory watchers can express their own `relevant` method without
-// restating it. Anything in a SUBDIRECTORY is excluded: the watch is not
+// directory holds. Anything in a SUBDIRECTORY is excluded: the watch is not
 // recursive, but a rename can still name a nested path.
-func relevantInDir(dir, path string, relevantName func(name string) bool) bool {
-	if relevantName == nil {
+func (w *watcher) relevant(path string) bool {
+	if w.relevantName == nil {
 		return false
 	}
 	clean := filepath.Clean(path)
-	if filepath.Dir(clean) != filepath.Clean(dir) {
+	if filepath.Dir(clean) != filepath.Clean(w.dir) {
 		return false
 	}
-	return relevantName(filepath.Base(clean))
+	return w.relevantName(filepath.Base(clean))
 }
 
 // rearm re-creates the watched directory and re-registers the watch after
@@ -230,15 +193,15 @@ func relevantInDir(dir, path string, relevantName func(name string) bool) bool {
 // no longer being watched. A REMOVE has already dropped it, and Remove on
 // an unwatched path is a harmless error.
 //
-// Runs on the watch goroutine, which is why the delay honours w.done —
-// the directory is gone, so there is nothing else for that goroutine to
-// be doing, but a Close during the retry must not be held up by it.
-func (w *watcher) rearm() {
+// Runs on the loop goroutine, which is why the delay honours stop — the
+// directory is gone, so there is nothing else for that goroutine to be
+// doing, but a Close during the retry must not be held up by it.
+func (w *watcher) rearm(stop <-chan struct{}) {
 	var err error
 	for attempt := range rearmAttempts {
 		if attempt > 0 {
 			select {
-			case <-w.done:
+			case <-stop:
 				return
 			case <-time.After(rearmDelay):
 			}
@@ -257,63 +220,21 @@ func (w *watcher) rearm() {
 	log.Printf("%s: %s went away and could not be re-watched, live reload is off until restart: %v", w.label, w.dir, err)
 }
 
-func (w *watcher) Close() error {
-	var closeErr error
-	w.closeOnce.Do(func() {
-		close(w.done)
-		closeErr = w.watcher.Close()
-		w.waitGroup.Wait()
-	})
-	return closeErr
-}
+func (w *watcher) Close() error { return w.loop.Close() }
 
-func (w *watcher) loop() {
-	defer w.waitGroup.Done()
-	// timerChannel is the pending debounce wait. Each queued event replaces
-	// it, so only the wait started by the last event of a burst can emit; an
-	// abandoned wait's channel is never read again.
-	var timerChannel <-chan time.Time
-	queueEmit := func() {
-		timerChannel = w.after(w.debounce)
+// handle reports whether one event changed content this directory holds.
+func (w *watcher) handle(event fsnotify.Event, stop <-chan struct{}) bool {
+	// The watched directory ITSELF going away kills the watch silently:
+	// inotify stops delivering, fsnotify reports no error, and live reload
+	// is dead for the rest of the process with nothing in the log.
+	// `rm -rf themes/` is a plausible thing for a user or an agent to do
+	// while iterating, and EnsureBoot only runs at boot, so nothing else
+	// would ever put it back.
+	if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 && filepath.Clean(event.Name) == w.dir {
+		w.rearm(stop)
+		// Whatever was in there is gone, which is a change the frontend
+		// has to see even if the re-watch failed.
+		return true
 	}
-
-	for {
-		select {
-		case <-w.done:
-			return
-		case event, ok := <-w.watcher.Events:
-			if !ok {
-				return
-			}
-			if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 {
-				continue
-			}
-			// The watched directory ITSELF going away kills the watch
-			// silently: inotify stops delivering, fsnotify reports no
-			// error, and live reload is dead for the rest of the process
-			// with nothing in the log. `rm -rf themes/` is a plausible
-			// thing for a user or an agent to do while iterating, and
-			// EnsureBoot only runs at boot, so nothing else would ever
-			// put it back.
-			if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 && filepath.Clean(event.Name) == w.dir {
-				w.rearm()
-				// Whatever was in there is gone, which is a change the
-				// frontend has to see even if the re-watch failed.
-				queueEmit()
-				continue
-			}
-			if !w.relevant(event.Name) || w.isSuppressed(event.Name) {
-				continue
-			}
-			queueEmit()
-		case err, ok := <-w.watcher.Errors:
-			if !ok {
-				return
-			}
-			log.Printf("%s: %v", w.label, err)
-		case <-timerChannel:
-			timerChannel = nil
-			w.emit()
-		}
-	}
+	return w.relevant(event.Name) && !w.isSuppressed(event.Name)
 }

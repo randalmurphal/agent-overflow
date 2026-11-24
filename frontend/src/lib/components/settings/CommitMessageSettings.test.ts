@@ -46,70 +46,37 @@ describe("<CommitMessageSettings>", () => {
     expect(values.sort()).toEqual(["agy", "claude", "codex"]);
   });
 
-  it("shows the codex default model in the placeholder when provider is codex", async () => {
-    await seed({ textGenerationProvider: "codex" });
+  it.each([
+    ["codex", "Default: newest gpt-luna"],
+    ["claude", "Default: newest claude-haiku"],
+  ] as const)("shows the %s default model in the placeholder", async (provider, placeholder) => {
+    await seed({ textGenerationProvider: provider });
     const { getByTestId } = render(CommitMessageSettings);
     const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    expect(input.placeholder).toBe("Default: newest gpt-luna");
+    expect(input.placeholder).toBe(placeholder);
   });
 
-  it("shows the claude default model in the placeholder when provider is claude", async () => {
-    await seed({ textGenerationProvider: "claude" });
+  it.each([
+    ["textGenerationProvider", "settings-textgen-provider", "claude"],
+    ["textGenerationModel", "settings-textgen-model", "gpt-5.4"],
+    ["textGenerationReasoningEffort", "settings-textgen-effort", "medium"],
+  ])("dispatches %s patch on change", async (key, testId, value) => {
     const { getByTestId } = render(CommitMessageSettings);
-    const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    expect(input.placeholder).toBe("Default: newest claude-haiku");
+    const control = getByTestId(testId) as HTMLInputElement | HTMLSelectElement;
+    control.value = value;
+    await fireEvent.change(control);
+
+    expect(getBindingMock("UpdateSettings")!.mock.calls[0][0]).toEqual({ [key]: value });
   });
 
-  it("dispatches textGenerationProvider patch on change", async () => {
-    const { getByTestId } = render(CommitMessageSettings);
-    const select = getByTestId(
-      "settings-textgen-provider",
-    ) as HTMLSelectElement;
-    select.value = "claude";
-    await fireEvent.change(select);
-
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({
-      textGenerationProvider: "claude",
-    });
-  });
-
-  it("dispatches textGenerationModel patch on change", async () => {
-    const { getByTestId } = render(CommitMessageSettings);
-    const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    input.value = "gpt-5.4";
-    await fireEvent.change(input);
-
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ textGenerationModel: "gpt-5.4" });
-  });
-
-  it("lists codex reasoning-effort tiers", async () => {
+  it.each([
+    ["codex", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]],
+    ["claude", ["low", "medium", "high", "xhigh", "max"]],
+  ] as const)("lists %s reasoning-effort tiers", async (provider, tiers) => {
+    await seed({ textGenerationProvider: provider });
     const { getByTestId } = render(CommitMessageSettings);
     const select = getByTestId("settings-textgen-effort") as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual([
-      "none",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-      "ultra",
-    ]);
-    const labels = Array.from(select.options).map((o) => o.textContent);
-    expect(labels).toContain("xHigh");
-  });
-
-  it("lists claude reasoning-effort tiers without codex-only values", async () => {
-    await seed({ textGenerationProvider: "claude" });
-    const { getByTestId } = render(CommitMessageSettings);
-    const select = getByTestId("settings-textgen-effort") as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(tiers);
     const labels = Array.from(select.options).map((o) => o.textContent);
     expect(labels).toContain("xHigh");
     expect(labels).not.toContain("Extra High");
@@ -132,19 +99,6 @@ describe("<CommitMessageSettings>", () => {
     expect(mock!.mock.calls[0][0]).toEqual({
       textGenerationProvider: "claude",
       textGenerationReasoningEffort: "low",
-    });
-  });
-
-  it("dispatches textGenerationReasoningEffort patch on change", async () => {
-    const { getByTestId } = render(CommitMessageSettings);
-    const select = getByTestId("settings-textgen-effort") as HTMLSelectElement;
-    select.value = "medium";
-    await fireEvent.change(select);
-
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({
-      textGenerationReasoningEffort: "medium",
     });
   });
 });

@@ -3,8 +3,8 @@
 // reads, the run request, the announcement toasts and the notes modal.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
+import { setBindingMock } from '../../test/mocks/bindings-app';
+import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import {
   grantBackendScopes,
   pairViewOnly,
@@ -13,7 +13,7 @@ import {
   revokeBackendScopes,
 } from '../../test/helpers/scopes';
 import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { SCOPES, __resetScopesForTest } from '../transport/scopes';
+import { SCOPES } from '../transport/scopes';
 import { takePinnedBackend } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
@@ -90,21 +90,13 @@ const LAPTOP_HELLO = {
 
 describe('providerUpdates store', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWailsMocks();
-    resetProviderUpdatesForTest();
-    resetStagedBackends();
     resetToLocalPage();
-    resetToastsForTest();
     localStorage.clear();
   });
 
   afterEach(() => {
-    resetProviderUpdatesForTest();
-    resetStagedBackends();
     revokeBackendScopes('laptop');
     resetToLocalPage();
-    __resetScopesForTest();
   });
 
   describe('hydration', () => {
@@ -305,14 +297,6 @@ describe('providerUpdates store', () => {
       ]);
     });
 
-    it('does not toast a version whose run is in progress, nor after that run fails', () => {
-      listenProviderUpdates();
-      emitWailsEvent('provider:updates', [available('claude', '1.1.0', { run: { phase: 'running' } })]);
-      expect(messages()).toEqual([]);
-      emitWailsEvent('provider:updates', [available('claude', '1.1.0', { run: { phase: 'failed', error: 'exit status 1' } })]);
-      expect(messages()).toEqual(['Claude did not update.']);
-    });
-
     it('names the computer in every toast while more than one is attached', async () => {
       stageBackend();
       await grantBackendScopes('laptop', SCOPES);
@@ -365,8 +349,12 @@ describe('providerUpdates store', () => {
       expect(messages()).toEqual(['Claude updated to 1.2.0']);
       expect(getToasts()[0].type).toBe('success');
 
+      // A version first seen with its run in progress is never announced as
+      // available, neither while it runs nor after the run fails.
       emitWailsEvent('provider:updates', [available('codex', '0.3.0', { run: { phase: 'running' } })]);
+      expect(messages()).toEqual(['Claude updated to 1.2.0']);
       emitWailsEvent('provider:updates', [available('codex', '0.3.0', { run: { phase: 'failed', error: 'npm exited 1' } })]);
+      expect(messages()).toEqual(['Claude updated to 1.2.0', 'Codex did not update.']);
       const failure = getToasts().at(-1)!;
       expect(failure.type).toBe('error');
       expect(failure.message).toBe('Codex did not update.');

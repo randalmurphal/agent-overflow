@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/settings"
 )
 
@@ -89,5 +88,5 @@ func (a *App) drainPooledConnectionsForProvider(providerName string) {
 // setting would be the interactive one, silently talking to a different
 // backend than every other session and probe.
 func (a *App) claudetuiUpstream() string {
-	return a.providerCustomEnv(string(provider.ClaudeTUI))[claudetui.BaseURLEnv]
+	return a.providerCustomEnv(string(provider.ClaudeTUI))[provider.ClaudeBaseURLEnv.Name()]
 }

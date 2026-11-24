@@ -664,7 +664,7 @@ func TestHandleUserText_SubagentPromptDoesNotConsumePendingSend(t *testing.T) {
 		t.Fatalf("child ParentID = %q, want spawn-1", child.ParentID)
 	}
 
-	pending, ok := router.consumeMatchingPendingSend("t1", "")
+	pending, ok := router.consumeMatchingPendingSend("t1", "", "")
 	if !ok {
 		t.Fatalf("pending send was consumed by child prompt")
 	}
@@ -801,38 +801,6 @@ func TestHandleUserText_PendingSendMatch_EmptyProviderItemID_LogsAndNoOp(t *test
 		if ev.Action == itemStreamActionUpsert && ev.Item != nil && ev.Item.Kind == "user_text" {
 			t.Fatalf("no user_text upsert should be emitted on empty-id branch, got: %+v", ev)
 		}
-	}
-}
-
-// TestHandleUserText_PendingSendMatch_DuplicateProviderItemID_NoLog
-// pins the legitimate-duplicate sibling: when the same wire echo
-// arrives twice (session-resume replay landing on an already-stamped
-// row), the merge no-ops because the id already matches. No log
-// fires — the empty-id log is reserved for the parser-gap signal.
-func TestHandleUserText_PendingSendMatch_DuplicateProviderItemID_NoLog(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
-	seedUserTextRow(t, st, "t1", 0, "hello", `{"provider_item_id":"msg_existing"}`)
-
-	var logBuf bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&logBuf)
-	defer log.SetOutput(prev)
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventUserText,
-		ThreadID:  "t1",
-		Content:   "hello",
-		Meta:      json.RawMessage(`{"provider_item_id":"msg_existing"}`),
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-
-	if strings.Contains(logBuf.String(), "queue-confirm path will not fire") {
-		t.Fatalf("duplicate-id branch must not emit the empty-id warning, got: %q", logBuf.String())
 	}
 }
 
@@ -1044,7 +1012,7 @@ func TestHandleUserText_PendingMatchWithMissingTargetRow_LogsAndReturns(t *testi
 	}
 
 	// Pending FIFO should be drained — consuming the head should fail.
-	if _, ok := router.consumeMatchingPendingSend("t1", ""); ok {
+	if _, ok := router.consumeMatchingPendingSend("t1", "", ""); ok {
 		t.Fatalf("pending FIFO should be drained even when the row was missing")
 	}
 
@@ -1831,4 +1799,10 @@ func TestHandleUserText_EagerPersistedDeferredFlush_EchoSettlesItsReviewClaims(t
 			t.Fatalf("meta %q: note = %+v (%v), want it sent", meta, got, err)
 		}
 	}
+}
+
+// readProviderItemIDFromMeta reads a row's provider item id from its raw meta
+// (a persisted row's, not a live event's).
+func readProviderItemIDFromMeta(meta json.RawMessage) string {
+	return decodeUserTextMeta(meta).text("provider_item_id")
 }

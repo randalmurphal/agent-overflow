@@ -2,11 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
 import ToolCallCard from './ToolCallCard.svelte';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { codexSubagentDisplayLabel } from '../../utils/subagentLaunch';
 
 beforeEach(() => {
-  resetBindingMocks();
   setBindingMock('GetPayloadPreview', async () => ({
     data: '', totalSize: 0, nextOffset: 0, isComplete: true,
   }));
@@ -49,10 +48,15 @@ describe('<CollabToolRow> immutable spawn and standalone activity', () => {
       }),
     });
 
-    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
-    expect(getByTestId('collab-tool-row').textContent).toContain('Spawned reviewer');
-    expect(queryByTestId('collab-tool-row-state')).toBeNull();
-    expect(queryByTestId('collab-tool-row-interactions')).toBeNull();
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const text = getByTestId('collab-tool-row').textContent ?? '';
+    expect(text).toContain('Spawned reviewer');
+    // The legacy meta is carried, not shown: neither its raw values nor the
+    // labels the removed spawn-card renderer made of them ("message sent" for
+    // the interaction, "delivered" for the card state).
+    for (const legacy of ['completed', 'delivered', '1700', 'interacted', 'send_message', 'message sent']) {
+      expect(text, legacy).not.toContain(legacy);
+    }
   });
 
   it('renders a spawn row the same, with no indicator, whatever its stored liveness bit says', async () => {

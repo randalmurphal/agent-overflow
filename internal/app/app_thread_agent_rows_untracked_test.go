@@ -14,6 +14,8 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+
+	"github.com/google/uuid"
 )
 
 // seedSpawnBeforeRuns writes caller's spawn of worker as a build before
@@ -115,8 +117,8 @@ func TestASpawnFromBeforeRunsStaysClosedWhenThePersonContinuesItsWorker(t *testi
 		mockClaudeInitLine,
 		`{"type":"control_request","request_id":"req-approve","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"make deploy"}}}`,
 	}})
-	t.Cleanup(func() { _ = f.app.StopSession(worker.ID) })
-	if err := f.app.SendMessage(context.Background(), worker.ID, "now deploy it", nil); err != nil {
+	t.Cleanup(func() { stopSessionChecked(t, f.app, worker.ID) })
+	if _, err := f.app.SendMessageWithOptions(context.Background(), worker.ID, "now deploy it", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {
@@ -198,7 +200,7 @@ func TestARemoteSpawnFromBeforeRunsStaysClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
+	if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "now also update the changelog", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {

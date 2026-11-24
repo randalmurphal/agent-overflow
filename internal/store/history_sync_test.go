@@ -612,3 +612,8 @@ func TestEnsureStoreIdentityHealsAMissingRow(t *testing.T) {
 		t.Fatal("heal reused the lost backend id; a fresh identity must drop every replica keyed to the old one")
 	}
 }
+
+// UnknownHistoryStamp is the HistoryStamp a caller with no replica sends.
+func UnknownHistoryStamp() HistoryStamp {
+	return HistoryStamp{Rev: UnknownStamp, Epoch: UnknownStamp}
+}

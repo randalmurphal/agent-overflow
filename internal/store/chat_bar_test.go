@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -146,9 +147,9 @@ func TestChatModelProfileLatestAndProviderLookup(t *testing.T) {
 		t.Fatalf("latest = %#v, want codex/gpt-5.5", latest)
 	}
 
-	claude, err := s.LatestChatModelProfileForProvider("claude")
+	claude, err := s.LatestChatModelProfileForProviderContext(context.Background(), "claude")
 	if err != nil {
-		t.Fatalf("LatestChatModelProfileForProvider: %v", err)
+		t.Fatalf("LatestChatModelProfileForProviderContext: %v", err)
 	}
 	if claude.Model != "claude-sonnet-4-6" || !claude.FastMode || claude.RuntimeMode != "approval-required" {
 		t.Fatalf("claude profile = %#v", claude)

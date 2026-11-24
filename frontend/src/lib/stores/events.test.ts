@@ -1,33 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
+import { modelCatalog } from '../../test/helpers/modelCatalog';
 import { setupEventListeners } from './events';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { createThreadPane } from './thread.svelte';
-import { findPaneShowingThread, registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { findPaneShowingThread, registerPaneForTest } from './panes.svelte';
 import {
   getActiveTurn,
   getThreadStatus,
   hasPendingSend,
   projectSendStarted,
-  resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
-import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
-import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
+import { markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
 import { addThreadRemovedObserver, getThreads, getThreadLiveActivityAt } from './threads.svelte';
 import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { hasUnread } from '../utils/threadStatusPill';
 import { sidebarListsThread } from '../components/sidebar/sidebarBuckets';
-import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
+import { claimLocalReadMarker } from './threadReadWrites';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import { getToasts } from './toast.svelte';
-import { getProjectLiveActivityAt, getProjects, resetProjectsForTest } from './projects.svelte';
+import { getProjectLiveActivityAt, getProjects } from './projects.svelte';
 import {
-  getProviderRateLimit,
+  getProviderRateLimitsForWindow,
   resetForTest as resetRateLimitsInfo,
 } from './rateLimitsInfo.svelte';
 import {
   getProviderStatus,
-  resetForTest as resetProviderStatuses,
 } from './providerStatus.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 import { attachPR } from './prReviewStore.svelte';
@@ -37,8 +35,8 @@ import { prKey } from '../utils/prReference';
 import { setPullsReceiver } from './pullsStore.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { getConnectionId } from '../transport/clientIdentity';
-import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { emitWailsEvent, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
   buildPane,
   installPaneMocks,
@@ -100,19 +98,9 @@ describe('setupEventListeners', () => {
   let cleanup: () => void;
 
   beforeEach(() => {
-    resetWailsMocks();
-    resetBindingMocks();
-    resetThreadStatuses();
-    resetSendQueue();
-    resetLiveUsageSnapshotsForTest();
-    resetLocalReadMarkersForTest();
-    resetProjectsForTest();
-    resetRateLimitsInfo();
-    resetProviderStatuses();
     setBindingMock('AutoResumeThread', async () => {});
     setBindingMock('GetRateLimitsSnapshots', async () => []);
     setBindingMock('ListProviderAccounts', async () => []);
-    resetPanesForTest();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
     cleanup = setupEventListeners();
@@ -120,9 +108,6 @@ describe('setupEventListeners', () => {
 
   afterEach(() => {
     cleanup();
-    resetPanesForTest();
-    resetThreadStatuses();
-    resetSendQueue();
   });
 
   it('registers and unregisters the unified listener set', () => {
@@ -269,8 +254,8 @@ describe('setupEventListeners', () => {
 
     cleanup = setupEventListeners();
     await vi.waitFor(() => {
-      expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(31);
-      expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(30);
+      expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(31);
+      expect(getProviderRateLimitsForWindow('codex', 10080).primary?.usedPercent).toBe(30);
     });
   });
 
@@ -455,7 +440,10 @@ describe('setupEventListeners', () => {
     cacheModule.threadItemCache.clear();
   });
 
-  it('preserves the cached snapshot for redundant active-thread item upserts', async () => {
+  it('preserves the cached snapshot and the lastLiveContentAt stamp for a redundant active-thread item upsert', async () => {
+    // The stamp lives inside `if (pane.upsertItems(...))`, gated on a real
+    // change. An echo of an existing row dedupes to no change, so the
+    // controller stays sync-pinned.
     const cacheModule = await import('./threadItemCache');
     cacheModule.threadItemCache.clear();
     const item = makeItem({
@@ -464,7 +452,8 @@ describe('setupEventListeners', () => {
       kind: 'assistant_text',
       summary: 'same',
     });
-    await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    expect(pane.lastLiveContentAt).toBe(0);
     cacheModule.threadItemCache.set('thread-a', {
       items: [item],
       oldestLoadedTurnIndex: 0,
@@ -482,6 +471,7 @@ describe('setupEventListeners', () => {
     await nextFrame();
 
     expect(cacheModule.threadItemCache.get('thread-a')).not.toBeNull();
+    expect(pane.lastLiveContentAt).toBe(0);
     cacheModule.threadItemCache.clear();
   });
 
@@ -541,29 +531,6 @@ describe('setupEventListeners', () => {
     await nextFrame();
 
     expect(pane.items.map((item) => item.id)).toEqual(['bash-1']);
-    expect(pane.lastLiveContentAt).toBe(0);
-  });
-
-  it('does not stamp lastLiveContentAt for a redundant upsert that leaves the window unchanged', async () => {
-    // The stamp lives inside `if (pane.upsertItems(...))` — gated on a real
-    // change. An echo of an existing row dedupes to no change, so the
-    // controller stays sync-pinned.
-    const item = makeItem({
-      id: 'cached-a',
-      threadId: 'thread-a',
-      kind: 'assistant_text',
-      summary: 'same',
-    });
-    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
-    expect(pane.lastLiveContentAt).toBe(0);
-
-    emitWailsEvent('provider:item_event', {
-      action: 'upsert',
-      threadId: 'thread-a',
-      item: { ...item },
-    });
-    await nextFrame();
-
     expect(pane.lastLiveContentAt).toBe(0);
   });
 
@@ -1142,6 +1109,8 @@ describe('setupEventListeners', () => {
     let releaseSnapshot!: (value: unknown) => void;
     setBindingMock('SwitchThread', async (threadId: unknown) =>
       makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
+    // The live snapshot fails, so the pane takes the pending-request fallback.
+    setBindingMock('GetThreadLiveState', async () => { throw new Error('live state unavailable'); });
     setBindingMock('ListPendingInteractiveRequests', () => new Promise((resolve) => {
       releaseSnapshot = resolve;
     }));
@@ -2331,25 +2300,11 @@ describe('setupEventListeners', () => {
     expect(pane.activeModel).toBe('claude-fable-5');
   });
 
-  it('patches the sidebar row and every matching pane from thread:mode_changed, and toasts when needsReconnect', async () => {
-    setBindingMock('ListThreads', async () => [
-      makeThread({ id: 'thread-1', mode: 'chat' }),
-    ]);
-    await loadSidebarCatalogs();
-    const pane = await buildPane(makeThread({ id: 'thread-1', mode: 'chat' }));
-
-    emitWailsEvent('thread:mode_changed', {
-      threadId: 'thread-1',
-      mode: 'plan',
-      needsReconnect: true,
-    });
-
-    expect(getThreads()[0]?.mode).toBe('plan');
-    expect(pane.thread?.mode).toBe('plan');
-    expect(getToasts().some((toast) => toast.type === 'warning' && toast.message.includes('plan'))).toBe(true);
-  });
-
-  it('patches without a toast from thread:mode_changed when needsReconnect is false', async () => {
+  it.each([
+    ['patches the sidebar row and every matching pane from thread:mode_changed, and toasts when needsReconnect', true,
+      [expect.objectContaining({ type: 'warning', message: expect.stringContaining('plan') })]],
+    ['patches without a toast from thread:mode_changed when needsReconnect is false', false, []],
+  ])('%s', async (_name, needsReconnect, toasts) => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', mode: 'chat' }),
     ]);
@@ -2357,15 +2312,11 @@ describe('setupEventListeners', () => {
     const pane = await buildPane(makeThread({ id: 'thread-1', mode: 'chat' }));
     const toastCountBefore = getToasts().length;
 
-    emitWailsEvent('thread:mode_changed', {
-      threadId: 'thread-1',
-      mode: 'plan',
-      needsReconnect: false,
-    });
+    emitWailsEvent('thread:mode_changed', { threadId: 'thread-1', mode: 'plan', needsReconnect });
 
     expect(getThreads()[0]?.mode).toBe('plan');
     expect(pane.thread?.mode).toBe('plan');
-    expect(getToasts().length).toBe(toastCountBefore);
+    expect(getToasts().slice(toastCountBefore)).toEqual(toasts);
   });
 
   it('patches the sidebar row and every matching pane from thread:runtime_mode_changed', async () => {
@@ -2886,8 +2837,8 @@ describe('setupEventListeners', () => {
 
     expect(pane.contextWindow?.usedTokens).toBe(175000);
     expect(pane.contextWindow?.usedPercentage).toBe(87.5);
-    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(47);
-    expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(28);
+    expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(47);
+    expect(getProviderRateLimitsForWindow('codex', 10080).primary?.usedPercent).toBe(28);
   });
 
   it('does not revert local read state when a provider:usage gap refreshes the thread row', async () => {
@@ -3102,6 +3053,8 @@ describe('setupEventListeners', () => {
   it('hydrates accountInfo store from provider:account', async () => {
     const accountInfo = await import('./accountInfo.svelte');
     accountInfo.resetForTest();
+    // An account change reads the provider's model list again.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
 
     emitWailsEvent('provider:account', {
       provider: 'claude',
@@ -3126,6 +3079,8 @@ describe('setupEventListeners', () => {
   it('clears selected account state from a provider:account removal event', async () => {
     const accountInfo = await import('./accountInfo.svelte');
     accountInfo.resetForTest();
+    // An account change reads the provider's model list again.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     accountInfo.setProviderAccount('claude', { subscriptionType: 'Claude Max' }, 'account-one');
 
     emitWailsEvent('provider:account', {
@@ -3162,6 +3117,8 @@ describe('setupEventListeners', () => {
   it('keeps the account in use when another card changes', async () => {
     const accountInfo = await import('./accountInfo.svelte');
     accountInfo.resetForTest();
+    // An account change reads the provider's model list again.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     emitWailsEvent('provider:account', {
       provider: 'codex',
       accountId: 'selected',
@@ -3238,6 +3195,8 @@ describe('setupEventListeners', () => {
   it('drops malformed provider:account events before hitting the store', async () => {
     const accountInfo = await import('./accountInfo.svelte');
     accountInfo.resetForTest();
+    // An account change reads the provider's model list again.
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
 
     // Unknown provider name — should be ignored, not silently inserted.
     emitWailsEvent('provider:account', {
@@ -3462,7 +3421,7 @@ describe('setupEventListeners', () => {
     expect(pane.contextWindow?.maxTokens).toBe(200000);
 
     // Global store populated with the 5h entry under provider 'claude'.
-    const fiveHour = getProviderRateLimit('claude', 300);
+    const fiveHour = getProviderRateLimitsForWindow('claude', 300).primary;
     expect(fiveHour).not.toBeNull();
     expect(fiveHour?.usedPercent).toBe(62.5);
     expect(fiveHour?.resetsAt).toBe(4102444800);
@@ -3498,14 +3457,14 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(30);
-    expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(51);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(30);
+    expect(getProviderRateLimitsForWindow('claude', 10080).primary?.usedPercent).toBe(51);
   });
 
   // Unknown rate-limit types arrive with windowMins=0 from the parser
   // (Claude's `windowMinsForRateLimitType` fallback). The store must
   // drop those rather than write a 0-keyed slot — the toolbar reads
-  // `getProviderRateLimit(provider, 300)` / `(provider, 10080)` and a
+  // `getProviderRateLimitsForWindow(provider, 300)` / `(provider, 10080)` and a
   // stray 0 entry would let an unrenderable window fill memory forever.
   it('keeps unknown-duration limits out of the toolbar lookup', async () => {
     await buildPane();
@@ -3523,32 +3482,8 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
-    expect(getProviderRateLimit('claude', 0)).toBeNull();
-  });
-
-  // Rate-limit data is account-wide, not thread-wide. A snapshot for
-  // provider 'claude' is visible to every pane that reads with
-  // provider 'claude' — including freshly-switched-to threads. This
-  // is the opposite of the legacy per-pane behavior and the whole
-  // point of the global store. Keep the user expectation pinned:
-  // "values persist even if you switch to a new thread."
-  it('rate-limit snapshots are visible across thread switches', async () => {
-    emitWailsEvent('provider:usage', {
-      action: 'rate_limits',
-      threadId: 'thread-A',
-      rateLimits: {
-        provider: 'claude',
-        limits: [
-          { limitId: 'five_hour', limitName: '5h', usedPercent: 73, windowMins: 300, resetsAt: 4102444800 },
-        ],
-        updatedAt: 1776283000,
-      },
-    });
-
-    // Even before any pane registers itself for thread-B, the global
-    // store carries the value — RateLimitMeter reads from it directly.
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(73);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
+    expect(getProviderRateLimitsForWindow('claude', 0).primary).toBeNull();
   });
 
   // Provider isolation: a Codex snapshot must not bleed into the
@@ -3567,15 +3502,16 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(88);
-    expect(getProviderRateLimit('claude', 300)).toBeNull();
+    expect(getProviderRateLimitsForWindow('codex', 300).primary?.usedPercent).toBe(88);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary).toBeNull();
   });
 
   // Empty snapshots (no `limits` entries) arrive in edge cases — the
   // store must NOT wipe its last-known state. Holding on to the
   // previous good value is the entire reason for the global store
   // (the per-pane prior implementation had a wipe-on-replaceThread
-  // bug that flickered the rings during a session).
+  // bug that flickered the rings during a session). No pane is open:
+  // rate limits are account-wide, and the store takes them without one.
   it('does not wipe last-known values on an empty rate_limits snapshot', async () => {
     emitWailsEvent('provider:usage', {
       action: 'rate_limits',
@@ -3589,7 +3525,7 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
 
     // Empty-limits snapshot — must be a no-op, not a wipe.
     emitWailsEvent('provider:usage', {
@@ -3602,7 +3538,7 @@ describe('setupEventListeners', () => {
       },
     });
 
-    expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(42);
   });
 
   // EventSessionStatus routing: persistent kinds surface on
@@ -4070,44 +4006,30 @@ describe('setupEventListeners', () => {
   // path missed a row (or this is the only path, e.g. cross-pane
   // reflection), this handler is the safety net that removes every
   // item at the reverted turn — not just the user_text.
-  it('removes every item at the reverted turn on user_message:reverted', async () => {
-    const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    pane.upsertItems([
+  it.each([
+    ['removes every item at the reverted turn on user_message:reverted', 0, [
       makeItem({ id: 'u:0', threadId: 'thread-a', turnIndex: 0, kind: 'user_text', role: 'user' }),
       makeItem({ id: 'think:0:0', threadId: 'thread-a', turnIndex: 0, kind: 'thinking', role: 'assistant', status: 'streaming' }),
       makeItem({ id: 'retry:0', threadId: 'thread-a', turnIndex: 0, kind: 'api_retry', role: 'system', status: 'running' }),
-    ]);
-    expect(pane.items.map((it) => it.id).sort()).toEqual(['retry:0', 'think:0:0', 'u:0']);
-
-    emitWailsEvent('user_message:reverted', {
-      threadId: 'thread-a',
-      userItemId: 'u:0',
-      turnIndex: 0,
-    });
-
-    expect(pane.items).toEqual([]);
-  });
-
-  it('does not disturb earlier turns when handling user_message:reverted', async () => {
-    const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    pane.upsertItems([
+    ], []],
+    ['does not disturb earlier turns when handling user_message:reverted', 1, [
       makeItem({ id: 'u:0', threadId: 'thread-a', turnIndex: 0, kind: 'user_text', role: 'user' }),
       makeItem({ id: 'a:0', threadId: 'thread-a', turnIndex: 0, kind: 'assistant_text', role: 'assistant' }),
       makeItem({ id: 'u:1', threadId: 'thread-a', turnIndex: 1, kind: 'user_text', role: 'user' }),
       makeItem({ id: 'think:1:0', threadId: 'thread-a', turnIndex: 1, kind: 'thinking', role: 'assistant', status: 'streaming' }),
-    ]);
+    ], ['a:0', 'u:0']],
+  ])('%s', async (_name, turnIndex, items, survivors) => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    pane.upsertItems(items);
+    expect(pane.items.map((it) => it.id).sort()).toEqual(items.map((it) => it.id).sort());
 
-    emitWailsEvent('user_message:reverted', {
-      threadId: 'thread-a',
-      userItemId: 'u:1',
-      turnIndex: 1,
-    });
+    emitWailsEvent('user_message:reverted', { threadId: 'thread-a', userItemId: `u:${turnIndex}`, turnIndex });
 
     // Explicit-length assertion guards against an item silently
     // surviving at the reverted turn (sort would still pass if a
-    // hidden id sorted before 'a:0').
-    expect(pane.items).toHaveLength(2);
-    expect(pane.items.map((it) => it.id).sort()).toEqual(['a:0', 'u:0']);
+    // hidden id sorted before a survivor).
+    expect(pane.items).toHaveLength(survivors.length);
+    expect(pane.items.map((it) => it.id).sort()).toEqual(survivors);
   });
 
   // The handler iterates every pane via iterPanes(); a regression that

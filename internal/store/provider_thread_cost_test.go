@@ -152,35 +152,37 @@ func TestProviderThreadCost_CascadesWithTheThread(t *testing.T) {
 	}
 }
 
-// TestProviderThreadCost_RefusesAnUnknownCostSource is what forces a future
-// second producer to declare itself rather than borrowing this one's label.
-func TestProviderThreadCost_RefusesAnUnknownCostSource(t *testing.T) {
+// TestProviderThreadCost_RefusesAnInvalidRow: each refused write leaves
+// nothing readable.
+func TestProviderThreadCost_RefusesAnInvalidRow(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadWithSessionRef(t, s, "thread-cost-4", "codex-thread-4")
-
-	err := s.PutProviderThreadCost(ProviderThreadCost{
-		ThreadID:      "thread-cost-4",
-		SessionRef:    "codex-thread-4",
-		Provider:      "codex",
-		CostSource:    "wire",
-		CostUSDMicros: 1,
-		UpdatedAt:     1,
-	})
-	if err == nil {
-		t.Fatal("PutProviderThreadCost accepted a cost_source outside the CHECK")
-	}
-}
-
-// TestProviderThreadCost_EmptyThreadIDIsRefused keeps the empty string from
-// becoming a real key. It is the unattributed marker everywhere else in this
-// schema, and a row under it would be read as some thread's cost.
-func TestProviderThreadCost_EmptyThreadIDIsRefused(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.PutProviderThreadCost(ProviderThreadCost{Provider: "codex", SessionRef: "codex-thread-x"}); err == nil {
-		t.Fatal("PutProviderThreadCost accepted an empty thread id")
-	}
-	if _, found, err := s.GetProviderThreadCost(""); err != nil || found {
-		t.Fatalf("GetProviderThreadCost(\"\") = (found %v, err %v), want (false, nil)", found, err)
+	mustCreateThreadWithSessionRef(t, s, "thread-cost-unnamed", "")
+	for _, tc := range []struct {
+		name string
+		cost ProviderThreadCost
+	}{
+		// What forces a future second producer to declare itself rather
+		// than borrowing this one's label.
+		{"cost source outside the CHECK", ProviderThreadCost{ThreadID: "thread-cost-4", SessionRef: "codex-thread-4", Provider: "codex", CostSource: "wire", CostUSDMicros: 1, UpdatedAt: 1}},
+		// The empty string is the unattributed marker everywhere else in
+		// this schema, and a row under it would be read as some thread's
+		// cost.
+		{"empty thread id", ProviderThreadCost{Provider: "codex", SessionRef: "codex-thread-x"}},
+		// A blank stored identity would equal the cleared session_ref of
+		// every thread rolled back to turn 0, which is exactly the row v68
+		// exists to stop serving, so the writer refuses a row it cannot
+		// name rather than storing an unattributed one.
+		{"empty session ref", ProviderThreadCost{ThreadID: "thread-cost-unnamed", Provider: "codex", CostUSDMicros: 1, UpdatedAt: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := s.PutProviderThreadCost(tc.cost); err == nil {
+				t.Fatal("PutProviderThreadCost accepted the row")
+			}
+			if _, found, err := s.GetProviderThreadCost(tc.cost.ThreadID); err != nil || found {
+				t.Fatalf("GetProviderThreadCost(%q) = (found %v, err %v), want (false, nil)", tc.cost.ThreadID, found, err)
+			}
+		})
 	}
 }
 
@@ -274,28 +276,5 @@ func TestProviderThreadCost_ANewReadReclaimsTheRow(t *testing.T) {
 	}
 	if got.CostUSDMicros != 25_000 || got.SessionRef != "codex-thread-after" {
 		t.Fatalf("read back %+v, want the new provider thread's own total", got)
-	}
-}
-
-// TestProviderThreadCost_EmptySessionRefIsRefused pins the one comparison that
-// must never succeed. A blank stored identity would equal the cleared
-// session_ref of every thread rolled back to turn 0, which is exactly the row
-// v68 exists to stop serving — so the writer refuses a row it cannot name
-// rather than storing an unattributed one.
-func TestProviderThreadCost_EmptySessionRefIsRefused(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThreadWithSessionRef(t, s, "thread-cost-unnamed", "")
-
-	err := s.PutProviderThreadCost(ProviderThreadCost{
-		ThreadID:      "thread-cost-unnamed",
-		Provider:      "codex",
-		CostUSDMicros: 1,
-		UpdatedAt:     1,
-	})
-	if err == nil {
-		t.Fatal("PutProviderThreadCost stored a row that names no provider thread")
-	}
-	if _, found, err := s.GetProviderThreadCost("thread-cost-unnamed"); err != nil || found {
-		t.Fatalf("an unnamed row became readable (found %v, err %v)", found, err)
 	}
 }

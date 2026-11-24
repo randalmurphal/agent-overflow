@@ -15,96 +15,6 @@ import (
 	"agent-overflow/internal/provider/providertest"
 )
 
-func TestRespondToApprovalAllowFormat(t *testing.T) {
-	resp := provider.ApprovalResponse{RequestID: "req-1", Decision: "allow"}
-
-	var behavior map[string]any
-	if resp.Decision == "allow" || resp.Decision == "allow_session" {
-		behavior = map[string]any{"behavior": "allow"}
-	} else {
-		behavior = map[string]any{"behavior": "deny", "message": "User denied"}
-	}
-	msg := map[string]any{
-		"type": "control_response",
-		"response": map[string]any{
-			"subtype":    "success",
-			"request_id": resp.RequestID,
-			"response":   behavior,
-		},
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var parsed map[string]json.RawMessage
-	json.Unmarshal(data, &parsed)
-
-	var msgType string
-	json.Unmarshal(parsed["type"], &msgType)
-	if msgType != "control_response" {
-		t.Errorf("type: got %q, want %q", msgType, "control_response")
-	}
-
-	var response struct {
-		Subtype   string `json:"subtype"`
-		RequestID string `json:"request_id"`
-		Response  struct {
-			Behavior string `json:"behavior"`
-		} `json:"response"`
-	}
-	json.Unmarshal(parsed["response"], &response)
-	if response.Subtype != "success" {
-		t.Errorf("subtype: got %q, want %q", response.Subtype, "success")
-	}
-	if response.RequestID != "req-1" {
-		t.Errorf("request_id: got %q, want %q", response.RequestID, "req-1")
-	}
-	if response.Response.Behavior != "allow" {
-		t.Errorf("behavior: got %q, want %q", response.Response.Behavior, "allow")
-	}
-}
-
-func TestRespondToApprovalDenyFormat(t *testing.T) {
-	resp := provider.ApprovalResponse{RequestID: "req-2", Decision: "deny"}
-
-	var behavior map[string]any
-	if resp.Decision == "allow" || resp.Decision == "allow_session" {
-		behavior = map[string]any{"behavior": "allow"}
-	} else {
-		behavior = map[string]any{"behavior": "deny", "message": "User denied"}
-	}
-	msg := map[string]any{
-		"type": "control_response",
-		"response": map[string]any{
-			"subtype":    "success",
-			"request_id": resp.RequestID,
-			"response":   behavior,
-		},
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var parsed map[string]json.RawMessage
-	json.Unmarshal(data, &parsed)
-
-	var response struct {
-		Response struct {
-			Behavior string `json:"behavior"`
-			Message  string `json:"message"`
-		} `json:"response"`
-	}
-	json.Unmarshal(parsed["response"], &response)
-	if response.Response.Behavior != "deny" {
-		t.Errorf("behavior: got %q, want %q", response.Response.Behavior, "deny")
-	}
-	if response.Response.Message != "User denied" {
-		t.Errorf("message: got %q, want %q", response.Response.Message, "User denied")
-	}
-}
-
 func TestFullAccessToolRequestDoesNotAutoApproveInPlanMode(t *testing.T) {
 	s := &Session{
 		basePermissionMode:    "bypassPermissions",
@@ -126,9 +36,9 @@ func TestFullAccessToolRequestAutoApprovesRegularTools(t *testing.T) {
 	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
-		Env: map[string]string{
+		Env: provider.EnvInput{Custom: map[string]string{
 			"CAPTURE": capturePath,
-		},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("spawn capture process: %v", err)
@@ -214,9 +124,9 @@ func TestSessionRespondToUserInputIncludesQuestionsInUpdatedInput(t *testing.T) 
 	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
-		Env: map[string]string{
+		Env: provider.EnvInput{Custom: map[string]string{
 			"CAPTURE": capturePath,
-		},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("spawn capture process: %v", err)

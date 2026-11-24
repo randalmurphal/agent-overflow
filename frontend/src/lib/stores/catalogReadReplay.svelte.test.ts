@@ -5,24 +5,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
 import { HOME_BACKEND, detachBackend, takePinnedBackend } from '../transport/backends';
-import { __resetEntityIndexForTest, noteThread, noteThreadGroup } from '../transport/entityIndex';
+import { noteThread, noteThreadGroup } from '../transport/entityIndex';
 import type { ProjectWithCounts, Thread, ThreadGroup } from '../types/models';
-import { __catalogRetryCountForTest, catalogLoadState, resetCatalogLoadForTest, retryCatalogLoad } from './catalogLoad.svelte';
+import { __catalogRetryCountForTest, catalogLoadState, retryCatalogLoad } from './catalogLoad.svelte';
 import { openCatalogReadsForTest } from './computerCatalogReads';
 import { COMPUTER_READ_DEADLINE_MS } from './computerRows';
 import { applyProjectUpdated } from './eventsProjectRows';
 import { applyThreadUpdated, refreshSidebarProjections } from './eventsThreadRows';
 import {
-  addProjectLocal, getProjects, removeProjectLocal, resetProjectsForTest, updateProjectLocal,
+  addProjectLocal,
+  getProjects,
+  removeProjectLocal,
+  updateProjectLocal,
 } from './projects.svelte';
 import {
-  clearThreadGroupMembership, getThreads, prependThread, removeThread, replaceThread,
-  resetThreadsForTest, updateThreadTitle,
+  clearThreadGroupMembership,
+  getThreads,
+  prependThread,
+  removeThread,
+  replaceThread,
+  updateThreadTitle,
 } from './threads.svelte';
-import { getThreadGroups, resetThreadGroupsForTest, upsertThreadGroup } from './threadGroups.svelte';
+import { getThreadGroups, upsertThreadGroup } from './threadGroups.svelte';
 import { loadSidebarCatalogs } from './sidebarCatalogs';
 
 const LOADED = { phase: 'loaded', error: '' };
@@ -51,12 +58,6 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 const ids = (rows: readonly { id: string }[]) => rows.map((row) => row.id);
 
 beforeEach(() => {
-  resetStagedBackends();
-  __resetEntityIndexForTest();
-  resetThreadsForTest();
-  resetProjectsForTest();
-  resetThreadGroupsForTest();
-  resetCatalogLoadForTest();
   // A round reads all three catalogs of the tree; a case mocks the one it
   // is about and these answer the rest.
   setBindingMock('ListProjects', async () => []);
@@ -66,7 +67,6 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 afterEach(() => {
-  resetStagedBackends();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });

@@ -18,6 +18,7 @@ import {
   type ScriptedTurn,
 } from './thread-tools-helpers.js';
 import { escapeTimelineFollow, timelineOf } from './timeline-follow-helpers.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 /** The computer name a capture may show. */
 export const DEVICE_NAME = 'Wake tray computer';
@@ -78,8 +79,7 @@ export async function registerThrough(
       afterTurns: 'repeatLast',
     }),
   );
-  await harness.rpc('StartSession', agent.thread);
-  await harness.rpc('SendMessage', agent.thread, 'set up the schedule', null);
+  await harness.send(agent.thread, 'set up the schedule');
   const answers: Record<string, unknown>[] = [];
   for (const call of calls) {
     const answer = await awaitToolAnswer(harness, { tool: call.tool, cwd: agent.home, timeoutMs: 60_000 });
@@ -213,11 +213,12 @@ export async function awaitSidebarSettled(page: Page): Promise<void> {
 }
 
 /**
- * Captures the window once every target is visible and wholly in it. The
- * harness's temporary root, which a watch's directory shows, is written as
- * `<harness root>` in the capture: the spec asserts the real path before it,
- * and the captures are published. The sidebar's system footer, the host
- * machine's own CPU and memory, is not evidence and is hidden.
+ * Captures the window once every target is visible and wholly in it; the
+ * targets are checked with screenshots off too. The harness's temporary
+ * root, which a watch's directory shows, is written as `<harness root>` in
+ * the capture: the spec asserts the real path before it, and the captures
+ * are published. The sidebar's system footer, the host machine's own CPU
+ * and memory, is not evidence and is hidden.
  */
 export async function capture(page: Page, name: string, ...targets: Locator[]): Promise<void> {
   for (const target of targets) {
@@ -231,6 +232,7 @@ export async function capture(page: Page, name: string, ...targets: Locator[]): 
       throw new Error(`${name}: target at ${box ? `y ${Math.round(box.y)}, height ${Math.round(box.height)}` : 'no box'} in a ${viewport.width}x${viewport.height} viewport, timeline scrollTop ${Math.round(scrollTop)}`, { cause: error });
     }
   }
+  if (!screenshotsOn) return;
   await page.evaluate(() => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -241,7 +243,7 @@ export async function capture(page: Page, name: string, ...targets: Locator[]): 
   await page.evaluate(
     () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
   );
-  await page.screenshot({
+  await screenshot(page, {
     path: test.info().outputPath(name),
     animations: 'disabled',
     style: '[data-testid="sidebar-system-stats"] { display: none !important; }',
@@ -249,13 +251,14 @@ export async function capture(page: Page, name: string, ...targets: Locator[]): 
 }
 
 /**
- * capture, also copied to AO_AGENT_MESSAGE_SHOTS when it is set, since the
+ * capture, also copied to AO_AGENT_MESSAGE_SHOTS when it is set and
+ * screenshots are on (AO_E2E_SCREENSHOTS), since the
  * next run wipes the run's output: the agent message rows' published shots.
  */
 export async function captureAgentMessage(page: Page, name: string, ...targets: Locator[]): Promise<void> {
   await capture(page, name, ...targets);
   const dir = process.env.AO_AGENT_MESSAGE_SHOTS;
-  if (!dir) return;
+  if (!dir || !screenshotsOn) return;
   await mkdir(dir, { recursive: true });
   await copyFile(test.info().outputPath(name), `${dir}/${name}`);
 }

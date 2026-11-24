@@ -168,204 +168,105 @@ func TestUnregisterSessionWithNoEntryIsSafe(t *testing.T) {
 
 // TestSessionEventHandlerDisconnectUnregistersSession verifies the
 // disconnect path inside sessionEventHandler: the matching-token session is
-// cleaned up when a "disconnected" session_status event arrives.
+// cleaned up when a "disconnected" session_status event arrives, and any
+// other status (e.g. "ready") leaves it registered.
 func TestSessionEventHandlerDisconnectUnregistersSession(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-disconnect-handler")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "token-disconnect",
-	})
+	for _, tc := range []struct {
+		status      string
+		wantPresent bool
+	}{
+		{status: "disconnected"},
+		{status: "ready", wantPresent: true},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread("thread-status-" + tc.status)
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread() error = %v", err)
+			}
+			app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "token-live"})
 
-	handler := startedSessionEventHandler(app, thread.ID, "token-disconnect", "")
-	handler(provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  thread.ID,
-		Content:   "disconnected",
-		Timestamp: time.Now(),
-	})
-	waitProviderEvents(t, app, thread.ID)
+			handler := startedSessionEventHandler(app, thread.ID, "token-live", "")
+			handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: tc.status, Timestamp: time.Now()})
+			waitProviderEvents(t, app, thread.ID)
 
-	_, present := app.sessionManager().get(thread.ID)
-	if present {
-		t.Fatal("session not removed after disconnect event")
-	}
-}
-
-// TestSessionEventHandlerNonDisconnectStatusPreservesSession makes sure that
-// a non-disconnect session_status (e.g. "ready", "error") does NOT remove
-// the session. Only the literal "disconnected" content triggers cleanup.
-func TestSessionEventHandlerNonDisconnectStatusPreservesSession(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-status-preserve")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "token-ok",
-	})
-
-	handler := startedSessionEventHandler(app, thread.ID, "token-ok", "")
-	handler(provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  thread.ID,
-		Content:   "ready",
-		Timestamp: time.Now(),
-	})
-
-	waitProviderEvents(t, app, thread.ID)
-
-	_, present := app.sessionManager().get(thread.ID)
-	if !present {
-		t.Fatal("session wrongly removed on non-disconnect status event")
+			if _, present := app.sessionManager().get(thread.ID); present != tc.wantPresent {
+				t.Fatalf("session present after %q = %v, want %v", tc.status, present, tc.wantPresent)
+			}
+		})
 	}
 }
 
 // TestSessionEventHandlerAutoReconnectsAfterAbnormalDeath verifies the
-// recovery hook fires when a session sees the "error" → "disconnected"
-// pair (an abnormal exit) and the thread has a stored SessionRef. The
-// auto-reconnect is the path that turns SIGTERM / clean-exit-0 / OOM-kill
-// into a silently-recovered session without user action.
+// recovery hook the event handler fires after a session's death, and each
+// gate that withholds it. The auto-reconnect is the path that turns SIGTERM /
+// clean-exit-0 / OOM-kill into a silently-recovered session without user
+// action.
 func TestSessionEventHandlerAutoReconnectsAfterAbnormalDeath(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-auto-reconnect")
-	thread.SessionRef = "claude-resume-abc"
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Claude),
-		Token:    "token-dead",
-	})
+	for _, tc := range []struct {
+		name         string
+		sessionRef   string
+		statuses     []string
+		shuttingDown bool
+		want         bool
+	}{
+		// The "error" → "disconnected" pair is an abnormal exit, and a
+		// stored SessionRef is what --resume targets.
+		{name: "abnormal death", sessionRef: "claude-resume-abc", statuses: []string{"error", "disconnected"}, want: true},
+		// A "disconnected" without a preceding "error" came from us closing
+		// the session: without this gate, StopSession would instantly
+		// restart its provider.
+		{name: "clean stop", sessionRef: "claude-resume-clean", statuses: []string{"disconnected"}},
+		// A death before the provider published a resume cursor cannot be
+		// auto-recovered, so the banner stays up for the user to decide.
+		{name: "no session ref", statuses: []string{"error", "disconnected"}},
+		// A death arriving concurrently with a.Stop() must not resurrect the
+		// provider after the app has begun teardown.
+		{name: "shutting down", sessionRef: "claude-resume-shutdown", statuses: []string{"error", "disconnected"}, shuttingDown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread("thread-auto-reconnect")
+			thread.SessionRef = tc.sessionRef
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread() error = %v", err)
+			}
+			app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "token-dead"})
+			startCalls := make(chan string, 4)
+			app.stopSessionFn = func(string) error { return nil }
+			app.startSessionFn = func(threadID string) error {
+				startCalls <- threadID
+				return nil
+			}
+			app.shuttingDown.Store(tc.shuttingDown)
 
-	startCalls := make(chan string, 4)
-	app.stopSessionFn = func(string) error { return nil }
-	app.startSessionFn = func(threadID string) error {
-		startCalls <- threadID
-		return nil
-	}
+			handler := startedSessionEventHandler(app, thread.ID, "token-dead", string(provider.Claude))
+			for _, status := range tc.statuses {
+				handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: status, Timestamp: time.Now()})
+			}
+			waitProviderEvents(t, app, thread.ID)
 
-	handler := startedSessionEventHandler(app, thread.ID, "token-dead", string(provider.Claude))
-	handler(provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  thread.ID,
-		Content:   "error",
-		Timestamp: time.Now(),
-	})
-	handler(provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  thread.ID,
-		Content:   "disconnected",
-		Timestamp: time.Now(),
-	})
-
-	waitProviderEvents(t, app, thread.ID)
-
-	select {
-	case got := <-startCalls:
-		if got != thread.ID {
-			t.Fatalf("startSessionFn invoked for %q, want %q", got, thread.ID)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for auto-reconnect startSession call")
-	}
-}
-
-// TestSessionEventHandlerNoAutoReconnectWithoutDeathSignal pins the
-// intentional-stop carve-out: a "disconnected" event that arrived without
-// a preceding "error" came from us closing the session and must NOT
-// resurrect it. Without this gate, calling StopSession on a thread would
-// instantly restart its provider.
-func TestSessionEventHandlerNoAutoReconnectWithoutDeathSignal(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-clean-stop")
-	thread.SessionRef = "claude-resume-clean"
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Claude),
-		Token:    "token-clean",
-	})
-
-	startCalled := make(chan struct{}, 1)
-	app.stopSessionFn = func(string) error { return nil }
-	app.startSessionFn = func(string) error {
-		startCalled <- struct{}{}
-		return nil
-	}
-
-	handler := startedSessionEventHandler(app, thread.ID, "token-clean", string(provider.Claude))
-	handler(provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  thread.ID,
-		Content:   "disconnected",
-		Timestamp: time.Now(),
-	})
-
-	waitProviderEvents(t, app, thread.ID)
-
-	select {
-	case <-startCalled:
-		t.Fatal("startSessionFn called on clean disconnect; auto-reconnect should be gated on prior error event")
-	case <-time.After(150 * time.Millisecond):
-		// expected — no auto-reconnect for a clean stop
-	}
-}
-
-// TestSessionEventHandlerNoAutoReconnectWithoutSessionRef confirms the
-// SessionRef gate: a death that hits before the provider published a
-// resume cursor cannot be auto-recovered (--resume needs a target), so we
-// leave the banner up and let the user decide.
-func TestSessionEventHandlerNoAutoReconnectWithoutSessionRef(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-no-sessionref")
-	// SessionRef intentionally empty
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Claude),
-		Token:    "token-early",
-	})
-
-	startCalled := make(chan struct{}, 1)
-	app.stopSessionFn = func(string) error { return nil }
-	app.startSessionFn = func(string) error {
-		startCalled <- struct{}{}
-		return nil
-	}
-
-	handler := startedSessionEventHandler(app, thread.ID, "token-early", string(provider.Claude))
-	handler(provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  thread.ID,
-		Content:   "error",
-		Timestamp: time.Now(),
-	})
-	handler(provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  thread.ID,
-		Content:   "disconnected",
-		Timestamp: time.Now(),
-	})
-
-	waitProviderEvents(t, app, thread.ID)
-
-	select {
-	case <-startCalled:
-		t.Fatal("startSessionFn called despite empty SessionRef; auto-reconnect should skip when there is nothing to --resume against")
-	case <-time.After(150 * time.Millisecond):
-		// expected
+			// The reconnect runs on its own goroutine: a wanted one gets the
+			// time a loaded runner needs, an unwanted one a short window.
+			wait := 150 * time.Millisecond
+			if tc.want {
+				wait = 2 * time.Second
+			}
+			select {
+			case got := <-startCalls:
+				if !tc.want || got != thread.ID {
+					t.Fatalf("auto-reconnect started %q, want a reconnect = %v of %q", got, tc.want, thread.ID)
+				}
+			case <-time.After(wait):
+				if tc.want {
+					t.Fatal("timed out waiting for auto-reconnect startSession call")
+				}
+			}
+		})
 	}
 }
 
@@ -513,52 +414,6 @@ func TestAutoReconnectRearmsOnlyAfterAServedTurn(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-// TestAttemptAutoReconnectSkippedDuringShutdown pins the shutdown-race
-// safety check: a death arriving concurrently with a.Stop() must not
-// resurrect the provider after the app has begun teardown.
-func TestAttemptAutoReconnectSkippedDuringShutdown(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-shutdown")
-	thread.SessionRef = "claude-resume-shutdown"
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	startCalled := make(chan struct{}, 1)
-	app.stopSessionFn = func(string) error { return nil }
-	app.startSessionFn = func(string) error {
-		startCalled <- struct{}{}
-		return nil
-	}
-
-	app.shuttingDown.Store(true)
-
-	handler := startedSessionEventHandler(app, thread.ID, "tok-shutdown", string(provider.Claude))
-	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "tok-shutdown"})
-	handler(provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  thread.ID,
-		Content:   "error",
-		Timestamp: time.Now(),
-	})
-	handler(provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  thread.ID,
-		Content:   "disconnected",
-		Timestamp: time.Now(),
-	})
-
-	waitProviderEvents(t, app, thread.ID)
-
-	select {
-	case <-startCalled:
-		t.Fatal("auto-reconnect fired during shutdown; shuttingDown gate failed")
-	case <-time.After(150 * time.Millisecond):
-		// expected — shutdown gated it
-	}
-}
-
 // TestReconnectSessionSingleFlightSecondCallNoOps pins the gate that
 // stops a concurrent ReconnectSession from yanking the in-flight start.
 // The second caller returns nil without invoking stop/start.
@@ -678,10 +533,13 @@ func TestRetiredSessionFramesDoNotActOnTheReplacement(t *testing.T) {
 	}
 }
 
-// The verifier's probe, kept as it found the gap: session A's frame is stuck
-// inside triage when the replacement commits the thread. Once it unsticks,
-// none of the host's effects after triage may run for it.
-func TestInFlightRetiredFrameDoesNotReachTurnObservers(t *testing.T) {
+// Session A's worker is stuck inside triage on its turn-complete while A's
+// ScheduleWakeup ack queues behind it, and the replacement commits the
+// thread. Once the worker unsticks, none of the host's effects after triage
+// may run for either frame: no turn observer sees them, and the ack, which
+// reaches triage only after the commit carrying A's token from the
+// read-loop callback, leaves the replacement holding no schedule.
+func TestInFlightRetiredFramesDoNotReachTheReplacement(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithTriage(t)
 	thread := testThread("thread-probe-inflight")
@@ -712,39 +570,6 @@ func TestInFlightRetiredFrameDoesNotReachTurnObservers(t *testing.T) {
 	mu.Lock()
 	seen = nil
 	mu.Unlock()
-	app.triage.MarkThreadActive(thread.ID, "token-b")
-	close(release)
-	waitProviderEvents(t, app, thread.ID)
-	mu.Lock()
-	defer mu.Unlock()
-	if len(seen) != 0 {
-		t.Fatalf("turn observers saw the retired session's in-flight frame after the replacement committed: %v", seen)
-	}
-}
-
-// The PR's race in one process: A's worker is stuck inside triage on one
-// frame while A's ScheduleWakeup ack queues behind it, and the replacement
-// commits. The ack reaches triage only after the commit, carrying A's token
-// from the read-loop callback, so the replacement holds no schedule.
-func TestFrameQueuedBehindAStuckHandlerNeverArmsTheReplacement(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithTriage(t)
-	thread := testThread("thread-stuck-worker")
-	thread.Provider = string(provider.Claude)
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatal(err)
-	}
-	inHandle := make(chan struct{})
-	release := make(chan struct{})
-	var once sync.Once
-	app.triage.SetEventHook(func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventTurnComplete {
-			once.Do(func() { close(inHandle); <-release })
-		}
-	})
-	dead := startedSessionEventHandler(app, thread.ID, "token-a", string(provider.Claude))
-	dead(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: thread.ID, TurnComplete: &provider.WireTurnCompleteMeta{}, Timestamp: time.Now()})
-	awaitHeldInHandle(t, inHandle)
 	wakeup, err := json.Marshal(provider.SessionWakeupMeta{ScheduledForUnixMs: time.Now().Add(30 * time.Minute).UnixMilli()})
 	if err != nil {
 		t.Fatal(err)
@@ -755,6 +580,11 @@ func TestFrameQueuedBehindAStuckHandlerNeverArmsTheReplacement(t *testing.T) {
 	waitProviderEvents(t, app, thread.ID)
 	if at, ok := app.triage.PendingWakeupAt(thread.ID); ok {
 		t.Fatalf("the replacement holds the retired session's wakeup until %s", at)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 0 {
+		t.Fatalf("turn observers saw the retired session's in-flight frames after the replacement committed: %v", seen)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -34,7 +33,7 @@ func agyPoolKey(
 	accountID string,
 	accountGen uint64,
 	home agy.Home,
-	env map[string]string,
+	env provider.EnvInput,
 	isolateThreadID string,
 ) string {
 	h := sha256.New()
@@ -53,14 +52,7 @@ func agyPoolKey(
 	if isolateThreadID != "" {
 		writePart("thread", isolateThreadID)
 	}
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		writePart("env:"+k, env[k])
-	}
+	writePart("env", env.Fingerprint())
 	return fmt.Sprintf("agy|%s|%s", strings.TrimSpace(binary), hex.EncodeToString(h.Sum(nil)[:16]))
 }
 
@@ -73,7 +65,7 @@ func (a *App) acquireAgyConn(
 	threadID string,
 	binary string,
 	workDir string,
-	env map[string]string,
+	env provider.EnvInput,
 	accountSelection *providerAccountSelection,
 ) (*acp.Conn, func(), string, error) {
 	identity, _ := a.resolveProviderBinaryIdentity(string(provider.Agy))
@@ -112,7 +104,6 @@ func (a *App) acquireAgyConn(
 				Args:         launch.ACPArgs(),
 				WorkDir:      connWorkDir,
 				Env:          launch.Env,
-				UnsetEnv:     launch.Unset,
 				EventLogger:  a.logger,
 				Reaper:       a.groupReaper("agy session"),
 				ThreadID:     "agy-conn",
@@ -144,8 +135,8 @@ func (a *App) borrowAgyConnForCurrentAccount(binary string, home agy.Home) (*acp
 	resolvedBinary := agy.ResolveBinary(binary)
 	identity, _ := a.resolveProviderBinaryIdentity(string(provider.Agy))
 	selection := a.captureProviderAccountSelection(string(provider.Agy))
-	// acquireAgyConn keys live pooled connections with sessionProcessEnv(agy, nil).
-	sessionEnv := a.sessionProcessEnv(string(provider.Agy), nil)
+	// acquireAgyConn keys live pooled connections with sessionProcessEnv(agy).
+	sessionEnv := a.sessionProcessEnv(string(provider.Agy))
 	wantKey := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, home, sessionEnv, "")
 	conn, release, ok := a.sessionRuntime.Connections().Borrow(wantKey)
 	if !ok {
@@ -215,7 +206,6 @@ func (a *App) withAgyImportConn(ctx context.Context, appDataDir, avoidSessionID 
 		Args:         launch.ACPArgs(),
 		WorkDir:      providerProbeWorkDir(),
 		Env:          launch.Env,
-		UnsetEnv:     launch.Unset,
 		Reaper:       a.groupReaper("agy session import"),
 		ProviderName: string(provider.Agy),
 	})

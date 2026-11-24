@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // seedChildItem persists a subagent child row with an explicit summary
@@ -82,7 +84,7 @@ func itemByID(items []Item, id string) (Item, bool) {
 	return Item{}, false
 }
 
-func TestListSubagentDescendants_MultiLevelOrderedAndExcludedFromWindows(t *testing.T) {
+func TestNestedSubagentRowsStayOutOfWindows(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -102,16 +104,6 @@ func TestListSubagentDescendants_MultiLevelOrderedAndExcludedFromWindows(t *test
 	seedItem(t, s, "t", "noise", 2, 0, "")
 	seedItem(t, s, "t", "noise2", 3, 0, "")
 	seedChildItem(t, s, "t", "child", 5, 0, "parent", "child", "completed")
-
-	// The whole subtree hydrates from the root in one call, ordered by
-	// timeline coordinate.
-	descendants, err := s.ListSubagentDescendants("t", "grand")
-	if err != nil {
-		t.Fatalf("list descendants: %v", err)
-	}
-	if !equalStringSlice(collectIDs(descendants), []string{"parent", "child"}) {
-		t.Errorf("descendants: got %v, want [parent child]", collectIDs(descendants))
-	}
 
 	// Windows carry only top-level rows; the anchor's collapsed card
 	// aggregates stand in for the unloaded subtree.
@@ -137,95 +129,7 @@ func TestListSubagentDescendants_MultiLevelOrderedAndExcludedFromWindows(t *test
 	}
 }
 
-func TestListSubagentDescendants_CrossThreadIsolation(t *testing.T) {
-	// The items PK is `(thread_id, id)`, so the same item id can exist
-	// on two threads. The recursive walk re-filters by thread_id at
-	// every step; an id collision on another thread must neither leak
-	// rows in nor pull foreign children.
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("ta", "claude")); err != nil {
-		t.Fatalf("create ta: %v", err)
-	}
-	if err := s.CreateThread(makeThread("tb", "claude")); err != nil {
-		t.Fatalf("create tb: %v", err)
-	}
-	seedAnchorItem(t, s, "ta", "parent", 0, 0)
-	seedItem(t, s, "ta", "child", 5, 0, "parent")
-	// Thread B reuses the id "parent" as a plain row AND has its own
-	// child pointing at that id.
-	seedItem(t, s, "tb", "parent", 10, 0, "")
-	seedItem(t, s, "tb", "b-child", 10, 1, "parent")
-
-	forA, err := s.ListSubagentDescendants("ta", "parent")
-	if err != nil {
-		t.Fatalf("list ta: %v", err)
-	}
-	if !equalStringSlice(collectIDs(forA), []string{"child"}) {
-		t.Errorf("ta descendants: got %v, want [child]", collectIDs(forA))
-	}
-	for _, item := range forA {
-		if item.ThreadID != "ta" {
-			t.Errorf("cross-thread leak: item %s came from %s, want ta", item.ID, item.ThreadID)
-		}
-	}
-
-	forB, err := s.ListSubagentDescendants("tb", "parent")
-	if err != nil {
-		t.Fatalf("list tb: %v", err)
-	}
-	if !equalStringSlice(collectIDs(forB), []string{"b-child"}) {
-		t.Errorf("tb descendants: got %v, want [b-child]", collectIDs(forB))
-	}
-	for _, item := range forB {
-		if item.ThreadID != "tb" {
-			t.Errorf("cross-thread leak: item %s came from %s, want tb", item.ID, item.ThreadID)
-		}
-	}
-}
-
-func TestListSubagentDescendants_TerminatesOnParentCycle(t *testing.T) {
-	// A malformed thread where parent_id forms a cycle (a -> b -> a).
-	// The recursive CTE uses UNION (not UNION ALL) so (root, id) pairs
-	// dedup during recursion and the walk converges instead of
-	// spinning. The cycle makes the root reachable from itself, so it
-	// appears in its own descendant list — acceptable for corrupt data;
-	// the guard is termination, not prettiness. If a future refactor
-	// changes UNION → UNION ALL this test hangs, surfacing the
-	// regression immediately.
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	seedItem(t, s, "t", "a", 0, 0, "b")
-	seedItem(t, s, "t", "b", 1, 0, "a")
-	seedItem(t, s, "t", "child", 5, 0, "a")
-
-	descendants, err := s.ListSubagentDescendants("t", "a")
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	got := collectIDs(descendants)
-	want := []string{"a", "b", "child"}
-	if !equalStringSlice(got, want) {
-		t.Errorf("descendants: got %v, want %v", got, want)
-	}
-}
-
-func TestListSubagentDescendants_EmptyRootID(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	descendants, err := s.ListSubagentDescendants("t", "   ")
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(descendants) != 0 {
-		t.Errorf("descendants: got %v, want empty", collectIDs(descendants))
-	}
-}
-
-func TestListSubagentDescendants_FiltersPlanUpdateChildren(t *testing.T) {
+func TestSubagentAggregateExcludesPlanUpdateChildren(t *testing.T) {
 	// plan_update notifications never render in any timeline surface;
 	// they must not hydrate on expansion nor count against the
 	// collapsed card's "N entries" badge.
@@ -243,14 +147,6 @@ func TestListSubagentDescendants_FiltersPlanUpdateChildren(t *testing.T) {
 	}
 	seedChildItem(t, s, "t", "c-real", 0, 2, "anchor", "real work", "completed")
 
-	descendants, err := s.ListSubagentDescendants("t", "anchor")
-	if err != nil {
-		t.Fatalf("list descendants: %v", err)
-	}
-	if !equalStringSlice(collectIDs(descendants), []string{"c-real"}) {
-		t.Errorf("descendants: got %v, want [c-real]", collectIDs(descendants))
-	}
-
 	paged, err := s.ListThreadSliceAround(context.Background(), "t", "", 200, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
@@ -262,43 +158,6 @@ func TestListSubagentDescendants_FiltersPlanUpdateChildren(t *testing.T) {
 	count, _, hasCount, _ := decodedSubagentMeta(t, anchor)
 	if !hasCount || count != 1 {
 		t.Errorf("descendant count: got %v (present=%v), want 1 (plan_update excluded)", count, hasCount)
-	}
-}
-
-func TestListSubagentDescendants_HydratesPayloadMeta(t *testing.T) {
-	// Child rows carry the same payload-meta projection as window rows
-	// so the expanded transcript renders identically (diff stats,
-	// command exit codes) without loading payload data blobs.
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	seedAnchorItem(t, s, "t", "anchor", 0, 0)
-	if err := insertWithPayloadCarded(s, Item{
-		ID: "c-cmd", ThreadID: "t", TurnIndex: 0, ItemIndex: 1,
-		Kind: "tool_call", Role: "assistant", ToolName: "Bash",
-		Summary: "go test ./...", ParentID: "anchor",
-		PayloadID: "p-cmd", CreatedAt: 1,
-	}, Payload{
-		ID: "p-cmd", Kind: "command_output",
-		Meta: `{"exitCode":0}`, Data: []byte("ok\n"), CreatedAt: 1,
-	}); err != nil {
-		t.Fatalf("seed payload child: %v", err)
-	}
-
-	descendants, err := s.ListSubagentDescendants("t", "anchor")
-	if err != nil {
-		t.Fatalf("list descendants: %v", err)
-	}
-	child, ok := itemByID(descendants, "c-cmd")
-	if !ok {
-		t.Fatalf("c-cmd missing: got %v", collectIDs(descendants))
-	}
-	if child.PayloadKind != "command_output" {
-		t.Errorf("payload kind: got %q, want command_output", child.PayloadKind)
-	}
-	if child.PayloadMeta != `{"exitCode":0}` {
-		t.Errorf("payload meta: got %q, want exitCode JSON", child.PayloadMeta)
 	}
 }
 
@@ -350,86 +209,6 @@ func TestDecorateSubagentAnchors_PreviewIsTheNewestToolSummary(t *testing.T) {
 	}
 }
 
-func TestDecorateSubagentAnchors_EmptySummariesOmitSummaryKey(t *testing.T) {
-	// A just-launched group whose children haven't produced text yet:
-	// the count decorates (the card shows "N entries") but no summary
-	// key is written, so the frontend falls back to its own
-	// "Initializing..." placeholder.
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	seedAnchorItem(t, s, "t", "anchor", 0, 0)
-	seedChildItem(t, s, "t", "c-blank", 0, 1, "anchor", "", "running")
-
-	paged, err := s.ListThreadSliceAround(context.Background(), "t", "", 200, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
-	if err != nil {
-		t.Fatalf("list slice: %v", err)
-	}
-	anchor, ok := itemByID(paged.Items, "anchor")
-	if !ok {
-		t.Fatal("anchor missing from window")
-	}
-	count, _, hasCount, hasSummary := decodedSubagentMeta(t, anchor)
-	if !hasCount || count != 1 {
-		t.Errorf("count: got %v (present=%v), want 1", count, hasCount)
-	}
-	if hasSummary {
-		t.Error("summary key must be omitted when no child has summary text")
-	}
-}
-
-func TestListSubagentDescendants_CapsAtMaxNewestWin(t *testing.T) {
-	// The expansion load is a wire RPC; maxSubagentDescendants bounds one
-	// call the way maxWindowItems bounds the window pagers. When the cap
-	// binds, the newest rows win (tail-biased, like listTailSlice) and
-	// the result stays in ascending timeline order.
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-	seedAnchorItem(t, s, "t", "anchor", 0, 0)
-	total := maxSubagentDescendants + 5
-	for i := 1; i <= total; i++ {
-		seedChildItem(t, s, "t", fmt.Sprintf("c-%d", i), i, 0, "anchor", "", "completed")
-	}
-
-	descendants, err := s.ListSubagentDescendants("t", "anchor")
-	if err != nil {
-		t.Fatalf("list descendants: %v", err)
-	}
-	if len(descendants) != maxSubagentDescendants {
-		t.Fatalf("len: got %d, want %d", len(descendants), maxSubagentDescendants)
-	}
-	wantFirst := fmt.Sprintf("c-%d", total-maxSubagentDescendants+1)
-	if descendants[0].ID != wantFirst {
-		t.Errorf("first: got %s, want %s (oldest rows beyond the cap drop)", descendants[0].ID, wantFirst)
-	}
-	if descendants[len(descendants)-1].ID != fmt.Sprintf("c-%d", total) {
-		t.Errorf("last: got %s, want c-%d", descendants[len(descendants)-1].ID, total)
-	}
-	for i := 1; i < len(descendants); i++ {
-		if descendants[i-1].TurnIndex > descendants[i].TurnIndex {
-			t.Fatalf("not ascending at %d: %d > %d", i, descendants[i-1].TurnIndex, descendants[i].TurnIndex)
-		}
-	}
-
-	// The collapsed-card badge still reports the full total — the cap
-	// bounds one hydrate call, not the aggregate.
-	paged, err := s.ListThreadSliceAround(context.Background(), "t", "", 200, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
-	if err != nil {
-		t.Fatalf("list slice: %v", err)
-	}
-	anchor, ok := itemByID(paged.Items, "anchor")
-	if !ok {
-		t.Fatal("anchor missing from window")
-	}
-	count, _, hasCount, _ := decodedSubagentMeta(t, anchor)
-	if !hasCount || int(count) != total {
-		t.Errorf("decorated count: got %v (present=%v), want %d", count, hasCount, total)
-	}
-}
-
 func TestMergeSubagentAnchorMeta_MalformedMetaLeftUntouched(t *testing.T) {
 	// SQLite rejects malformed items.meta on write (the partial-index
 	// predicates json_extract it), so this guards external corruption
@@ -450,7 +229,9 @@ func TestDecorateSubagentAnchors_StaleStoredSummaryKeyDropped(t *testing.T) {
 	// The decoration owns its keys. A same-named summary key already in
 	// stored meta must not leak through when the computed summary is
 	// empty — otherwise the collapsed card would render text the backend
-	// never picked. Unrelated stored keys survive the merge.
+	// never picked. A child with no text yet still counts, and the
+	// frontend shows its own placeholder. Unrelated stored keys survive
+	// the merge.
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -645,15 +426,6 @@ func TestSubagentReadsResolveAResumeCarrierToItsTranscriptRoot(t *testing.T) {
 	}
 	if rootCount, _, hasRootCount, _ := decodedSubagentMeta(t, root); !hasRootCount || rootCount != 2 {
 		t.Errorf("root descendant count: got %v (present=%v), want 2", rootCount, hasRootCount)
-	}
-
-	// Expanding the carrier's card hydrates the ROOT's subtree.
-	descendants, err := s.ListSubagentDescendants("t", "carrier-1")
-	if err != nil {
-		t.Fatalf("list carrier descendants: %v", err)
-	}
-	if !equalStringSlice(collectIDs(descendants), []string{"child-1", "child-2"}) {
-		t.Errorf("carrier descendants: got %v, want [child-1 child-2]", collectIDs(descendants))
 	}
 }
 
@@ -1112,5 +884,100 @@ func TestDecorateSubagentAnchors_CompletionSiblingCarriesTheLaunchAggregate(t *t
 	}
 	if _, _, hasCount, _ := decodedSubagentMeta(t, bash); hasCount {
 		t.Fatalf("childless completion was decorated: %s", bash.Meta)
+	}
+}
+
+// A malformed thread whose parent_id forms a cycle (a -> b -> a) must not
+// hang either live caller of descendantsWalk: the recursive hops join by
+// UNION, which dedups (root, id) pairs so the walk converges. The cycle makes
+// the root reachable from itself; for corrupt data the guard is termination.
+// Each read runs under a deadline so a regression fails instead of hanging.
+func TestDescendantsWalkTerminatesOnAParentCycle(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedItem(t, s, "t", "a", 0, 0, "b")
+	seedItem(t, s, "t", "b", 1, 0, "a")
+	seedItem(t, s, "t", "child", 5, 0, "a")
+
+	// The deadline belongs to the read itself, so a walk that never
+	// terminates is interrupted rather than left running past the test.
+	within := func(t *testing.T, read func(q sqlQueryer) error) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := readSnapshotContext(ctx, s.reader(), "cyclic walk", func(q sqlQueryer) (struct{}, error) {
+			return struct{}{}, read(q)
+		}); err != nil {
+			t.Fatalf("the descendant walk on a parent cycle: %v", err)
+		}
+	}
+
+	t.Run("anchor aggregates", func(t *testing.T) {
+		within(t, func(q sqlQueryer) error {
+			roots := []string{"a"}
+			got, err := subagentAggregatesByRound(q, "t", roots, subagentRoundBoundsFor(roots, nil, nil))
+			if err != nil {
+				return err
+			}
+			if count := got["a"].descendantCount; count != 3 {
+				return fmt.Errorf("descendant count = %d, want 3 (b, child, and a itself through the cycle)", count)
+			}
+			return nil
+		})
+	})
+	t.Run("fork subtree", func(t *testing.T) {
+		within(t, func(q sqlQueryer) error {
+			ids, err := timelineSubtreeTx(q, "t", []string{"a"})
+			if err != nil {
+				return err
+			}
+			slices.Sort(ids)
+			if want := []string{"a", "a", "b", "child"}; !slices.Equal(ids, want) {
+				return fmt.Errorf("subtree = %v, want %v", ids, want)
+			}
+			return nil
+		})
+	})
+}
+
+// The items key is (thread_id, id), so one id can exist on two threads. The
+// walk re-filters by thread at every hop: a collision on another thread must
+// neither count that thread's rows nor follow its children. tb holds a row
+// named like ta's child, with a child of its own; ta's walk must not reach it.
+// The subtree read has no join after the walk, so it shows what the walk
+// itself followed.
+func TestDescendantsWalkStaysOnItsThread(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"ta", "tb"} {
+		if err := s.CreateThread(makeThread(id, "claude")); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	seedAnchorItem(t, s, "ta", "parent", 0, 0)
+	seedItem(t, s, "ta", "child", 5, 0, "parent")
+	seedItem(t, s, "tb", "parent", 10, 0, "")
+	seedItem(t, s, "tb", "b-child", 10, 1, "parent")
+	seedItem(t, s, "tb", "child", 10, 2, "")
+	seedItem(t, s, "tb", "b-grandchild", 10, 3, "child")
+
+	for thread, want := range map[string][]string{"ta": {"child", "parent"}, "tb": {"b-child", "parent"}} {
+		ids, err := timelineSubtreeTx(s.reader(), thread, []string{"parent"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(ids)
+		if !slices.Equal(ids, want) {
+			t.Errorf("%s subtree = %v, want %v", thread, ids, want)
+		}
+		roots := []string{"parent"}
+		got, err := subagentAggregatesByRound(s.reader(), thread, roots, subagentRoundBoundsFor(roots, nil, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count := got["parent"].descendantCount; count != 1 {
+			t.Errorf("%s descendant count = %d, want 1", thread, count)
+		}
 	}
 }

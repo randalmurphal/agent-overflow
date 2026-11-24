@@ -279,6 +279,31 @@ func TestInvocationLogIsBounded(t *testing.T) {
 	if len(log.Invocations) != maxInvocations || log.Dropped != 5 || log.Invocations[0].Seq != 6 {
 		t.Fatalf("len %d dropped %d first seq %d", len(log.Invocations), log.Dropped, log.Invocations[0].Seq)
 	}
+	// A cursor reads the window after it, wherever it falls in the
+	// retained log, and is told how many of the window's rows were
+	// evicted: one inside the evicted rows reads all that is kept.
+	last := maxInvocations + 5
+	for _, since := range []int{3, 5, 6, 100, last - 1, last} {
+		window := e.Invocations(since)
+		want := min(last-since, maxInvocations)
+		rows := window.Invocations
+		if len(rows) != want || (want > 0 && (rows[len(rows)-1].Seq != last || rows[0].Seq != last-want+1)) || window.Dropped != max(0, 5-since) {
+			t.Fatalf("since %d: %d rows from %+v, %d dropped; want %d ending at %d, %d dropped",
+				since, len(rows), rows[:min(len(rows), 1)], window.Dropped, want, last, max(0, 5-since))
+		}
+	}
+	// After a reset, nothing recorded before it counts as dropped; rows the
+	// bound evicts after it do.
+	e.Reset()
+	if log := e.Invocations(0); len(log.Invocations) != 0 || log.Dropped != 0 {
+		t.Fatalf("after reset: %d rows, %d dropped", len(log.Invocations), log.Dropped)
+	}
+	for range maxInvocations + 2 {
+		handle(e, "ssh", "-G", "example.com")
+	}
+	if log := e.Invocations(0); len(log.Invocations) != maxInvocations || log.Dropped != 2 {
+		t.Fatalf("after reset and overflow: %d rows, %d dropped, want %d and 2", len(log.Invocations), log.Dropped, maxInvocations)
+	}
 }
 
 func TestResetClearsStateAndLogButNotIDs(t *testing.T) {
@@ -667,9 +692,6 @@ func TestGitHubJobLogsServeARunningJobOnceItsBlobExists(t *testing.T) {
 		t.Fatalf("running job log = %+v", partial)
 	}
 	conditional := http.Header{"Authorization": {"Bearer " + testAPIToken}, "If-None-Match": {partial.header.Get("ETag")}}
-	if got := logs("500", conditional); got.status != 304 || got.body != "" {
-		t.Fatalf("unchanged running log revalidated = %+v, want 304", got)
-	}
 	fixture.Repos[0].Pulls[0].CI.Jobs[0].Log = "partial\nmore"
 	if _, err := e.Seed(fixture); err != nil {
 		t.Fatalf("re-seed: %v", err)

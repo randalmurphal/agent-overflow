@@ -46,7 +46,7 @@ test('a completion forms its card when its launch is outside the shipped activit
   });
   const threadId = await seedAgentThread(harness, 'offscreen-agents', 'Offscreen agent report');
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'investigate', null);
+  await harness.send(threadId, 'investigate');
   await waitForGate(harness, 'finished');
   type Row = { id: string; kind: string; completionOf?: string; completionLaunch?: { id: string } };
   const readTail = () => harness.rpc<{ items: Row[] }>('ListThreadSliceAround', threadId, '', 200,

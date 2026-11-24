@@ -310,6 +310,10 @@ func TestTransportPortResetLeavesTheFileAloneForAnExplicitPort(t *testing.T) {
 // separates, because the whole value of the middle one is that it sits
 // between two behaviours it shares nothing with.
 
+// The saved port beats the cache, and the cache-coherence half: a port the
+// setting asked for and the kernel gave IS the previous bind, so clearing the
+// setting later means "stay here" rather than "jump back to a number from
+// before you set this".
 func TestTransportPortSettingsPortBeatsTheCache(t *testing.T) {
 	dir := t.TempDir()
 	cached := freePort(t)
@@ -323,21 +327,6 @@ func TestTransportPortSettingsPortBeatsTheCache(t *testing.T) {
 	if bound != chosen {
 		t.Fatalf("bound %d, want the saved network.listenPort %d", bound, chosen)
 	}
-}
-
-// The cache-coherence half: a port the setting asked for and the kernel
-// gave IS the previous bind, so clearing the setting later means "stay
-// here" rather than "jump back to a number from before you set this".
-func TestTransportPortSettingsPortIsAdoptedIntoTheCache(t *testing.T) {
-	dir := t.TempDir()
-	stale := freePort(t)
-	writePinnedPortRaw(t, dir, `{"port":`+strconv.Itoa(stale)+`}`)
-	chosen := freePort(t)
-	if chosen == stale {
-		t.Skip("the two probe ports collided; nothing to separate")
-	}
-
-	bound, _ := bootOnceWithSettingsPort(t, dir, transport.Config{}, chosen, false)
 	if got := readPinnedPort(t, dir); got != bound {
 		t.Fatalf("the cache holds %d after binding the saved port %d; it must name the previous bind", got, bound)
 	}

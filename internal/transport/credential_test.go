@@ -14,10 +14,10 @@ import (
 	"github.com/coder/websocket"
 )
 
-// The credential channel, end to end. Each case here is one link in the
-// chain a page walks: it arrives with a one-time ticket on its URL,
-// trades it for a cookie it cannot read, and uses that cookie for the
-// manifest refetch and the WebSocket upgrade. Clients that are not
+// The credential channel, end to end. The chain a page walks: it arrives
+// with a one-time ticket on its URL, trades it for a cookie it cannot
+// read, and uses that cookie for the manifest refetch and the WebSocket
+// upgrade. Clients that are not
 // browsers present the session token instead, through the same
 // validation function.
 
@@ -62,20 +62,21 @@ func pageCookieFrom(t *testing.T, resp *http.Response) *http.Cookie {
 	return nil
 }
 
-// TestCredential_TicketExchangeIssuesHttpOnlyCookie is the first
-// contact: a page URL's ticket buys a session cookie, and every
-// attribute of that cookie is a decision the browser has to honour for
-// the credential to stay out of script's reach.
-func TestCredential_TicketExchangeIssuesHttpOnlyCookie(t *testing.T) {
+// TestCredential_PageWalksTheCredentialChain walks one page through the
+// chain, asserting each link where the page reaches it.
+func TestCredential_PageWalksTheCredentialChain(t *testing.T) {
 	f := newServerFixture(t)
 	ticket := pageURLTicket(t, f.srv)
 
-	resp := bootstrapWithTicket(t, f.srv.Addr(), ticket)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("bootstrap with a fresh ticket = %d, want 200", resp.StatusCode)
+	// First contact: a page URL's ticket buys a session cookie, and every
+	// attribute of that cookie is a decision the browser has to honour for
+	// the credential to stay out of script's reach.
+	exchange := bootstrapWithTicket(t, f.srv.Addr(), ticket)
+	_ = exchange.Body.Close()
+	if exchange.StatusCode != http.StatusOK {
+		t.Fatalf("bootstrap with a fresh ticket = %d, want 200", exchange.StatusCode)
 	}
-	cookie := pageCookieFrom(t, resp)
+	cookie := pageCookieFrom(t, exchange)
 	if !cookie.HttpOnly {
 		t.Error("page cookie is not HttpOnly, so page script can read the credential")
 	}
@@ -99,59 +100,89 @@ func TestCredential_TicketExchangeIssuesHttpOnlyCookie(t *testing.T) {
 	if cookie.Value == ticket {
 		t.Error("the cookie is the ticket; a spent ticket must not be reusable as a session")
 	}
-}
 
-// TestCredential_TicketIsSingleUse is the property the URL exists for:
-// what travels through history, shell arguments and logs buys one cookie
-// and nothing more.
-func TestCredential_TicketIsSingleUse(t *testing.T) {
-	f := newServerFixture(t)
-	ticket := pageURLTicket(t, f.srv)
-
-	first := bootstrapWithTicket(t, f.srv.Addr(), ticket)
-	_ = first.Body.Close()
-	if first.StatusCode != http.StatusOK {
-		t.Fatalf("first exchange = %d, want 200", first.StatusCode)
-	}
-
-	// Same ticket, a client holding no cookie — a copied URL opened in
-	// another browser, or a stale bookmark.
+	// The ticket is single use, which is the property the URL exists for:
+	// what travels through history, shell arguments and logs buys one
+	// cookie and nothing more. Same ticket, a client holding no cookie — a
+	// copied URL opened in another browser, or a stale bookmark.
 	second := bootstrapWithTicket(t, f.srv.Addr(), ticket)
 	_ = second.Body.Close()
 	if second.StatusCode != http.StatusNotFound {
 		t.Fatalf("second exchange of the same ticket = %d, want 404", second.StatusCode)
 	}
-}
 
-// TestCredential_CookieCarriesTheReloadAndRefetch covers the two
-// requests that follow first contact: the SPA's manifest refetch, and a
-// reload of the URL after the ticket was scrubbed from it. Both present
-// the cookie alone.
-func TestCredential_CookieCarriesTheReloadAndRefetch(t *testing.T) {
-	f := newServerFixture(t)
-	ticket := pageURLTicket(t, f.srv)
-
-	first := bootstrapWithTicket(t, f.srv.Addr(), ticket)
-	_ = first.Body.Close()
-	cookie := pageCookieFrom(t, first)
-
+	// The SPA's manifest refetch, and a reload of the URL after the ticket
+	// was scrubbed from it, present the cookie alone.
 	req, err := http.NewRequest(http.MethodGet, "http://"+f.srv.Addr()+"/bootstrap.json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.AddCookie(cookie)
-	resp, err := http.DefaultClient.Do(req)
+	refetch, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("refetch: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("ticketless refetch with the cookie = %d, want 200", resp.StatusCode)
+	_ = refetch.Body.Close()
+	if refetch.StatusCode != http.StatusOK {
+		t.Fatalf("ticketless refetch with the cookie = %d, want 200", refetch.StatusCode)
 	}
 	// The refetch must not burn a second cookie issuance: the request
 	// already authenticated, so there is nothing to exchange.
-	if len(resp.Cookies()) != 0 {
-		t.Errorf("refetch re-issued cookies: %v", resp.Cookies())
+	if len(refetch.Cookies()) != 0 {
+		t.Errorf("refetch re-issued cookies: %v", refetch.Cookies())
+	}
+
+	upgrade := func(origin string) (*websocket.Conn, *http.Response, error) {
+		header := http.Header{}
+		header.Set("Cookie", cookie.Name+"="+cookie.Value)
+		if origin != "" {
+			header.Set("Origin", origin)
+		}
+		return websocket.Dial(context.Background(), "ws://"+f.srv.Addr()+"/ws", &websocket.DialOptions{HTTPHeader: header})
+	}
+
+	// The browser's own path: no credential in the URL, the cookie doing
+	// the work. The page the server itself served names this very
+	// authority, and must be let through.
+	for _, origin := range []string{"", "http://" + f.srv.Addr()} {
+		conn, _, err := upgrade(origin)
+		if err != nil {
+			t.Fatalf("upgrade with the page cookie from origin %q: %v", origin, err)
+		}
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+	}
+
+	// The load-bearing cross-origin control. Cookies are scoped by host and
+	// not by port, so a page served by any other listener on this host is
+	// sent our cookie by the browser, and a WebSocket handshake is not
+	// subject to the cross-origin read rules that keep such a page away
+	// from /bootstrap.json. The Origin check refuses the handshake before
+	// the credential is even consulted, which is why this presents a
+	// perfectly valid cookie.
+	_, port, err := splitHostPortForTest(f.srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, origin := range []string{
+		"http://untrusted.example",
+		// Another listener on this very host: same cookie scope,
+		// different principal.
+		"http://127.0.0.1:" + neighbourPort(port),
+		// A sandboxed document names no authority at all.
+		"null",
+		// Right authority, wrong scheme.
+		"https://127.0.0.1:" + port,
+	} {
+		t.Run(origin, func(t *testing.T) {
+			conn, resp, err := upgrade(origin)
+			if err == nil {
+				_ = conn.Close(websocket.StatusNormalClosure, "")
+				t.Fatalf("upgrade from origin %q succeeded", origin)
+			}
+			if resp != nil && resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("refusal status = %d, want 404 (indistinguishable from an unknown path)", resp.StatusCode)
+			}
+		})
 	}
 }
 
@@ -217,95 +248,6 @@ func TestCredential_StaleTicketAfterRestartFailsCleanly(t *testing.T) {
 	if fresh.StatusCode != http.StatusOK {
 		t.Fatalf("fresh ticket after restart = %d, want 200", fresh.StatusCode)
 	}
-}
-
-// TestCredential_UpgradeWithCookie is the browser's own path: no
-// credential in the URL, the cookie doing the work.
-func TestCredential_UpgradeWithCookie(t *testing.T) {
-	f := newServerFixture(t)
-	ticket := pageURLTicket(t, f.srv)
-	exchange := bootstrapWithTicket(t, f.srv.Addr(), ticket)
-	_ = exchange.Body.Close()
-	cookie := pageCookieFrom(t, exchange)
-
-	header := http.Header{}
-	header.Set("Cookie", cookie.Name+"="+cookie.Value)
-	conn, _, err := websocket.Dial(context.Background(), "ws://"+f.srv.Addr()+"/ws", &websocket.DialOptions{
-		HTTPHeader: header,
-	})
-	if err != nil {
-		t.Fatalf("upgrade with the page cookie: %v", err)
-	}
-	_ = conn.Close(websocket.StatusNormalClosure, "")
-}
-
-// TestCredential_UpgradeRefusesForeignOrigin is the load-bearing
-// cross-origin control. Cookies are scoped by host and not by port, so a
-// page served by any other listener on this host is sent our cookie by
-// the browser, and a WebSocket handshake is not subject to the
-// cross-origin read rules that keep such a page away from
-// /bootstrap.json. The Origin check refuses the handshake before the
-// credential is even consulted, which is why this case presents a
-// perfectly valid cookie.
-func TestCredential_UpgradeRefusesForeignOrigin(t *testing.T) {
-	f := newServerFixture(t)
-	ticket := pageURLTicket(t, f.srv)
-	exchange := bootstrapWithTicket(t, f.srv.Addr(), ticket)
-	_ = exchange.Body.Close()
-	cookie := pageCookieFrom(t, exchange)
-
-	_, port, err := splitHostPortForTest(f.srv.Addr())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, origin := range []string{
-		"http://untrusted.example",
-		// Another listener on this very host: same cookie scope,
-		// different principal.
-		"http://127.0.0.1:" + neighbourPort(port),
-		// A sandboxed document names no authority at all.
-		"null",
-		// Right authority, wrong scheme.
-		"https://127.0.0.1:" + port,
-	} {
-		t.Run(origin, func(t *testing.T) {
-			header := http.Header{}
-			header.Set("Cookie", cookie.Name+"="+cookie.Value)
-			header.Set("Origin", origin)
-			conn, resp, err := websocket.Dial(context.Background(), "ws://"+f.srv.Addr()+"/ws", &websocket.DialOptions{
-				HTTPHeader: header,
-			})
-			if err == nil {
-				_ = conn.Close(websocket.StatusNormalClosure, "")
-				t.Fatalf("upgrade from origin %q succeeded", origin)
-			}
-			if resp != nil && resp.StatusCode != http.StatusNotFound {
-				t.Fatalf("refusal status = %d, want 404 (indistinguishable from an unknown path)", resp.StatusCode)
-			}
-		})
-	}
-}
-
-// TestCredential_UpgradeAcceptsOwnOrigin is the other half: the page the
-// server itself served names this very authority, and must be let
-// through.
-func TestCredential_UpgradeAcceptsOwnOrigin(t *testing.T) {
-	f := newServerFixture(t)
-	ticket := pageURLTicket(t, f.srv)
-	exchange := bootstrapWithTicket(t, f.srv.Addr(), ticket)
-	_ = exchange.Body.Close()
-	cookie := pageCookieFrom(t, exchange)
-
-	header := http.Header{}
-	header.Set("Cookie", cookie.Name+"="+cookie.Value)
-	header.Set("Origin", "http://"+f.srv.Addr())
-	conn, _, err := websocket.Dial(context.Background(), "ws://"+f.srv.Addr()+"/ws", &websocket.DialOptions{
-		HTTPHeader: header,
-	})
-	if err != nil {
-		t.Fatalf("upgrade from this server's own origin: %v", err)
-	}
-	_ = conn.Close(websocket.StatusNormalClosure, "")
 }
 
 // TestCredential_UpgradeWithoutOriginTakesTheTokenPath is every client
@@ -500,4 +442,12 @@ func neighbourPort(port string) string {
 		return "2"
 	}
 	return "1"
+}
+
+// consumeTicket removes ticket from the outstanding set, reporting
+// whether it was there. A ticket answers exactly one exchange: a URL
+// that already bought its cookie cannot buy a second one.
+func (c *Credential) consumeTicket(ticket string) bool {
+	_, ok := c.tickets.consume(ticket)
+	return ok
 }

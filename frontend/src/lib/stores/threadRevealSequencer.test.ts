@@ -46,11 +46,6 @@ describe('threadRevealGate', () => {
       });
     }
 
-    it('starts with no gate', async () => {
-      const pane = await buildPane(makeThread({ id: 't' }));
-      expect(pane.revealBoundary).toBeNull();
-    });
-
     it('synchronizes the gate after an upsert bookkeeping failure', async () => {
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);

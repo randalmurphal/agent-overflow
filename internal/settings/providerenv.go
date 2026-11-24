@@ -8,6 +8,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+
+	"agent-overflow/internal/provider"
 )
 
 // ProviderEnvVar is one user-defined environment variable applied to the
@@ -58,70 +60,16 @@ const (
 	MaxProviderEnvValueLength = 8192
 )
 
-// providerEnvReservedPrefix is the namespace Agent Overflow uses for every
-// variable it injects into a provider process: the in-session marker
-// (AO_IN_SESSION, internal/aocli/run.go), the test harness
-// control channel (AO_HARNESS_*, internal/harness/control), the mock provider
-// (AO_MOCK_*), and claudetui's hook relay (AO_CLAUDE_HOOK_URL /
-// AO_CLAUDE_HOOK_TOKEN). Denying the whole prefix rather than the current name
-// list means a variable added to any of those contracts is covered the day it
-// lands, instead of the day someone remembers to update this file.
-const providerEnvReservedPrefix = "AO_"
-
-// deniedProviderEnvNames maps a reserved variable name to the reason the user
-// is not allowed to set it. Keys are upper-case; lookup upper-cases the
-// candidate, matching provider.FilterEnvironment's case-insensitive removal —
-// two spellings of one name must not disagree about whether they're reserved.
-//
-// Membership rule: a name belongs here when an Agent Overflow spawn path sets
-// or unsets it deliberately, so a user override would either be silently
-// discarded (the value never reaches the CLI) or would defeat a documented
-// invariant (the CLI reads a home / entrypoint / search path AO is responsible
-// for). Rejecting at validation time is the point — a name that is silently
-// dropped at spawn time looks like a bug in the feature.
-//
-// Cross-checked against provider.ReservedEnvNames by
-// TestReservedEnvNamesMatchTheProviderPins (root package): internal/settings
-// must not import internal/provider, so the two lists are kept honest — in both
-// directions — by a test that can see both, the same arrangement the
-// reasoning-effort tables use.
-var deniedProviderEnvNames = map[string]map[string]string{
-	// Applies to every provider.
-	"": {
-		"PATH": "PATH is assembled by Agent Overflow (the bundled `agent-overflow` CLI directory is prepended to the inherited PATH for every session); point at a different CLI with the provider's binary-path setting instead",
-		"HOME": "the provider CLI reads its login and data from a folder under HOME, and Agent Overflow manages the ones under your own home folder, so another HOME here would make the CLI use a login and data the app does not show",
-	},
-	"claude": {
-		"CLAUDE_CONFIG_DIR":                    "Agent Overflow owns Claude's config home: every spawn clears this variable, and managed-account probes set it to a temporary home. Claude treats its PRESENCE (not its value) as \"non-default home\", which on macOS hashes into a different Keychain service",
-		"CLAUDE_SECURESTORAGE_CONFIG_DIR":      "Claude 2.1.220+ keys its credential-storage (macOS Keychain service) naming off this variable when present, overriding CLAUDE_CONFIG_DIR — a custom value would make Agent Overflow's account probes write rotated tokens into the wrong account's storage",
-		"CLAUDE_CODE_ENTRYPOINT":               "Agent Overflow pins this to \"agent-overflow\" so its sessions stay listed in `claude --resume`",
-		"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":      "set by the per-provider auto-compact threshold, delivered through `--settings` (whose flagSettings source outranks the subprocess environment), so a value here would be silently ignored",
-		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":      "derived from the thread's context window and delivered through `--settings` (whose flagSettings source outranks the subprocess environment), so a value here would be silently ignored",
-		"CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "set by the Claude subagent-limit setting, delivered through `--settings` (whose flagSettings source outranks the subprocess environment), so a value here would be silently ignored",
-		"CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "set by the Claude subagent-limit setting, delivered through `--settings` (whose flagSettings source outranks the subprocess environment), so a value here would be silently ignored",
-		"CLAUDE_CODE_TOOL_MEMORY_LIMIT":        "set by the Claude tool-memory-limit setting, delivered through `--settings` (whose flagSettings source outranks the subprocess environment), so a value here would be silently ignored",
-		"CLAUDE_CODE_RESUME_INTERRUPTED_TURN":  "Claude 2.1.236+ drops the interrupted turn's tool results from a resumed transcript when this variable is set, which Agent Overflow's resume-cursor mirror does not model, so the first start of a forked conversation under it can fail outright; the name stays unavailable until the mirror handles that case",
-		"CLAUDE_CODE_DISABLE_1M_CONTEXT":       "Claude 2.1.237 ignores the `[1m]` model suffix Agent Overflow appends to request the 1M-token context tier whenever this variable is set, so a value here would make the thread's context-window setting silently lie about the window the session actually got",
-		"CLAUDE_CODE_HARBOR_KITE":              "set by the cross-session messaging setting, which is what opens the peer inbox; a value here would let a thread be discovered and messaged by other Claude sessions while the setting says it is off",
-		"CLAUDE_CODE_SESSION_NAME":             "Agent Overflow derives the peer-visible session name from the thread and passes it as `--name`, keeping it distinct per thread and in step with the thread title; a value here would name every thread the same thing to every peer",
-		"CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS":   "sets how long a HELD cross-session message waits before it is silently dropped; Agent Overflow always sends an explicit inbound policy so nothing is ever held, and a value here would only re-time a drop the user cannot see",
-		"CLAUDE_CODE_TASK_LIST_ID":             "Agent Overflow pins this to the thread id so Claude's task list follows the thread across restarts and reverts; a value here would make every thread share one task list",
-	},
-	"codex": {
-		"CODEX_HOME": "Agent Overflow owns Codex's home: every spawn clears this variable, and login / inactive-account probes set it to a temporary home holding that account's credentials",
-	},
-	"agy": {
-		"GEMINI_HOME":                 "Agent Overflow manages Antigravity's home isolation",
-		"AGY_APP_DATA_DIR":            "Agent Overflow manages Antigravity's app data directory",
-		"AGY_ACP_FORCE_FILE_STORAGE":  "Agent Overflow controls Antigravity's credential storage isolation",
-		"SSH_CONNECTION":              "Agent Overflow sets this with Antigravity's file credential storage on every launch that uses it",
-		"AGY_CLI_DISABLE_AUTO_UPDATE": "Agent Overflow pins this so background auto-updates do not replace the running ACP server mid-session",
-	},
-}
+// The names a custom environment may not set are provider's table
+// (internal/provider/envtable.go): every variable an Agent Overflow spawn path
+// sets or clears deliberately is declared there, so a user override that would
+// be silently discarded, or would defeat a documented invariant, is refused
+// here from the same list. Rejecting at validation time is the point — a name
+// that is silently dropped at spawn time looks like a bug in the feature.
 
 // providerEnvSettingsField returns the settings JSON key that stores the
 // provider's custom environment, and the canonical provider key used for
-// deny-list lookups. claude-tui shares Claude's list: one binary, one backend,
+// reserved-name lookups. claude-tui shares Claude's list: one binary, one backend,
 // so a base URL that moves one must move the other.
 func providerEnvSettingsField(providerName string) (field, key string, err error) {
 	switch strings.TrimSpace(providerName) {
@@ -155,9 +103,9 @@ func (s Settings) ProviderEnvVars(providerName string) []ProviderEnvVar {
 	return nil
 }
 
-// ProviderEnvMap returns the provider's custom environment as the override map
-// provider.BuildEnvironment consumes. nil when nothing is configured, so the
-// spawn paths keep their existing "no overrides" fast path.
+// ProviderEnvMap returns the provider's custom environment as the map
+// provider.BuildEnvironment takes in EnvInput.Custom. nil when nothing is
+// configured.
 func (s Settings) ProviderEnvMap(providerName string) map[string]string {
 	vars := s.ProviderEnvVars(providerName)
 	if len(vars) == 0 {
@@ -209,28 +157,6 @@ func RedactProviderEnvVars(vars []ProviderEnvVar) []ProviderEnvVar {
 	return out
 }
 
-// ReservedProviderEnvNames returns the explicit reserved names for a provider
-// (upper-case, unordered). It does NOT include the AO_ prefix rule, which is a
-// prefix rather than a name — ValidateProviderEnvVarName enforces both.
-//
-// Exported for the root-package test that cross-checks this list against
-// provider.ReservedEnvNames in both directions; that test is what keeps the
-// duplication honest, since this package must not import internal/provider.
-func ReservedProviderEnvNames(providerName string) []string {
-	_, key, err := providerEnvSettingsField(providerName)
-	if err != nil {
-		return nil
-	}
-	out := make([]string, 0, len(deniedProviderEnvNames[""])+len(deniedProviderEnvNames[key]))
-	for name := range deniedProviderEnvNames[""] {
-		out = append(out, name)
-	}
-	for name := range deniedProviderEnvNames[key] {
-		out = append(out, name)
-	}
-	return out
-}
-
 // ValidateProviderEnvVarName is the single name rule, exported so the App-level
 // mutators can reject a bad name before touching the settings file and surface
 // the same message the strict save path would.
@@ -271,25 +197,16 @@ func ValidateProviderEnvVarName(providerName, name string) error {
 			)
 		}
 	}
-	upper := strings.ToUpper(trimmed)
-	if strings.HasPrefix(upper, providerEnvReservedPrefix) {
-		return fmt.Errorf(
-			"%q is reserved: the %s prefix is how Agent Overflow passes its own session, harness, and hook-relay contract to provider processes",
-			trimmed, providerEnvReservedPrefix,
-		)
-	}
-	if reason, denied := deniedProviderEnvNames[""][upper]; denied {
-		return reservedProviderEnvNameError{name: trimmed, upper: upper, reason: reason}
-	}
-	if reason, denied := deniedProviderEnvNames[key][upper]; denied {
-		return reservedProviderEnvNameError{name: trimmed, upper: upper, reason: reason}
+	if refusal, refused := provider.ReservedEnvRefusal(key, trimmed); refused {
+		return reservedProviderEnvNameError{name: trimmed, tableName: refusal.Name, reason: refusal.Reason}
 	}
 	return nil
 }
 
 // reservedProviderEnvNameError is ValidateProviderEnvVarName's refusal of a
-// well-formed name in the deny table: upper is the table's name for it.
-type reservedProviderEnvNameError struct{ name, upper, reason string }
+// well-formed reserved name: tableName is the reserved table's spelling of it,
+// "" for a name refused for its prefix (provider.EnvRefusal).
+type reservedProviderEnvNameError struct{ name, tableName, reason string }
 
 func (e reservedProviderEnvNameError) Error() string {
 	return fmt.Sprintf("%q is reserved: %s", e.name, e.reason)
@@ -341,9 +258,9 @@ func validateProviderEnvVars(providerName string, vars []ProviderEnvVar) ([]Prov
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", field, err)
 		}
-		// Case-insensitive: provider.FilterEnvironment removes overridden keys
-		// case-insensitively, so `Proxy` and `PROXY` would fight over one slot
-		// in the assembled environment with the winner decided by map order.
+		// Case-insensitive, although the child receives `Proxy` and `PROXY`
+		// as two variables: a list whose names differ only in case is a
+		// mistake to show the user, not two settings to apply.
 		upper := strings.ToUpper(v.Name)
 		if first, dup := seen[upper]; dup {
 			if first == v.Name {
@@ -370,7 +287,7 @@ func sanitizeProviderEnvVars(providerName string, vars []ProviderEnvVar) []Provi
 }
 
 // walkSavedProviderEnv is the load rule for one provider's saved list: the
-// entries it keeps, and the deny-table names (upper-case, each once) of the
+// entries it keeps, and the reserved table's names (each once) of the
 // entries it drops as reserved. It logs every drop when logDrops is set; the
 // load logs, and SavedReservedProviderEnv, which reads the same list again,
 // does not.
@@ -390,8 +307,8 @@ func walkSavedProviderEnv(providerName string, vars []ProviderEnvVar, logDrops b
 		v, err := validateProviderEnvVar(providerName, raw)
 		if err != nil {
 			var denied reservedProviderEnvNameError
-			if errors.As(err, &denied) && !slices.Contains(reserved, denied.upper) {
-				reserved = append(reserved, denied.upper)
+			if errors.As(err, &denied) && denied.tableName != "" && !slices.Contains(reserved, denied.tableName) {
+				reserved = append(reserved, denied.tableName)
 			}
 			logf("settings: dropping invalid %s entry %q: %v", field, raw.Name, err)
 			continue
@@ -415,12 +332,12 @@ func walkSavedProviderEnv(providerName string, vars []ProviderEnvVar, logDrops b
 }
 
 // ReservedProviderEnv is a variable saved in a provider's custom environment
-// whose name is reserved (in the deny table), so load drops it: a value
+// whose name is in provider's reserved table, so load drops it: a value
 // saved before the name was reserved.
 type ReservedProviderEnv struct {
 	// Provider is the settings key: claude, codex or agy.
 	Provider string
-	// Name is the reserved name as the deny table spells it.
+	// Name is the reserved name as the table spells it.
 	Name string
 }
 
@@ -469,7 +386,7 @@ const maxReservedProviderEnvNamed = 6
 // a save of any provider's custom environment rewrites settings.json from
 // the loaded settings, which no longer hold them (Service.mutate,
 // writeSparse). It names variables only by
-// their deny-table name, never a value, and at most
+// their table name, never a value, and at most
 // maxReservedProviderEnvNamed of them. "" for none.
 func ReservedProviderEnvNotice(found []ReservedProviderEnv) string {
 	if len(found) == 0 {

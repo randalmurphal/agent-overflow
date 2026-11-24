@@ -39,45 +39,21 @@ describe('<SendButton>', () => {
     expect(run.getByTestId('composer-send').textContent).toContain('Run');
   });
 
-  it('is disabled when idle and canSend is false', () => {
-    const { getByTestId } = render(SendButton, {
-      props: {
-        canSend: false,
-        isTurnActive: false,
-        onSend: vi.fn(),
-        onInterrupt: vi.fn(),
-      },
-    });
-    const btn = getByTestId('composer-send') as HTMLButtonElement;
-    expect(btn.disabled).toBe(true);
-  });
-
-  it('swaps to composer-interrupt and fires onInterrupt when a turn is active', async () => {
+  it.each([
+    { name: 'swaps to composer-interrupt and fires onInterrupt when a turn is active', props: { isTurnActive: true } },
+    // sendInFlight=true with isTurnActive=false simulates the dispatch
+    // window between user-Send and `provider:turn_started`. The stop
+    // button must already be visible so Esc / click can abort.
+    { name: 'shows the stop variant during the sendInFlight window', props: { isTurnActive: false, sendInFlight: true } },
+  ])('$name', async ({ props }) => {
     const onSend = vi.fn();
     const onInterrupt = vi.fn();
     const { getByTestId, queryByTestId } = render(SendButton, {
-      props: { canSend: false, isTurnActive: true, onSend, onInterrupt },
+      props: { canSend: false, ...props, onSend, onInterrupt },
     });
     expect(queryByTestId('composer-send')).toBeNull();
     const btn = getByTestId('composer-interrupt') as HTMLButtonElement;
     // Interrupt remains enabled even when the textarea is empty.
-    expect(btn.disabled).toBe(false);
-    await fireEvent.click(btn);
-    expect(onInterrupt).toHaveBeenCalledOnce();
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it('shows the stop variant during the sendInFlight window', async () => {
-    const onSend = vi.fn();
-    const onInterrupt = vi.fn();
-    // sendInFlight=true with isTurnActive=false simulates the dispatch
-    // window between user-Send and `provider:turn_started`. The stop
-    // button must already be visible so Esc / click can abort.
-    const { getByTestId, queryByTestId } = render(SendButton, {
-      props: { canSend: false, isTurnActive: false, sendInFlight: true, onSend, onInterrupt },
-    });
-    expect(queryByTestId('composer-send')).toBeNull();
-    const btn = getByTestId('composer-interrupt') as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
     await fireEvent.click(btn);
     expect(onInterrupt).toHaveBeenCalledOnce();
@@ -110,6 +86,7 @@ describe('<SendButton>', () => {
       props: { canSend: false, isTurnActive: false, onSend: vi.fn(), onInterrupt: vi.fn() },
     });
     const btn = getByTestId('composer-send') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
     expect(btn.hasAttribute('data-pending')).toBe(false);
     expect(btn.getAttribute('aria-busy')).toBe('false');
     expect(btn.getAttribute('aria-label')).toBe('Send message');

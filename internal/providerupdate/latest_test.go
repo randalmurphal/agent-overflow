@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -33,41 +34,12 @@ func TestClaudeLatestFollowsTheDoctorChannel(t *testing.T) {
 				t.Errorf("claude = %+v", claude)
 			}
 			doctor := r.runner.lastOf("doctor")
-			want := Command{Binary: "/opt/claude", Args: []string{"doctor"}, Env: map[string]string{"PROXY_FOR": ProviderClaude}, Dir: "/home/u"}
-			if doctor.Binary != want.Binary || !slices.Equal(doctor.Args, want.Args) || !maps.Equal(doctor.Env, want.Env) || doctor.Dir != want.Dir {
+			want := Command{Binary: "/opt/claude", Args: []string{"doctor"}, Env: provider.EnvInput{Custom: map[string]string{"PROXY_FOR": ProviderClaude}}, Dir: "/home/u"}
+			if doctor.Binary != want.Binary || !slices.Equal(doctor.Args, want.Args) || !maps.Equal(doctor.Env.Custom, want.Env.Custom) || doctor.Dir != want.Dir {
 				t.Errorf("doctor ran %+v, want %+v", doctor, want)
 			}
 			if got := r.hosts.count(ClaudeChannelURL(tc.channel)); got != 1 {
 				t.Errorf("channel %s fetched %d times", tc.channel, got)
-			}
-		})
-	}
-}
-
-func TestBrewInstallsReadTheirCask(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		provider, resolved, cask string
-	}{
-		{ProviderClaude, "/opt/homebrew/Caskroom/claude-code/2.1.300/claude", "claude-code"},
-		{ProviderClaude, "/opt/homebrew/Caskroom/claude-code@latest/2.1.300/claude", "claude-code@latest"},
-		{ProviderCodex, "/usr/local/Caskroom/codex/0.160.0/codex-x86_64-apple-darwin", "codex"},
-	} {
-		t.Run(tc.cask, func(t *testing.T) {
-			t.Parallel()
-			r := newRig(t)
-			r.setBinary(tc.provider, Binary{Path: "/opt/homebrew/bin/" + tc.provider, ResolvedPath: tc.resolved})
-			r.hosts.text(BrewCaskURL(tc.cask), http.StatusOK, `{"token":"`+tc.cask+`","version":"9.9.9"}`)
-			claude, codex := r.check()
-			status := map[string]Status{ProviderClaude: claude, ProviderCodex: codex}[tc.provider]
-			if status.LatestVersion != "9.9.9" || !status.Available {
-				t.Fatalf("%s = %+v, want the cask's 9.9.9", tc.provider, status)
-			}
-			if r.runner.ran("doctor") != 0 && tc.provider == ProviderClaude {
-				t.Error("a brew install ran claude doctor; brew ignores the settings channel")
-			}
-			if tc.provider == ProviderCodex && r.hosts.count(CodexNPMLatestURL) != 0 {
-				t.Error("a brew codex read the npm manifest")
 			}
 		})
 	}
@@ -127,9 +99,13 @@ func TestAStandaloneCodexInstallsTheReleaseItsCheckOffered(t *testing.T) {
 		t.Fatalf("run = %+v", status.Run)
 	}
 	update := r.runner.lastOf("update")
-	want := map[string]string{"PROXY_FOR": ProviderCodex, "CODEX_RELEASE": "0.169.0"}
-	if update.Binary != standaloneCodex.Path || !slices.Equal(update.Args, []string{"update"}) || !maps.Equal(update.Env, want) {
-		t.Fatalf("ran %+v, want %s update with %v", update, standaloneCodex.Path, want)
+	want := provider.EnvInput{
+		Custom: map[string]string{"PROXY_FOR": ProviderCodex},
+		Pins:   map[provider.ReservedEnv]string{provider.CodexReleaseEnv: "0.169.0"},
+	}
+	if update.Binary != standaloneCodex.Path || !slices.Equal(update.Args, []string{"update"}) ||
+		!maps.Equal(update.Env.Custom, want.Custom) || !maps.Equal(update.Env.Pins, want.Pins) {
+		t.Fatalf("ran %+v, want %s update with %+v", update, standaloneCodex.Path, want)
 	}
 	if len(userEnv) != 1 {
 		t.Errorf("the pin was written into the user's environment: %v", userEnv)
@@ -312,8 +288,9 @@ func brewCaskOf(providerName, path string) string {
 	return cask
 }
 
-// A Homebrew install is upgraded by the Homebrew whose Caskroom holds it:
-// `claude update` on one only prints advice and exits 0.
+// A Homebrew install reads its cask's version and is upgraded by the Homebrew
+// whose Caskroom holds it: `claude update` on one only prints advice and
+// exits 0.
 func TestABrewInstallIsUpgradedByItsHomebrew(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -329,7 +306,13 @@ func TestABrewInstallIsUpgradedByItsHomebrew(t *testing.T) {
 			r := newRig(t)
 			r.setBinary(tc.provider, Binary{Path: "/opt/homebrew/bin/" + tc.provider, ResolvedPath: tc.resolved})
 			r.hosts.text(BrewCaskURL(tc.cask), http.StatusOK, `{"version":"9.9.9"}`)
-			r.check()
+			claude, codex := r.check()
+			if status := map[string]Status{ProviderClaude: claude, ProviderCodex: codex}[tc.provider]; status.LatestVersion != "9.9.9" || !status.Available {
+				t.Fatalf("%s = %+v, want the cask's 9.9.9", tc.provider, status)
+			}
+			if tc.provider == ProviderCodex && r.hosts.count(CodexNPMLatestURL) != 0 {
+				t.Error("a brew codex read the npm manifest")
+			}
 			r.runner.on(tc.brew+" upgrade", func(context.Context) (Output, error) {
 				r.setInstalled(tc.provider, "9.9.9")
 				return Output{}, nil
@@ -411,7 +394,7 @@ func TestClaudeCommandsCarryTheTranscriptRetention(t *testing.T) {
 	for _, command := range commands {
 		block := []string{"--settings", `{"cleanupPeriodDays":90}`}
 		if command.Binary != "/opt/claude" {
-			if slices.Contains(command.Args, "--settings") || len(command.UnsetEnv) != 0 {
+			if slices.Contains(command.Args, "--settings") || len(command.Env.Clears) != 0 || command.Env.Pins != nil {
 				t.Errorf("%s %q carries Claude's launch rules", command.Binary, command.Args)
 			}
 			continue
@@ -420,12 +403,12 @@ func TestClaudeCommandsCarryTheTranscriptRetention(t *testing.T) {
 		if !slices.Equal(command.Args, append(block, verb(command))) {
 			t.Errorf("claude %s args = %q, want the block first", verb(command), command.Args)
 		}
-		for _, name := range claude.ConfigHomeUnsetEnv() {
-			if !slices.Contains(command.UnsetEnv, name) {
-				t.Errorf("claude %s keeps an inherited %s", verb(command), name)
+		for _, env := range []provider.ReservedEnv{provider.ClaudeConfigDirEnv, provider.ClaudeSecureStorageConfigDirEnv} {
+			if !slices.Contains(command.Env.Clears, env) {
+				t.Errorf("claude %s keeps an inherited %s", verb(command), env.Name())
 			}
 		}
-		if command.Env["PROXY_FOR"] != ProviderClaude {
+		if command.Env.Custom["PROXY_FOR"] != ProviderClaude {
 			t.Errorf("claude %s lost its environment: %v", verb(command), command.Env)
 		}
 	}

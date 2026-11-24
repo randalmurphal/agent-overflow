@@ -99,11 +99,7 @@ export function remoteJobComputerName(threadId: string, computerId: string): str
   return store.peek(threadId)?.computerNames.get(computerId) ?? '';
 }
 
-/**
- * Test seam: suspend() releases every unheld entry; resetAll() lifts the
- * suspension. An entry that survives both was attached and never released.
- */
+/** Test seam: drop every entry, as a fresh module load would. */
 export function __resetRemoteJobsForTest(): void {
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
 }

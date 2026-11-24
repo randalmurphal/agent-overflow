@@ -44,31 +44,20 @@ func TestCredentialOrgIDPrefersIDTokenClaim(t *testing.T) {
 
 func TestCredentialOrgIDFallsBackToTopLevelAccountID(t *testing.T) {
 	t.Parallel()
-	// An id_token whose auth namespace lacks the claim.
-	token := encodeIDToken(t, map[string]any{"email": "user@example.com"})
-	data, _ := json.Marshal(map[string]any{
-		"tokens": map[string]any{
-			"id_token":   token,
-			"account_id": "ws-toplevel",
-		},
-	})
-	id, ok := CredentialOrgID(data)
-	if !ok || id != "ws-toplevel" {
-		t.Fatalf("CredentialOrgID = %q, %v; want ws-toplevel, true", id, ok)
-	}
-}
-
-func TestCredentialOrgIDMalformedJWTStillUsesFallback(t *testing.T) {
-	t.Parallel()
-	data, _ := json.Marshal(map[string]any{
-		"tokens": map[string]any{
-			"id_token":   "not-a-jwt",
-			"account_id": "ws-toplevel",
-		},
-	})
-	id, ok := CredentialOrgID(data)
-	if !ok || id != "ws-toplevel" {
-		t.Fatalf("CredentialOrgID = %q, %v; want ws-toplevel, true", id, ok)
+	for _, tc := range []struct{ name, idToken string }{
+		// An id_token whose auth namespace lacks the claim.
+		{"claim absent", encodeIDToken(t, map[string]any{"email": "user@example.com"})},
+		{"malformed jwt", "not-a-jwt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, _ := json.Marshal(map[string]any{
+				"tokens": map[string]any{"id_token": tc.idToken, "account_id": "ws-toplevel"},
+			})
+			id, ok := CredentialOrgID(data)
+			if !ok || id != "ws-toplevel" {
+				t.Fatalf("CredentialOrgID = %q, %v; want ws-toplevel, true", id, ok)
+			}
+		})
 	}
 }
 

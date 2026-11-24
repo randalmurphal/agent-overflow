@@ -48,7 +48,7 @@ func NewCache() *Cache {
 // handled here rather than at the call site so no caller can get the rule
 // wrong: an unreadable array is NO information, so the previous entry stands.
 // An empty (or absent) array IS information — a binary that reports no
-// commands — so it replaces the entry with an empty list, and CommandsFor then
+// commands — so it replaces the entry with an empty list, and AnswerFor then
 // answers "none" rather than serving a list the running binary disowns.
 //
 // Reports whether the stored answer changed, so a caller can skip a
@@ -74,17 +74,9 @@ func (c *Cache) Store(key provider.ProbeCacheKey, commands []provider.SlashComma
 	return !sameCommands(previous, stored)
 }
 
-// CommandsFor returns the command list one probe identity reported, or nil when
-// no probe has reported for it yet. Never spawns: this type only ever reads
-// what a probe already handed it, and nil means "nobody has asked the binary",
-// which a caller must not render as "this session has no commands".
-func (c *Cache) CommandsFor(key provider.ProbeCacheKey) []provider.SlashCommand {
-	commands, _ := c.AnswerFor(key)
-	return commands
-}
-
-// AnswerFor is CommandsFor plus the one fact the slice cannot carry: whether a
-// probe has reported for this identity at all.
+// AnswerFor returns the command list one probe identity reported and whether a
+// probe has reported for this identity at all. Never spawns: this type only
+// ever reads what a probe already handed it.
 //
 // The list alone cannot say. A binary that reports no commands stores an empty
 // answer, and an empty answer clones back as nil — the same nil an identity no

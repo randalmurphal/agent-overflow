@@ -23,6 +23,8 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 const restShellCommand = "tail -f deploy.log"
@@ -135,37 +137,12 @@ func TestASpawnSettlesWhenItsWorkerRests(t *testing.T) {
 	}
 }
 
-// A later turn, here the person's, ends with the shell over: the request
-// settles once, with that turn's message.
-func TestAHeldSpawnSettlesOnceWithItsWorkersLaterMessage(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	f.watchAgentRows()
-	f.holdCallerSession()
-	later := append(restShellDone("bg-2", "task-2"), mockClaudeInitLine,
-		`{"type":"assistant","message":{"id":"msg-later","role":"assistant","content":[{"type":"text","text":"The deploy is green."}]}}`,
-		mockClaudeResultLine)
-	installMockClaudeTurns(t, f.app, [][]string{
-		append(restShellLaunch("bg-2", "task-2", "Watching the deploy."), mockClaudeResultLine),
-		later,
-	})
-	ack := f.spawnWorker(t, "watch the deploy")
-	f.awaitRestHold(t, ack)
-	if err := f.app.SendMessage(t.Context(), ack.ThreadID, "how is it going?", nil); err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
-	if string(row.Answer) != "The deploy is green." || row.Revision != 1 {
-		t.Fatalf("settled %+v; want finished once with the later turn's message", row)
-	}
-	waitUntil(t, 10*time.Second, func() bool { return len(durableQueueRows(t, f.app, f.caller.ID)) == 1 })
-}
-
 // A person's message to a held worker opens a turn: from the send's write
 // to the turn's published round the worker is not at rest. The real start
 // is held after it claimed the send, with the shell the worker waited on
 // already ended: thread_status does not read it resting, a rest pass does
-// not settle the spawn, and the spawn settles with that turn's message.
+// not settle the spawn, and the spawn settles once with that turn's message,
+// waking the spawner once.
 func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -190,7 +167,7 @@ func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
 		}
 	})
 	t.Cleanup(func() { letGo(); f.app.triage.SetTurnRowWrittenGate(nil) })
-	if err := f.app.SendMessage(t.Context(), ack.ThreadID, "how is it going?", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "how is it going?", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	select {
@@ -198,8 +175,8 @@ func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("the worker's turn start never reached the gate")
 	}
-	if work, err := f.app.runningBackgroundWorkForThread(ack.ThreadID, ""); err != nil || len(work) != 0 {
-		t.Fatalf("background work %+v, %v; want the shell ended before the start", work, err)
+	if running, err := f.app.runningBackgroundTaskCount(ack.ThreadID); err != nil || running != 0 {
+		t.Fatalf("background work %d, %v; want the shell ended before the start", running, err)
 	}
 	state, err := f.app.threadTools().threadStateNow(t.Context(), ack.ThreadID)
 	if err != nil || state.Resting {
@@ -220,6 +197,7 @@ func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
 	if string(row.Answer) != "Answered." || row.Revision != 1 {
 		t.Fatalf("settled %+v; want finished once with the new turn's message", row)
 	}
+	waitUntil(t, 10*time.Second, func() bool { return len(durableQueueRows(t, f.app, f.caller.ID)) == 1 })
 }
 
 // gatedTurn is a turn that says text and holds its result until gate
@@ -481,8 +459,8 @@ func TestASendWaitsForRestOnlyOnTheCallersOwnWorker(t *testing.T) {
 	if string(row.Answer) != "Tailing for you." {
 		t.Fatalf("send settled %+v; want its turn's message", row)
 	}
-	if work, err := f.app.runningBackgroundWorkForThread(other.ID, ""); err != nil || len(work) != 1 {
-		t.Fatalf("background work %+v, %v; the send must settle with the shell still running", work, err)
+	if running, err := f.app.runningBackgroundTaskCount(other.ID); err != nil || running != 1 {
+		t.Fatalf("background work %d, %v; the send must settle with the shell still running", running, err)
 	}
 	if f.request(t, own.Token).State != store.ThreadRequestRunning {
 		t.Fatal("the send to the caller's own worker settled while its shell runs")

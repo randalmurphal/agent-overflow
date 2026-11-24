@@ -6,7 +6,6 @@ import { tick } from 'svelte';
 import ProjectsSection from '../ProjectsSection.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import {
-  getProjectSortMode,
   resetSidebarForTest,
   setProjectSortMode,
 } from '../../../stores/sidebar.svelte';
@@ -16,6 +15,7 @@ import {
   updateProjectLocal,
 } from '../../../stores/projects.svelte';
 import { catalogTreeListed, loadSidebarCatalogs, resetSidebarCatalogsForTest } from '../../../stores/sidebarCatalogs';
+import { COMPUTER_READ_DEADLINE_MS } from '../../../stores/computerRows';
 import {
   ensureMainPane,
   getAllPanes,
@@ -54,6 +54,18 @@ function mkProject(id: string, overrides: Partial<Project> = {}): Project {
     archived: false,
     ...overrides,
   };
+}
+
+/**
+ * A round with a computer whose tree is held answers at the read deadline.
+ * Fakes the clock and passes the deadline on it; the caller's describe
+ * restores real timers.
+ */
+async function loadPastReadDeadline(): ReturnType<typeof loadSidebarCatalogs> {
+  vi.useFakeTimers();
+  const round = loadSidebarCatalogs();
+  await vi.advanceTimersByTimeAsync(COMPUTER_READ_DEADLINE_MS);
+  return round;
 }
 
 async function settleTicks(): Promise<void> {
@@ -236,12 +248,6 @@ describe('<ProjectsSection>', () => {
     });
   });
 
-  it('defaults to lastActivity sort mode', async () => {
-    expect(getProjectSortMode()).toBe('lastActivity');
-    const pane = createThreadPane();
-    render(ProjectsSection, { props: { pane } });
-  });
-
   it('sorts projects by lastActivity desc by default', async () => {
     await seedProjects([
       { project: mkProject('p-stale', { name: 'Stale' }), threadCount: 1, lastActive: 100 },
@@ -311,35 +317,26 @@ describe('<ProjectsSection>', () => {
     expect(ids).toEqual(['p-fresh', 'p-stale']);
   });
 
-  it('switches to createdAt sort and re-orders projects', async () => {
-    await seedProjects([
+  it.each([
+    ['switches to createdAt sort and re-orders projects', 'createdAt', [
       { project: mkProject('p-old', { name: 'Old', createdAt: 100 }), threadCount: 0, lastActive: 0 },
       { project: mkProject('p-new', { name: 'New', createdAt: 9000 }), threadCount: 0, lastActive: 0 },
-    ]);
-    setProjectSortMode('createdAt');
-    const pane = createThreadPane();
-    const { container } = render(ProjectsSection, { props: { pane } });
-    await tick();
-    const ids = Array.from(
-      container.querySelectorAll('[data-testid="project-item"]'),
-    ).map((el) => el.getAttribute('data-project-id'));
-    expect(ids).toEqual(['p-new', 'p-old']);
-  });
-
-  it('honors manual sort by sortPosition asc when mode is manual', async () => {
-    await seedProjects([
+    ], ['p-new', 'p-old']],
+    ['honors manual sort by sortPosition asc when mode is manual', 'manual', [
       { project: mkProject('p-a', { name: 'A', sortPosition: 2 }), threadCount: 0, lastActive: 0 },
       { project: mkProject('p-b', { name: 'B', sortPosition: 0 }), threadCount: 0, lastActive: 0 },
       { project: mkProject('p-c', { name: 'C', sortPosition: 1 }), threadCount: 0, lastActive: 0 },
-    ]);
-    setProjectSortMode('manual');
+    ], ['p-b', 'p-c', 'p-a']],
+  ] as const)('%s', async (_name, mode, rows, expected) => {
+    await seedProjects([...rows]);
+    setProjectSortMode(mode);
     const pane = createThreadPane();
     const { container } = render(ProjectsSection, { props: { pane } });
     await tick();
     const ids = Array.from(
       container.querySelectorAll('[data-testid="project-item"]'),
     ).map((el) => el.getAttribute('data-project-id'));
-    expect(ids).toEqual(['p-b', 'p-c', 'p-a']);
+    expect(ids).toEqual(expected);
   });
 
   function itemIds(container: HTMLElement): string[] {
@@ -657,8 +654,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpuThreads.promise : Promise.resolve(after)));
       setBindingMock('ListThreadGroups', async () => (takePinnedBackend() === 'gpu' ? [] : [group('g2')]));
       const { container } = render(ProjectsSection, { props: { pane: null } });
-      const round = loadSidebarCatalogs();
-      await round;
+      await loadPastReadDeadline();
       await settle();
       expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
       expect(catalogTreeListed('gpu')).toBe(false);
@@ -699,7 +695,7 @@ describe('<ProjectsSection> threads and their groups', () => {
         : Promise.resolve([makeThread({ id: 'ta', projectId: 'a-home' }), makeThread({ id: 'tb', projectId: 'b-home' })])));
       setBindingMock('ListThreadGroups', async () => []);
       const { container } = render(ProjectsSection, { props: { pane: null } });
-      await loadSidebarCatalogs();
+      await loadPastReadDeadline();
       await settle();
       expect(catalogTreeListed('gpu')).toBe(false);
       // B is still the newer entry: the held member's 300 is not folded in.
@@ -736,7 +732,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpuThreads.promise : Promise.resolve([])));
       setBindingMock('ListThreadGroups', async () => []);
       const { container } = render(ProjectsSection, { props: { pane: null } });
-      await loadSidebarCatalogs();
+      await loadPastReadDeadline();
       await settle();
       expect(headers(container)).toEqual(['a-mac']);
 
@@ -1323,7 +1319,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       const refresh = vi.fn(async (id: string) => ({ ...repoProject(id, 'A', '/home/a'), identityError: '' }));
       setBindingMock('RefreshProjectIdentity', refresh);
       const { container, getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
-      await loadSidebarCatalogs();
+      await loadPastReadDeadline();
       await settle();
       expect(headers(container)).toEqual(['a-home']);
       expect(getByTestId('project-item-identity-error').getAttribute('title'))
@@ -1343,6 +1339,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(getByTestId('project-item-identity-error').getAttribute('title'))
         .toBe('Could not fully verify /gpu/a: gpu reason');
     } finally {
+      vi.useRealTimers();
       resetStagedBackends();
     }
   });
@@ -1457,41 +1454,9 @@ describe('<ProjectsSection> threads and their groups', () => {
     expect(queryByTestId('project-thread-list-empty')).toBeNull();
   });
 
-  // G1: the group answer does not show alone while the failed thread read
-  // retries; the retry's pair moves the rows in one step.
-  it("keeps a listed computer's arrangement when a refresh's thread read fails beside a new group, until the retry moves it once", async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    setBindingMock('ListThreads', async () => before);
-    setBindingMock('ListThreadGroups', async () => []);
-    const { container, getByTestId } = render(ProjectsSection, { props: { pane: null } });
-    await loadSidebarCatalogs();
-    await settle();
-    expect(arrangement(container)).toEqual(BEFORE);
-
-    vi.useFakeTimers();
-    const shown: string[][] = [arrangement(container)];
-    const observer = new MutationObserver(() => {
-      const next = arrangement(container);
-      if (next.join() !== shown[shown.length - 1]!.join()) shown.push(next);
-    });
-    observer.observe(container, { childList: true, subtree: true, attributes: true });
-    setBindingMock('ListThreads', async () => { throw new TransportError('method_error', 'list threads: disk I/O error'); });
-    setBindingMock('ListThreadGroups', async () => [group('g2')]);
-    await loadSidebarCatalogs().catch(() => {});
-    await vi.advanceTimersByTimeAsync(0);
-    await settle();
-    expect(normalizedTextContent(getByTestId('sidebar-catalog-failed'))).toMatch(/disk I\/O error/i);
-    expect(arrangement(container)).toEqual(BEFORE);
-
-    setBindingMock('ListThreads', async () => after);
-    await vi.advanceTimersByTimeAsync(1000);
-    await settle();
-    observer.disconnect();
-    expect(arrangement(container)).toEqual(AFTER);
-    expect(shown).toEqual([BEFORE, AFTER]);
-  });
-
-  // H2: no attempt publishes half the pair, the retries included.
+  // The group answer does not show alone while the failed thread read
+  // retries, and no attempt publishes half the pair, the retries included:
+  // the successful retry's pair moves the rows in one step.
   it("keeps a listed computer's arrangement through a refresh's thread failure and its retry's, then changes it once at the success", async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     setBindingMock('ListThreads', async () => before);
@@ -1640,8 +1605,6 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
   });
   afterEach(() => {
     resetStagedBackends();
-    resetCatalogLoadForTest();
-    resetSidebarCatalogsForTest();
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -1687,9 +1650,10 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
     expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
   });
 
-  // Neither a first dial still in flight nor a computer that answered it is
-  // starting is an outage: either may still list projects.
-  for (const state of ['connecting', 'starting'] as const) {
+  // Neither a first dial still in flight, a computer that answered it is
+  // starting, nor a reachable computer whose read is still out is an outage:
+  // each may still list projects.
+  for (const state of ['connecting', 'starting', 'loading'] as const) {
     it(`keeps the list blank while a paired computer is ${state}, however long it takes`, async () => {
       const view = await renderWith(state, []);
       await vi.advanceTimersByTimeAsync(40_000);
@@ -1698,14 +1662,6 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
       expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
     });
   }
-
-  it('keeps the list blank while a paired computer that is reachable is still loading', async () => {
-    const view = await renderWith('loading', []);
-    await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS * 2);
-    await settle();
-    expect(view.queryByTestId('sidebar-projects-empty')).toBeNull();
-    expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
-  });
 
   it('shows the empty hint at once when every computer has loaded', async () => {
     const loaded = await renderWith('reachable', []);

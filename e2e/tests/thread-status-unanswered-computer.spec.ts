@@ -11,6 +11,7 @@ import { headlessPairing } from './headless-pairing-helpers.js';
 import { expandRow } from './ao-tool-rows-helpers.js';
 import { aoRow, openThread } from './ao-tool-rows-more-helpers.js';
 import { awaitToolAnswer, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -74,8 +75,7 @@ test('a wait reads a thread a down computer may hold as unresolved beside the th
   bench = undefined;
   await down.close();
 
-  await home.rpc('StartSession', caller);
-  await home.rpc('SendMessage', caller, 'wait on both threads', null);
+  await home.send(caller, 'wait on both threads');
   const answer = await awaitToolAnswer<StatusAnswer>(home, { tool: 'thread_status', cwd: local.path, timeoutMs: 120_000 });
   expect(answer.isError, answer.text).toBe(false);
   const [here, unresolved] = answer.value!.threads;
@@ -104,5 +104,5 @@ test('a wait reads a thread a down computer may hold as unresolved beside the th
   await expect(lines.nth(1).getByTestId('tool-call-card-ao-line-title')).toBeVisible();
   await expect(lines.nth(0).getByTestId('tool-call-card-ao-line-link')).toHaveCount(1);
   await expect(row.locator('[data-testid="tool-call-card-ao-result-fact"][data-fact="Bench computer"]')).toBeVisible();
-  await row.screenshot({ path: test.info().outputPath('thread-status-unresolved.png') });
+  await screenshot(row, { path: test.info().outputPath('thread-status-unresolved.png') });
 });

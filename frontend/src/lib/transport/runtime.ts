@@ -398,10 +398,4 @@ export const Events = {
       handler({ name, data: safeRepositoryMetadata(data), origin: transport.origin, sequence, replayed });
     });
   },
-  Emit(_event: { name: string; data: unknown }): void {
-    // The Phase B client never pushes events; this is here for API
-    // compatibility with the @wailsio/runtime surface. If a code path
-    // ever needs to fire a server-side event, it should go through a
-    // bound RPC method rather than re-purposing Events.Emit.
-  },
 };

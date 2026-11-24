@@ -97,7 +97,7 @@ async function stopComposerSampler(page: Page): Promise<string[]> {
 }
 
 async function userRows(harness: Parameters<typeof seedAgentThread>[0], threadId: string, text: string): Promise<number> {
-  const rows = await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', threadId, true);
+  const rows = await harness.items<{ kind: string; summary: string }>(threadId, true);
   return rows.filter((row) => row.kind === 'user_text' && row.summary === text).length;
 }
 

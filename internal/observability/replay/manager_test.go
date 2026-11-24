@@ -106,13 +106,6 @@ func TestManagerDropsWhenQueueFullAndInvokesHook(t *testing.T) {
 	dir := t.TempDir()
 	drops := atomic.Int64{}
 
-	// Build a writer that blocks forever on the first write. We do that by
-	// pre-creating the file as a directory so os.OpenFile fails — Enqueue
-	// still fills the queue, then subsequent Enqueue calls drop.
-	// Easier: use a tiny queue with a slow producer so the queue fills fast.
-	slow := make(chan struct{})
-	t.Cleanup(func() { close(slow) })
-
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    2,
@@ -123,17 +116,16 @@ func TestManagerDropsWhenQueueFullAndInvokesHook(t *testing.T) {
 	})
 	defer m.Shutdown(context.Background())
 
-	// Block the drain loop by holding the writer mutex on the only active
-	// file. We do this indirectly: start one legitimate write, then flood
-	// the queue.
-	// Strategy: write many records fast enough that the bounded queue
-	// overflows. We rely on the reaper/drainer being sequential.
+	// A tight loop of records outruns the single drainer, so the size-2
+	// queue overflows.
 	const flood = 500
+	accepted := int64(0)
 	first, _ := NewRecord(time.Unix(0, 0), "t-1", "k", nil)
-	m.Enqueue(first) // warms the writer
+	if m.Enqueue(first) { // warms the writer
+		accepted++
+	}
 
 	// Spin a tight loop pushing to a size-2 channel; at least some will drop.
-	accepted := int64(0)
 	for i := 0; i < flood; i++ {
 		rec, _ := NewRecord(time.Unix(0, int64(i)*int64(time.Microsecond)), "t-1", "k", map[string]int{"i": i})
 		if m.Enqueue(rec) {
@@ -141,16 +133,14 @@ func TestManagerDropsWhenQueueFullAndInvokesHook(t *testing.T) {
 		}
 	}
 
-	// Give the drainer a moment to process.
-	time.Sleep(100 * time.Millisecond)
-
 	if drops.Load() == 0 {
 		t.Errorf("expected at least one drop (queue size 2 vs %d records)", flood)
 	}
-	if accepted+drops.Load() < int64(flood) {
-		// Sanity: every record either accepted or dropped.
-		t.Errorf("accepted=%d drops=%d flood=%d; some records disappeared",
-			accepted, drops.Load(), flood)
+	// Enqueue counts a drop before it returns, so every record, the warming
+	// one included, is either accepted or dropped.
+	if accepted+drops.Load() != flood+1 {
+		t.Errorf("accepted=%d drops=%d, want %d records accounted for",
+			accepted, drops.Load(), flood+1)
 	}
 	// Every queue-full drop also counts toward LostCount — the signal
 	// harness recordings use to refuse a lossy capture window.
@@ -487,6 +477,12 @@ func TestManagerConcurrentEnqueueAllWritten(t *testing.T) {
 	if int64(len(lines)) != accepted.Load() {
 		t.Errorf("written lines = %d, accepted = %d (should match once inflight==0)", len(lines), accepted.Load())
 	}
+	for i, line := range lines {
+		var rec Record
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("invalid NDJSON line %d: %v (%q)", i, err, line)
+		}
+	}
 }
 
 func TestNilManagerMethodsSafe(t *testing.T) {
@@ -579,31 +575,13 @@ func TestRemoveThreadLogRemovesRotatedBackups(t *testing.T) {
 	}
 }
 
-// TestRemoveThreadLogNoFileNoError covers the case where replay was never
-// enabled for the thread (e.g. replay disabled at thread creation, or
-// thread deleted before any event fired). Removing must succeed silently.
-func TestRemoveThreadLogNoFileNoError(t *testing.T) {
-	dir := t.TempDir()
-	m := NewManager(ManagerConfig{
-		RootDir:      dir,
-		QueueSize:    16,
-		WriterConfig: syncOnClose,
-		IdleTimeout:  100 * time.Second,
-		Enabled:      true,
-	})
-	defer m.Shutdown(context.Background())
-
-	if err := m.RemoveThreadLog("t-never-wrote"); err != nil {
-		t.Errorf("RemoveThreadLog on missing file returned %v, want nil", err)
-	}
-}
-
-// TestRemoveThreadLogEmptyThreadID silently succeeds. Guarding against a
+// TestRemoveThreadLogNoFileNoError: removing must succeed silently when
+// replay never recorded the thread (replay disabled at thread creation, or
+// thread deleted before any event fired), and for an empty thread ID, a
 // misuse that would otherwise blow away the entire replay root ("/.jsonl").
-func TestRemoveThreadLogEmptyThreadID(t *testing.T) {
-	dir := t.TempDir()
+func TestRemoveThreadLogNoFileNoError(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		RootDir:      dir,
+		RootDir:      t.TempDir(),
 		QueueSize:    16,
 		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
@@ -611,8 +589,15 @@ func TestRemoveThreadLogEmptyThreadID(t *testing.T) {
 	})
 	defer m.Shutdown(context.Background())
 
-	if err := m.RemoveThreadLog(""); err != nil {
-		t.Errorf("RemoveThreadLog('') returned %v, want nil", err)
+	for _, tc := range []struct{ name, threadID string }{
+		{"thread never wrote", "t-never-wrote"},
+		{"empty thread ID", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := m.RemoveThreadLog(tc.threadID); err != nil {
+				t.Errorf("RemoveThreadLog(%q) returned %v, want nil", tc.threadID, err)
+			}
+		})
 	}
 }
 
@@ -638,10 +623,17 @@ func TestDisabledManagerNoGoroutines(t *testing.T) {
 		IdleTimeout:  100 * time.Second,
 		Enabled:      false,
 	})
+	// Enqueues the disabled manager refuses must not start goroutines either.
+	for i := 0; i < 200; i++ {
+		rec, _ := NewRecord(time.Now(), "t-none", "k", nil)
+		if m.Enqueue(rec) {
+			t.Fatalf("Enqueue accepted at i=%d while disabled", i)
+		}
+	}
 	waitForGoroutineStable(t)
 	afterCreate := runtime.NumGoroutine()
 	if afterCreate > before {
-		t.Errorf("disabled construction started %d extra goroutines, want 0",
+		t.Errorf("disabled construction and enqueues started %d extra goroutines, want 0",
 			afterCreate-before)
 	}
 

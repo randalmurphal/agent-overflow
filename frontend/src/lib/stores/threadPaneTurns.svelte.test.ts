@@ -18,7 +18,6 @@ describe('threadPaneTurns', () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread());
     expect(getActiveTurn(pane.threadId)).toBeNull();
-    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
 
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
 
@@ -27,7 +26,6 @@ describe('threadPaneTurns', () => {
       turnIndex: 0,
       startedAt: 1000,
     });
-    expect(getActiveTurn(pane.threadId) !== null).toBe(true);
   });
 
   it('setActiveTurn is idempotent by turnId — preserves startedAt on re-emit', async () => {
@@ -42,7 +40,7 @@ describe('threadPaneTurns', () => {
     expect(getActiveTurn(pane.threadId)?.startedAt).toBe(1000);
   });
 
-  it('settleTurn clears activeTurn and writes latestSettledTurn', () => {
+  it('settleTurn clears activeTurn and writes latestSettledTurn; clearTurnState then resets both slots without rehydrating', () => {
     const pane = createThreadPane();
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1000 });
 
@@ -59,7 +57,6 @@ describe('threadPaneTurns', () => {
     });
 
     expect(getActiveTurn(pane.threadId)).toBeNull();
-    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
     expect(pane.latestSettledTurn).toEqual({
       turnId: 'turn-1',
       turnIndex: 0,
@@ -71,23 +68,6 @@ describe('threadPaneTurns', () => {
       aborted: false,
       errorMessage: '',
     });
-  });
-
-  it('clearTurnState resets both slots without rehydrating', () => {
-    const pane = createThreadPane();
-    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
-    pane.settleTurn({
-      turnId: 'turn-1',
-      turnIndex: 0,
-      startedAt: 1,
-      completedAt: 2,
-      stopReason: 'end_turn',
-      assistantMessageId: null,
-      tokenUsage: null,
-      aborted: false,
-      errorMessage: '',
-    });
-    expect(pane.latestSettledTurn).not.toBeNull();
 
     pane.clearTurnState();
     expect(getActiveTurn(pane.threadId)).toBeNull();
@@ -132,7 +112,6 @@ describe('threadPaneTurns', () => {
     });
     // activeTurn stays null even though rehydration ran — invariant 22.
     expect(getActiveTurn(pane.threadId)).toBeNull();
-    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
   });
 
   it('switchThread does NOT promote an in-flight historical turn to activeTurn', async () => {
@@ -165,7 +144,6 @@ describe('threadPaneTurns', () => {
 
     // Not lit up.
     expect(getActiveTurn(pane.threadId)).toBeNull();
-    expect(getActiveTurn(pane.threadId) !== null).toBe(false);
     // But the prior settled turn IS rehydrated for read-state and trace/debug
     // consumers.
     expect(pane.latestSettledTurn?.turnId).toBe('turn-settled');

@@ -14,7 +14,7 @@ import (
 // system/api_error rows whose parentUuid points at u2-toolresult (the
 // transcript leaf when the API retry fired — BYPASSING a2/a3-final),
 // then u3 chained onto the api_errors.
-const apiErrorOffBranchFixture = "../../../../docs/references/fixtures/claude/session_api_error_offbranch.jsonl"
+const apiErrorOffBranchFixture = "../../wirecaptures/claude/session_api_error_offbranch.jsonl"
 
 func readFixture(t *testing.T, path string) string {
 	t.Helper()

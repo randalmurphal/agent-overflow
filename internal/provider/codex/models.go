@@ -36,7 +36,7 @@ type ModelListConfig struct {
 	// Reaper ends the process if the backend dies first. Required.
 	Reaper       procutil.Reaper
 	WorkDir      string
-	Env          map[string]string
+	Env          provider.EnvInput
 	CustomModels []string
 }
 

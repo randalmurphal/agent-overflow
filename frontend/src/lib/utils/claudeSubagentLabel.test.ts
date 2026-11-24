@@ -4,39 +4,23 @@ import {
   deriveClaudeSubagentEffort,
   deriveClaudeSubagentEffortAlternatives,
   deriveClaudeSubagentLabel,
-  deriveClaudeSubagentModelLabel,
+  deriveClaudeSubagentModel,
   readClaudeSubagentInput,
   readClaudeSubagentInputFromStrings,
   titleCaseClaudeSubagentToken,
 } from './claudeSubagentLabel';
 
 describe('titleCaseClaudeSubagentToken', () => {
-  it('returns "" for empty input so callers can fall through without a guard', () => {
-    expect(titleCaseClaudeSubagentToken('')).toBe('');
-  });
-
-  it('title-cases a single lowercase token', () => {
-    expect(titleCaseClaudeSubagentToken('explore')).toBe('Explore');
-  });
-
-  it('splits kebab-case into capitalized words', () => {
-    expect(titleCaseClaudeSubagentToken('general-purpose')).toBe('General Purpose');
-  });
-
-  it('splits snake_case into capitalized words', () => {
-    expect(titleCaseClaudeSubagentToken('code_reviewer')).toBe('Code Reviewer');
-  });
-
-  it('splits CamelCase boundaries into capitalized words', () => {
-    expect(titleCaseClaudeSubagentToken('spawnAgent')).toBe('Spawn Agent');
-  });
-
-  it('collapses runs of mixed delimiters and skips empties', () => {
-    expect(titleCaseClaudeSubagentToken(' code__reviewer--lead ')).toBe('Code Reviewer Lead');
-  });
-
-  it('leaves already-capitalised tokens untouched', () => {
-    expect(titleCaseClaudeSubagentToken('Explore')).toBe('Explore');
+  it.each([
+    ['returns "" for empty input so callers can fall through without a guard', '', ''],
+    ['title-cases a single lowercase token', 'explore', 'Explore'],
+    ['splits kebab-case into capitalized words', 'general-purpose', 'General Purpose'],
+    ['splits snake_case into capitalized words', 'code_reviewer', 'Code Reviewer'],
+    ['splits CamelCase boundaries into capitalized words', 'spawnAgent', 'Spawn Agent'],
+    ['collapses runs of mixed delimiters and skips empties', ' code__reviewer--lead ', 'Code Reviewer Lead'],
+    ['leaves already-capitalised tokens untouched', 'Explore', 'Explore'],
+  ])('%s', (_name, raw, want) => {
+    expect(titleCaseClaudeSubagentToken(raw)).toBe(want);
   });
 });
 
@@ -107,10 +91,10 @@ describe('deriveClaudeSubagentLabel', () => {
   });
 });
 
-describe('deriveClaudeSubagentModelLabel', () => {
+describe('deriveClaudeSubagentModel', () => {
   it('returns "" for non-Agent tools so non-subagent rows never render a stray "()" affix', () => {
     expect(
-      deriveClaudeSubagentModelLabel(
+      deriveClaudeSubagentModel(
         { model: 'opus' },
         { subagent_model: 'claude-opus-4-7' },
         'Read',
@@ -119,47 +103,47 @@ describe('deriveClaudeSubagentModelLabel', () => {
   });
 
   it('accepts Task, the older name for the Agent tool', () => {
-    expect(deriveClaudeSubagentModelLabel({ model: 'opus' }, {}, 'Task')).toBe('Opus');
+    expect(deriveClaudeSubagentModel({ model: 'opus' }, {}, 'Task')).toBe('opus');
   });
 
   it('prefers parentMeta.subagent_model (the post-spawn stamp) over input.model', () => {
     expect(
-      deriveClaudeSubagentModelLabel(
+      deriveClaudeSubagentModel(
         { model: 'sonnet' },
         { subagent_model: 'claude-opus-4-7' },
         'Agent',
       ),
-    ).toBe('Opus 4.7');
+    ).toBe('claude-opus-4-7');
   });
 
   it('falls back to input.model for the pre-stamp window', () => {
-    expect(deriveClaudeSubagentModelLabel({ model: 'opus' }, {}, 'Agent')).toBe('Opus');
-    expect(deriveClaudeSubagentModelLabel({ model: 'opus' }, null, 'Agent')).toBe('Opus');
+    expect(deriveClaudeSubagentModel({ model: 'opus' }, {}, 'Agent')).toBe('opus');
+    expect(deriveClaudeSubagentModel({ model: 'opus' }, null, 'Agent')).toBe('opus');
   });
 
   it('reads the model the alias resolved to at launch before the alias itself', () => {
     expect(
-      deriveClaudeSubagentModelLabel({ model: 'haiku' }, { requested_model: 'claude-haiku-4-5' }, 'Agent'),
-    ).toBe('Haiku 4.5');
+      deriveClaudeSubagentModel({ model: 'haiku' }, { requested_model: 'claude-haiku-4-5' }, 'Agent'),
+    ).toBe('claude-haiku-4-5');
   });
 
   it('ignores the model a fork names: a fork runs on its launcher\'s model', () => {
-    expect(deriveClaudeSubagentModelLabel({ model: 'haiku', subagent_type: 'fork' }, {}, 'Agent')).toBe('');
+    expect(deriveClaudeSubagentModel({ model: 'haiku', subagent_type: 'fork' }, {}, 'Agent')).toBe('');
   });
 
   it('returns "" when neither source carries a model', () => {
-    expect(deriveClaudeSubagentModelLabel(null, null, 'Agent')).toBe('');
-    expect(deriveClaudeSubagentModelLabel({}, {}, 'Agent')).toBe('');
+    expect(deriveClaudeSubagentModel(null, null, 'Agent')).toBe('');
+    expect(deriveClaudeSubagentModel({}, {}, 'Agent')).toBe('');
   });
 
   it('rejects empty / whitespace-only subagent_model strings (must fall through to input.model)', () => {
     expect(
-      deriveClaudeSubagentModelLabel(
+      deriveClaudeSubagentModel(
         { model: 'opus' },
         { subagent_model: '   ' },
         'Agent',
       ),
-    ).toBe('Opus');
+    ).toBe('opus');
   });
 });
 

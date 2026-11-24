@@ -36,7 +36,7 @@ var _ provider.Connection = (*Conn)(nil)
 type ConnConfig struct {
 	Binary      string
 	WorkDir     string
-	Env         map[string]string
+	Env         provider.EnvInput
 	EventLogger *logging.Logger
 	Reaper      procutil.Reaper
 	// ThreadID labels process-level event logs; shared connections pass a
@@ -48,10 +48,21 @@ type ConnConfig struct {
 // with the optional Codex threadId carried on the notification.
 type ConnMCPOAuthCompletedHandler func(threadID, serverName string, success bool, errorMessage string)
 
+// connTransport is the line pipe a Conn drives: the app-server's stdio
+// (*provider.Process) in production, an in-memory pipe in tests.
+type connTransport interface {
+	WriteLine(data []byte) error
+	ReadLine() ([]byte, error)
+	Close() error
+	PID() int
+	StderrTail() string
+	provider.ExitWaiter
+}
+
 // Conn owns one live `codex app-server` subprocess, its JSON-RPC framing,
 // request correlation, initialize handshake, and multi-session frame routing.
 type Conn struct {
-	proc   *provider.Process
+	proc   connTransport
 	cancel context.CancelFunc
 	binary string
 	done   chan struct{}
@@ -72,17 +83,31 @@ type Conn struct {
 	// session. thread/resume already names its threadId and does not take this.
 	startMu sync.Mutex
 
-	routesMu                 sync.Mutex
-	allSessions              map[*Session]struct{}
-	byThread                 map[string]*Session
-	bySessionID              map[string]*Session
-	starting                 *Session
-	loaded                   map[string]struct{}
-	closedWaiters            map[string][]chan struct{}
-	deferredChild            map[string][]deferredChildWireEvent
-	deferredChildDeadlines   map[string]*time.Timer
-	deferredChildCount       int
-	deferredChildBytes       int
+	// routesMu guards the routing tables and the child holds below. Lock
+	// order: a Session's mu, then routesMu. Nothing takes a Session's mu while
+	// holding routesMu; the only session call made under it is
+	// enqueueEarlyFrames, which takes earlyFramesMu.
+	routesMu      sync.Mutex
+	allSessions   map[*Session]struct{}
+	byThread      map[string]*Session
+	bySessionID   map[string]*Session
+	starting      *Session
+	loaded        map[string]struct{}
+	closedWaiters map[string][]chan struct{}
+	// holds keeps the frames of each thread no session routes yet, until a
+	// spawn claims the thread or its deadline expires; nil once closed.
+	holds map[string]*childHold
+	// heldFrames and heldBytes total every hold's frames against the
+	// connection-wide budget.
+	heldFrames int
+	heldBytes  int
+	// refusedForBudget counts frames refused because the connection-wide
+	// budget was full, for threads with no hold to count them on. The next
+	// claim or expiry logs and resets it.
+	refusedForBudget int
+	// startHoldTimer arms a hold's deadline. Set when the connection is
+	// built; a test replaces it to fire deadlines itself.
+	startHoldTimer           func(time.Duration, func()) holdTimer
 	skillsChangedHandler     SkillsChangedHandler
 	mcpStartupUpdateHandler  MCPStartupUpdateHandler
 	mcpOAuthCompletedHandler ConnMCPOAuthCompletedHandler
@@ -106,8 +131,7 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		Binary:           binary,
 		Args:             codexSharedAppServerArgs(),
 		Dir:              cfg.WorkDir,
-		Env:              cfg.Env,
-		UnsetEnv:         []string{"CODEX_HOME"},
+		Env:              cfg.Env.Clear(provider.CodexHomeEnv),
 		EventLogger:      cfg.EventLogger,
 		EventLogRedactor: newCodexProviderEventLogRedactor(),
 		ThreadID:         logLabel,
@@ -127,9 +151,7 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("codex: initialize handshake failed: %w", err)
 	}
-	version := parseAppServerVersion(readNestedString(initResp, "userAgent"))
-	c.appServerVersion.Store(&version)
-	c.threadQueueNative.Store(provider.CodexCLIVersionAtLeast(version, threadQueueMinimumCodexVersion))
+	c.recordInitialize(initResp)
 
 	if err := c.writeNotification("initialized", nil); err != nil {
 		_ = c.Close()
@@ -138,20 +160,32 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 	return c, nil
 }
 
-func newConnWithProcess(proc *provider.Process, cancel context.CancelFunc, binary string) *Conn {
+// recordInitialize keeps what the initialize response states about the
+// app-server. A response that carries no parseable version leaves the version
+// empty, which every gate reads as "too old": fail closed, since the cost of
+// guessing wrong is a JSON-RPC error on every attempt.
+func (c *Conn) recordInitialize(initResp json.RawMessage) {
+	version := parseAppServerVersion(readNestedString(initResp, "userAgent"))
+	c.appServerVersion.Store(&version)
+	c.threadQueueNative.Store(provider.CodexCLIVersionAtLeast(version, threadQueueMinimumCodexVersion))
+}
+
+func newConnWithProcess(proc connTransport, cancel context.CancelFunc, binary string) *Conn {
 	return &Conn{
-		proc:                   proc,
-		cancel:                 cancel,
-		binary:                 binary,
-		done:                   make(chan struct{}),
-		pending:                make(map[int64]chan json.RawMessage),
-		allSessions:            make(map[*Session]struct{}),
-		byThread:               make(map[string]*Session),
-		bySessionID:            make(map[string]*Session),
-		loaded:                 make(map[string]struct{}),
-		closedWaiters:          make(map[string][]chan struct{}),
-		deferredChild:          make(map[string][]deferredChildWireEvent),
-		deferredChildDeadlines: make(map[string]*time.Timer),
+		proc:          proc,
+		cancel:        cancel,
+		binary:        binary,
+		done:          make(chan struct{}),
+		pending:       make(map[int64]chan json.RawMessage),
+		allSessions:   make(map[*Session]struct{}),
+		byThread:      make(map[string]*Session),
+		bySessionID:   make(map[string]*Session),
+		loaded:        make(map[string]struct{}),
+		closedWaiters: make(map[string][]chan struct{}),
+		holds:         make(map[string]*childHold),
+		startHoldTimer: func(d time.Duration, f func()) holdTimer {
+			return time.AfterFunc(d, f)
+		},
 	}
 }
 
@@ -322,11 +356,65 @@ func (c *Conn) open(
 		}
 	}
 
+	s := c.newSession(ctx, threadID, cfg, onEvent, ownsConn, releaseConn, sessionStart)
+
+	// Register session before sending thread/start or thread/resume so early
+	// notifications route to it immediately.
+	startingFresh := c.registerSession(s, cfg.ResumeThreadID)
+
+	if cfg.ResumeThreadID != "" && cfg.BeforeResume != nil {
+		cfg.BeforeResume(s)
+	}
+
+	if err := s.startOrResumeThread(ctx, cfg); err != nil {
+		if startingFresh {
+			c.routesMu.Lock()
+			if c.starting == s {
+				c.starting = nil
+			}
+			c.routesMu.Unlock()
+			c.startMu.Unlock()
+		}
+		c.detachSession(s, s.rootThreadID(), s.rootSessionID(), nil)
+		if ownsConn {
+			_ = c.Close()
+		} else if releaseConn != nil {
+			s.releaseConnOnce.Do(releaseConn)
+		}
+		return nil, err
+	}
+
+	c.bindSessionRoot(s, startingFresh)
+
+	meta, _ := json.Marshal(provider.SessionInfo{
+		SessionID: s.rootThreadID(),
+		Model:     cfg.Model,
+		CWD:       cfg.WorkDir,
+	})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  threadID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	})
+	return s, nil
+}
+
+// newSession builds the Session that open attaches: every map the session
+// writes is allocated and the connection's version facts are copied in.
+func (c *Conn) newSession(
+	ctx context.Context,
+	threadID string,
+	cfg Config,
+	onEvent func(provider.ProviderEvent),
+	ownsConn bool,
+	releaseConn func(),
+	sessionStart *provider.SessionStartDelivery,
+) *Session {
 	s := &Session{
 		conn:        c,
 		ownsConn:    ownsConn,
 		releaseConn: releaseConn,
-		proc:        c.proc,
 		ctx:         ctx,
 		threadID:    threadID,
 		workDir:     cfg.WorkDir,
@@ -343,7 +431,6 @@ func (c *Conn) open(
 		},
 		writableRoots:   slices.Clone(cfg.WritableRoots),
 		nativeMemoryOff: cfg.NativeMemoryOff,
-		pending:         make(map[int64]chan json.RawMessage),
 		onEvent:         onEvent,
 		sessionStart:    sessionStart,
 		readDone:        make(chan struct{}),
@@ -361,10 +448,6 @@ func (c *Conn) open(
 		rawCalls: sessionRawToolCallState{
 			byID:                  make(map[string]rawToolCall),
 			waitReceiverIDsByCall: make(map[string][]string),
-		},
-		childRouting: sessionChildRoutingState{
-			deferredChildWireEvents: make(map[string][]deferredChildWireEvent),
-			deferredChildDeadlines:  make(map[string]*time.Timer),
 		},
 		collabHistory: sessionCollabHistoryState{
 			generation: 1,
@@ -389,9 +472,15 @@ func (c *Conn) open(
 		s.setRootThreadID(cfg.ResumeThreadID)
 	}
 
-	// Register session before sending thread/start or thread/resume so early
-	// notifications route to it immediately.
-	startingFresh := cfg.ResumeThreadID == ""
+	return s
+}
+
+// registerSession makes s a route on this connection before its thread/start
+// or thread/resume is written, so frames that arrive first reach it. A fresh
+// start (no resumeThreadID) holds startMu until bindSessionRoot, which makes
+// s the one starting session. It reports whether s is starting fresh.
+func (c *Conn) registerSession(s *Session, resumeThreadID string) bool {
+	startingFresh := resumeThreadID == ""
 	if startingFresh {
 		c.startMu.Lock()
 	}
@@ -400,49 +489,33 @@ func (c *Conn) open(
 	if startingFresh {
 		c.starting = s
 	} else {
-		c.byThread[cfg.ResumeThreadID] = s
+		c.byThread[resumeThreadID] = s
 	}
 	c.routesMu.Unlock()
 
-	clearStarting := func() {
-		if startingFresh {
-			c.routesMu.Lock()
-			if c.starting == s {
-				c.starting = nil
-			}
-			c.routesMu.Unlock()
-			c.startMu.Unlock()
-		}
-	}
+	return startingFresh
+}
 
-	if cfg.ResumeThreadID != "" && cfg.BeforeResume != nil {
-		cfg.BeforeResume(s)
-	}
-
-	if err := s.startOrResumeThread(ctx, cfg); err != nil {
-		clearStarting()
-		c.detachSession(s, s.rootThreadID(), s.rootSessionID(), nil)
-		if ownsConn {
-			_ = c.Close()
-		} else if releaseConn != nil {
-			s.releaseConnOnce.Do(releaseConn)
-		}
-		return nil, err
-	}
-
+// bindSessionRoot routes s by the root thread and session ids its start or
+// resume established, ends a fresh start's hold on startMu, and delivers the
+// root's frames that arrived before the route existed.
+func (c *Conn) bindSessionRoot(s *Session, startingFresh bool) {
 	rootID := s.rootThreadID()
 	rootSessID := s.rootSessionID()
 	var hasEarlyFrames bool
+	var claimed *childHold
+	var refused int
 	c.routesMu.Lock()
 	if rootID != "" {
 		c.byThread[rootID] = s
 		c.loaded[rootID] = struct{}{}
-		if earlyRootFrames := c.takeDeferredChildLocked(rootID); len(earlyRootFrames) > 0 {
+		if hold := c.takeHoldLocked(rootID); hold != nil {
 			// Enqueue BEFORE releasing routesMu so any subsequent frame routed
 			// to s by the reader goroutine sees earlyPending==true and drains
 			// these older frames first in strict FIFO order.
-			s.enqueueEarlyFrames(earlyRootFrames)
-			hasEarlyFrames = true
+			s.enqueueEarlyFrames(hold.frames)
+			hasEarlyFrames = len(hold.frames) > 0
+			claimed, refused = hold, c.takeRefusedLocked()
 		}
 	}
 	if rootSessID != "" {
@@ -452,25 +525,13 @@ func (c *Conn) open(
 		c.starting = nil
 	}
 	c.routesMu.Unlock()
+	logClaimedHoldLosses(rootID, claimed, refused)
 	if startingFresh {
 		c.startMu.Unlock()
 	}
 	if hasEarlyFrames {
 		s.flushEarlyFrames()
 	}
-
-	meta, _ := json.Marshal(provider.SessionInfo{
-		SessionID: rootID,
-		Model:     cfg.Model,
-		CWD:       cfg.WorkDir,
-	})
-	s.emitEvent(provider.ProviderEvent{
-		Kind:      provider.EventInit,
-		ThreadID:  threadID,
-		Meta:      meta,
-		Timestamp: time.Now(),
-	})
-	return s, nil
 }
 
 func (c *Conn) requestTimeout() time.Duration {
@@ -721,46 +782,104 @@ func (c *Conn) unsubscribeAndWait(ctx context.Context, providerThreadID string) 
 	}
 }
 
+// registerChildRoute routes childThreadID to s and moves the thread's held
+// frames into s's early queue. The route is the signal deliverOrHold reads:
+// the caller registers it only for a child it owns, after the child's spawn
+// event was emitted, and holds s.mu so close_agent's unregisterChildRoute
+// cannot interleave (lock order: s.mu, then routesMu). It reports whether
+// frames were moved; the caller flushes them once it releases s.mu.
 func (c *Conn) registerChildRoute(childThreadID string, s *Session) bool {
 	childThreadID = strings.TrimSpace(childThreadID)
 	if c == nil || childThreadID == "" || s == nil {
 		return false
 	}
-	var hasHeld bool
+	var claimed *childHold
+	var refused int
 	c.routesMu.Lock()
 	c.byThread[childThreadID] = s
 	c.loaded[childThreadID] = struct{}{}
-	if held := c.takeDeferredChildLocked(childThreadID); len(held) > 0 {
+	if hold := c.takeHoldLocked(childThreadID); hold != nil {
 		// Enqueue BEFORE releasing routesMu so any subsequent frame routed to s
-		// on the reader goroutine drains these quarantined frames first in FIFO order.
-		s.enqueueEarlyFrames(held)
-		hasHeld = true
+		// on the reader goroutine drains these held frames first in FIFO order.
+		s.enqueueEarlyFrames(hold.frames)
+		claimed = hold
 	}
+	// Every claim reports the budget refusals since the last report, held
+	// frames or not: a refused frame armed no hold of its own.
+	refused = c.takeRefusedLocked()
 	c.routesMu.Unlock()
-	return hasHeld
+	logClaimedHoldLosses(childThreadID, claimed, refused)
+	return claimed != nil && len(claimed.frames) > 0
 }
 
-func (c *Conn) takeDeferredChildLocked(childThreadID string) []deferredChildWireEvent {
-	events := c.deferredChild[childThreadID]
-	if len(events) == 0 {
+// unregisterChildRoute removes s's route for a child whose ownership ended,
+// so the child's later frames are held and expire rather than reach s. The
+// caller holds s.mu, as for registerChildRoute.
+func (c *Conn) unregisterChildRoute(childThreadID string, s *Session) {
+	if c == nil || childThreadID == "" || s == nil {
+		return
+	}
+	c.routesMu.Lock()
+	if c.byThread[childThreadID] == s {
+		delete(c.byThread, childThreadID)
+	}
+	c.routesMu.Unlock()
+}
+
+// childHold is one thread's held frames and deadline. Its identity is what
+// an expiry checks: a hold taken by a claim, or replaced by a newer hold for
+// the same thread, is no longer the map entry, and its expiry does nothing.
+type childHold struct {
+	frames []deferredChildWireEvent
+	bytes  int
+	timer  holdTimer
+	// droppedNotifications and rejectedRequests count frames refused
+	// because this thread's queue was full.
+	droppedNotifications int
+	rejectedRequests     int
+}
+
+// holdTimer is the part of *time.Timer a hold uses.
+type holdTimer interface{ Stop() bool }
+
+// takeHoldLocked removes providerThreadID's hold, stops its deadline and
+// releases its frames from the budget. Caller holds routesMu.
+func (c *Conn) takeHoldLocked(providerThreadID string) *childHold {
+	hold := c.holds[providerThreadID]
+	if hold == nil {
 		return nil
 	}
-	delete(c.deferredChild, childThreadID)
-	if timer := c.deferredChildDeadlines[childThreadID]; timer != nil {
-		timer.Stop()
-		delete(c.deferredChildDeadlines, childThreadID)
+	delete(c.holds, providerThreadID)
+	hold.timer.Stop()
+	c.heldFrames -= len(hold.frames)
+	c.heldBytes -= hold.bytes
+	return hold
+}
+
+// takeRefusedLocked returns and resets the connection-wide budget refusal
+// count. Caller holds routesMu.
+func (c *Conn) takeRefusedLocked() int {
+	refused := c.refusedForBudget
+	c.refusedForBudget = 0
+	return refused
+}
+
+// logClaimedHoldLosses logs, once, the frames a claimed hold (nil when the
+// claim took none) lost to its full queue and the connection-wide budget
+// refusals since the last claim, expiry or teardown. Nothing reaches a
+// thread: a refused frame names no root.
+func logClaimedHoldLosses(providerThreadID string, hold *childHold, refused int) {
+	dropped, rejected := 0, 0
+	if hold != nil {
+		dropped, rejected = hold.droppedNotifications, hold.rejectedRequests
 	}
-	for _, ev := range events {
-		c.deferredChildBytes -= ev.sizeBytes()
+	if dropped+rejected+refused == 0 {
+		return
 	}
-	c.deferredChildCount -= len(events)
-	if c.deferredChildCount < 0 {
-		c.deferredChildCount = 0
-	}
-	if c.deferredChildBytes < 0 {
-		c.deferredChildBytes = 0
-	}
-	return events
+	log.Printf(
+		"codex: a spawn claimed provider thread %s after its full queue dropped %d notifications and rejected %d requests; %d frames refused connection-wide for a full routing budget",
+		providerThreadID, dropped, rejected, refused,
+	)
 }
 
 func (c *Conn) detachSession(s *Session, rootThreadID, rootSessionID string, childIDs []string) {
@@ -820,11 +939,11 @@ func (c *Conn) readLoop() {
 			}
 			delete(c.closedWaiters, tid)
 		}
-		for tid, timer := range c.deferredChildDeadlines {
-			timer.Stop()
-			delete(c.deferredChildDeadlines, tid)
+		for _, hold := range c.holds {
+			hold.timer.Stop()
 		}
-		c.deferredChild = nil
+		c.holds = nil
+		refused := c.takeRefusedLocked()
 		c.loaded = make(map[string]struct{})
 		sessions := make([]*Session, 0, len(c.allSessions))
 		for s := range c.allSessions {
@@ -835,6 +954,9 @@ func (c *Conn) readLoop() {
 		c.bySessionID = make(map[string]*Session)
 		c.starting = nil
 		c.routesMu.Unlock()
+		if refused > 0 {
+			log.Printf("codex: the connection closed with %d frames refused connection-wide for a full routing budget since the last claim or expiry", refused)
+		}
 
 		connClosing := c.closing.Load()
 		var exitMeta json.RawMessage
@@ -1106,68 +1228,130 @@ func (c *Conn) routeTarget(providerThreadID, sessionID, parentThreadID string, a
 	return c.routeTargetLocked(providerThreadID, sessionID, parentThreadID, allowStartingFallback)
 }
 
-// routeOrQuarantine performs route lookup and quarantine enqueue under ONE
-// routesMu acquisition so registerChildRoute or open() can never register and
-// drain an empty queue between lookup and enqueue.
+// routeOrQuarantine performs route lookup and the hold under ONE routesMu
+// acquisition so registerChildRoute or open() can never register and drain an
+// empty hold between lookup and enqueue.
 func (c *Conn) routeOrQuarantine(
 	providerThreadID, sessionID, parentThreadID string,
 	allowStartingFallback bool,
 	ev deferredChildWireEvent,
 	requestID *json.Number,
 ) *Session {
-	trimmedID := strings.TrimSpace(providerThreadID)
-	evBytes := ev.sizeBytes()
-
 	c.routesMu.Lock()
 	if target := c.routeTargetLocked(providerThreadID, sessionID, parentThreadID, allowStartingFallback); target != nil {
 		c.routesMu.Unlock()
 		return target
 	}
-	if trimmedID == "" || len(trimmedID) > maxDeferredChildThreadIDBytes {
-		c.routesMu.Unlock()
-		c.rejectQuarantinedRequest(requestID, "subagent ownership was not available")
-		return nil
-	}
-	if c.deferredChild == nil {
-		c.routesMu.Unlock()
-		c.rejectQuarantinedRequest(requestID, "connection closed")
-		return nil
-	}
-	queued := c.deferredChild[trimmedID]
-	if len(queued) >= maxDeferredChildEventsPerThread ||
-		c.deferredChildCount >= maxDeferredChildEventsTotal ||
-		evBytes > maxDeferredChildEventBytes ||
-		c.deferredChildBytes > maxDeferredChildEventBytes-evBytes {
-		c.routesMu.Unlock()
-		c.rejectQuarantinedRequest(requestID, "subagent ownership was not available before the routing buffer filled")
-		return nil
-	}
-	ev.Params = append(json.RawMessage(nil), ev.Params...)
-	ev.RawLine = append(json.RawMessage(nil), ev.RawLine...)
-	c.deferredChild[trimmedID] = append(queued, ev)
-	c.deferredChildCount++
-	c.deferredChildBytes += evBytes
-	if c.deferredChildDeadlines[trimmedID] == nil {
-		tid := trimmedID
-		c.deferredChildDeadlines[tid] = time.AfterFunc(deferredChildOwnershipTimeout, func() {
-			c.expireDeferredChild(tid)
-		})
-	}
+	rejection := c.holdLocked(providerThreadID, ev)
 	c.routesMu.Unlock()
+	if rejection != "" {
+		c.rejectQuarantinedRequest(requestID, rejection)
+	}
 	return nil
 }
 
-func (c *Conn) expireDeferredChild(providerThreadID string) {
+// deliverOrHold decides, once and under routesMu, who gets a frame s received
+// on a thread that is not its root: s delivers it when the thread is routed to
+// s; a frame for a thread routed to another session goes to that session's
+// early queue, as a claim's held frames do; any other frame joins the
+// thread's hold, which a claim either takes whole or never sees. A frame is
+// therefore never held for a thread that has a route. It reports whether s
+// delivers the frame. A frame the hold bounds refuse is rejected when it is a
+// request and dropped otherwise.
+func (c *Conn) deliverOrHold(providerThreadID string, s *Session, ev deferredChildWireEvent, requestID *json.Number) bool {
 	c.routesMu.Lock()
-	events := c.takeDeferredChildLocked(providerThreadID)
+	owner := c.byThread[strings.TrimSpace(providerThreadID)]
+	if owner == s {
+		c.routesMu.Unlock()
+		return true
+	}
+	if owner != nil {
+		owner.enqueueEarlyFrames([]deferredChildWireEvent{ev.retained()})
+		c.routesMu.Unlock()
+		owner.flushEarlyFrames()
+		return false
+	}
+	rejection := c.holdLocked(providerThreadID, ev)
 	c.routesMu.Unlock()
-	for _, ev := range events {
+	if rejection != "" {
+		c.rejectQuarantinedRequest(requestID, rejection)
+	}
+	return false
+}
+
+// holdLocked adds ev to providerThreadID's hold, creating the hold and arming
+// its deadline for the thread's first frame. It returns the rejection for a
+// frame it could not hold, after counting it: on the thread's hold when the
+// thread's own queue is full, connection-wide when the shared budget is.
+// Caller holds routesMu.
+func (c *Conn) holdLocked(providerThreadID string, ev deferredChildWireEvent) string {
+	trimmedID := strings.TrimSpace(providerThreadID)
+	evBytes := ev.sizeBytes()
+	if trimmedID == "" || len(trimmedID) > maxDeferredChildThreadIDBytes {
+		return "subagent ownership was not available"
+	}
+	if c.holds == nil {
+		return "connection closed"
+	}
+	const full = "subagent ownership was not available before the routing buffer filled"
+	hold := c.holds[trimmedID]
+	if hold != nil && len(hold.frames) >= maxDeferredChildEventsPerThread {
+		if ev.RequestID == "" {
+			hold.droppedNotifications++
+		} else {
+			hold.rejectedRequests++
+		}
+		return full
+	}
+	if c.heldFrames >= maxDeferredChildEventsTotal ||
+		evBytes > maxDeferredChildEventBytes ||
+		c.heldBytes > maxDeferredChildEventBytes-evBytes {
+		c.refusedForBudget++
+		return full
+	}
+	if hold == nil {
+		hold = &childHold{}
+		c.holds[trimmedID] = hold
+		hold.timer = c.startHoldTimer(deferredChildOwnershipTimeout, func() {
+			c.expireHold(trimmedID, hold)
+		})
+	}
+	hold.frames = append(hold.frames, ev.retained())
+	hold.bytes += evBytes
+	c.heldFrames++
+	c.heldBytes += evBytes
+	return ""
+}
+
+// expireHold is hold's deadline: it rejects the hold's requests, drops its
+// notifications and logs the thread, unless a claim took the hold or a newer
+// hold replaced it, in which case it does nothing.
+func (c *Conn) expireHold(providerThreadID string, hold *childHold) {
+	c.routesMu.Lock()
+	if c.holds[providerThreadID] != hold {
+		c.routesMu.Unlock()
+		return
+	}
+	c.takeHoldLocked(providerThreadID)
+	refused := c.takeRefusedLocked()
+	sessions := len(c.allSessions)
+	c.routesMu.Unlock()
+	rejected := 0
+	for _, ev := range hold.frames {
 		if ev.RequestID == "" {
 			continue
 		}
+		rejected++
 		id := json.Number(ev.RequestID)
 		c.rejectQuarantinedRequest(&id, "subagent ownership did not arrive before the routing deadline")
 	}
+	// A held frame names only its own thread, so the connection cannot tell
+	// which root the thread belonged to: the expiry is logged, never shown on
+	// a guessed thread.
+	log.Printf(
+		"codex: no spawn claimed provider thread %s before the routing deadline: rejected %d requests, dropped %d notifications (%d and %d more refused for its full queue); %d frames refused connection-wide for a full routing budget; %d sessions on the connection",
+		providerThreadID, rejected, len(hold.frames)-rejected, hold.rejectedRequests, hold.droppedNotifications, refused, sessions,
+	)
 }
 
 func (c *Conn) rejectQuarantinedRequest(id *json.Number, message string) {

@@ -63,6 +63,7 @@ type testHost struct {
 	liveAfterStop   [][]string
 	mergedPRPauses  int
 	mergedPRResumes int
+	mergedPRPolled  time.Time
 	onPause         func()
 	onResume        func()
 }
@@ -200,10 +201,12 @@ func (h *testHost) MakeAssistant(threadID string) (store.StandingAgent, error) {
 func (h *testHost) BroadcastThreadRow(threadID string) {
 	h.broadcastRows = append(h.broadcastRows, threadID)
 }
+func (h *testHost) StartSession(string) error { return nil }
 func (h *testHost) StopSession(threadID string) error {
 	h.stopped = append(h.stopped, threadID)
 	return nil
 }
+func (h *testHost) ListItems(string, bool) ([]store.Item, error) { return nil, nil }
 func (h *testHost) AwaitSessionEndWork() []string {
 	if len(h.liveAfterStop) == 0 {
 		return nil
@@ -248,6 +251,7 @@ func (h *testHost) PauseMergedPRCleanup() func() {
 		}
 	}
 }
+func (h *testHost) MergedPRPolled() time.Time    { return h.mergedPRPolled }
 func (h *testHost) DropRetainedEvents()          { h.droppedRetained++ }
 func (h *testHost) HasWorkflowEngine() bool      { return false }
 func (h *testHost) RequireWorkflowEngine() error { return fmt.Errorf("workflow engine unavailable") }
@@ -265,9 +269,9 @@ func (h *testHost) ReleaseWorkflowStarts() error                     { return ni
 func (h *testHost) CancelWorkflowItem(context.Context, string) error { return nil }
 func (h *testHost) SyncWorkflowEngine() error                        { return nil }
 func (h *testHost) PublishStoreIdentity(identity store.Identity)     { h.published = &identity }
-func (h *testHost) SendMessage(threadID, message string) error {
-	h.sent = append(h.sent, threadID+":"+message)
-	return nil
+func (h *testHost) Send(_ context.Context, threadID, text string, _ bool) (HarnessSendResult, error) {
+	h.sent = append(h.sent, threadID+":"+text)
+	return HarnessSendResult{}, nil
 }
 
 func seedHarnessThread(t *testing.T, database *store.Store, threadID string) {

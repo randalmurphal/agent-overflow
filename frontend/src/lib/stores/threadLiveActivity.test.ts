@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reconcileThreadLiveActivity } from './threadLiveActivity';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
-import { __resetEntityIndexForTest, noteThread, threadBackend } from '../transport/entityIndex';
+import { noteThread, threadBackend } from '../transport/entityIndex';
 import {
   applySendsPendingFrame,
   getActiveTurn,
@@ -10,7 +10,6 @@ import {
   projectApprovalResolution,
   projectTurnCompleted,
   projectTurnStarted,
-  resetForTest,
 } from './threadStatuses.svelte';
 import settling from '../../../../internal/app/testdata/turn_settling_snapshot.json';
 import { applyCompactingState, isThreadCompacting } from './compactingState.svelte';
@@ -26,8 +25,6 @@ const push = (threadId: string, pending: boolean) => applySendsPendingFrame({ th
 vi.mock('../transport/scopes', async (original) => ({ ...await original<object>(), hasScope: vi.fn(() => true) }));
 
 beforeEach(() => {
-  resetForTest();
-  __resetEntityIndexForTest();
   for (const id of ['gpu-running', 'gpu-blocked', 'gpu-stale']) noteThread(id, 'gpu');
   noteThread('laptop-running', 'laptop');
 });

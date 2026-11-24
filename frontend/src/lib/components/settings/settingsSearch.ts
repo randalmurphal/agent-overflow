@@ -15,7 +15,6 @@ import {
   settingsSectionAvailable,
   settingsSectionDef,
   settingsSectionDescription,
-  type SettingsSection,
   type SettingsSectionDef,
 } from './sections';
 import { remoteAccessAvailable } from '../../transport/buildVariant';
@@ -27,10 +26,6 @@ export type SettingsSearchHit =
 /** The stable key a result list renders by. */
 export function searchHitKey(hit: SettingsSearchHit): string {
   return hit.kind === 'field' ? hit.field.id : `page:${hit.page.id}`;
-}
-
-export function searchHitSection(hit: SettingsSearchHit): SettingsSection {
-  return hit.page.id;
 }
 
 interface IndexedField {

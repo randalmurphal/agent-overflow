@@ -7,12 +7,11 @@ import {
   attachBrowserCompanion,
   browserActionError,
   noteBrowserPaneError,
-  resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
 import { focusBrowserPage } from './browserPageFocus';
-import { installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { installCompanionPanes } from './companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import { createPane, resetPanesForTest } from './panes.svelte';
+import { createPane } from './panes.svelte';
 import { makeThread } from '../../test/helpers/chat';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
@@ -49,10 +48,7 @@ describe('handing the keyboard to the browser page', () => {
   const withdrawals = () => actions.filter((action) => action.kind === 'focus-page-withdraw');
 
   beforeEach(async () => {
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
     createPane('main').replaceThread(makeThread({ id: THREAD }));
@@ -79,7 +75,6 @@ describe('handing the keyboard to the browser page', () => {
     composer.remove();
     address.remove();
     vi.unstubAllGlobals();
-    resetBrowserCompanionForTest();
   });
 
   it('asks for the page by its mount and a numbered intent, telling the launcher first', async () => {

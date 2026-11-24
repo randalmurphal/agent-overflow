@@ -132,14 +132,6 @@ func (c *Cache) Get(ctx context.Context, key string, fetch Fetch) (codex.Account
 	return cloneUsage(usage), err
 }
 
-// Invalidate drops the cached entry for a key so the next Get refetches. Used
-// by the manual refresh path and after an account switch.
-func (c *Cache) Invalidate(key string) {
-	c.mu.Lock()
-	delete(c.entries, strings.TrimSpace(key))
-	c.mu.Unlock()
-}
-
 // cloneUsage deep-copies every reference field — the bucket slice AND the
 // optional summary pointers. Handing out the cached pointers would let one
 // caller rewrite the number every later caller reads; the copy makes that

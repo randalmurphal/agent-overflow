@@ -213,7 +213,7 @@ type Manager struct {
 	// Production leaves it nil; the managed-Chrome integration test uses the
 	// signal instead of polling on wall-clock sleeps.
 	pageAdopted func()
-	// popupListing is a test seam: adoptPopup calls it between the hold that
+	// popupListing is a test seam: the adoption calls it between the hold that
 	// lists a popup's tab with the downloads the popup started and the
 	// application of their parked ends.
 	popupListing func()

@@ -796,3 +796,7 @@ func equalStrings(left, right []string) bool {
 	}
 	return true
 }
+
+func (a *App) launchThreadWorktreeSetup(thread store.Thread, requireRecipe bool) error {
+	return a.worktreeSetupService().LaunchThread(thread, requireRecipe)
+}

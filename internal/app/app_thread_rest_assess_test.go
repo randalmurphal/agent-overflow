@@ -9,6 +9,7 @@ package app
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"path/filepath"
 	"slices"
@@ -20,6 +21,29 @@ import (
 
 	"agent-overflow/internal/store"
 )
+
+// passesUntil runs pass, one retention pass, until cleared returns nil, and
+// fails t with what cleared last returned once 10 seconds have passed. A
+// pass that reads a thread at rest keeps its spawns whole when what memory
+// holds of that thread changes before the write, as a session's late
+// events or a queue write can after its turn ends, and the product's next
+// pass reads again (sweepThreadRequestsBefore): some pass clears a spawn
+// whose worker rests, not always the first.
+func passesUntil(t *testing.T, pass func(), cleared func() error) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for passes := 1; ; passes++ {
+		pass()
+		err := cleared()
+		if err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after %d retention passes: %v", passes, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 // armChildLoop arms a loop on threadID as registerAgentWake does: the row,
 // then its frame.
@@ -198,8 +222,8 @@ func TestAFailedRestReadIsRetriedByTheSweep(t *testing.T) {
 }
 
 // A spawn past the floor whose worker takes a loop once the sweep has read
-// it, with the drain held, is left whole; once the loop is cancelled the
-// next sweep keeps only its lineage.
+// it, with the drain held, is left whole; once the loop is cancelled a
+// later sweep keeps only its lineage.
 func TestWorkAdmittedDuringTheSweepsReadKeepsTheSpawnWhole(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -227,10 +251,12 @@ func TestWorkAdmittedDuringTheSweepsReadKeepsTheSpawnWhole(t *testing.T) {
 	}
 	f.app.restReadForTest = nil
 	f.cancelChildLoop(t, *loop.Load())
-	f.app.expireThreadRequests(later)
-	if _, found, err := f.app.store.GetThreadRequest(ack.Token); err != nil || found {
-		t.Fatalf("the spawn's token once its worker rests: found %v, %v; want unknown", found, err)
-	}
+	passesUntil(t, func() { f.app.expireThreadRequests(later) }, func() error {
+		if _, found, err := f.app.store.GetThreadRequest(ack.Token); err != nil || found {
+			return fmt.Errorf("the spawn's token once its worker rests: found %v, %v; want unknown", found, err)
+		}
+		return nil
+	})
 }
 
 // Work admitted on threads outside the worker's subtree while its turn end
@@ -282,4 +308,11 @@ func TestSteadyChangesOffTheTreeDoNotStarveASettlement(t *testing.T) {
 	if row := f.request(t, token); row.State != store.ThreadRequestFinished || string(row.Answer) != "Handed it on." {
 		t.Fatalf("request %+v with work changing only off its subtree; want finished at its turn end", row)
 	}
+}
+
+// watchedThreads counts the threads watched now.
+func (r *restRevisions) watchedThreads() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.watched)
 }

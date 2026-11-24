@@ -17,6 +17,7 @@
     "android/**/*.ts",
     "scripts/**/*.ts",
     "playwright.config.ts",
+    "test-files.ts",
     "playwright.manual.config.ts",
     "playwright.android.config.ts"
   ]

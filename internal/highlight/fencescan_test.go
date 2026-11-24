@@ -19,6 +19,10 @@ func TestScanFences(t *testing.T) {
 			want: nil,
 		},
 		{
+			// Source must byte-match marked's token.text, because the seed
+			// hash chain is computed over it. The frontend integration test
+			// asserts the same source reaches HighlightCode
+			// (ChatMarkdown.codeSpans.test.ts), pinning the other side.
 			name: "closed fence with lang",
 			text: "before\n```python\ndef f():\n    pass\n```\nafter",
 			want: []Fence{{Lang: "python", Source: "def f():\n    pass", Closed: true}},
@@ -104,20 +108,6 @@ func TestScanFences(t *testing.T) {
 				t.Errorf("ScanFences(%q) = %#v, want %#v", tc.text, got, tc.want)
 			}
 		})
-	}
-}
-
-// The scanner's Source must byte-match marked's token.text for the
-// common streaming shapes, because the seed hash chain is computed
-// over it. The frontend integration test asserts the same source
-// reaches HighlightCode (ChatMarkdown.codeSpans.test.ts), pinning the
-// other side of this contract.
-func TestScanFencesSourceMatchesMarkedTokenText(t *testing.T) {
-	// '```python\n' + SOURCE + '\n```' → token.text === SOURCE.
-	source := "def route():\n    pass"
-	fences := ScanFences("```python\n" + source + "\n```")
-	if len(fences) != 1 || fences[0].Source != source {
-		t.Fatalf("got %#v, want single fence with source %q", fences, source)
 	}
 }
 

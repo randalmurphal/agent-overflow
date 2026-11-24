@@ -5,11 +5,27 @@ import type { ReviewFile } from '../../lib/utils/patchParser';
 import type { ReviewFindFileSpot, ReviewFindHit } from '../../lib/utils/reviewFindIdentity';
 import { scanReviewFind, type ReviewFindContent, type ReviewFindScanOptions } from '../../lib/utils/reviewFindScan';
 import type { DiffReviewComment, ReviewThread } from '../../lib/types/models';
+import { indexReviewComments, type ReviewCommentIndex } from '../../lib/utils/reviewRows';
 
 export type CollectedHit = ReviewFindHit & ReviewFindFileSpot & { fileIndex: number };
 
-export function findContent(files: readonly ReviewFile[], over: Partial<ReviewFindContent> = {}): ReviewFindContent {
-  return { files, drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }], ...over };
+/** The scan's content with its comments given as lists, indexed as the
+ * pane indexes them. */
+export type FindContentOver = Partial<Omit<ReviewFindContent, 'comments'>> & {
+  drafts?: readonly DiffReviewComment[];
+  prThreads?: readonly ReviewThread[];
+};
+
+export function findContent(files: readonly ReviewFile[], over: FindContentOver = {}): ReviewFindContent {
+  const { drafts = [], prThreads = [], ...rest } = over;
+  return { files, comments: indexReviewComments(prThreads, drafts), commentText: (body) => [{ text: body, shown: true }], ...rest };
+}
+
+/** `content` with its drafts or threads replaced, indexed again. */
+export function withComments<T extends { readonly comments: ReviewCommentIndex }>(
+  content: T, over: { drafts?: readonly DiffReviewComment[]; prThreads?: readonly ReviewThread[] },
+): T {
+  return { ...content, comments: indexReviewComments(over.prThreads ?? content.comments.threads, over.drafts ?? content.comments.drafts) };
 }
 
 /** A draft on new line `newLine` of src/needle.ts. */

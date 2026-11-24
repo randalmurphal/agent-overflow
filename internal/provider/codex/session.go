@@ -66,8 +66,8 @@ func IsTurnNotSteerable(err error) bool {
 	return errors.Is(err, ErrTurnNotSteerable)
 }
 
-// DynamicToolHandler is called when the provider invokes a dynamic tool (item/tool/call
-// or dynamicToolCall). The handler receives the tool name and arguments, and returns
+// DynamicToolHandler is called when the provider invokes a dynamic tool
+// (item/tool/call). The handler receives the tool name and arguments, and returns
 // the result content and a success flag.
 type DynamicToolHandler func(toolName string, args map[string]any) (content string, success bool, err error)
 
@@ -208,7 +208,12 @@ type sessionSettingsState struct {
 //
 // childThreadByAgentPath identifies the current owner of a reusable path.
 // agentPathByThread retains each thread's canonical path so replay from a
-// superseded child can be rejected and close_agent can clean up safely.
+// superseded child can be rejected.
+//
+// close_agent ends a child's delivery and none of this identity: a closed
+// child keeps its spawn card, so a resume_agent restores delivery under it.
+// The identity maps therefore hold one entry per child the session saw, the
+// same children a resume of the parent rebuilds spawn cards for.
 //
 // No heuristic background-tool classifier runs here (invariant 25).
 // The wire-typed signals for a backgrounded item are
@@ -234,7 +239,8 @@ type sessionCollabState struct {
 	// childRuntimeByThread is the live-process turn state needed to target
 	// turn/interrupt at a child. Persisted ownership is intentionally separate:
 	// a historical child identity can survive an app-server restart while its
-	// work cannot.
+	// work cannot. An owned child with no entry is one close_agent closed
+	// (childLiveLocked).
 	childRuntimeByThread map[string]childRuntimeState
 	// profileReadsByThread coalesces repeated V2 activity delivery while one
 	// effective-profile request is in flight.
@@ -258,27 +264,6 @@ type childRuntimeState struct {
 	phase      childRuntimePhase
 	turnID     string
 	generation uint64
-}
-
-// sessionChildRoutingState quarantines notifications and server requests from
-// provider threads whose spawn ownership has not arrived yet. Codex
-// MultiAgentV2 starts the child before it emits the parent's canonical
-// subAgentActivity item, so child output can legitimately win that race.
-// Nothing in this queue may reach the AO parent projection until a typed
-// ownership edge maps the provider thread to its spawn card. Guarded by mu;
-// Close stops the deadline timers and then zeroes the group.
-type sessionChildRoutingState struct {
-	recoveryPending         map[string]bool
-	recoveryQueue           []string
-	recoveryRunning         bool
-	unrelatedThreads        map[string]struct{}
-	unrelatedOrder          []string
-	deferredChildWireEvents map[string][]deferredChildWireEvent
-	deferredChildWireCount  int
-	deferredChildWireBytes  int
-	deferredChildDeadlines  map[string]*time.Timer
-	// warned dedupes the routing-overflow log to once per session.
-	warned bool
 }
 
 // sessionCollabHistoryState is the sequential metadata recovery a resume runs
@@ -310,7 +295,6 @@ type sessionRawToolCallState struct {
 // comment), the atomics that exist to stay out of that order, and the
 // registered observers. See Close for which groups are session-scoped.
 type Session struct {
-	proc     *provider.Process
 	ctx      context.Context
 	threadID string // our internal thread ID
 	workDir  string // absolute workspace cwd used for project-scoped config/read
@@ -380,7 +364,6 @@ type Session struct {
 	// the key comes off the wire. Guarded by mu.
 	unclaimedNotifications           map[string]struct{}
 	unclaimedNotificationsOverflowed bool
-	nextID                           atomic.Int64
 	// LOCK ORDER: controlMu → mu → childLifecycleMu → eventMu. Take them
 	// in that order or not at all; nothing in this package takes them in the
 	// reverse direction. controlMu serializes history-sensitive root and child
@@ -407,7 +390,7 @@ type Session struct {
 	// session state while the app layer runs.
 	//
 	// codexThreadID, appServerVersion, threadHistoryMode, pendingRevert,
-	// revertEpoch, threadQueueNative, closing and nextID are atomics precisely
+	// revertEpoch, threadQueueNative and closing are atomics precisely
 	// so their readers never have to enter this order at all.
 	// settingsWireMu precedes mu and never nests with controlMu.
 	// It orders snapshots and pipe writes, not response waits.
@@ -415,11 +398,9 @@ type Session struct {
 	settingsSync       settingsSyncState
 	controlMu          sync.Mutex
 	mu                 sync.Mutex
-	pending            map[int64]chan json.RawMessage
 	onEvent            func(provider.ProviderEvent)
 	eventMu            sync.Mutex
 	dynamicToolHandler DynamicToolHandler
-	cancel             context.CancelFunc
 	closing            atomic.Bool
 	readDone           chan struct{}
 	// approvals is the outstanding-interactive-request ledger: which
@@ -457,12 +438,11 @@ type Session struct {
 	// non-zero. Set by tests that exercise the late-response path; a
 	// production Session leaves it at zero to use the default.
 	requestTimeoutOverride time.Duration
-	// collab is the child-thread identity map, childRouting the quarantine for
-	// child frames whose ownership has not arrived, collabHistory the sequential
+	// collab is the child-thread identity map, collabHistory the sequential
 	// resume recovery queue for unresolved children, and rawCalls the raw
-	// function-call tracking their enrichment reads.
+	// function-call tracking their enrichment reads. The connection holds the
+	// frames of a child whose ownership has not arrived (Conn.holds).
 	collab        sessionCollabState
-	childRouting  sessionChildRoutingState
 	collabHistory sessionCollabHistoryState
 	rawCalls      sessionRawToolCallState
 	// rolloutTail is the arming state of the resumed-session rollout reader.
@@ -576,13 +556,11 @@ type Session struct {
 	// change means the turn it intended to stop crossed a revert boundary and
 	// the stale interrupt must not hit the resulting thread runtime.
 	revertEpoch atomic.Uint64
-	// threadQueueNative freezes, at handshake time, whether this session
-	// hands mid-turn user messages to the provider's own `thread/queue/*`
-	// (codex >= 0.148) instead of AO's in-process flushqueue. Atomic for the
-	// same reason appServerVersion is — the app-layer dispatcher reads it off
-	// its own goroutine — and written exactly once, by
-	// recordThreadQueueSupport, because the two queues must be mutually
-	// exclusive for the whole life of the session.
+	// threadQueueNative freezes, at handshake time, whether the connected
+	// app-server has the `thread/queue/*` family (codex >= 0.148); see
+	// ThreadQueueNative. Atomic for the same reason appServerVersion is — the
+	// app layer reads it off its own goroutine — and written exactly once,
+	// from the Conn's handshake when the session opens.
 	threadQueueNative atomic.Bool
 
 	// conn is the multiplexed app-server connection this session runs on (nil
@@ -744,12 +722,6 @@ func (s *Session) rootSessionID() string {
 }
 
 func (s *Session) setRootSessionID(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.rootSessionID() != id {
-		s.childRouting.unrelatedThreads = nil
-		s.childRouting.unrelatedOrder = nil
-	}
 	s.codexSessionID.Store(&id)
 }
 
@@ -898,7 +870,7 @@ type Config struct {
 	// app-server process, merged over the inherited environment. The
 	// agent test harness scopes its mock-provider control credentials
 	// to provider spawns through this instead of the process env.
-	Env         map[string]string
+	Env         provider.EnvInput
 	EventLogger *logging.Logger
 	// Reaper ends the session's process group if the backend dies first
 	// (provider.SpawnConfig.Reaper).
@@ -968,8 +940,8 @@ func (s *Session) ThreadID() string {
 	return s.threadID
 }
 
-// SetDynamicToolHandler registers a handler for dynamic tool calls (item/tool/call,
-// dynamicToolCall). If nil, those requests are rejected with -32601.
+// SetDynamicToolHandler registers a handler for dynamic tool calls
+// (item/tool/call). If nil, those requests are rejected with -32601.
 func (s *Session) SetDynamicToolHandler(h DynamicToolHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1037,31 +1009,15 @@ func (s *Session) ForgetMCPStartupState(name string) {
 // PID returns the OS process id (and process-group id) of the Codex
 // app-server subprocess, or 0 when no process is live.
 func (s *Session) PID() int {
-	if s.conn != nil {
-		return s.conn.PID()
-	}
-	if s.proc == nil {
-		return 0
-	}
-	return s.proc.PID()
+	return s.conn.PID()
 }
 
 // Connection returns the underlying app-server connection backing this session.
 func (s *Session) Connection() provider.Connection {
-	if s == nil {
+	if s == nil || s.conn == nil {
 		return nil
 	}
-	if s.conn != nil {
-		return s.conn
-	}
-	if s.proc == nil {
-		return nil
-	}
-	return provider.FuncConnection{
-		PIDFn:   s.PID,
-		DoneCh:  s.readDone,
-		CloseFn: s.Close,
-	}
+	return s.conn
 }
 
 // OwnedProcesses returns this session's process root and workspace for dev-server attribution.
@@ -1074,7 +1030,7 @@ func (s *Session) OwnedProcesses() []provider.OwnedProcess {
 }
 
 func (s *Session) hasTransport() bool {
-	return s != nil && (s.conn != nil || s.proc != nil)
+	return s != nil && s.conn != nil
 }
 
 func (s *Session) finishReadDone() {
@@ -1138,17 +1094,6 @@ func (s *Session) Close() error {
 		if s.readDone != nil {
 			<-s.readDone
 		}
-	default:
-		s.clearPendingApprovals()
-		if s.proc != nil {
-			err = s.proc.Close()
-		}
-		if s.cancel != nil {
-			s.cancel()
-		}
-		if s.readDone != nil {
-			<-s.readDone
-		}
 	}
 
 	s.rolloutObserverWG.Wait()
@@ -1162,27 +1107,11 @@ func (s *Session) Close() error {
 	// them later from being forgotten here —
 	// TestCloseReleasesSessionScopedState pins that, and lists the state this
 	// deliberately leaves alone.
-	//
-	// We deliberately leave s.pending as an empty map (readLoop already
-	// drained it) — a late sendRequest caller would otherwise panic writing to
-	// a nil map; the existing WriteLine-on-closed-proc path handles shutdown
-	// cleanly.
 	s.mu.Lock()
-	deferredChildEvents := 0
-	for _, queued := range s.childRouting.deferredChildWireEvents {
-		deferredChildEvents += len(queued)
-	}
-	if deferredChildEvents > 0 {
-		log.Printf("codex: closing with %d quarantined child events whose spawn ownership never arrived", deferredChildEvents)
-	}
-	for _, timer := range s.childRouting.deferredChildDeadlines {
-		timer.Stop()
-	}
 	s.turn = sessionTurnState{}
 	s.review = nil
 	s.collab = sessionCollabState{}
 	s.rawCalls = sessionRawToolCallState{}
-	s.childRouting = sessionChildRoutingState{}
 	s.collabHistory = sessionCollabHistoryState{}
 	s.rolloutTail = sessionRolloutTailState{}
 	// childLifecycleRevision is the one piece of child state guarded by

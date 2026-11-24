@@ -666,3 +666,17 @@ func TestNewSessionFencesPreviousCostRead(t *testing.T) {
 		t.Fatal("replacement lost its read")
 	}
 }
+
+// claimThreadCostRead is claimThreadCostReadLocked under costMu.
+func (a *Service) claimThreadCostRead(threadID, sessionToken string) (uint64, bool) {
+	a.costMu.Lock()
+	defer a.costMu.Unlock()
+	return a.claimThreadCostReadLocked(threadID, sessionToken)
+}
+
+// threadCostReadIsCurrent is threadCostReadIsCurrentLocked under costMu.
+func (a *Service) threadCostReadIsCurrent(threadID string, epoch uint64) bool {
+	a.costMu.Lock()
+	defer a.costMu.Unlock()
+	return a.threadCostReadIsCurrentLocked(threadID, epoch)
+}

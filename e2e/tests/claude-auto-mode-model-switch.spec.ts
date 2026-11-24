@@ -28,6 +28,7 @@ import { mockSessions } from './workflows-helpers.js';
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 const SONNET_46 = 'claude-sonnet-4-6';
 const DROP_NOTICE = `Claude Code turned off Auto on ${SONNET_46}. This thread's access is now Supervised.`;
@@ -98,11 +99,12 @@ async function runtimeMode(harness: HarnessApp, threadId: string): Promise<strin
 }
 
 async function screenshots(page: Page, name: string) {
+  if (!screenshotsOn) return;
   for (const scheme of ['dark', 'light'] as const) {
     await page.emulateMedia({ colorScheme: scheme });
     // The scheme change fades colors in; capture after it settles.
     await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'));
-    await page.screenshot({ path: test.info().outputPath(`${name}-${scheme}.png`) });
+    await screenshot(page, { path: test.info().outputPath(`${name}-${scheme}.png`) });
   }
 }
 
@@ -119,13 +121,13 @@ test('switching an auto session to a model without auto mode shows the mode Clau
   const access = page.getByTestId('composer-access-toggle');
   const notices = page.getByTestId('notification-row');
 
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const [mock] = await mockSessions(harness, 'claude', 1);
   expect(mock.sessionConfig?.permissionMode).toBe('auto');
-  await harness.rpc('SendMessage', threadId, 'first', null);
+  await harness.send(threadId, 'first');
   await expect(page.getByText('First answer.', { exact: true })).toBeVisible();
 
-  await harness.rpc('UpdateThreadModel', threadId, SONNET_46);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', SONNET_46);
   // The switch brings the model's remembered Auto, so the reconcile is a
   // bare set_model on the running auto session.
   expect(mock.mockId).toBe((await mockSessions(harness, 'claude', 1))[0].mockId);
@@ -137,14 +139,14 @@ test('switching an auto session to a model without auto mode shows the mode Clau
 
   // The next turn runs on the same process: AO asks the CLI for nothing it
   // would refuse, and no restart was needed.
-  await harness.rpc('SendMessage', threadId, 'second', null);
+  await harness.send(threadId, 'second');
   await expect(page.getByText('Second answer.', { exact: true })).toBeVisible();
   expect(await mockSessions(harness, 'claude', 1)).toHaveLength(1);
   await expect(page.getByText('auto mode unavailable', { exact: false })).toHaveCount(0);
 
   // Back to the first model: its remembered Auto returns, and says so.
   const restoreNotice = `Auto is back on for ${firstModel}. This thread's access is Auto again.`;
-  await harness.rpc('UpdateThreadModel', threadId, firstModel);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', firstModel);
   await expect(notices.filter({ hasText: restoreNotice })).toHaveCount(1);
   await expect(access).toHaveAttribute('data-mode', 'auto');
   await expect(access).toHaveAttribute('aria-label', 'Runtime Access Mode: Auto');
@@ -152,7 +154,7 @@ test('switching an auto session to a model without auto mode shows the mode Clau
   // Each notice sits where its switch happened.
   await expect(notices).toContainText([DROP_NOTICE, restoreNotice]);
 
-  await harness.rpc('SendMessage', threadId, 'third', null);
+  await harness.send(threadId, 'third');
   await expect(page.getByText('Third answer.', { exact: true })).toBeVisible();
   expect(await mockSessions(harness, 'claude', 1)).toHaveLength(1);
 
@@ -170,10 +172,10 @@ test('switching models in plan drops Auto when plan ends and restores it, with o
   const access = page.getByTestId('composer-access-toggle');
   const notices = page.getByTestId('notification-row');
 
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const [first] = await mockSessions(harness, 'claude', 1);
   await harness.rpc('UpdateThreadMode', threadId, 'plan');
-  await harness.rpc('SendMessage', threadId, 'plan it', null);
+  await harness.send(threadId, 'plan it');
   await expect(page.getByText('Here is the plan.', { exact: true })).toBeVisible();
   // The restarted process below plays its own first turn.
   await harness.rpc('HarnessSetScenario', {
@@ -189,7 +191,7 @@ test('switching models in plan drops Auto when plan ends and restores it, with o
   // A model switch in plan is not applied live: the session restarts on
   // the new model once the thread is quiet, started on auto, which the CLI
   // cannot run on this model. Nothing reports that until the next turn.
-  await harness.rpc('UpdateThreadModel', threadId, SONNET_46);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', SONNET_46);
   let restarted: { mockId: string; sessionConfig?: { permissionMode?: string } } | undefined;
   await expect
     .poll(async () => {
@@ -201,7 +203,7 @@ test('switching models in plan drops Auto when plan ends and restores it, with o
 
   // The first turn after plan: the CLI's init says it runs default, and
   // the thread follows before the answer.
-  await harness.rpc('SendMessage', threadId, 'go ahead', null);
+  await harness.send(threadId, 'go ahead');
   await expect(page.getByText('Done after plan.', { exact: true })).toBeVisible();
   await expect(page.getByTestId('notification-row').filter({ hasText: DROP_NOTICE })).toHaveCount(1);
   await expect(access).toHaveAttribute('data-mode', 'approval-required');
@@ -217,11 +219,11 @@ test('switching models in plan drops Auto when plan ends and restores it, with o
   // so the switch applies live; its remembered Auto comes back with its
   // notice, and plan returns to it.
   await harness.rpc('UpdateThreadMode', threadId, 'plan');
-  await harness.rpc('UpdateThreadModel', threadId, firstModel);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', firstModel);
   await expect(notices.filter({ hasText: restoreNotice })).toHaveCount(1);
   await expect(access).toHaveAttribute('data-mode', 'auto');
   await harness.rpc('UpdateThreadMode', threadId, 'chat');
-  await harness.rpc('SendMessage', threadId, 'carry on', null);
+  await harness.send(threadId, 'carry on');
   await expect(page.getByText('Back on Auto.', { exact: true })).toBeVisible();
   await expect(notices.filter({ hasText: restoreNotice })).toHaveCount(1);
   await expect(notices.filter({ hasText: DROP_NOTICE })).toHaveCount(1);
@@ -243,11 +245,11 @@ test('switching back to an auto model in plan restores Auto through the restart,
   const access = page.getByTestId('composer-access-toggle');
   const notices = page.getByTestId('notification-row');
 
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const [first] = await mockSessions(harness, 'claude', 1);
-  await harness.rpc('SendMessage', threadId, 'first', null);
+  await harness.send(threadId, 'first');
   await expect(page.getByText('First answer.', { exact: true })).toBeVisible();
-  await harness.rpc('UpdateThreadModel', threadId, SONNET_46);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', SONNET_46);
   await expect(notices.filter({ hasText: DROP_NOTICE })).toHaveCount(1);
   await expect(access).toHaveAttribute('data-mode', 'approval-required');
 
@@ -258,7 +260,7 @@ test('switching back to an auto model in plan restores Auto through the restart,
     scenario: { version: 1, name: 'auto-mode-back-restart', provider: 'claude', turns: answers('Back on Auto.'), afterTurns: 'silent' },
   });
   await harness.rpc('UpdateThreadMode', threadId, 'plan');
-  await harness.rpc('UpdateThreadModel', threadId, firstModel);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', firstModel);
   await expect(access).toHaveAttribute('data-mode', 'auto');
   await expect(notices.filter({ hasText: restoreNotice })).toHaveCount(1);
   let restarted: { mockId: string; sessionConfig?: { permissionMode?: string } } | undefined;
@@ -270,7 +272,7 @@ test('switching back to an auto model in plan restores Auto through the restart,
     .toBe('auto');
 
   await harness.rpc('UpdateThreadMode', threadId, 'chat');
-  await harness.rpc('SendMessage', threadId, 'carry on', null);
+  await harness.send(threadId, 'carry on');
   await expect(page.getByText('Back on Auto.', { exact: true })).toBeVisible();
   await expect(notices.filter({ hasText: restoreNotice })).toHaveCount(1);
   await expect(notices.filter({ hasText: DROP_NOTICE })).toHaveCount(1);
@@ -291,19 +293,19 @@ test('switching a supervised session to a model without auto mode that remembers
   await harness.rpc('UpdateThreadRuntimeMode', threadId, 'approval-required');
   await expect(access).toHaveAttribute('data-mode', 'approval-required');
 
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const [mock] = await mockSessions(harness, 'claude', 1);
-  await harness.rpc('SendMessage', threadId, 'first', null);
+  await harness.send(threadId, 'first');
   await expect(page.getByText('First answer.', { exact: true })).toBeVisible();
 
   // The switch brings Sonnet 4.6's remembered Auto, which the CLI refuses
   // for that model: the thread takes the drop and its notice, not the
   // restore notice, on the same process.
-  await harness.rpc('UpdateThreadModel', threadId, SONNET_46);
+  await harness.rpc('UpdateThreadModelSelection', threadId, 'claude', SONNET_46);
   await expect(notices.filter({ hasText: DROP_NOTICE })).toHaveCount(1);
   await expect(access).toHaveAttribute('data-mode', 'approval-required');
   await expect.poll(() => runtimeMode(harness, threadId)).toBe('approval-required');
-  await harness.rpc('SendMessage', threadId, 'second', null);
+  await harness.send(threadId, 'second');
   await expect(page.getByText('Second answer.', { exact: true })).toBeVisible();
   expect((await mockSessions(harness, 'claude', 1)).map((m) => m.mockId)).toEqual([mock.mockId]);
   await expect(notices.filter({ hasText: 'Auto is back on' })).toHaveCount(0);

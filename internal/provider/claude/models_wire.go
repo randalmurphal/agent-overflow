@@ -11,7 +11,7 @@ import (
 // `initialize` control_response (and, identically, on `list_models`).
 //
 // Captured from claude 2.1.219 —
-// `docs/references/fixtures/claude/initialize_models_20260802.json`, and the
+// `internal/provider/wirecaptures/claude/initialize_models_20260802.json`, and the
 // field docs below are the CLI's own zod `.describe()` strings read out of the
 // binary. This is a PICKER SHORTLIST, not a catalog: it carries the five rows
 // the CLI's own model menu shows, with aliases and canonical ids mixed in one

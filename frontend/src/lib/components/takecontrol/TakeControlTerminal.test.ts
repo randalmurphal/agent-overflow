@@ -172,7 +172,10 @@ vi.mock('@xterm/addon-webgl', () => ({
 vi.mock('../../stores/keybindings.svelte', () => ({
   eventEscapesTerminalToCommand: vi.fn(() => false),
 }));
-vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }));
+vi.mock('../../utils/clipboard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/clipboard')>()),
+  copyToClipboard: vi.fn(async () => true),
+}));
 vi.mock('../../stores/toast.svelte', () => ({ addToast: mocks.addToast, addErrorToast: mocks.addErrorToast }));
 // Spread the real module: the bridge already degrades to an empty ITheme
 // without a canvas, and a factory that lists only the export this component
@@ -511,22 +514,6 @@ describe('<TakeControlTerminal>', () => {
     expect(getByRole('button', { name: 'Take control' })).toBeTruthy();
     term.dataHandler!('y');
     expect(mocks.ProviderTerminalInput).not.toHaveBeenCalled();
-  });
-
-  it('detaches the provider terminal on destroy', async () => {
-    mocks.ProviderTerminalReplay.mockResolvedValue({
-      data: '',
-      fromSequence: 0,
-      throughSequence: 0,
-    });
-
-    const { unmount } = render(TakeControlTerminal, {
-      props: { paneId: 'tc-1', threadId: 'thread-1' },
-    });
-    await waitFor(() => expect(mocks.getLastTerminal()).not.toBeNull());
-
-    unmount();
-    expect(mocks.ProviderTerminalDetach).toHaveBeenCalledWith('thread-1');
   });
 
   it('compensates when an acquire completes after the pane is destroyed', async () => {

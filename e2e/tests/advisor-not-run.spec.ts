@@ -133,7 +133,7 @@ test('advisor calls the API never ran show no row or settle as Not run', async (
 
   const advising = waitForGate(harness, 'advising');
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'check with the advisor', null);
+  await harness.send(threadId, 'check with the advisor');
   await advising;
 
   // The call that runs is the only advisor row, and it is running. The

@@ -398,128 +398,77 @@ func TestExternalCodexLoginLeavesRunningSessionOnCachedAccount(t *testing.T) {
 	}
 }
 
-func TestExternalCodexTokenRotationUpdatesSavedAccountCredential(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	installIdentityTestAccount(
-		t,
-		app,
-		string(provider.Codex),
-		"first",
-		"first@example.com",
-		[]byte(`{"tokens":{"access_token":"initial"}}`),
-	)
-	generation := app.providerAccounts.Generation(string(provider.Codex))
-
-	accountPath, err := providerCredentialsForTest(t, app).AccountCredentialPath(
-		string(provider.Codex),
-		"first",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		accountPath,
-		[]byte(`{"tokens":{"access_token":"managed-old"}}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-time.Minute)
-	if err := os.Chtimes(accountPath, old, old); err != nil {
-		t.Fatal(err)
-	}
-
-	activePath, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Codex))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		activePath,
-		[]byte(`{"tokens":{"access_token":"external-refresh"}}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	binary := writeCodexIdentityProbeBinary(t, "first@example.com")
-	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
-		t.Fatalf("reconcileExternalProviderAccount: %v", err)
-	}
-
-	got, err := os.ReadFile(accountPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const externalCredential = `{"tokens":{"access_token":"external-refresh"}}`
-	if string(got) != externalCredential {
-		t.Fatalf("saved account credential = %s, want %s", got, externalCredential)
-	}
-	if got := app.providerAccounts.Generation(string(provider.Codex)); got != generation+1 {
-		t.Fatalf("credential generation = %d, want %d", got, generation+1)
-	}
-}
-
+// The canonical (active) credential is the truth for its account's saved
+// slot whichever of the two files is newer: an outside token rotation
+// reaches the slot, and so does an older canonical credential over a newer
+// slot. The slot's change is a new credential generation.
 func TestExternalCodexReconciliationUsesCanonicalCredentialAsTruth(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	installIdentityTestAccount(
-		t,
-		app,
-		string(provider.Codex),
-		"first",
-		"first@example.com",
-		[]byte(`{"tokens":{"access_token":"initial"}}`),
-	)
+	cases := []struct {
+		name, slot, active string
+		slotAge, activeAge time.Duration
+	}{
+		{name: "an outside token rotation", slot: `{"tokens":{"access_token":"managed-old"}}`, active: `{"tokens":{"access_token":"external-refresh"}}`, slotAge: time.Minute},
+		{name: "an older canonical credential", slot: `{"tokens":{"access_token":"managed-refresh"}}`, active: `{"tokens":{"access_token":"external-old"}}`, activeAge: time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			app.settings = settings.NewService(t.TempDir())
+			installIdentityTestAccount(
+				t,
+				app,
+				string(provider.Codex),
+				"first",
+				"first@example.com",
+				[]byte(`{"tokens":{"access_token":"initial"}}`),
+			)
+			generation := app.providerAccounts.Generation(string(provider.Codex))
 
-	accountPath, err := providerCredentialsForTest(t, app).AccountCredentialPath(
-		string(provider.Codex),
-		"first",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const managedCredential = `{"tokens":{"access_token":"managed-refresh"}}`
-	if err := os.WriteFile(accountPath, []byte(managedCredential), 0o600); err != nil {
-		t.Fatal(err)
-	}
+			accountPath, err := providerCredentialsForTest(t, app).AccountCredentialPath(
+				string(provider.Codex),
+				"first",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			activePath, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Codex))
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			for _, file := range []struct {
+				path, content string
+				age           time.Duration
+			}{{accountPath, tc.slot, tc.slotAge}, {activePath, tc.active, tc.activeAge}} {
+				if err := os.WriteFile(file.path, []byte(file.content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(file.path, now.Add(-file.age), now.Add(-file.age)); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	activePath, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Codex))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		activePath,
-		[]byte(`{"tokens":{"access_token":"external-old"}}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-time.Minute)
-	if err := os.Chtimes(activePath, old, old); err != nil {
-		t.Fatal(err)
-	}
+			binary := writeCodexIdentityProbeBinary(t, "first@example.com")
+			if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+				t.Fatal(err)
+			}
+			if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+				t.Fatalf("reconcileExternalProviderAccount: %v", err)
+			}
 
-	binary := writeCodexIdentityProbeBinary(t, "first@example.com")
-	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
-		t.Fatalf("reconcileExternalProviderAccount: %v", err)
-	}
-
-	got, err := os.ReadFile(accountPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const canonicalCredential = `{"tokens":{"access_token":"external-old"}}`
-	if string(got) != canonicalCredential {
-		t.Fatalf("saved account credential = %s, want %s", got, canonicalCredential)
+			got, err := os.ReadFile(accountPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.active {
+				t.Fatalf("saved account credential = %s, want %s", got, tc.active)
+			}
+			if got := app.providerAccounts.Generation(string(provider.Codex)); got != generation+1 {
+				t.Fatalf("credential generation = %d, want %d", got, generation+1)
+			}
+		})
 	}
 }
 
@@ -783,96 +732,63 @@ func TestThreadLiveStateIncludesCurrentSessionAccount(t *testing.T) {
 // A second workspace on the SAME email is a different login, not a rotation.
 // Before org capture this silently overwrote the saved account; now the saved
 // slot's own bytes name its workspace (backfill), the observed credential
-// names the new one, and reconciliation creates a separate account.
+// names the new one, and reconciliation creates a separate account. The same
+// workspace re-observed (a refreshed token: new bytes, same account_id)
+// lands back on its saved account with no duplicate, and the observation
+// enriches the legacy blank org.
 func TestExternalCodexLoginOnDifferentWorkspaceCreatesSeparateAccount(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	installIdentityTestAccount(
-		t,
-		app,
-		string(provider.Codex),
-		"first",
-		"shared@example.com",
-		[]byte(`{"tokens":{"access_token":"a","account_id":"ws-a"}}`),
-	)
+	cases := []struct {
+		name, active, workspace string
+		newAccount              bool
+		wantAccounts            int
+	}{
+		{name: "a different workspace", active: `{"tokens":{"access_token":"b","account_id":"ws-b"}}`, workspace: "ws-b", newAccount: true, wantAccounts: 2},
+		{name: "the same workspace", active: `{"tokens":{"access_token":"a2","account_id":"ws-a"}}`, workspace: "ws-a", wantAccounts: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			app.settings = settings.NewService(t.TempDir())
+			installIdentityTestAccount(
+				t,
+				app,
+				string(provider.Codex),
+				"first",
+				"shared@example.com",
+				[]byte(`{"tokens":{"access_token":"a","account_id":"ws-a"}}`),
+			)
 
-	activePath, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Codex))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		activePath,
-		[]byte(`{"tokens":{"access_token":"b","account_id":"ws-b"}}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
+			activePath, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Codex))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(activePath, []byte(tc.active), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	binary := writeCodexIdentityProbeBinary(t, "shared@example.com")
-	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
-		t.Fatalf("reconcileExternalProviderAccount: %v", err)
-	}
+			binary := writeCodexIdentityProbeBinary(t, "shared@example.com")
+			if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+				t.Fatal(err)
+			}
+			if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+				t.Fatalf("reconcileExternalProviderAccount: %v", err)
+			}
 
-	accounts := app.providerAccounts.List(string(provider.Codex), time.Now())
-	if len(accounts) != 2 {
-		t.Fatalf("accounts = %+v, want 2", accounts)
-	}
-	active, ok := app.providerAccounts.Active(string(provider.Codex), time.Now())
-	if !ok || active.ID == "first" || active.OrgID != "ws-b" {
-		t.Fatalf("active = %+v, want a NEW account on ws-b", active)
-	}
-	first, ok := app.providerAccounts.Get(string(provider.Codex), "first", time.Now())
-	if !ok || first.OrgID != "ws-a" {
-		t.Fatalf("first = %+v, want backfilled OrgID ws-a", first)
-	}
-}
-
-// The same workspace re-observed lands back on its saved account (no
-// duplicate), and the observation enriches the legacy blank org.
-func TestExternalCodexSameWorkspaceRelandsOnSavedAccount(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	installIdentityTestAccount(
-		t,
-		app,
-		string(provider.Codex),
-		"first",
-		"shared@example.com",
-		[]byte(`{"tokens":{"access_token":"a","account_id":"ws-a"}}`),
-	)
-
-	activePath, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Codex))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A refreshed token for the same workspace: new bytes, same account_id.
-	if err := os.WriteFile(
-		activePath,
-		[]byte(`{"tokens":{"access_token":"a2","account_id":"ws-a"}}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	binary := writeCodexIdentityProbeBinary(t, "shared@example.com")
-	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex)); err != nil {
-		t.Fatalf("reconcileExternalProviderAccount: %v", err)
-	}
-
-	accounts := app.providerAccounts.List(string(provider.Codex), time.Now())
-	if len(accounts) != 1 {
-		t.Fatalf("accounts = %+v, want the one saved account", accounts)
-	}
-	if accounts[0].ID != "first" || accounts[0].OrgID != "ws-a" {
-		t.Fatalf("account = %+v, want first enriched with ws-a", accounts[0])
+			accounts := app.providerAccounts.List(string(provider.Codex), time.Now())
+			if len(accounts) != tc.wantAccounts {
+				t.Fatalf("accounts = %+v, want %d", accounts, tc.wantAccounts)
+			}
+			active, ok := app.providerAccounts.Active(string(provider.Codex), time.Now())
+			if !ok || (active.ID != "first") != tc.newAccount || active.OrgID != tc.workspace {
+				t.Fatalf("active = %+v, want the account on %s (new account %v)", active, tc.workspace, tc.newAccount)
+			}
+			first, ok := app.providerAccounts.Get(string(provider.Codex), "first", time.Now())
+			if !ok || first.OrgID != "ws-a" {
+				t.Fatalf("first = %+v, want backfilled OrgID ws-a", first)
+			}
+		})
 	}
 }
 

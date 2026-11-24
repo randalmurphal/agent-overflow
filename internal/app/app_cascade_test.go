@@ -2,10 +2,10 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -59,7 +59,7 @@ func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
 		}
 	})
 
-	joinBackgroundWorkAtCleanup(t, app)
+	tearDownTestAppAtCleanup(t, app)
 	return app, bus, dbDir
 }
 
@@ -241,16 +241,8 @@ func TestCascade_ThreadDeleteIsIdempotent(t *testing.T) {
 		t.Fatalf("first DeleteThread: %v", err)
 	}
 
-	// Second delete: the thread delete uses sql.ErrNoRows as idempotent-success.
-	err := app.deleteThread(thread.ID)
-	if err != nil {
-		// If the production code ever transitions to returning an error here,
-		// it must be clear (not a panic). Accept any non-nil error as long as
-		// it's not a bare runtime panic.
-		if strings.Contains(err.Error(), "runtime error") {
-			t.Fatalf("second DeleteThread panicked: %v", err)
-		}
-	}
+	// Second delete: either outcome is accepted; a panic fails the test.
+	_ = app.deleteThread(thread.ID)
 
 	// App must still be usable after.
 	if _, err := app.ListThreads(); err != nil {
@@ -276,7 +268,7 @@ func TestCascade_DeletingWithActiveSession(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("Update settings: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 

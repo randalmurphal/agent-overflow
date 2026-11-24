@@ -228,7 +228,7 @@ test('a reply left while its settled text still reveals is whole on return', asy
   await startMock(harness, threadId);
 
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'stream something', null);
+  await harness.send(threadId, 'stream something');
   await completed;
   const reply = timeline.getByTestId('assistant-message-body').filter({ hasText: token('text', 1).trim() });
   await expect(reply).toContainText(token('text', 20).trim());
@@ -260,7 +260,7 @@ for (const block of ['thinking', 'text'] as const) {
 
     const awayGate = waitForGate(harness, 'away');
     const completed = harness.waitForEvent('provider:turn_completed');
-    await harness.rpc('SendMessage', threadId, 'stream something', null);
+    await harness.send(threadId, 'stream something');
     await awayGate;
     const firstPart = block === 'thinking'
       ? timeline.getByTestId('thinking-body')

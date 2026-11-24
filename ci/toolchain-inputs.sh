@@ -17,9 +17,13 @@ fi
 pnpm_version=$(sed -n 's/.*"packageManager": *"pnpm@\([^+"]*\).*/\1/p' frontend/package.json)
 playwright_version=$(sed -n 's/.*"@playwright\/test": *"\([^"]*\)".*/\1/p' e2e/package.json)
 golangci_version=$(sed -n 's/^GOLANGCI_LINT_VERSION *:= *v\(.*\)$/\1/p' Makefile)
+# The image installs a browser set through scripts/playwright-browsers.sh
+# (ci/Dockerfile), so both files name the image.
+playwright_install=$(cat build/test-inputs.mk scripts/playwright-browsers.sh | sha256sum | cut -c1-16)
 
 for pair in "GO_VERSION=$go_version" "WAILS_VERSION=$wails_version" "PNPM_VERSION=$pnpm_version" \
-  "PLAYWRIGHT_VERSION=$playwright_version" "GOLANGCI_LINT_VERSION=$golangci_version"; do
+  "PLAYWRIGHT_VERSION=$playwright_version" "PLAYWRIGHT_INSTALL=$playwright_install" \
+  "GOLANGCI_LINT_VERSION=$golangci_version"; do
   if [[ "$pair" == *= ]]; then
     echo "toolchain-inputs: ${pair%=} is empty" >&2
     exit 1

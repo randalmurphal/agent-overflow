@@ -3,11 +3,11 @@
 // assistant follow the setting of the computer it lives on, and New
 // Assistant the computer it creates on, whatever this computer's says.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { makeSettings } from '../../test/helpers/settings';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { __resetEntityIndexForTest, noteProject, noteThread } from '../transport/entityIndex';
+import { noteProject, noteThread } from '../transport/entityIndex';
 import { assistantsOffNote, hiddenAssistantThread } from './assistants.svelte';
 import { closePreviousThreadsDialog, getPreviousThreads, openPreviousThreadsDialog } from './assistantPastThreads.svelte';
 import {
@@ -19,7 +19,7 @@ import {
   openNewAssistantDialog,
 } from './newAssistant.svelte';
 import { setSelectedBackend } from './selectedBackend.svelte';
-import { applySettingsSnapshot, resetSettingsForTest } from './settings.svelte';
+import { applySettingsSnapshot } from './settings.svelte';
 
 describe('assistants on each computer by its own setting', () => {
   beforeEach(() => {
@@ -38,9 +38,6 @@ describe('assistants on each computer by its own setting', () => {
     closeAssistantProjectsDialog();
     closePreviousThreadsDialog();
     setSelectedBackend(HOME_BACKEND);
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    resetSettingsForTest();
   });
 
   it('hides the threads of the computer with them off only', () => {

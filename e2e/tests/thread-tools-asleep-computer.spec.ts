@@ -71,8 +71,7 @@ test('a spawn on a computer that is off is refused at once and leaves nothing op
     );
 
     expect(await remote.stop()).toBe(true);
-    await home.rpc('StartSession', caller.threadIds[0]);
-    await home.rpc('SendMessage', caller.threadIds[0], 'start something over there', null);
+    await home.send(caller.threadIds[0], 'start something over there');
 
     const spawn = await awaitToolAnswer(home, { tool: 'thread_spawn', timeoutMs: 120_000 });
     expect(spawn.isError, spawn.text).toBe(true);

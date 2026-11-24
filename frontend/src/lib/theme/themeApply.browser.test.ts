@@ -19,7 +19,6 @@ import {
   deriveAccentForeground,
   enrichDeclarations,
   readWindowGroundHex,
-  resetThemeApplyForTest,
   stampBootTheme,
 } from './themeApply.svelte';
 import { parseTheme, type ThemeWarning } from './themeParse';
@@ -47,14 +46,12 @@ let priorClass = '';
 
 beforeEach(() => {
   priorClass = document.documentElement.className;
-  resetThemeApplyForTest();
   localStorage.removeItem(THEME_BOOT_STORAGE_KEY);
 });
 
 afterEach(() => {
   document.documentElement.className = priorClass;
   document.getElementById(USER_THEME_STYLE_ID)?.remove();
-  resetThemeApplyForTest();
   localStorage.removeItem(THEME_BOOT_STORAGE_KEY);
 });
 

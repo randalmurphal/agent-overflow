@@ -69,21 +69,19 @@ async function waitForUserMessage(
   threadId: string,
   match: (summary: string) => boolean,
 ): Promise<string> {
-  const deadline = Date.now() + 15_000;
   let seen: ThreadItem[] = [];
-  while (Date.now() < deadline) {
-    // A thread with no items yet answers `null`, not `[]`. Polling before the
-    // first item lands is the normal case here — the wake is delivered off the
-    // engine's command loop — so treat it as "nothing yet" and keep waiting
-    // rather than crashing on the first poll and losing the timeout entirely.
-    seen = (await harness.rpc<ThreadItem[] | null>('ListItems', threadId, true)) ?? [];
-    const wake = seen.find((item) => item.kind === 'user_text' && match(item.summary));
-    if (wake) return wake.summary;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(
-    `thread ${threadId} never received the expected user message: ${JSON.stringify(seen)}`,
-  );
+  let wake: ThreadItem | undefined;
+  // A thread with no items yet answers `null`, not `[]`. Polling before the
+  // first item lands is the normal case here (the wake is delivered off the
+  // engine's command loop), so it reads as "nothing yet".
+  await expect
+    .poll(async () => {
+      seen = (await harness.items<ThreadItem>(threadId, true)) ?? [];
+      wake = seen.find((item) => item.kind === 'user_text' && match(item.summary));
+      return wake !== undefined;
+    }, { timeout: 15_000, intervals: [100], message: `thread ${threadId} never received the expected user message` })
+    .toBe(true);
+  return wake!.summary;
 }
 
 // A workflow that declares an output, because a wake reports the run's declared
@@ -170,7 +168,7 @@ test('a bound run wakes its origin thread when it rests', async ({ harness, page
   // The wake is the workflow's report, not the person's: it renders as an
   // agent row naming the workflow (docs/specs/agent-thread-tools.md, "How
   // agent messages appear").
-  const items = (await harness.rpc<Array<ThreadItem & { meta?: string }>>('ListItems', thread.id, true)) ?? [];
+  const items = (await harness.items<ThreadItem & { meta?: string }>(thread.id, true)) ?? [];
   const wakeItem = items.find((entry) => entry.kind === 'user_text' && entry.summary === wake)!;
   expect(JSON.parse(wakeItem.meta ?? '{}')).toMatchObject({
     origin: 'agent-wake',

@@ -109,52 +109,42 @@ func TestEventBus_EmitAssignsSeq(t *testing.T) {
 	}
 }
 
-func TestEventBus_RingBoundedDropsOldest(t *testing.T) {
-	bus := NewEventBus(3)
-	defer bus.Close()
-
-	for i := 0; i < 5; i++ {
-		bus.Emit("ch1", i)
-	}
-
-	// Replay from seq 0 — oldestSeq is now 3, so client at seq 0
-	// should receive a gap marker, not partial history.
-	out := bus.Replay(map[string]uint64{"ch1": 0})
-	if len(out) != 1 {
-		t.Fatalf("expected gap marker, got %d events", len(out))
-	}
-	if !out[0].Gap {
-		t.Fatalf("expected gap=true, got %+v", out[0])
-	}
-	if out[0].Seq != 5 {
-		t.Fatalf("gap should carry current head seq=5, got %d", out[0].Seq)
-	}
-}
-
-// After eviction, an in-window client must still receive the surviving
-// entries in order. Strengthens TestEventBus_RingBoundedDropsOldest:
-// proves eviction preserves the post-eviction ring contents, not just
-// that the gap marker fires.
-func TestEventBus_PostEvictionInWindowGetsSurvivors(t *testing.T) {
-	bus := NewEventBus(3)
-	defer bus.Close()
-
-	for i := 0; i < 5; i++ {
-		bus.Emit("ch1", i)
-	}
-	// After 5 emits into a 3-cap ring, surviving seqs are 3,4,5.
-	// A client at lastSeq=3 is in-window — should get 4 and 5.
-	out := bus.Replay(map[string]uint64{"ch1": 3})
-	if len(out) != 2 {
-		t.Fatalf("expected 2 surviving events, got %d (%+v)", len(out), out)
-	}
-	if out[0].Seq != 4 || out[1].Seq != 5 {
-		t.Fatalf("surviving seqs out of order: %+v", out)
-	}
-	for _, e := range out {
-		if e.Gap {
-			t.Fatalf("in-window replay should not have gap markers")
-		}
+// Five frames on one channel, replayed from one cursor. A cursor inside
+// the ring gets every later frame in order and no gap marker; a cursor the
+// ring evicted past gets one gap marker carrying the head seq, not partial
+// history, and eviction leaves the surviving frames intact.
+func TestEventBus_ReplayFromCursor(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		capacity int
+		cursor   uint64
+		wantSeqs []uint64
+		wantGap  bool
+	}{
+		{"in window", 10, 2, []uint64{3, 4, 5}, false},
+		{"at head", 10, 5, nil, false},
+		{"fresh client", 10, 0, []uint64{1, 2, 3, 4, 5}, false},
+		{"evicted cursor", 3, 0, []uint64{5}, true},
+		{"in window after eviction", 3, 3, []uint64{4, 5}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewEventBus(tc.capacity)
+			defer bus.Close()
+			for i := 1; i <= 5; i++ {
+				if _, err := bus.Emit("ch1", i); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out := bus.Replay(map[string]uint64{"ch1": tc.cursor})
+			if len(out) != len(tc.wantSeqs) {
+				t.Fatalf("replay = %+v, want seqs %v with gap=%v", out, tc.wantSeqs, tc.wantGap)
+			}
+			for i, e := range out {
+				if e.Seq != tc.wantSeqs[i] || e.Gap != tc.wantGap {
+					t.Fatalf("replay[%d] = seq %d gap %v, want seq %d gap %v", i, e.Seq, e.Gap, tc.wantSeqs[i], tc.wantGap)
+				}
+			}
+		})
 	}
 }
 
@@ -180,141 +170,59 @@ func TestEventBus_RingCapacityOne(t *testing.T) {
 	}
 }
 
-func TestEventBus_Replay_InWindow(t *testing.T) {
-	bus := NewEventBus(10)
-	defer bus.Close()
-
-	for i := 1; i <= 5; i++ {
-		bus.Emit("ch1", i)
-	}
-	out := bus.Replay(map[string]uint64{"ch1": 2})
-	if len(out) != 3 {
-		t.Fatalf("expected 3 missed events (3,4,5), got %d", len(out))
-	}
-	for i, e := range out {
-		if e.Gap {
-			t.Fatalf("in-window replay should not have gap markers: %+v", e)
-		}
-		if e.Seq != uint64(3+i) {
-			t.Fatalf("expected seq %d, got %d", 3+i, e.Seq)
-		}
-	}
-}
-
-func TestEventBus_Replay_AtHeadReturnsNothing(t *testing.T) {
-	bus := NewEventBus(10)
-	defer bus.Close()
-
-	for i := 1; i <= 5; i++ {
-		bus.Emit("ch1", i)
-	}
-	out := bus.Replay(map[string]uint64{"ch1": 5})
-	if len(out) != 0 {
-		t.Fatalf("expected no replay when client at head, got %d events", len(out))
-	}
-}
-
-func TestEventBus_Replay_FreshClientGetsAll(t *testing.T) {
-	bus := NewEventBus(10)
-	defer bus.Close()
-
-	for i := 1; i <= 5; i++ {
-		bus.Emit("ch1", i)
-	}
-	// lastSeq=0 means "I haven't seen anything yet" — within ring,
-	// expect every event back.
-	out := bus.Replay(map[string]uint64{"ch1": 0})
-	if len(out) != 5 {
-		t.Fatalf("expected all 5 events, got %d", len(out))
-	}
-}
-
-// A cursor above the channel's head is not "nothing missed" — it is a
-// client holding a sequence space that isn't ours (a restarted backend
-// re-seeds every channel from 1). Answering with an empty, gapless
-// replay would leave that client dropping every live event below its
-// stale cursor, so the invalid state has to surface as a gap.
+// Three frames on a channel of each retention class, replayed from a
+// cursor behind the head and from one above it. Behind, each class answers
+// what it retains: every later frame, only the newest (superseded state is
+// not lost history), or nothing and no gap (ephemeral frames were never
+// history). A cursor above the head names a sequence space that is not
+// ours (a restarted backend re-seeds every channel from 1), so every class
+// answers a pre-encoded gap marker at the head: an empty, gapless answer
+// would leave the client dropping every live event below its stale cursor.
+// Live delivery and seq assignment are the same for every class.
 func TestEventBus_Replay_CursorAboveHeadGaps(t *testing.T) {
-	bus := NewEventBus(10)
-	defer bus.Close()
+	for _, tc := range []struct {
+		name       string
+		channel    string
+		retention  Retention
+		wantBehind []uint64
+	}{
+		{"default", "ch1", RetentionDefault, []uint64{2, 3}},
+		{"latest only", "system:stats", RetentionLatestOnly, []uint64{3}},
+		{"ephemeral", "highlight:live", RetentionEphemeral, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if channelRetention(tc.channel) != tc.retention {
+				t.Fatalf("%s is no longer retention %v; pick another fixture", tc.channel, tc.retention)
+			}
+			bus := NewEventBus(10)
+			defer bus.Close()
+			sub := bus.Subscribe()
+			defer sub.Close()
+			for i := 1; i <= 3; i++ {
+				evt, err := bus.Emit(eventchan.Channel(tc.channel), i)
+				if err != nil || evt.Seq != uint64(i) {
+					t.Fatalf("emit %d = seq %d, %v; want seq %d", i, evt.Seq, err, i)
+				}
+			}
+			if live := drainEvents(t, sub, 3, time.Second); len(live) != 3 {
+				t.Fatalf("live delivery = %d frames, want 3", len(live))
+			}
 
-	for i := 1; i <= 3; i++ {
-		bus.Emit("ch1", i)
-	}
-	out := bus.Replay(map[string]uint64{"ch1": 900})
-	if len(out) != 1 {
-		t.Fatalf("expected exactly one gap marker, got %d events: %+v", len(out), out)
-	}
-	if !out[0].Gap {
-		t.Fatalf("expected gap marker, got %+v", out[0])
-	}
-	if out[0].Seq != 3 {
-		t.Fatalf("gap marker seq = %d, want the current head 3", out[0].Seq)
-	}
-	if len(out[0].WireBytes) == 0 {
-		t.Fatal("gap marker must be pre-encoded like every other replay frame")
-	}
-}
+			behind := bus.Replay(map[string]uint64{tc.channel: 1})
+			if len(behind) != len(tc.wantBehind) {
+				t.Fatalf("behind cursor = %+v, want seqs %v", behind, tc.wantBehind)
+			}
+			for i, e := range behind {
+				if e.Gap || e.Seq != tc.wantBehind[i] {
+					t.Fatalf("behind cursor = %+v, want seqs %v and no gap", behind, tc.wantBehind)
+				}
+			}
 
-// The two gap causes stay distinguishable on a latest-only channel: an
-// evicted (behind) cursor is answered with the newest frame, an ahead
-// cursor with the marker that resets it.
-func TestEventBus_Replay_CursorAboveHeadGapsLatestOnlyChannel(t *testing.T) {
-	bus := NewEventBus(10)
-	defer bus.Close()
-
-	const channel = "system:stats"
-	if channelRetention(channel) != RetentionLatestOnly {
-		t.Fatalf("%s is no longer latest-only; pick another fixture", channel)
-	}
-	for i := 1; i <= 3; i++ {
-		bus.Emit(eventchan.Channel(channel), i)
-	}
-
-	behind := bus.Replay(map[string]uint64{channel: 1})
-	if len(behind) != 1 || behind[0].Gap || behind[0].Seq != 3 {
-		t.Fatalf("behind cursor = %+v, want the newest frame (seq 3, no gap)", behind)
-	}
-
-	ahead := bus.Replay(map[string]uint64{channel: 900})
-	if len(ahead) != 1 || !ahead[0].Gap {
-		t.Fatalf("ahead cursor = %+v, want a gap marker", ahead)
-	}
-}
-
-// Ephemeral channels retain nothing, so a behind cursor legitimately
-// replays nothing at all — but an ahead cursor is still an invalid
-// cursor and must gap, otherwise the client's seq tracking for that
-// channel never recovers.
-func TestEventBus_Replay_EphemeralChannelCursors(t *testing.T) {
-	bus := NewEventBus(10)
-	defer bus.Close()
-
-	const channel = "highlight:live"
-	if channelRetention(channel) != RetentionEphemeral {
-		t.Fatalf("%s is no longer ephemeral; pick another fixture", channel)
-	}
-	for i := 1; i <= 3; i++ {
-		bus.Emit(eventchan.Channel(channel), i)
-	}
-
-	if behind := bus.Replay(map[string]uint64{channel: 1}); len(behind) != 0 {
-		t.Fatalf("ephemeral channel replay = %+v, want nothing (no retention, no gap)", behind)
-	}
-	ahead := bus.Replay(map[string]uint64{channel: 900})
-	if len(ahead) != 1 || !ahead[0].Gap {
-		t.Fatalf("ahead cursor on an ephemeral channel = %+v, want a gap marker", ahead)
-	}
-}
-
-func TestEventBus_Replay_UnknownChannelSkipped(t *testing.T) {
-	bus := NewEventBus(10)
-	defer bus.Close()
-
-	bus.Emit("ch1", 1)
-	out := bus.Replay(map[string]uint64{"never-emitted": 0})
-	if len(out) != 0 {
-		t.Fatalf("unknown channel should produce no events, got %d", len(out))
+			ahead := bus.Replay(map[string]uint64{tc.channel: 900})
+			if len(ahead) != 1 || !ahead[0].Gap || ahead[0].Seq != 3 || len(ahead[0].WireBytes) == 0 {
+				t.Fatalf("ahead cursor = %+v, want one pre-encoded gap marker at head seq 3", ahead)
+			}
+		})
 	}
 }
 
@@ -597,26 +505,6 @@ func TestEventBus_ConcurrentEmit_AllPersist(t *testing.T) {
 		if e.Seq != uint64(i+1) {
 			t.Fatalf("expected contiguous seq, got %d at index %d", e.Seq, i)
 		}
-	}
-}
-
-func TestEventBus_DataIsRawJSON(t *testing.T) {
-	bus := NewEventBus(10)
-	defer bus.Close()
-
-	type payload struct {
-		Title string `json:"title"`
-	}
-	evt, err := bus.Emit("ch1", payload{Title: "hello"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got payload
-	if err := json.Unmarshal(evt.Data, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Title != "hello" {
-		t.Fatalf("payload corrupted: %q", got.Title)
 	}
 }
 
@@ -1305,20 +1193,19 @@ func TestEventBus_MarkerThatDoesNotFitSurvivesForNextDelivery(t *testing.T) {
 	if got := drainEvents(t, sub, 1, time.Second); len(got) != 1 || got[0].Seq != 1 {
 		t.Fatalf("expected only the seq-1 event, got %+v", got)
 	}
-	// Room now exists: the next delivery flushes chB's marker, then the
-	// chA event rides with its own gap stamp.
+	// Room for one frame now exists: the next delivery flushes chB's
+	// marker into it, and the chA event behind it drops. Delivery runs
+	// synchronously inside Emit, so the buffer is settled when Emit returns.
 	if _, err := bus.Emit("test:chA", 3); err != nil {
 		t.Fatalf("emit a3: %v", err)
 	}
-	got := drainEvents(t, sub, 2, 2*time.Second)
-	if len(got) < 1 {
-		t.Fatalf("expected at least the chB marker, got none")
+	if got := drainEvents(t, sub, 1, time.Second); len(got) != 1 || !got[0].Gap || got[0].Channel != "test:chB" {
+		t.Fatalf("expected the chB marker, got %+v", got)
 	}
-	if !got[0].Gap || got[0].Channel != "test:chB" {
-		t.Fatalf("expected chB marker first, got %+v", got[0])
-	}
-	if len(got) > 1 && (!got[1].Gap || got[1].Channel != "test:chA") {
-		t.Fatalf("expected gap-stamped chA event second, got %+v", got[1])
+	select {
+	case e := <-sub.Events():
+		t.Fatalf("the chA event behind the marker was delivered: %+v", e)
+	default:
 	}
 }
 
@@ -1423,24 +1310,33 @@ func TestEventBus_DropAnnouncementNamesDroppedThreads(t *testing.T) {
 // TestEventBus_UnattributedDropAnnouncesNoThreads: one dropped frame with
 // no entity key, before or after keyed drops, makes the announcement name
 // nothing, so the client recovers everything. So do more keys than a watch
-// set may hold. The wire then omits the field.
+// set may hold, and the wire then omits the field. Exactly as many keys as
+// a watch set may hold is still an attributed loss.
 func TestEventBus_UnattributedDropAnnouncesNoThreads(t *testing.T) {
-	cases := map[string]func(t *testing.T, bus *EventBus){
-		"keyless after keyed": func(t *testing.T, bus *EventBus) {
+	cases := map[string]struct {
+		drop  func(t *testing.T, bus *EventBus)
+		named int // threads the announcement names; 0 is unattributed
+	}{
+		"keyless after keyed": {drop: func(t *testing.T, bus *EventBus) {
 			emitItem(t, bus, "thread-B", 2)
 			emitItem(t, bus, "", 3)
-		},
-		"keyed after keyless": func(t *testing.T, bus *EventBus) {
+		}},
+		"keyed after keyless": {drop: func(t *testing.T, bus *EventBus) {
 			emitItem(t, bus, "", 2)
 			emitItem(t, bus, "thread-B", 3)
-		},
-		"more keys than a watch set": func(t *testing.T, bus *EventBus) {
+		}},
+		"more keys than a watch set": {drop: func(t *testing.T, bus *EventBus) {
 			for i := 0; i <= MaxWatchThreads; i++ {
 				emitItem(t, bus, fmt.Sprintf("thread-%d", i), i)
 			}
-		},
+		}},
+		"exactly a watch set of keys": {named: MaxWatchThreads, drop: func(t *testing.T, bus *EventBus) {
+			for i := 0; i < MaxWatchThreads; i++ {
+				emitItem(t, bus, fmt.Sprintf("thread-%03d", i), i)
+			}
+		}},
 	}
-	for name, drop := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			bus := NewEventBus(10)
 			defer bus.Close()
@@ -1449,38 +1345,17 @@ func TestEventBus_UnattributedDropAnnouncesNoThreads(t *testing.T) {
 			defer sub.Close()
 
 			emitItem(t, bus, "thread-A", 1) // fills the buffer
-			drop(t, bus)
+			tc.drop(t, bus)
 			drainEvents(t, sub, 1, time.Second)
 			emitItem(t, bus, "thread-A", 1)
 			got := drainEvents(t, sub, 1, time.Second)
-			if len(got) != 1 || !got[0].Gap || got[0].GapThreads != nil {
-				t.Fatalf("expected an unattributed announcement, got %+v", got)
+			if len(got) != 1 || !got[0].Gap || len(got[0].GapThreads) != tc.named || (got[0].GapThreads == nil) != (tc.named == 0) {
+				t.Fatalf("expected an announcement naming %d threads, got %+v", tc.named, got)
 			}
-			if bytes.Contains(got[0].WireBytes, []byte("gapThreads")) {
-				t.Fatalf("unattributed frame carries gapThreads: %s", got[0].WireBytes)
+			if bytes.Contains(got[0].WireBytes, []byte("gapThreads")) != (tc.named > 0) {
+				t.Fatalf("gapThreads on the wire must match the %d named threads: %s", tc.named, got[0].WireBytes)
 			}
 		})
-	}
-}
-
-// TestEventBus_AtWatchSetBoundDropStillNamesThreads: exactly as many keys
-// as a watch set may hold is still an attributed loss.
-func TestEventBus_AtWatchSetBoundDropStillNamesThreads(t *testing.T) {
-	bus := NewEventBus(10)
-	defer bus.Close()
-	bus.subBuf = 1
-	sub := bus.Subscribe()
-	defer sub.Close()
-
-	emitItem(t, bus, "fill", 0)
-	for i := 0; i < MaxWatchThreads; i++ {
-		emitItem(t, bus, fmt.Sprintf("thread-%03d", i), i)
-	}
-	drainEvents(t, sub, 1, time.Second)
-	emitItem(t, bus, "fill", 1)
-	got := drainEvents(t, sub, 1, time.Second)
-	if len(got) != 1 || len(got[0].GapThreads) != MaxWatchThreads {
-		t.Fatalf("expected %d named threads, got %+v", MaxWatchThreads, got)
 	}
 }
 

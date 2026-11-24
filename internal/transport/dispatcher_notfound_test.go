@@ -16,23 +16,21 @@ func (a *missingRowApp) Read() (string, error) {
 	return "", sql.ErrNoRows
 }
 
-func TestDispatcherMissingRowsRemainApplicationStateOnEveryOrigin(t *testing.T) {
+func TestDispatcherMissingRowsRemainApplicationState(t *testing.T) {
 	for _, wrapped := range []bool{false, true} {
-		for _, local := range []bool{false, true} {
-			t.Run(fmt.Sprintf("wrapped=%v/local=%v", wrapped, local), func(t *testing.T) {
-				dispatcher := NewDispatcher()
-				if _, err := dispatcher.Register(&missingRowApp{wrapped: wrapped}, RegisterOptions{}); err != nil {
-					t.Fatal(err)
-				}
-				method, failure := resolveLoopback(dispatcher, 0, "Read")
-				if failure != nil {
-					t.Fatal(failure)
-				}
-				_, failure = dispatcher.Invoke(context.Background(), method, nil)
-				if failure == nil || failure.Code != ErrCodeNotFound || failure.Message != "The requested item no longer exists." {
-					t.Fatalf("missing-row verdict: %+v", failure)
-				}
-			})
-		}
+		t.Run(fmt.Sprintf("wrapped=%v", wrapped), func(t *testing.T) {
+			dispatcher := NewDispatcher()
+			if _, err := dispatcher.Register(&missingRowApp{wrapped: wrapped}, RegisterOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			method, failure := resolveLoopback(dispatcher, 0, "Read")
+			if failure != nil {
+				t.Fatal(failure)
+			}
+			_, failure = dispatcher.Invoke(context.Background(), method, nil)
+			if failure == nil || failure.Code != ErrCodeNotFound || failure.Message != "The requested item no longer exists." {
+				t.Fatalf("missing-row verdict: %+v", failure)
+			}
+		})
 	}
 }

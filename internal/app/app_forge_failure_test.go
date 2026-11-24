@@ -321,33 +321,6 @@ func TestPRUpdateRefusedReadCarriesItsSentence(t *testing.T) {
 	}
 }
 
-// A re-sent follow revalidates the cached log with the ETag the last
-// download returned: the forge's 304 keeps the version and sends no frame.
-func TestPRCILogFollowRevalidatesWithItsETag(t *testing.T) {
-	t.Parallel()
-	f := newPRCIFixture(t, true)
-	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
-	f.setLog("7", "done\n", nil)
-	sub := f.subscribe(t)
-	awaitSettledCIEvent(t, f, "pipeline frame")
-	if _, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"}); err != nil {
-		t.Fatalf("SetPRCILogFollows: %v", err)
-	}
-	awaitLogEvent(t, f.logEvents, "first log frame")
-	again, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
-	if err != nil {
-		t.Fatalf("re-follow: %v", err)
-	}
-	if state := again.Logs["7"]; state.Version != 1 || state.TotalLines != 1 || !state.Available || state.Error != "" {
-		t.Fatalf("re-follow state = %+v, want the held version", state)
-	}
-	requests := f.requests()
-	if len(requests) != 2 || requests[0].ETag != "" || requests[1].ETag != strconv.Quote("done\n") {
-		t.Fatalf("log requests %+v, want none then the first answer's ETag", requests)
-	}
-	expectNoLogEvent(t, f.logEvents, "a 304 re-fetch")
-}
-
 // isolatedForgeCore builds the App's git core over an isolated transport
 // pointed at handler.
 func isolatedForgeCore(t *testing.T, app *App, handler http.Handler) {

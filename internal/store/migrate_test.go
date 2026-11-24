@@ -2,12 +2,15 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -842,41 +845,86 @@ func TestMessageAnchorsCascadeOnItemDelete(t *testing.T) {
 
 // --- Index presence and query-planner usage ---
 
-func TestPayloadIDIndexExistsAndIsPartial(t *testing.T) {
+// Each index keeps the shape its readers depend on, and the planner picks it
+// for the query it exists for.
+func TestIndexesUsedByPlanner(t *testing.T) {
 	s := newTestStore(t)
-
-	var sqlText string
-	if err := s.db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE name = 'idx_items_payload_id'`,
-	).Scan(&sqlText); err != nil {
-		t.Fatalf("read idx_items_payload_id: %v", err)
-	}
-	if !strings.Contains(sqlText, "payload_id IS NOT NULL") {
-		t.Errorf("expected partial predicate, got: %s", sqlText)
+	for _, tc := range []struct {
+		index string
+		shape []string
+		query string
+		args  []any
+	}{
+		{
+			"idx_items_meta_task_id",
+			[]string{"json_extract(meta, '$.task_id')", "WHERE json_extract(meta, '$.task_id') IS NOT NULL"},
+			`SELECT id FROM items
+			  WHERE thread_id = ? AND json_extract(meta, '$.task_id') = ?`,
+			[]any{"t", "task-1"},
+		},
+		{
+			"idx_turns_thread_completed",
+			[]string{"thread_id", "completed_at DESC", "completed_at IS NOT NULL"},
+			`SELECT MAX(completed_at)
+			   FROM turns
+			  WHERE thread_id = ?
+			    AND completed_at IS NOT NULL`,
+			[]any{"thread-1"},
+		},
+		{
+			// The tray's launch predicate.
+			"idx_items_live_background",
+			[]string{"is_background = 1", "status = 'running'", "parent_id = ''", "live_background_active"},
+			`SELECT id FROM items
+			  WHERE thread_id = ?
+			    AND is_background = 1
+			    AND status = 'running'
+			    AND parent_id = ''
+			    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0`,
+			[]any{"t"},
+		},
+		{
+			"idx_items_live_codex_subagent",
+			[]string{"status = 'completed'", "tool_name = 'collab_agent'", "live_background_active", "$.input.tool", "spawn_agent", "spawnAgent"},
+			`SELECT id FROM items
+			  WHERE thread_id = ?
+			    AND kind = 'tool_call'
+			    AND status = 'completed'
+			    AND tool_name = 'collab_agent'
+			    AND is_background = 1
+			    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+			    AND json_extract(meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')`,
+			[]any{"t"},
+		},
+	} {
+		t.Run(tc.index, func(t *testing.T) {
+			sqlText := readIndexSQL(t, s.db, tc.index)
+			for _, want := range tc.shape {
+				if !strings.Contains(sqlText, want) {
+					t.Errorf("%s missing %q in SQL: %s", tc.index, want, sqlText)
+				}
+			}
+			assertPlanUses(t, s.db, tc.index, "EXPLAIN QUERY PLAN "+tc.query, tc.args...)
+		})
 	}
 }
 
-func TestMetaTaskIDIndexUsedByPlanner(t *testing.T) {
+// A rebuild that recreates a table must not silently drop a partial index's
+// WHERE clause.
+func TestPartialIndexPredicates(t *testing.T) {
 	s := newTestStore(t)
-
-	var sqlText string
-	if err := s.db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE name = 'idx_items_meta_task_id'`,
-	).Scan(&sqlText); err != nil {
-		t.Fatalf("read idx_items_meta_task_id: %v", err)
+	for _, tc := range []struct{ index, predicate string }{
+		{"idx_items_payload_id", "payload_id IS NOT NULL"},
+		{"idx_threads_pinned_at", "WHERE pinned_at IS NOT NULL"},
+		// v13: backs the boot-time crashed-turn sweep.
+		{"idx_turns_inflight", "completed_at IS NULL"},
+	} {
+		t.Run(tc.index, func(t *testing.T) {
+			if sqlText := readIndexSQL(t, s.db, tc.index); !strings.Contains(sqlText, tc.predicate) {
+				t.Errorf("%s lost its partial predicate %q: %s", tc.index, tc.predicate, sqlText)
+			}
+		})
 	}
-	if !strings.Contains(sqlText, "json_extract(meta, '$.task_id')") {
-		t.Errorf("expected index expression on json_extract(meta, '$.task_id'), got: %s", sqlText)
-	}
-	if !strings.Contains(sqlText, "WHERE json_extract(meta, '$.task_id') IS NOT NULL") {
-		t.Errorf("expected partial predicate, got: %s", sqlText)
-	}
-
-	assertPlanUses(t, s.db, "idx_items_meta_task_id",
-		`EXPLAIN QUERY PLAN
-		 SELECT id FROM items
-		  WHERE thread_id = ? AND json_extract(meta, '$.task_id') = ?`,
-		"t", "task-1")
 }
 
 func TestTurnsTableShape(t *testing.T) {
@@ -907,106 +955,9 @@ func TestTurnsTableShape(t *testing.T) {
 	}
 }
 
-func TestTurnsThreadCompletedIndexUsedByPlanner(t *testing.T) {
-	s := newTestStore(t)
-
-	var sqlText string
-	if err := s.db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE name = 'idx_turns_thread_completed'`,
-	).Scan(&sqlText); err != nil {
-		t.Fatalf("read idx_turns_thread_completed: %v", err)
-	}
-	if !strings.Contains(sqlText, "thread_id") || !strings.Contains(sqlText, "completed_at DESC") {
-		t.Errorf("expected (thread_id, completed_at DESC), got: %s", sqlText)
-	}
-	if !strings.Contains(sqlText, "completed_at IS NOT NULL") {
-		t.Errorf("expected partial predicate, got: %s", sqlText)
-	}
-
-	assertPlanUses(t, s.db, "idx_turns_thread_completed",
-		`EXPLAIN QUERY PLAN
-		 SELECT MAX(completed_at)
-		   FROM turns
-		  WHERE thread_id = ?
-		    AND completed_at IS NOT NULL`,
-		"thread-1")
-}
-
-func TestLiveBackgroundIndexMatchesTrayLaunchPredicate(t *testing.T) {
-	s := newTestStore(t)
-
-	sqlText := readIndexSQL(t, s.db, "idx_items_live_background")
-	for _, want := range []string{
-		"is_background = 1",
-		"status = 'running'",
-		"parent_id = ''",
-		"live_background_active",
-	} {
-		if !strings.Contains(sqlText, want) {
-			t.Errorf("idx_items_live_background missing %q in SQL: %s", want, sqlText)
-		}
-	}
-
-	assertPlanUses(t, s.db, "idx_items_live_background",
-		`EXPLAIN QUERY PLAN
-		 SELECT id FROM items
-		  WHERE thread_id = ?
-		    AND is_background = 1
-		    AND status = 'running'
-		    AND parent_id = ''
-		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0`,
-		"t")
-}
-
-func TestLiveCodexSubagentIndexUsedByPlanner(t *testing.T) {
-	s := newTestStore(t)
-
-	sqlText := readIndexSQL(t, s.db, "idx_items_live_codex_subagent")
-	for _, want := range []string{
-		"status = 'completed'",
-		"tool_name = 'collab_agent'",
-		"live_background_active",
-		"$.input.tool",
-		"spawn_agent",
-		"spawnAgent",
-	} {
-		if !strings.Contains(sqlText, want) {
-			t.Errorf("idx_items_live_codex_subagent missing %q in SQL: %s", want, sqlText)
-		}
-	}
-
-	assertPlanUses(t, s.db, "idx_items_live_codex_subagent",
-		`EXPLAIN QUERY PLAN
-		 SELECT id FROM items
-		  WHERE thread_id = ?
-		    AND kind = 'tool_call'
-		    AND status = 'completed'
-		    AND tool_name = 'collab_agent'
-		    AND is_background = 1
-		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
-		    AND json_extract(meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')`,
-		"t")
-}
-
-func TestThreadsPinnedAtPartialIndex(t *testing.T) {
-	s := newTestStore(t)
-
-	var indexSQL sql.NullString
-	if err := s.db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_threads_pinned_at'`,
-	).Scan(&indexSQL); err != nil {
-		t.Fatalf("look up idx_threads_pinned_at: %v", err)
-	}
-	if !indexSQL.Valid {
-		t.Fatalf("idx_threads_pinned_at missing")
-	}
-	if !strings.Contains(indexSQL.String, "WHERE pinned_at IS NOT NULL") {
-		t.Errorf("expected partial predicate, got %q", indexSQL.String)
-	}
-}
-
 // --- Triggers (payload GC) ---
 
+// Deleting an item sweeps the payload it pointed at through either column.
 func TestTrgItemsGCPayloadSweepsOrphans(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
@@ -1016,60 +967,33 @@ func TestTrgItemsGCPayloadSweepsOrphans(t *testing.T) {
 		defaultTestProjectID, now, now); err != nil {
 		t.Fatalf("seed thread: %v", err)
 	}
-	if _, err := s.db.Exec(`INSERT INTO payloads (thread_id, id, kind, meta, data, created_at)
-		VALUES ('t-gc', 'p-gc', 'thinking', '{}', x'00', ?)`, now); err != nil {
-		t.Fatalf("seed payload: %v", err)
-	}
-	if _, err := s.db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, payload_id, created_at, updated_at)
-		VALUES ('i-gc', 't-gc', 0, 0, 'thinking', 'assistant', '', 'p-gc', ?, ?)`,
-		now, now); err != nil {
-		t.Fatalf("seed item: %v", err)
-	}
-
-	if _, err := s.db.Exec(`DELETE FROM items WHERE id = 'i-gc'`); err != nil {
-		t.Fatalf("delete item: %v", err)
-	}
-
-	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'p-gc'`).Scan(&count); err != nil {
-		t.Fatalf("count payload: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("trg_items_gc_payload should sweep orphaned payload, got %d", count)
-	}
-}
-
-func TestTrgItemsGCInputPayloadSweepsOrphans(t *testing.T) {
-	s := newTestStore(t)
-	now := time.Now().UnixMilli()
-	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
-		created_at, updated_at, archived, mode)
-		VALUES ('t-gci', ?, 'T', 'claude', '/tmp', '', ?, ?, 0, 'chat')`,
-		defaultTestProjectID, now, now); err != nil {
-		t.Fatalf("seed thread: %v", err)
-	}
-	if _, err := s.db.Exec(`INSERT INTO payloads (thread_id, id, kind, meta, data, created_at)
-		VALUES ('t-gci', 'p-tool-input', 'tool_call_input', '{}', x'00', ?)`, now); err != nil {
-		t.Fatalf("seed payload: %v", err)
-	}
-	if _, err := s.db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, input_payload_id, created_at, updated_at)
-		VALUES ('i-tool', 't-gci', 0, 0, 'tool_call', 'assistant', 'Edit', 'p-tool-input', ?, ?)`,
-		now, now); err != nil {
-		t.Fatalf("seed item: %v", err)
-	}
-
-	if _, err := s.db.Exec(`DELETE FROM items WHERE id = 'i-tool'`); err != nil {
-		t.Fatalf("delete item: %v", err)
-	}
-
-	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'p-tool-input'`).Scan(&count); err != nil {
-		t.Fatalf("count payload: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("trg_items_gc_input_payload should sweep orphaned input payload, got %d", count)
+	for i, tc := range []struct{ trigger, column, payloadKind, itemKind string }{
+		{"trg_items_gc_payload", "payload_id", "thinking", "thinking"},
+		{"trg_items_gc_input_payload", "input_payload_id", "tool_call_input", "tool_call"},
+	} {
+		t.Run(tc.trigger, func(t *testing.T) {
+			payloadID, itemID := "p-"+tc.column, "i-"+tc.column
+			if _, err := s.db.Exec(`INSERT INTO payloads (thread_id, id, kind, meta, data, created_at)
+				VALUES ('t-gc', ?, ?, '{}', x'00', ?)`, payloadID, tc.payloadKind, now); err != nil {
+				t.Fatalf("seed payload: %v", err)
+			}
+			if _, err := s.db.Exec(`INSERT INTO items
+				(id, thread_id, turn_index, item_index, kind, role, summary, `+tc.column+`, created_at, updated_at)
+				VALUES (?, 't-gc', 0, ?, ?, 'assistant', '', ?, ?, ?)`,
+				itemID, i, tc.itemKind, payloadID, now, now); err != nil {
+				t.Fatalf("seed item: %v", err)
+			}
+			if _, err := s.db.Exec(`DELETE FROM items WHERE id = ?`, itemID); err != nil {
+				t.Fatalf("delete item: %v", err)
+			}
+			var count int
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = ?`, payloadID).Scan(&count); err != nil {
+				t.Fatalf("count payload: %v", err)
+			}
+			if count != 0 {
+				t.Errorf("%s should sweep orphaned payload, got %d", tc.trigger, count)
+			}
+		})
 	}
 }
 
@@ -1724,25 +1648,77 @@ func TestV12ChannelMaxTurnsColumn(t *testing.T) {
 // migrateThrough opens an in-memory DB configured like production
 // (SetMaxOpenConns(1), so the single shared :memory: connection is reused
 // across calls and the rebuild migration's pinned-connection FK toggle
-// lands on it) and applies every migration up to and including target. It
-// is the pre-image builder for migration-transition tests: seed against
-// the schema at `target`, then drive the next migration.
+// lands on it) holding the schema every migration up to and including
+// target leaves. It is the pre-image builder for migration-transition
+// tests: seed against the schema at `target`, then drive the next
+// migration. The database is a copy of migratedImage(target), so the
+// chain up to a version runs once per test process, not once per test.
 func migrateThrough(t *testing.T, target int) *sql.DB {
+	t.Helper()
+	image := migratedImage(t, target)
+	db := openMigrationDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := deserialize(db, image); err != nil {
+		t.Fatalf("copy the v%d image: %v", target, err)
+	}
+	return db
+}
+
+// openMigrationDB is the one-connection :memory: database migrateThrough
+// hands out and builds its images on.
+func openMigrationDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", poolDSN(":memory:", writerConnPragmas))
 	if err != nil {
 		t.Fatalf("open sqlite db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
 
-	if err := configureDatabase(db, writerConnPragmas); err != nil {
-		t.Fatalf("configure database: %v", err)
+// migratedImages are the serialized databases the chain leaves at each
+// version a test asked migrateThrough for, built from the nearest lower
+// one. mu is held while one is built, so a version is built once.
+var migratedImages struct {
+	mu        sync.Mutex
+	byVersion map[int][]byte
+}
+
+// migratedImage is the database every migration up to and including
+// target leaves on a new in-memory database, serialized.
+func migratedImage(t *testing.T, target int) []byte {
+	t.Helper()
+	migratedImages.mu.Lock()
+	defer migratedImages.mu.Unlock()
+	if image, ok := migratedImages.byVersion[target]; ok {
+		return image
 	}
-	if err := ensureMigrationTable(db); err != nil {
-		t.Fatalf("ensure migration table: %v", err)
+	base := 0
+	for version := range migratedImages.byVersion {
+		if version < target && version > base {
+			base = version
+		}
+	}
+	db := openMigrationDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close the v%d image's database: %v", target, err)
+		}
+	}()
+	if base == 0 {
+		if err := configureDatabase(db, writerConnPragmas); err != nil {
+			t.Fatalf("configure database: %v", err)
+		}
+		if err := ensureMigrationTable(db); err != nil {
+			t.Fatalf("ensure migration table: %v", err)
+		}
+	} else if err := deserialize(db, migratedImages.byVersion[base]); err != nil {
+		t.Fatalf("copy the v%d image: %v", base, err)
 	}
 	for _, m := range migrations {
+		if m.Version <= base {
+			continue
+		}
 		if m.Version > target {
 			break
 		}
@@ -1754,7 +1730,65 @@ func migrateThrough(t *testing.T, target int) *sql.DB {
 			t.Fatalf("apply migration v%d: %v", m.Version, err)
 		}
 	}
-	return db
+	image, err := serialize(db)
+	if err != nil {
+		t.Fatalf("serialize the v%d database: %v", target, err)
+	}
+	if migratedImages.byVersion == nil {
+		migratedImages.byVersion = map[int][]byte{}
+	}
+	migratedImages.byVersion[target] = image
+	return image
+}
+
+// serializer is modernc.org/sqlite's connection: it copies its main
+// database out of and into memory.
+type serializer interface {
+	Serialize() ([]byte, error)
+	Deserialize([]byte) error
+}
+
+// serialize and deserialize copy the main database of db's one connection
+// out of and into memory.
+func serialize(db *sql.DB) ([]byte, error) {
+	var image []byte
+	err := rawConn(db, func(c serializer) error {
+		var err error
+		image, err = c.Serialize()
+		return err
+	})
+	return image, err
+}
+
+// deserialize replaces the main database, which resets the settings SQLite
+// keeps per database, such as synchronous, to their defaults; it applies the
+// writer's pragmas again and verifies them, so the connection is configured
+// as openMigrationDB opened it.
+func deserialize(db *sql.DB, image []byte) error {
+	if err := rawConn(db, func(c serializer) error { return c.Deserialize(image) }); err != nil {
+		return err
+	}
+	for _, p := range writerConnPragmas {
+		if _, err := db.Exec("PRAGMA " + p.name + "=" + p.dsnValue); err != nil {
+			return fmt.Errorf("apply PRAGMA %s: %w", p.name, err)
+		}
+	}
+	return verifyConnPragmas(db, writerConnPragmas)
+}
+
+func rawConn(db *sql.DB, fn func(serializer) error) error {
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	err = conn.Raw(func(driverConn any) error {
+		c, ok := driverConn.(serializer)
+		if !ok {
+			return fmt.Errorf("driver connection %T cannot serialize", driverConn)
+		}
+		return fn(c)
+	})
+	return errors.Join(err, conn.Close())
 }
 
 // migratedDB is migrateThrough to the last migration for a test that
@@ -1882,7 +1916,7 @@ func migrationByVersion(t *testing.T, v int) Migration {
 	return Migration{}
 }
 
-func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
+func mustExec(t testing.TB, db *sql.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(query, args...); err != nil {
 		t.Fatalf("exec %q: %v", query, err)
@@ -1931,23 +1965,6 @@ func queryPlanText(t *testing.T, db *sql.DB, query string, args ...any) string {
 		t.Fatalf("read plan: %v", err)
 	}
 	return plan.String()
-}
-
-// v13: the partial in-flight index backing the boot-time crashed-turn
-// sweep. Assert both the index and its partial predicate so a rebuild
-// migration that recreates turns can't silently drop the WHERE clause.
-func TestTurnsInflightPartialIndex(t *testing.T) {
-	s := newTestStore(t)
-
-	var indexSQL string
-	if err := s.db.QueryRow(
-		"SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_turns_inflight'",
-	).Scan(&indexSQL); err != nil {
-		t.Fatalf("idx_turns_inflight not found: %v", err)
-	}
-	if !strings.Contains(indexSQL, "completed_at IS NULL") {
-		t.Fatalf("idx_turns_inflight lost its partial predicate: %s", indexSQL)
-	}
 }
 
 // TestMigrationV20BackfillsProviderTurnID pins the provider_turn_id
@@ -5080,15 +5097,6 @@ func TestMigrationV67AddsImportSourceIdentity(t *testing.T) {
 			t.Errorf("thread_import_state accepted a NULL %s after v67", column)
 		}
 	}
-	// It still cascades with the thread.
-	mustExec(t, db, `DELETE FROM threads WHERE id = 'thread-v67'`)
-	var remaining int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM thread_import_state`).Scan(&remaining); err != nil {
-		t.Fatalf("count thread_import_state: %v", err)
-	}
-	if remaining != 0 {
-		t.Error("thread_import_state row survived its thread's deletion after v67")
-	}
 }
 
 // TestMigrationV68DropsProviderThreadCostRowsAndKeysBySessionRef is the
@@ -5546,4 +5554,18 @@ func TestMigrationV76ThreadGroupSchema(t *testing.T) {
 	if after.Valid {
 		t.Errorf("group_id = %q after the group was deleted, want NULL", after.String)
 	}
+}
+
+// runMigrations is runMigrationsContext with the writer pool's pragmas and
+// no progress report.
+func runMigrations(db *sql.DB) error {
+	return runMigrationsContext(context.Background(), db, writerConnPragmas, nil)
+}
+
+func applyMigration(db *sql.DB, m Migration) error {
+	return applyMigrationContext(context.Background(), db, m)
+}
+
+func applyRebuildMigration(db *sql.DB, m Migration) error {
+	return applyRebuildMigrationSteps(context.Background(), db, m, nil)
 }

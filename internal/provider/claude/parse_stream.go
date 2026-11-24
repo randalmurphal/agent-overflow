@@ -166,7 +166,7 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		// production compactions where `compactMetadata.preTokens`
 		// matched top-level within 1-2% and was ~2x the last-iteration
 		// snapshot on advisor turns. See
-		// docs/references/fixtures/claude/advisor_pretokens_correlation_20260523.summary.json
+		// internal/provider/wirecaptures/claude/advisor_pretokens_correlation_20260523.summary.json
 		// and docs/references/claude-wire.md §Context-window usage.
 		var events []provider.ProviderEvent
 		if usageRaw := eventObj["usage"]; len(usageRaw) > 0 {

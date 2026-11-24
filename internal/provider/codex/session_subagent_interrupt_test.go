@@ -12,12 +12,13 @@ import (
 func TestInterruptSubagentTargetsOwnedChildTurnAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 	events := make(chan provider.ProviderEvent, 4)
-	s, capturePath := newCapturingSession(t, "root-provider-thread")
+	s, fx := newCapturingSession(t, "root-provider-thread")
 	s.onEvent = func(event provider.ProviderEvent) { events <- event }
-	s.registerChildOwnership("root-provider-thread", "child-provider-thread", "/root/reviewer", "spawn-1")
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-provider-thread","turn":{"id":"child-turn-7"}}}`))
+	ownChild(t, s, "root-provider-thread", "child-provider-thread", "/root/reviewer", "spawn-1")
+	s.drainDeferredChildWireEvents("child-provider-thread")
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-provider-thread","turn":{"id":"child-turn-7"}}}`))
 
-	answerer := newPendingAnswerer(s)
+	answerer := newPendingAnswerer(t, s)
 	done := make(chan struct {
 		stopped bool
 		err     error
@@ -35,7 +36,7 @@ func TestInterruptSubagentTargetsOwnedChildTurnAndIsIdempotent(t *testing.T) {
 		t.Fatalf("InterruptSubagent = (%v, %v), want (true, nil)", result.stopped, result.err)
 	}
 
-	frames := waitForCapturedRawFrames(t, capturePath, 1, 3*time.Second)
+	frames := waitForCapturedRawFrames(t, fx, 1)
 	var request struct {
 		Method string `json:"method"`
 		Params struct {
@@ -75,16 +76,16 @@ statusObserved:
 	if err != nil || stopped {
 		t.Fatalf("repeated InterruptSubagent = (%v, %v), want (false, nil)", stopped, err)
 	}
-	if got := len(readCapturedRawFrames(t, capturePath)); got != 1 {
+	if got := len(readCapturedRawFrames(t, fx)); got != 1 {
 		t.Fatalf("repeated stop wrote %d interrupt requests, want 1", got)
 	}
 }
 
 func TestInterruptSubagentUsesStartupInterruptBeforeTurnStarted(t *testing.T) {
 	t.Parallel()
-	s, capturePath := newCapturingSession(t, "root-provider-thread")
-	s.registerChildOwnership("root-provider-thread", "child-pending", "", "spawn-pending")
-	answerer := newPendingAnswerer(s)
+	s, fx := newCapturingSession(t, "root-provider-thread")
+	ownChild(t, s, "root-provider-thread", "child-pending", "", "spawn-pending")
+	answerer := newPendingAnswerer(t, s)
 
 	done := make(chan error, 1)
 	go func() {
@@ -96,7 +97,7 @@ func TestInterruptSubagentUsesStartupInterruptBeforeTurnStarted(t *testing.T) {
 		t.Fatalf("InterruptSubagent pending start: %v", err)
 	}
 
-	frames := waitForCapturedRawFrames(t, capturePath, 1, 3*time.Second)
+	frames := waitForCapturedRawFrames(t, fx, 1)
 	var request struct {
 		Params struct {
 			ThreadID string `json:"threadId"`

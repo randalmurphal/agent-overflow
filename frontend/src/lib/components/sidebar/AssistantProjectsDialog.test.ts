@@ -4,12 +4,11 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import AssistantProjectsDialog from './AssistantProjectsDialog.svelte';
 import { closeAssistantProjectsDialog, getAssistantProjectsAgentId, openAssistantProjectsDialog } from '../../stores/newAssistant.svelte';
-import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
-import { __resetEntityIndexForTest, noteThread, threadBackend } from '../../transport/entityIndex';
+import { noteThread, threadBackend } from '../../transport/entityIndex';
 import { TransportError } from '../../transport/wsClient';
 import type { Project, Thread } from '../../types/models';
 import { applySettingsSnapshot } from '../../stores/settings.svelte';
@@ -27,9 +26,6 @@ describe('<AssistantProjectsDialog>', () => {
   const agent = makeThread({ id: 'agent', title: 'Ops', projectId: '', agentId: 'ops', agentProjectIds: ['p2', 'p3'] });
 
   beforeEach(async () => {
-    resetBindingMocks();
-    resetProjectsForTest();
-    __resetEntityIndexForTest();
     setBindingMock('ListProjects', async () => [
       { project: project('p1', 'Alpha'), threadCount: 0 },
       { project: project('p2', 'Beta'), threadCount: 0 },

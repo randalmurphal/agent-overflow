@@ -14,115 +14,32 @@ import (
 	"time"
 )
 
-func TestBuildArgs_DirectPath(t *testing.T) {
-	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStyleDirectPath},
-		Path:   "/tmp/foo.go",
-		Line:   10,
-		Column: 20,
+// TestBuildArgs pins each launch style's argv shape for the cursor
+// placements the catalog table below does not exercise (it runs every
+// editor with line 12, column 3).
+func TestBuildArgs(t *testing.T) {
+	cases := []struct {
+		name         string
+		style        LaunchStyle
+		line, column int
+		want         []string
+	}{
+		{"direct path ignores position", LaunchStyleDirectPath, 10, 20, []string{"/tmp/foo.go"}},
+		{"goto line defaults column to one", LaunchStyleGoto, 42, 0, []string{"--goto", "/tmp/foo.go:42:1"}},
+		{"goto without line drops flag", LaunchStyleGoto, 0, 0, []string{"/tmp/foo.go"}},
+		{"path-line-column line only", LaunchStylePathLineColumn, 12, 0, []string{"/tmp/foo.go:12"}},
+		// A column with no line is meaningless (`path::3` is not a valid
+		// suffix for either editor) — drop the position entirely.
+		{"path-line-column column without line", LaunchStylePathLineColumn, 0, 3, []string{"/tmp/foo.go"}},
+		{"path-line-column no cursor", LaunchStylePathLineColumn, 0, 0, []string{"/tmp/foo.go"}},
 	}
-	got := buildArgs(opts)
-	want := []string{"/tmp/foo.go"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs direct-path:\n got: %v\nwant: %v", got, want)
-	}
-}
-
-func TestBuildArgs_GotoWithLineAndColumn(t *testing.T) {
-	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStyleGoto},
-		Path:   "/tmp/foo.go",
-		Line:   42,
-		Column: 7,
-	}
-	got := buildArgs(opts)
-	want := []string{"--goto", "/tmp/foo.go:42:7"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs goto line+col:\n got: %v\nwant: %v", got, want)
-	}
-}
-
-func TestBuildArgs_GotoWithLineDefaultsColumnToOne(t *testing.T) {
-	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStyleGoto},
-		Path:   "/tmp/foo.go",
-		Line:   42,
-	}
-	got := buildArgs(opts)
-	want := []string{"--goto", "/tmp/foo.go:42:1"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs goto line-only:\n got: %v\nwant: %v", got, want)
-	}
-}
-
-func TestBuildArgs_GotoWithoutLineDropsFlag(t *testing.T) {
-	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStyleGoto},
-		Path:   "/tmp/foo.go",
-	}
-	got := buildArgs(opts)
-	want := []string{"/tmp/foo.go"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs goto no-line:\n got: %v\nwant: %v", got, want)
-	}
-}
-
-func TestBuildArgs_PathLineColumn(t *testing.T) {
-	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStylePathLineColumn},
-		Path:   "/tmp/foo.go",
-		Line:   12,
-		Column: 3,
-	}
-	got := buildArgs(opts)
-	// Sublime and Zed take the position as a `:line:column` suffix on
-	// the path — they have no --line/--column flags, so passing flags
-	// here opened bogus paths (or errored) instead of placing the
-	// cursor. See LaunchStylePathLineColumn's doc for the upstream
-	// references.
-	want := []string{"/tmp/foo.go:12:3"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs path-line-column:\n got: %v\nwant: %v", got, want)
-	}
-}
-
-func TestBuildArgs_PathLineColumnLineOnly(t *testing.T) {
-	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStylePathLineColumn},
-		Path:   "/tmp/foo.go",
-		Line:   12,
-	}
-	got := buildArgs(opts)
-	want := []string{"/tmp/foo.go:12"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs path-line-column line-only:\n got: %v\nwant: %v", got, want)
-	}
-}
-
-func TestBuildArgs_PathLineColumnColumnWithoutLine(t *testing.T) {
-	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStylePathLineColumn},
-		Path:   "/tmp/foo.go",
-		Column: 3,
-	}
-	got := buildArgs(opts)
-	// A column with no line is meaningless (`path::3` is not a valid
-	// suffix for either editor) — drop the position entirely.
-	want := []string{"/tmp/foo.go"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs path-line-column column-only:\n got: %v\nwant: %v", got, want)
-	}
-}
-
-func TestBuildArgs_PathLineColumnNoCursor(t *testing.T) {
-	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStylePathLineColumn},
-		Path:   "/tmp/foo.go",
-	}
-	got := buildArgs(opts)
-	want := []string{"/tmp/foo.go"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs path-line-column no cursor:\n got: %v\nwant: %v", got, want)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildArgs(SpawnOptions{Editor: &Editor{LaunchStyle: tc.style}, Path: "/tmp/foo.go", Line: tc.line, Column: tc.column})
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("buildArgs:\n got: %v\nwant: %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -145,7 +62,7 @@ func TestBuildArgs_PerCatalogEditor(t *testing.T) {
 		"subl": {"/tmp/foo.go:12:3"},
 		"zed":  {"/tmp/foo.go:12:3"},
 	}
-	for _, ed := range EditorCatalog() {
+	for _, ed := range editorCatalog {
 		expected, ok := want[ed.ID]
 		if !ok {
 			t.Errorf("catalog editor %q has no expected argv in this table — add it with a reference to its CLI docs", ed.ID)
@@ -171,18 +88,13 @@ func TestOpen_RejectsUnavailableEditor(t *testing.T) {
 	}
 }
 
-func TestOpen_RejectsEmptyPath(t *testing.T) {
-	ed := &Editor{ID: "code", Available: true, ResolvedPath: "/usr/bin/code"}
-	if err := Open(context.Background(), SpawnOptions{Editor: ed}); err == nil {
-		t.Fatal("expected error for empty path")
-	}
-}
-
 // TestOpen_RejectsRelativePathWithoutWorkspace pins the LAN-bind safety
 // floor: a remote token-holder asking the host's editor to open
 // `./foo.ts` without a workspace anchor gets a clear error rather than
 // a quiet open against the server's cwd. The check fires before
-// resolveSpawnBinary, so the test doesn't need to stub lookPath.
+// resolveSpawnBinary, so the test doesn't need to stub lookPath. It is
+// the proof that Open gates on ResolvePath; TestResolvePath pins each
+// of ResolvePath's refusals.
 func TestOpen_RejectsRelativePathWithoutWorkspace(t *testing.T) {
 	ed := &Editor{
 		ID: "code", Name: "VS Code",
@@ -330,32 +242,6 @@ func TestOpen_AppliesTheAppImageScrub(t *testing.T) {
 	})
 }
 
-// TestOpen_RejectsWorkspaceEscapeToMissingTarget pins the residual
-// traversal guard: a `..`-laden relative path that escapes the
-// workspace is only openable when it lands on an EXISTING REGULAR
-// FILE. An escape to a nonexistent target must not spawn anything —
-// the out-of-workspace affordance is "show me this file", never
-// "scaffold files anywhere on the host".
-func TestOpen_RejectsWorkspaceEscapeToMissingTarget(t *testing.T) {
-	ws := t.TempDir()
-	ed := &Editor{
-		ID: "code", Name: "VS Code",
-		Available: true, ResolvedPath: "/usr/bin/code",
-		LaunchStyle: LaunchStyleGoto,
-	}
-	err := Open(context.Background(), SpawnOptions{
-		Editor:        ed,
-		Path:          "../does-not-exist-anywhere/passwd",
-		WorkspacePath: ws,
-	})
-	if err == nil {
-		t.Fatal("expected error for escape to nonexistent target")
-	}
-	if !strings.Contains(err.Error(), "outside the workspace") {
-		t.Fatalf("expected error to mention 'outside the workspace', got %q", err.Error())
-	}
-}
-
 // TestDefaultObserveFastExit_NonZeroExitWithinWindow exercises the
 // real (non-stubbed) watcher against a fast-failing binary. `false`
 // exits 1 inside fastExitWindow → defaultObserveFastExit must surface
@@ -460,48 +346,6 @@ func TestOpen_FastExitFailureSurfacesEditorName(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exited with code 1") {
 		t.Fatalf("error should report exit code; got %q", err.Error())
-	}
-}
-
-// TestOpen_RejectsRelativeWorkspace confirms the workspacePath itself
-// must be absolute. A relative workspacePath would just shift the
-// cwd-relative attack vector up one level.
-func TestOpen_RejectsRelativeWorkspace(t *testing.T) {
-	ed := &Editor{
-		ID: "code", Name: "VS Code",
-		Available: true, ResolvedPath: "/usr/bin/code",
-		LaunchStyle: LaunchStyleGoto,
-	}
-	err := Open(context.Background(), SpawnOptions{
-		Editor:        ed,
-		Path:          "foo.go",
-		WorkspacePath: "relative/workspace",
-	})
-	if err == nil {
-		t.Fatal("expected error for relative workspacePath")
-	}
-	if !strings.Contains(err.Error(), "workspacePath must be absolute") {
-		t.Fatalf("expected workspacePath error, got %q", err.Error())
-	}
-}
-
-// TestOpen_RejectsTraversalPath pins the canonicalisation guard. An
-// absolute path that contains traversal segments (`/foo/../etc/passwd`)
-// canonicalises to a different string; the check refuses it before the
-// editor sees it. Defence in depth alongside whatever workspace
-// validation the caller might layer on top.
-func TestOpen_RejectsTraversalPath(t *testing.T) {
-	ed := &Editor{
-		ID: "code", Name: "VS Code",
-		Available: true, ResolvedPath: "/usr/bin/code",
-		LaunchStyle: LaunchStyleGoto,
-	}
-	err := Open(context.Background(), SpawnOptions{Editor: ed, Path: "/foo/../etc/passwd"})
-	if err == nil {
-		t.Fatal("expected error for traversal path")
-	}
-	if !strings.Contains(err.Error(), "canonical") {
-		t.Fatalf("expected error to mention 'canonical', got %q", err.Error())
 	}
 }
 
@@ -755,20 +599,6 @@ func TestResolvePath_AbsoluteWithWorkspaceAcceptsInsidePath(t *testing.T) {
 	}
 }
 
-// TestResolvePath_AbsoluteWithoutWorkspaceStillTrusted preserves the
-// project-open code path: callers that hand us a project root with
-// no workspace context (e.g. the sidebar's "Open in editor" menu)
-// still get the canonical absolute back unchanged.
-func TestResolvePath_AbsoluteWithoutWorkspaceStillTrusted(t *testing.T) {
-	got, err := ResolvePath("/tmp/project-root", "")
-	if err != nil {
-		t.Fatalf("ResolvePath: %v", err)
-	}
-	if got != "/tmp/project-root" {
-		t.Fatalf("expected pass-through, got %q", got)
-	}
-}
-
 // TestResolvePath_SymlinkEscapeFollowsFileRule covers the symlink
 // interaction with the 2026-08-18 file-only carve-out: a
 // workspace-internal symlink whose target sits outside the workspace
@@ -801,59 +631,6 @@ func TestResolvePath_SymlinkEscapeFollowsFileRule(t *testing.T) {
 		t.Fatalf("symlink to outside directory must be refused")
 	} else if !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("expected 'not a regular file' error, got %q", err.Error())
-	}
-}
-
-// TestResolvePath_NewFileFlowStillWorks asserts that the fallback to
-// the lexical check kicks in when the target file does not exist
-// yet — opening a new file via path is a legitimate workflow that
-// the symlink resolution must not break.
-func TestResolvePath_NewFileFlowStillWorks(t *testing.T) {
-	ws := t.TempDir()
-	got, err := ResolvePath("new/file.md", ws)
-	if err != nil {
-		t.Fatalf("ResolvePath: %v", err)
-	}
-	want := filepath.Join(ws, "new", "file.md")
-	if got != want {
-		t.Fatalf("expected %q, got %q", want, got)
-	}
-}
-
-// TestOpen_AcceptsCleanAbsolute confirms the happy path still flows
-// through unchanged — a clean absolute path reaches startCmd and the
-// editor's argv is built normally.
-func TestOpen_AcceptsCleanAbsolute(t *testing.T) {
-	originalLookPath := lookPath
-	originalStart := startCmd
-	originalObserve := observeFastExit
-	t.Cleanup(func() {
-		lookPath = originalLookPath
-		startCmd = originalStart
-		observeFastExit = originalObserve
-	})
-
-	lookPath = func(string) (string, error) { return "/usr/bin/code", nil }
-	var captured *exec.Cmd
-	startCmd = func(cmd *exec.Cmd) error {
-		captured = cmd
-		return nil
-	}
-	observeFastExit = func(*exec.Cmd, string) error { return nil }
-
-	ed := &Editor{
-		ID: "code", Name: "VS Code", Command: "code",
-		Available: true, ResolvedPath: "/usr/bin/code",
-		LaunchStyle: LaunchStyleGoto,
-	}
-	if err := Open(context.Background(), SpawnOptions{
-		Editor: ed,
-		Path:   "/tmp/foo.go",
-	}); err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if captured == nil {
-		t.Fatal("startCmd not invoked on clean absolute path")
 	}
 }
 

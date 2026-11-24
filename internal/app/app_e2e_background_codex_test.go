@@ -659,7 +659,7 @@ func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
 // backgrounded tool_call rows must stay running. The frontend's
 // interrupt button is a turn-scoped cancel — it stops the model, NOT
 // the backgrounded PTYs / subagents. Those have their own stop
-// primitives (StopClaudeTask / CleanCodexBackgroundTerminals).
+// primitives (StopClaudeTask / cleanCodexBackgroundTerminals).
 //
 // Structure follows the existing TestInterrupt_LeavesBackgroundTasksRunning
 // coverage in app_send_test.go but routes through the full E2E harness
@@ -713,7 +713,7 @@ func TestE2E_InterruptDoesNotKillBackground(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
-			t.Cleanup(func() { _ = sess.Close() })
+			t.Cleanup(func() { closeSessionChecked(t, sess) })
 			app.sessionManager().put(thread.ID, session{
 				Provider: string(provider.Claude),
 				Token:    "interrupt-bg-" + pc.name,
@@ -740,7 +740,7 @@ func TestE2E_InterruptDoesNotKillBackground(t *testing.T) {
 				t.Errorf("%s: bg row decision stamped: %q", pc.name, after.Decision)
 			}
 
-			_ = app.StopSession(thread.ID)
+			stopSessionChecked(t, app, thread.ID)
 		})
 	}
 }

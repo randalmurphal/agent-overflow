@@ -4,6 +4,8 @@ package atomicfile
 
 import "errors"
 
-func renameNoReplace(string, string) error {
+func platformExclusiveRename(string, string) error {
 	return errors.New("atomic publication is unsupported on this platform")
 }
+
+func exclusiveRenameUnsupported(error) bool { return false }

@@ -8,15 +8,13 @@ import ProjectThreadList from '../../../test/helpers/ProjectThreadListOfEntry.sv
 import AssistantsSection from './AssistantsSection.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest } from '../../stores/panes.svelte';
-import { getCollapsedGroups, resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { getCollapsedGroups } from '../../stores/sidebar.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { replaceAllThreads, touchThreadActivity } from '../../stores/threads.svelte';
-import { resetProjectsForTest } from '../../stores/projects.svelte';
-import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
-import { refreshThreadWorkerSummaries, resetThreadWorkerSummariesForTest } from '../../stores/threadWorkerSummaries.svelte';
+import { refreshThreadWorkerSummaries } from '../../stores/threadWorkerSummaries.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { projectTurnStarted } from '../../stores/threadStatuses.svelte';
-import { appStorageGet, resetAppStorageForTest } from '../../stores/appStorage';
+import { appStorageGet } from '../../stores/appStorage';
 import type { Thread, ThreadGroup } from '../../types/models';
 
 const group: ThreadGroup = { id: 'group', projectId: 'project', name: 'Work', createdAt: 0, updatedAt: 0 };
@@ -28,10 +26,6 @@ function thread(id: string, overrides: Partial<Thread> = {}): Thread {
   };
 }
 
-beforeEach(() => {
-  resetAppStorageForTest();
-  resetSidebarForTest();
-});
 afterEach(() => setCompactLayoutForTest(false));
 
 function row(container: HTMLElement, id: string): HTMLElement {
@@ -175,8 +169,6 @@ it('aligns the group chevron with top-level pins and member pins with the folder
 // and projects lines under the title.
 describe('assistant rows', () => {
   beforeEach(() => {
-    resetThreadWakesForTest();
-    resetProjectsForTest();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   });
 
@@ -241,7 +233,6 @@ describe('assistant rows', () => {
 // time, on the title's line, at every density.
 describe('worker counts', () => {
   beforeEach(() => {
-    resetThreadWorkerSummariesForTest();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   });
 

@@ -65,13 +65,6 @@ func ownedRootIdentity(root string) (rootIdentity, error) {
 	return rootIdentity{info: info, token: string(token)}, nil
 }
 
-// New validates the plan and establishes both the manifest and lease before
-// any caller workload mutation. Borrowed roots acquire the lease first so a
-// live run's manifest cannot be overwritten.
-func New(plan RunPlan, now time.Time) (*Supervisor, error) {
-	return NewWithOptions(plan, now, SupervisorOptions{})
-}
-
 // SupervisorOptions controls bounded supervisor behavior.
 type SupervisorOptions struct {
 	CleanupTimeout time.Duration
@@ -80,8 +73,9 @@ type SupervisorOptions struct {
 	Retention *ArtifactRegistry
 }
 
-// NewWithOptions is New with an explicit cleanup bound, useful for callers
-// with a tighter run budget and for deterministic tests.
+// NewWithOptions validates the plan and establishes both the manifest and
+// lease before any caller workload mutation. Borrowed roots acquire the lease
+// first so a live run's manifest cannot be overwritten.
 func NewWithOptions(plan RunPlan, now time.Time, opts SupervisorOptions) (*Supervisor, error) {
 	plan = ApplyDefaults(plan)
 	plan = cloneRunPlan(plan)

@@ -10,6 +10,7 @@
 import { expect, test } from './fixtures.js';
 import { expectEveryForgeCallHandled, forgeRouteCalls } from './forge-helpers.js';
 import { centre, chip, closeAll, line, openEditor, openPinned, ROUTES, SUGGEST_ID, thread } from './review-suggestions-reactions-flow.js';
+import { screenshot } from '../src/screenshot.js';
 
 const FORGE = 'gitlab';
 
@@ -35,7 +36,7 @@ test('on compact, reactions, suggestions, Preview and Copy link work by tap', as
     const tops = await Promise.all([...chips, outdatedHead.getByText(/^· /)].map(async (part) => (await part.boundingBox())!.y));
     expect(Math.max(...tops) - Math.min(...tops)).toBeLessThan(4);
     await centre(card);
-    await page.screenshot({ path: testInfo.outputPath('compact-reactions.png') });
+    await screenshot(page, { path: testInfo.outputPath('compact-reactions.png') });
 
     // A chip toggles by tap; the popover adds one.
     const up = chip(card, 'thumbsup');
@@ -44,7 +45,7 @@ test('on compact, reactions, suggestions, Preview and Copy link work by tap', as
     await expect(up).toHaveText(/2/);
     await menu.tap();
     await expect(page.getByTestId('review-comment-react')).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath('compact-comment-menu.png') });
+    await screenshot(page, { path: testInfo.outputPath('compact-comment-menu.png') });
     await page.getByTestId('review-comment-react').tap();
     const picker = page.getByTestId('review-reaction-picker');
     await expect(picker.getByTestId('review-reaction-option')).toHaveCount(8);
@@ -52,7 +53,7 @@ test('on compact, reactions, suggestions, Preview and Copy link work by tap', as
     const pickerBox = (await picker.boundingBox())!;
     const trigger = (await menu.boundingBox())!;
     expect(Math.abs(pickerBox.y - (trigger.y + trigger.height)) < 24 || Math.abs(pickerBox.y + pickerBox.height - trigger.y) < 24).toBe(true);
-    await page.screenshot({ path: testInfo.outputPath('compact-reaction-popover.png') });
+    await screenshot(page, { path: testInfo.outputPath('compact-reaction-popover.png') });
     await picker.locator('[data-reaction="eyes"]').tap();
     await expect(chip(card, 'eyes')).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
     expect(await forgeRouteCalls(harness, ROUTES[FORGE].react)).toHaveLength(2);
@@ -74,17 +75,17 @@ test('on compact, reactions, suggestions, Preview and Copy link work by tap', as
       expect(b.x + b.width).toBeLessThanOrEqual(box.x + box.width + 0.5);
     }
     await centre(editor);
-    await page.screenshot({ path: testInfo.outputPath('compact-editor-suggestion.png') });
+    await screenshot(page, { path: testInfo.outputPath('compact-editor-suggestion.png') });
     await editor.getByTestId('review-editor-preview-toggle').tap();
     await expect(editor.getByTestId('review-editor-preview').getByTestId('review-suggestion-removed')).toHaveText(['export const five = 5;']);
-    await page.screenshot({ path: testInfo.outputPath('compact-editor-preview.png') });
+    await screenshot(page, { path: testInfo.outputPath('compact-editor-preview.png') });
     await editor.getByTestId('review-editor-preview-toggle').tap();
     await editor.getByRole('button', { name: 'Cancel' }).tap();
 
     // Apply: the commit lands and the stale-head banner takes over.
     const suggestion = card.getByTestId('review-suggestion');
     await centre(card);
-    await page.screenshot({ path: testInfo.outputPath('compact-suggestion.png') });
+    await screenshot(page, { path: testInfo.outputPath('compact-suggestion.png') });
     await suggestion.getByTestId('review-suggestion-apply').tap();
     await expect(review.getByTestId('review-pr-stale')).toBeVisible({ timeout: 30_000 });
     expect(await forgeRouteCalls(harness, ROUTES[FORGE].apply)).toHaveLength(1);
@@ -93,7 +94,7 @@ test('on compact, reactions, suggestions, Preview and Copy link work by tap', as
     await expect(line(review, 'export const half = 5 / 2;')).toBeVisible({ timeout: 30_000 });
     await expect(card.getByTestId('review-suggestion-applied')).toBeVisible({ timeout: 30_000 });
     await centre(card);
-    await page.screenshot({ path: testInfo.outputPath('compact-after-apply.png') });
+    await screenshot(page, { path: testInfo.outputPath('compact-after-apply.png') });
     await expectEveryForgeCallHandled(harness);
   } finally {
     await closeAll(page, harness);

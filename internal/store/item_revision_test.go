@@ -550,79 +550,62 @@ func TestPayloadTouchProbesPayloadIndexes(t *testing.T) {
 // row's meta at read time (decorateProposedPlanItems), so their writers
 // must stamp that row.
 func TestProposedPlanWritersStampPlanItemRow(t *testing.T) {
-	newPlanStore := func(t *testing.T) *Store {
-		t.Helper()
-		s := newTestStore(t)
-		seedContractThread(t, s, "t")
-		plan := contractItem("t", "plan", 0)
-		plan.Kind = "tool_call"
-		plan.ToolName = "ExitPlanMode"
-		if err := insertCarded(s, plan); err != nil {
-			t.Fatalf("seed plan row: %v", err)
-		}
-		return s
+	s := newTestStore(t)
+	seedContractThread(t, s, "t")
+	plan := contractItem("t", "plan", 0)
+	plan.Kind = "tool_call"
+	plan.ToolName = "ExitPlanMode"
+	if err := insertCarded(s, plan); err != nil {
+		t.Fatalf("seed plan row: %v", err)
 	}
-
-	t.Run("EnsureProposedPlanState", func(t *testing.T) {
-		s := newPlanStore(t)
-		before := itemRevisionOf(t, s, "t", "plan")
-		if _, err := s.EnsureProposedPlanState("t", "plan", 2000); err != nil {
-			t.Fatalf("ensure plan state: %v", err)
-		}
-		if got := itemRevisionOf(t, s, "t", "plan"); got <= before {
-			t.Fatalf("plan rev = %d, want > %d", got, before)
-		}
-	})
-
-	t.Run("comment lifecycle", func(t *testing.T) {
-		s := newPlanStore(t)
-		if _, err := s.EnsureProposedPlanState("t", "plan", 2000); err != nil {
-			t.Fatalf("ensure plan state: %v", err)
-		}
-		steps := []struct {
-			name string
-			run  func(t *testing.T)
-		}{
-			{"create", func(t *testing.T) {
-				if _, err := s.CreateProposedPlanComment(ProposedPlanComment{
-					ID: "c1", ThreadID: "t", PlanItemID: "plan",
-					StartLine: 1, EndLine: 1, SelectedText: "line", Body: "note",
-					CreatedAt: 2000, UpdatedAt: 2000,
-				}); err != nil {
-					t.Fatalf("create comment: %v", err)
-				}
-			}},
-			{"update", func(t *testing.T) {
-				if _, err := s.UpdateProposedPlanComment("t", "c1", ProposedPlanCommentUpdate{
-					Body: "edited",
-				}, 2500); err != nil {
-					t.Fatalf("update comment: %v", err)
-				}
-			}},
-			{"mark sent", func(t *testing.T) {
-				if err := s.MarkProposedPlanCommentsSent("t", "plan", []string{"c1"}, 2600, "t:0"); err != nil {
-					t.Fatalf("mark sent: %v", err)
-				}
-			}},
-			{"resolve", func(t *testing.T) {
-				if err := s.DeleteOrResolveProposedPlanComment("t", "c1", 2700); err != nil {
-					t.Fatalf("resolve comment: %v", err)
-				}
-			}},
-			{"mark implemented", func(t *testing.T) {
-				if err := s.MarkProposedPlanImplemented("t", "plan", "t", "impl", 2800); err != nil {
-					t.Fatalf("mark implemented: %v", err)
-				}
-			}},
-		}
-		for _, step := range steps {
-			before := itemRevisionOf(t, s, "t", "plan")
-			step.run(t)
-			if got := itemRevisionOf(t, s, "t", "plan"); got <= before {
-				t.Fatalf("%s left the plan rev at %d, want > %d", step.name, got, before)
+	steps := []struct {
+		name string
+		run  func(t *testing.T)
+	}{
+		{"ensure plan state", func(t *testing.T) {
+			if _, err := s.EnsureProposedPlanState("t", "plan", 2000); err != nil {
+				t.Fatalf("ensure plan state: %v", err)
 			}
+		}},
+		{"create", func(t *testing.T) {
+			if _, err := s.CreateProposedPlanComment(ProposedPlanComment{
+				ID: "c1", ThreadID: "t", PlanItemID: "plan",
+				StartLine: 1, EndLine: 1, SelectedText: "line", Body: "note",
+				CreatedAt: 2000, UpdatedAt: 2000,
+			}); err != nil {
+				t.Fatalf("create comment: %v", err)
+			}
+		}},
+		{"update", func(t *testing.T) {
+			if _, err := s.UpdateProposedPlanComment("t", "c1", ProposedPlanCommentUpdate{
+				Body: "edited",
+			}, 2500); err != nil {
+				t.Fatalf("update comment: %v", err)
+			}
+		}},
+		{"mark sent", func(t *testing.T) {
+			if err := s.MarkProposedPlanCommentsSent("t", "plan", []string{"c1"}, 2600, "t:0"); err != nil {
+				t.Fatalf("mark sent: %v", err)
+			}
+		}},
+		{"resolve", func(t *testing.T) {
+			if err := s.DeleteOrResolveProposedPlanComment("t", "c1", 2700); err != nil {
+				t.Fatalf("resolve comment: %v", err)
+			}
+		}},
+		{"mark implemented", func(t *testing.T) {
+			if err := s.MarkProposedPlanImplemented("t", "plan", "t", "impl", 2800); err != nil {
+				t.Fatalf("mark implemented: %v", err)
+			}
+		}},
+	}
+	for _, step := range steps {
+		before := itemRevisionOf(t, s, "t", "plan")
+		step.run(t)
+		if got := itemRevisionOf(t, s, "t", "plan"); got <= before {
+			t.Fatalf("%s left the plan rev at %d, want > %d", step.name, got, before)
 		}
-	})
+	}
 }
 
 // TestItemRevisionUnderBulkLoad pins the one place the stamp and the

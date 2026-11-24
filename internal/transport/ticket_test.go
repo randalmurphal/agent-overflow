@@ -154,3 +154,11 @@ func TestOneSubjectCannotEvictAnothersTickets(t *testing.T) {
 		t.Fatal("the looper's newest ticket was evicted")
 	}
 }
+
+// outstanding reports how many tickets are minted but unspent, for the
+// bound's own assertions.
+func (b *ticketBook) outstanding() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.entries)
+}

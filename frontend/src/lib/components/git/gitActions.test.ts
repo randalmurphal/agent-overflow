@@ -5,7 +5,7 @@
 //     errors differently — conflating them flips success toasts on push
 //     failures. Assert both paths.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   menuPullEnabled,
   menuPushEnabled,
@@ -20,11 +20,9 @@ import {
 import type { GitActionOutcome, GitStatus, WorkspaceRef } from '../../types/git';
 import { DisconnectedError } from '../../transport/wsClient';
 import {
-  resetBindingMocks,
   setBindingMock,
 } from '../../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 
 function status(overrides: Partial<GitStatus> = {}): GitStatus {
   return {
@@ -71,43 +69,16 @@ describe('primaryActionFor', () => {
     });
   });
 
-  it('surfaces Commit when there are uncommitted changes', () => {
-    const out = primaryActionFor(status({ hasChanges: true }));
-    expect(out.action).toBe('commit');
-    expect(out.disabled).toBe(false);
-    expect(out.tooltip).toBe('Stage and commit changes');
-  });
-
-  it('surfaces Push when no changes but ahead of upstream (singular)', () => {
-    const out = primaryActionFor(status({ aheadCount: 1 }));
-    expect(out.action).toBe('push');
-    expect(out.tooltip).toBe('Push 1 commit');
-  });
-
-  it('surfaces Push with plural tooltip when ahead > 1', () => {
-    const out = primaryActionFor(status({ aheadCount: 3 }));
-    expect(out.tooltip).toBe('Push 3 commits');
-  });
-
-  it('surfaces Pull when no changes, not ahead, but behind upstream (singular)', () => {
-    const out = primaryActionFor(status({ behindCount: 1 }));
-    expect(out.action).toBe('pull');
-    expect(out.tooltip).toBe('Pull 1 commit');
-  });
-
-  it('surfaces Pull with plural tooltip when behind > 1', () => {
-    const out = primaryActionFor(status({ behindCount: 2 }));
-    expect(out.tooltip).toBe('Pull 2 commits');
-  });
-
-  it('priority: hasChanges wins over ahead/behind', () => {
-    const out = primaryActionFor(status({ hasChanges: true, aheadCount: 3, behindCount: 2 }));
-    expect(out.action).toBe('commit');
-  });
-
-  it('priority: ahead wins over behind when no changes', () => {
-    const out = primaryActionFor(status({ aheadCount: 1, behindCount: 1 }));
-    expect(out.action).toBe('push');
+  it.each([
+    ['surfaces Commit when there are uncommitted changes', { hasChanges: true }, { action: 'commit', disabled: false, tooltip: 'Stage and commit changes' }],
+    ['surfaces Push when no changes but ahead of upstream (singular)', { aheadCount: 1 }, { action: 'push', tooltip: 'Push 1 commit' }],
+    ['surfaces Push with plural tooltip when ahead > 1', { aheadCount: 3 }, { action: 'push', tooltip: 'Push 3 commits' }],
+    ['surfaces Pull when no changes, not ahead, but behind upstream (singular)', { behindCount: 1 }, { action: 'pull', tooltip: 'Pull 1 commit' }],
+    ['surfaces Pull with plural tooltip when behind > 1', { behindCount: 2 }, { action: 'pull', tooltip: 'Pull 2 commits' }],
+    ['priority: hasChanges wins over ahead/behind', { hasChanges: true, aheadCount: 3, behindCount: 2 }, { action: 'commit' }],
+    ['priority: ahead wins over behind when no changes', { aheadCount: 1, behindCount: 1 }, { action: 'push' }],
+  ])('%s', (_name, overrides, expected) => {
+    expect(primaryActionFor(status(overrides))).toMatchObject(expected);
   });
 
   it('falls back to a disabled Commit "no changes" when idle', () => {
@@ -122,7 +93,6 @@ describe('primaryActionFor', () => {
 });
 
 describe('runPushAction', () => {
-  beforeEach(() => resetBindingMocks());
 
   it('reports result.error without throwing and without refreshing status', async () => {
     setBindingMock('GitPush', async () => ({ error: 'Repo has diverged', commitSha: '' }));
@@ -179,7 +149,6 @@ describe('runPushAction', () => {
 });
 
 describe('runPullAction', () => {
-  beforeEach(() => resetBindingMocks());
 
   it('reports result.error without throwing', async () => {
     setBindingMock('GitPull', async () => ({ error: 'conflict' }));
@@ -215,7 +184,6 @@ describe('runPullAction', () => {
 });
 
 describe('runFetchOriginAction', () => {
-  beforeEach(() => resetBindingMocks());
 
   it('fetches the workspace and refreshes its status', async () => {
     const fetch = setBindingMock('GitFetchOrigin', vi.fn(async () => ({ action: 'fetch' })));
@@ -239,21 +207,14 @@ describe('runFetchOriginAction', () => {
 });
 
 describe('menuPushEnabled', () => {
-  it('offers Push when the branch is ahead of its upstream', () => {
-    expect(menuPushEnabled(status({ aheadCount: 2 }))).toBe(true);
-  });
-
-  it('does not offer Push when up to date with the upstream', () => {
-    expect(menuPushEnabled(status({ hasUpstream: true, aheadCount: 0 }))).toBe(false);
-  });
-
-  // Porcelain reports no ahead count without an upstream; the push sets one.
-  it('offers Push for a branch that has no upstream yet', () => {
-    expect(menuPushEnabled(status({ branch: 'feature', hasUpstream: false, aheadCount: 0 }))).toBe(true);
-  });
-
-  it('does not offer Push on a detached HEAD without an upstream', () => {
-    expect(menuPushEnabled(status({ branch: '', hasUpstream: false, aheadCount: 0 }))).toBe(false);
+  it.each([
+    ['offers Push when the branch is ahead of its upstream', { aheadCount: 2 }, true],
+    ['does not offer Push when up to date with the upstream', { hasUpstream: true, aheadCount: 0 }, false],
+    // Porcelain reports no ahead count without an upstream; the push sets one.
+    ['offers Push for a branch that has no upstream yet', { branch: 'feature', hasUpstream: false, aheadCount: 0 }, true],
+    ['does not offer Push on a detached HEAD without an upstream', { branch: '', hasUpstream: false, aheadCount: 0 }, false],
+  ])('%s', (_name, overrides, enabled) => {
+    expect(menuPushEnabled(status(overrides))).toBe(enabled);
   });
 });
 
@@ -275,10 +236,6 @@ describe('a detached HEAD', () => {
 });
 
 describe('runRemoveWorktreeAction', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
-  });
 
   it('removes the named worktree and applies the moved rows from the reply', async () => {
     const worktree = '/workspace/.worktrees/feature';

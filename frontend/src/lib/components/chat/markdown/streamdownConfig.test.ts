@@ -7,8 +7,6 @@ import {
 
 describe('streamdownConfig', () => {
   it('reuses stable config objects across render updates', () => {
-    expect(STREAMDOWN_STATIC_RENDERERS).toBe(STREAMDOWN_STATIC_RENDERERS);
-    expect(STREAMDOWN_STATIC_WORK_SCHEDULER).toBe(STREAMDOWN_STATIC_WORK_SCHEDULER);
     expect(streamdownComponentsFor(false)).toBe(streamdownComponentsFor(false));
     expect(streamdownComponentsFor(true)).toBe(streamdownComponentsFor(true));
   });

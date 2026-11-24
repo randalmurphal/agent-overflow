@@ -198,7 +198,7 @@ func TestClaudeProbePersistsTheCatalogAgainstItsBinary(t *testing.T) {
 	)
 	app := seedTestApp(t, binary, nil)
 
-	if _, err := app.ProbeClaudeAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 
@@ -273,7 +273,7 @@ func TestAClaudeProbeFilesItsModelsUnderTheAccountItAdopts(t *testing.T) {
 			}
 			before := app.captureProviderAccountSelection(string(provider.Claude)).AccountID
 
-			if _, err := app.ProbeClaudeAccount(); err != nil {
+			if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 				t.Fatalf("ProbeClaudeAccount: %v", err)
 			}
 			active, ok := app.providerAccounts.Active(string(provider.Claude), time.Now())
@@ -333,7 +333,7 @@ func TestSeedClaudeCatalogSkipsARecordFromAnotherEnvironment(t *testing.T) {
 
 	resetClaudeProbeCacheForTest(t)
 	first := newAppOn(t, "https://one.example.com")
-	if _, err := first.ProbeClaudeAccount(); err != nil {
+	if _, err := first.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 	if _, ok := first.providerAccounts.ClaudeCatalog("acct-1"); !ok {
@@ -387,7 +387,7 @@ func TestPersistedClaudeCatalogSurvivesARestart(t *testing.T) {
 
 	resetClaudeProbeCacheForTest(t)
 	first := newAppOn(t)
-	if _, err := first.ProbeClaudeAccount(); err != nil {
+	if _, err := first.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 

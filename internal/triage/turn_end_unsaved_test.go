@@ -52,42 +52,21 @@ func wantTurnOpen(t *testing.T, router *Router) {
 	}
 }
 
-// A completion whose end write fails tells the user, and the row stays
-// open as the entry says.
-func TestTurnCompletionWhoseEndIsRefusedReachesTheUser(t *testing.T) {
-	router, _, raw, recorder, _ := newUnsavedRowRouter(t)
-	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1})
-	refuseTurnEnds(t, raw, "database or disk is full")
+// A turn's end write that fails tells the user, whichever path wrote it,
+// and the row stays open as the entry says.
+func TestATurnEndTheStoreRefusesReachesTheUser(t *testing.T) {
+	for _, path := range endPaths {
+		t.Run(path.name, func(t *testing.T) {
+			router, _, raw, recorder, _ := newUnsavedRowRouter(t)
+			parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1})
+			refuseTurnEnds(t, raw, "database or disk is full")
 
-	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now()}); err != nil {
-		t.Fatalf("turn complete: %v", err)
+			path.end(t, router)
+
+			wantTurnEndReport(t, recorder, "t1:1")
+			wantTurnOpen(t, router)
+		})
 	}
-
-	wantTurnEndReport(t, recorder, "t1:1")
-	wantTurnOpen(t, router)
-}
-
-// A turn still open when the next one starts is settled by that start; a
-// failure of that end is told the same way.
-func TestPredecessorEndTheStoreRefusesReachesTheUser(t *testing.T) {
-	router, _, raw, recorder, _ := newUnsavedRowRouter(t)
-	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1})
-	refuseTurnEnds(t, raw, "database or disk is full")
-
-	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 2})
-
-	wantTurnEndReport(t, recorder, "t1:1")
-}
-
-// The end of a turn a merge fold emptied is told the same way.
-func TestFoldEmptiedTurnEndTheStoreRefusesReachesTheUser(t *testing.T) {
-	router, _, raw, recorder, _ := newUnsavedRowRouter(t)
-	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1})
-	refuseTurnEnds(t, raw, "database or disk is full")
-
-	router.endFoldEmptiedTurn("t1", 1, time.Now().UnixMilli())
-
-	wantTurnEndReport(t, recorder, "t1:1")
 }
 
 // A turn whose end fails twice, on two paths, is one entry: both reports

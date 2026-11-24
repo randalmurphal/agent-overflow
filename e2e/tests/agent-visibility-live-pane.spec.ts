@@ -33,7 +33,7 @@ const MID = 'Live note: the parser lives in internal/provider.';
 const FINAL = 'Live final: mapped every surface.';
 const THINK = 'Thinking live about the map.';
 
-/** REAL sidechain shape (docs/references/fixtures/claude/task_progress_20260822.ndjson):
+/** REAL sidechain shape (internal/provider/wirecaptures/claude/task_progress_20260822.ndjson):
  *  a subagent's text/thinking arrive as a bare `assistant` envelope with
  *  `parent_tool_use_id` and NO stream_event lifecycle. */
 function sidechainBlockLine(messageId: string, block: Record<string, unknown>, parent: string): string {
@@ -96,7 +96,7 @@ test('an open pane shows prose, thinking, and the final text as the agent stream
   await harness.open(page);
   await page.getByText('Live pane').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'map surfaces', null);
+  await harness.send(threadId, 'map surfaces');
 
   await waitForGate(harness, 'open');
   const timeline = page.getByTestId('message-timeline-scroll');

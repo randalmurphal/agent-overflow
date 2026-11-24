@@ -34,7 +34,7 @@ test('a many-row agent digest virtualizes, follows its tail and scrolls independ
   await harness.open(page);
   await page.getByText('Digest load').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'read it all', null);
+  await harness.send(threadId, 'read it all');
   await awaitTurnCompleted(harness, threadId);
 
   const { row, digest, clip, child } = await openTrayDigest(page);
@@ -130,7 +130,7 @@ test('an open digest loads an out-of-window launch and keeps its rows through se
   await harness.open(page);
   await page.getByText('Digest retention').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'read it all', null);
+  await harness.send(threadId, 'read it all');
   await awaitTurnCompleted(harness, threadId);
 
   // Reopen from persistence: the thread comes back on its tail page and
@@ -164,7 +164,7 @@ test('an open digest loads an out-of-window launch and keeps its rows through se
   // Turn two. A late child lands running, then settles: the settled row
   // stays in the independent digest window.
   holdRunRefresh = true;
-  await harness.rpc('SendMessage', threadId, 'keep going', null);
+  await harness.send(threadId, 'keep going');
   await expect(child(LATE)).toBeVisible();
   await expect(child(LATE).getByTestId('tool-call-card-status')).toHaveAttribute('data-state', 'running');
   // The mounted element proves settling did not remount the row.

@@ -232,58 +232,43 @@ func TestOpenPRThreadRefusesADivergedPRBranch(t *testing.T) {
 	}
 }
 
-// A failure once the thread exists takes back the thread, its worktree
-// and the pr/N the call made, and returns the cause.
-// The seed is saved inside the same rollback: a draft that cannot be
-// written leaves no thread, worktree or fetched branch.
-func TestOpenPRThreadRollsBackWhenTheSeedFails(t *testing.T) {
+// A write that fails while the thread is made takes back the thread, its
+// worktree and the pr/N the call made, and returns the cause: the thread row
+// itself, the seed (saved inside the same rollback, so a draft that cannot be
+// written leaves nothing), and the PR record. A retry once the store recovers
+// succeeds.
+func TestOpenPRThreadRollsBackWhenAWriteFails(t *testing.T) {
 	t.Parallel()
-	c := newPRThreadCase(t)
-	c.push(t, "refs/pull/5/head")
-	execOnStore(t, c.dbPath, `CREATE TRIGGER refuse_draft BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`)
+	for _, table := range []string{"threads", "thread_drafts", "thread_pull_requests"} {
+		t.Run(table, func(t *testing.T) {
+			t.Parallel()
+			c := newPRThreadCase(t)
+			c.push(t, "refs/pull/5/head")
+			execOnStore(t, c.dbPath, `CREATE TRIGGER refuse BEFORE INSERT ON `+table+` BEGIN SELECT RAISE(ABORT, 'injected failure'); END`)
 
-	_, err := c.app.OpenPRThread(context.Background(), c.request("fork-work", true))
-	if err == nil || !strings.Contains(err.Error(), "injected draft failure") {
-		t.Fatalf("OpenPRThread = %v, want the draft's failure", err)
-	}
-	if threads := c.threads(t); len(threads) != 0 {
-		t.Fatalf("threads left = %+v", threads)
-	}
-	if branchExists(c.repo, "pr/5") {
-		t.Fatal("pr/5 was left behind")
-	}
-	worktrees, err := c.app.gitCore().ListWorktrees(c.repo)
-	if err != nil || len(worktrees) != 1 {
-		t.Fatalf("worktrees = %+v (%v), want the main checkout alone", worktrees, err)
-	}
-}
+			_, err := c.app.OpenPRThread(context.Background(), c.request("fork-work", true))
+			if err == nil || !strings.Contains(err.Error(), "injected failure") {
+				t.Fatalf("OpenPRThread = %v, want the %s insert's failure", err, table)
+			}
+			if strings.Contains(err.Error(), "delete branch") || strings.Contains(err.Error(), "undo the worktree") {
+				t.Fatalf("OpenPRThread rollback failed: %v", err)
+			}
+			if threads := c.threads(t); len(threads) != 0 {
+				t.Fatalf("threads left = %+v", threads)
+			}
+			if branchExists(c.repo, "pr/5") {
+				t.Fatal("pr/5 was left behind")
+			}
+			worktrees, err := c.app.gitCore().ListWorktrees(c.repo)
+			if err != nil || len(worktrees) != 1 {
+				t.Fatalf("worktrees = %+v (%v), want the main checkout alone", worktrees, err)
+			}
 
-// A thread row that cannot be written leaves no worktree and no fetched
-// pr/N behind, and a retry once the store recovers succeeds.
-func TestOpenPRThreadRollsBackWhenTheThreadCannotBeWritten(t *testing.T) {
-	t.Parallel()
-	c := newPRThreadCase(t)
-	c.push(t, "refs/pull/5/head")
-	execOnStore(t, c.dbPath, `CREATE TRIGGER refuse_thread BEFORE INSERT ON threads BEGIN SELECT RAISE(ABORT, 'injected thread failure'); END`)
-
-	_, err := c.app.OpenPRThread(context.Background(), c.request("fork-work", true))
-	if err == nil || !strings.Contains(err.Error(), "injected thread failure") {
-		t.Fatalf("OpenPRThread = %v, want the thread insert's failure", err)
-	}
-	if strings.Contains(err.Error(), "delete branch") || strings.Contains(err.Error(), "undo the worktree") {
-		t.Fatalf("OpenPRThread rollback failed: %v", err)
-	}
-	if branchExists(c.repo, "pr/5") {
-		t.Fatal("pr/5 was left behind")
-	}
-	worktrees, err := c.app.gitCore().ListWorktrees(c.repo)
-	if err != nil || len(worktrees) != 1 {
-		t.Fatalf("worktrees = %+v (%v), want the main checkout alone", worktrees, err)
-	}
-
-	execOnStore(t, c.dbPath, `DROP TRIGGER refuse_thread`)
-	if _, err := c.app.OpenPRThread(context.Background(), c.request("fork-work", true)); err != nil {
-		t.Fatalf("retry: %v", err)
+			execOnStore(t, c.dbPath, `DROP TRIGGER refuse`)
+			if _, err := c.app.OpenPRThread(context.Background(), c.request("fork-work", true)); err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+		})
 	}
 }
 
@@ -358,28 +343,6 @@ func TestOpenPRThreadRollsBackTheLocalBranchOfAnOriginHead(t *testing.T) {
 		if threads := c.threads(t); len(threads) != 0 {
 			t.Fatalf("%s: threads left = %+v", trigger, threads)
 		}
-	}
-}
-
-func TestOpenPRThreadRollsBackWhenTheRecordFails(t *testing.T) {
-	t.Parallel()
-	c := newPRThreadCase(t)
-	c.push(t, "refs/pull/5/head")
-	execOnStore(t, c.dbPath, `CREATE TRIGGER refuse_pr_record BEFORE INSERT ON thread_pull_requests BEGIN SELECT RAISE(ABORT, 'injected record failure'); END`)
-
-	_, err := c.app.OpenPRThread(context.Background(), c.request("fork-work", true))
-	if err == nil || !strings.Contains(err.Error(), "injected record failure") {
-		t.Fatalf("OpenPRThread = %v, want the record's failure", err)
-	}
-	if threads := c.threads(t); len(threads) != 0 {
-		t.Fatalf("threads left = %+v", threads)
-	}
-	if branchExists(c.repo, "pr/5") {
-		t.Fatal("pr/5 was left behind")
-	}
-	worktrees, err := c.app.gitCore().ListWorktrees(c.repo)
-	if err != nil || len(worktrees) != 1 {
-		t.Fatalf("worktrees = %+v (%v), want the main checkout alone", worktrees, err)
 	}
 }
 

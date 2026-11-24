@@ -4,7 +4,6 @@ import ProviderPromptSection from './ProviderPromptSection.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import {
   ensureProviderModels,
-  resetProviderModelsForTest,
 } from '../../stores/providerModels.svelte';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -66,9 +65,6 @@ const ENTRY = (over: Partial<PromptOverride> = {}): PromptOverride => ({
 });
 
 describe('<ProviderPromptSection>', () => {
-  beforeEach(() => {
-    resetProviderModelsForTest();
-  });
 
   it('renders the configured entries with their file, switch, and models', async () => {
     await seed({
@@ -165,57 +161,33 @@ describe('<ProviderPromptSection>', () => {
     expect(chip.className).not.toContain('border-dashed');
   });
 
-  it('does not call a selected slug missing when the catalog failed to load', async () => {
+  it('surfaces a failed model catalog as state, and does not call a selected slug missing', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ models: ['claude-retired-1'] })] });
     setBindingMock('GetModelsForProvider', async () => {
       throw new Error('claude CLI not found');
     });
 
     const { findByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    await findByTestId('settings-prompts-claude-catalog-error');
+    expect(
+      (await findByTestId('settings-prompts-claude-catalog-error')).textContent,
+    ).toContain('Could not load the Claude model catalog.');
     const chip = await findByTestId('settings-prompt-model-claude-0-claude-retired-1');
     expect(chip.dataset.missing).toBe('false');
   });
 
-  it('surfaces a failed model catalog as state, not as silence', async () => {
-    await seed({ claudePromptOverrides: [ENTRY()] });
-    setBindingMock('GetModelsForProvider', async () => {
-      throw new Error('claude CLI not found');
-    });
-    const { findByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    expect(
-      (await findByTestId('settings-prompts-claude-catalog-error')).textContent,
-    ).toContain('Could not load the Claude model catalog.');
-  });
-
-  it('warns when an enabled entry applies to no model', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ models: [] })] });
-    const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    expect(getByTestId('settings-prompt-nomodels-claude-0')).toBeTruthy();
-    expect(queryByTestId('settings-prompt-blank-claude-0')).toBeNull();
-  });
-
-  it('warns when an enabled entry has a blank file, which the backend skips too', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ blank: true })] });
-    const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    expect(getByTestId('settings-prompt-blank-claude-0').textContent).toContain('file is empty');
-    expect(queryByTestId('settings-prompt-nomodels-claude-0')).toBeNull();
-  });
-
-  it('names both causes when an enabled entry has neither', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ models: [], blank: true })] });
-    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    expect(getByTestId('settings-prompt-nomodels-claude-0')).toBeTruthy();
-    expect(getByTestId('settings-prompt-blank-claude-0')).toBeTruthy();
-  });
-
-  it('warns about neither when the entry is switched off', async () => {
-    await seed({
-      claudePromptOverrides: [ENTRY({ enabled: false, models: [], blank: true })],
-    });
+  // The backend skips an enabled entry with no model or a blank file too, so
+  // the page names each cause; a switched-off entry is skipped by choice.
+  const EMPTY_FILE = expect.stringContaining('file is empty');
+  it.each<[string, Partial<PromptOverride>, boolean, unknown]>([
+    ['applies to no model', { models: [] }, true, null],
+    ['has a blank file', { blank: true }, false, EMPTY_FILE],
+    ['has neither', { models: [], blank: true }, true, EMPTY_FILE],
+    ['is switched off', { enabled: false, models: [], blank: true }, false, null],
+  ])('warns as it should when the entry %s', async (_case, over, nomodels, blank) => {
+    await seed({ claudePromptOverrides: [ENTRY(over)] });
     const { queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    expect(queryByTestId('settings-prompt-nomodels-claude-0')).toBeNull();
-    expect(queryByTestId('settings-prompt-blank-claude-0')).toBeNull();
+    expect(queryByTestId('settings-prompt-nomodels-claude-0') !== null).toBe(nomodels);
+    expect(queryByTestId('settings-prompt-blank-claude-0')?.textContent ?? null).toEqual(blank);
   });
 
   it('warns that an earlier enabled entry already covers a model', async () => {
@@ -229,9 +201,6 @@ describe('<ProviderPromptSection>', () => {
 });
 
 describe('<ProviderPromptSection> placeholder legend', () => {
-  beforeEach(() => {
-    resetProviderModelsForTest();
-  });
 
   it('lists every placeholder as a read-only reference', async () => {
     await seed({ claudePromptOverrides: [ENTRY()] });
@@ -258,7 +227,6 @@ describe('<ProviderPromptSection> placeholder legend', () => {
 
 describe('<ProviderPromptSection> prompt file', () => {
   beforeEach(() => {
-    resetProviderModelsForTest();
     setPageGrantsFromBootstrap(false);
   });
 

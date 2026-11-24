@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBuiltinMonitor, installCompositorMonitorAdapter, installSourceMonitorAdapter } from './monitorHosts';
+import { createBuiltinMonitor } from './monitorHosts';
 import type { MonitorCapability, MonitorContext, MonitorSpec } from './monitorTypes';
 
 const contexts: MonitorContext[] = [];
@@ -10,7 +10,6 @@ function context(id: string, capabilities: readonly MonitorCapability[]): { cont
   const monitorContext: MonitorContext = {
     runId: 'host-test', monitorId: id, startedAtMs: 0,
     capabilities: new Set(capabilities),
-    probes: { read: (request) => ({ kind: request.kind, atMs: 0, available: false }) },
     now: () => 0,
     observe: (value) => observations.push(value),
     fail: (message) => errors.push(message),
@@ -120,13 +119,13 @@ describe('browser monitor hosts', () => {
     const inputHost = createBuiltinMonitor(spec('input-to-render', ['input', 'animation-frame']), input.context)!;
     document.dispatchEvent(new Event('input'));
     callbacks.get(1)?.(1);
-    expect((inputHost.stop?.(2) as { counts: { inputToRenderMs: number } }).counts.inputToRenderMs).toBe(1);
+    expect((inputHost.stop!(2) as { counts: { inputToRenderMs: number } }).counts.inputToRenderMs).toBe(1);
 
     const scroll = context('scroll-response', ['scroll', 'animation-frame']);
     const scrollHost = createBuiltinMonitor(spec('scroll-response', ['scroll', 'animation-frame']), scroll.context)!;
     document.dispatchEvent(new Event('scroll'));
     callbacks.get(2)?.(3);
-    expect((scrollHost.stop?.(4) as { counts: { scrollToRenderMs: number } }).counts.scrollToRenderMs).toBe(1);
+    expect((scrollHost.stop!(4) as { counts: { scrollToRenderMs: number } }).counts.scrollToRenderMs).toBe(1);
   });
 
   it('records long-task entries and observer setup faults', () => {
@@ -167,34 +166,4 @@ describe('browser monitor hosts', () => {
     expect(summary.cumulativeLayoutShift).toBe(0.25);
   });
 
-  it('uses typed source and compositor adapters and refuses malformed source data', () => {
-    let cursor = 4;
-    const removeSource = installSourceMonitorAdapter(() => ({ cursor, parserBoundaries: cursor }));
-    const source = context('source-rewind', ['source-rewind']);
-    const sourceHost = createBuiltinMonitor(spec('source-rewind', ['source-rewind']), source.context)!;
-    cursor = 2;
-    sourceHost.heartbeat?.(10);
-    const sourceSummary = sourceHost.stop?.(20) as { 'source-rewind': { cursor: number }; counts: { rewinds: number } };
-    expect(sourceSummary['source-rewind'].cursor).toBe(2);
-    expect(sourceSummary.counts.rewinds).toBe(1);
-    removeSource();
-
-    const removeCompositor = installCompositorMonitorAdapter(() => ({ presentedFrames: 2, droppedFrames: 1 }));
-    const compositor = context('compositor-counters', ['compositor-counters']);
-    const compositorHost = createBuiltinMonitor(spec('compositor-counters', ['compositor-counters']), compositor.context)!;
-    const compositorSummary = compositorHost.stop?.(20) as { compositor: { droppedFrames: number } };
-    expect(compositorSummary.compositor.droppedFrames).toBe(1);
-    removeCompositor();
-  });
-
-  it('restores a previous adapter after nested replacement cleanup', () => {
-    const removeFirst = installSourceMonitorAdapter(() => ({ cursor: 1 }));
-    const removeSecond = installSourceMonitorAdapter(() => ({ cursor: 2 }));
-    removeSecond();
-    const source = context('source-rewind', ['source-rewind']);
-    const host = createBuiltinMonitor(spec('source-rewind', ['source-rewind']), source.context)!;
-    const summary = host.stop?.(10) as { 'source-rewind': { cursor: number } };
-    expect(summary['source-rewind'].cursor).toBe(1);
-    removeFirst();
-  });
 });

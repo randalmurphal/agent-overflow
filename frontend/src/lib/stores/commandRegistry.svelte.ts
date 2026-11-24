@@ -32,7 +32,7 @@ export interface CommandFlags {
   turnActive: boolean;
   /**
    * True between the moment the user clicks Send and the moment
-   * SendMessage resolves. Lets the interrupt keybinding fire
+   * SendMessageWithOptions resolves. Lets the interrupt keybinding fire
    * during the dispatch window before `provider:turn_started`
    * lands.
    */
@@ -218,10 +218,6 @@ export function registerCommand(cmd: Command): void {
   const whenAst = cmd.when ? tryParseWhen(cmd.when) : null;
   const offeredAst = cmd.offeredWhen ? tryParseWhen(cmd.offeredWhen) : null;
   commands.set(cmd.id, { ...cmd, whenAst, offeredAst });
-}
-
-export function unregisterCommand(id: string): void {
-  commands.delete(id);
 }
 
 export function listCommands(): Command[] {

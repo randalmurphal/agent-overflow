@@ -37,7 +37,7 @@ func noSessionQueueThread(t *testing.T, app *App, name string) (store.Thread, st
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeClaudeStdinCaptureBinary(t, capture)}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 	return thread, capture
 }
 

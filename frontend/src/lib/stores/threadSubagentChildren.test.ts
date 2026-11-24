@@ -7,7 +7,6 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane } from './thread.svelte';
-import { __resetAgentPaneStateForTest } from './agentPane.svelte';
 import { createAgentScopeView } from './agentScopeView.svelte';
 import { type Item } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -27,7 +26,6 @@ describe('subagent children', () => {
   beforeEach(() => {
     installTimelineScopeCapability();
     installThreadPaneTestEnv();
-    __resetAgentPaneStateForTest();
   });
 
   describe('main window scope', () => {
@@ -404,6 +402,7 @@ describe('subagent children', () => {
       expect(itemCountDuringGuard).toBe(MAX + 1);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items[0].id).toBe(`t${MAX + 1 - TARGET}`);
+      expect(pane.hasMoreHistory).toBe(true);
       expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
 
@@ -549,62 +548,6 @@ describe('subagent children', () => {
       pane.retryDeferredRecentWindowPrune();
 
       expect(retryPreserve).toHaveBeenCalledTimes(1);
-      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(pane.items[0].id).toBe(`t${MAX + 1 - TARGET}`);
-      expect(pane.hasMoreHistory).toBe(true);
-      expect(pane.hasDeferredRecentWindowPrune).toBe(false);
-    });
-
-    it('keeps prune mutation ownership in the pane after the viewport guard approves it', async () => {
-      const pane = createThreadPane();
-      const initial = Array.from({ length: MAX }, (_, index) =>
-        makeItem({
-          id: `t${index}`,
-          threadId: 'prune-missing-run',
-          turnIndex: index,
-          itemIndex: 0,
-        }),
-      );
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: initial,
-        oldestTurnIndex: 0,
-        newestTurnIndex: MAX - 1,
-        hasMore: false,
-        hasMoreOlder: false,
-        hasMoreNewer: false,
-      }));
-      await pane.switchThread(makeThread({ id: 'prune-missing-run' }));
-      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: MAX, startedAt: 1 });
-      pane.upsertItem(
-        makeItem({
-          id: `t${MAX}`,
-          threadId: 'prune-missing-run',
-          turnIndex: MAX,
-          itemIndex: 0,
-        }),
-      );
-
-      const canPreserveTimelineWindow = vi.fn(() => true);
-      pane.attachScrollController(
-        stubScrollController({ canPreserveTimelineWindow }),
-      );
-
-      pane.settleTurn({
-        turnId: 'turn-800',
-        turnIndex: MAX,
-        startedAt: 1,
-        completedAt: 2,
-        stopReason: 'end_turn',
-        assistantMessageId: null,
-        tokenUsage: null,
-        aborted: false,
-        errorMessage: '',
-      });
-      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
-
-      pane.retryDeferredRecentWindowPrune();
-
-      expect(canPreserveTimelineWindow).toHaveBeenCalledTimes(1);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items[0].id).toBe(`t${MAX + 1 - TARGET}`);
       expect(pane.hasMoreHistory).toBe(true);

@@ -14,7 +14,7 @@ import (
 	"agent-overflow/internal/store"
 )
 
-const localCommandFixture = "../../docs/references/fixtures/claude/local_command_20260803.ndjson"
+const localCommandFixture = "../provider/wirecaptures/claude/local_command_20260803.ndjson"
 
 func commandResultEvent(threadID, itemID, text string) provider.ProviderEvent {
 	return provider.ProviderEvent{

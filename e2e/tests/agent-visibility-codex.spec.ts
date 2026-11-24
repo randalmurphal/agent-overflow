@@ -236,11 +236,11 @@ async function startSpawnTurn(
   await harness.open(page);
   await page.getByText(title).click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'review this', null);
+  await harness.send(threadId, 'review this');
   return mockId;
 }
 
-test('a Codex spawn_agent child keeps its launched row, opens the same pane, and gets its card at the completion', async ({
+test('a Codex spawn_agent child keeps its launched row, opens the same pane, and gets its card at the completion, whose answer renders once', async ({
   harness,
   page,
 }) => {
@@ -331,45 +331,26 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   expect(cardBox!.y).toBeGreaterThan(spawnBox!.y + spawnBox!.height - 1);
   // The launch row is still the launch row.
   await expect(spawnRow.getByTestId('collab-tool-row')).toHaveCount(1);
-});
 
-// Regression pin — a Codex child's answer renders ONCE, as its own
-// message, formatted and whole.
-//
-// The answer exists in three places: the child's own assistant row
-// (parented to the spawn), the FINAL_ANSWER envelope that puts it into
-// the parent's model context, and the 240-char `payloadMeta.preview` on
-// the completion sibling. Only the first is a message. The preview is
-// the COLLAPSED one-liner and nothing else — rendering it in the body
-// too showed the same text twice, unformatted and cut mid-word (user
-// ruling 2026-08-23).
-test('a Codex child\u2019s answer renders once, as a normal message', async ({
-  harness,
-  page,
-}) => {
-  const mockId = await startSpawnTurn(harness, page, 'codex-answer-app', 'Codex answer');
-  await waitForGate(harness, 'tokens');
-  await advance(harness, mockId, 'tokens');
-  await waitForGate(harness, 'tools');
-  await advance(harness, mockId, 'tools');
-  await waitForGate(harness, 'answer');
-  await advance(harness, mockId, 'answer');
-  await harness.waitForEvent('provider:turn_completed');
-
-  const timeline = page.getByTestId('message-timeline-scroll');
-  const card = timeline.getByTestId('subagent-group').first();
+  // --- The answer renders ONCE, as its own message, formatted and whole
+  // The answer exists in three places: the child's own assistant row
+  // (parented to the spawn), the FINAL_ANSWER envelope that puts it into
+  // the parent's model context, and the 240-char `payloadMeta.preview` on
+  // the completion sibling. Only the first is a message. The preview is
+  // the COLLAPSED one-liner and nothing else — rendering it in the body
+  // too showed the same text twice, unformatted and cut mid-word (user
+  // ruling 2026-08-23).
   await expect(card.getByTestId('subagent-group-preview')).toContainText(FINAL_ANSWER);
-
   await card.getByTestId('subagent-group-toggle').first().click();
   const body = card.getByTestId('subagent-group-body');
   await expect(body).toContainText(FINAL_ANSWER);
-  await expect(card.getByTestId('subagent-group-final-answer')).toHaveCount(0);
   await expect(body.getByText(FINAL_ANSWER, { exact: false })).toHaveCount(1);
-
+  // The card's own door opens the child's pane with the answer in it.
+  await pane.getByTestId('agent-pane-close').click();
+  await expect(pane).toHaveCount(0);
   await card.getByTestId('subagent-group-open-pane').first().click();
-  const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane.getByTestId('agent-pane-timeline')).toContainText(FINAL_ANSWER);
-  await expect(pane.getByTestId('agent-pane-final-answer')).toHaveCount(0);
+  await expect(pane.getByText(FINAL_ANSWER, { exact: false }).filter({ visible: true })).toHaveCount(1);
   await expect(pane.getByTestId('agent-pane-empty')).toHaveCount(0);
 });
 
@@ -457,16 +438,16 @@ for (const rootRunning of [false, true]) {
     await page.getByText(title).click();
     const mockId = await startMock(harness, threadId);
     const firstTurnDone = harness.waitForEvent('provider:turn_completed');
-    await harness.rpc('SendMessage', threadId, 'build it in the background', null);
+    await harness.send(threadId, 'build it in the background');
     await firstTurnDone;
-    if (rootRunning) await harness.rpc('SendMessage', threadId, 'keep going', null);
+    if (rootRunning) await harness.send(threadId, 'keep going');
 
     await waitForGate(harness, 'late');
     await advance(harness, mockId, 'late');
 
     interface Row { id: string; parentId: string; turnIndex: number; status: string }
-    const spawn = async () => (await harness.rpc<Row[]>('ListItems', threadId, true)).find(row => row.id === SPAWN_CALL);
-    await expect.poll(async () => (await harness.rpc<Row[]>('ListItems', threadId, true))
+    const spawn = async () => (await harness.items<Row>(threadId, true)).find(row => row.id === SPAWN_CALL);
+    await expect.poll(async () => (await harness.items<Row>(threadId, true))
       .filter(row => row.id === CHILD_BG_CMD)
       .map(row => [row.parentId, row.turnIndex, row.status]))
       .toEqual([[SPAWN_CALL, (await spawn())!.turnIndex, 'completed']]);
@@ -485,10 +466,11 @@ for (const rootRunning of [false, true]) {
 
     // Cutting the later turn keeps the agent's command; the cut message is
     // replaced by the resend.
-    const later = (await harness.rpc<Row[]>('ListItems', threadId, true)).find(row => row.id === 'user:2');
+    const later = (await harness.items<Row & { kind: string; summary: string }>(threadId, true))
+      .find(row => row.kind === 'user_text' && row.summary === 'keep going');
     expect(later).toBeTruthy();
-    await harness.rpc('RevertConversationAndResendMessage', threadId, 'user:2', { content: 'keep going, rephrased' });
-    await expect.poll(async () => (await harness.rpc<(Row & { summary: string })[]>('ListItems', threadId, true))
+    await harness.rpc('RevertConversationAndResendMessage', threadId, later!.id, { content: 'keep going, rephrased' });
+    await expect.poll(async () => (await harness.items<Row & { summary: string }>(threadId, true))
       .filter(row => row.id === CHILD_BG_CMD || row.summary === 'keep going')
       .map(row => row.id))
       .toEqual([CHILD_BG_CMD]);
@@ -573,14 +555,14 @@ test('a Codex child’s command from an earlier execution is in neither card whe
   await page.getByText(title).click();
   const mockId = await startMock(harness, threadId);
   const firstTurnDone = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'review, and keep the build running', null);
+  await harness.send(threadId, 'review, and keep the build running');
   await firstTurnDone;
   const timeline = page.getByTestId('message-timeline-scroll');
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
   const cardA = timeline.getByTestId('subagent-group').first();
   await expect(cardA.getByTestId('subagent-group-tools')).toHaveCount(0);
 
-  await harness.rpc('SendMessage', threadId, 'one more pass', null);
+  await harness.send(threadId, 'one more pass');
   // The running execution's live count, as the backend answers it.
   const liveTools = async () => ((await harness.rpc<{ subagentProgress: { itemId: string; progress: { toolUses?: number } }[] }>('GetThreadLiveState', threadId))
     .subagentProgress.find(entry => entry.itemId === SPAWN_CALL)?.progress.toolUses ?? 0);
@@ -588,7 +570,7 @@ test('a Codex child’s command from an earlier execution is in neither card whe
   await expect.poll(liveTools).toBe(1);
   await advance(harness, mockId, 'late');
   interface Row { id: string; parentId: string; turnIndex: number; meta?: string }
-  await expect.poll(async () => (await harness.rpc<Row[]>('ListItems', threadId, true))
+  await expect.poll(async () => (await harness.items<Row>(threadId, true))
     .filter(row => row.id === CHILD_BG_CMD)
     .map(row => [row.parentId, JSON.parse(row.meta ?? '{}').codex_execution_turn_id]))
     .toEqual([[SPAWN_CALL, 'child-turn']]);

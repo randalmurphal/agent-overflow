@@ -33,7 +33,7 @@ import (
 //
 // Verified against Claude Code 2.1.219; see
 // docs/references/claude-wire.md §get_context_usage and
-// docs/references/fixtures/claude/context_usage_control_20260803.summary.json.
+// internal/provider/wirecaptures/claude/context_usage_control_20260803.summary.json.
 type ContextUsage struct {
 	// TotalTokens is the context the model actually sees. It is the sum of
 	// the non-deferred, non-free-space categories — deferred tool

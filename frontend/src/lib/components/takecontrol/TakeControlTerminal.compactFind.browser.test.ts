@@ -25,7 +25,7 @@ vi.mock('../terminal/terminalXterm', async (importOriginal) => {
 
 import TakeControlTerminal from './TakeControlTerminal.svelte';
 import { TERMINAL_FIND_ACTIVE_CLASS } from '../terminal/terminalFindLayer';
-import { closePaneFind, getPaneFindProvider, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import { closePaneFind, getPaneFindProvider, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -52,7 +52,6 @@ function intersects(a: DOMRect, b: DOMRect): boolean {
 beforeEach(async () => {
   await page.viewport(412, 839);
   setCompactLayoutForTest(true);
-  resetPaneFindForTest();
   captured.term = null;
   setBindingMock('ProviderTerminalAttach', async () => ({ terminalID: 'term-compact', threadID: 'thread-compact', summary: { cols: 0, rows: 0 } }));
   // A fresh session: a match on its first line.
@@ -74,7 +73,6 @@ afterEach(() => {
   if (component) unmount(component);
   component = null;
   captured.term = null;
-  resetPaneFindForTest();
   setCompactLayoutForTest(false);
   document.body.replaceChildren();
 });

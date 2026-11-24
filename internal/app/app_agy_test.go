@@ -15,6 +15,8 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/google/uuid"
 )
 
 func writeSharedPoolAgyBinary(t *testing.T, logPath string) string {
@@ -94,10 +96,10 @@ func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T
 		t.Fatal(err)
 	}
 
-	if err := app.StartSession(threadA.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), threadA.ID); err != nil {
 		t.Fatalf("StartSession(A): %v", err)
 	}
-	if err := app.StartSession(threadB.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), threadB.ID); err != nil {
 		t.Fatalf("StartSession(B): %v", err)
 	}
 
@@ -166,7 +168,7 @@ func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T
 	}
 
 	// Send a turn on thread A and verify the response lands on the timeline.
-	if err := app.SendMessage(context.Background(), threadA.ID, "hello agy", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadA.ID, "hello agy", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage(A): %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -359,10 +361,10 @@ func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testi
 
 	// 2. Run Turn 1, stop/disconnect session, reconnect, and run Turn 2.
 	// Both turns MUST land as distinct turn rows in SQLite (no acp-turn-1 collision).
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession(1): %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "turn one", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "turn one", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage(1): %v", err)
 	}
 	waitAssistantCount := func(want int) {
@@ -389,10 +391,10 @@ func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testi
 	if err := app.StopSession(thread.ID); err != nil {
 		t.Fatalf("StopSession: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession(2): %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "turn two", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "turn two", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage(2): %v", err)
 	}
 	waitAssistantCount(2)
@@ -415,7 +417,7 @@ func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testi
 	if turns[0].TurnID == turns[1].TurnID || turns[1].TurnID == turns[2].TurnID {
 		t.Fatalf("reconnected turn overwrote prior turn ID: %q / %q / %q", turns[0].TurnID, turns[1].TurnID, turns[2].TurnID)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 
 	// 3. isAgyNativePromptItem counts both visible user_text and AskUserQuestion with prompt_dispatched:true.
 	if !isAgyNativePromptItem(store.Item{Kind: "tool_call", ToolName: "AskUserQuestion", Meta: `{"prompt_dispatched":true}`}) {

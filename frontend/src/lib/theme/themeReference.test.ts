@@ -8,11 +8,10 @@
 // description or changing a default in app.css all fail here until the
 // generator is re-run.
 
-import { readFileSync } from 'node:fs';
+import committedSchema from '../../../../internal/theme/assets/theme.schema.json?raw';
+import committedTokens from '../../../../internal/theme/assets/TOKENS.md?raw';
 import { describe, expect, it } from 'vitest';
 import {
-  SCHEMA_PATH,
-  TOKENS_PATH,
   buildSchema,
   generateThemeReference,
   parseCssBlocks,
@@ -20,17 +19,21 @@ import {
 import { TOKEN_REGISTRY, tokensInSection, type ThemeSection } from './tokenRegistry';
 import { MAX_NAME_LENGTH, MAX_VALUE_LENGTH } from './themeParse';
 
+// The generator reads these stylesheets itself; importing them here makes
+// `vitest --changed` select this file when one changes.
+import.meta.glob(['../../app.css', '../../styles/tokens.css', '../../styles/syntax.css'], { query: '?raw' });
+
 const REGENERATE = 'Run: cd frontend && node scripts/generate-theme-reference.mjs';
 
 describe('generated theme reference', () => {
   const generated = generateThemeReference() as { schema: string; tokensMd: string };
 
   it('matches the committed theme.schema.json', () => {
-    expect(readFileSync(SCHEMA_PATH, 'utf8'), REGENERATE).toBe(generated.schema);
+    expect(committedSchema, REGENERATE).toBe(generated.schema);
   });
 
   it('matches the committed TOKENS.md', () => {
-    expect(readFileSync(TOKENS_PATH, 'utf8'), REGENERATE).toBe(generated.tokensMd);
+    expect(committedTokens, REGENERATE).toBe(generated.tokensMd);
   });
 
   it('enumerates every registry key in the schema, and refuses anything else', () => {

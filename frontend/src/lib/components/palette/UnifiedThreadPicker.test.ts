@@ -43,7 +43,6 @@ async function seedThreads(threads: Thread[]): Promise<void> {
 beforeEach(async () => {
   resetThreadStatuses();
   setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
   await seedThreads([]);
 });
 
@@ -194,34 +193,18 @@ describe('<UnifiedThreadPicker> — visibility', () => {
 // ---- Filtering ----
 
 describe('<UnifiedThreadPicker> — filtering', () => {
-  it('filters by title substring (case-insensitive)', async () => {
-    await seedThreads([
-      makeThread({ id: 'a', title: 'Refactor storage layer' }),
-      makeThread({ id: 'b', title: 'Design system spike' }),
-    ]);
+  it.each([
+    { field: 'title substring (case-insensitive)', a: { title: 'Refactor storage layer' }, b: { title: 'Design system spike' }, query: 'DESIGN' },
+    { field: 'project path', a: { title: 'Alpha', projectPath: '/home/me/work/alpha' }, b: { title: 'Bravo', projectPath: '/home/me/work/bravo' }, query: 'bravo' },
+  ])('filters by $field', async ({ a, b, query }) => {
+    await seedThreads([makeThread({ id: 'a', ...a }), makeThread({ id: 'b', ...b })]);
     const pane = makePane();
     const { getByTestId, queryByTestId } = render(UnifiedThreadPicker, {
       open: true,
       pane,
       onClose: vi.fn(),
     });
-    await fireEvent.input(getByTestId('thread-picker-input'), { target: { value: 'DESIGN' } });
-    expect(getByTestId('thread-picker-hit-b')).toBeInTheDocument();
-    expect(queryByTestId('thread-picker-hit-a')).toBeNull();
-  });
-
-  it('filters by project path', async () => {
-    await seedThreads([
-      makeThread({ id: 'a', title: 'Alpha', projectPath: '/home/me/work/alpha' }),
-      makeThread({ id: 'b', title: 'Bravo', projectPath: '/home/me/work/bravo' }),
-    ]);
-    const pane = makePane();
-    const { getByTestId, queryByTestId } = render(UnifiedThreadPicker, {
-      open: true,
-      pane,
-      onClose: vi.fn(),
-    });
-    await fireEvent.input(getByTestId('thread-picker-input'), { target: { value: 'bravo' } });
+    await fireEvent.input(getByTestId('thread-picker-input'), { target: { value: query } });
     expect(getByTestId('thread-picker-hit-b')).toBeInTheDocument();
     expect(queryByTestId('thread-picker-hit-a')).toBeNull();
   });
@@ -246,32 +229,20 @@ describe('<UnifiedThreadPicker> — filtering', () => {
     expect(ordered[1]).toBe('thread-picker-hit-sub');
   });
 
-  it('highlights matching substrings with <mark>', async () => {
-    await seedThreads([makeThread({ id: 'a', title: 'Release pipeline' })]);
+  it.each([
+    { rule: 'matching substrings with <mark>', title: 'Release pipeline', query: 'release', marked: 'Release' },
+    { rule: 'by its own filter rule, at the match after a character whose lower case is longer', title: 'İzmir ÉCOLE notes', query: 'école', marked: 'ÉCOLE' },
+  ])('highlights $rule', async ({ title, query, marked }) => {
+    await seedThreads([makeThread({ id: 'a', title })]);
     const pane = makePane();
     const { getByTestId, findByTestId } = render(UnifiedThreadPicker, {
       open: true,
       pane,
       onClose: vi.fn(),
     });
-    await fireEvent.input(getByTestId('thread-picker-input'), { target: { value: 'release' } });
+    await fireEvent.input(getByTestId('thread-picker-input'), { target: { value: query } });
     const row = await findByTestId('thread-picker-hit-a');
-    const marks = row.querySelectorAll('mark');
-    expect(marks.length).toBeGreaterThan(0);
-    expect(marks[0].textContent).toBe('Release');
-  });
-
-  it('highlights by its own filter rule, at the match after a character whose lower case is longer', async () => {
-    await seedThreads([makeThread({ id: 'a', title: 'İzmir ÉCOLE notes' })]);
-    const pane = makePane();
-    const { getByTestId, findByTestId } = render(UnifiedThreadPicker, {
-      open: true,
-      pane,
-      onClose: vi.fn(),
-    });
-    await fireEvent.input(getByTestId('thread-picker-input'), { target: { value: 'école' } });
-    const row = await findByTestId('thread-picker-hit-a');
-    expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['ÉCOLE']);
+    expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual([marked]);
   });
 
   it('shows the "N more — refine your query" footer when results exceed the cap', async () => {
@@ -350,21 +321,6 @@ describe('<UnifiedThreadPicker> — keyboard', () => {
     expect(getByTestId('thread-picker-hit-c').getAttribute('aria-current')).toBe('true');
     // Backdrop is still the place Escape lands.
     expect(document.querySelector('[data-modal-backdrop]')).not.toBeNull();
-  });
-
-  it('Enter switches to the highlighted thread and calls onClose', async () => {
-    await seedThreads([
-      makeThread({ id: 'a', title: 'Alpha' }),
-      makeThread({ id: 'b', title: 'Bravo' }),
-    ]);
-    const onClose = vi.fn();
-    const pane = makePane();
-    const { getByTestId } = render(UnifiedThreadPicker, { open: true, pane, onClose });
-    const body = getByTestId('thread-picker');
-    await fireEvent.keyDown(body, { key: 'ArrowDown' });
-    await fireEvent.keyDown(body, { key: 'Enter' });
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(pane.threadId).toBe('b');
   });
 
   it('does not open a thread while an IME composition is active', async () => {

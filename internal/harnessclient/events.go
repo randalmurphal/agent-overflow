@@ -112,7 +112,7 @@ type WaitOptions struct {
 // and returns, so a caller can then do the thing that produces the event
 // without a window in which the answer could arrive unobserved. That is
 // the difference between `send` and `send --wait`: a mock can complete a
-// turn inside the SendMessage round trip.
+// turn inside the send round trip.
 type Awaiting struct {
 	c       *Client
 	key     int

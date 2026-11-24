@@ -71,7 +71,7 @@ test('Back resolves the find on the pane on screen, not the thread focus stayed 
   await page.getByTestId('thread-row').filter({ hasText: 'Find beside agent' }).click();
   await expect(screen).toHaveAttribute('data-compact-screen', 'thread');
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'check the notes', null);
+  await harness.send(threadId, 'check the notes');
   await harness.waitForEvent('provider:turn_completed');
 
   const thread = page.locator('section[data-pane-kind="thread"]');

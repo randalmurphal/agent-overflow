@@ -7,17 +7,15 @@ import { applySettingsSnapshot } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { resetEditorsForTest } from '../../stores/editors.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
-import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
+import { applyBrowserCompanionState } from '../../stores/browserCompanion.svelte';
+import { closeCompanion, companionForSource, installCompanionPanes } from '../../stores/companionPanes.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Project, Thread } from '../../types/models';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock, getBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { commitList } from '../../../test/helpers/commitList';
 import { __setTransportHelloForTest, __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
@@ -117,8 +115,6 @@ function installSubscribeMock(initial: GitStatus, id = 'sub-1', cwd = WORKSPACE)
 
 describe('<ChatHeaderActions> badge gating', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => makeThread());
@@ -160,6 +156,8 @@ describe('<ChatHeaderActions> badge gating', () => {
 
   it('clicking the workspace +/- opens review on the workspace scope', async () => {
     const pane = await buildPane();
+    // Opening review reads the workspace diff: no changes.
+    setReviewDiffMock('OpenWorkspaceDiff', () => '');
     setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
     installSubscribeMock(status({ insertions: 2, deletions: 0 }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
@@ -198,8 +196,6 @@ describe('<ChatHeaderActions> badge gating', () => {
 
 describe('<ChatHeaderActions> subscription effect', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => makeThread());
@@ -227,41 +223,26 @@ describe('<ChatHeaderActions> subscription effect', () => {
     expect(getBindingMock('GitStatusUnsubscribe')).not.toHaveBeenCalled();
   });
 
-  it('does NOT re-subscribe when the pane switches threads inside one workspace', async () => {
+  it('subscribes on the CHECKOUT, and a thread swap inside it does not resubscribe', async () => {
     // The entity is the WORKSPACE. Switching which thread a pane shows says
     // nothing about the checkout, so a release + re-attach here would bounce
     // the backend refcount through zero: the fs watcher torn down and
-    // rebuilt, and every badge in the header blanked, for nothing.
-    const thread = makeThread({ id: 'thread-a', workspacePath: WORKSPACE });
-    const pane = await buildPane(thread);
+    // rebuilt, and every badge in the header blanked, for nothing. The ref
+    // is derived off the two primitive strings, so its identity does not move
+    // either — an identity churn here would re-source on every streamed token.
+    const pane = await buildPane(makeThread({ id: 'thread-a', workspacePath: WORKSPACE }));
     const { subscribeFn } = installSubscribeMock(status({ insertions: 3 }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();
     expect(subscribeFn).toHaveBeenCalledTimes(1);
-
-    pane.replaceThread(makeThread({ id: 'thread-b', workspacePath: WORKSPACE }));
-    await flush();
-
-    expect(subscribeFn).toHaveBeenCalledTimes(1);
-    expect(getBindingMock('GitStatusUnsubscribe')).not.toHaveBeenCalled();
-    // And the observation is still there — no blank frame on the switch.
-    expect(getByTestId('workspace-diff-counts').textContent).toContain('+3');
-  });
-
-  it('subscribes on the CHECKOUT, and a thread swap inside it does not resubscribe', async () => {
-    // The subject is the directory, not the row: swapping which conversation
-    // the pane shows inside one worktree is not a different watcher. The ref
-    // is derived off the two primitive strings, so its identity does not move
-    // either — an identity churn here would re-source on every streamed token.
-    const pane = await buildPane(makeThread({ id: 'thread-a', workspacePath: WORKSPACE }));
-    const { subscribeFn } = installSubscribeMock(status());
-    render(ChatHeaderActions, { props: { pane } });
-    await flush();
     expect(subscribeFn).toHaveBeenCalledWith(WS);
 
     pane.replaceThread(makeThread({ id: 'thread-b', workspacePath: WORKSPACE }));
     await flush();
     expect(subscribeFn).toHaveBeenCalledTimes(1);
+    expect(getBindingMock('GitStatusUnsubscribe')).not.toHaveBeenCalled();
+    // And the observation is still there — no blank frame on the switch.
+    expect(getByTestId('workspace-diff-counts').textContent).toContain('+3');
 
     // A reconnect re-acquires every key; the store asks the ctx again, and
     // gets the ref the pane holds NOW.
@@ -388,10 +369,10 @@ describe('<ChatHeaderActions> compact header menu', () => {
   // Thread actions menu both layouts share. No command palette button: the
   // phone has no chords for it to stand in for.
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -484,10 +465,10 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
   const INERT = 'Not granted to this device';
 
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -499,24 +480,25 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
     resetToLocalPage();
   });
 
-  it('disables New Thread, Same Assistant without threads:autonomy, which the next thread rides', async () => {
+  it.each([
+    {
+      name: 'disables New Thread, Same Assistant without threads:autonomy, which the next thread rides',
+      thread: { agentId: 'agent-1' },
+      testId: 'chat-header-next-thread',
+    },
+    {
+      name: 'disables the desktop take-control button with the reason',
+      thread: { provider: 'claude-tui' as const },
+      testId: 'take-control-toggle',
+    },
+  ])('$name', async ({ thread, testId }) => {
     installSubscribeMock(status({}));
-    const pane = await buildPane(makeThread({ agentId: 'agent-1' }));
+    const pane = await buildPane(makeThread(thread));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();
-    const next = getByTestId('chat-header-next-thread') as HTMLButtonElement;
-    expect(next.disabled).toBe(true);
-    expect(next.title).toBe(INERT);
-  });
-
-  it('disables the desktop take-control button with the reason', async () => {
-    installSubscribeMock(status({}));
-    const pane = await buildPane(makeThread({ provider: 'claude-tui' }));
-    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
-    await flush();
-    const take = getByTestId('take-control-toggle') as HTMLButtonElement;
-    expect(take.disabled).toBe(true);
-    expect(take.title).toBe(INERT);
+    const control = getByTestId(testId) as HTMLButtonElement;
+    expect(control.disabled).toBe(true);
+    expect(control.title).toBe(INERT);
   });
 
   it('renders the compact terminal and Take control rows inert with the reason', async () => {
@@ -545,10 +527,10 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
 // they are on.
 describe('<ChatHeaderActions> New Thread, Same Assistant with assistants off', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     await loadSettings();
@@ -602,13 +584,11 @@ describe('<ChatHeaderActions> browser toggle', () => {
   const shown = (seq: number) => ({ kind: 'state', threadId: THREAD, activePageId: 'page-1', visible: true, pages: [tab], seq });
 
   beforeEach(async () => {
-    resetPanesForTest();
-    resetEditorsForTest();
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     installCompanionPanes();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The observed branch is persisted; the rows already agree, so none change.
+    setBindingMock('UpdateThreadBranch', async () => []);
     setBindingMock('ListAvailableEditors', async () => []);
     setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
     setBindingMock('BrowserCompanionThreadState', async () => shown(1));
@@ -624,8 +604,6 @@ describe('<ChatHeaderActions> browser toggle', () => {
   afterEach(() => {
     __setTransportHelloForTest(null);
     setCompactLayoutForTest(false);
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
   });
 
   // Pressed is what the layout presents, not the session's visibility.

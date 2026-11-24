@@ -6,7 +6,6 @@
 // hints are pinned here as exactly-one rules for the same drift reason.
 
 import { describe, expect, it } from 'vitest';
-import { runMapTone } from './workflowRunMap';
 import type { RunMapSignal } from './workflowRunMap';
 import { runMapNodeStyle } from './workflowRunMapStyle';
 
@@ -91,7 +90,6 @@ describe('runMapNodeStyle', () => {
 
   it('gives an unknown engine status its own neutral treatment, never a borrowed one', () => {
     const unknown = runMapNodeStyle('unknown');
-    expect(runMapTone('unknown')).toBe('text-fg-muted');
     expect(unknown.glyph).toBe('?');
     // Distinct from every other signal's glyph: it must not read as queued.
     expect(SIGNALS.filter((signal) => runMapNodeStyle(signal).glyph === '?')).toEqual(['unknown']);

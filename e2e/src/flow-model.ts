@@ -1,4 +1,4 @@
-import type { CompatibilityLeg, MonitorId } from './monitor-catalog.ts';
+import type { BuiltinMonitorId, MonitorCompatibilityLeg } from '../../frontend/src/lib/harness/monitorTypes.ts';
 
 export const FUNCTIONAL_FLOW_VERSION = 1 as const;
 export const MAX_FLOW_WAIT_MS = 60_000;
@@ -29,11 +29,11 @@ export type FlowAssertion =
 export interface FlowMonitor {
   id: string;
   /** Registry monitor ID. Omitted keeps the legacy semantic target monitor. */
-  monitorId?: MonitorId;
+  monitorId?: BuiltinMonitorId;
   target?: SemanticTarget;
   durationMs: number;
   intervalMs?: number;
-  compatibilityLeg?: CompatibilityLeg;
+  compatibilityLeg?: MonitorCompatibilityLeg;
 }
 
 export interface FunctionalScenario {
@@ -94,7 +94,7 @@ export interface FlowTypedMonitorResult {
 export interface FlowMonitorResult {
   monitorId: string;
   runId: string;
-  compatibilityLeg?: CompatibilityLeg;
+  compatibilityLeg?: MonitorCompatibilityLeg;
   status: 'complete' | 'partial';
   startedAtMs: number;
   stoppedAtMs: number;

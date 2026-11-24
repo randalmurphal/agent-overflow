@@ -4,7 +4,6 @@ package browser
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
-	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/storage"
 	"github.com/chromedp/chromedp"
 
@@ -39,9 +37,9 @@ import (
 // the mock keychain added on macOS, and hands out a target the shared CDP
 // driver can attach to and navigate; that Dispose leaves no process of it running and an ephemeral
 // profile nowhere on disk; that a persisted profile keeps a cookie set
-// just before Dispose; that a popup's first request passes the
-// workspace's navigation policy; and that the crash handler writes
-// nothing into HOME. Run it after a Chromium major upgrade and before
+// just before Dispose; and that the crash handler writes nothing into
+// HOME. A popup's first request against the workspace's navigation policy
+// is TestHeadlessChromiumRealNavigationPolicy's. Run it after a Chromium major upgrade and before
 // shipping a change to the launch flags or to how a browser is stopped.
 func TestHeadlessChromiumReal(t *testing.T) {
 	if os.Getenv("AO_HEADLESS_CHROMIUM_SMOKE") != "1" {
@@ -119,7 +117,6 @@ func TestHeadlessChromiumReal(t *testing.T) {
 		t.Fatalf("the cookie set before Dispose reads %q after it, want %q", got, cookie.Value)
 	}
 
-	assertRealPopupsPassThePolicy(t, engine)
 	assertRealDocumentTitles(t, engine)
 	assertRealDocumentTitleChanges(t, engine)
 	assertRealEvaluateSemantics(t, engine)
@@ -231,87 +228,6 @@ setTimeout(() => { document.title = typeof __aoDocumentTitle + " by script" }, 3
 		t.Fatalf("a document that is not the tab's reported its title: %s", url)
 	default:
 	}
-}
-
-// assertRealPopupsPassThePolicy opens an outside-workspace file in a popup
-// from a workspace page, as a page script can, with and without an opener.
-// Each popup runs before AttachPage installs its own policy, so what keeps
-// the file out of the adopted page is the workspace's policy.
-func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
-	t.Helper()
-	workspace, outside := t.TempDir(), t.TempDir()
-	index := filepath.Join(workspace, "index.html")
-	secret := filepath.Join(outside, "secret.txt")
-	if err := os.WriteFile(index, []byte("<html><body>workspace</body></html>"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(secret, []byte("outside-secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	inWorkspace := func(url string) bool {
-		return !strings.HasPrefix(url, "file:") || strings.HasPrefix(url, "file://"+workspace+"/")
-	}
-	popups := make(chan enginePopup, 2)
-	engine.events.PopupOpened = func(popup enginePopup) { popups <- popup }
-	downloads := filepath.Join(t.TempDir(), "downloads")
-	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: jarKey(workspace), DownloadDir: downloads, OpenDownloadDir: openDirByName(downloads), Ephemeral: true, Allow: func(_ []frameID, url string) (bool, bool) { return inWorkspace(url), true },
-	})
-	if err != nil {
-		t.Fatalf("new profile: %v", err)
-	}
-	profile := created.(*headlessProfile)
-	defer func() {
-		if err := profile.Dispose(context.Background()); err != nil {
-			t.Errorf("dispose: %v", err)
-		}
-	}()
-	hooks := testPageHooks()
-	hooks.Allow = inWorkspace
-	page, err := profile.NewPage(t.Context(), hooks)
-	if err != nil {
-		t.Fatalf("new page: %v", err)
-	}
-	opCtx, cancel := operationContext(t.Context(), page.Lifetime(), operationTimeout)
-	defer cancel()
-	if err := page.Navigate(opCtx, "file://"+index); err != nil {
-		t.Fatalf("navigate to the workspace page: %v", err)
-	}
-	for _, features := range []string{"", "noopener"} {
-		open := fmt.Sprintf(`window.open(%q, "_blank", %q); 1`, "file://"+secret, features)
-		if _, err := chromedp.Call(opCtx, cdpruntime.Evaluate, cdpruntime.EvaluateParams{Expression: open, UserGesture: new(true)}); err != nil {
-			t.Fatalf("open a popup with features %q: %v", features, err)
-		}
-		var popup enginePopup
-		select {
-		case popup = <-popups:
-		case <-time.After(headlessTestDeadline):
-			t.Fatalf("the popup with features %q was never reported", features)
-		}
-		driver, err := profile.AttachPage(t.Context(), popup.Handle, hooks)
-		if err != nil {
-			t.Fatalf("adopt the popup with features %q: %v", features, err)
-		}
-		popupCtx, popupCancel := operationContext(t.Context(), driver.Lifetime(), operationTimeout)
-		status, _ := driver.PageStatus(popupCtx)
-		for status.Ready != "complete" || status.URL == "about:blank" {
-			if popupCtx.Err() != nil {
-				t.Fatalf("the popup with features %q never finished loading: %+v", features, status)
-			}
-			time.Sleep(20 * time.Millisecond)
-			status, _ = driver.PageStatus(popupCtx)
-		}
-		body, _, err := driverEvaluator(popupCtx, driver, false)(`document.body ? document.body.innerText : ""`, nil)
-		popupCancel()
-		driver.Close()
-		if err != nil {
-			t.Fatalf("read the popup with features %q: %v", features, err)
-		}
-		if strings.Contains(fmt.Sprint(body), "outside-secret") {
-			t.Fatalf("the popup with features %q loaded the outside file at %s", features, status.URL)
-		}
-	}
-	page.Close()
 }
 
 // setRealCookie sets a persistent cookie from a page of profile and

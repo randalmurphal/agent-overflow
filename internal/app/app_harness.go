@@ -24,6 +24,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/def"
+
+	"github.com/google/uuid"
 )
 
 type harnessHost struct {
@@ -121,6 +123,8 @@ func (h *harnessHost) ProviderUpdateFeed() *updatefake.Feed { return h.app.provi
 func (h *harnessHost) RecheckProviderUpdates() { h.app.providerUpdateService().Check() }
 
 func (h *harnessHost) PauseMergedPRCleanup() (resume func()) { return h.app.pauseMergedPRCleanup() }
+
+func (h *harnessHost) MergedPRPolled() time.Time { return h.app.mergedPRPolled() }
 
 func (h *harnessHost) ReplayLog() *replaylog.Manager { return h.app.replay }
 
@@ -326,8 +330,16 @@ func (h *harnessHost) BroadcastThreadRow(threadID string) {
 	h.app.announceThread(h.app.listedAction(threadID), threadID)
 }
 
+func (h *harnessHost) StartSession(threadID string) error {
+	return h.app.startSessionTakingLock(context.Background(), threadID)
+}
+
 func (h *harnessHost) StopSession(threadID string) error {
 	return h.app.StopSession(threadID)
+}
+
+func (h *harnessHost) ListItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
+	return h.app.listThreadItems(threadID, inlinePreviews)
 }
 
 func (h *harnessHost) AwaitSessionEndWork() []string {
@@ -499,8 +511,32 @@ func (h *harnessHost) PublishStoreIdentity(identity store.Identity) {
 	h.app.storeIdentity.Store(&identity)
 }
 
-func (h *harnessHost) SendMessage(threadID, message string) error {
-	return h.app.SendMessage(context.Background(), threadID, message, nil)
+// Send answers, for a send admitted only at rest, the completion floor.
+//
+// The floor is read under the thread action lock once placement admits the
+// send and before the provider opens its turn, so that turn's completion is
+// above it. A completion above it for the same index is an earlier turn's
+// only if a revert cut that turn and freed the index; the revert's
+// replacement settles through the thread's provider event queue, whose one
+// worker finishes each event, emit included, before the next, so the cut
+// turn's completion was published before admission could find the thread
+// at rest. A send failure settled outside the queue is not ordered with it.
+func (h *harnessHost) Send(ctx context.Context, threadID, text string, atRestOnly bool) (harnessrpc.HarnessSendResult, error) {
+	admission := admitQueueing
+	var completionsAfter uint64
+	var onPlaced func()
+	if atRestOnly {
+		admission = admitAtRest
+		onPlaced = func() { completionsAfter = h.app.eventSequence(eventchan.ProviderTurnCompleted) }
+	}
+	item, err := h.app.sendClientMessage(ctx, threadID, text, pageSendOptions(uuid.NewString()), admission, onPlaced)
+	if err != nil {
+		return harnessrpc.HarnessSendResult{}, err
+	}
+	if item.ID == "" {
+		return harnessrpc.HarnessSendResult{Queued: true}, nil
+	}
+	return harnessrpc.HarnessSendResult{TurnIndex: item.TurnIndex, CompletionsAfter: completionsAfter}, nil
 }
 
 var _ harnessrpc.Host = (*harnessHost)(nil)

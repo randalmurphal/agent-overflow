@@ -20,11 +20,10 @@ import {
   loadWorkflowDetail,
   loadWorkflowsOverlayData,
   recordWorkflowReceipt,
-  resetWorkflowRunsForTest,
   retainWorkflowDetails,
 } from './workflowRuns.svelte';
 import { getToasts, removeToast } from './toast.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
 function item(id: string, over: Partial<WorkItem> = {}): WorkItem {
   return { id, projectId: 'p1', state: 'needs-human', reason: 'gate', createdAt: 1, ...over } as WorkItem;
@@ -60,16 +59,12 @@ function clearToasts(): void {
 
 describe('workflowRuns store', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWorkflowRunsForTest();
     clearToasts();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    resetBindingMocks();
-    resetWorkflowRunsForTest();
     clearToasts();
   });
 

@@ -9,7 +9,7 @@
 // (executes steps), and Go tests (author inline scenarios). Frames are
 // carried as raw wire lines — Claude stream-json NDJSON or Codex
 // app-server JSON-RPC — so the captured fixtures under
-// docs/references/fixtures/ can be replayed verbatim; the schema never
+// internal/provider/wirecaptures/ can be replayed verbatim; the schema never
 // re-models provider wire shapes.
 package scenario
 
@@ -61,17 +61,18 @@ type Scenario struct {
 	// works under repeatLast rather than only for the first turn.
 	AfterTurns string `json:"afterTurns,omitempty"`
 
-	// StartupDelayMs makes the app's COLD-START window drivable: the
-	// adapter sleeps this long before writing the first frame that proves
-	// the provider is up — Claude's first per-turn `system/init`, Codex's
-	// `initialize` response. Once per process, not per turn: the thing
-	// under test is a slow provider launch, not slow turns.
+	// StartupGate makes the app's COLD-START window drivable: the adapter
+	// holds the first frame that proves the provider is up (Claude's first
+	// per-turn `system/init`, Codex's and ACP's `initialize` response)
+	// behind a gate of this name, reported as waiting_signal with Startup
+	// set. Once per process, not per turn: the thing under test is a slow
+	// provider launch, not slow turns. The first advance naming it releases
+	// it whenever it arrives, and no waitSignal step may share the name. A
+	// mock loaded from a file without a control channel refuses it, since
+	// nothing could release it.
 	//
-	// Zero (the default) is no delay at all. Capped at MaxStartupDelayMs;
-	// a scenario asking for more is a typo, and a mock that sleeps past
-	// the app's own spawn timeout tests the timeout rather than the
-	// window.
-	StartupDelayMs int `json:"startupDelayMs,omitempty"`
+	// Empty (the default) holds nothing.
+	StartupGate string `json:"startupGate,omitempty"`
 
 	// ExitDelayMs makes the app's SHUTDOWN window drivable: after the app
 	// closes stdin the adapter sleeps this long before exiting, as a real
@@ -360,7 +361,7 @@ type ApprovalStep struct {
 	// are load-bearing downstream: triage resolves AgentID to the launch
 	// tool_use so the prompt scopes to the agent's card rather than the
 	// main thread. Captured shape:
-	// docs/references/fixtures/claude/can_use_tool_agent_id_20260822.ndjson.
+	// internal/provider/wirecaptures/claude/can_use_tool_agent_id_20260822.ndjson.
 	// Omitted fields are left off the request, which is the top-level
 	// (main-agent) shape. Both support ${VAR} substitution.
 	ToolUseID string `json:"toolUseId,omitempty"`
@@ -463,12 +464,6 @@ func (v Vars) Substitute(line string) string {
 	return out
 }
 
-// MaxStartupDelayMs caps Scenario.StartupDelayMs at 30 seconds. The
-// knob exists to drive the app's cold-start WINDOW; a delay longer than
-// any spawn timeout the app applies stops testing the window and starts
-// testing the timeout, which is a different scenario and should say so.
-const MaxStartupDelayMs = 30_000
-
 // MaxExitDelayMs caps Scenario.ExitDelayMs below the 3s the app waits for a
 // provider to exit after closing its stdin before it signals the process.
 const MaxExitDelayMs = 2_500
@@ -507,8 +502,8 @@ func (s *Scenario) Validate() error {
 	if !afterTurnsModes[s.AfterTurns] {
 		return fmt.Errorf("scenario %q: afterTurns %q must be repeatLast, silent, or exit", s.Name, s.AfterTurns)
 	}
-	if s.StartupDelayMs < 0 || s.StartupDelayMs > MaxStartupDelayMs {
-		return fmt.Errorf("scenario %q: startupDelayMs %d must be between 0 and %d", s.Name, s.StartupDelayMs, MaxStartupDelayMs)
+	if strings.TrimSpace(s.StartupGate) != s.StartupGate {
+		return fmt.Errorf("scenario %q: startupGate %q has surrounding space", s.Name, s.StartupGate)
 	}
 	if s.ExitDelayMs < 0 || s.ExitDelayMs > MaxExitDelayMs {
 		return fmt.Errorf("scenario %q: exitDelayMs %d must be between 0 and %d", s.Name, s.ExitDelayMs, MaxExitDelayMs)
@@ -525,9 +520,12 @@ func (s *Scenario) Validate() error {
 	if len(s.Turns) == 0 && len(s.OnStart) == 0 {
 		return fmt.Errorf("scenario %q: needs at least one turn or onStart step", s.Name)
 	}
-	holdsInput := s.Provider == ProviderClaude && s.Claude != nil && s.Claude.HoldQueuedInput
+	rules := stepRules{
+		holdsInput:  s.Provider == ProviderClaude && s.Claude != nil && s.Claude.HoldQueuedInput,
+		startupGate: s.StartupGate,
+	}
 	for i, step := range s.OnStart {
-		if err := step.validate(holdsInput); err != nil {
+		if err := step.validate(rules); err != nil {
 			return fmt.Errorf("scenario %q: onStart step %d: %w", s.Name, i+1, err)
 		}
 	}
@@ -536,7 +534,7 @@ func (s *Scenario) Validate() error {
 			return fmt.Errorf("scenario %q: turn %d has no steps", s.Name, ti+1)
 		}
 		for si, step := range turn.Steps {
-			if err := step.validate(holdsInput); err != nil {
+			if err := step.validate(rules); err != nil {
 				return fmt.Errorf("scenario %q: turn %d step %d: %w", s.Name, ti+1, si+1, err)
 			}
 		}
@@ -544,9 +542,18 @@ func (s *Scenario) Validate() error {
 	return nil
 }
 
-// validate checks one step; holdsInput says whether the scenario holds
-// queued input for a drainQueuedInput step to consume.
-func (st *Step) validate(holdsInput bool) error {
+// stepRules is what a step's validity depends on beyond the step itself.
+type stepRules struct {
+	// holdsInput: the scenario holds queued input for a drainQueuedInput
+	// step to consume.
+	holdsInput bool
+	// startupGate is the scenario's startupGate, whose name only the
+	// startup hold answers to.
+	startupGate string
+}
+
+// validate checks one step against the scenario's rules.
+func (st *Step) validate(rules stepRules) error {
 	set := 0
 	if st.Emit != nil {
 		set++
@@ -592,18 +599,21 @@ func (st *Step) validate(holdsInput bool) error {
 			return fmt.Errorf("approval: toolName must be non-empty")
 		}
 		for i, sub := range st.Approval.OnAllow {
-			if err := sub.validate(holdsInput); err != nil {
+			if err := sub.validate(rules); err != nil {
 				return fmt.Errorf("approval onAllow step %d: %w", i+1, err)
 			}
 		}
 		for i, sub := range st.Approval.OnDeny {
-			if err := sub.validate(holdsInput); err != nil {
+			if err := sub.validate(rules); err != nil {
 				return fmt.Errorf("approval onDeny step %d: %w", i+1, err)
 			}
 		}
 	}
 	if st.WaitSignal != nil {
 		set++
+		if rules.startupGate != "" && st.WaitSignal.Name == rules.startupGate {
+			return fmt.Errorf("waitSignal: %q is the startupGate's name, and an advance naming it releases only the startup gate", st.WaitSignal.Name)
+		}
 	}
 	if st.Stall != nil {
 		set++
@@ -620,7 +630,7 @@ func (st *Step) validate(holdsInput bool) error {
 			return fmt.Errorf("repeat: steps must be non-empty")
 		}
 		for i, sub := range st.Repeat.Steps {
-			if err := sub.validate(holdsInput); err != nil {
+			if err := sub.validate(rules); err != nil {
 				return fmt.Errorf("repeat step %d: %w", i+1, err)
 			}
 		}
@@ -673,13 +683,13 @@ func (st *Step) validate(holdsInput bool) error {
 	}
 	if st.DrainQueuedInput {
 		set++
-		if !holdsInput {
+		if !rules.holdsInput {
 			return fmt.Errorf("drainQueuedInput: needs provider %q with claude.holdQueuedInput", ProviderClaude)
 		}
 	}
 	if st.CancelQueuedInput {
 		set++
-		if !holdsInput {
+		if !rules.holdsInput {
 			return fmt.Errorf("cancelQueuedInput: needs provider %q with claude.holdQueuedInput", ProviderClaude)
 		}
 	}
@@ -759,6 +769,9 @@ func Parse(data []byte) (*Scenario, error) {
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&s); err != nil {
+		if strings.Contains(err.Error(), `unknown field "startupDelayMs"`) {
+			return nil, fmt.Errorf("parse scenario: startupDelayMs is gone; hold the first provider frame with startupGate and release it with an advance naming the gate")
+		}
 		return nil, fmt.Errorf("parse scenario: %w", err)
 	}
 	if err := s.Validate(); err != nil {

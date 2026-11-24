@@ -11,11 +11,12 @@
 // session's alone.
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { MockInfo } from './workflows-helpers.js';
+import type { HarnessApp } from '../src/harness.js';
 
 const APP_GUIDE_OPENING = 'You are running inside Agent Overflow';
 const UPDATE_OPENING = 'The developer instructions for this conversation have changed.';
 
-type Harness = { rpc: <T>(method: string, ...args: unknown[]) => Promise<T> };
+type Harness = Pick<HarnessApp, 'rpc' | 'startSession'>;
 
 async function codexMocks(harness: Harness): Promise<MockInfo[]> {
   const mocks = await harness.rpc<MockInfo[]>('HarnessListMocks');
@@ -23,11 +24,11 @@ async function codexMocks(harness: Harness): Promise<MockInfo[]> {
 }
 
 // Starts the thread's session and returns the one Codex mock it spawned.
-// StartSession returns after the session's thread is loaded, and the mock
+// HarnessStartSession returns after the session's thread is loaded, and the mock
 // reports an injection before it answers it, so the latched items are
 // complete when this returns.
 async function startSession(harness: Harness, threadId: string, known: Set<string>): Promise<MockInfo> {
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const spawned = (await codexMocks(harness)).filter((mock) => !known.has(mock.mockId));
   expect(spawned).toHaveLength(1);
   known.add(spawned[0].mockId);
@@ -50,7 +51,7 @@ test('a guide change between two sessions of a Codex thread reaches the resumed 
     await expect
       .poll(async () => (await harness.rpc<{ sessionRef?: string }>('GetThread', threadId)).sessionRef ?? '')
       .not.toBe('');
-    await harness.rpc('StopSession', threadId);
+    await harness.stopSession(threadId);
 
     await harness.rpc('UpdateSettings', { agentGuideEnabled: false });
     const resumed = await startSession(harness, threadId, known);
@@ -59,12 +60,12 @@ test('a guide change between two sessions of a Codex thread reaches the resumed 
     expect(injected[0].role).toBe('developer');
     expect(injected[0].text.startsWith(UPDATE_OPENING)).toBe(true);
     expect(injected[0].text).not.toContain(APP_GUIDE_OPENING);
-    await harness.rpc('StopSession', threadId);
+    await harness.stopSession(threadId);
 
     const unchanged = await startSession(harness, threadId, known);
     expect(unchanged.injectedItems ?? []).toEqual([]);
   } finally {
-    await harness.rpc('StopSession', threadId);
+    await harness.stopSession(threadId);
     await harness.rpc('UpdateSettings', { agentGuideEnabled: true });
   }
 });

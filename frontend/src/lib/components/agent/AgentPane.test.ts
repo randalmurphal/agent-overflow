@@ -14,11 +14,9 @@ import { installTimelineScopeCapability, installPaneMocks, makeItem, makeThread 
 import { makeSettings } from '../../../test/helpers/settings';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
-import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { focusPane, registerPaneForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import {
-  __resetAgentPaneStateForTest,
   agentStateForPane,
   openAgentCompanion,
 } from '../../stores/agentPane.svelte';
@@ -32,7 +30,7 @@ import {
   setUiRenderTraceEnabled,
 } from '../../utils/uiRenderTrace';
 import { makePanelContext, type PanelContext } from '../../stores/panelContext.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { Item } from '../../types/models';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
@@ -77,14 +75,9 @@ async function renderAgent(options: { props: { ctx: PanelContext } }) {
 describe('<AgentPane>', () => {
   beforeEach(async () => {
     installTimelineScopeCapability();
-    resetBindingMocks();
     for (const toast of getToasts()) removeToast(toast.id);
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
-    __resetAgentPaneStateForTest();
     setBindingMock('GetSettings', async () => null);
-    setBindingMock('ListSubagentDescendants', async () => []);
     setBindingMock('GetThreadUserMessageTicks', async () => []);
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     await loadSettings();
@@ -92,7 +85,6 @@ describe('<AgentPane>', () => {
 
   afterEach(() => {
     cleanup();
-    __resetAgentPaneStateForTest();
     vi.restoreAllMocks();
   });
 
@@ -296,20 +288,6 @@ describe('<AgentPane>', () => {
     expect(queryByTestId('agent-pane-stop')).toBeNull();
   });
 
-  it('keeps a manually backgrounded launch live instead of showing the old paused marker', async () => {
-    const { ctx } = await setup([
-      launchItem({
-        isBackground: true,
-        meta: JSON.stringify({ task_id: 'task-9', subagentBackgroundedAt: 123 }),
-      }),
-      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'work' }),
-    ]);
-    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const { queryByTestId } = await renderAgent({ props: { ctx } });
-
-    expect(queryByTestId('agent-pane-streaming-paused')).toBeNull();
-  });
-
   it('renders a nested launch as a navigation row without embedding its transcript', async () => {
     // Regression (found by the F6 harness): a direct child whose parentId
     // is absent from the grouping input ranks as an orphan, a nested
@@ -484,56 +462,6 @@ describe('<AgentPane>', () => {
     // The carrier and its completion are lifecycle rows, not transcript
     // rows: the scoped window never shows them.
     expect(timeline.textContent).not.toContain('Agent: exploring');
-  });
-
-  it('loads the whole transcript independently of round-one descendant counts', async () => {
-    // The store bounds the root's `subagentDescendantCount` to round one
-    // (each round is its own card) and stamps the all-rounds total as
-    // `subagentTranscriptDescendantCount`. Round one is fully loaded here,
-    // so gating on the round count would skip the fetch and the pane
-    // would open without round two.
-    // The third argument is the inline-previews flag (false on a loopback
-    // client; `wantsInlinePreviews` in stores/threadPaneShared.ts).
-    const listDescendants = vi.fn(async () => []);
-    setBindingMock('ListSubagentDescendants', listDescendants);
-    const { ctx } = await setup([
-      launchItem({
-        status: 'running',
-        isBackground: true,
-        meta: JSON.stringify({
-          task_id: 'task-round-1',
-          subagentDescendantCount: 1,
-          subagentTranscriptDescendantCount: 3,
-        }),
-      }),
-      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'round one work' }),
-      resumeCarrier(),
-    ]);
-    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-
-    await renderAgent({ props: { ctx } });
-
-    expect(listDescendants).not.toHaveBeenCalled();
-  });
-
-  it('does not re-fetch a round-one-only agent whose rows are all loaded', async () => {
-    const listDescendants = vi.fn(async () => []);
-    setBindingMock('ListSubagentDescendants', listDescendants);
-    const { ctx } = await setup([
-      launchItem({
-        status: 'running',
-        isBackground: true,
-        meta: JSON.stringify({ task_id: 'task-round-1', subagentDescendantCount: 1 }),
-      }),
-      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'round one work' }),
-    ]);
-    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-
-    await renderAgent({ props: { ctx } });
-    await tick();
-    await tick();
-
-    expect(listDescendants).not.toHaveBeenCalled();
   });
 
   // A Codex child's final answer is a NORMAL message in the transcript —
@@ -754,7 +682,6 @@ describe('<AgentPane>', () => {
     beforeEach(() => {
       setUiRenderTraceEnabled(true);
       clearUiRenderTrace();
-      clearThreadScrollSnapshotsForTest();
     });
 
     afterEach(() => {

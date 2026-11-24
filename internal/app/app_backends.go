@@ -322,14 +322,6 @@ func (a *App) RenameBackend(id, nickname string) error {
 	return a.backends.Rename(id, nickname)
 }
 
-// AttachedBackends exposes the manager to the transport, which serves one
-// carried route family per attached machine. Package-level for the same
-// reason BackendIdentity is: it is boot wiring, not a bound method.
-//
-// Returns a nil interface rather than a typed nil when this boot keeps no
-// profiles, so the transport registers no routes at all.
-func AttachedBackends(a *App) *attachedbackends.Manager { return a.backends }
-
 // SetAttachedBackends installs the manager during boot.
 func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 	a.backends = manager

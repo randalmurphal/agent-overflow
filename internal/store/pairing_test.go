@@ -543,37 +543,23 @@ func renew(s *Store, session Session, old, next string, at int64) error {
 	return err
 }
 
+// A renewal spends its predecessor, and the spent row stays readable: the
+// reuse detector is exactly this row surviving its own consumption. If the
+// spend deleted it, a replay would read as a credential that never existed.
 func TestRefreshRotationSpendsThePredecessor(t *testing.T) {
 	s, session := seedRefreshSession(t, "secret-1", 90000)
 	if err := renew(s, session, "secret-1", "secret-2", 2000); err != nil {
 		t.Fatalf("renew: %v", err)
 	}
 	spent, err := s.GetRefreshSecretByHash(refreshHash("secret-1"))
-	if err != nil || !spent.Spent() || spent.ConsumedBy != session.DeviceID {
+	if err != nil || !spent.Spent() || spent.ConsumedBy != session.DeviceID || spent.SessionID != session.ID {
 		t.Fatalf("the renewal did not record the spend: %+v (%v)", spent, err)
-	}
-	if err := renew(s, session, "secret-1", "secret-3", 2500); !errors.Is(err, ErrRefreshReuse) {
-		t.Fatalf("a second renewal with the spent secret = %v, want ErrRefreshReuse", err)
-	}
-}
-
-// TestSpentRefreshSecretStaysReadable — the reuse detector is exactly this
-// row surviving its own consumption. If the spend deleted it, a replay
-// would read as a credential that never existed.
-func TestSpentRefreshSecretStaysReadable(t *testing.T) {
-	s, session := seedRefreshSession(t, "secret-1", 90000)
-	if err := renew(s, session, "secret-1", "secret-2", 2000); err != nil {
-		t.Fatalf("renew: %v", err)
-	}
-	read, err := s.GetRefreshSecretByHash(refreshHash("secret-1"))
-	if err != nil {
-		t.Fatalf("GetRefreshSecretByHash: %v", err)
-	}
-	if !read.Spent() || read.SessionID != session.ID {
-		t.Fatalf("spent secret did not survive readable: %+v", read)
 	}
 	if _, err := s.GetRefreshSecretByHash(refreshHash("never-issued")); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("an unissued hash read as %v, want sql.ErrNoRows", err)
+	}
+	if err := renew(s, session, "secret-1", "secret-3", 2500); !errors.Is(err, ErrRefreshReuse) {
+		t.Fatalf("a second renewal with the spent secret = %v, want ErrRefreshReuse", err)
 	}
 }
 

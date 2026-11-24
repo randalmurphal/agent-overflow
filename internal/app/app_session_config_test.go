@@ -274,7 +274,7 @@ done
 	if err != nil {
 		t.Fatalf("codex.NewSession() error = %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider:      thread.Provider,
 		Token:         "live-codex-token",

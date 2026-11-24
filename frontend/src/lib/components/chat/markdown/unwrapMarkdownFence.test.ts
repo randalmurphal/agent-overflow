@@ -36,26 +36,6 @@ describe('unwrapMarkdownFence', () => {
     );
   });
 
-  it('unwraps ```md (lowercase short alias)', () => {
-    const input = ['```md', '# Title', '```go', 'x := 1', '```', '```'].join('\n');
-    expect(unwrapMarkdownFence(input)).toBe(['# Title', '```go', 'x := 1', '```'].join('\n'));
-  });
-
-  it('unwraps ```MARKDOWN (case-insensitive)', () => {
-    const input = ['```MARKDOWN', '# Title', '```go', 'x := 1', '```', '```'].join('\n');
-    expect(unwrapMarkdownFence(input)).toBe(['# Title', '```go', 'x := 1', '```'].join('\n'));
-  });
-
-  it('preserves up-to-3-space leading indent on the opener', () => {
-    const input = ['   ```markdown', '# Title', '```go', 'code', '```', '   ```'].join('\n');
-    expect(unwrapMarkdownFence(input)).toBe(['# Title', '```go', 'code', '```'].join('\n'));
-  });
-
-  it('leaves content alone when the wrapper has no language tag', () => {
-    const input = ['```', '# Title', '```go', 'code', '```', '```'].join('\n');
-    expect(unwrapMarkdownFence(input)).toBe(input);
-  });
-
   it('leaves content alone when there is no inner fence', () => {
     const input = ['```markdown', '', 'Just some text with no code blocks.', '', '```'].join('\n');
     expect(unwrapMarkdownFence(input)).toBe(input);
@@ -255,29 +235,15 @@ describe('unwrapMarkdownFence', () => {
     expect(unwrapMarkdownFence(input)).toBe(input);
   });
 
-  it('unwraps an opener preceded by up to three blank characters', () => {
-    const input = ['', '```markdown', '# Title', '```go', 'code', '```', '```'].join('\n');
-    expect(unwrapMarkdownFence(input)).toBe(['# Title', '```go', 'code', '```'].join('\n'));
-  });
-
-  it('unwraps an opener with trailing whitespace', () => {
-    const input = ['```markdown   ', '# Title', '```go', 'code', '```', '```'].join('\n');
+  // Three is the guard boundary: the opener sits within the first four characters.
+  it.each([1, 3])('unwraps an opener preceded by %i blank lines', (blanks) => {
+    const input = [...Array<string>(blanks).fill(''), '```markdown', '# Title', '```go', 'code', '```', '```'].join('\n');
     expect(unwrapMarkdownFence(input)).toBe(['# Title', '```go', 'code', '```'].join('\n'));
   });
 
   it('leaves an opener beyond the first four characters unchanged (guard shape)', () => {
     const input = ['', '', '', '', '```markdown', '```go', 'code', '```', '```'].join('\n');
     expect(unwrapMarkdownFence(input)).toBe(input);
-  });
-
-  it('leaves a language-tag lookalike unchanged', () => {
-    const input = ['```markdownx', '```go', 'code', '```', '```'].join('\n');
-    expect(unwrapMarkdownFence(input)).toBe(input);
-  });
-
-  it('unwraps with exactly three leading blank characters (guard boundary)', () => {
-    const input = ['', '', '', '```markdown', '# Title', '```go', 'code', '```', '```'].join('\n');
-    expect(unwrapMarkdownFence(input)).toBe(['# Title', '```go', 'code', '```'].join('\n'));
   });
 
   // OPENER_SCAN_RE (the sticky fast-path pre-check) must accept/reject
@@ -299,6 +265,7 @@ describe('unwrapMarkdownFence', () => {
       ['mixed case alias', '```Md', '```'],
       ['one leading space', ' ```markdown', '```'],
       ['three leading spaces', '   ```markdown', '```'],
+      ['three leading spaces on opener and closer', '   ```markdown', '   ```'],
       ['trailing spaces', '```markdown   ', '```'],
       ['trailing tab', '```markdown\t', '```'],
       ['trailing carriage return', '```markdown\r', '```'],
@@ -310,6 +277,7 @@ describe('unwrapMarkdownFence', () => {
       ['two backticks', '``md'],
       ['wrong language', '```markdwn'],
       ['tag with suffix', '```mdx'],
+      ['long tag with suffix', '```markdownx'],
       ['tilde fence', '~~~markdown'],
       ['tab indentation', '\t```markdown'],
       ['inline content after tag', '```markdown # heading'],

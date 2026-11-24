@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import CompactionDivider from './CompactionDivider.svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 function compactionItem(overrides = {}) {
   return makeItem({
@@ -15,13 +15,6 @@ function compactionItem(overrides = {}) {
 }
 
 describe('<CompactionDivider>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
-  });
 
   it('renders a plain, non-interactive divider when no summary payload is linked', () => {
     // Headless claude / Codex boundaries carry no committed summary, so the row
@@ -37,7 +30,7 @@ describe('<CompactionDivider>', () => {
     expect(dataMock).not.toHaveBeenCalled();
   });
 
-  it('lazy-loads the committed summary on expand', async () => {
+  it('lazy-loads the committed summary on expand and collapses it on a second toggle', async () => {
     // Payload data is the raw summary text (same shape as a thinking payload),
     // not a JSON wrapper — the summarizer's reasoning streamed as its own row.
     const summary = 'The user asked to fix compaction grouping under one row.';
@@ -75,26 +68,6 @@ describe('<CompactionDivider>', () => {
     expect(getByTestId('compaction-detail').className).toContain('overflow-y-auto');
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(dataMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('collapses the detail again on a second toggle', async () => {
-    setBindingMock('GetPayloadData', async () => ({ data: 'a committed summary' }));
-    const { getByTestId, queryByTestId } = render(CompactionDivider, {
-      props: {
-        item: compactionItem({
-          payloadId: 'compaction-payload',
-          payloadKind: 'compaction',
-        }),
-      },
-    });
-
-    const toggle = getByTestId('compaction-toggle');
-    await fireEvent.click(toggle);
-    await waitFor(() =>
-      expect(getByTestId('compaction-summary').textContent).toContain(
-        'a committed summary',
-      ),
-    );
 
     await fireEvent.click(toggle);
     await tick();

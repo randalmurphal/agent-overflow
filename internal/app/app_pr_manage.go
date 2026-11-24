@@ -196,23 +196,6 @@ func (l *prManageLocks) acquire(ctx context.Context, key string) (release func()
 	}, nil
 }
 
-// users is how many callers hold or await key's lock.
-func (l *prManageLocks) users(key string) int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if entry := l.entries[key]; entry != nil {
-		return entry.users
-	}
-	return 0
-}
-
-// size is the number of PRs with a held or awaited lock.
-func (l *prManageLocks) size() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.entries)
-}
-
 // SearchPRCandidates is one picker search: kind "reviewers",
 // "assignees" or "labels", the first page matching query.
 //

@@ -15,12 +15,11 @@ import {
   readAloud,
   readAloudPhase,
   readAloudPosition,
-  resetReadAloudForTest,
   useOpenAIEngineForTest,
   watchReadAloudVoices,
 } from '../../stores/readAloud.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
-import { refreshReadAloudSource, resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
+import { refreshReadAloudSource } from '../../stores/readAloudSource.svelte';
 
 // Three sections, split by headings; the device reads them as 2, 1 and 3 sentences.
 const REPLY = '## One\n\nFirst part here.\n\n## Two\n\n## Three\n\nLast part. Really last.';
@@ -40,8 +39,6 @@ describe('<ReadAloudButton>', () => {
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     setReadAloudPreference('enabled', true);
-    resetReadAloudForTest();
-    resetReadAloudSourcesForTest();
     device = fakeSpeechEngine();
     watchReadAloudVoices(device.engine);
     clips = fakeClipEngines();
@@ -52,8 +49,6 @@ describe('<ReadAloudButton>', () => {
   });
 
   afterEach(() => {
-    resetReadAloudForTest();
-    resetReadAloudSourcesForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
   });
@@ -78,7 +73,7 @@ describe('<ReadAloudButton>', () => {
     expect(device.playbacks[0].from).toBe(0);
   });
 
-  it('shows the cluster in order while reading, back disabled while the first clip is fetched', async () => {
+  it('shows the cluster in order while reading, back disabled while the first clip is fetched, then moves back 10 seconds, to the next and to the previous section through an OpenAI voice', async () => {
     const v = view();
     await readOpenAI(null);
     expect(cluster(v)).toEqual([
@@ -93,15 +88,14 @@ describe('<ReadAloudButton>', () => {
     expect(button(v, '-next').disabled).toBe(false);
     expect(button(v, '-previous').getAttribute('aria-label')).toBe('Previous section');
     expect(button(v, '-next').getAttribute('aria-label')).toBe('Next section');
-  });
 
-  it('moves back 10 seconds, to the next and to the previous section through an OpenAI voice', async () => {
-    const v = view();
-    await readOpenAI(0);
+    // The first clip starts playing.
+    const playback = clips.playbacks[0];
+    playback.onPiece(0);
+    await settle();
     const back = button(v, '-back');
     expect(back.disabled).toBe(false);
     expect(back.getAttribute('aria-label')).toBe('Back 10 seconds');
-    const playback = clips.playbacks[0];
     await fireEvent.click(back);
     expect(playback.calls).toEqual(['seek 10']);
 

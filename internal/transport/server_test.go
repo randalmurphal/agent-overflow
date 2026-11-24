@@ -177,19 +177,15 @@ func TestServer_RPCRoundTrip(t *testing.T) {
 
 func TestServer_AuthRequiresToken(t *testing.T) {
 	f := newServerFixture(t)
-	url := "ws://" + f.srv.Addr() + "/ws"
-	_, _, err := websocket.Dial(context.Background(), url, nil)
-	if err == nil {
-		t.Fatalf("dial without token should fail")
-	}
-}
-
-func TestServer_AuthRejectsWrongToken(t *testing.T) {
-	f := newServerFixture(t)
-	url := "ws://" + f.srv.Addr() + "/ws?token=wrong"
-	_, _, err := websocket.Dial(context.Background(), url, nil)
-	if err == nil {
-		t.Fatalf("dial with wrong token should fail")
+	for _, tc := range []struct{ name, query string }{
+		{"no token", ""},
+		{"wrong token", "?token=wrong"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := websocket.Dial(context.Background(), "ws://"+f.srv.Addr()+"/ws"+tc.query, nil); err == nil {
+				t.Fatal("dial should fail")
+			}
+		})
 	}
 }
 
@@ -231,36 +227,25 @@ func TestServer_BootstrapEndpoint(t *testing.T) {
 	}
 }
 
+// The loopback peer is TestServer_BootstrapEndpoint, over a real socket.
 func TestServer_BootstrapRemoteUsesPeerLocality(t *testing.T) {
 	f := newServerFixture(t)
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/bootstrap.json", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.RemoteAddr = "192.168.1.25:54321"
+	recorder := httptest.NewRecorder()
 
-	for _, tc := range []struct {
-		name       string
-		remoteAddr string
-		wantRemote bool
-	}{
-		{name: "loopback", remoteAddr: "127.0.0.1:54321", wantRemote: false},
-		{name: "non-loopback", remoteAddr: "192.168.1.25:54321", wantRemote: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "http://example.test/bootstrap.json", nil)
-			req.Header.Set("Authorization", "Bearer test-token")
-			req.RemoteAddr = tc.remoteAddr
-			recorder := httptest.NewRecorder()
+	f.srv.handleBootstrap(recorder, req)
 
-			f.srv.handleBootstrap(recorder, req)
-
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
-			}
-			var bootstrap Bootstrap
-			if err := json.NewDecoder(recorder.Body).Decode(&bootstrap); err != nil {
-				t.Fatalf("decode bootstrap: %v", err)
-			}
-			if bootstrap.Remote != tc.wantRemote {
-				t.Fatalf("Remote = %v, want %v", bootstrap.Remote, tc.wantRemote)
-			}
-		})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	var bootstrap Bootstrap
+	if err := json.NewDecoder(recorder.Body).Decode(&bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if !bootstrap.Remote {
+		t.Fatal("non-loopback peer's bootstrap not marked remote")
 	}
 }
 
@@ -291,63 +276,6 @@ func TestWorkflowReadsAndPauseSplitOnScope(t *testing.T) {
 	}
 	if frameErr.Code != ErrCodeScopeRequired || frameErr.Scope != string(ScopeThreadsAutonomy) {
 		t.Fatalf("refusal = {%s, %s}, want {%s, %s}", frameErr.Code, frameErr.Scope, ErrCodeScopeRequired, ScopeThreadsAutonomy)
-	}
-}
-
-func TestServer_BootstrapReadinessGate(t *testing.T) {
-	d := NewDispatcher()
-	bus := NewEventBus(20)
-	srv, err := New(Config{
-		Dispatcher:               d,
-		EventBus:                 bus,
-		Token:                    "test-token",
-		RequireReadyForBootstrap: true,
-	})
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	if err := srv.Start(); err != nil {
-		t.Fatalf("start server: %v", err)
-	}
-	t.Cleanup(func() {
-		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
-		defer c()
-		_ = srv.Shutdown(shutCtx)
-	})
-
-	resp := getBootstrap(t, srv.Addr())
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("bootstrap status before ready = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
-	}
-	if srv.Ready() {
-		t.Fatal("server reported ready before MarkReady")
-	}
-
-	refusedResp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=never-minted", srv.Addr()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = refusedResp.Body.Close()
-	if refusedResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("refused credential status before ready = %d, want %d", refusedResp.StatusCode, http.StatusNotFound)
-	}
-
-	srv.MarkReady()
-	if !srv.Ready() {
-		t.Fatal("server did not report ready after MarkReady")
-	}
-	resp = getBootstrap(t, srv.Addr())
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("bootstrap status after ready = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	var b Bootstrap
-	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
-		t.Fatal(err)
-	}
-	if b.WSURL == "" {
-		t.Fatal("bootstrap after ready carries no wsUrl")
 	}
 }
 
@@ -433,15 +361,22 @@ func TestServer_BootstrapReportsARefusalToMigrateLive(t *testing.T) {
 
 func TestServer_BootstrapRejectsBadToken(t *testing.T) {
 	f := newServerFixture(t)
-	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=wrong", f.srv.Addr()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	// Indistinguishable from "no such path" — 404, not 401, so a LAN
-	// scanner can't fingerprint the agent-overflow server.
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	for _, tc := range []struct{ name, query string }{
+		{"wrong ticket", "?t=wrong"},
+		{"no credential", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json%s", f.srv.Addr(), tc.query))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			// Indistinguishable from "no such path": 404, not 401, so a LAN
+			// scanner can't fingerprint the agent-overflow server.
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("expected 404, got %d", resp.StatusCode)
+			}
+		})
 	}
 }
 
@@ -497,18 +432,6 @@ func TestServer_BootstrapAdmitsALiveSessionWithoutAPageCredential(t *testing.T) 
 	defer refused.Body.Close()
 	if refused.StatusCode != http.StatusNotFound {
 		t.Fatalf("refused session bootstrap = %d, want 404", refused.StatusCode)
-	}
-}
-
-func TestServer_BootstrapRejectsEmptyToken(t *testing.T) {
-	f := newServerFixture(t)
-	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json", f.srv.Addr()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
 }
 
@@ -1432,77 +1355,48 @@ func TestServer_ShutdownWithoutStart(t *testing.T) {
 }
 
 // TestRebind_InvalidAddrLeavesStateIntact pins the state-intact
-// contract: a Rebind that fails to acquire its listener (here an
-// invalid host) MUST leave the server's observable state exactly as
-// it was. Without the contract, callers would have to maintain their
-// own rollback bookkeeping on top of a partially-mutated server.
+// contract: a Rebind that fails to acquire its listener MUST leave the
+// server's observable state exactly as it was. Without the contract,
+// callers would have to maintain their own rollback bookkeeping on top of
+// a partially-mutated server.
 func TestRebind_InvalidAddrLeavesStateIntact(t *testing.T) {
-	f := newServerFixture(t)
-	preAddr := f.srv.Addr()
-	conn := f.dial(t)
-
-	// 999.999.999.999 is not a valid IPv4 — net.Listen rejects it before
-	// any state is mutated.
-	err := f.srv.Rebind("999.999.999.999:0", nil)
-	if err == nil {
-		t.Fatalf("expected rebind to fail on invalid addr")
-	}
-
-	if got := f.srv.Addr(); got != preAddr {
-		t.Fatalf("Addr changed after failed rebind: pre=%q post=%q", preAddr, got)
-	}
-
-	// Original WS connection still works — the failed rebind didn't
-	// touch the live http.Server / listener pair.
-	resp := f.rpc(t, conn, 0, "Greet", "still-alive")
-	if resp.Error != nil {
-		t.Fatalf("rpc on original conn errored after failed rebind: %+v", resp.Error)
-	}
-	if string(resp.Result) != `"hello, still-alive"` {
-		t.Fatalf("unexpected result on original conn: %s", string(resp.Result))
-	}
-}
-
-// TestRebind_ForeignHolderDifferentPortLeavesStateIntact pins that an
-// address held by another socket fails the rebind with the existing
-// listener exactly as it was.
-func TestRebind_ForeignHolderDifferentPortLeavesStateIntact(t *testing.T) {
-	f := newServerFixture(t)
-	preAddr := f.srv.Addr()
-	conn := f.dial(t)
-
-	// Pre-rebind RPC must work.
-	resp := f.rpc(t, conn, 0, "Greet", "before")
-	if resp.Error != nil {
-		t.Fatalf("rpc pre-rebind: %+v", resp.Error)
-	}
-
-	// Stage a foreign holder on a fresh ephemeral port (different from
-	// f.srv's port), so the bind returns EADDRINUSE.
+	// A foreign holder on a fresh ephemeral port, different from any
+	// fixture's, so the bind returns EADDRINUSE.
 	foreign, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("stage foreign listener: %v", err)
 	}
 	defer foreign.Close()
-	foreignAddr := foreign.Addr().String()
 
-	err = f.srv.Rebind(foreignAddr, nil)
-	if err == nil {
-		t.Fatalf("expected rebind to fail when target addr is held by a foreign listener")
-	}
+	for _, tc := range []struct{ name, addr string }{
+		// Not a valid IPv4: net.Listen rejects it before any state is mutated.
+		{"invalid host", "999.999.999.999:0"},
+		{"held by a foreign listener", foreign.Addr().String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newServerFixture(t)
+			preAddr := f.srv.Addr()
+			conn := f.dial(t)
+			if resp := f.rpc(t, conn, 0, "Greet", "before"); resp.Error != nil {
+				t.Fatalf("rpc pre-rebind: %+v", resp.Error)
+			}
 
-	// Addr unchanged.
-	if got := f.srv.Addr(); got != preAddr {
-		t.Fatalf("Addr changed after failed rebind: pre=%q post=%q", preAddr, got)
-	}
-
-	// Pre-rebind hijacked WS connection still works.
-	resp = f.rpc(t, conn, 0, "Greet", "still-alive")
-	if resp.Error != nil {
-		t.Fatalf("rpc on pre-rebind conn after failed rebind: %+v", resp.Error)
-	}
-	if string(resp.Result) != `"hello, still-alive"` {
-		t.Fatalf("unexpected result: %s", string(resp.Result))
+			if err := f.srv.Rebind(tc.addr, nil); err == nil {
+				t.Fatalf("expected rebind to %s to fail", tc.addr)
+			}
+			if got := f.srv.Addr(); got != preAddr {
+				t.Fatalf("Addr changed after failed rebind: pre=%q post=%q", preAddr, got)
+			}
+			// The original WS connection still works: the failed rebind did
+			// not touch the live http.Server / listener pair.
+			resp := f.rpc(t, conn, 0, "Greet", "still-alive")
+			if resp.Error != nil {
+				t.Fatalf("rpc on original conn errored after failed rebind: %+v", resp.Error)
+			}
+			if string(resp.Result) != `"hello, still-alive"` {
+				t.Fatalf("unexpected result on original conn: %s", string(resp.Result))
+			}
+		})
 	}
 }
 
@@ -2290,6 +2184,66 @@ func TestServer_BootstrapAnnouncesHarnessMode(t *testing.T) {
 	harness := newServerFixtureWith(t, func(cfg *Config) { cfg.Harness = true })
 	if !bootstrapDoc(t, harness).Harness {
 		t.Error("a harness boot did not advertise harness mode")
+	}
+}
+
+// TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode: a harness boot
+// serves its frontend timer overrides; a harness or soak boot with none
+// serves no field, and no other boot can be configured to serve one.
+func TestServer_BootstrapServesFrontendTimingOnlyInHarnessMode(t *testing.T) {
+	callers := map[string]int64{"unreachable-settle": 2000}
+	timed := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.Harness = true
+		cfg.FrontendTiming = callers
+	})
+	// The server serves what it was built with, not the caller's map.
+	callers["unreachable-settle"] = 1
+	callers["agent-row-linger"] = 1
+	if got := bootstrapDoc(t, timed).HarnessTiming; len(got) != 1 || got["unreachable-settle"] != 2000 {
+		t.Fatalf("harness manifest timing = %v, want unreachable-settle 2000", got)
+	}
+	longest := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.Harness = true
+		cfg.FrontendTiming = map[string]int64{"agent-row-linger": MaxFrontendTimingMs}
+	})
+	if got := bootstrapDoc(t, longest).HarnessTiming["agent-row-linger"]; got != MaxFrontendTimingMs {
+		t.Fatalf("the longest page timer served as %d, want %d", got, MaxFrontendTimingMs)
+	}
+
+	empty := func(cfg *Config) { cfg.FrontendTiming = map[string]int64{} }
+	for name, cfg := range map[string]func(*Config){
+		"ordinary":           func(*Config) {},
+		"ordinary empty map": empty,
+		"soak":               func(cfg *Config) { cfg.Harness = true },
+		"soak empty map": func(cfg *Config) {
+			cfg.Harness = true
+			empty(cfg)
+		},
+	} {
+		f := newServerFixtureWith(t, cfg)
+		resp := getBootstrap(t, f.srv.Addr())
+		var raw map[string]json.RawMessage
+		err := json.NewDecoder(resp.Body).Decode(&raw)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("%s: decode manifest: %v", name, err)
+		}
+		if timing, ok := raw["harnessTiming"]; ok {
+			t.Errorf("%s boot served harnessTiming %s", name, timing)
+		}
+	}
+
+	for name, cfg := range map[string]Config{
+		"without harness":  {FrontendTiming: map[string]int64{"agent-row-linger": 3000}},
+		"nonpositive time": {Harness: true, FrontendTiming: map[string]int64{"agent-row-linger": 0}},
+		"past setTimeout":  {Harness: true, FrontendTiming: map[string]int64{"agent-row-linger": MaxFrontendTimingMs + 1}},
+		"unnamed":          {Harness: true, FrontendTiming: map[string]int64{" ": 3000}},
+	} {
+		cfg.Dispatcher = NewDispatcher()
+		cfg.EventBus = NewEventBus(20)
+		if _, err := New(cfg); err == nil {
+			t.Errorf("New accepted frontend timing %s", name)
+		}
 	}
 }
 

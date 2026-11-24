@@ -328,11 +328,11 @@ func (a *App) endRestingThreadSession(threadID string, by restStop, result *Thre
 	background := 0
 	sess, live := a.sessionManager().get(threadID)
 	if live {
-		running, err := a.runningBackgroundWorkForThread(threadID, sess.Provider)
+		running, err := a.runningBackgroundTaskCount(threadID)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list its background work: %w", err))
 		}
-		background = len(running)
+		background = running
 		if a.triage != nil && a.triage.SampleInterrupt(threadID).CutTurn() >= 0 {
 			interrupted, err := a.interruptTurnHoldingLock(threadID, anyOpenTurn, by.turn, a.observeInterruptTarget(threadID))
 			if err != nil {

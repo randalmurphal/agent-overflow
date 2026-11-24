@@ -34,7 +34,7 @@ type LoginConfig struct {
 	WorkDir string
 	// Home is the isolated home the sign-in writes its credential into.
 	Home   Home
-	Env    map[string]string
+	Env    provider.EnvInput
 	Reaper procutil.Reaper
 }
 
@@ -78,7 +78,6 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 		Args:           launch.ACPArgs("--login"),
 		Dir:            workDir,
 		Env:            launch.Env,
-		UnsetEnv:       launch.Unset,
 		Provider:       string(provider.Agy),
 		ThreadID:       "agy-login",
 		GracefulCancel: true,

@@ -989,7 +989,7 @@ func TestCodexStartHandlesItsInitBeforeReturning(t *testing.T) {
 	}
 	started := make(chan startResult, 1)
 	go func() {
-		err := app.StartSession(thread.ID)
+		err := app.startSessionTakingLock(context.Background(), thread.ID)
 		started <- startResult{err: err, initHandled: initHandled.Load()}
 	}()
 	if !waitForQueueWaiter(&app.providerEvents, thread.ID) {

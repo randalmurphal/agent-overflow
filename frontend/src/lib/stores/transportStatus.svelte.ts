@@ -28,6 +28,7 @@ import {
   onBackendsChanged,
 } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { harnessInterval } from '../transport/harnessMode';
 import { dispatchRefusalKind, parseDispatchMark } from '../transport/dispatchRefusal';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
@@ -111,7 +112,7 @@ function trackReachability(id: BackendKey, next: TransportStatusSnapshot): void 
   settleTimers.set(id, setTimeout(() => {
     settleTimers.delete(id);
     unreachableSettled.set(id, true);
-  }, UNREACHABLE_SETTLE_MS));
+  }, harnessInterval('unreachable-settle', UNREACHABLE_SETTLE_MS)));
 }
 
 function forgetReachability(id: BackendKey): void {

@@ -18,7 +18,6 @@ import {
   focusPane,
   moveFocusedPane,
   registerPaneForTest,
-  resetPanesForTest,
   revealPane,
   togglePanePromotion,
 } from '../../stores/panes.svelte';
@@ -30,7 +29,7 @@ import {
   setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
 import { promotedLayerClip, promotedLayerFrame } from '../../utils/panePromotion.svelte';
-import { airspaceIntersects, resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
+import { airspaceIntersects } from '../../utils/paneAirspace.svelte';
 import { getPaneWidth } from '../../stores/layoutMetrics.svelte';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 
@@ -53,8 +52,6 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   setCompactLayoutForTest(false);
   resetPaneLayoutForTest();
-  resetPanesForTest();
-  resetAirspaceForTest();
 });
 
 async function mountStrip(ids: string[], focused: string): Promise<HTMLElement> {

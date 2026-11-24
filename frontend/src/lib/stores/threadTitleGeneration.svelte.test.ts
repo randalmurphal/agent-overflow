@@ -8,23 +8,18 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   applyThreadTitleGeneration,
   regenerateThreadTitle,
-  resetThreadTitleGenerationForTest,
   titleGenerationPending,
 } from './threadTitleGeneration.svelte';
-import { resetPanesForTest } from './panes.svelte';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { getToasts, removeToast } from './toast.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function clearToasts(): void {
-  for (const toast of [...getToasts()]) removeToast(toast.id);
+  for (const toast of getToasts()) removeToast(toast.id);
 }
 
 describe('threadTitleGeneration', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
-    resetThreadTitleGenerationForTest();
     clearToasts();
   });
 

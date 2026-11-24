@@ -6,7 +6,7 @@
 import type { BrowserContext, Page } from '@playwright/test';
 import { test as base, expect } from './fixtures.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
-import { confirmOnHost, redeemOnScreen, nonLoopbackIPv4, type PairingInvite } from './offhost-helpers.js';
+import { PAIRED_REDIAL_MS, confirmOnHost, redeemOnScreen, nonLoopbackIPv4, type PairingInvite } from './offhost-helpers.js';
 import { installSoftwarePasskeys, passkeyDomainProxy } from './passkey-helpers.js';
 import { launchLifecycleBrowser } from './browser-lifecycle-helpers.js';
 
@@ -276,14 +276,14 @@ test('losing connectivity while locked preserves the cover and recovers the same
   // One DOM read: a verification that lands between two locator calls removes
   // the button the second one would wait for. The proxy refused the outage's
   // dials rather than taking the browser offline, so no `online` event wakes
-  // the reconnect ladder and the page reconnects on its next rung, which for
-  // a remote backend can be up to wsClient's RECONNECT_MAX_REMOTE_MS (30 s).
+  // the reconnect ladder and the page reconnects on its next rung
+  // (PAIRED_REDIAL_MS).
   await expect.poll(() => page.evaluate(() => {
     const cover = document.querySelector('[data-testid="app-lock"]');
     if (!cover) return 'verified';
     const button = [...cover.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Unlock');
     return button && !button.disabled ? 'retry' : 'pending';
-  }), { timeout: 40_000 }).not.toBe('pending');
+  }), { timeout: PAIRED_REDIAL_MS }).not.toBe('pending');
   if (await page.getByTestId('app-lock').count()) await unlock(page);
   await expect(page.getByTestId('view-only-indicator')).toBeVisible();
   expect((await session(page)).sessionId).toBe(before.sessionId);

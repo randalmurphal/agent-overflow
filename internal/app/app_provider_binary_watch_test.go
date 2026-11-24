@@ -17,6 +17,8 @@ import (
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
+
+	"github.com/google/uuid"
 )
 
 // stubProviderBinaryDetect installs the watcher's version-probe seam for the
@@ -276,7 +278,7 @@ func TestProviderBinaryUpgradeRefreshesTheCodexCatalogBeforeCommitting(t *testin
 		lists++
 		return []provider.ModelInfo{{Slug: "gpt-5", Provider: string(provider.Codex)}}, nil
 	}, time.Now)
-	if _, err := app.codexModelsForBinary(context.Background(), binary); err != nil {
+	if _, err := app.providerDiscoveryService().CodexModelsForBinary(context.Background(), binary); err != nil {
 		t.Fatalf("prime codex catalog: %v", err)
 	}
 	if lists != 1 {
@@ -325,7 +327,7 @@ func TestProviderBinaryUpgradeRefreshesTheCodexCatalogBeforeCommitting(t *testin
 	if _, _, cached := app.cachedCodexModelsForBinary(binary); cached {
 		t.Fatal("codex model cache still answers for the old binary after the upgrade")
 	}
-	if _, err := app.codexModelsForBinary(context.Background(), binary); err != nil {
+	if _, err := app.providerDiscoveryService().CodexModelsForBinary(context.Background(), binary); err != nil {
 		t.Fatalf("relist codex catalog: %v", err)
 	}
 	if lists != 2 {
@@ -414,10 +416,10 @@ func TestStaleBinaryFlagsTheLiveThreadAndHydrates(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "hi", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
@@ -498,10 +500,10 @@ func TestStaleBinaryFlagsTheLiveThreadAndHydrates(t *testing.T) {
 	// Back on a live session running the old build, then the user restarts
 	// the CLI onto the session's build (or the session onto the new one):
 	// the banner is raised and then withdrawn.
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession again: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "hi again", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi again", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage again: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)

@@ -8,7 +8,6 @@ import {
   hasQueueItems,
   isRegisteringQueueItem,
   onRegistrationSendsPending,
-  resetForTest as resetSendQueueForTest,
 } from './sendQueue.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -16,27 +15,21 @@ import { onBackendDetached } from '../transport/backends';
 import { currentThreadEvent, onThreadOwnershipChanged, threadBackend } from '../transport/entityIndex';
 import {
   clearFastModeStateForThread,
-  resetForTest as resetFastModeStateForTest,
 } from './fastModeState.svelte';
 import {
   clearCompactingForThread,
-  resetForTest as resetCompactingStateForTest,
 } from './compactingState.svelte';
 import {
   clearSubagentProgressForThread,
-  resetForTest as resetSubagentProgressForTest,
 } from './subagentProgress.svelte';
 import {
   cancelBackgroundKillConfirmationForThread,
-  resetForTest as resetBackgroundKillConfirmationForTest,
 } from './backgroundKillConfirmation.svelte';
 import {
   clearSubagentRunStatesForThread,
-  resetForTest as resetSubagentRunStatesForTest,
 } from './subagentRunState.svelte';
 import {
   clearProviderCommandsForThread,
-  resetForTest as resetProviderCommandsForTest,
 } from './providerCommands.svelte';
 
 /**
@@ -432,7 +425,7 @@ export function projectSendStarted(threadId: string): void {
 }
 
 /**
- * Clear the pending-send flag. Called by composerSend when SendMessage
+ * Clear the pending-send flag. Called by composerSend when SendMessageWithOptions
  * rejects (with `error: true` so the pill flips to Failed rather than
  * idle), by early provider process failure before `turn_started`, or when
  * turn lifecycle events arrive and take over ownership of the running signal.
@@ -600,23 +593,6 @@ onThreadOwnershipChanged((threadId, previousBackend) => {
 
 export function isSendInFlight(threadId: string | null | undefined, paneSendInFlight: boolean): boolean {
   return paneSendInFlight || hasPendingSend(threadId);
-}
-
-/**
- * Explicit clear for the pending-send flag without changing other
- * status flags. Queue-drain failure uses this because on a thrown
- * provider write the flag would otherwise leak forever. Distinct from
- * `projectSendResolved({error:true})` because we don't want to flip the
- * thread to a Failed status pill: the queue preview is still showing
- * the user's restored item, the error banner carries the failure
- * context, and another drain attempt should be possible from a clean
- * state.
- */
-export function clearPendingSend(threadId: string): void {
-  if (!threadId) return;
-  if (!pendingSendThreads.get(threadId)) return;
-  pendingSendThreads.set(threadId, false);
-  recalculateThreadStatus(threadId);
 }
 
 export function replaceInteractiveRequestsForThread(
@@ -1032,8 +1008,8 @@ export function projectThreadViewed(threadId: string): void {
 
 /**
  * Wipe the entire map. Only intended for test isolation — production
- * code should use clearThreadStatus per id. Also wipes the per-thread
- * send queue because `isThreadWorking` reads that bridge state.
+ * code should use clearThreadStatus per id. The per-thread stores this
+ * module reads (the send queue among them) reset through their own seams.
  */
 export function resetForTest(): void {
   activeTurns.reset();
@@ -1053,13 +1029,6 @@ export function resetForTest(): void {
   errorThreads.clear();
   interruptedThreads.clear();
   liveStateHydrationTokenByThread.clear();
-  resetSendQueueForTest();
-  resetFastModeStateForTest();
-  resetCompactingStateForTest();
-  resetSubagentProgressForTest();
-  resetSubagentRunStatesForTest();
-  resetBackgroundKillConfirmationForTest();
-  resetProviderCommandsForTest();
   liveStateHydratingThreads.reset();
   statuses.reset();
 }

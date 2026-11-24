@@ -47,12 +47,11 @@ async function clippedVerbs(): Promise<string[]> {
   return clipped;
 }
 
-it('shows every AO verb whole in the desktop label column', async () => {
-  expect(await clippedVerbs()).toEqual([]);
-});
-
-it('shows every AO verb whole in the compact label column', async () => {
-  setCompactLayoutForTest(true);
-  expect(document.querySelector('.layout-compact')).not.toBeNull();
+it.each([
+  { layout: 'desktop', compact: false },
+  { layout: 'compact', compact: true },
+])('shows every AO verb whole in the $layout label column', async ({ compact }) => {
+  setCompactLayoutForTest(compact);
+  expect(document.querySelector('.layout-compact') !== null).toBe(compact);
   expect(await clippedVerbs()).toEqual([]);
 });

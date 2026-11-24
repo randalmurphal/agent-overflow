@@ -116,52 +116,16 @@ func TestGetProviderStatusesDoesNotEmitForReadyProvider(t *testing.T) {
 	}
 }
 
-// TestEmitProviderStatusesFromDetectIsIdempotent covers the
-// "re-emit same state is harmless" contract called out in the task.
-// A duplicated DetectProvider result produces two identical events;
-// the code under test must not crash, deduplicate at the Go layer, or
-// mutate state that changes between calls.
-func TestEmitProviderStatusesFromDetectIsIdempotent(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	events := collectProviderStatusEmissions(app)
-
-	statuses := []provider.ProviderStatus{
-		{
-			Provider:   string(provider.Codex),
-			Installed:  true,
-			Status:     "version_too_old",
-			Version:    "codex 0.36.0",
-			BinaryPath: "/usr/local/bin/codex",
-			Message:    "Codex CLI v0.36.0 is too old for Agent Overflow.",
-		},
-	}
-	app.emitProviderStatusesFromDetect(statuses)
-	app.emitProviderStatusesFromDetect(statuses)
-
-	if len(*events) != 2 {
-		t.Fatalf("want 2 emissions (idempotent re-emit), got %d", len(*events))
-	}
-	for i, ev := range *events {
-		if ev.Status != "version_too_old" {
-			t.Fatalf("emission[%d].Status = %q, want version_too_old", i, ev.Status)
-		}
-		if ev.Provider != string(provider.Codex) {
-			t.Fatalf("emission[%d].Provider = %q, want codex", i, ev.Provider)
-		}
-	}
-}
-
 // TestEmitClaudeUnauthenticatedStatusShape guarantees the Claude
 // unauthenticated emission carries the fields the UI branches on.
-// Expressed as a direct call on the emit helper so the test doesn't
+// Expressed as a direct call on the discovery service's emit so the test doesn't
 // need a running Claude probe.
 func TestEmitClaudeUnauthenticatedStatusShape(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	events := collectProviderStatusEmissions(app)
 
-	app.emitClaudeUnauthenticatedStatus()
+	app.providerDiscoveryService().EmitClaudeUnauthenticatedStatus()
 
 	if len(*events) != 1 {
 		t.Fatalf("want 1 emission, got %d", len(*events))

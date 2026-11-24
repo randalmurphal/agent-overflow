@@ -159,21 +159,20 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
     }),
   );
 
-  await harness.rpc('StartSession', busy);
+  await harness.startSession(busy);
   const busyRested = hold ? null : awaitTurnCompleted(harness, busy);
-  await harness.rpc('SendMessage', busy, BUSY_TASK, null);
+  await harness.send(busy, BUSY_TASK);
   const busyMock = hold ? await awaitGate(harness, 'hold-busy', busyProject.path) : null;
   await busyRested;
 
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, LEAD_ASK, null);
+  await harness.send(lead, LEAD_ASK);
   const spawn = await awaitToolAnswer<{ thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', timeoutMs: 60_000 });
   await releaseAfterBackgrounded(spawn, { harness, gate: 'hold-audit', cwd: auditProject.path });
   const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
   expect(send.isError, send.text).toBe(false);
   const replyMock = hold ? null : await awaitGate(harness, 'hold-reply', busyProject.path);
 
-  const items = (thread: string) => harness.rpc<TimelineItem[]>('ListItems', thread, true);
+  const items = (thread: string) => harness.items<TimelineItem>(thread, true);
   const has = async (thread: string, text: string) =>
     (await items(thread)).some((item: TimelineItem) => (item.summary ?? '').includes(text));
   // The lead's second turn is the audit's wake.
@@ -225,7 +224,7 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
     followUp: async () => {
       for (const thread of [lead, busy]) {
         const rested = awaitTurnCompleted(harness, thread);
-        await harness.rpc('SendMessage', thread, FOLLOW_UP, null);
+        await harness.send(thread, FOLLOW_UP);
         await rested;
       }
     },
@@ -484,11 +483,9 @@ export async function runQueuedRequest(harness: HarnessApp, tag: string): Promis
       afterTurns: 'silent',
     }),
   );
-  await harness.rpc('StartSession', target);
-  await harness.rpc('SendMessage', target, BUSY_TASK, null);
+  await harness.send(target, BUSY_TASK);
   const targetMock = await awaitGate(harness, 'hold-target', targetProject.path);
-  await harness.rpc('StartSession', sender);
-  await harness.rpc('SendMessage', sender, 'pass that on', null);
+  await harness.send(sender, 'pass that on');
   const send = await awaitToolAnswer(harness, { tool: 'thread_send', timeoutMs: 60_000 });
   expect(send.isError, send.text).toBe(false);
   const flushedRequest = await harness.waitForEvent<FlushedEvent>(
@@ -592,9 +589,9 @@ async function runReviewReply(
     threadToolsScenario({ name: `${tag}-lead-script`, provider, echoUserMessage: true, turns, afterTurns: 'silent' }),
   );
 
-  await harness.rpc('StartSession', lead);
+  await harness.startSession(lead);
   const spawned = awaitTurnCompleted(harness, lead);
-  await harness.rpc('SendMessage', lead, 'have a thread review the rule 5 lookup', null);
+  await harness.send(lead, 'have a thread review the rule 5 lookup');
   const spawn = await awaitToolAnswer(harness, { tool: 'thread_spawn', timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   await spawned;
@@ -604,7 +601,7 @@ async function runReviewReply(
   const reply = await awaitToolAnswer(harness, { tool: 'thread_reply', timeoutMs: 60_000 });
   expect(reply.isError, reply.text).toBe(false);
   await answered;
-  const items = await harness.rpc<TimelineItem[]>('ListItems', lead, true);
+  const items = await harness.items<TimelineItem>(lead, true);
   expect(items.some((item) => (item.summary ?? '').includes(REVIEW_SUMMARY))).toBe(true);
   return { lead };
 }
@@ -665,8 +662,7 @@ export async function runRemoteCompletion(harness: HarnessApp, remote: HarnessAp
     }),
     claude: { holdQueuedInput: true },
   });
-  await harness.rpc('StartSession', thread);
-  await harness.rpc('SendMessage', thread, BUILD_ASK, null);
+  await harness.send(thread, BUILD_ASK);
   const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
   expect(started.report.isError, started.report.result).toBeFalsy();
   expect(started.report.result).toContain('"backgrounded":true');

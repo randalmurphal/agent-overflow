@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { render, waitFor } from '@testing-library/svelte';
 import CommitFilePreview from './CommitFilePreview.svelte';
-import { resetBindingMocks, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { normalizedTextContent } from '../../../test/helpers/textContent';
 import type { CommitFile, WorkspaceRef } from '../../types/git';
 import type { EntityScopeGrant } from '../../transport/scopes';
@@ -15,22 +15,14 @@ function mount(grant: EntityScopeGrant) {
   return { diff, preview: () => normalizedTextContent(view.getByTestId('commit-file-preview')) };
 }
 
-afterEach(() => {
-  cleanup();
-  resetBindingMocks();
-});
-
 // The preview body says why it shows no patch, and reads nothing it may not.
 describe('CommitFilePreview without the files:read grant', () => {
-  it('says the computer has to connect while its grant has not arrived', () => {
-    const { diff, preview } = mount('pending');
-    expect(preview()).toBe('Unavailable until this computer connects');
-    expect(diff).not.toHaveBeenCalled();
-  });
-
-  it('says not granted only for a known refusal', () => {
-    const { diff, preview } = mount('refused');
-    expect(preview()).toBe('Not granted to this device');
+  it.each([
+    ['says the computer has to connect while its grant has not arrived', 'pending', 'Unavailable until this computer connects'],
+    ['says not granted only for a known refusal', 'refused', 'Not granted to this device'],
+  ] as const)('%s', (_name, grant, text) => {
+    const { diff, preview } = mount(grant);
+    expect(preview()).toBe(text);
     expect(diff).not.toHaveBeenCalled();
   });
 

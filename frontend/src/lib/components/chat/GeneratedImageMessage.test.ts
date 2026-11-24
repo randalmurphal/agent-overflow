@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import GeneratedImageMessage from './GeneratedImageMessage.svelte';
@@ -40,7 +40,6 @@ function makePane(): ThreadPane {
 describe('<GeneratedImageMessage>', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetBindingMocks();
     setBindingMock('GetAttachmentThumbnail', async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }));
     mockAttachmentDownload();
   });

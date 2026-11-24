@@ -87,7 +87,6 @@ describe('interceptedCommandRange', () => {
       start: 0,
       end: 6,
     });
-    expect('/model sonnet'.slice(0, 6)).toBe('/model');
   });
 
   it('paints nothing mid-sentence, where interception does not fire', () => {

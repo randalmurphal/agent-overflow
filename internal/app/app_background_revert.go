@@ -54,7 +54,7 @@ func (a *App) cleanRunningBackgroundTasksBeforeProviderRevert(thread store.Threa
 	if _, hasSession := a.activeCodexSession(thread.ID); !hasSession {
 		return nil
 	}
-	if err := a.CleanCodexBackgroundTerminals(thread.ID); err != nil {
+	if err := a.cleanCodexBackgroundTerminals(thread.ID); err != nil {
 		return fmt.Errorf("%s: clean Codex background terminals: %w", errorPrefix, err)
 	}
 	return nil

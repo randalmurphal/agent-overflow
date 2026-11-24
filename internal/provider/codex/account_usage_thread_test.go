@@ -134,55 +134,37 @@ func TestSession_ReadThreadUsage_PresentEstimate(t *testing.T) {
 	}
 }
 
-// TestSession_ReadThreadUsage_NullThreadUsage covers the answer upstream gives
-// when the backend refuses the thread with 403/404: a successful response whose
-// `threadUsage` is null. It is a STATE answer — the caller keeps its fallback —
-// so it must resolve to ErrThreadUsageUnavailable rather than an error a caller
-// would log every turn.
-func TestSession_ReadThreadUsage_NullThreadUsage(t *testing.T) {
+// TestSession_ReadThreadUsage_UnavailableAnswers covers the answers that are
+// STATE, not faults: the caller keeps its fallback, so each must resolve to
+// ErrThreadUsageUnavailable rather than an error a caller would log every turn.
+func TestSession_ReadThreadUsage_UnavailableAnswers(t *testing.T) {
 	t.Parallel()
-	capture := t.TempDir() + "/usage-request.json"
-	reply := `"result":{"summary":{},"dailyUsageBuckets":null,"threadUsage":null}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.148.0 (Linux)", "codex-thread-usage", reply, capture)
-
-	s := newThreadUsageSession(t, binary)
-	_, err := s.ReadThreadUsage(context.Background())
-	if !errors.Is(err, ErrThreadUsageUnavailable) {
-		t.Fatalf("ReadThreadUsage error = %v, want ErrThreadUsageUnavailable", err)
-	}
-}
-
-// TestSession_ReadThreadUsage_AbsentThreadUsage is the same conclusion reached
-// from a response that omits the key entirely — the shape a future codex could
-// answer with, since upstream marks the field `#[serde(default)]`.
-func TestSession_ReadThreadUsage_AbsentThreadUsage(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/usage-request.json"
-	reply := `"result":{"summary":{},"dailyUsageBuckets":null}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.148.0 (Linux)", "codex-thread-usage", reply, capture)
-
-	s := newThreadUsageSession(t, binary)
-	_, err := s.ReadThreadUsage(context.Background())
-	if !errors.Is(err, ErrThreadUsageUnavailable) {
-		t.Fatalf("ReadThreadUsage error = %v, want ErrThreadUsageUnavailable", err)
-	}
-}
-
-// TestSession_ReadThreadUsage_CreditsOnly pins the third absence: the backend
-// priced the thread, but only in credits. `estimatedUsageUsdMicros` is
-// `Option<i64>` upstream, and a credit figure is not a dollar figure — so this
-// is unavailable too, and the rate table stays.
-func TestSession_ReadThreadUsage_CreditsOnly(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/usage-request.json"
-	reply := `"result":{"summary":{},"threadUsage":{"threadId":"codex-thread-usage",` +
-		`"estimatedUsageCreditsMicros":900000,"estimatedUsageUsdMicros":null,"groups":[]}}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.148.0 (Linux)", "codex-thread-usage", reply, capture)
-
-	s := newThreadUsageSession(t, binary)
-	_, err := s.ReadThreadUsage(context.Background())
-	if !errors.Is(err, ErrThreadUsageUnavailable) {
-		t.Fatalf("ReadThreadUsage error = %v, want ErrThreadUsageUnavailable", err)
+	for _, tc := range []struct{ name, userAgent, reply string }{
+		// Upstream's answer when the backend refuses the thread with 403/404.
+		{"null threadUsage", "codex_cli_rs/0.148.0 (Linux)",
+			`"result":{"summary":{},"dailyUsageBuckets":null,"threadUsage":null}`},
+		// The key omitted entirely: upstream marks the field `#[serde(default)]`.
+		{"absent threadUsage", "codex_cli_rs/0.148.0 (Linux)",
+			`"result":{"summary":{},"dailyUsageBuckets":null}`},
+		// Priced only in credits: `estimatedUsageUsdMicros` is `Option<i64>`
+		// upstream, and a credit figure is not a dollar figure.
+		{"credits only", "codex_cli_rs/0.148.0 (Linux)",
+			`"result":{"summary":{},"threadUsage":{"threadId":"codex-thread-usage",` +
+				`"estimatedUsageCreditsMicros":900000,"estimatedUsageUsdMicros":null,"groups":[]}}`},
+		// The one RPC error that IS a state answer: an API-key login has no
+		// billing route, and upstream refuses it with a generic invalid_request
+		// whose message is the only distinguishing mark.
+		{"auth refusal", "codex_cli_rs/0.149.0 (Linux)",
+			`"error":{"code":-32602,"message":"chatgpt authentication required to read token usage"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			binary := threadUsageFakeScript(t, tc.userAgent, "codex-thread-usage", tc.reply, t.TempDir()+"/usage-request.json")
+			_, err := newThreadUsageSession(t, binary).ReadThreadUsage(context.Background())
+			if !errors.Is(err, ErrThreadUsageUnavailable) {
+				t.Fatalf("ReadThreadUsage error = %v, want ErrThreadUsageUnavailable", err)
+			}
+		})
 	}
 }
 
@@ -230,60 +212,30 @@ func TestSession_ReadThreadUsage_UnknownVersionSendsNothing(t *testing.T) {
 	}
 }
 
-// TestSession_ReadThreadUsage_RPCError covers a real JSON-RPC failure. The
-// backend errored (not a 403/404, which upstream converts to a null field), so
-// this must NOT resolve to ErrThreadUsageUnavailable — a caller should see it.
-func TestSession_ReadThreadUsage_RPCError(t *testing.T) {
+// TestSession_ReadThreadUsage_FaultsReachTheCaller covers answers that must
+// NOT resolve to ErrThreadUsageUnavailable: a caller has to see them.
+func TestSession_ReadThreadUsage_FaultsReachTheCaller(t *testing.T) {
 	t.Parallel()
-	capture := t.TempDir() + "/usage-request.json"
-	reply := `"error":{"code":-32603,"message":"failed to fetch thread usage: upstream 500"}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.149.0 (Linux)", "codex-thread-usage", reply, capture)
-
-	s := newThreadUsageSession(t, binary)
-	_, err := s.ReadThreadUsage(context.Background())
-	if err == nil {
-		t.Fatal("ReadThreadUsage returned no error for a JSON-RPC failure")
-	}
-	if errors.Is(err, ErrThreadUsageUnavailable) {
-		t.Fatalf("a backend failure was classified as a state answer: %v", err)
-	}
-}
-
-// TestSession_ReadThreadUsage_AuthRefusalIsAState pins the one RPC error that
-// IS a state answer: an API-key login has no billing route at all, and
-// upstream refuses it with a generic invalid_request whose message is the only
-// distinguishing mark.
-func TestSession_ReadThreadUsage_AuthRefusalIsAState(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/usage-request.json"
-	reply := `"error":{"code":-32602,"message":"chatgpt authentication required to read token usage"}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.149.0 (Linux)", "codex-thread-usage", reply, capture)
-
-	s := newThreadUsageSession(t, binary)
-	_, err := s.ReadThreadUsage(context.Background())
-	if !errors.Is(err, ErrThreadUsageUnavailable) {
-		t.Fatalf("ReadThreadUsage error = %v, want ErrThreadUsageUnavailable", err)
-	}
-}
-
-// TestSession_ReadThreadUsage_ThreadIDMismatchIsAFault guards the one way an
-// estimate could be attributed to the wrong thread. The echoed id is the only
-// evidence available, so a mismatch is a wire fault the caller must see — NOT
-// a state answer that silently keeps the fallback forever.
-func TestSession_ReadThreadUsage_ThreadIDMismatchIsAFault(t *testing.T) {
-	t.Parallel()
-	capture := t.TempDir() + "/usage-request.json"
-	reply := `"result":{"threadUsage":{"threadId":"some-other-thread",` +
-		`"estimatedUsageCreditsMicros":1,"estimatedUsageUsdMicros":1,"groups":[]}}`
-	binary := threadUsageFakeScript(t, "codex_cli_rs/0.149.0 (Linux)", "codex-thread-usage", reply, capture)
-
-	s := newThreadUsageSession(t, binary)
-	_, err := s.ReadThreadUsage(context.Background())
-	if err == nil {
-		t.Fatal("ReadThreadUsage accepted an estimate for a different thread")
-	}
-	if errors.Is(err, ErrThreadUsageUnavailable) {
-		t.Fatalf("a thread-id mismatch was classified as a state answer: %v", err)
+	for _, tc := range []struct{ name, reply string }{
+		// A real JSON-RPC failure; a 403/404 upstream converts to a null field.
+		{"rpc error", `"error":{"code":-32603,"message":"failed to fetch thread usage: upstream 500"}`},
+		// The echoed id is the only evidence of which thread an estimate is
+		// for, so a mismatch is a wire fault, not a state answer that silently
+		// keeps the fallback forever.
+		{"thread id mismatch", `"result":{"threadUsage":{"threadId":"some-other-thread",` +
+			`"estimatedUsageCreditsMicros":1,"estimatedUsageUsdMicros":1,"groups":[]}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			binary := threadUsageFakeScript(t, "codex_cli_rs/0.149.0 (Linux)", "codex-thread-usage", tc.reply, t.TempDir()+"/usage-request.json")
+			_, err := newThreadUsageSession(t, binary).ReadThreadUsage(context.Background())
+			if err == nil {
+				t.Fatal("ReadThreadUsage returned no error")
+			}
+			if errors.Is(err, ErrThreadUsageUnavailable) {
+				t.Fatalf("a fault was classified as a state answer: %v", err)
+			}
+		})
 	}
 }
 

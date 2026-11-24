@@ -284,8 +284,7 @@ export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: 
     }));
 
     await harness.rpc('GetProviderStatuses');
-    await harness.rpc('StartSession', leadId);
-    await harness.rpc('SendMessage', leadId, 'send a scout', null);
+    await harness.send(leadId, 'send a scout');
 
     // The lead's thread_options lists the profile as this computer runs it.
     const options = await awaitToolAnswer<{ profiles?: ProfileOption[]; profile_notes?: string[] }>(harness, { tool: 'thread_options', cwd: lead.path });
@@ -325,7 +324,7 @@ export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: 
     const own = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER, cwd: asked.path });
     expect(own.tools).toContain('thread_spawn');
     await harness.waitForEvent('provider:turn_completed', (data: { threadId?: string }) => data.threadId === leadId);
-    await harness.rpc('SendMessage', leadId, 'ask it', null);
+    await harness.send(leadId, 'ask it');
     const ask = await awaitToolAnswer(harness, { tool: 'thread_ask', cwd: lead.path });
     expect(ask.isError, ask.text).toBe(false);
     const copy = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER, cwd: asked.path });

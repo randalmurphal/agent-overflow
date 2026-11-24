@@ -16,7 +16,6 @@ import {
   paneFindDetailKey,
   paneFindListKey,
   paneFindTarget,
-  resetPaneFindForTest,
 } from '../../stores/paneFind.svelte';
 import { selectPR, selectedPR } from '../../stores/pullsPage.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -34,7 +33,6 @@ function listedNumbers(view: ReturnType<typeof mountPane>): string[] {
 
 beforeEach(() => {
   resetPullsPane();
-  resetPaneFindForTest();
   installPullsPaneMocks(pullsSnapshot([pullsProject([
     pullItem(5, { title: 'Queue: retry a failed delivery' }),
     pullItem(6, { title: 'Speed up builds' }),
@@ -43,7 +41,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetPaneFindForTest();
   resetPullsPane();
 });
 

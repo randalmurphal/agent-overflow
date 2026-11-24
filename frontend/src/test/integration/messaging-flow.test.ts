@@ -90,7 +90,7 @@ describe('App integration — messaging flow', () => {
     expect((getByLabelText('Message Input') as HTMLTextAreaElement).value).toBe('');
   });
 
-  it('Enter during an active turn enqueues the message instead of dispatching', async () => {
+  it('Enter during an active turn enqueues the message, and the queue survives a thread switch A → B → A', async () => {
     // Replaces the older "Cannot send during active turn" block — the
     // composer is always-typeable now and Enter routes mid-round
     // submissions through the per-thread send queue. Drain fires on
@@ -137,33 +137,6 @@ describe('App integration — messaging flow', () => {
     // Queueing clears the draft through the same send path, which swaps
     // the <textarea> element (recreateInput) — re-query for the live one.
     expect((getByLabelText('Message Input') as HTMLTextAreaElement).value).toBe('');
-  });
-
-  // The legacy frontend-driven drain tests have been removed: the
-  // backend now owns the queue (Phases G1–G6) and the trigger fires
-  // on the first non-subagent tool_use of a wire round, not on
-  // turn_completed. End-to-end queue coverage lives in
-  // src/test/integration/send-queue-flow.test.ts (frontend events ↔
-  // store ↔ UI) and internal/triage/flush_queue_test.go +
-  // app_flush_queue_test.go (backend trigger + dispatcher).
-
-  it('queued items survive a thread switch A → B → A', async () => {
-    // Mount thread-1 first.
-    const { getByLabelText } = await mountWithActiveThread();
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-
-    // Queue an item on thread-1 mid-round.
-    emitWailsEvent('provider:turn_started', {
-      threadId: 'thread-1',
-      turnId: 'r-1',
-      turnIndex: 0,
-      startedAt: 1,
-    });
-    await flush();
-    await fireEvent.input(textarea, { target: { value: 'queued on A' } });
-    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
-    await flush();
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queued on A']);
 
     // Switch panes by setting pane.threadId — reuse the pane store
     // directly. The queue is keyed in a global SvelteMap, so the
@@ -177,15 +150,23 @@ describe('App integration — messaging flow', () => {
     await pane.switchThread(makeThread({ id: 'thread-2', title: 'Other' }));
     await flush();
     // thread-1's queue is still intact even though we're now on thread-2.
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queued on A']);
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue this']);
     expect(getQueueForThread('thread-2')).toEqual([]);
 
     // Switch back.
     setBindingMock('SwitchThread', async () => makeThread({ id: 'thread-1' }));
     await pane.switchThread(makeThread({ id: 'thread-1' }));
     await flush();
-    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queued on A']);
+    expect(getQueueForThread('thread-1').map((item) => item.message)).toEqual(['queue this']);
   });
+
+  // The legacy frontend-driven drain tests have been removed: the
+  // backend now owns the queue (Phases G1–G6) and the trigger fires
+  // on the first non-subagent tool_use of a wire round, not on
+  // turn_completed. End-to-end queue coverage lives in
+  // src/test/integration/send-queue-flow.test.ts (frontend events ↔
+  // store ↔ UI) and internal/triage/flush_queue_test.go +
+  // app_flush_queue_test.go (backend trigger + dispatcher).
 
   it('interrupts an active turn via the Interrupt button', async () => {
     const { getByTestId } = await mountWithActiveThread();
@@ -658,7 +639,7 @@ describe('App integration — messaging flow', () => {
   // re-flip ON for round 2 when the task notification provokes
   // another model call.
   it('flips off between rounds in a multi-result-per-turn cascade and re-flips on round 2', async () => {
-    const { queryByTestId, findByTestId } = await mountWithActiveThread();
+    const { queryByTestId, findByTestId, getByLabelText, getByTestId } = await mountWithActiveThread();
     const paneMod = await import('../../lib/stores/panes.svelte');
     const pane = paneMod.getMainPane();
 
@@ -684,6 +665,18 @@ describe('App integration — messaging flow', () => {
     });
     await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
     expect(queryByTestId('activity-rail-working')).toBeNull();
+
+    // The composer is enabled in the gap — the user can send a follow-up
+    // prompt during the bg-wait gap. Matches Claude Code's actual behaviour
+    // and is the canonical per-round emission contract. Without this, a
+    // regression that gates the composer on logical-turn-active would
+    // silently lock the user out of the gap window.
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(false);
+    await fireEvent.input(textarea, { target: { value: 'follow-up between rounds' } });
+    await flush();
+    const sendBtn = getByTestId('composer-send') as HTMLButtonElement;
+    await waitFor(() => expect(sendBtn.disabled).toBe(false));
 
     // Round 2 begins (Claude system.init re-emit after a
     // task_notification provoked another model call). Distinct
@@ -712,47 +705,5 @@ describe('App integration — messaging flow', () => {
     });
     await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
     expect(queryByTestId('activity-rail-working')).toBeNull();
-  });
-
-  // Composer is enabled between rounds — the user can send a
-  // follow-up prompt during the bg-wait gap. Matches Claude Code's
-  // actual behaviour and is the canonical per-round emission
-  // contract. Without this assertion, a regression that gates the
-  // composer on logical-turn-active would silently lock the user out
-  // of the gap window.
-  it('composer is enabled between rounds in a multi-result-per-turn cascade', async () => {
-    const { getByLabelText, getByTestId } = await mountWithActiveThread();
-    const paneMod = await import('../../lib/stores/panes.svelte');
-    const pane = paneMod.getMainPane();
-
-    // Round 1 starts → composer disabled (mid-round).
-    emitWailsEvent('provider:turn_started', {
-      threadId: 'thread-1',
-      turnId: 'round-1',
-      turnIndex: 0,
-      startedAt: Date.now(),
-    });
-    await waitFor(() => expect(getActiveTurn(pane.threadId)?.turnId).toBe('round-1'));
-
-    // Round 1 ends → composer should be enabled during the gap.
-    // The Send button flips back to its operational state and Enter
-    // is no longer blocked by the mid-turn guard.
-    emitWailsEvent('provider:turn_completed', {
-      threadId: 'thread-1',
-      turnId: 'round-1',
-      turnIndex: 0,
-      startedAt: Date.now(),
-      completedAt: Date.now() + 500,
-      stopReason: 'end_turn',
-    });
-    await waitFor(() => expect(getActiveTurn(pane.threadId)).toBeNull());
-
-    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
-    expect(textarea.disabled).toBe(false);
-    await fireEvent.input(textarea, { target: { value: 'follow-up between rounds' } });
-    await flush();
-
-    const sendBtn = getByTestId('composer-send') as HTMLButtonElement;
-    await waitFor(() => expect(sendBtn.disabled).toBe(false));
   });
 });

@@ -109,20 +109,22 @@ func TestAPIRetryUpsertsRowFromFourthAttempt(t *testing.T) {
 	}
 }
 
-// TestAPIRetryClosesOnForwardProgress — once a forward-progress event
-// arrives for the thread (text delta, tool start, tool complete, turn
-// complete, etc) the api_retry row flips from running to completed
+// TestAPIRetryStaysCompletedOnLateAttempt — once a forward-progress
+// event arrives for the thread (text delta, tool start, tool complete,
+// turn complete, etc) the api_retry row flips from running to completed
 // so the renderer reads it as historical context rather than a live
-// indicator.
-func TestAPIRetryClosesOnForwardProgress(t *testing.T) {
+// indicator. An out-of-order retry observation arriving late in the
+// turn must NOT reopen the row, so it doesn't read as "still retrying"
+// after work continued. The upsert still runs (refreshing the summary
+// in place) — only the status preservation kicks in.
+func TestAPIRetryStaysCompletedOnLateAttempt(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	openTurn(t, router, "t1")
 
 	if err := router.Handle(retryEvent("t1", 4, 10, "rate_limit")); err != nil {
-		t.Fatalf("api_retry: %v", err)
+		t.Fatalf("api_retry initial: %v", err)
 	}
-
 	// Forward-progress event: a text delta on the open turn proves the
 	// retry succeeded, so the row should flip to completed.
 	if err := router.Handle(provider.ProviderEvent{
@@ -134,7 +136,6 @@ func TestAPIRetryClosesOnForwardProgress(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("text delta: %v", err)
 	}
-
 	row, found, err := st.GetThreadItem("t1", "retry:0")
 	if err != nil {
 		t.Fatalf("get retry row: %v", err)
@@ -145,38 +146,12 @@ func TestAPIRetryClosesOnForwardProgress(t *testing.T) {
 	if row.Status != statusCompleted {
 		t.Fatalf("status: got %q, want %q (forward progress should flip to completed)", row.Status, statusCompleted)
 	}
-}
-
-// TestAPIRetryStaysCompletedOnLateAttempt — once the row has flipped
-// to completed, an out-of-order retry observation arriving late in the
-// turn must NOT reopen the row. The historical record should stay
-// closed so it doesn't read as "still retrying" after work continued.
-// The upsert still runs (refreshing the summary in place) — only the
-// status preservation kicks in.
-func TestAPIRetryStaysCompletedOnLateAttempt(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	openTurn(t, router, "t1")
-
-	if err := router.Handle(retryEvent("t1", 4, 10, "rate_limit")); err != nil {
-		t.Fatalf("api_retry initial: %v", err)
-	}
-	// Forward-progress flips the row to completed.
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTextDelta,
-		ThreadID:  "t1",
-		ItemID:    "msg-1",
-		Content:   "ok",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("text delta: %v", err)
-	}
 	// Late retry observation arrives after the turn moved on.
 	if err := router.Handle(retryEvent("t1", 5, 10, "rate_limit")); err != nil {
 		t.Fatalf("late api_retry: %v", err)
 	}
 
-	row, _, err := st.GetThreadItem("t1", "retry:0")
+	row, _, err = st.GetThreadItem("t1", "retry:0")
 	if err != nil {
 		t.Fatalf("get retry row: %v", err)
 	}

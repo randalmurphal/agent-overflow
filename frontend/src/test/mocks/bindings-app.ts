@@ -1,23 +1,52 @@
 // Fake for `bindings/agent-overflow/app.js` — the auto-generated Wails
 // bindings that the real app imports via `lib/stores/bindings.ts`.
 //
-// Tests call `setBindingMock('ListItems', impl)` to stub specific RPC methods.
-// Anything not explicitly mocked rejects with a clear error so an untested
-// code path can't silently no-op.
+// Tests call `setBindingMock('GetThread', impl)` to stub specific RPC methods.
+// A call to anything not mocked, except the passive loads below, throws, and
+// the reset registry fails the test that made it, even when the code under
+// test catches the error. A test that needs a binding absent installs a mock
+// that rejects.
 
 import { vi, type Mock } from 'vitest';
+import { RESET_REGISTRY_KEY } from '../config/testResets';
+import type { ResetRegistry } from '../resetRegistry';
 
 type MockedFn = Mock<(...args: unknown[]) => unknown>;
 
 const mocks: Map<string, MockedFn> = new Map();
 
+const registry = (globalThis as { [key: symbol]: ResetRegistry | undefined })[Symbol.for(RESET_REGISTRY_KEY)];
+if (registry === undefined) {
+  throw new Error('bindings-app.ts loaded without the reset registry: the setup file must import src/test/resetRegistry.ts first');
+}
+
 /**
- * Internal export of the mocks registry. Imported by the wailsio-runtime
- * mock so Call.ByName dispatches to the same per-name handlers that
- * setBindingMock installs. Not part of the public test surface — prefer
- * setBindingMock / getBindingMock in tests.
+ * Records a call to a binding with no mock installed, which fails the test
+ * that made it, and returns the error the call fails with.
  */
-export const __bindingMocksInternal = mocks;
+export function unansweredBinding(name: string): Error {
+  registry!.unansweredBinding(name);
+  return new Error(
+    `Binding ${name} called without a mock. Install one via setBindingMock('${name}', impl) in the test.`,
+  );
+}
+
+/**
+ * The mock that answers `name`: the one a test installed, or the passive
+ * load's default, whose spy is made on first use. Undefined when neither
+ * exists. The wailsio-runtime mock dispatches through it too.
+ */
+export function bindingMockFor(name: string): MockedFn | undefined {
+  const installed = mocks.get(name);
+  if (installed !== undefined) return installed;
+  if (!Object.hasOwn(PASSIVE_LOADS, name)) return undefined;
+  return setBindingMock(name, PASSIVE_LOADS[name]);
+}
+
+/** Every name a mock answers or a passive load would answer. */
+export function bindingMockNames(): string[] {
+  return [...new Set([...mocks.keys(), ...Object.keys(PASSIVE_LOADS)])];
+}
 
 /**
  * Install (or replace) a mock implementation for a binding.
@@ -92,7 +121,7 @@ export function setAttachmentThumbnailMock(
  * Direct read for assertions (call counts, args).
  */
 export function getBindingMock(name: string): MockedFn | undefined {
-  return mocks.get(name);
+  return bindingMockFor(name);
 }
 
 /**
@@ -102,14 +131,155 @@ export function resetBindingMocks(): void {
   mocks.clear();
 }
 
+// Loads a rendered surface or a store starts on its own, with no user
+// action, that most tests never mean to exercise. Each answers as a backend
+// with nothing recorded, so a test need not stub it and its store does not
+// log a failed load on every test. A test that cares installs its own
+// answer with setBindingMock, which holds until the next reset.
+let gitStatusSubscriptions = 0;
+let browserStates = 0;
+const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
+  // A computer's sign-in state and accounts (stores/computerAccounts). With
+  // no sign-in running the backend answers idle for the provider asked
+  // about (app_provider_account_bindings.go GetProviderLoginState).
+  GetProviderLoginState: async (provider: string) => ({ provider, phase: 'idle' }),
+  ListProviderAccounts: async () => [],
+  // Custom notification sounds (stores/sounds).
+  GetSoundFiles: async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }),
+  // Rate limit snapshots read on every hello (stores/eventsRateLimits).
+  GetRateLimitsSnapshots: async () => [],
+  // A thread the pane opens, as the backend holds an idle thread with no
+  // history: resuming it does nothing (app_session_bindings.go), and its
+  // ticks, plans, turns, tray tasks, wakes and pending requests are empty
+  // (app_paging.go, app_agent_wake_rows.go, app_approval.go).
+  AutoResumeThread: async () => undefined,
+  GetThreadUserMessageTicks: async () => [],
+  ListThreadProposedPlans: async () => [],
+  ListRecentTurns: async () => [],
+  ListLiveBackgroundTasks: async () => [],
+  ListThreadWakes: async () => ({ rows: [], moreReminders: 0 }),
+  // Its window, read again on a refresh: the empty page (store/paging.go
+  // emptyPagedItems).
+  ListThreadSliceAround: async () => ({
+    items: [],
+    runs: [],
+    oldestCursor: { turnIndex: -1, itemIndex: -1, itemId: '' },
+    newestCursor: { turnIndex: -1, itemIndex: -1, itemId: '' },
+    oldestTurnIndex: -1,
+    newestTurnIndex: -1,
+    hasMore: false,
+    hasMoreOlder: false,
+    hasMoreNewer: false,
+  }),
+  ListPendingInteractiveRequests: async () => ({ approvals: [], userInputs: [] }),
+  // Its live state: nothing running, queued or waiting (app_live_state.go).
+  GetThreadLiveState: async (threadId: string) => ({
+    threadId,
+    codexAgents: [],
+    subagentProgress: [],
+    queueItems: [],
+    flushedItems: [],
+    flushedThrough: 0,
+    interactive: { approvals: [], userInputs: [] },
+  }),
+  // Its workers: none open (app_thread_agent_rows_summary.go).
+  GetThreadWorkerSummary: async (threadId: string) => ({ threadId, open: 0, needYou: 0 }),
+  ListThreadWorkerSummaries: async () => ({ summaries: [] }),
+  ListStandingAgentWakes: async () => [],
+  // Its running shell commands, async questions and agent request
+  // deliveries: none (app_shell_command.go, app_async_questions.go,
+  // app_thread_request_states.go).
+  GetThreadShellCommands: async () => [],
+  ListAsyncQuestions: async () => [],
+  GetThreadRequestStates: async () => [],
+  // Every thread's live activity, read on each connection: none running
+  // (app_live_state.go).
+  ListThreadLiveActivity: async () => [],
+  // The workflow engine, not paused (app_workflow.go).
+  WorkflowGetEngineState: async () => ({ paused: false }),
+  // A checkout with no busy thread (app_workspace_activity.go).
+  GetWorkspaceActivity: async () => ({ activeTurnThreads: 0, runningBackgroundTasks: 0, busyThreads: [] }),
+  // A checkout's status stream, for a project directory that is no git
+  // repository (gitapp/watch.go Subscribe, git/status.go Status). The stream
+  // is keyed on the workspace path; unsubscribing is idempotent
+  // (app_gitwatch.go).
+  GitStatusSubscribe: async (ws: { workspacePath: string }) => ({
+    id: `git-status-${++gitStatusSubscriptions}`,
+    cwd: ws.workspacePath,
+    status: {
+      isRepo: false, branch: '', isDefaultBranch: false, hasChanges: false, insertions: 0, deletions: 0,
+      fileCount: 0, hasUpstream: false, aheadCount: 0, behindCount: 0, hasOriginRemote: false,
+    },
+  }),
+  GitStatusUnsubscribe: async () => undefined,
+  // The sidebar's thread list and the composer's usage meter, with nothing
+  // recorded (app_thread_bindings.go, app_usage.go).
+  ListThreads: async () => [],
+  GetUsageStats: async () => [],
+  // The error and render trace sinks answer with the file they appended to
+  // (app_observability.go, internal/uitrace).
+  ReportFrontendErrorBatch: async () => '/tmp/ui-trace/frontend-errors.jsonl',
+  AppendUIRenderTraceBatch: async () => '/tmp/ui-trace/render.jsonl',
+  // An error report reads the backend log lines of the failure it carries:
+  // none retained for it (app_observability.go GetErrorLogLines).
+  GetErrorLogLines: async () => ({ lines: [], found: false }),
+  // The sidebar's projects and groups: none (store/projects.go,
+  // store/thread_groups.go; the generated binding reads a null list as []).
+  ListProjects: async () => [],
+  ListThreadGroups: async () => [],
+  // A thread's requests of other threads, waiting and past: none
+  // (app_thread_agent_rows.go).
+  ListThreadAgentRows: async () => ({ rows: [] }),
+  ListThreadPastAgentRows: async () => ({ rows: [], total: 0 }),
+  // A thread's browser, with no pages opened: the state of a fresh thread
+  // browser (browser/state_push.go buildThreadState, thread_life.go
+  // newThreadBrowser). Seq rises with each state built.
+  BrowserCompanionThreadState: async (threadId: string) => ({
+    kind: 'state', threadId, visible: false, viewportWidth: 1280, viewportHeight: 720, jar: 'worktree',
+    recentGen: 'test-launch.0', seq: ++browserStates,
+  }),
+  // Dictation offered by neither source: no Codex sign-in, no OpenAI key
+  // (app_dictation.go).
+  DictationSources: async () => ({ subscription: false, live: false, chatGPTSignIn: false }),
+  // Dev servers: none listening, and no address to share a preview on
+  // (devscan.go DevServerList).
+  GetDevServers: async () => ({ servers: [], previewHost: '' }),
+  // An unstamped build without an updater: version "dev", self-update not
+  // supported (app_host.go Version, app_update_bindings.go CheckForUpdate).
+  Version: async () => 'dev',
+  CheckForUpdate: async () => ({ supported: false, available: false, currentVersion: 'dev' }),
+  // A computer no service manager supervises, read on each connection
+  // (app_service_update.go serviceUpdateStatusLocked).
+  GetServiceUpdateStatus: async () => ({ supervised: false, available: false, currentVersion: 'dev', phase: 'idle' }),
+  // A thread's or a draft's MCP menu, as the backend lists it for a thread of
+  // a provider with no built-in servers and nothing configured
+  // (app_mcp_bindings.go).
+  ListThreadMcpServers: async () => [],
+  ListWorkspaceMcpServers: async () => [],
+  ...highlightingUnavailable(),
+};
+
+// Highlighting unavailable: every highlight read refuses the way the backend
+// refuses a session without `files:read` (transport/authorize.go
+// scopeRefusal), so code renders plain, as with no computer to highlight it.
+// This stands apart from the scope posture the other answers assume, the
+// owner's session with every scope. A test about highlighting installs its
+// own answers.
+function highlightingUnavailable(): Record<string, () => Promise<never>> {
+  const names = [
+    'HighlightSchemaVersion', 'HighlightClassNames', 'HighlightCode',
+    'HighlightPatch', 'HighlightPatchWithContext', 'HighlightEditPatchWithContext',
+  ];
+  return Object.fromEntries(names.map((name) => [name, async () => {
+    const { TransportError } = await import('../../lib/transport/wsClient');
+    throw new TransportError('scope_required', `${name} requires the files:read scope, which this session was not granted`, { scope: 'files:read' });
+  }]));
+}
+
 function dispatch(name: string) {
   return (...args: unknown[]) => {
-    const fn = mocks.get(name);
-    if (!fn) {
-      throw new Error(
-        `Binding ${name} called without a mock. Install one via setBindingMock('${name}', impl) in the test.`,
-      );
-    }
+    const fn = bindingMockFor(name);
+    if (!fn) throw unansweredBinding(name);
     return fn(...args);
   };
 }
@@ -210,7 +380,6 @@ export class TerminalOpenOptions {
   }
 }
 
-export const StartSession = dispatch('StartSession');
 export const AutoResumeThread = dispatch('AutoResumeThread');
 export const StopSession = dispatch('StopSession');
 export const ReconnectSession = dispatch('ReconnectSession');
@@ -226,12 +395,9 @@ export const GetThreadUnsavedRows = async (threadId: unknown): Promise<unknown> 
   if (explicit) return explicit(threadId);
   return { threadId, rows: [] };
 };
-export const SendMessage = dispatch('SendMessage');
 export const SendMessageWithOptions = dispatch('SendMessageWithOptions');
-export const SteerMessageWithOptions = dispatch('SteerMessageWithOptions');
 export const InterruptTurn = dispatch('InterruptTurn');
 export const GetConversationMutationState = dispatch('GetConversationMutationState');
-export const InterruptAndRevertIfClean = dispatch('InterruptAndRevertIfClean');
 export const GetThreadLiveState = dispatch('GetThreadLiveState');
 export const ListThreadLiveActivity = dispatch('ListThreadLiveActivity');
 export const ListUnsettledFlushes = dispatch('ListUnsettledFlushes');
@@ -244,7 +410,6 @@ export const SendPlanRevisionComments = dispatch('SendPlanRevisionComments');
 export const StopClaudeTask = dispatch('StopClaudeTask');
 export const TerminateCodexBackgroundTerminal = dispatch('TerminateCodexBackgroundTerminal');
 export const StopCodexSubagent = dispatch('StopCodexSubagent');
-export const CleanCodexBackgroundTerminals = dispatch('CleanCodexBackgroundTerminals');
 export const StopBackgroundTasks = dispatch('StopBackgroundTasks');
 export const BackgroundClaudeTask = dispatch('BackgroundClaudeTask');
 export const WatchBackgroundTaskOutput = dispatch('WatchBackgroundTaskOutput');
@@ -256,8 +421,6 @@ export const GetThreadContextUsage = dispatch('GetThreadContextUsage');
 // Thread-scoped model / workspace / message-search / commit-message bindings
 // (previously hand-wrapped with Call.ByName; now re-exported through the
 // generated app.js). Tests stub these through setBindingMock by method name.
-export const UpdateThreadModel = dispatch('UpdateThreadModel');
-export const UpdateThreadProvider = dispatch('UpdateThreadProvider');
 export const UpdateThreadModelSelection = dispatch('UpdateThreadModelSelection');
 export const UpdateThreadMode = dispatch('UpdateThreadMode');
 export const UpdateThreadReasoningEffort = dispatch('UpdateThreadReasoningEffort');
@@ -276,7 +439,6 @@ export const GenerateCommitMessage = dispatch('GenerateCommitMessage');
 export const GetPayloadPreview = dispatch('GetPayloadPreview');
 export const GetPayloadChunk = dispatch('GetPayloadChunk');
 export const GetPayloadData = dispatch('GetPayloadData');
-export const ListItems = dispatch('ListItems');
 export const GetRateLimitsSnapshots = dispatch('GetRateLimitsSnapshots');
 export const ListProviderAccounts = dispatch('ListProviderAccounts');
 export const StartProviderLogin = dispatch('StartProviderLogin');
@@ -374,12 +536,7 @@ export const WorkflowTakeOverUnit = dispatch('WorkflowTakeOverUnit');
 export const WorkflowUnbindThread = dispatch('WorkflowUnbindThread');
 
 // Per-provider/model context window + auto-compact thresholds.
-// GetContextSettings hydrates the form; the two updates persist either
-// the model default (UpdateContextSettingsProfile) or a thread-scoped
-// override (UpdateThreadContextSettings).
 export const GetContextSettings = dispatch('GetContextSettings');
-export const UpdateContextSettingsProfile = dispatch('UpdateContextSettingsProfile');
-export const UpdateThreadContextSettings = dispatch('UpdateThreadContextSettings');
 export const GetNetworkSettings = dispatch('GetNetworkSettings');
 export const SetNetworkSettings = dispatch('SetNetworkSettings');
 export const ForgetTailnetNode = dispatch('ForgetTailnetNode');
@@ -553,9 +710,6 @@ export const GetClaudeSlashCommands = dispatch('GetClaudeSlashCommands');
 export const GetClaudeSkills = dispatch('GetClaudeSkills');
 export const GetCodexSkills = dispatch('GetCodexSkills');
 export const CompactCodexThread = dispatch('CompactCodexThread');
-export const StartCodexReview = dispatch('StartCodexReview');
-export const ProbeClaudeAccount = dispatch('ProbeClaudeAccount');
-export const ProbeAgyAccount = dispatch('ProbeAgyAccount');
 export const RecheckClaudeAccount = dispatch('RecheckClaudeAccount');
 export const RecheckCodexAccount = dispatch('RecheckCodexAccount');
 export const RecheckAgyAccount = dispatch('RecheckAgyAccount');
@@ -588,7 +742,6 @@ export const GitFetchOrigin = dispatch('GitFetchOrigin');
 export const GitCheckout = dispatch('GitCheckout');
 export const GitCreateBranchFrom = dispatch('GitCreateBranchFrom');
 export const GitCreatePR = dispatch('GitCreatePR');
-export const GitCreateWorktree = dispatch('GitCreateWorktree');
 export const GitMaybeFetchRemotes = dispatch('GitMaybeFetchRemotes');
 export const GitListBranchPruneCandidates = dispatch('GitListBranchPruneCandidates');
 export const GitPruneBranches = dispatch('GitPruneBranches');
@@ -596,7 +749,6 @@ export const GitSyncBranch = dispatch('GitSyncBranch');
 export const GitWorktreeStatus = dispatch('GitWorktreeStatus');
 export const PrepareThreadWorktree = dispatch('PrepareThreadWorktree');
 export const AttachThreadWorktree = dispatch('AttachThreadWorktree');
-export const GitRemoveWorktree = dispatch('GitRemoveWorktree');
 export const RemoveOtherWorktree = dispatch('RemoveOtherWorktree');
 // WorktreeStatus mirrors the generated class; tests stub the binding
 // to return plain object literals, so the class shape is only here so
@@ -635,7 +787,6 @@ export const GetLocalImage = dispatch('GetLocalImage');
 export const SaveLocalImage = dispatch('SaveLocalImage');
 export const SaveDraft = dispatch('SaveDraft');
 export const GetDraft = dispatch('GetDraft');
-export const ClearDraft = dispatch('ClearDraft');
 export const DeleteEmptyDraftThread = dispatch('DeleteEmptyDraftThread');
 export const DictationSources = dispatch('DictationSources');
 export const BeginDictation = dispatch('BeginDictation');
@@ -690,13 +841,9 @@ export const HighlightEditPatchWithContext = dispatch('HighlightEditPatchWithCon
 export const ForkThreadFromMessage = dispatch('ForkThreadFromMessage');
 export const RevertConversationAndResendMessage = dispatch('RevertConversationAndResendMessage');
 
-// Thread runtime mode
-export const GetThreadRuntimeMode = dispatch('GetThreadRuntimeMode');
-
 // Dev-only UI render tracing
 export const AppendUIRenderTraceBatch = dispatch('AppendUIRenderTraceBatch');
 export const BookmarkUIRenderTrace = dispatch('BookmarkUIRenderTrace');
-export const GetUIRenderTracePath = dispatch('GetUIRenderTracePath');
 
 // Always-on frontend runtime-error log
 export const ReportFrontendErrorBatch = dispatch('ReportFrontendErrorBatch');
@@ -760,7 +907,6 @@ export const SyncThreadWindow = async (
 export const ListActivityRunMembers = dispatch('ListActivityRunMembers');
 export const ListItemsBeforeCursor = dispatch('ListItemsBeforeCursor');
 export const ListItemsAfterCursor = dispatch('ListItemsAfterCursor');
-export const ListSubagentDescendants = dispatch('ListSubagentDescendants');
 export const GetThreadItemProjectionSource = dispatch('GetThreadItemProjectionSource');
 export const ListThreadProposedPlans = dispatch('ListThreadProposedPlans');
 export const ListProposedPlanComments = dispatch('ListProposedPlanComments');
@@ -917,23 +1063,16 @@ export const DownloadUpdate = dispatch('DownloadUpdate');
 export const RestartToUpdate = dispatch('RestartToUpdate');
 export const CancelRestartToUpdate = dispatch('CancelRestartToUpdate');
 export const ListReleases = dispatch('ListReleases');
-export const ReconfigureObservability = dispatch('ReconfigureObservability');
-export const ProbeCodexAccount = dispatch('ProbeCodexAccount');
-export const SavePayloadToFile = dispatch('SavePayloadToFile');
 export const ListArchivedThreads = dispatch('ListArchivedThreads');
 export const UpdateProjectSortPositions = dispatch('UpdateProjectSortPositions');
 export const ProviderTerminalAttach = dispatch('ProviderTerminalAttach');
 export const ProviderTerminalDetach = dispatch('ProviderTerminalDetach');
 export const ProviderTerminalInput = dispatch('ProviderTerminalInput');
-export const ProviderTerminalRefresh = dispatch('ProviderTerminalRefresh');
 export const ProviderTerminalReplay = dispatch('ProviderTerminalReplay');
 export const ProviderTerminalResize = dispatch('ProviderTerminalResize');
 export const ProviderTerminalSetControl = dispatch('ProviderTerminalSetControl');
 export const NotificationActivated = dispatch('NotificationActivated');
 export const WorkflowScheduleResume = dispatch('WorkflowScheduleResume');
-export const ListMcpServerStatuses = dispatch('ListMcpServerStatuses');
-export const ListRunningBackgroundWork = dispatch('ListRunningBackgroundWork');
-export const StopThreadBackgroundWork = dispatch('StopThreadBackgroundWork');
 export const ReportUpdateInstallStatus = dispatch('ReportUpdateInstallStatus');
 export const GetServiceUpdateStatus = dispatch('GetServiceUpdateStatus');
 export const ListServiceReleases = dispatch('ListServiceReleases');
@@ -950,8 +1089,6 @@ export const GetNativeNetworkConfig = dispatch('GetNativeNetworkConfig');
 export const MintOwnDevicePairing = dispatch('MintOwnDevicePairing');
 
 export const RegisterOwnDevice = dispatch('RegisterOwnDevice');
-
-export const RemoveOwnDevice = dispatch('RemoveOwnDevice');
 
 export const ReportNativeNetworkState = dispatch('ReportNativeNetworkState');
 

@@ -3,9 +3,6 @@ package app
 import (
 	"errors"
 	"strings"
-
-	"agent-overflow/internal/errorsx"
-	"agent-overflow/internal/threadtools"
 )
 
 // threadCleanupError is the cleanup after a committed archive or delete that
@@ -86,16 +83,6 @@ func (e *threadCleanupError) addBelow(child threadCleanupError) {
 	if child.below != nil {
 		e.addBelow(*child.below)
 	}
-}
-
-// err is the cleanup's failure, or nil when every part succeeded. The
-// public message is the outermost layer, so it is what every caller is
-// shown even when a cause carries public prose of its own.
-func (e threadCleanupError) err() error {
-	if e.Unwrap() == nil {
-		return nil
-	}
-	return errorsx.Public(threadtools.CodeCleanupFailed, e.message(), &e)
 }
 
 func (e *threadCleanupError) Error() string { return e.Unwrap().Error() }

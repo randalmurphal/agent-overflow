@@ -47,24 +47,3 @@ func StandaloneProviders() []ProviderKind {
 func IsKnownProvider(name string) bool {
 	return slices.Contains(allProviders, ProviderKind(name))
 }
-
-// IsStandaloneProvider reports whether name is a standalone ProviderKind.
-func IsStandaloneProvider(name string) bool {
-	return slices.Contains(standaloneProviders, ProviderKind(name))
-}
-
-// ProviderDisplayName returns the human-facing display label for a provider.
-func ProviderDisplayName(name string) string {
-	switch ProviderKind(name) {
-	case Claude:
-		return "Claude Code"
-	case Codex:
-		return "Codex"
-	case ClaudeTUI:
-		return "Claude TUI"
-	case Agy:
-		return "Antigravity"
-	default:
-		return name
-	}
-}

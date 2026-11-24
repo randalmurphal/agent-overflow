@@ -175,53 +175,6 @@ func TestEnsureCLIBinDirToleratesAnUnwritableConfigDir(t *testing.T) {
 	}
 }
 
-func TestPrependCLIBinDir(t *testing.T) {
-	t.Parallel()
-	separator := string(os.PathListSeparator)
-	tests := []struct {
-		name string
-		env  map[string]string
-		want map[string]string
-	}{
-		{
-			name: "an env with no PATH gets one",
-			env:  map[string]string{"HOME": "/home/agent"},
-			want: map[string]string{"HOME": "/home/agent", "PATH": "/cfg/bin"},
-		},
-		{
-			name: "an existing PATH keeps its entries behind ours",
-			env:  map[string]string{"PATH": "/usr/bin" + separator + "/bin"},
-			want: map[string]string{"PATH": "/cfg/bin" + separator + "/usr/bin" + separator + "/bin"},
-		},
-		{
-			// provider.BuildEnvironment matches PATH case-insensitively; if this
-			// helper did not, a `Path` override would survive and our entry would
-			// land on a variable nothing reads.
-			name: "a differently cased PATH is the one extended",
-			env:  map[string]string{"Path": "/usr/bin"},
-			want: map[string]string{"Path": "/cfg/bin" + separator + "/usr/bin"},
-		},
-		{
-			name: "an empty PATH is replaced rather than left with a leading separator",
-			env:  map[string]string{"PATH": ""},
-			want: map[string]string{"PATH": "/cfg/bin"},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			prependCLIBinDir(test.env, "/cfg/bin")
-			if len(test.env) != len(test.want) {
-				t.Fatalf("env = %#v, want %#v", test.env, test.want)
-			}
-			for key, want := range test.want {
-				if test.env[key] != want {
-					t.Fatalf("env[%q] = %q, want %q", key, test.env[key], want)
-				}
-			}
-		})
-	}
-}
-
 func writeStubBinary(t *testing.T, path string) {
 	t.Helper()
 	mockexec.WriteFile(t, path, []byte("#!/bin/sh\nexit 0\n"), 0o700)

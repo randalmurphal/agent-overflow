@@ -9,7 +9,7 @@
 // two timestamps and is the only logic in this directory that is not a
 // forwarding call.
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { installNativeLifecycle } from './lifecycle';
 import { DEFAULT_LOCK_WINDOW_MS, installAppLock, lockWindowMs, shouldLock } from './lock';
 import { isNativeShell, nativePlatform } from './platform';
@@ -22,7 +22,7 @@ import {
 } from './bundleSync';
 import { scanPairingQr } from './qr';
 import { adoptPairingEndpoint, onceUnlocked, prepareNativeShell } from './boot';
-import { __resetHomeEndpointForTest, homeEndpoint } from '../transport/homeEndpoint';
+import { homeEndpoint } from '../transport/homeEndpoint';
 
 describe('the web fallbacks', () => {
   it('answer no shell', () => {
@@ -156,10 +156,6 @@ describe('adoptPairingEndpoint', () => {
     backendId: 'b-home',
   };
 
-  afterEach(() => {
-    __resetHomeEndpointForTest();
-  });
-
   it('validates a new computer without replacing the existing home endpoint', () => {
     expect(adoptPairingEndpoint(payload)).toBe('');
     expect(homeEndpoint()).toBe('');
@@ -170,7 +166,6 @@ describe('adoptPairingEndpoint', () => {
     expect(homeEndpoint()).toBe('');
   });
 });
-
 
 describe('a plugin proxy handed out by an accessor', () => {
   // Capacitor's registerPlugin proxy answers every property with a method
@@ -196,14 +191,6 @@ describe('a plugin proxy handed out by an accessor', () => {
     const shielded = await (async () => unthenable(capacitorLike()))();
     expect(typeof shielded.addListener).toBe('function');
     await expect(shielded.addListener()).rejects.toThrow('addListener()');
-  });
-
-  it('would hang unshielded', async () => {
-    const settled = await Promise.race([
-      (async () => capacitorLike())().then(() => 'settled', () => 'settled'),
-      new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 50)),
-    ]);
-    expect(settled).toBe('hung');
   });
 });
 

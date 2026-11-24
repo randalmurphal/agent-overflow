@@ -149,18 +149,6 @@ describe('applyContextExpansion', () => {
     expect(gapsOf(expanded).some((gap) => gap.location === 'trailing')).toBe(false);
   });
 
-  it('keeps a stable identity per (file, version) for downstream memos', () => {
-    const file = fileOf(midFilePatch);
-    const expansion = state(range(14, 18), null, 7);
-    const first = applyContextExpansion(file, expansion);
-    expect(applyContextExpansion(file, expansion)).toBe(first);
-
-    expansion.lines.set(18, 'src 18');
-    expansion.version = 8;
-    const second = applyContextExpansion(file, expansion);
-    expect(second).not.toBe(first);
-  });
-
   it('keeps two expansion states on the same base array fully independent', () => {
     // Two panes expanding identical content hit applyContextExpansion
     // with the SAME base file but different states. Each state must keep

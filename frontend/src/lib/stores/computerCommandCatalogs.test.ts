@@ -1,16 +1,15 @@
-import { afterEach, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { detachBackend, takePinnedBackend } from '../transport/backends';
 import { SCOPES, setCarriedSessionScopes } from '../transport/scopes';
-import { ensureClaudeSkills, getClaudeSkills, resetForTest as resetClaude } from './claudeSkills.svelte';
-import { ensureCodexSkills, getCodexSkills, resetForTest as resetCodex } from './codexSkills.svelte';
+import { ensureClaudeSkills, getClaudeSkills } from './claudeSkills.svelte';
+import { ensureCodexSkills, getCodexSkills } from './codexSkills.svelte';
 import {
-  ensureClaudeProbeCommands, getClaudeProbeCommands, invalidateClaudeProbeCommands,
-  resetForTest as resetCommands,
+  ensureClaudeProbeCommands,
+  getClaudeProbeCommands,
+  invalidateClaudeProbeCommands,
 } from './providerCommands.svelte';
-
-afterEach(() => { resetStagedBackends(); resetClaude(); resetCodex(); resetCommands(); });
 
 it('reads command and skill catalogs from the requested computer even when paths are identical', async () => {
   stageBackend();

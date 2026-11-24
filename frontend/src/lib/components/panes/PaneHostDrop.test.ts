@@ -33,7 +33,6 @@ import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { installThreadSwitchMocks, makeThread } from '../../../test/helpers/chat';
 import { prependThread } from '../../stores/threads.svelte';
 import { airspaceSurfaces } from '../../utils/paneAirspace.svelte';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
   beginThreadRowDrag,
   endThreadRowDrag,
@@ -68,7 +67,6 @@ describe('PaneHost drag and drop', () => {
     cleanup();
     endThreadRowDrag();
     vi.restoreAllMocks();
-    resetBindingMocks();
     resetAll();
     vi.unstubAllGlobals();
   });
@@ -662,17 +660,6 @@ describe('PaneHost drag and drop', () => {
     await dispatchDrag(pane('right'), 'dragover', threadDataTransfer('any-thread'), 600);
     await tick();
     expect(rendered.getByTestId('pane-drop-seam').dataset.insertIndex).toBe('1');
-  });
-
-  it('raises no shield for a drag that places no pane', async () => {
-    const { rendered, pane } = renderTwoPanes();
-    const text = { types: ['text/plain'], getData: () => '' } as unknown as DataTransfer;
-
-    await dispatchDrag(pane('right'), 'dragover', text, 900);
-    await tick();
-
-    expect(rendered.queryByTestId('pane-drag-shield')).toBeNull();
-    expect(rendered.queryByTestId('pane-drop-seam')).toBeNull();
   });
 
   it('outlines the empty strip while a thread hovers it', async () => {

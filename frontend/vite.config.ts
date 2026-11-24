@@ -6,7 +6,7 @@ import { PAGE_VERSION_GLOBAL, buildReleaseVersion, bundleIdPlugin } from "./scri
 
 // Phase B aliases @wailsio/runtime to the local transport shim. The shim
 // exposes the same surface the generated bindings depend on (Call.ByID,
-// CancellablePromise, Create.* factories, Events.On/Emit) but routes
+// CancellablePromise, Create.* factories, Events.On) but routes
 // every call through the WebSocket transport in /internal/transport.
 // Generated bindings remain byte-identical — this alias is the only
 // change at the build layer required to swap Wails native IPC for the

@@ -9,7 +9,6 @@ import { flushSync } from 'svelte';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
   __pipelineStageKeysForTest,
-  __resetPipelinesPageForTest,
   attachPipelinesPage,
   clearPipelineSelection,
   detachPipelinesPage,
@@ -30,15 +29,14 @@ import {
   setVisiblePipelines,
 } from './pipelinesPage.svelte';
 import { DEFAULT_RETRY } from './entityStore.svelte';
-import { __resetPipelineCIForTest } from './pipelineCI.svelte';
-import { PIPELINE_FILTERS_KEY, resetPullsFiltersForTest } from './pullsPageFilters.svelte';
-import { appStorageGet, resetAppStorageForTest } from './appStorage';
+import { PIPELINE_FILTERS_KEY } from './pullsPageFilters.svelte';
+import { appStorageGet } from './appStorage';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { detachBackend, takePinnedBackend } from '../transport/backends';
 import { presentScope } from '../transport/scopeRefusal';
 import { TransportError } from '../transport/wsClient';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { grantBackendScopes, revokeBackendScopes } from '../../test/helpers/scopes';
 
 const NOT_GRANTED = `${presentScope('git:operate').title} ${presentScope('git:operate').hint}`;
@@ -99,15 +97,10 @@ function setDocumentVisibility(value: DocumentVisibilityState): void {
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-  resetAppStorageForTest();
-  resetPullsFiltersForTest();
 });
 
 afterEach(() => {
-  __resetPipelinesPageForTest();
-  __resetPipelineCIForTest();
   revokeBackendScopes('laptop');
-  resetStagedBackends();
   delete (document as unknown as Record<string, unknown>).visibilityState;
   vi.useRealTimers();
 });
@@ -646,6 +639,11 @@ describe('the list find query', () => {
     stageBackend();
     await grantBackendScopes('laptop', ['git:operate']);
     installMocks({ p1: [summary(1), summary(3, { refKind: 'tag', ref: 'v1' })], p2: [summary(2, { ref: 'release-train' })] });
+    // Selecting a pipeline follows it.
+    setBindingMock('SubscribePipeline', async (_repo: unknown, id: string) => ({
+      id: `pipe-${id}`, key: `gitlab:group/app:pipeline:${id}`, pipeline: { id, status: 'running', stages: [] }, error: '', errorKind: '', reserve: false, resumeAt: '', seq: 1,
+    }));
+    setBindingMock('UnsubscribePipeline', async () => undefined);
     attachPipelinesPage(PANE, 'laptop');
     attachPipelinesPage('tools-other', 'laptop');
     await settle();

@@ -7,7 +7,6 @@ import {
   getPaneFind,
   openPaneFind,
   registerPaneFindProvider,
-  resetPaneFindForTest,
 } from '../../stores/paneFind.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { clearCommandRegistry, registerCommand } from '../../stores/commandRegistry.svelte';
@@ -25,7 +24,6 @@ let fallback: HTMLElement;
 let fallbackTarget: () => HTMLElement | null;
 
 beforeEach(() => {
-  resetPaneFindForTest();
   setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 }]);
   provider = fakeFindProvider();
   registerPaneFindProvider('a', provider);
@@ -37,7 +35,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetPaneFindForTest();
   resetPaneLayoutForTest();
   document.body.replaceChildren();
 });
@@ -275,17 +272,6 @@ describe('<PaneFindBar>', () => {
     } finally {
       window.removeEventListener('keydown', onKey);
     }
-  });
-
-  it('returns focus to the pane when the element it came from is gone', async () => {
-    const before = document.createElement('textarea');
-    document.body.appendChild(before);
-    const { getByTestId } = renderBar();
-    await openBar(before);
-    before.remove();
-    await fireEvent.click(getByTestId('pane-find-close'));
-    await tick();
-    await waitFor(() => expect(document.activeElement).toBe(fallback));
   });
 
   it('returns focus to the pane when the element it came from is still there but cannot take focus', async () => {

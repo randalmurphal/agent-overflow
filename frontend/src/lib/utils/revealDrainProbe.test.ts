@@ -12,47 +12,19 @@ function pane(smoothingItemCount: number, revealBoundary: unknown = null): Revea
 }
 
 describe('summarizeRevealDrain', () => {
-  it('reads an idle set of panes as fully drained', () => {
-    expect(summarizeRevealDrain([pane(0), pane(0), pane(0)])).toEqual({
-      v: 1,
-      panes: 3,
-      draining: 0,
-      smoothers: 0,
-      boundaries: 0,
-    });
-  });
+  const broken = { smoothingItemCount: Number.NaN, revealBoundary: undefined } as RevealDrainPane;
 
-  it('answers an empty registry without inventing a drain', () => {
-    expect(summarizeRevealDrain([])).toEqual({
-      v: 1,
-      panes: 0,
-      draining: 0,
-      smoothers: 0,
-      boundaries: 0,
-    });
-  });
-
-  it('totals smoothers across panes and counts each draining pane once', () => {
-    const summary = summarizeRevealDrain([pane(2), pane(0), pane(5)]);
-    expect(summary).toEqual({ v: 1, panes: 3, draining: 2, smoothers: 7, boundaries: 0 });
-  });
-
-  // A gate can stand with no smoother left: the boundary is published by
-  // the reveal recompute and cleared by it, and the window must not close in
-  // the gap. Counting a gated pane as draining is what keeps that honest.
-  it('counts a pane whose gate is engaged even with no live smoother', () => {
-    const summary = summarizeRevealDrain([pane(0, { turnIndex: 3, itemIndex: 1 })]);
-    expect(summary).toEqual({ v: 1, panes: 1, draining: 1, smoothers: 0, boundaries: 1 });
-  });
-
-  it('does not double-count a pane that is both gated and smoothing', () => {
-    const summary = summarizeRevealDrain([pane(4, { turnIndex: 0, itemIndex: 0 })]);
-    expect(summary).toEqual({ v: 1, panes: 1, draining: 1, smoothers: 4, boundaries: 1 });
-  });
-
-  it('treats an unreadable pane as contributing nothing rather than NaN', () => {
-    const broken = { smoothingItemCount: Number.NaN, revealBoundary: undefined } as RevealDrainPane;
-    const summary = summarizeRevealDrain([broken, pane(1)]);
-    expect(summary).toEqual({ v: 1, panes: 2, draining: 1, smoothers: 1, boundaries: 0 });
+  it.each<[string, RevealDrainPane[], { panes: number; draining: number; smoothers: number; boundaries: number }]>([
+    ['reads an idle set of panes as fully drained', [pane(0), pane(0), pane(0)], { panes: 3, draining: 0, smoothers: 0, boundaries: 0 }],
+    ['answers an empty registry without inventing a drain', [], { panes: 0, draining: 0, smoothers: 0, boundaries: 0 }],
+    ['totals smoothers across panes and counts each draining pane once', [pane(2), pane(0), pane(5)], { panes: 3, draining: 2, smoothers: 7, boundaries: 0 }],
+    // A gate can stand with no smoother left: the boundary is published by
+    // the reveal recompute and cleared by it, and the window must not close in
+    // the gap. Counting a gated pane as draining is what keeps that honest.
+    ['counts a pane whose gate is engaged even with no live smoother', [pane(0, { turnIndex: 3, itemIndex: 1 })], { panes: 1, draining: 1, smoothers: 0, boundaries: 1 }],
+    ['does not double-count a pane that is both gated and smoothing', [pane(4, { turnIndex: 0, itemIndex: 0 })], { panes: 1, draining: 1, smoothers: 4, boundaries: 1 }],
+    ['treats an unreadable pane as contributing nothing rather than NaN', [broken, pane(1)], { panes: 2, draining: 1, smoothers: 1, boundaries: 0 }],
+  ])('%s', (_name, panes, want) => {
+    expect(summarizeRevealDrain(panes)).toEqual({ v: 1, ...want });
   });
 });

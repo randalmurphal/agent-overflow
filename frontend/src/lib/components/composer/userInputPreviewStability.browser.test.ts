@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { cleanup, render } from '@testing-library/svelte';
 // Real production stylesheet: these assertions are cascade-coupled to the
 // utilities the panel uses -- `content-start` on the option column and the
 // stacked `col-start-1 row-start-1 / invisible` preview layers. Drop either
@@ -115,24 +115,11 @@ describe('user-input option preview layout stability', () => {
     for (const state of states.slice(1)) expect(state).toEqual(states[0]);
   });
 
-  it('shows exactly one preview layer while laying out all of them', async () => {
+  it('sizes every preview layer to one capped cell beside natural-height buttons, then shows only the focused layer', async () => {
     const host = await mountPanel();
     const layers = [...host.querySelectorAll<HTMLElement>('[data-user-input-preview]')];
     expect(layers).toHaveLength(3);
 
-    await focusOption(host, 1);
-    const visible = layers.filter((l) => getComputedStyle(l).visibility === 'visible');
-    expect(visible).toHaveLength(1);
-    expect(visible[0].dataset.active).toBe('true');
-    expect(visible[0].textContent).toContain('line 1 of a long preview');
-    // The hidden layers still occupy their cell -- that is what holds the
-    // height constant. `invisible` must never become `hidden`/`display:none`.
-    for (const layer of layers) expect(layer.getBoundingClientRect().height).toBeGreaterThan(0);
-  });
-
-  it('sizes the preview cell to the tallest option, capped at max-h-60', async () => {
-    const host = await mountPanel();
-    const layers = [...host.querySelectorAll<HTMLElement>('[data-user-input-preview]')];
     const heights = layers.map((l) => Math.round(l.getBoundingClientRect().height));
     // Layers share one grid cell and stretch to it, so every layer -- short
     // preview, long preview, no preview -- reports the row height. That
@@ -145,11 +132,9 @@ describe('user-input option preview layout stability', () => {
     const cs = getComputedStyle(cell);
     const chrome = ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth']
       .reduce((sum, prop) => sum + Number.parseFloat(cs[prop as 'paddingTop']), 0);
-    expect(Math.round(cell.getBoundingClientRect().height)).toBe(heights[0] + Math.round(chrome));
-  });
+    const cellRect = cell.getBoundingClientRect();
+    expect(Math.round(cellRect.height)).toBe(heights[0] + Math.round(chrome));
 
-  it('keeps option buttons at their natural height beside a tall preview', async () => {
-    const host = await mountPanel();
     const buttons = optionButtons(host);
     // Without `content-start` the option column's auto rows stretch to fill
     // the preview's height, inflating every button (48px -> 68px pre-fix).
@@ -159,7 +144,15 @@ describe('user-input option preview layout stability', () => {
     // The stack as a whole must stay well short of the preview column --
     // the buttons pack at the top rather than spreading down it.
     const span = buttons.at(-1)!.getBoundingClientRect().bottom - buttons[0].getBoundingClientRect().top;
-    const preview = host.querySelector('[data-testid="user-input-preview"]')!.getBoundingClientRect();
-    expect(span).toBeLessThan(preview.height);
+    expect(span).toBeLessThan(cellRect.height);
+
+    await focusOption(host, 1);
+    const visible = layers.filter((l) => getComputedStyle(l).visibility === 'visible');
+    expect(visible).toHaveLength(1);
+    expect(visible[0].dataset.active).toBe('true');
+    expect(visible[0].textContent).toContain('line 1 of a long preview');
+    // The hidden layers still occupy their cell -- that is what holds the
+    // height constant. `invisible` must never become `hidden`/`display:none`.
+    for (const layer of layers) expect(layer.getBoundingClientRect().height).toBeGreaterThan(0);
   });
 });

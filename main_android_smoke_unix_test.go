@@ -284,8 +284,12 @@ func TestAndroidSmokeSelectsOnlyAnExplicitPhone(t *testing.T) {
 		{name: "phone beside the emulator run", devices: "pixel\tdevice", emulatorSDK: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+			// The fixture reads the scripts from the checkout before the
+			// subtests run in parallel, so they are read in the same order
+			// every run: Go keys a cached test result by the order of the
+			// reads it records.
 			f := newSmokeFixture(t)
+			t.Parallel()
 			if tc.emulatorSDK {
 				mockexec.WriteIn(t, filepath.Join(f.dir, "emulator"), "emulator", "#!/bin/sh\nexit 0\n")
 				if err := os.MkdirAll(filepath.Join(f.dir, "avd", "ao.avd"), 0o700); err != nil {

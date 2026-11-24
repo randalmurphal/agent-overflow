@@ -62,11 +62,6 @@ export function reactionGlyph(name: string): string {
   return Object.hasOwn(EMOJI, name) ? EMOJI[name] : `:${name}:`;
 }
 
-/** Whether the table knows the name's emoji. */
-export function reactionKnown(name: string): boolean {
-  return Object.hasOwn(EMOJI, name);
-}
-
 /** The words for a reaction: a shared one's label, else `:name:`. */
 export function reactionLabel(name: string): string {
   return (LABEL as Record<string, string>)[name] ?? `:${name}:`;

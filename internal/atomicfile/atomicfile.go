@@ -42,18 +42,33 @@ func WriteJSON(path string, v any) error {
 // all. The file fsync alone protects the contents of an entry that may not be
 // there.
 func Write(path string, data []byte) error {
+	tmpPath, err := stage(path, data)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("atomicfile: rename %s -> %s: %w", tmpPath, path, err)
+	}
+	return SyncDir(filepath.Dir(path))
+}
+
+// stage writes data to a new private temporary file beside path, synced
+// and closed, and returns its name, for the caller to rename into place.
+// The parent directory is created if missing.
+func stage(path string, data []byte) (string, error) {
 	if path == "" {
-		return errors.New("atomicfile: empty path")
+		return "", errors.New("atomicfile: empty path")
 	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return fmt.Errorf("atomicfile: mkdir %s: %w", dir, err)
+		return "", fmt.Errorf("atomicfile: mkdir %s: %w", dir, err)
 	}
 
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("atomicfile: create temp in %s: %w", dir, err)
+		return "", fmt.Errorf("atomicfile: create temp in %s: %w", dir, err)
 	}
 	tmpPath := tmp.Name()
 	cleanup := func() { _ = os.Remove(tmpPath) }
@@ -61,27 +76,23 @@ func Write(path string, data []byte) error {
 	if err := tmp.Chmod(fileMode); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return fmt.Errorf("atomicfile: chmod %s: %w", tmpPath, err)
+		return "", fmt.Errorf("atomicfile: chmod %s: %w", tmpPath, err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return fmt.Errorf("atomicfile: write %s: %w", tmpPath, err)
+		return "", fmt.Errorf("atomicfile: write %s: %w", tmpPath, err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		cleanup()
-		return fmt.Errorf("atomicfile: sync %s: %w", tmpPath, err)
+		return "", fmt.Errorf("atomicfile: sync %s: %w", tmpPath, err)
 	}
 	if err := tmp.Close(); err != nil {
 		cleanup()
-		return fmt.Errorf("atomicfile: close %s: %w", tmpPath, err)
+		return "", fmt.Errorf("atomicfile: close %s: %w", tmpPath, err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		cleanup()
-		return fmt.Errorf("atomicfile: rename %s -> %s: %w", tmpPath, path, err)
-	}
-	return SyncDir(dir)
+	return tmpPath, nil
 }
 
 // Remove deletes path and then fsyncs its directory, Write's counterpart for

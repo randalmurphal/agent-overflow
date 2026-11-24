@@ -61,10 +61,15 @@ describe('<ChatMarkdown> streaming boundary spacing seam', () => {
     expect(volatileEl.lastElementChild).toHaveClass('sd-trim-last-block');
   });
 
-  it('leaves a heading-led tail without a <p> first child (no seam margin stacked on a heading)', async () => {
-    const { container } = render(ChatMarkdown, {
-      props: { source: 'Paragraph one.\n\n## A heading being typed', streaming: true },
-    });
+  // The tail's first block is a heading or a list, so the paragraph attribute
+  // selector does NOT match. The seam adds nothing and the block's own
+  // intrinsic margin sets the gap (collapsing across the plain wrapper to the
+  // settled value).
+  it.each([
+    { kind: 'heading', source: 'Paragraph one.\n\n## A heading being typed', tag: 'H2' },
+    { kind: 'list', source: 'Paragraph one.\n\n- bullet one\n- bullet tw', tag: 'UL' },
+  ])('leaves a $kind-led tail without a <p> first child (no seam margin stacked on a $kind)', async ({ source, tag }) => {
+    const { container } = render(ChatMarkdown, { props: { source, streaming: true } });
     const body = container.querySelector('.markdown-body')!;
 
     await waitFor(() => {
@@ -73,29 +78,7 @@ describe('<ChatMarkdown> streaming boundary spacing seam', () => {
     });
 
     const volatileEl = body.querySelector('.md-volatile')!;
-    // The tail's first block is a heading, so the paragraph attribute selector
-    // does NOT match. The seam adds nothing and the heading's own top margin
-    // sets the gap (collapsing across the plain wrapper to the settled value).
-    expect(volatileEl.firstElementChild?.tagName).toBe('H2');
-    expect(volatileEl.firstElementChild?.tagName).not.toBe('P');
-    expect(volatileEl.firstElementChild).toHaveClass('sd-first-block');
-  });
-
-  it('leaves a list-led tail without a <p> first child (no seam margin stacked on a list)', async () => {
-    const { container } = render(ChatMarkdown, {
-      props: { source: 'Paragraph one.\n\n- bullet one\n- bullet tw', streaming: true },
-    });
-    const body = container.querySelector('.markdown-body')!;
-
-    await waitFor(() => {
-      expect(body.querySelector('.md-committed')).not.toBeNull();
-      expect(body.querySelector('.md-volatile')).not.toBeNull();
-    });
-
-    const volatileEl = body.querySelector('.md-volatile')!;
-    // Same as the heading case: the list type fails the p→p attribute gate,
-    // so the list's intrinsic margin owns the gap rather than the p+p seam.
-    expect(volatileEl.firstElementChild?.tagName).toBe('UL');
+    expect(volatileEl.firstElementChild?.tagName).toBe(tag);
     expect(volatileEl.firstElementChild?.tagName).not.toBe('P');
     expect(volatileEl.firstElementChild).toHaveClass('sd-first-block');
   });

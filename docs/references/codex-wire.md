@@ -752,24 +752,41 @@ activity always precedes the spawn's `function_call_output` response item
 with no typed activity behind it is therefore a refusal or error, and the
 session renders it as its own result row; mock fixtures must keep that order.
 V2 core creates and starts the child before emitting `subAgentActivity`, so
-the child's `thread/started`, `turn/started`, or transcript deltas can arrive
-first. The session adapter must quarantine every unmapped non-root provider
-thread and replay it only after this typed ownership edge arrives. Falling
-through to the AO root is forbidden: child turn starts reset root stream
-counters, and child turn completions falsely close the root round. The
-quarantine has per-thread, total-count, byte, and thread-id bounds. If typed
-ownership does not arrive within ten seconds, queued approvals are rejected,
-the child events are dropped, and one visible session warning is emitted.
-The quarantined `thread/started` display metadata is cached separately so the
-event remains unroutable while its nickname can still enrich the spawn row on
-first paint once ownership arrives.
+the child's `turn/started` or transcript deltas can arrive first. The
+app-server sends no `thread/started` for a spawned child: it announces only a
+`thread/start`, a `thread/fork`, and (before 0.169) a detached `review/start`
+(`app-server/src/request_processors/thread_processor.rs` and
+`turn_processor.rs`, read at `rust-v0.143.0`, `rust-v0.162.1` and
+`rust-v0.169.0`). A child's frames therefore carry only its `threadId`, which
+names no root.
 
-Live `thread/started` includes a `sessionId` shared by a root and its descendants.
-When it differs from the active root's session ID and no known parent or typed
-spawn links the thread to that root, the adapter discards its wire events and
-rejects its pending requests without a child-routing warning. Missing identity
-continues through quarantine. Historical `thread/read` metadata is not used for
-this filter: legacy resumed subagent records can carry their own session ID.
+The shared connection (`internal/provider/codex/conn.go`) holds every frame
+of a non-root provider thread it does not route, and replays it to the session
+whose typed ownership edge claims the thread. A session routes a child only
+after its spawn row was emitted. A frame a session receives for a thread it
+does not route goes to the session that routes it, or back to the hold.
+A V1 `close_agent` removes the child's route and keeps its spawn identity, so
+the closed child's frames are held and expire. A `resume_agent` item that
+completes with `status:"completed"` restores the route after the resume row,
+under the original spawn card, and the frames held since the close are
+delivered then. A `"failed"` resume restores nothing. V2 has no close or
+resume.
+Falling through to the AO root is forbidden: child turn starts reset root
+stream counters, and child turn completions falsely close the root round. The
+holds have per-thread, total-count, byte, and thread-id bounds, shared by every
+session on the connection. If typed ownership does not arrive within ten
+seconds, held approvals are rejected, the held notifications are dropped, and
+the connection logs the thread, both counts, the frames its full queue
+refused, and how many sessions are on the connection. Nothing is shown on a
+thread, since a held frame does not name its root. Frames refused for a full
+queue are counted on the thread's hold and logged when it is claimed or
+expires. Frames refused for the full connection budget are counted on the
+connection and logged once at the next claim of any thread, the next expiry,
+or teardown, whichever comes first.
+
+`thread/started` includes a `sessionId` shared by a root and its descendants.
+The connection routes a `thread/started` by that `sessionId` or by its
+`parentThreadId` to the session that owns either.
 
 This rule is recursive. A `subAgentActivity kind:"started"` received on a
 known child thread creates a nested edge from that child's spawn item to the
@@ -1358,7 +1375,7 @@ Verified against `rust-v0.153.4`.
 ### Thread unload and cold resume (verified 0.162.1)
 
 Spike 2026-10-16, codex-cli 0.162.1, `gpt-6-luna`, one connection.
-Fixture: `fixtures/codex/thread_unload_cold_resume_20261016.ndjson`.
+Fixture: `internal/provider/wirecaptures/codex/thread_unload_cold_resume_20261016.ndjson`.
 
 - `thread/unsubscribe {threadId}` answers `{status}`: `unsubscribed`,
   `notSubscribed`, or `notLoaded` once the thread is gone. It removes only
@@ -1415,7 +1432,7 @@ Same spike. Several threads on one app-server:
 Spike 2026-10-16, codex-cli 0.162.1, `gpt-5.6-luna` (`gpt-6-luna` is
 refused for a ChatGPT account: "not supported when using Codex with a
 ChatGPT account"). Fixture:
-`fixtures/codex/developer_instructions_shared_process_20261016.ndjson`.
+`internal/provider/wirecaptures/codex/developer_instructions_shared_process_20261016.ndjson`.
 Each step asked for a reply ending in the token the current instructions
 name.
 
@@ -1654,7 +1671,7 @@ Available since codex 0.140.0; verified on 0.146.0 and 0.159.1.
 ### What a kill writes (verified 0.159.1)
 
 Spike 2026-10-15, codex-cli 0.159.1, `gpt-6-luna`. Fixtures under
-`docs/references/fixtures/codex/`, one run each:
+`internal/provider/wirecaptures/codex/`, one run each:
 
 | Fixture | Case |
 |---|---|

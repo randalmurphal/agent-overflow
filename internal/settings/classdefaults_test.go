@@ -3,7 +3,6 @@ package settings
 import (
 	"encoding/json"
 	"maps"
-	"slices"
 	"testing"
 )
 
@@ -52,14 +51,16 @@ func withPhoneClassDefault(t *testing.T) {
 // per-screen answer to a question about the person — and applyRows would drop
 // either silently, so the table would look like it worked.
 func TestEveryClassDefaultNamesADeviceTierKey(t *testing.T) {
-	for _, key := range classDefaultKeys() {
-		tier, known := TierForKey(key)
-		if !known {
-			t.Errorf("class default %q has no tier at all: place it in tier.go", key)
-			continue
-		}
-		if tier != TierDevice {
-			t.Errorf("class default %q is tier %q, want %q: a class describes a SCREEN", key, tier, TierDevice)
+	for _, overrides := range classDefaults {
+		for key := range overrides {
+			tier, known := TierForKey(key)
+			if !known {
+				t.Errorf("class default %q has no tier at all: place it in tier.go", key)
+				continue
+			}
+			if tier != TierDevice {
+				t.Errorf("class default %q is tier %q, want %q: a class describes a SCREEN", key, tier, TierDevice)
+			}
 		}
 	}
 }
@@ -239,28 +240,5 @@ func TestTwoPhonesResolveTheSameClassAndKeepSeparateWrites(t *testing.T) {
 	}
 	if svc.For(changed, DevicePhone).Get().LowPowerMode {
 		t.Error("the phone that wrote lost its own value")
-	}
-}
-
-// classDefaultKeys is what the tier guard enumerates the table with; it has
-// to actually see every row.
-func TestClassDefaultKeysEnumeratesEveryRow(t *testing.T) {
-	want := map[string]struct{}{}
-	for _, overrides := range classDefaults {
-		for key := range overrides {
-			want[key] = struct{}{}
-		}
-	}
-	got := classDefaultKeys()
-	if len(got) != len(want) {
-		t.Fatalf("classDefaultKeys() = %v, want %d distinct keys", got, len(want))
-	}
-	if !slices.IsSorted(got) {
-		t.Errorf("classDefaultKeys() = %v, want sorted", got)
-	}
-	for _, key := range got {
-		if _, ok := want[key]; !ok {
-			t.Errorf("classDefaultKeys() invented %q", key)
-		}
 	}
 }

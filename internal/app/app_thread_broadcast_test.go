@@ -12,6 +12,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 // threadBroadcasts captures the `thread:updated` frames one mutation
@@ -89,7 +91,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 			t.Fatalf("cleanup nonempty draft = %v, %v", deleted, err)
 		}
 		broadcasts.expectSilence("retaining draft content")
-		if err := app.ClearDraft(t.Context(), thread.ID); err != nil {
+		if err := app.SaveDraft(t.Context(), thread.ID, "", nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		broadcasts.reset()
@@ -414,9 +416,9 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		thread := mustCreateBroadcastThread(t, app)
 		broadcasts := captureThreadBroadcasts(t, app)
 
-		updated, err := app.UpdateThreadModel(thread.ID, "claude-opus-4-1")
+		updated, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "claude-opus-4-1")
 		if err != nil {
-			t.Fatalf("UpdateThreadModel: %v", err)
+			t.Fatalf("UpdateThreadModelSelection: %v", err)
 		}
 		row := broadcasts.expectRow(triage.ThreadActionFull, thread.ID)
 		if row.Model != updated.Model {
@@ -424,8 +426,8 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		}
 
 		broadcasts.reset()
-		if _, err := app.UpdateThreadModel(thread.ID, updated.Model); err != nil {
-			t.Fatalf("UpdateThreadModel(repeat): %v", err)
+		if _, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, updated.Model); err != nil {
+			t.Fatalf("UpdateThreadModelSelection(repeat): %v", err)
 		}
 		broadcasts.expectSilence("re-selecting the model a thread already carries")
 	})
@@ -517,6 +519,8 @@ func TestProposedPlanStateChangesBroadcastTheThreadRow(t *testing.T) {
 		broadcasts := captureThreadBroadcasts(t, app)
 
 		if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
+			SendID:             uuid.NewString(),
+			ReconcileBySendID:  true,
 			SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 		}); err == nil {
 			t.Fatal("SendMessageWithOptions() error = nil, want session-has-no-provider failure")

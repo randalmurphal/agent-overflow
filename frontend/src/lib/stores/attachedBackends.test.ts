@@ -118,7 +118,6 @@ describe('threadMachineUnreachableSettled', () => {
   afterEach(() => {
     probe?.dispose();
     probe = null;
-    resetStagedBackends();
     vi.useRealTimers();
   });
 

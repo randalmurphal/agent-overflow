@@ -6,7 +6,6 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccountapp"
-	"agent-overflow/internal/providerdiscoveryapp"
 )
 
 var (
@@ -15,32 +14,6 @@ var (
 )
 
 var rateLimitProbeHTTPClient = &http.Client{}
-
-func claudeAccountProbeCache() *provider.ProbeCache {
-	return providerdiscoveryapp.DefaultCaches().Claude
-}
-
-// ProbeClaudeAccount spawns a short-lived Claude CLI subprocess (via
-// the SDK initialize handshake) and returns the authenticated account
-// metadata. Results are cached per binary path for 5 minutes. Zero
-// tokens are consumed — the CLI never runs inference (`--max-turns 0`).
-//
-// On a successful probe that returns an empty AccountInfo (no
-// subscription and no token source) we emit a `provider:status` event
-// with Status="unauthenticated" so the thread-level banner can prompt
-// the user to run `claude login`. On any cache-miss success we also
-// emit a `provider:account` event so the rate-limit ring popover's
-// plan label hydrates from the same code path that the startup hook
-// uses — no separate emit step in callers.
-//
-// Cache hits do NOT re-emit `provider:account`: the frontend store
-// already has the value from the original miss.
-//
-//ao:scope access:admin
-//ao:route home
-func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
-	return a.providerDiscoveryService().ProbeClaudeAccount()
-}
 
 // RecheckClaudeAccount evicts the cached result for the configured
 // Claude binary and re-runs ProbeClaudeAccount. This is the surface

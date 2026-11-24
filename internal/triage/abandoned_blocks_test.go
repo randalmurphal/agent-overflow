@@ -163,30 +163,29 @@ func TestBlocksAbandonedNamesOnlyBlocksFromTheIndex(t *testing.T) {
 	}
 }
 
-// An index above every block seen means the stall fell between blocks and
-// nothing visible was discarded: no row is written.
+// A signal that names no seen block writes no row: an index above every
+// block seen means the stall fell between blocks, and a response the turn
+// never streamed (an unknown id) names no rows.
 func TestBlocksAbandonedBeyondSeenBlocksWritesNothing(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+	for _, tc := range []struct {
+		name     string
+		response string
+		from     int
+	}{
+		{"index beyond seen blocks", "msg_01", 1},
+		{"unknown response", "msg_other", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			createTestThread(t, st, "t1")
 
-	streamBlock(t, router, "t1", "", "msg_01", 0, "text", "Finished block.")
-	abandonBlocks(t, router, "t1", "", "msg_01", 1)
+			streamBlock(t, router, "t1", "", "msg_01", 0, "text", "Finished block.")
+			abandonBlocks(t, router, "t1", "", tc.response, tc.from)
 
-	if notes := abandonedNotifications(t, st, "t1"); len(notes) != 0 {
-		t.Fatalf("unexpected notification: %+v", notes)
-	}
-}
-
-// A response the turn never streamed (an unknown id) names no rows.
-func TestBlocksAbandonedUnknownResponseWritesNothing(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	streamBlock(t, router, "t1", "", "msg_01", 0, "text", "Finished block.")
-	abandonBlocks(t, router, "t1", "", "msg_other", 0)
-
-	if notes := abandonedNotifications(t, st, "t1"); len(notes) != 0 {
-		t.Fatalf("unexpected notification: %+v", notes)
+			if notes := abandonedNotifications(t, st, "t1"); len(notes) != 0 {
+				t.Fatalf("unexpected notification: %+v", notes)
+			}
+		})
 	}
 }
 

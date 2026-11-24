@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -116,6 +117,23 @@ func newQueueSessionWithConfig(
 	return s
 }
 
+// newQueueFixtureSession attaches a session for codex-thread-q to a fixture
+// connection whose app-server reports codex 0.149.0 and answers
+// thread/queue/list with listResult (raw JSON).
+func newQueueFixtureSession(t *testing.T, listResult string, onEvent func(provider.ProviderEvent), customize func(*Config)) *Session {
+	t.Helper()
+	fx := newConnFixture(t)
+	fx.conn.recordInitialize(json.RawMessage(`{"userAgent":"codex_cli_rs/0.149.0 (test)"}`))
+	fx.answer("thread/queue/list", listResult)
+	s := fx.session(testThread, "codex-thread-q", onEvent)
+	if customize != nil {
+		var cfg Config
+		customize(&cfg)
+		s.ownsQueuedClient = cfg.OwnsQueuedClientID
+	}
+	return s
+}
+
 func capturedRequests(t *testing.T, path string) []map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -175,13 +193,13 @@ func TestThreadQueueIsGatedOnTheHandshakeVersion(t *testing.T) {
 			}
 			// Every entry point refuses with the same typed sentinel, so the
 			// caller has one thing to branch on.
-			if _, err := s.QueueList(context.Background()); !isThreadQueueUnsupported(err) {
+			if _, err := s.QueueList(context.Background()); !errors.Is(err, ErrThreadQueueUnsupported) {
 				t.Errorf("QueueList err = %v, want ErrThreadQueueUnsupported", err)
 			}
-			if _, err := s.QueueDelete(context.Background(), "sub-1"); !isThreadQueueUnsupported(err) {
+			if _, err := s.QueueDelete(context.Background(), "sub-1"); !errors.Is(err, ErrThreadQueueUnsupported) {
 				t.Errorf("QueueDelete err = %v, want ErrThreadQueueUnsupported", err)
 			}
-			if _, err := s.PurgeQueue(context.Background()); !isThreadQueueUnsupported(err) {
+			if _, err := s.PurgeQueue(context.Background()); !errors.Is(err, ErrThreadQueueUnsupported) {
 				t.Errorf("PurgeQueue err = %v, want ErrThreadQueueUnsupported", err)
 			}
 			// A refusal must not have put anything on the wire.
@@ -296,15 +314,11 @@ func TestPurgeQueueRefusesToReportACompletePurgeOverAPartialList(t *testing.T) {
 // to the user as having come from outside Agent Overflow.
 func TestQueueChangedIsSilentForASubmissionTheAppOwns(t *testing.T) {
 	t.Parallel()
-	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
-		"thread/queue/list": `{"data":[{"id":"sub-7","input":[{"type":"text","text":"hi"}],` +
-			`"clientUserMessageId":"user:1"}],"nextCursor":null}`,
-	})
 	var mu sync.Mutex
 	notices := 0
 	var asked []string
-	s := newQueueSessionWithConfig(t, binary, func(evt provider.ProviderEvent) {
+	s := newQueueFixtureSession(t, `{"data":[{"id":"sub-7","input":[{"type":"text","text":"hi"}],`+
+		`"clientUserMessageId":"user:1"}],"nextCursor":null}`, func(evt provider.ProviderEvent) {
 		if evt.Kind != provider.EventNotification {
 			return
 		}
@@ -322,7 +336,7 @@ func TestQueueChangedIsSilentForASubmissionTheAppOwns(t *testing.T) {
 		}
 	})
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-q"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-q"}}`))
 
 	// The reconcile lists asynchronously; give it room to reach a verdict.
 	deadline := time.Now().Add(2 * time.Second)
@@ -351,14 +365,10 @@ func TestQueueChangedIsSilentForASubmissionTheAppOwns(t *testing.T) {
 // somebody else's until the app layer says otherwise.
 func TestQueueChangedWithNoOwnershipPredicateReportsEverySubmission(t *testing.T) {
 	t.Parallel()
-	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
-		"thread/queue/list": `{"data":[{"id":"sub-7","input":[{"type":"text","text":"hi"}],` +
-			`"clientUserMessageId":"user:1"}],"nextCursor":null}`,
-	})
 	var mu sync.Mutex
 	notices := 0
-	s := newQueueSession(t, binary, func(evt provider.ProviderEvent) {
+	s := newQueueFixtureSession(t, `{"data":[{"id":"sub-7","input":[{"type":"text","text":"hi"}],`+
+		`"clientUserMessageId":"user:1"}],"nextCursor":null}`, func(evt provider.ProviderEvent) {
 		if evt.Kind != provider.EventNotification {
 			return
 		}
@@ -367,9 +377,9 @@ func TestQueueChangedWithNoOwnershipPredicateReportsEverySubmission(t *testing.T
 			notices++
 			mu.Unlock()
 		}
-	})
+	}, nil)
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-q"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-q"}}`))
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -391,14 +401,10 @@ func TestQueueChangedWithNoOwnershipPredicateReportsEverySubmission(t *testing.T
 // however many change notifications the row's lifetime produces.
 func TestQueueChangedReportsAForeignSubmissionOnce(t *testing.T) {
 	t.Parallel()
-	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
-		"thread/queue/list": `{"data":[{"id":"sub-foreign","input":[{"type":"text","text":"from the cli"}],` +
-			`"clientUserMessageId":"cli-uuid-1"}],"nextCursor":null}`,
-	})
 	var mu sync.Mutex
 	notices := []provider.ProviderEvent{}
-	s := newQueueSession(t, binary, func(evt provider.ProviderEvent) {
+	s := newQueueFixtureSession(t, `{"data":[{"id":"sub-foreign","input":[{"type":"text","text":"from the cli"}],`+
+		`"clientUserMessageId":"cli-uuid-1"}],"nextCursor":null}`, func(evt provider.ProviderEvent) {
 		if evt.Kind != provider.EventNotification {
 			return
 		}
@@ -407,10 +413,10 @@ func TestQueueChangedReportsAForeignSubmissionOnce(t *testing.T) {
 			notices = append(notices, evt)
 			mu.Unlock()
 		}
-	})
+	}, nil)
 
 	for range 3 {
-		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-q"}}`))
+		feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-q"}}`))
 	}
 
 	deadline := time.Now().Add(3 * time.Second)

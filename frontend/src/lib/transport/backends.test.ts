@@ -1,7 +1,7 @@
 // The backend registry: one handle per attached backend, the `all` route's
 // fan-out and merge, and the event stamp that has to name the connection a
 // frame actually arrived on rather than "the" backend.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { homeClient } = vi.hoisted(() => ({
   homeClient: {
@@ -21,7 +21,8 @@ const { homeClient } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('./wsClient', () => ({
+vi.mock('./wsClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./wsClient')>()),
   wsClient: homeClient,
   DisconnectedError: class extends Error {},
   TransportError: class extends Error {},
@@ -32,7 +33,6 @@ vi.mock('./wsClient', () => ({
 
 import {
   __attachBackendForTest,
-  __resetBackendsForTest,
   HOME_BACKEND,
   attachedBackends,
   backendById,
@@ -48,11 +48,9 @@ import {
 } from './backends';
 import { HOME_DESCRIPTOR } from './manifestBackends';
 import {
-  __resetBackendIdentityForTest,
   setBackendIdentityFromBootstrap,
 } from './backendIdentity';
 import {
-  __resetEntityIndexForTest,
   noteProject,
   noteTerminal,
   noteThread,
@@ -63,7 +61,7 @@ import {
   threadGroupBackend,
 } from './entityIndex';
 import { onBackendDetached, type BackendDetachment } from './backends';
-import { backendClockSkew, resetBackendClocksForTest } from './backendClock';
+import { backendClockSkew } from './backendClock';
 import { Events } from './runtime';
 import type { WSClient } from './wsClient';
 
@@ -135,11 +133,9 @@ function deliverHome(channel: string, data: unknown, sequence?: number): void {
 }
 
 beforeEach(() => {
+  // The home entry registered its clock at module load and keeps it; a
+  // detached entry drops its own (testResets.ts NOT_BETWEEN_TESTS).
   __attachBackendForTest(HOME_DESCRIPTOR, homeClient as never);
-  __resetBackendsForTest();
-  __resetBackendIdentityForTest();
-  __resetEntityIndexForTest();
-  resetBackendClocksForTest();
   homeHandlers = new Map();
   for (const fn of Object.values(homeClient)) (fn as { mockReset?: () => void }).mockReset?.();
   homeClient.getStatus.mockReturnValue({ status: 'connected', nextAttemptAt: null });
@@ -154,11 +150,6 @@ beforeEach(() => {
     set.add(handler);
     return () => set.delete(handler);
   });
-});
-
-afterEach(() => {
-  __resetBackendsForTest();
-  __resetBackendIdentityForTest();
 });
 
 describe('the registry', () => {
@@ -261,11 +252,14 @@ describe('the registry', () => {
     expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['thread-unplaced'], []);
   });
 
-  it('states the watched set on a backend attached afterwards', () => {
+  it.each<[string, string[], { threadId: string; scopeRootId: string }[]]>([
+    ['the watched set', ['thread-laptop'], []],
+    ['a scope-only watched set', [], [{ threadId: 'thread-laptop', scopeRootId: 'agent-1' }]],
+  ])('states %s on a backend attached afterwards', (_name, threads, scopes) => {
     noteThread('thread-laptop', 'laptop');
-    setWatchedThreadsEverywhere(['thread-laptop'], []);
+    setWatchedThreadsEverywhere(threads, scopes);
     const { client } = attachFake();
-    expect(client.setWatchedThreads).toHaveBeenCalledWith(['thread-laptop'], []);
+    expect(client.setWatchedThreads).toHaveBeenCalledWith(threads, scopes);
   });
 
   it('tells a backend that owns none of the watched threads so', () => {
@@ -308,12 +302,10 @@ describe('the registry', () => {
     expect(client.setWatchedThreads).toHaveBeenLastCalledWith([], [scope]);
   });
 
-  it('states a scope-only watched set on a backend attached afterwards', () => {
-    noteThread('thread-laptop', 'laptop');
-    const scope = { threadId: 'thread-laptop', scopeRootId: 'agent-1' };
-    setWatchedThreadsEverywhere([], [scope]);
-    const { client } = attachFake();
-    expect(client.setWatchedThreads).toHaveBeenCalledWith([], [scope]);
+
+  it("publishes the home backend's clock from its hello", () => {
+    homeClient.getHello.mockReturnValue({ clockSkewMs: 90_000 } as never);
+    expect(backendClockSkew(HOME_BACKEND)).toBe(90_000);
   });
 
   it('publishes an attached backend’s clock and drops it on detach', () => {
@@ -394,28 +386,15 @@ describe('the fan-out merges by shape', () => {
     return callEveryBackend(METHOD, []);
   }
 
-  it('concatenates arrays in attach order', async () => {
-    await expect(shares([1, 2], [3])).resolves.toEqual([1, 2, 3]);
-  });
-
-  it('shallow-merges id-keyed objects, later backends winning', async () => {
-    await expect(shares({ a: '1' }, { b: '2', a: '3' })).resolves.toEqual({ a: '3', b: '2' });
-  });
-
-  it('falls back to the home share for a scalar', async () => {
-    await expect(shares(7, 9)).resolves.toBe(7);
-  });
-
-  it('falls back to the home share for a mixed set', async () => {
-    await expect(shares([1], { a: '1' })).resolves.toEqual([1]);
-  });
-
-  it('drops null and undefined shares before judging the shape', async () => {
-    await expect(shares(null, [1], undefined, [2])).resolves.toEqual([1, 2]);
-  });
-
-  it('answers the home share when every share is nothing', async () => {
-    await expect(shares(null, undefined)).resolves.toBeNull();
+  it.each<[string, unknown, unknown[], unknown]>([
+    ['concatenates arrays in attach order', [1, 2], [[3]], [1, 2, 3]],
+    ['shallow-merges id-keyed objects, later backends winning', { a: '1' }, [{ b: '2', a: '3' }], { a: '3', b: '2' }],
+    ['falls back to the home share for a scalar', 7, [9], 7],
+    ['falls back to the home share for a mixed set', [1], [{ a: '1' }], [1]],
+    ['drops null and undefined shares before judging the shape', null, [[1], undefined, [2]], [1, 2]],
+    ['answers the home share when every share is nothing', null, [undefined], null],
+  ])('%s', async (_name, home, remotes, merged) => {
+    await expect(shares(home, ...remotes)).resolves.toEqual(merged);
   });
 });
 
@@ -451,7 +430,6 @@ describe('callEveryBackend', () => {
     ]);
   });
 });
-
 
 // A detached backend takes its rows with it. Both halves matter and each
 // breaks differently: an index that still resolves the thread points calls
@@ -520,7 +498,6 @@ describe('detach forgets what the backend owned', () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 });
-
 
 it('captures diagnostics from existing and later connections and releases detached sinks', () => {
   const sink = vi.fn();

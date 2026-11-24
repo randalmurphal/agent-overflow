@@ -108,6 +108,9 @@ func (s *Service) memoryTree(item store.WorkItem) (MemoryTree, error) {
 	return s.deps.MemoryTree(item)
 }
 
+// describeMemoryFindings renders draft validation for a CLI caller. The CLI
+// prints the error verbatim, so it has to name every rule broken and the value
+// that broke it.
 func describeMemoryFindings(action string, err error) error {
 	var validation *memory.ValidationError
 	if !errors.As(err, &validation) {

@@ -6,7 +6,6 @@ import {
 } from '../types/providers';
 export {
   asProviderID,
-  isProviderID,
   PROVIDER_IDS,
   type ProviderID,
 } from '../types/providers';

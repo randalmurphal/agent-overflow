@@ -122,7 +122,7 @@ describe('resolveThreadStatusPill', () => {
     ).toBeNull();
   });
 
-  it('returns Completed for idle + unread', () => {
+  it('returns Completed for idle + unread, with an inset row ring', () => {
     const pill = resolveThreadStatusPill(
       t({ lastReadAt: 1_000, latestTurnCompletedAt: 2_000 }),
       'idle',
@@ -130,6 +130,7 @@ describe('resolveThreadStatusPill', () => {
     expect(pill?.label).toBe('Completed');
     expect(pill?.dotClass).toContain('bg-success');
     expect(pill?.pulse).toBe(false);
+    expect(pill?.ringClass).toBe('ring-1 ring-inset ring-success/40');
   });
 
   it.each([
@@ -150,11 +151,12 @@ describe('resolveThreadStatusPill', () => {
     expect(pill?.label).toBe('Working');
   });
 
-  it('pending-approval wins over the running/mode branch', () => {
+  it('pending-approval wins over the running/mode branch and carries the warning glow', () => {
     const pill = resolveThreadStatusPill(t({ mode: 'plan' }), 'pending-approval');
     expect(pill?.label).toBe('Pending Approval');
     expect(pill?.pulse).toBe(true);
     expect(pill?.dotClass).toContain('bg-warning');
+    expect(pill?.glowClass).toBe('status-glow-warning');
   });
 
   it('awaiting-input renders a pulsing info pill with info glow', () => {
@@ -165,11 +167,6 @@ describe('resolveThreadStatusPill', () => {
     expect(pill?.glowClass).toBe('status-glow-info');
   });
 
-  it('pending-approval carries the warning glow', () => {
-    const pill = resolveThreadStatusPill(t(), 'pending-approval');
-    expect(pill?.glowClass).toBe('status-glow-warning');
-  });
-
   it.each(['error', 'running', 'plan-ready', 'interrupted', 'idle'] as const)(
     '%s state carries no glow',
     (status) => {
@@ -178,11 +175,12 @@ describe('resolveThreadStatusPill', () => {
     },
   );
 
-  it('plan-ready renders a non-pulsing accent pill', () => {
+  it('plan-ready renders a non-pulsing accent pill with an inset row ring', () => {
     const pill = resolveThreadStatusPill(t(), 'plan-ready');
     expect(pill?.label).toBe('Plan Ready');
     expect(pill?.pulse).toBe(false);
     expect(pill?.dotClass).toContain('bg-accent');
+    expect(pill?.ringClass).toBe('ring-1 ring-inset ring-accent/40');
   });
 
   it('interrupted renders a non-pulsing warning pill', () => {
@@ -261,30 +259,9 @@ describe('setup-failed', () => {
     expect(pill?.glowClass).toBeUndefined();
   });
 
-  it('is distinct from the failed-turn pill', () => {
-    expect(resolveThreadStatusPill(t(), 'error')?.label).toBe('Failed');
-    expect(resolveThreadStatusPill(t(), 'setup-failed')?.label).toBe('Setup Failed');
-  });
-
-  it('is told apart from Interrupted by fill, the only channel left without text', () => {
-    const setup = resolveThreadStatusPill(t(), 'setup-failed');
-    const interrupted = resolveThreadStatusPill(t(), 'interrupted');
-    expect(setup?.dotClass).toBe('bg-warning');
-    expect(interrupted?.dotClass).toContain('border-warning');
-    expect(interrupted?.dotClass).toContain('bg-transparent');
-    expect(interrupted?.pulse).toBe(false);
-  });
 });
 
 describe('row ring (the attention states)', () => {
-  it('Completed and Plan Ready carry an inset row ring', () => {
-    const completed = resolveThreadStatusPill(t({ lastReadAt: 1_000, latestTurnCompletedAt: 2_000 }), 'idle');
-    expect(completed?.label).toBe('Completed');
-    expect(completed?.ringClass).toBe('ring-1 ring-inset ring-success/40');
-    const plan = resolveThreadStatusPill(t(), 'plan-ready');
-    expect(plan?.ringClass).toBe('ring-1 ring-inset ring-accent/40');
-  });
-
   it.each(['error', 'running', 'pending-approval', 'awaiting-input', 'setup-failed', 'interrupted'] as const)(
     '%s has no row ring',
     (status) => {

@@ -99,28 +99,17 @@ func readUntilReply(t *testing.T, conn *websocket.Conn, id string) []wireItem {
 }
 
 // An event a method emitted before it returned reaches the client before
-// the method's reply, even when the batching window has not elapsed.
-func TestReplyFollowsEventsEmittedBeforeIt(t *testing.T) {
-	f := newReplyOrderFixture(t, time.Hour)
-	conn := f.dial(t)
-
-	items := readUntilReply(t, conn, sendRPC(t, conn, "EmitThenReturn", 3))
-
-	if len(items) != 4 || !items[3].reply {
-		t.Fatalf("want 3 events then the reply, got %+v", items)
-	}
-}
-
-// The flush ahead of a reply keeps the events in emission order, across
+// the method's reply, even when the batching window has not elapsed, and
+// the flush ahead of the reply keeps the events in emission order, across
 // channels and within each.
-func TestReplyFlushKeepsEventOrder(t *testing.T) {
+func TestReplyFollowsEventsEmittedBeforeIt(t *testing.T) {
 	f := newReplyOrderFixture(t, time.Hour)
 	conn := f.dial(t)
 
 	items := readUntilReply(t, conn, sendRPC(t, conn, "EmitThenReturn", 6))
 
-	if len(items) != 7 {
-		t.Fatalf("want 6 events then the reply, got %d items", len(items))
+	if len(items) != 7 || !items[6].reply {
+		t.Fatalf("want 6 events then the reply, got %+v", items)
 	}
 	for i, item := range items[:6] {
 		var payload struct {

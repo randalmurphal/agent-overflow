@@ -2,11 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import ProjectThreadList from '../../../../test/helpers/ProjectThreadListOfEntry.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
+import { registerPaneForTest } from '../../../stores/panes.svelte';
 import type { Thread, ThreadGroup } from '../../../types/models';
 import { loadSettingsFixture as loadSettings } from '../../../../test/helpers/settingsFixture';
-import { resetThreadGroupsForTest } from '../../../stores/threadGroups.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { normalizedTextContent } from '../../../../test/helpers/textContent';
 import {
   beginThreadRowDrag,
@@ -16,10 +15,8 @@ import {
   type ThreadDragPayload,
   threadDragPayloadForEvent,
 } from '../../../utils/threadDragPayload';
-import { resetSidebarForTest } from '../../../stores/sidebar.svelte';
 import { replaceAllThreads, touchThreadActivity } from '../../../stores/threads.svelte';
 import { tick } from 'svelte';
-import { resetForTest as resetThreadStatuses } from '../../../stores/threadStatuses.svelte';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -38,11 +35,6 @@ function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 describe('<ProjectThreadList>', () => {
-  beforeEach(() => {
-    resetPanesForTest();
-    resetSidebarForTest();
-    resetThreadStatuses();
-  });
 
   it('shows a "+ New Thread" empty-state button when threads is empty, and no other', () => {
     const pane = createThreadPane();
@@ -57,57 +49,18 @@ describe('<ProjectThreadList>', () => {
     expect([...container.querySelectorAll('button')].map((button) => normalizedTextContent(button))).toEqual(['New Thread']);
   });
 
-  it('empty-state button calls onNewThread with the projectId', async () => {
+  it.each([
+    ['empty-state button calls onNewThread with the projectId', {}, false],
+    ['ctrl-clicking the empty-state button requests a new pane', { ctrlKey: true }, true],
+    ['cmd-clicking the empty-state button requests a new pane', { metaKey: true }, true],
+  ])('%s', async (_name, modifiers, openInNewPane) => {
     const onNewThread = vi.fn();
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectThreadList, {
-      props: {
-        projectId: 'proj-42',
-        listKey: 'proj-42',
-        threads: [],
-        pane,
-        onNewThread,
-      },
+      props: { projectId: 'proj-42', listKey: 'proj-42', threads: [], pane, onNewThread },
     });
-    const btn = getByTestId('project-thread-list-empty');
-    await fireEvent.click(btn);
-    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane: false });
-  });
-
-  it('ctrl-clicking the empty-state button requests a new pane', async () => {
-    const onNewThread = vi.fn();
-    const pane = createThreadPane();
-    const { getByTestId } = render(ProjectThreadList, {
-      props: {
-        projectId: 'proj-42',
-        listKey: 'proj-42',
-        threads: [],
-        pane,
-        onNewThread,
-      },
-    });
-
-    await fireEvent.click(getByTestId('project-thread-list-empty'), { ctrlKey: true });
-
-    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane: true });
-  });
-
-  it('cmd-clicking the empty-state button requests a new pane', async () => {
-    const onNewThread = vi.fn();
-    const pane = createThreadPane();
-    const { getByTestId } = render(ProjectThreadList, {
-      props: {
-        projectId: 'proj-42',
-        listKey: 'proj-42',
-        threads: [],
-        pane,
-        onNewThread,
-      },
-    });
-
-    await fireEvent.click(getByTestId('project-thread-list-empty'), { metaKey: true });
-
-    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane: true });
+    await fireEvent.click(getByTestId('project-thread-list-empty'), modifiers);
+    expect(onNewThread).toHaveBeenCalledWith('proj-42', { openInNewPane });
   });
 
   it('renders thread rows when threads are present', () => {
@@ -332,11 +285,6 @@ describe('<ProjectThreadList>', () => {
 
 describe('<ProjectThreadList> thread groups', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetSidebarForTest();
-    resetThreadStatuses();
-    resetThreadGroupsForTest();
-    resetBindingMocks();
     endThreadRowDrag();
     replaceAllThreads([]);
     setBindingMock('GetSettings', async () => null);

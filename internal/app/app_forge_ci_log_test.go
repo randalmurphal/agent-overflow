@@ -77,15 +77,20 @@ func TestSetPRCILogFollowsFetchesNowAndEmitsIndexesUntilTerminal(t *testing.T) {
 	expectCountHolds(t, &f.logFetches, "terminal job kept being fetched")
 	expectCountHolds(t, &f.ciFetches, "terminal pipeline kept polling")
 
-	// A re-sent follow (the Refresh button) fetches again, quietly when
-	// nothing changed.
+	// A re-sent follow (the Refresh button) revalidates the cached log with
+	// the ETag the last download returned: the forge's 304 keeps the version
+	// and sends no frame.
 	before := f.logFetches.Load()
 	again, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
-	if err != nil || again.Logs["7"].Version != 3 || again.Logs["7"].TotalLines != 4 {
-		t.Fatalf("re-follow = %+v, %v", again, err)
+	if state := again.Logs["7"]; err != nil || state.Version != 3 || state.TotalLines != 4 || !state.Available || state.Error != "" {
+		t.Fatalf("re-follow = %+v, %v; want the held version", again, err)
 	}
 	if f.logFetches.Load() != before+1 {
 		t.Fatalf("re-follow did not fetch: %d -> %d", before, f.logFetches.Load())
+	}
+	requests := f.requests()
+	if requests[0].ETag != "" || requests[len(requests)-1].ETag != strconv.Quote("step 1\nprogress 60%\nstep 2\ndone\n") {
+		t.Fatalf("log requests %+v, want none on the first download and the last answer's ETag on the re-follow", requests)
 	}
 	expectNoLogEvent(t, f.logEvents, "re-follow with an unchanged log")
 }

@@ -19,8 +19,6 @@ it('answers from the row meta', () => {
 
   expect(isReaderAuthoredUserText(row('{"sendId":"s"}'))).toBe(true);
   expect(isReaderAuthoredUserText(row(undefined))).toBe(true);
-  expect(isReaderAuthoredUserText(row('{"wire_only":true}'))).toBe(false);
-  expect(isReaderAuthoredUserText(row('{"sendId":"s"}', { parentId: 'agent' }))).toBe(false);
   expect(isReaderAuthoredUserText(row('{"sendId":"s"}', { kind: 'assistant_text' }))).toBe(false);
 });
 

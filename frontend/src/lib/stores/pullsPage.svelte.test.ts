@@ -3,7 +3,7 @@
 // persistence, the row projection, the needs-you count, the selection,
 // and Open with agent.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import {
   __resetPullsPageForTest,
@@ -29,7 +29,6 @@ import {
   setPullsQuery,
 } from './pullsPage.svelte';
 import {
-  __resetPullsPageAgentForTest,
   loadThreadsOnPR,
   newThreadCheckedOutBy,
   openPRThread,
@@ -41,16 +40,12 @@ import {
   DEFAULT_MR_SORT,
   MR_FILTERS_KEY,
   mrFilters,
-  resetPullsFiltersForTest,
   setMRFilters,
   syncPullsFiltersFromAppStorage,
 } from './pullsPageFilters.svelte';
 import { applyPullsUpdatedEvent } from './pullsStore.svelte';
-import { __resetPRReviewStoreForTest } from './prReviewStore.svelte';
-import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
+import { appStorageGet, appStorageSet } from './appStorage';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
-import { resetPanesForTest } from './panes.svelte';
-import { __resetReviewPaneStateForTest } from './reviewPane.svelte';
 import type { PRListItem, PRListSnapshot, ProjectPRList } from './bindings';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { takePinnedBackend } from '../transport/backends';
@@ -58,9 +53,9 @@ import { prKey, type PRRef } from '../utils/prReference';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { grantBackendScopes, revokeBackendScopes } from '../../test/helpers/scopes';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 
 const PANE = 'tools-pulls';
 
@@ -168,19 +163,7 @@ function groupKeys(): string[][] {
   return pullsRowsByGroup(PANE).map((group) => group.rows.map((row) => row.key));
 }
 
-beforeEach(() => {
-  resetAppStorageForTest();
-  resetPullsFiltersForTest();
-  resetPanesForTest();
-});
-
 afterEach(() => {
-  __resetPullsPageForTest();
-  __resetPullsPageAgentForTest();
-  __resetReviewPaneStateForTest();
-  __resetPRReviewStoreForTest();
-  resetStagedBackends();
-  resetToastsForTest();
   delete (document as unknown as Record<string, unknown>).visibilityState;
   vi.useRealTimers();
 });

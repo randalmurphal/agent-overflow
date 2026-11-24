@@ -14,19 +14,6 @@ export type ReasoningEffort =
   | "max"
   | "ultra";
 
-/**
- * ContextWindow mirrors the per-thread context-window token count.
- * Supported values come from the active provider/model metadata because
- * Claude and Codex expose different standard and extended tiers.
- */
-export type ContextWindow = number;
-
-/**
- * ThreadMode is the user-selectable subset of the canonical mode column on
- * thread rows.
- */
-export type ThreadMode = "chat" | "plan";
-
 export type RuntimeMode =
   | "read-only"
   | "approval-required"

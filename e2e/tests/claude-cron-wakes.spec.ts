@@ -1,6 +1,6 @@
 // Claude turns the CLI starts on its own (claude-wire.md §E7 and §E11),
 // replayed from the 2.1.284 cron captures in
-// docs/references/fixtures/claude/ through the mock provider:
+// internal/provider/wirecaptures/claude/ through the mock provider:
 //
 //   - A session holding an armed recurring `CronCreate` job outlives the
 //     idle-reap threshold, the job's fire still reaches it, and
@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { Page, TestInfo } from '@playwright/test';
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';
 import {
   type ScenarioStep,
@@ -42,8 +42,9 @@ import {
   toolUseLine,
   waitForGate,
 } from './agent-visibility-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
-const FIXTURES = path.resolve(import.meta.dirname, '../../docs/references/fixtures/claude');
+const FIXTURES = path.resolve(import.meta.dirname, '../../internal/provider/wirecaptures/claude');
 const CRON_CAPTURE = 'cron_create_fire_20261010.ndjson';
 const LOOP_CAPTURE = 'cron_loop_midturn_20261010.ndjson';
 const CRON_PROMPT = 'Reply with exactly the text CRON-FIRED and call no tools.';
@@ -65,10 +66,10 @@ function capture(file: string, from: number, to: number): string[] {
 
 async function withHarness(
   page: Page,
-  timing: string,
+  timing: Record<string, string>,
   run: (harness: HarnessApp) => Promise<void>,
 ): Promise<void> {
-  const harness = await launchHarness({ env: { AO_HARNESS_TIMING: timing } });
+  const harness = await launchHarness({ env: harnessTiming(timing) });
   try {
     await run(harness);
   } finally {
@@ -95,7 +96,7 @@ function replyRow(page: Page, text: string | RegExp) {
 }
 
 async function shot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
-  await page.screenshot({ path: testInfo.outputPath(name) });
+  await screenshot(page, { path: testInfo.outputPath(name) });
 }
 
 /** What a service update would wait for now; "" when nothing. */
@@ -128,7 +129,7 @@ test('an armed recurring cron job keeps its session alive until CronDelete relea
   test.setTimeout(120_000);
   // The session is a reap candidate after 3s idle; the sweep runs twice a
   // second. Every assertion below is about the cron record, not the cadence.
-  await withHarness(page, `${HARNESS_TIMING},idle-reap=3s,idle-reap-sweep=500ms`, async (harness) => {
+  await withHarness(page, { 'idle-reap': '3s', 'idle-reap-sweep': '500ms' }, async (harness) => {
     await harness.rpc('HarnessSetScenario', {
       scenario: claudeTurnsScenario('cron-reap', [
         [
@@ -146,13 +147,23 @@ test('an armed recurring cron job keeps its session alive until CronDelete relea
     const threadId = await seedAgentThread(harness, 'cron-reap', 'Cron reap');
     await openThread(harness, page, 'Cron reap');
     const mockId = await startMock(harness, threadId);
-    const exited = () =>
+    const exitsOf = (id: string) => () =>
       harness.countEvents<{ mockId: string; report: { kind: string } }>(
         'harness:mock',
-        (ev) => ev.mockId === mockId && ev.report.kind === 'exiting',
+        (ev) => ev.mockId === id && ev.report.kind === 'exiting',
       );
+    const exited = exitsOf(mockId);
+    // The barrier for "not reaped": a session with no job, started idle
+    // after the cron session last did anything, is reaped by sweeps that
+    // would have reaped the cron session too.
+    let controls = 0;
+    const reapAnIdleControl = async () => {
+      controls += 1;
+      const control = await seedAgentThread(harness, `cron-reap-control-${controls}`, `Idle control ${controls}`);
+      await expect.poll(exitsOf(await startMock(harness, control)), { timeout: 15_000 }).toBe(1);
+    };
 
-    await harness.rpc('SendMessage', threadId, 'Schedule the cron job.', null);
+    await harness.send(threadId, 'Schedule the cron job.');
     await expect(replyRow(page, SCHEDULED_REPLY)).toBeVisible();
     await waitForGate(harness, 'fire');
 
@@ -161,25 +172,25 @@ test('an armed recurring cron job keeps its session alive until CronDelete relea
     // half below still runs when this fails.
     await expect.configure({ soft: true }).poll(() => updateWorkReason(harness), { message: 'a recurring job held a service update' }).toBe('');
 
-    // Several sweeps past the idle threshold with the job armed.
-    await page.waitForTimeout(10_000);
+    // Sweeps past the idle threshold with the job armed.
+    await reapAnIdleControl();
     expect(exited(), 'the session holding an armed recurring job was reaped').toBe(0);
 
     // The fire reaches the live session.
     await advance(harness, mockId, 'fire');
     await expect(replyRow(page, 'CRON-FIRED')).toBeVisible();
-    await page.waitForTimeout(5_000);
+    await reapAnIdleControl();
     expect(exited(), 'the session was reaped after its job fired').toBe(0);
 
     // CronDelete releases the job; the next sweeps reap the idle session.
-    await harness.rpc('SendMessage', threadId, 'List and delete the jobs.', null);
+    await harness.send(threadId, 'List and delete the jobs.');
     await expect(replyRow(page, 'DONE')).toBeVisible();
     await expect.poll(exited, { timeout: 10_000 }).toBe(1);
   });
 });
 
 test('a cron fire renders as a scheduled turn with its prompt', async ({ page }, testInfo) => {
-  await withHarness(page, HARNESS_TIMING, async (harness) => {
+  await withHarness(page, {}, async (harness) => {
     await harness.rpc('HarnessSetScenario', {
       scenario: claudeTurnsScenario('cron-fire', [
         [
@@ -193,7 +204,7 @@ test('a cron fire renders as a scheduled turn with its prompt', async ({ page },
     const threadId = await seedAgentThread(harness, 'cron-fire', 'Cron fire');
     await openThread(harness, page, 'Cron fire');
     const mockId = await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'Schedule the cron job.', null);
+    await harness.send(threadId, 'Schedule the cron job.');
     await expect(replyRow(page, SCHEDULED_REPLY)).toBeVisible();
     await waitForGate(harness, 'fires');
     await advance(harness, mockId, 'fires');
@@ -210,7 +221,7 @@ test('a cron fire renders as a scheduled turn with its prompt', async ({ page },
 });
 
 test('a cron fire held through a busy turn renders after that turn as a scheduled turn', async ({ page }, testInfo) => {
-  await withHarness(page, HARNESS_TIMING, async (harness) => {
+  await withHarness(page, {}, async (harness) => {
     await harness.rpc('HarnessSetScenario', {
       scenario: claudeTurnsScenario('cron-held', [
         // /loop 1m: CronCreate "*/1 * * * *".
@@ -222,13 +233,13 @@ test('a cron fire held through a busy turn renders after that turn as a schedule
     const threadId = await seedAgentThread(harness, 'cron-held', 'Cron held');
     await openThread(harness, page, 'Cron held');
     await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'Loop every minute.', null);
+    await harness.send(threadId, 'Loop every minute.');
     await expect(replyRow(page, SCHEDULED_REPLY)).toBeVisible();
     // `/loop` runs its prompt once right away, so the reply above already
     // ends in LOOP-PING; the fire's reply is the second one.
     const pings = replyRow(page, 'LOOP-PING');
     await expect(pings).toHaveCount(1);
-    await harness.rpc('SendMessage', threadId, 'Sleep for 80 seconds.', null);
+    await harness.send(threadId, 'Sleep for 80 seconds.');
     await expect(pings).toHaveCount(2);
     await expectClearOfComposer(page, pings.last());
     await shot(page, testInfo, 'cron-held-fire.png');
@@ -265,7 +276,7 @@ function armScheduleTurn(n: number, completes = true): ScenarioStep {
 
 test('a CLI that exits by itself takes its scheduled wakeup and one-shot job with it', async ({ page }) => {
   test.setTimeout(90_000);
-  await withHarness(page, HARNESS_TIMING, async (harness) => {
+  await withHarness(page, {}, async (harness) => {
     const scheduleFor = (n: number, completes = true) =>
       harness.rpc('HarnessSetScenario', { scenario: claudeTurnsScenario(`exit-schedule-${n}`, [[armScheduleTurn(n, completes)]]) });
     const exitCleanly = (mockId: string) => harness.rpc('HarnessMockCommand', mockId, { type: 'exit', code: 0 });
@@ -275,7 +286,7 @@ test('a CLI that exits by itself takes its scheduled wakeup and one-shot job wit
       harness.countEvents<{ report: { kind: string } }>('harness:mock', (ev) => ev.report.kind === 'registered');
     const held = 'Waiting for turns and queued work to finish…';
     const armed = async (n: number) => {
-      await harness.rpc('SendMessage', threadId, `Schedule the checks (${n}).`, null);
+      await harness.send(threadId, `Schedule the checks (${n}).`);
       await expect(replyRow(page, `Armed schedule ${n}.`)).toBeVisible();
       await expect.poll(() => updateWorkReason(harness)).toBe(held);
     };
@@ -302,7 +313,7 @@ test('a CLI that exits by itself takes its scheduled wakeup and one-shot job wit
     // completes. It never served one, so it is not resumed
     // (TestAutoReconnectRearmsOnlyAfterAServedTurn) and only the exit
     // itself can drop what it armed.
-    await harness.rpc('SendMessage', threadId, 'Schedule the checks (3).', null);
+    await harness.send(threadId, 'Schedule the checks (3).');
     await expect(replyRow(page, 'Armed schedule 3.')).toBeVisible();
     await exitCleanly(third);
     // Soft, so a failure here still records what the transfer does.
@@ -366,7 +377,7 @@ function wakeMirror(uuid: string, body: string): string {
 test('a background completion and a Monitor event that wake an idle session each show one notice of what woke it', async ({ page }, testInfo) => {
   const buildSummary = `Background command "${BUILD_DESC}" completed (exit code 0)`;
   const watchEvent = 'ERROR deploy step 3 failed: connection refused';
-  await withHarness(page, HARNESS_TIMING, async (harness) => {
+  await withHarness(page, {}, async (harness) => {
     await harness.rpc('HarnessSetScenario', {
       scenario: claudeTurnsScenario('idle-wake', [
         [
@@ -422,7 +433,7 @@ test('a background completion and a Monitor event that wake an idle session each
     const threadId = await seedAgentThread(harness, 'idle-wake', 'Idle wake');
     await openThread(harness, page, 'Idle wake');
     const mockId = await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'Build the release and watch the deploy.', null);
+    await harness.send(threadId, 'Build the release and watch the deploy.');
     await expect(replyRow(page, ARMED_REPLY)).toBeVisible();
 
     await waitForGate(harness, 'build-done');

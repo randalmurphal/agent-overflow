@@ -237,7 +237,7 @@ done
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	deadline := time.Now().Add(time.Second)
 	for sess.MCPStartupStates()["github"].State == "" && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -968,63 +968,93 @@ type capturedEmission struct {
 }
 
 // TestPollClaudeMCPAfterOAuth_ConnectedFlipPutsCacheAndEmits asserts
-// the happy path: the poller sees needs-auth on tick 1 and connected
-// on tick 2, then Puts an authoritative live-session entry, emits
+// that every tick before the connected flip keeps the poll going: on the
+// flip the poller Puts an authoritative live-session entry, emits one
 // mcp:oauth-completed{success:true}, and exits before the remaining
 // intervals fire.
 func TestPollClaudeMCPAfterOAuth_ConnectedFlipPutsCacheAndEmits(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	snapshot := captureOrderedEmissions(app, "mcp:status", "mcp:oauth-completed")
-
-	getQuerier := scriptedQuerier(
-		[][]claude.MCPServerStatus{
+	cases := []struct {
+		name      string
+		responses [][]claude.MCPServerStatus
+		errs      []error
+	}{
+		{name: "needs-auth then connected", responses: [][]claude.MCPServerStatus{
 			{{Name: "sentry", Status: "needs-auth"}},
 			{{Name: "sentry", Status: "connected"}},
-		},
-		nil,
-	)
+		}},
+		// The CLI may briefly emit pending or starting after OAuth completes
+		// while the now-credentialed client warms up; an exit on anything
+		// except needs-auth would miss the actual connected flip.
+		{name: "pending and starting are not terminal", responses: [][]claude.MCPServerStatus{
+			{{Name: "sentry", Status: "pending"}},
+			{{Name: "sentry", Status: "starting"}},
+			{{Name: "sentry", Status: "connected"}},
+		}},
+		// The Claude CLI builds mcp_status from three in-memory client
+		// pools; a server configured but not yet attempted can be missing.
+		{name: "a missing entry keeps polling", responses: [][]claude.MCPServerStatus{
+			{},
+			{{Name: "other", Status: "connected"}},
+			{{Name: "sentry", Status: "connected"}},
+		}},
+		// A transient query error (CLI unreachable, decode failure, timeout
+		// mid-poll) is non-fatal.
+		{name: "a query error keeps polling", responses: [][]claude.MCPServerStatus{
+			nil,
+			{{Name: "sentry", Status: "connected"}},
+		}, errs: []error{errors.New("transient: control_request timeout"), nil}},
+		// A raw status the projector does not recognise projects to
+		// StatusUnknown, which must not be terminal, or OAuth detection
+		// breaks whenever the CLI adds a raw status value.
+		{name: "an unknown raw status keeps polling", responses: [][]claude.MCPServerStatus{
+			{{Name: "sentry", Status: "weird-future-state"}},
+			{{Name: "sentry", Status: "connected"}},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
 
-	app.pollClaudeMCPAfterOAuth(
-		context.Background(),
-		"thread-1",
-		"sentry",
-		zeroIntervals(6),
-		getQuerier,
-	)
+			app.pollClaudeMCPAfterOAuth(
+				context.Background(),
+				"thread-1",
+				"sentry",
+				zeroIntervals(6),
+				scriptedQuerier(tc.responses, tc.errs),
+			)
 
-	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "sentry"})
-	if !ok {
-		t.Fatal("expected sentry entry in cache after connected flip")
-	}
-	if cached.Status != mcpstatus.StatusConnected {
-		t.Errorf("status = %q, want %q", cached.Status, mcpstatus.StatusConnected)
-	}
-	if cached.Source != mcpstatus.SourceLiveSession {
-		t.Errorf("source = %q, want %q", cached.Source, mcpstatus.SourceLiveSession)
-	}
+			cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "sentry"})
+			if !ok {
+				t.Fatal("expected sentry entry in cache after connected flip")
+			}
+			if cached.Status != mcpstatus.StatusConnected {
+				t.Errorf("status = %q, want %q", cached.Status, mcpstatus.StatusConnected)
+			}
+			if cached.Source != mcpstatus.SourceLiveSession {
+				t.Errorf("source = %q, want %q", cached.Source, mcpstatus.SourceLiveSession)
+			}
 
-	emissions := snapshot()
-	var oauthEvent map[string]any
-	for _, e := range emissions {
-		if e.name == "mcp:oauth-completed" {
-			oauthEvent, _ = e.data.(map[string]any)
-		}
-	}
-	if oauthEvent == nil {
-		t.Fatal("expected mcp:oauth-completed emission")
-	}
-	if oauthEvent["success"] != true {
-		t.Errorf("success = %v, want true", oauthEvent["success"])
-	}
-	if oauthEvent["provider"] != "claude" {
-		t.Errorf("provider = %v, want claude", oauthEvent["provider"])
-	}
-	if oauthEvent["serverName"] != "sentry" {
-		t.Errorf("serverName = %v, want sentry", oauthEvent["serverName"])
-	}
-	if oauthEvent["threadId"] != "thread-1" {
-		t.Errorf("threadId = %v, want thread-1", oauthEvent["threadId"])
+			emissions := snapshot()
+			if len(emissions) != 1 {
+				t.Fatalf("expected one mcp:oauth-completed emission, got %d: %+v", len(emissions), emissions)
+			}
+			oauthEvent, _ := emissions[0].data.(map[string]any)
+			if oauthEvent["success"] != true {
+				t.Errorf("success = %v, want true", oauthEvent["success"])
+			}
+			if oauthEvent["provider"] != "claude" {
+				t.Errorf("provider = %v, want claude", oauthEvent["provider"])
+			}
+			if oauthEvent["serverName"] != "sentry" {
+				t.Errorf("serverName = %v, want sentry", oauthEvent["serverName"])
+			}
+			if oauthEvent["threadId"] != "thread-1" {
+				t.Errorf("threadId = %v, want thread-1", oauthEvent["threadId"])
+			}
+		})
 	}
 }
 
@@ -1076,79 +1106,6 @@ func TestPollClaudeMCPAfterOAuth_FailedFlipEmitsFailure(t *testing.T) {
 	}
 	if payload["error"] != "connection refused" {
 		t.Errorf("error = %v, want connection refused", payload["error"])
-	}
-}
-
-// TestPollClaudeMCPAfterOAuth_PendingThenConnected confirms that
-// pending/starting states are intermediate (keep polling) — not
-// terminal. The CLI may briefly emit "pending" after OAuth completes
-// while the now-credentialed client warms up; an over-eager exit
-// condition (anything except needs-auth) would miss the actual
-// connected flip.
-func TestPollClaudeMCPAfterOAuth_PendingThenConnected(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
-
-	getQuerier := scriptedQuerier(
-		[][]claude.MCPServerStatus{
-			{{Name: "github", Status: "pending"}},
-			{{Name: "github", Status: "starting"}},
-			{{Name: "github", Status: "connected"}},
-		},
-		nil,
-	)
-
-	app.pollClaudeMCPAfterOAuth(
-		context.Background(),
-		"thread-1",
-		"github",
-		zeroIntervals(6),
-		getQuerier,
-	)
-
-	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "github"})
-	if !ok || cached.Status != mcpstatus.StatusConnected {
-		t.Fatalf("expected connected, got cached=%+v ok=%v", cached, ok)
-	}
-	if len(snapshot()) != 1 {
-		t.Errorf("expected one mcp:oauth-completed emission, got %d", len(snapshot()))
-	}
-}
-
-// TestPollClaudeMCPAfterOAuth_MissingEntryKeepsPolling asserts that a
-// server absent from the response is treated as "wait and retry," not
-// a terminal state. The Claude CLI builds mcp_status from three
-// in-memory client pools; a server configured but not yet attempted
-// can be missing.
-func TestPollClaudeMCPAfterOAuth_MissingEntryKeepsPolling(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
-
-	getQuerier := scriptedQuerier(
-		[][]claude.MCPServerStatus{
-			{},                                     // empty
-			{{Name: "other", Status: "connected"}}, // ours still absent
-			{{Name: "linear", Status: "connected"}},
-		},
-		nil,
-	)
-
-	app.pollClaudeMCPAfterOAuth(
-		context.Background(),
-		"thread-1",
-		"linear",
-		zeroIntervals(6),
-		getQuerier,
-	)
-
-	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "linear"})
-	if !ok || cached.Status != mcpstatus.StatusConnected {
-		t.Fatalf("expected connected on third tick, got cached=%+v ok=%v", cached, ok)
-	}
-	if len(snapshot()) != 1 {
-		t.Errorf("expected one mcp:oauth-completed emission, got %d", len(snapshot()))
 	}
 }
 
@@ -1287,40 +1244,6 @@ func TestDefaultClaudeMCPOAuthIntervals_Shape(t *testing.T) {
 	}
 }
 
-// TestPollClaudeMCPAfterOAuth_QueryErrorKeepsPolling asserts that a
-// transient query error (CLI unreachable, decode failure, timeout
-// mid-poll) is non-fatal: the loop continues to the next tick and
-// can still observe the flip if it succeeds.
-func TestPollClaudeMCPAfterOAuth_QueryErrorKeepsPolling(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
-
-	getQuerier := scriptedQuerier(
-		[][]claude.MCPServerStatus{
-			nil,
-			{{Name: "github", Status: "connected"}},
-		},
-		[]error{errors.New("transient: control_request timeout"), nil},
-	)
-
-	app.pollClaudeMCPAfterOAuth(
-		context.Background(),
-		"thread-1",
-		"github",
-		zeroIntervals(6),
-		getQuerier,
-	)
-
-	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "github"})
-	if !ok || cached.Status != mcpstatus.StatusConnected {
-		t.Fatalf("expected connected after recovering from transient error, got cached=%+v ok=%v", cached, ok)
-	}
-	if len(snapshot()) != 1 {
-		t.Errorf("expected one mcp:oauth-completed, got %d", len(snapshot()))
-	}
-}
-
 // TestPollClaudeMCPAfterOAuth_SessionGoneExitsCleanly asserts that the
 // getQuerier closure returning nil (live session torn down between
 // TriggerMcpAuth and the first poll tick) terminates the loop without
@@ -1343,43 +1266,6 @@ func TestPollClaudeMCPAfterOAuth_SessionGoneExitsCleanly(t *testing.T) {
 	}
 	if got := len(snapshot()); got != 0 {
 		t.Errorf("expected no emissions, got %d", got)
-	}
-}
-
-// TestPollClaudeMCPAfterOAuth_UnknownRawStatusKeepsPolling pins
-// future-CLI-status-string drift behavior: if the projector returns
-// StatusUnknown (a raw status the projector doesn't recognise),
-// the loop must NOT treat that as terminal — keep polling. A
-// regression that added StatusUnknown to the terminal switch would
-// silently break OAuth detection any time the CLI added a new
-// raw status value.
-func TestPollClaudeMCPAfterOAuth_UnknownRawStatusKeepsPolling(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	snapshot := captureOrderedEmissions(app, "mcp:oauth-completed")
-
-	getQuerier := scriptedQuerier(
-		[][]claude.MCPServerStatus{
-			{{Name: "future", Status: "weird-future-state"}},
-			{{Name: "future", Status: "connected"}},
-		},
-		nil,
-	)
-
-	app.pollClaudeMCPAfterOAuth(
-		context.Background(),
-		"thread-1",
-		"future",
-		zeroIntervals(6),
-		getQuerier,
-	)
-
-	cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "future"})
-	if !ok || cached.Status != mcpstatus.StatusConnected {
-		t.Fatalf("expected connected on tick 2, got cached=%+v ok=%v", cached, ok)
-	}
-	if len(snapshot()) != 1 {
-		t.Errorf("expected one mcp:oauth-completed (only on connected tick), got %d", len(snapshot()))
 	}
 }
 
@@ -1571,4 +1457,15 @@ func TestPollClaudeMCPAfterOAuth_ContextCancelExitsImmediately(t *testing.T) {
 	if got := len(snapshot()); got != 0 {
 		t.Errorf("expected no emissions on canceled ctx, got %d", got)
 	}
+}
+
+func (a *App) pollClaudeMCPAfterOAuth(
+	ctx context.Context,
+	threadID, serverName string,
+	intervals []time.Duration,
+	getQuerier func() claudeMCPStatusQuerier,
+) {
+	a.mcpService().PollClaudeMCPAfterOAuth(ctx, threadID, serverName, intervals, func() mcpapp.ClaudeMCPStatusQuerier {
+		return mcpapp.ClaudeMCPStatusQuerier(getQuerier())
+	})
 }

@@ -42,7 +42,7 @@ type CodexAccountUsageBucket struct {
 	Tokens    int64  `json:"tokens"`
 }
 
-// CleanCodexBackgroundTerminals asks the Codex app-server to terminate
+// cleanCodexBackgroundTerminals asks the Codex app-server to terminate
 // every running unified-exec background PTY for `threadID`. This is the
 // thread-wide "Stop all" primitive for Codex; the per-row stop is
 // TerminateCodexBackgroundTerminal below.
@@ -56,15 +56,13 @@ type CodexAccountUsageBucket struct {
 // Returns typed errors for:
 //
 //   - session-missing: no Codex session for this thread. The caller
-//     reached the binding before Start / after Close.
+//     reached it before Start / after Close.
 //   - provider-mismatch: the thread exists but it's a Claude session.
-//     Claude has its own per-row stop primitive (StopClaudeTask); the
-//     frontend must branch on provider before reaching for this.
-//   - timeout / provider error: surfaced verbatim so the UI can render
-//     the CLI-supplied message.
-//
-//ao:scope threads:operate
-func (a *App) CleanCodexBackgroundTerminals(threadID string) error {
+//     Claude has its own per-row stop primitive (StopClaudeTask); callers
+//     branch on provider before reaching for this.
+//   - timeout / provider error: surfaced verbatim, the CLI-supplied
+//     message included.
+func (a *App) cleanCodexBackgroundTerminals(threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
@@ -210,7 +208,7 @@ func (a *App) codexAppDeps() codexapp.Deps {
 		CustomEnv: func() map[string]string {
 			return a.providerCustomEnv(string(provider.Codex))
 		},
-		ProbeEnv: func() map[string]string {
+		ProbeEnv: func() provider.EnvInput {
 			return a.providerProbeEnv(string(provider.Codex), nil)
 		},
 		ProbeWorkDir: providerProbeWorkDir,

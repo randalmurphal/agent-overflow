@@ -19,11 +19,12 @@
 //   - Composer-height CSS variable propagation through the chat column.
 //   - Reserved-slot banner height stability across mount/unmount.
 
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { buildPane, installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { createThreadPane } from '../../stores/thread.svelte';
 import type { Item } from '../../types/models';
@@ -36,7 +37,6 @@ import {
   setThreadScrollSnapshot,
 } from '../../utils/threadScrollSnapshots';
 import {
-  clearAllThreadSizePriorsForTest,
   peekThreadSizePriorsForTest,
   setThreadSizePriors,
   type SizePriorsEntry,
@@ -159,16 +159,13 @@ function watchStickNotifications(pane: ThreadPane): {
 
 beforeEach(async () => {
   createdStickControllers.length = 0;
-  resetBindingMocks();
-  clearThreadScrollSnapshotsForTest();
-  clearAllThreadSizePriorsForTest();
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
+  // The composer reads its thread's saved draft and attachments: none.
+  setBindingMock('GetDraft', async (threadId: string) => ({ threadId, content: '', attachmentIds: [], terminalChips: [], updatedAt: 0 }));
+  setBindingMock('ListAttachments', async () => []);
   setBindingMock('GetSettings', async () => null);
   await loadSettings();
-});
-
-afterEach(() => {
-  clearThreadScrollSnapshotsForTest();
-  clearAllThreadSizePriorsForTest();
 });
 
 describe('scroll integration — per-thread snapshot save/restore', () => {
@@ -198,21 +195,6 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     if (snap?.kind === 'anchor') {
       expect(['a', 'b']).toContain(snap.itemId);
     }
-  });
-
-  it('keeps the virtual row plane free of authored compositor state', async () => {
-    const pane = await buildPane(undefined, [makeItem({ id: 'a', summary: 'first' })]);
-    pane.thread!.id = 'thread-will-change';
-
-    const { getByTestId } = render(MessageTimeline, { props: { pane } });
-    await tick();
-
-    const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
-    const content = scroll.querySelector('[data-virtual-row-plane]') as HTMLElement | null;
-    expect(content).not.toBeNull();
-    expect(content?.style.transform).toBe('');
-    expect(content?.style.getPropertyValue('translate')).toBe('');
-    expect(content?.style.getPropertyValue('rotate')).toBe('');
   });
 
   // The measured-size priors are what let a revisited thread skip the
@@ -406,22 +388,12 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(loadUntilItem).toHaveBeenCalledWith('pinned-item', expect.any(Function));
   });
 
-  it('bottom-snapshot restore leaves the controller sticky and not escaped', async () => {
-    // The bottom-restore path uses `stick.forceStick()` — a single
-    // scrollTop write against the current target. Subsequent
-    // markdown async typesetting
-    // (shiki / KaTeX / mermaid / parseIncompleteMarkdown rebalance)
-    // and the engine's per-row remeasurement get handled invisibly by the
+  it('bottom-snapshot restore sticks with a single forceStick, then re-observes content a frame later', async () => {
+    // The bottom-restore path uses `stick.forceStick()`: a single scrollTop
+    // write against the current target. Later markdown async typesetting
+    // (shiki / KaTeX / mermaid / parseIncompleteMarkdown rebalance) and the
+    // engine's per-row remeasurement get handled invisibly by the
     // controller's contentRO sync-pin path.
-    //
-    // We can't assert the absence of a scroll preamble directly in
-    // happy-dom (no real layout), so the contract this test pins is
-    // the controller end-state: after restoration completes, the
-    // controller must be in (isSticky=true, escapedFromLock=false).
-    // The $effect.pre escape guard sets escape=true synchronously on
-    // thread mount; if restoreToBottom didn't call forceStick (or
-    // replaced it with something that fails to clear escape), this
-    // assertion fails.
     setThreadScrollSnapshot('thread-bottom-restore', { kind: 'bottom' });
 
     const pane = await buildPane(undefined, [
@@ -431,6 +403,15 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     ]);
     pane.thread!.id = 'thread-bottom-restore';
 
+    let forceStickSpy: ReturnType<typeof vi.spyOn> | null = null;
+    let observeSpy: ReturnType<typeof vi.spyOn> | null = null;
+    const origAttach = pane.attachScrollController.bind(pane);
+    pane.attachScrollController = (ctrl: PaneScrollController) => {
+      forceStickSpy = vi.spyOn(timelineStick(), 'forceStick');
+      observeSpy = vi.spyOn(timelineStick(), 'observe');
+      origAttach(ctrl);
+    };
+
     render(MessageTimeline, { props: { pane } });
     // Three ticks: controller attach, $effect.pre escape guard,
     // restoreAnchor awaiting tick before scrollToIndex.
@@ -438,9 +419,35 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
+    // happy-dom has no layout, so the end state is the contract: the
+    // $effect.pre escape guard sets escape=true synchronously on thread
+    // mount, and a restoreToBottom that skipped forceStick (or replaced it
+    // with something that fails to clear escape) leaves it set.
     const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
+
+    // Exactly one forceStick call: the single-writer contract. Pairing
+    // `listRef.scrollToIndex(last, 'end')` with `stick.markAtBottom()` once
+    // made two scrollTop writers (index-scroll convergence and the contentRO
+    // sync-pin) that targeted slightly different values and oscillated on
+    // every Streamdown typesetting tick. An extra writer routed through a
+    // fallback forceStick surfaces here as count > 1.
+    expect(forceStickSpy).not.toBeNull();
+    expect(forceStickSpy!).toHaveBeenCalledTimes(1);
+
+    // The trailing rAF settle pass. Late layout settling (composer-height RO
+    // updating scrollEl's padding-bottom, which does not refire the
+    // contentRO; the engine's next-frame remeasurement; the first burst of
+    // async typesetting) can shift the bottom a few pixels one frame after
+    // forceStick. Dropping the rAF landed the reader "half a scroll tick from
+    // the bottom" intermittently.
+    expect(observeSpy).not.toBeNull();
+    const contentCalls = (): number =>
+      observeSpy!.mock.calls.filter((call: unknown[]) => call[0] === 'content').length;
+    const callsBeforeRaf = contentCalls();
+    await waitForAnimationFrame();
+    expect(contentCalls()).toBeGreaterThan(callsBeforeRaf);
   });
 
   it('blank loaded threads default to sticky-bottom even before virtualized rows mount', async () => {
@@ -496,164 +503,44 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     expect(getThreadScrollSnapshot(thread.id)).not.toEqual({ kind: 'bottom' });
   });
 
-  it('bottom-snapshot restore writes scrollTop exactly once via forceStick (no virtualizer-scroll fight)', async () => {
-    // Regression: an earlier iteration of restoreToBottom paired
-    // `listRef.scrollToIndex(last, 'end')` with `stick.markAtBottom()`.
-    // virtua's measurement loop (this predates the bespoke engine) kept
-    // writing scrollTop on every resize tick for ~150ms, while the controller's
-    // contentRO sync-pin (enabled by markAtBottom) ALSO wrote scrollTop
-    // on every positive contentEl delta. They targeted slightly
-    // different values (virtualizer: itemOffset+itemSize-clientHeight;
-    // controller: scrollHeight-clientHeight) and oscillated visibly
-    // on every Streamdown async typesetting tick. The single-writer
-    // contract closes that hole: forceStick() lands scrollTop once,
-    // then sync-pin owns subsequent re-pins.
-    //
-    // Pin the call by spying on stick.forceStick AND ensuring
-    // scrollToIndex is NOT called as part of the bottom-restore path.
-    setThreadScrollSnapshot('thread-bottom-force-stick', { kind: 'bottom' });
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'a', summary: 'first' }),
-      makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
-    ]);
-    pane.thread!.id = 'thread-bottom-force-stick';
-
-    let forceStickSpy: ReturnType<typeof vi.spyOn> | null = null;
-    const origAttach = pane.attachScrollController.bind(pane);
-    pane.attachScrollController = (ctrl: PaneScrollController) => {
-      forceStickSpy = vi.spyOn(timelineStick(), 'forceStick');
-      origAttach(ctrl);
-    };
-
-    render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-    await tick();
-
-    expect(forceStickSpy).not.toBeNull();
-    // Exactly one forceStick call — the bottom restore. A regression
-    // that re-introduced an extra scrollTop writer (e.g. routing
-    // through scrollToIndex+markAtBottom plus a fallback forceStick)
-    // would surface here as count > 1.
-    expect(forceStickSpy!).toHaveBeenCalledTimes(1);
-  });
-
-  it('bottom-snapshot restore schedules a rAF content-observation settle pass', async () => {
-    // The synchronous forceStick at restore time lands scrollTop against
-    // the geometry the engine reports at frame 0 from its initial estimates.
-    // Late layout settling — composer-height RO updating scrollEl's
-    // padding-bottom (padding-only growth doesn't refire the contentRO),
-    // the engine's per-row remeasurement on the next frame, and the first
-    // burst of Streamdown async typesetting (shiki / KaTeX / mermaid) —
-    // can shift the bottom by a few pixels one frame after forceStick.
-    // The user-visible symptom of dropping the trailing rAF was landing
-    // "half a scroll tick from the bottom" intermittently. Pin the
-    // contract by spying on the stick's observe() and asserting a
-    // 'content' observation fires after one rAF tick.
-    setThreadScrollSnapshot('thread-bottom-settle', { kind: 'bottom' });
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'a', summary: 'first' }),
-      makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
-    ]);
-    pane.thread!.id = 'thread-bottom-settle';
-
-    let observeSpy: ReturnType<typeof vi.spyOn> | null = null;
-    const origAttach = pane.attachScrollController.bind(pane);
-    pane.attachScrollController = (ctrl: PaneScrollController) => {
-      observeSpy = vi.spyOn(timelineStick(), 'observe');
-      origAttach(ctrl);
-    };
-
-    render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-    await tick();
-
-    expect(observeSpy).not.toBeNull();
-    const contentCalls = (): number =>
-      observeSpy!.mock.calls.filter((call: unknown[]) => call[0] === 'content').length;
-    const callsBeforeRaf = contentCalls();
-    // Drive one animation frame so the trailing settle pass fires.
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    expect(contentCalls()).toBeGreaterThan(callsBeforeRaf);
-  });
-
-  it('still calls pane.loadUntilItem when a saved anchor item no longer exists', async () => {
-    setThreadScrollSnapshot('thread-missing-anchor', {
+  // restoreAnchor falls back to restoreToBottom, whose forceStick clears
+  // escape and sets sticky. A regression that turned a fallback into the
+  // anchor-success path (which sets escape=true) surfaces here.
+  it.each([
+    // The saved anchor's item is gone from the backend: loadUntilItem still
+    // runs, reports `missing`, and the `missing` branch falls back.
+    {
+      name: 'still calls pane.loadUntilItem and falls back to restoreToBottom when a saved anchor item no longer exists',
+      anchorId: 'gone-from-history',
+      items: [makeItem({ id: 'present', summary: 'still here' })],
+      result: 'missing' as const,
+      ticks: 3,
+    },
+    // loadUntilItem reports the item loaded, then restoreAnchor awaits a tick
+    // and calls findTimelineNodeIndex(snap.itemId). If the virtualizer has not
+    // rendered the row (race) or another path pruned the id, idx < 0 falls
+    // back. The pane's items carry other ids, so the lookup misses.
+    {
+      name: 'falls back to restoreToBottom when the anchor item resolves but findTimelineNodeIndex returns -1',
+      anchorId: 'never-rendered',
+      items: [makeItem({ id: 'a', summary: 'a' }), makeItem({ id: 'b', itemIndex: 1, summary: 'b' })],
+      result: 'loaded' as const,
+      ticks: 4,
+    },
+  ])('$name', async ({ anchorId, items, result, ticks }) => {
+    setThreadScrollSnapshot('thread-anchor-fallback', {
       kind: 'anchor',
-      itemId: 'gone-from-history',
+      itemId: anchorId,
       offsetTop: -120,
     });
-
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'present', summary: 'still here' }),
-    ]);
-    pane.thread!.id = 'thread-missing-anchor';
-    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('missing');
+    const pane = await buildPane(undefined, items);
+    pane.thread!.id = 'thread-anchor-fallback';
+    const loadUntilItem = vi.spyOn(pane, 'loadUntilItem').mockResolvedValue(result);
 
     render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-    await tick();
+    for (let i = 0; i < ticks; i += 1) await tick();
 
-    expect(loadUntilItem).toHaveBeenCalledWith('gone-from-history', expect.any(Function));
-  });
-
-  it('falls back to restoreToBottom when loadUntilItem reports the anchor missing (controller ends sticky+not-escaped)', async () => {
-    // restoreAnchor has a `missing` branch that calls
-    // restoreToBottom when the saved anchor's item is gone from the
-    // backend. Pin the controller end-state contract: after the fallback
-    // runs, restoreToBottom calls forceStick which clears escape and
-    // sets sticky. A regression that turned the fallback into the
-    // anchor-success path (which sets escape=true) would surface here.
-    setThreadScrollSnapshot('thread-anchor-not-found', {
-      kind: 'anchor',
-      itemId: 'gone-from-history',
-      offsetTop: -120,
-    });
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'present', summary: 'still here' }),
-    ]);
-    pane.thread!.id = 'thread-anchor-not-found';
-    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('missing');
-
-    render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-    await tick();
-
-    const ctrl = timelineStick();
-    expect(ctrl.escapedFromLock).toBe(false);
-    expect(ctrl.isSticky).toBe(true);
-  });
-
-  it('falls back to restoreToBottom when the anchor item resolves but findTimelineNodeIndex returns -1', async () => {
-    // After loadUntilItem returns true, restoreAnchor awaits a
-    // tick and then calls findTimelineNodeIndex(snap.itemId). If the
-    // virtualizer hasn't yet rendered the row (race) or the item id was pruned in
-    // a different code path, idx < 0 → fall back to restoreToBottom.
-    // We force the branch by claiming the item exists (loadUntilItem
-    // returns true) but populating the pane with items that have
-    // different ids, so findTimelineNodeIndex won't find the snapshotted
-    // id in the rendered groupedNodes.
-    setThreadScrollSnapshot('thread-anchor-idx-missing', {
-      kind: 'anchor',
-      itemId: 'never-rendered',
-      offsetTop: -120,
-    });
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'a', summary: 'a' }),
-      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
-    ]);
-    pane.thread!.id = 'thread-anchor-idx-missing';
-    vi.spyOn(pane, 'loadUntilItem').mockResolvedValue('loaded');
-
-    render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-    await tick();
-    await tick();
-
+    expect(loadUntilItem).toHaveBeenCalledWith(anchorId, expect.any(Function));
     const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
@@ -729,27 +616,6 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
 });
 
 describe('scroll integration — load older', () => {
-  it('routes Load Older through pane.loadOlder and yields a "loaded" status', async () => {
-    const items = Array.from({ length: 3 }, (_, i) =>
-      makeItem({ id: `m:${i}`, turnIndex: i, summary: `m${i}` }),
-    );
-    const pane = await buildPane(undefined, items);
-    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
-    Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => false });
-    const loadOlder = vi.spyOn(pane, 'loadOlder').mockResolvedValue({
-      status: 'loaded',
-      insertedRows: true,
-      insertedBeforeWindow: true,
-    });
-
-    const { getByTestId } = render(MessageTimeline, { props: { pane } });
-    const button = getByTestId('load-older-messages');
-    await fireEvent.click(button);
-    await tick();
-
-    expect(loadOlder).toHaveBeenCalled();
-  });
-
   // Cascade-prevention. Before the fix, the auto-load gate's
   // floor-progress predicate cleared the moment the floor cursor advanced,
   // so the anchor-restore programmatic scroll that followed
@@ -1167,47 +1033,24 @@ describe('scroll integration — scroll-to-item requests', () => {
 });
 
 describe('scroll integration — composer height + layout invariance', () => {
-  it('publishes --composer-height as a CSS variable on the chat column', async () => {
-    const pane = await buildPane(makeThread(), [
-      makeItem({ id: 'tail', summary: 'tail' }),
-    ]);
-
-    const { container } = render(ChatView, { props: { pane } });
-    await tick();
-
-    // Find the chat-column element by its data-ui-surface marker; the
-    // chat column owns the --composer-height inline style.
-    const chatColumn = container.querySelector('[data-ui-surface="chat"]')
-      ?.querySelector(':scope > div');
-    expect(chatColumn).not.toBeNull();
-    const styleAttr = (chatColumn as HTMLElement).getAttribute('style') ?? '';
-    expect(styleAttr).toContain('--composer-height:');
-  });
-
   it('composer-height growth notifies the scroll controller synchronously inside the RO callback', async () => {
     // Regression guard for the "appears then settles" symptom on uncached
-    // loads. The previous composer-RO implementation deferred
-    // the scroll notification to the next animation frame because a
-    // synchronous read of `scrollEl.scrollHeight` would see stale padding
-    // (Svelte's reactive flush runs in a microtask AFTER the RO callback,
-    // so the style binding for `--composer-height` wouldn't have applied
-    // yet). The user-visible cost was a 1-frame gap where scrollTop
-    // pointed at the old bottom while padding-bottom had grown — for
-    // threads with a working/todo panel mounting late (after warm
-    // revealed contentEl) the gap was 200–400px, large enough to flicker
-    // the scroll-to-bottom chip on the way to settling.
+    // loads. The previous composer-RO implementation deferred the scroll
+    // notification to the next animation frame because a synchronous read of
+    // `scrollEl.scrollHeight` would see stale padding (Svelte's reactive flush
+    // runs in a microtask AFTER the RO callback, so the style binding for
+    // `--composer-height` would not have applied yet). The user-visible cost
+    // was a 1-frame gap where scrollTop pointed at the old bottom while
+    // padding-bottom had grown: 200-400px for threads with a working/todo
+    // panel mounting late, enough to flicker the scroll-to-bottom chip.
     //
     // Fix: write `--composer-height` directly on chatColumn via
-    // `style.setProperty`, bypassing the Svelte microtask boundary for
-    // the layout-relevant change, then notify the scroll controller
-    // synchronously inside the same RO callback. The controller's
-    // layout read applies the new CSS variable, so scrollHeight is
-    // post-grow when scrollTop is written.
-    //
-    // This test stubs ResizeObserver so we can drive the composer-RO
-    // callback with a specific height entry, then asserts that the
-    // controller's live-capable notification count incremented inside
-    // the synchronous callback (i.e. before any rAF could fire).
+    // `style.setProperty`, bypassing the Svelte microtask boundary, then
+    // notify the scroll controller synchronously inside the same RO
+    // callback. Without the direct write, `targetScrollTop()` would force
+    // layout with the old --composer-height and pin to the pre-grow bottom.
+    // The stubbed ResizeObserver lets the test drive the composer-RO callback
+    // with a specific height entry.
     const roCapture = installResizeObserverCapture();
 
     try {
@@ -1222,40 +1065,47 @@ describe('scroll integration — composer height + layout invariance', () => {
         origAttach(ctrl);
       };
 
-      const { getByTestId } = render(ChatView, { props: { pane } });
+      const { container, getByTestId } = render(ChatView, { props: { pane } });
       await tick();
-      // Flush the rAF that restoreToBottom queues for late layout
-      // settling so it doesn't pollute the baseline call count.
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
+      // The chat column (under the data-ui-surface marker) publishes
+      // --composer-height as an inline CSS variable.
+      const chatColumn = container.querySelector('[data-ui-surface="chat"]')
+        ?.querySelector(':scope > div') as HTMLElement | null;
+      expect(chatColumn).not.toBeNull();
+      if (!chatColumn) return;
+      expect(chatColumn.getAttribute('style') ?? '').toContain('--composer-height:');
+
+      // Flush the rAF that restoreToBottom queues for late layout settling
+      // so it does not pollute the observation baseline.
+      await waitForAnimationFrame();
       expect(observeSpy).not.toBeNull();
-      const composerCalls = (): number =>
-        observeSpy!.mock.calls.filter((call: unknown[]) => call[0] === 'composer-geometry').length;
-      const callsBeforeFire = composerCalls();
+      observeSpy!.mockClear();
 
-      // Find the composer overlay and its registered callback. The
-      // composer-RO is the one that observes `composerOverlay` in
-      // ChatView's $effect — the only target with the
-      // `composer-overlay` testid.
+      // The composer-RO is the one observing the `composer-overlay` testid.
       const composerOverlay = getByTestId('composer-overlay');
       const composerCallback = roCapture.callbacksByTarget.get(composerOverlay);
       expect(composerCallback).toBeDefined();
       if (!composerCallback) return;
 
-      // Synthesize a composer-height change. Composer overlay grew from
-      // its initial height (120 default) to 200. The RO callback should
-      // detect the change, write the CSS variable directly, AND call
-      // the controller synchronously.
-      const fakeEntry = {
-        contentRect: { height: 200 } as DOMRectReadOnly,
-      } as ResizeObserverEntry;
-      composerCallback([fakeEntry], {} as ResizeObserver);
+      // Grow the composer from its initial height (120 default) to 200. No
+      // tick, microtask or frame is awaited between the callback and the
+      // assertions: the variable write and the observation are synchronous.
+      composerCallback([{ contentRect: { height: 200 } as DOMRectReadOnly } as ResizeObserverEntry], {} as ResizeObserver);
+      expect(chatColumn.style.getPropertyValue('--composer-height')).toBe('200px');
+      expect(observeSpy!.mock.calls).toEqual([['composer-geometry']]);
 
-      // The synchronous observation must have happened before this
-      // assertion runs (no rAF awaited). Previously the call was queued
-      // inside a `requestAnimationFrame` and the assertion would fail
-      // until a frame elapsed.
-      expect(composerCalls()).toBeGreaterThan(callsBeforeFire);
+      // With live output active, the observation is still 'composer-geometry'
+      // and nothing else. That kind routes to the controller's live-capable
+      // path, so live output can spring through an activity-rail height change
+      // instead of snapping; the kind→path mapping is pinned by the
+      // controller-level "observe('composer-geometry') spring-chases /
+      // sync-pins" pair in utils/scroll/index.svelte.test.ts.
+      observeSpy!.mockClear();
+      pane.markLiveContentAdvanced(makeItem({ threadId: pane.threadId! }));
+      composerCallback([{ contentRect: { height: 247 } as DOMRectReadOnly } as ResizeObserverEntry], {} as ResizeObserver);
+      expect(chatColumn.style.getPropertyValue('--composer-height')).toBe('247px');
+      expect(observeSpy!.mock.calls).toEqual([['composer-geometry']]);
     } finally {
       roCapture.restore();
     }
@@ -1274,93 +1124,6 @@ describe('scroll integration — composer height + layout invariance', () => {
   // read"), which fails on the old gBCR-seeded behavior and passes on the
   // content-box-only helper. Do not re-add a happy-dom self-retrigger test.
 
-  it('composer-height growth observes as composer-geometry (live-capable path)', async () => {
-    // The 'composer-geometry' kind routes to the controller's
-    // live-capable path, so active live output can spring through an
-    // activity-rail height change instead of snapping. The kind→path
-    // mapping itself is pinned by the controller-level
-    // "observe('composer-geometry') spring-chases / sync-pins" pair in
-    // utils/scroll/index.svelte.test.ts; what ChatView owns is reporting
-    // the right observation kind.
-    const roCapture = installResizeObserverCapture();
-
-    try {
-      const pane = await buildPane(makeThread(), [
-        makeItem({ id: 'tail', summary: 'tail' }),
-      ]);
-
-      let observeSpy: ReturnType<typeof vi.spyOn> | null = null;
-      const origAttach = pane.attachScrollController.bind(pane);
-      pane.attachScrollController = (ctrl: PaneScrollController) => {
-        observeSpy = vi.spyOn(ctrl, 'observe');
-        origAttach(ctrl);
-      };
-
-      const { getByTestId } = render(ChatView, { props: { pane } });
-      await tick();
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-
-      expect(observeSpy).not.toBeNull();
-      observeSpy!.mockClear();
-
-      const composerOverlay = getByTestId('composer-overlay');
-      const composerCallback = roCapture.callbacksByTarget.get(composerOverlay);
-      expect(composerCallback).toBeDefined();
-      if (!composerCallback) return;
-
-      pane.markLiveContentAdvanced(makeItem({ threadId: pane.threadId! }));
-      const fakeEntry = {
-        contentRect: { height: 200 } as DOMRectReadOnly,
-      } as ResizeObserverEntry;
-      composerCallback([fakeEntry], {} as ResizeObserver);
-
-      expect(observeSpy!.mock.calls).toEqual([['composer-geometry']]);
-    } finally {
-      roCapture.restore();
-    }
-  });
-
-  it('composer-height growth writes --composer-height directly on chatColumn so layout reads see the new value', async () => {
-    // Companion to the synchronous composer-observation test above. The
-    // direct CSS-variable write is what makes the synchronous re-pin
-    // correct — without it, `targetScrollTop()` would force layout with
-    // the old --composer-height and pin to the pre-grow bottom. This
-    // test asserts the inline style on chatColumn reflects the new
-    // height BEFORE any tick/microtask/frame is awaited.
-    const roCapture = installResizeObserverCapture();
-
-    try {
-      const pane = await buildPane(makeThread(), [
-        makeItem({ id: 'tail', summary: 'tail' }),
-      ]);
-
-      const { container, getByTestId } = render(ChatView, { props: { pane } });
-      await tick();
-
-      const chatColumn = container.querySelector('[data-ui-surface="chat"]')
-        ?.querySelector(':scope > div') as HTMLElement | null;
-      expect(chatColumn).not.toBeNull();
-      if (!chatColumn) return;
-
-      const composerOverlay = getByTestId('composer-overlay');
-      const composerCallback = roCapture.callbacksByTarget.get(composerOverlay);
-      expect(composerCallback).toBeDefined();
-      if (!composerCallback) return;
-
-      const fakeEntry = {
-        contentRect: { height: 247 } as DOMRectReadOnly,
-      } as ResizeObserverEntry;
-      composerCallback([fakeEntry], {} as ResizeObserver);
-
-      // The direct setProperty must have written the new value before
-      // the RO callback returned — no tick / microtask / frame awaited
-      // between the callback and this assertion.
-      expect(chatColumn.style.getPropertyValue('--composer-height')).toBe('247px');
-    } finally {
-      roCapture.restore();
-    }
-  });
-
   it('renders the composer + below-bar inside the absolute overlay div', async () => {
     const pane = await buildPane(makeThread(), [
       makeItem({ id: 'tail', summary: 'tail' }),
@@ -1378,45 +1141,40 @@ describe('scroll integration — composer height + layout invariance', () => {
     expect(cls).toContain('bottom-0');
   });
 
-  it('opts out of browser scroll-anchor on the scroll container', async () => {
-    // Regression guard: the browser's default `overflow-anchor: auto`
-    // adjusts scrollTop to keep the topmost-visible element fixed when
-    // content above the viewport changes size — well-intentioned for
-    // static documents, but it actively fights the engine's remeasure
-    // compensation AND the controller's contentRO sync-pin. Streamdown
-    // async typesetting (shiki / KaTeX / mermaid) growing rows above the
-    // viewport on a sticky session would produce visible scrollTop
-    // oscillation between the browser's anchor adjustment and our re-pin
-    // without this opt-out.
+  it('styles the scroll container for the engine: no scroll-anchor, no native bar, a bare row plane', async () => {
     const pane = await buildPane(makeThread(), [
       makeItem({ id: 'tail', summary: 'tail' }),
     ]);
     const { getByTestId } = render(MessageTimeline, { props: { pane } });
     await tick();
     const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
-    expect(scroll.style.overflowAnchor).toBe('none');
-  });
 
-  it('suppresses the native bar and mounts the overlay scrollbar instead', async () => {
+    // The browser's default `overflow-anchor: auto` adjusts scrollTop to keep
+    // the topmost-visible element fixed when content above the viewport
+    // changes size. That fights the engine's remeasure compensation AND the
+    // controller's contentRO sync-pin: Streamdown async typesetting (shiki /
+    // KaTeX / mermaid) growing rows above a sticky viewport would oscillate
+    // scrollTop between the browser's adjustment and our re-pin.
+    expect(scroll.style.overflowAnchor).toBe('none');
+
     // The scroller draws no native bar (`pane-scroll-surface` in app.css:
     // scrollbar-width none + zero-width ::-webkit-scrollbar + the
     // composited-scrolling hint) and the <OverlayScrollbar> sibling is the
     // surface's scrollbar, consuming zero layout width in every state.
-    // This retired the `scrollbar-gutter: stable both-edges` reservation
-    // that used to hold the centered column still across the classic bar's
-    // appearance — with no bar, a reservation would inset the column for
-    // nothing, so its ABSENCE is asserted too. happy-dom has zero
+    // With no bar, a `scrollbar-gutter` reservation would inset the column
+    // for nothing, so its ABSENCE is asserted too. happy-dom has zero
     // geometry, so this guards the class, the directive's absence, and the
     // overlay's presence. See docs/architecture/frontend-scroll.md.
-    const pane = await buildPane(makeThread(), [
-      makeItem({ id: 'tail', summary: 'tail' }),
-    ]);
-    const { getByTestId } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
     expect(scroll.classList.contains('pane-scroll-surface')).toBe(true);
     expect(scroll.style.getPropertyValue('scrollbar-gutter')).toBe('');
     expect(getByTestId('overlay-scrollbar')).toBeTruthy();
+
+    // The virtual row plane carries no authored compositor state.
+    const content = scroll.querySelector('[data-virtual-row-plane]') as HTMLElement | null;
+    expect(content).not.toBeNull();
+    expect(content?.style.transform).toBe('');
+    expect(content?.style.getPropertyValue('translate')).toBe('');
+    expect(content?.style.getPropertyValue('rotate')).toBe('');
   });
 });
 
@@ -1500,7 +1258,18 @@ describe('scroll integration — auto-follow + button', () => {
     const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(true);
     expect(ctrl.isAtBottom).toBe(false);
-    expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull();
+    const chip = container.querySelector('[data-testid="scroll-to-bottom"]') as HTMLElement | null;
+    expect(chip).not.toBeNull();
+
+    // position:absolute inside an overflow:auto parent anchors in
+    // scroll-content space, so a chip inside the scroller would scroll with
+    // the transcript and ride up off-screen as scrollTop grows. The chip
+    // renders as a sibling of the scroll element inside a non-scrolling
+    // `relative` wrapper: not a descendant of the scroller, and its
+    // positioning wrapper shares the scroller's parent. A chip hoisted
+    // elsewhere (e.g. document.body) passes the first check, not the second.
+    expect(wrapper.contains(chip)).toBe(false);
+    expect(chip!.parentElement!.parentElement).toBe(wrapper.parentElement);
   });
 
   it('wheel-up by 1px prevents later layout-growth re-pin', async () => {
@@ -1624,63 +1393,6 @@ describe('scroll integration — auto-follow + button', () => {
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1200 });
     pane.scrollController?.observe('content');
     expect(scrollTop).toBe(600);
-  });
-
-  it('renders the scroll-to-bottom chip OUTSIDE the scroll container', async () => {
-    // Regression: position:absolute inside an overflow:auto parent
-    // anchors the absolute child in scroll-content space, not viewport
-    // space, so the chip would scroll with the transcript and ride up
-    // off-screen as scrollTop grows. The fix wraps the scroll element
-    // in a non-scrolling `relative` container and renders the chip as
-    // a sibling of the scroll element. This test asserts the DOM
-    // shape so that contract isn't quietly broken later.
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'a', summary: 'a' }),
-      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
-    ]);
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-    await waitFor(() => {
-      expect(container.querySelector('[data-testid="message-timeline-node"]')).not.toBeNull();
-      expect(pane.scrollController).not.toBeNull();
-    });
-
-    const scrollEl = container.querySelector('[data-testid="message-timeline-scroll"]') as HTMLElement;
-    expect(scrollEl).not.toBeNull();
-    // Force the chip visible: stub scrollable geometry, fire a wheel-up
-    // input, then a scroll event so isNearBottomState refreshes to
-    // false (intent + geometry both away from bottom → chip visible).
-    let scrollTop = 400;
-    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 1000 });
-    Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
-    Object.defineProperty(scrollEl, 'scrollTop', {
-      configurable: true,
-      get: () => scrollTop,
-      set: (value: number) => { scrollTop = value; },
-    });
-    const wheel = new WheelEvent('wheel', { deltaY: -50, bubbles: true });
-    Object.defineProperty(wheel, 'target', { value: scrollEl });
-    scrollEl.dispatchEvent(wheel);
-    scrollTop = 0;
-    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
-    await waitForScrollIntent();
-    await tick();
-    await tick();
-
-    const chip = container.querySelector('[data-testid="scroll-to-bottom"]') as HTMLElement | null;
-    expect(chip).not.toBeNull();
-    // The chip must NOT be a descendant of the scroll element. If it
-    // is, scrolling moves it.
-    expect(scrollEl.contains(chip)).toBe(false);
-    // Its positioning wrapper must be a sibling of the scroll element in the same
-    // non-scrolling positioned wrapper — so its `position:absolute`
-    // anchors to the wrapper's padding edge. A regression that hoisted
-    // the chip elsewhere (e.g., to document.body) would still pass the
-    // non-containment check above but break the absolute-positioning
-    // contract the wrapper exists to provide.
-    expect(chip!.parentElement!.parentElement).toBe(scrollEl.parentElement);
   });
 
   it('Bug A: re-stick succeeds in a streaming-cadence sequence (60 Hz contentRO + wheel-down)', async () => {
@@ -1926,36 +1638,39 @@ describe('scroll integration — auto-load-older trigger', () => {
     return scrollEl;
   }
 
-  it('does not fire pane.loadOlder when pane.hasMoreHistory is false', async () => {
-    const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
-    const pane = await buildPane(undefined, items);
-    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => false });
-    const loadOlder = vi.spyOn(pane, 'loadOlder');
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    dispatchScroll(container);
-    await tick();
-
-    expect(loadOlder).not.toHaveBeenCalled();
-  });
-
-  it('does not fire pane.loadOlder when oldestLoadedCursor is null (defensive null-floor exit)', async () => {
+  it.each([
+    {
+      name: 'when pane.hasMoreHistory is false',
+      items: [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })],
+      getters: { hasMoreHistory: false },
+      scrolls: 1,
+    },
     // Edge case: backend returns hasMore=true with no items so the floor
     // cursor stays null. Without the null-floor early-return in the gate,
     // every scroll tick would re-enter loadOlder (which itself noops on a
-    // null floor) — the progress guard's cursor compare would never engage.
-    // Pin the defensive exit.
-    const pane = await buildPane(undefined, []);
-    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
-    Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => false });
-    Object.defineProperty(pane, 'oldestLoadedCursor', { configurable: true, get: () => null });
+    // null floor) and the progress guard's cursor compare would never engage.
+    {
+      name: 'when oldestLoadedCursor is null (defensive null-floor exit)',
+      items: [],
+      getters: { hasMoreHistory: true, loadingOlder: false, oldestLoadedCursor: null },
+      scrolls: 2,
+    },
+    {
+      name: 'while a load is already in flight',
+      items: [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })],
+      getters: { hasMoreHistory: true, loadingOlder: true, oldestLoadedCursor: { turnIndex: 5, itemIndex: 0 } },
+      scrolls: 1,
+    },
+  ])('does not fire pane.loadOlder $name', async ({ items, getters, scrolls }) => {
+    const pane = await buildPane(undefined, items);
+    for (const [key, value] of Object.entries(getters)) {
+      Object.defineProperty(pane, key, { configurable: true, get: () => value });
+    }
     const loadOlder = vi.spyOn(pane, 'loadOlder');
 
     const { container } = render(MessageTimeline, { props: { pane } });
     await tick();
-    dispatchScroll(container);
-    dispatchScroll(container);
+    for (let i = 0; i < scrolls; i += 1) dispatchScroll(container);
     await tick();
 
     expect(loadOlder).not.toHaveBeenCalled();
@@ -2001,39 +1716,17 @@ describe('scroll integration — auto-load-older trigger', () => {
     expect(loadOlder).not.toHaveBeenCalled();
   });
 
-  it('fires pane.loadOlder from an upward wheel when the scroller is too short for disjoint zones', async () => {
+  it.each([
     // A window whose rows collapse into a few runs is exactly where
     // history matters, and it is also where the geometry gate stands
     // down. Direction is the intent the geometry cannot express.
-    const pane = await shortScrollerPane();
-    const loadOlder = vi.spyOn(pane, 'loadOlder');
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    const scrollEl = shortScroller(container);
-    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -40, bubbles: true }));
-    await tick();
-
-    expect(loadOlder).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not fire pane.loadOlder from a downward wheel in a short scroller', async () => {
-    const pane = await shortScrollerPane();
-    const loadOlder = vi.spyOn(pane, 'loadOlder');
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    const scrollEl = shortScroller(container);
-    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true }));
-    await tick();
-
-    expect(loadOlder).not.toHaveBeenCalled();
-  });
-
-  it('fires pane.loadOlder from an upward wheel at scrollTop 0 without any scroll event', async () => {
+    { name: 'fires pane.loadOlder from an upward wheel when the scroller is too short for disjoint zones', scrollHeight: 750, deltaY: -40, calls: 1 },
+    { name: 'does not fire pane.loadOlder from a downward wheel in a short scroller', scrollHeight: 750, deltaY: 40, calls: 0 },
     // Parked at the very top there is no scroll event to carry the
     // probe; the wheel itself is the trigger, or the reader can never
     // page further back from a stop.
+    { name: 'fires pane.loadOlder from an upward wheel at scrollTop 0 without any scroll event', scrollHeight: 3000, deltaY: -40, calls: 1 },
+  ])('$name', async ({ scrollHeight, deltaY, calls }) => {
     const pane = await shortScrollerPane();
     const loadOlder = vi.spyOn(pane, 'loadOlder');
 
@@ -2043,12 +1736,12 @@ describe('scroll integration — auto-load-older trigger', () => {
       '[data-testid="message-timeline-scroll"]',
     ) as HTMLElement;
     Object.defineProperty(scrollEl, 'scrollTop', { configurable: true, get: () => 0, set: () => {} });
-    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 3000 });
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => scrollHeight });
     Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
-    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY: -40, bubbles: true }));
+    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true }));
     await tick();
 
-    expect(loadOlder).toHaveBeenCalledTimes(1);
+    expect(loadOlder).toHaveBeenCalledTimes(calls);
   });
 
   it('fires pane.loadOlder from ArrowUp and PageUp, not from ArrowDown', async () => {
@@ -2064,22 +1757,6 @@ describe('scroll integration — auto-load-older trigger', () => {
     scrollEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
     await tick();
     expect(loadOlder).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not fire pane.loadOlder while a load is already in flight', async () => {
-    const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
-    const pane = await buildPane(undefined, items);
-    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
-    Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => true });
-    Object.defineProperty(pane, 'oldestLoadedCursor', { configurable: true, get: () => ({ turnIndex: 5, itemIndex: 0 }) });
-    const loadOlder = vi.spyOn(pane, 'loadOlder');
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    dispatchScroll(container);
-    await tick();
-
-    expect(loadOlder).not.toHaveBeenCalled();
   });
 });
 
@@ -2108,31 +1785,35 @@ describe('scroll integration — auto-load-newer trigger', () => {
     return scrollEl;
   }
 
-  it('does not fire pane.loadNewer when pane.hasMoreNewer is false', async () => {
-    const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
+  it.each([
+    {
+      name: 'when pane.hasMoreNewer is false',
+      items: [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })],
+      getters: { hasMoreNewer: false },
+      scrolls: 1,
+    },
+    {
+      name: 'when newestLoadedCursor is null (defensive null-ceiling exit)',
+      items: [],
+      getters: { hasMoreNewer: true, loadingNewer: false, newestLoadedCursor: null },
+      scrolls: 2,
+    },
+    {
+      name: 'while a load is already in flight',
+      items: [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })],
+      getters: { hasMoreNewer: true, loadingNewer: true, newestLoadedCursor: { turnIndex: 5, itemIndex: 0 } },
+      scrolls: 1,
+    },
+  ])('does not fire pane.loadNewer $name', async ({ items, getters, scrolls }) => {
     const pane = await buildPane(undefined, items);
-    Object.defineProperty(pane, 'hasMoreNewer', { configurable: true, get: () => false });
+    for (const [key, value] of Object.entries(getters)) {
+      Object.defineProperty(pane, key, { configurable: true, get: () => value });
+    }
     const loadNewer = vi.spyOn(pane, 'loadNewer');
 
     const { container } = render(MessageTimeline, { props: { pane } });
     await tick();
-    dispatchScrollAtBottom(container);
-    await tick();
-
-    expect(loadNewer).not.toHaveBeenCalled();
-  });
-
-  it('does not fire pane.loadNewer when newestLoadedCursor is null (defensive null-ceiling exit)', async () => {
-    const pane = await buildPane(undefined, []);
-    Object.defineProperty(pane, 'hasMoreNewer', { configurable: true, get: () => true });
-    Object.defineProperty(pane, 'loadingNewer', { configurable: true, get: () => false });
-    Object.defineProperty(pane, 'newestLoadedCursor', { configurable: true, get: () => null });
-    const loadNewer = vi.spyOn(pane, 'loadNewer');
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    dispatchScrollAtBottom(container);
-    dispatchScrollAtBottom(container);
+    for (let i = 0; i < scrolls; i += 1) dispatchScrollAtBottom(container);
     await tick();
 
     expect(loadNewer).not.toHaveBeenCalled();
@@ -2158,22 +1839,6 @@ describe('scroll integration — auto-load-newer trigger', () => {
     Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 750 });
     Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
     scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
-    await tick();
-
-    expect(loadNewer).not.toHaveBeenCalled();
-  });
-
-  it('does not fire pane.loadNewer while a load is already in flight', async () => {
-    const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
-    const pane = await buildPane(undefined, items);
-    Object.defineProperty(pane, 'hasMoreNewer', { configurable: true, get: () => true });
-    Object.defineProperty(pane, 'loadingNewer', { configurable: true, get: () => true });
-    Object.defineProperty(pane, 'newestLoadedCursor', { configurable: true, get: () => ({ turnIndex: 5, itemIndex: 0 }) });
-    const loadNewer = vi.spyOn(pane, 'loadNewer');
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    dispatchScrollAtBottom(container);
     await tick();
 
     expect(loadNewer).not.toHaveBeenCalled();
@@ -2220,7 +1885,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(typeof pane.scrollController?.preserveViewportBottom).toBe('function');
   });
 
-  it('vetoes timeline-window pruning when it would drop the visible anchor', async () => {
+  it('vetoes timeline-window pruning only when an escaped reader would lose the visible anchor', async () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'a', summary: 'a' }),
       makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
@@ -2239,79 +1904,20 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(ctrl?.canPreserveTimelineWindow).toBeTypeOf('function');
     if (!ctrl?.canPreserveTimelineWindow) return;
 
-    timelineStick().markEscaped();
-    const keepsItem = vi.fn(() => false);
-
-    const result = ctrl.canPreserveTimelineWindow(keepsItem);
-
-    expect(result).toBe(false);
-    expect(keepsItem).toHaveBeenCalledWith('a');
-  });
-
-  it('allows timeline-window pruning when it keeps the visible anchor', async () => {
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'a', summary: 'a' }),
-      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
-    ]);
-    let ctrl: PaneScrollController | null = null;
-    const origAttach = pane.attachScrollController.bind(pane);
-    pane.attachScrollController = (controller) => {
-      ctrl = controller;
-      origAttach(controller);
-    };
-
-    const { container } = render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-    await tick();
-    await waitFor(() => {
-      expect(getThreadScrollSnapshot(pane.threadId!)).toBeTruthy();
-    });
-    expect(container.querySelector('[data-item-id="a"]')).not.toBeNull();
-
-    expect(ctrl).not.toBeNull();
-    const controller = ctrl!;
-    expect(controller.canPreserveTimelineWindow).toBeTypeOf('function');
-    if (!controller.canPreserveTimelineWindow) return;
-
-    timelineStick().markEscaped();
-    const keepsItem = vi.fn((itemId: string) => itemId === 'a');
-
-    const result = controller.canPreserveTimelineWindow(keepsItem);
-
-    expect(result).toBe(true);
-    expect(keepsItem).toHaveBeenCalledWith('a');
-  });
-
-  it('allows bottom-held pruning without inspecting retained keys', async () => {
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'a', summary: 'a' }),
-      makeItem({ id: 'b', itemIndex: 1, summary: 'b' }),
-    ]);
-    let ctrl: PaneScrollController | null = null;
-    const origAttach = pane.attachScrollController.bind(pane);
-    pane.attachScrollController = (controller) => {
-      ctrl = controller;
-      origAttach(controller);
-    };
-
-    render(MessageTimeline, { props: { pane } });
-    await tick();
-    await tick();
-    await tick();
-    await waitFor(() => {
-      expect(getThreadScrollSnapshot(pane.threadId!)).toBeTruthy();
-    });
-
-    expect(ctrl).not.toBeNull();
-    const controller = ctrl!;
-    expect(controller.canPreserveTimelineWindow).toBeTypeOf('function');
-    if (!controller.canPreserveTimelineWindow) return;
-
+    // Held at the bottom: any cut is allowed, without inspecting retained keys.
     timelineStick().forceStick({ reason: 'restore' });
-    const keepsItem = vi.fn(() => false);
-    expect(controller.canPreserveTimelineWindow(keepsItem)).toBe(true);
-    expect(keepsItem).not.toHaveBeenCalled();
+    const keepsNothing = vi.fn(() => false);
+    expect(ctrl.canPreserveTimelineWindow(keepsNothing)).toBe(true);
+    expect(keepsNothing).not.toHaveBeenCalled();
+
+    // Escaped: the cut is judged by whether it keeps the visible anchor 'a'.
+    timelineStick().markEscaped();
+    const dropsAnchor = vi.fn(() => false);
+    expect(ctrl.canPreserveTimelineWindow(dropsAnchor)).toBe(false);
+    expect(dropsAnchor).toHaveBeenCalledWith('a');
+    const keepsAnchor = vi.fn((itemId: string) => itemId === 'a');
+    expect(ctrl.canPreserveTimelineWindow(keepsAnchor)).toBe(true);
+    expect(keepsAnchor).toHaveBeenCalledWith('a');
   });
 
   it('host-layout reconciliation preserves the current sticky or escaped intent', async () => {

@@ -76,9 +76,9 @@ func mergeCleanupThread(t *testing.T, app *App, repo, branch string) (store.Thre
 	if err := app.store.CreateThread(owner); err != nil {
 		t.Fatalf("CreateThread(owner): %v", err)
 	}
-	path, err := app.GitCreateWorktree(owner.ID, branch)
+	path, err := worktreePathOf(app.PrepareThreadWorktree(owner.ID, "", branch, false))
 	if err != nil {
-		t.Fatalf("GitCreateWorktree: %v", err)
+		t.Fatalf("PrepareThreadWorktree: %v", err)
 	}
 	thread := testThread("merge-thread-" + strings.ReplaceAll(branch, "/", "-"))
 	thread.ProjectID = project.ID
@@ -750,6 +750,48 @@ func (m *mergeCase) awaitHandled(t *testing.T) store.ThreadPullRequest {
 	}
 }
 
+// A poll pass is recorded when it ends, under the time it began; a pass
+// that does not run to its end is not recorded, and a pause forgets the
+// record with the rest of the state.
+func TestMergedPRPollRecordsEachPassThatRanToItsEnd(t *testing.T) {
+	t.Parallel()
+	m := newMergeCase(t, "feature/polled")
+	m.unmerge(t)
+	m.seed(t, "open")
+	if at := m.app.mergedPRPolled(); !at.IsZero() {
+		t.Fatalf("polled = %v before any pass", at)
+	}
+
+	began := time.Now()
+	var midPass time.Time
+	m.during(func() { midPass = m.app.mergedPRPolled() })
+	m.app.mergedPRPoll(context.Background(), began)
+	if m.requests.Load() != 1 {
+		t.Fatalf("the pass made %d state reads, want 1", m.requests.Load())
+	}
+	if !midPass.IsZero() {
+		t.Fatalf("the pass was recorded at %v while its read was in flight", midPass)
+	}
+	if at := m.app.mergedPRPolled(); !at.Equal(began) {
+		t.Fatalf("polled = %v, want the pass's start %v", at, began)
+	}
+
+	// A pass cancelled inside its read does not run to its end.
+	ctx, cancel := context.WithCancel(context.Background())
+	m.during(cancel)
+	m.app.mergedPRPoll(ctx, began.Add(time.Hour))
+	if at := m.app.mergedPRPolled(); !at.Equal(began) {
+		t.Fatalf("polled = %v after a cancelled pass, want %v", at, began)
+	}
+
+	resume := m.app.pauseMergedPRCleanup()
+	resume()
+	t.Cleanup(m.app.stopMergedPRCleanup)
+	if at := m.app.mergedPRPolled(); !at.IsZero() {
+		t.Fatalf("polled = %v after a pause, want none", at)
+	}
+}
+
 // The poll runs only while Settings.BackgroundGitFetch is on. Off, the
 // cleanup reads nothing on its own; turning it on starts the poll, which
 // picks up the PR tracked meanwhile; off again stops and joins it; once
@@ -911,4 +953,11 @@ func TestMergedPRWatchedReadRunsWithTheSettingOff(t *testing.T) {
 	if m.app.mergedPRs.mergedPRPollRunning() {
 		t.Fatal("the poll runs with the setting off")
 	}
+}
+
+// mergedPRPollRunning reports whether the poll goroutine is running.
+func (c *mergedPRCleanupState) mergedPRPollRunning() bool {
+	c.pollMu.Lock()
+	defer c.pollMu.Unlock()
+	return c.pollStop != nil
 }

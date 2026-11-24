@@ -176,38 +176,6 @@ func repointImportSource(t *testing.T, st *store.Store, threadID, sourcePath str
 	}
 }
 
-// The ordinary case still works: a tail that opens a turn the thread does
-// not hold appends, and the refusal above is not a blanket one.
-func TestRefreshAppendsACodexTailThatOpensANewTurn(t *testing.T) {
-	st := newTestStore(t)
-	homes := newProviderHomes(t)
-	homes.writeCodexIndex(t, codexThreadA)
-	path := homes.codexLinearSession(t, codexThreadA)
-	d := homes.deps(st)
-	threadID := importOneCodexFixture(t, d)
-	assertTurnCount(t, d, threadID, 1)
-
-	appendRolloutLines(t, path,
-		codexLine(900, "event_msg", map[string]any{"type": "task_started", "turn_id": "turn-2"}),
-		codexLine(1_000, "event_msg", map[string]any{"type": "user_message", "message": "and one more"}),
-		codexLine(1_100, "event_msg", map[string]any{
-			"type": "task_complete", "turn_id": "turn-2", "last_agent_message": "done",
-		}),
-	)
-
-	update, err := PlanUpdate(context.Background(), d, threadID)
-	if err != nil {
-		t.Fatalf("PlanUpdate: %v", err)
-	}
-	if !update.Appliable() {
-		t.Fatalf("status = %q (%s), want updates-available", update.Status, update.Detail)
-	}
-	if _, err := ApplyUpdate(d, update); err != nil {
-		t.Fatalf("ApplyUpdate: %v", err)
-	}
-	assertTurnCount(t, d, threadID, 2)
-}
-
 func TestRefreshRepairsAnOlderCodexImportWithoutReplayingHistory(t *testing.T) {
 	st := newTestStore(t)
 	homes := newProviderHomes(t)
@@ -460,40 +428,6 @@ func TestRefreshRefusesACodexRolloutMigratedToTheSameSize(t *testing.T) {
 	}
 }
 
-// The same rewrite, but LARGER than the file that was imported — which reads
-// to the size test as an ordinary append.
-func TestRefreshRefusesACodexRolloutMigratedToALargerFile(t *testing.T) {
-	st := newTestStore(t)
-	homes := newProviderHomes(t)
-	homes.writeCodexIndex(t, codexThreadA)
-	path := homes.codexLinearSession(t, codexThreadA)
-	d := homes.deps(st)
-	threadID := importOneCodexFixture(t, d)
-
-	before, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat original rollout: %v", err)
-	}
-	homes.paginatedMigratedRollout(t, codexThreadA, strings.Repeat("y", 8192))
-	after, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat migrated rollout: %v", err)
-	}
-	if after.Size() <= before.Size() {
-		t.Fatalf("fixture is not larger: %d vs %d", after.Size(), before.Size())
-	}
-
-	update := planCodexRefresh(t, d, threadID)
-	if update.Status != UpdateSourceDiverged {
-		t.Fatalf("status = %q (%s), want source-diverged", update.Status, update.Detail)
-	}
-	// It must be the IDENTITY guard that refused it, not the record-boundary
-	// check downstream — a larger rewritten file can pass that one by luck.
-	if !strings.Contains(update.Detail, "migrated") {
-		t.Errorf("detail = %q, want the identity guard's migration prose", update.Detail)
-	}
-}
-
 // A history_mode FLIP with the same header bytes otherwise is still a
 // divergence, and it is named as one.
 func TestRefreshRefusesACodexRolloutWhoseHistoryModeChanged(t *testing.T) {
@@ -531,7 +465,8 @@ func TestRefreshRefusesACodexRolloutWhoseHistoryModeChanged(t *testing.T) {
 }
 
 // The guard must not fire on the ordinary case it sits in front of: a
-// genuine append leaves the header alone.
+// genuine append leaves the header alone. A tail that opens a turn the thread
+// does not hold appends, so the re-minted-turn refusal is not a blanket one.
 func TestRefreshAcceptsAGenuineCodexAppendWithTheIdentityGuardArmed(t *testing.T) {
 	st := newTestStore(t)
 	homes := newProviderHomes(t)
@@ -539,6 +474,7 @@ func TestRefreshAcceptsAGenuineCodexAppendWithTheIdentityGuardArmed(t *testing.T
 	path := homes.codexLinearSession(t, codexThreadA)
 	d := homes.deps(st)
 	threadID := importOneCodexFixture(t, d)
+	assertTurnCount(t, d, threadID, 1)
 
 	state, found, err := st.GetThreadImportState(threadID)
 	if err != nil || !found {
@@ -611,21 +547,36 @@ func TestRefreshBackfillsAMissingSourceFingerprintInsteadOfDiverging(t *testing.
 }
 
 // The whole point of the guard: a migrated rollout is refused rather than
-// resumed, so nothing from the rewritten file lands in the thread.
+// resumed, so nothing from the rewritten file lands in the thread. The
+// rewrite is LARGER than the file that was imported, which reads to the size
+// test as an ordinary append.
 func TestRefreshWritesNothingWhenTheSourceIdentityChanged(t *testing.T) {
 	st := newTestStore(t)
 	homes := newProviderHomes(t)
 	homes.writeCodexIndex(t, codexThreadA)
-	homes.codexLinearSession(t, codexThreadA)
+	path := homes.codexLinearSession(t, codexThreadA)
 	d := homes.deps(st)
 	threadID := importOneCodexFixture(t, d)
 	assertTurnCount(t, d, threadID, 1)
 
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat original rollout: %v", err)
+	}
 	homes.paginatedMigratedRollout(t, codexThreadA, strings.Repeat("z", 4096))
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat migrated rollout: %v", err)
+	}
+	if after.Size() <= before.Size() {
+		t.Fatalf("fixture is not larger: %d vs %d", after.Size(), before.Size())
+	}
 	update := planCodexRefresh(t, d, threadID)
 	if update.Status != UpdateSourceDiverged {
 		t.Fatalf("status = %q (%s)", update.Status, update.Detail)
 	}
+	// It must be the IDENTITY guard that refused it, not the record-boundary
+	// check downstream: a larger rewritten file can pass that one by luck.
 	if !strings.Contains(update.Detail, "migrated") {
 		t.Errorf("detail = %q, want the identity guard's migration prose", update.Detail)
 	}

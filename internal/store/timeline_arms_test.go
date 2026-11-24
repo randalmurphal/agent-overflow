@@ -388,56 +388,10 @@ func TestTimelineArmsMatchTheViewForUserMessageReads(t *testing.T) {
 	})
 }
 
-// legacyDescendantsCTE is the two-arm, view-backed recursive walk
-// ListSubagentDescendants and subagentAggregatesByRound used before the
-// per-source arms replaced it. It is the oracle for both: identical
-// rows, identical order, and the only difference is the plan.
-//
-// Placeholder order: base hop (thread id, root), recursive hop (thread id).
-const legacyDescendantsCTE = `WITH RECURSIVE rel(root, id) AS (
-	SELECT i.parent_id, i.id
-	  FROM timeline_items i
-	 WHERE i.thread_id = ?
-	   AND i.parent_id IN (?)
-	   AND i.parent_id <> ''
-	   AND NOT (i.kind = 'notification' AND i.tool_name = 'plan_update')
-	UNION
-	SELECT rel.root, i.id
-	  FROM rel
-	  CROSS JOIN timeline_items i ON i.parent_id = rel.id
-	 WHERE i.thread_id = ?
-	   AND i.parent_id <> ''
-	   AND NOT (i.kind = 'notification' AND i.tool_name = 'plan_update')
-)`
-
 func TestTimelineArmsMatchTheViewForSubagentReads(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 	assertTimelineParityFixtureIsRepresentative(t, s)
-
-	for _, root := range []string{"imp-launch-0", "loc-launch-2"} {
-		t.Run("descendants of "+root, func(t *testing.T) {
-			items, err := s.ListSubagentDescendants(timelineParityThreadID, root)
-			if err != nil {
-				t.Fatalf("list descendants: %v", err)
-			}
-			// queryHydratedTimelineItems re-sorts its page ASC, so the
-			// oracle's DESC id page (the cap picks the NEWEST rows) is
-			// reversed to compare.
-			want := ascending(viewIDs(t, s, legacyDescendantsCTE+`
-			SELECT id FROM (
-				SELECT items.id AS id
-				  FROM rel
-				  CROSS JOIN timeline_items AS items ON items.thread_id = ? AND items.id = rel.id
-				 ORDER BY items.turn_index DESC, items.item_index DESC
-				 LIMIT ?
-			)`, timelineParityThreadID, root, timelineParityThreadID, timelineParityThreadID, maxSubagentDescendants))
-			assertSameIDs(t, itemIDs(items), want, "descendants of "+root)
-			if len(items) != 2 {
-				t.Errorf("descendants of %s = %d rows, want 2 (the child and its nested child)", root, len(items))
-			}
-		})
-	}
 
 	t.Run("anchor aggregates", func(t *testing.T) {
 		roots := []string{"imp-launch-0", "loc-launch-2", "loc-child-2"}
@@ -899,20 +853,12 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 
-	t.Run("ListSubagentDescendants", func(t *testing.T) {
-		selectedSQL, selectedArgs := mustTimelineIDSelection(t, s, timelineParityThreadID, timelineSelection{
-			Source:  "rel",
-			Where:   "items.id = rel.id",
-			OrderBy: "turn_index DESC, item_index DESC",
-			Limit:   maxSubagentDescendants,
-		})
+	t.Run("descendantsWalk", func(t *testing.T) {
 		walk, walkArgs, err := descendantsWalk(s.reader(), timelineParityThreadID, []string{"loc-launch-2"}, visibleItemsFilterFor)
 		if err != nil {
 			t.Fatal(err)
 		}
-		query := walk + "\n" + selectedSQL
-		args := append(walkArgs, selectedArgs...)
-		plan := explainPlan(t, s, query, args...)
+		plan := explainPlan(t, s, walk+"\nSELECT id FROM rel", walkArgs...)
 		for _, r := range plan {
 			if strings.Contains(r.detail, "timeline_items") {
 				t.Errorf("descendant walk touches the view: %q", r.detail)

@@ -1,27 +1,65 @@
-// The AO tool rows ao-tool-rows.spec.ts does not cover, on both mock
-// providers (docs/specs/agent-thread-tools.md, How calls surface in the
-// timeline): every other thread tool, the workflow run and memory tools,
-// the browser tools on a local page, the remote tools on a paired computer,
-// and a reply row in the thread that answered. Each row's header and body
-// read as decoded text, never the JSON the model read. Screenshots of
-// every row collapsed and expanded go to the test's output directory.
+// The AO tool rows ao-tool-rows.spec.ts does not cover, on the Claude mock
+// (docs/specs/agent-thread-tools.md, How calls surface in the timeline):
+// every other thread tool, the workflow run and memory tools, the browser
+// tools on a local page, the remote tools on a paired computer, and a reply
+// row in the thread that answered. Each row's header and body read as
+// decoded text, never the JSON the model read, on a desktop page and then,
+// over the same history, on a phone page (the compact project's device),
+// where each row also stays inside the phone-width thread screen. With
+// AO_E2E_SCREENSHOTS=1, screenshots of every row collapsed and expanded go
+// to the test's output directory.
+//
+// One provider is enough: both stamp the same meta.mcp on a row (Claude's
+// parse_assistant_test.go TestParseAssistant_MCPToolUseNormalizesName,
+// Codex's protocol_test.go TestClassifyNotification_McpToolCallEnrichesToolMeta
+// and ...CompletionCarriesResultContent), and the result decoding and the
+// rows above it branch on no provider. ao-tool-rows.spec.ts keeps the
+// thread and workflow servers' Codex wiring end to end and
+// browser-tools.spec.ts the browser server's; the remote server's Codex
+// registration is internal/app TestRemoteMCPRequiresEnabledPairedComputer.
 
-import { test } from './fixtures.js';
+import { devices, type Page } from '@playwright/test';
+
+import { test as base, expect, watchCspViolations } from './fixtures.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
 import { driveMoreAoToolRows, readMoreRows } from './ao-tool-rows-more-helpers.js';
 
-for (const provider of ['claude', 'codex'] as const) {
-  test(`${provider}: every other AO tool row reads as decoded text`, async ({ page }) => {
-    test.setTimeout(300_000);
-    let app: HarnessApp | undefined;
-    let remote: HarnessApp | undefined;
+// The phone page, held as the `page` fixture holds the desktop one: checked
+// for refused loads, and still open when a failure's stalled-page capture
+// runs.
+const test = base.extend<{ phone: Page }>({
+  phone: async ({ browser, stalledPageCapture }, use, testInfo) => {
+    const context = await browser.newContext({ ...devices['Pixel 7'], colorScheme: 'dark' });
     try {
-      [app, remote] = await startTogether(launchHarness(), launchHarness());
-      await driveMoreAoToolRows(app, remote, provider, `desktop-${provider}`);
-      await readMoreRows(app, page, (name) => test.info().outputPath(`${provider}-more-${name}.png`));
+      const phone = await context.newPage();
+      const expectNoCspViolations = await watchCspViolations(phone);
+      await stalledPageCapture.untilArmed(phone);
+      await use(phone);
+      await stalledPageCapture.captureIfFailed(testInfo);
+      expectNoCspViolations();
     } finally {
-      await Promise.allSettled([app?.close(), remote?.close()]);
+      await context.close();
     }
-  });
-}
+  },
+});
+
+test('claude: every other AO tool row reads as decoded text, on a desktop and on a phone', async ({ page, phone }) => {
+  test.setTimeout(300_000);
+  let app: HarnessApp | undefined;
+  let remote: HarnessApp | undefined;
+  try {
+    [app, remote] = await startTogether(launchHarness(), launchHarness());
+    await driveMoreAoToolRows(app, remote, 'claude', 'claude');
+    await readMoreRows(app, page, (name) => test.info().outputPath(`claude-more-${name}.png`));
+
+    const viewport = phone.viewportSize()!;
+    await readMoreRows(app, phone, (name) => test.info().outputPath(`compact-claude-more-${name}.png`), async (row) => {
+      const box = (await row.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+    });
+  } finally {
+    await Promise.allSettled([app?.close(), remote?.close()]);
+  }
+});

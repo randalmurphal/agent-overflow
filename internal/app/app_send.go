@@ -53,11 +53,9 @@ type sendMessageOptions struct {
 	// SendID is the client-minted idempotency id of one composer send. Empty
 	// for every app-internal caller, which is what keeps them out of each
 	// other's way. See app_send_idempotency.go.
-	SendID            string
-	ReconcileBySendID bool
-	// QueueIfActive is set by composer entry points. The frontend's last
-	// observed turn state cannot decide whether this is a new provider turn.
-	QueueIfActive bool
+	SendID string
+	// Admission is what the send does when the thread is working.
+	Admission sendAdmission
 	// PreserveDraft keeps the thread's durable composer draft. Set by the
 	// app-internal injectors (the workflow wake) whose text did not come from
 	// the composer: a user send consumes the draft, but a system-injected
@@ -67,7 +65,7 @@ type sendMessageOptions struct {
 	// ExpandComposerCommands admits a leading `/command` word for send-time
 	// expansion (D31). Explicit opt-in, set ONLY where text a human typed
 	// into a composer enters the app: the bound SendMessage /
-	// SendMessageWithOptions / SteerMessageWithOptions wire methods and the
+	// SendMessageWithOptions wire methods and the
 	// flush-queue dispatch of previously queued composer text. Every
 	// app-internal caller (workflow wake, seeded triage/PR turns,
 	// schema-driven phase sends) leaves it false by
@@ -90,6 +88,10 @@ type sendMessageOptions struct {
 	// token of the session the message was written to, empty when it was
 	// restored instead.
 	onDurable func(session string)
+	// onPlaced runs under the thread action lock once placement admits a send
+	// that opens a turn, before the session starts and the provider is
+	// written.
+	onPlaced func()
 	// onSessionDispatch runs on the idle path immediately before the provider
 	// write, with the token of the session the message is written to: the
 	// session the returned item went to, which the thread's live session may
@@ -100,10 +102,26 @@ type sendMessageOptions struct {
 	// emitted as soon as stdin is written to the exact account generation that
 	// sent the turn; reading the session after Send returns is already too late.
 	onProviderDispatch func(workflowhost.DispatchIdentity)
-	// onCodexReviewStarted observes the review/start acknowledgement for the
-	// legacy structured binding. Composer sends leave it nil.
-	onCodexReviewStarted func(codex.ReviewStarted)
 }
+
+// sendAdmission is what a send does when its thread is working: a turn is
+// open, a message waits for its turn to start, or a queued message has not
+// reached the provider. The thread's live state decides it under the
+// thread action lock (resolveUserMessagePlacement); a client's last observed
+// turn state cannot.
+type sendAdmission uint8
+
+const (
+	// admitDirect opens a turn of its own. Every app-internal send that
+	// does not come from a person or an agent uses it.
+	admitDirect sendAdmission = iota
+	// admitQueueing queues behind the work: a composer, an agent's request
+	// and a shell command's output.
+	admitQueueing
+	// admitAtRest refuses, recording nothing, so an accepted message's row
+	// is placed in a turn of its own: the harness's awaited send.
+	admitAtRest
+)
 
 // userMessageInputs is the projection of fields shared by every
 // user-message entry point (send, steer, flush). The shape is
@@ -387,13 +405,6 @@ func (a *App) wireText(threadID, content string, meta usermessage.Meta, shellInv
 	return text, command, nil
 }
 
-func (a *App) sendMessage(threadID string, content string, attachmentIDs []string) error {
-	_, err := a.sendMessageWithOptions(
-		context.Background(), threadID, content, sendMessageOptions{AttachmentIDs: attachmentIDs},
-	)
-	return err
-}
-
 // sendMessagePrepared is what sendMessageWithOptions resolves BEFORE it
 // takes the per-thread action lock. Neither field can be produced inside
 // the critical section: an invalid runtime mode has to be rejected
@@ -469,7 +480,7 @@ func (a *App) sendMessageWithOptions(
 			} else if found {
 				return record.item, nil
 			}
-			itemID, err := a.prepareWorkflowTakeoverSend(ctx, peek)
+			itemID, err := a.prepareWorkflowTakeoverSend(ctx, peek, opts.Admission == admitAtRest)
 			if err != nil {
 				return store.Item{}, fmt.Errorf("send message: %w", err)
 			}
@@ -590,15 +601,19 @@ func (a *App) sendMessageLocked(
 	}()
 
 	intent := messageDirect
-	if opts.QueueIfActive {
+	switch opts.Admission {
+	case admitQueueing:
 		intent = messageComposer
-		if !opts.ReconcileBySendID {
-			intent = messageLegacyComposer
-		}
+	case admitAtRest:
+		intent = messageAtRest
+	case admitDirect:
 	}
 	placement, err := a.resolveUserMessagePlacement(thread, intent)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: placement: %w", err)
+	}
+	if !placement.queue && opts.onPlaced != nil {
+		opts.onPlaced()
 	}
 	if a.sendStageFn != nil && !placement.queue {
 		a.sendStageFn(threadID, "placed")
@@ -928,18 +943,14 @@ func (a *App) sendMessageLocked(
 		}
 		reviewCtx, cancel := context.WithTimeout(context.Background(), codexReviewRPCTimeout)
 		defer cancel()
-		started, startErr := sess.Codex.StartReviewForTurn(
+		if _, startErr := sess.Codex.StartReviewForTurn(
 			reviewCtx,
 			reviewTarget,
 			codex.ReviewRunOptions{TurnIndex: turnIndex},
-		)
-		if startErr != nil {
+		); startErr != nil {
 			err = fmt.Errorf("start code review: %w", startErr)
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
 			return store.Item{}, fmt.Errorf("send message: %w", err)
-		}
-		if opts.onCodexReviewStarted != nil {
-			opts.onCodexReviewStarted(started)
 		}
 		return userItem, nil
 	}
@@ -991,11 +1002,20 @@ func (a *App) sendMessageLocked(
 	return userItem, nil
 }
 
+// errWorkflowRunning refuses a send admitted only at rest to the thread of a
+// workflow phase or fan-out unit the engine is starting or running.
+var errWorkflowRunning = errors.New("the workflow run on this thread is starting or running and an awaited send does not take it over; a send without waiting asks to take it over once it has started, which stops the phase's agent or detaches the unit")
+
 // prepareWorkflowTakeoverSend detaches a workflow run for user steering.
 // It MUST NOT run while holding the thread's action lock: TakeOver
 // round-trips the engine command loop, whose teardown interrupts the
 // live phase turn via InterruptTurn — which acquires that same lock.
-func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thread) (string, error) {
+//
+// atRestOnly takes over only what is already parked: the engine refuses an
+// item it is driving (TakeOverParked), and a unit that is not already taken
+// over is refused here, since the engine takes over only a live one. Either
+// refusal leaves the run as it was.
+func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thread, atRestOnly bool) (string, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return "", err
@@ -1009,7 +1029,7 @@ func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thre
 		return "", fmt.Errorf("workflow takeover: %w", err)
 	}
 	if isUnit {
-		return a.prepareWorkflowUnitTakeoverSend(ctx, workflowEngine, thread, unit)
+		return a.prepareWorkflowUnitTakeoverSend(ctx, workflowEngine, thread, unit, atRestOnly)
 	}
 	item, err := a.store.GetWorkItemByPhaseThread(thread.ID)
 	if err != nil {
@@ -1037,7 +1057,13 @@ func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thre
 		}
 		return item.ID, nil
 	}
-	if err := workflowEngine.TakeOver(item.ID); err != nil {
+	takeOver := workflowEngine.TakeOver
+	if atRestOnly {
+		takeOver = workflowEngine.TakeOverParked
+	}
+	if err := takeOver(item.ID); errors.Is(err, engine.ErrRunActive) {
+		return "", errWorkflowRunning
+	} else if err != nil {
 		return "", fmt.Errorf("workflow takeover: detach item: %w", err)
 	}
 	if err := a.workflowApplication().RegisterTakeover(ctx, item.ID, thread.ID); err != nil {
@@ -1051,7 +1077,7 @@ func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thre
 // a send into an already-detached one re-registers it. The unit's siblings are
 // untouched — they keep running, and the attempt parks once they rest.
 func (a *App) prepareWorkflowUnitTakeoverSend(
-	ctx context.Context, workflowEngine *engine.Engine, thread store.Thread, unit store.WorkItemUnit,
+	ctx context.Context, workflowEngine *engine.Engine, thread store.Thread, unit store.WorkItemUnit, atRestOnly bool,
 ) (string, error) {
 	item, err := a.store.GetWorkItem(unit.ItemID)
 	if err != nil {
@@ -1073,6 +1099,9 @@ func (a *App) prepareWorkflowUnitTakeoverSend(
 			"workflow takeover: unit %q of item %s is %s; only a running unit can be taken over",
 			unit.UnitID, item.ID, unit.Status,
 		)
+	}
+	if atRestOnly {
+		return "", errWorkflowRunning
 	}
 	if err := workflowEngine.TakeOverUnit(item.ID, unit.UnitID); err != nil {
 		return "", fmt.Errorf("workflow takeover: detach unit %q: %w", unit.UnitID, err)
@@ -1353,46 +1382,6 @@ func appendFileAttachmentLines(providerContent string, fileLines []string) strin
 		b.WriteString(line)
 	}
 	return b.String()
-}
-
-// nextSequenceForScope returns the next available sequence number for
-// `user:<turnIndex>:<scope>:<n>` ids on the given thread/turn. Used
-// by both the steer (`:steer:<n>`) and flush (`:flush:<n>`) paths to
-// allocate non-colliding mid-turn user-message ids without each
-// repeating the same MAX-by-suffix scan.
-//
-// Returns 1 on an empty turn (highest+1 with highest=0). Unparsable
-// suffixes are skipped so a future id-format extension doesn't crash
-// this counter.
-func (a *App) nextSequenceForScope(threadID string, turnIndex int, scope string) (int, error) {
-	prefix := fmt.Sprintf("user:%d:%s:", turnIndex, scope)
-	ids, err := a.store.TurnItemIDsWithPrefix(threadID, turnIndex, prefix)
-	if err != nil {
-		return 0, err
-	}
-	highest := 0
-	for _, id := range ids {
-		var n int
-		if _, scanErr := fmt.Sscanf(id[len(prefix):], "%d", &n); scanErr != nil {
-			continue
-		}
-		if n > highest {
-			highest = n
-		}
-	}
-	return highest + 1, nil
-}
-
-// nextSequencedUserItemID formats the next sequenced id for the given
-// scope (`steer` or `flush`). Wrapper around nextSequenceForScope so
-// callers that want the formatted id don't have to do their own
-// Sprintf.
-func (a *App) nextSequencedUserItemID(threadID string, turnIndex int, scope string) (string, error) {
-	seq, err := a.nextSequenceForScope(threadID, turnIndex, scope)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("user:%d:%s:%d", turnIndex, scope, seq), nil
 }
 
 // refusePRDraftSource refuses a send through the thread bindings that names
@@ -1697,15 +1686,6 @@ func (c diffReviewClaim) announce(a *App) {
 // diffReviewClaims are the claims of a message, one per source it carries,
 // or of a joined message's members.
 type diffReviewClaims []diffReviewClaim
-
-// ids are the comment ids the claims marked.
-func (cs diffReviewClaims) ids() []string {
-	var ids []string
-	for _, c := range cs {
-		ids = append(ids, c.ids...)
-	}
-	return ids
-}
 
 func (cs diffReviewClaims) release(a *App) error {
 	var errs []error

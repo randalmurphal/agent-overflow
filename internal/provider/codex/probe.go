@@ -41,7 +41,7 @@ type ProbeConfig struct {
 	// must be absolute — see provider.ValidateProbeWorkDir for why an
 	// inherited cwd is not an acceptable default here.
 	WorkDir string
-	Env     map[string]string
+	Env     provider.EnvInput
 	Timeout time.Duration // default: 20s, mirroring the Claude probe.
 
 	// OnSnapshot, when non-nil, fires once with the rate-limit snapshot
@@ -173,11 +173,10 @@ func runAccountProbe(ctx context.Context, cfg ProbeConfig, spend bool) (_ provid
 	}
 
 	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
-		Binary:   binary,
-		Args:     buildProbeArgs(),
-		Dir:      cfg.WorkDir,
-		Env:      cfg.Env,
-		UnsetEnv: []string{"CODEX_HOME"},
+		Binary: binary,
+		Args:   buildProbeArgs(),
+		Dir:    cfg.WorkDir,
+		Env:    cfg.Env.Clear(provider.CodexHomeEnv),
 		// The probe runs under a deadline and drives the CLI's own token
 		// refresh; a SIGKILL between the token endpoint answering and the
 		// credential write ends the account's chain (see GracefulCancel).
@@ -591,14 +590,4 @@ func extractAccountInfoFromRateLimits(result json.RawMessage) provider.AccountIn
 		SubscriptionType: payload.RateLimits.PlanType,
 		APIProvider:      "openai",
 	}
-}
-
-// ProbeCache aliases the shared `provider.ProbeCache` so existing callers
-// keep working. All cache logic lives in `internal/provider/probecache.go`.
-type ProbeCache = provider.ProbeCache
-
-// NewProbeCache returns a fresh cache with the given entry lifetime.
-// Thin wrapper around `provider.NewProbeCache` for call-site symmetry.
-func NewProbeCache(ttl time.Duration) *ProbeCache {
-	return provider.NewProbeCache(ttl)
 }

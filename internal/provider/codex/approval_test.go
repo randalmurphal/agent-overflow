@@ -1,44 +1,12 @@
 package codex
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"testing"
 
 	"agent-overflow/internal/provider"
 )
-
-func TestRespondToApprovalAccept(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-	s.trackPendingApproval(42, provider.EventApprovalResolved)
-
-	// Call the actual RespondToApproval method with an accept decision.
-	// The cat-backed session writes the JSON-RPC response to stdin successfully.
-	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
-		RequestID: "42",
-		Decision:  "accept",
-	})
-	if err != nil {
-		t.Fatalf("RespondToApproval(accept): %v", err)
-	}
-}
-
-func TestRespondToApprovalDecline(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-	s.trackPendingApproval(42, provider.EventApprovalResolved)
-
-	// Call the actual RespondToApproval method with a decline decision.
-	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
-		RequestID: "42",
-		Decision:  "decline",
-	})
-	if err != nil {
-		t.Fatalf("RespondToApproval(decline): %v", err)
-	}
-}
 
 func TestBuildApprovalResponseResultDecision(t *testing.T) {
 	t.Parallel()
@@ -216,20 +184,6 @@ func TestBuildApprovalResponseResultInvalidRequestID(t *testing.T) {
 	}
 }
 
-func TestCodexRespondToApprovalMethod(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-	s.trackPendingApproval(42, provider.EventApprovalResolved)
-
-	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
-		RequestID: "42",
-		Decision:  "allow",
-	})
-	if err != nil {
-		t.Fatalf("RespondToApproval(): %v", err)
-	}
-}
-
 // -- buildApprovalResponseResult: elicitation branch --
 
 func TestBuildApprovalResponseResultElicitation(t *testing.T) {
@@ -261,4 +215,9 @@ func TestBuildApprovalResponseResultElicitation(t *testing.T) {
 	if payload["_meta"] == nil {
 		t.Error("expected non-nil _meta")
 	}
+}
+
+func buildApprovalResponseResult(resp provider.ApprovalResponse) (int64, any, error) {
+	rpcID, result, _, err := buildApprovalResponseResultAndDecision(resp)
+	return rpcID, result, err
 }

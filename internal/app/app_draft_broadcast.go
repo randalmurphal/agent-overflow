@@ -141,7 +141,7 @@ func (a *App) announceDraftWrite(who transport.ClientIdentity, threadID string, 
 }
 
 // removeThreadDraft deletes and announces only the consumed snapshot. A nil
-// snapshot preserves unconditional deletion for explicit clears and legacy sends.
+// snapshot preserves unconditional deletion for legacy sends.
 func (a *App) removeThreadDraft(who transport.ClientIdentity, threadID string, snapshot *DraftSnapshot) error {
 	var expected *store.ThreadDraft
 	if snapshot != nil {

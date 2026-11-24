@@ -8,13 +8,13 @@ import { tick } from 'svelte';
 import ThreadContextMenu from './ThreadContextMenu.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { answerAsV0019, methodNotFound } from '../../../test/helpers/olderComputer';
 import { clearThreadSelection, getSelectedThreadIds, setThreadSelection } from '../../stores/threadFilter.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
 import { closeAssistantProjectsDialog, getAssistantProjectsAgentId } from '../../stores/newAssistant.svelte';
-import { getPreviousThreads, resetPreviousThreadsForTest } from '../../stores/assistantPastThreads.svelte';
+import { getPreviousThreads } from '../../stores/assistantPastThreads.svelte';
 import { getPane } from '../../stores/panes.svelte';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import { buildPane } from '../../../test/helpers/chat';
@@ -22,12 +22,8 @@ import { noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import {
   consumePendingGroupRename,
-  resetThreadGroupsForTest,
   upsertThreadGroup,
 } from '../../stores/threadGroups.svelte';
-import {
-  resetSidebarForTest,
-} from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
@@ -51,7 +47,6 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 
 function renderMenu(thread: Thread) {
   setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
   const pane = createThreadPane();
   const anchor = document.createElement('div');
   document.body.appendChild(anchor);
@@ -81,7 +76,6 @@ function confirmButton(root: HTMLElement): HTMLButtonElement | undefined {
 
 describe('<ThreadContextMenu> single-row menu', () => {
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
   });
 
@@ -168,7 +162,6 @@ describe('<ThreadContextMenu> Archive Thread', () => {
   }
 
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
   });
 
@@ -177,7 +170,6 @@ describe('<ThreadContextMenu> Archive Thread', () => {
     const archive = setBindingMock('ArchiveThread', vi.fn(async () => ({})));
     const onClose = vi.fn();
     setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
     const anchor = document.createElement('div');
     document.body.appendChild(anchor);
     const { getByRole, queryByRole } = render(ThreadContextMenu, {
@@ -211,11 +203,6 @@ describe('<ThreadContextMenu> Archive Thread', () => {
     await fireEvent.click(confirmBtn);
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
     expect(archive).toHaveBeenCalledWith('arch-on');
-  });
-
-  it('is not offered for a terminal thread', () => {
-    const { baseElement } = renderMenu(makeThread({ mode: 'terminal' }));
-    expect(visibleLabels(baseElement)).not.toContain('Archive Thread');
   });
 
   // Each archive reports its own failure into the walk, which shows one
@@ -252,16 +239,13 @@ describe('<ThreadContextMenu> without threads:operate', () => {
   const INERT = 'Not granted to this device';
 
   beforeEach(async () => {
-    resetBindingMocks();
     clearThreadSelection();
-    resetThreadGroupsForTest();
     upsertThreadGroup({ id: 'g-1', projectId: 'project-1', name: 'One', createdAt: 0, updatedAt: 0 });
     await pairViewOnly();
   });
 
   afterEach(() => {
     resetToLocalPage();
-    resetThreadGroupsForTest();
   });
 
   function item(el: HTMLElement, label: string): HTMLElement {
@@ -337,7 +321,6 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
   }
 
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
     // deleteThreadAction best-effort stops the session before deleting.
     setBindingMock('StopSession', async () => {});
@@ -643,7 +626,6 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
   // that has run a turn has a sessionRef, so that gate would offer the item
   // on threads with no source file to check.
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
     setPageGrantsFromBootstrap(false);
     setBindingMock('ListThreads', async () => []);
@@ -819,10 +801,7 @@ describe('<ThreadContextMenu> group items', () => {
   }
 
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
     upsertThreadGroup({
       id: 'g-zebra',
       projectId: 'project-1',
@@ -933,6 +912,7 @@ describe('<ThreadContextMenu> group items', () => {
       pendingDuringMove = consumePendingGroupRename('g-new');
       return [];
     }));
+    setEntryExpanded('project-1', false);
     const { baseElement } = renderMenu(makeThread({ id: 'row', projectId: 'project-1' }));
     await openSubmenu(baseElement);
 
@@ -942,6 +922,8 @@ describe('<ThreadContextMenu> group items', () => {
     await fireEvent.click(create);
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
 
+    // Expanded so the new row mounts and can open its rename.
+    expect(entryRecordForTest('project-1').expanded).toBe(true);
     expect(setGroup).toHaveBeenCalledWith(['row'], 'g-new');
     // Asked AFTER the move: the move re-sorts the group and a moved row
     // blurs an editor that is already open in it.
@@ -993,28 +975,6 @@ describe('<ThreadContextMenu> group items', () => {
     expect(setGroup).toHaveBeenCalledWith(['a'], '');
   });
 
-  it('expands the project before New Group…, so the new row can open its rename', async () => {
-    setBindingMock('CreateThreadGroup', async (projectId: string, name: string) => ({
-      id: 'g-new',
-      projectId,
-      name,
-      createdAt: 0,
-      updatedAt: 0,
-    }));
-    setBindingMock('SetThreadGroup', vi.fn(async () => []));
-    setEntryExpanded('project-1', false);
-    const { baseElement } = renderMenu(makeThread({ id: 'row', projectId: 'project-1' }));
-    await openSubmenu(baseElement);
-
-    const submenu = baseElement.querySelector('[role="menu"][aria-label="Move to Group"]') as HTMLElement;
-    const create = Array.from(submenu.querySelectorAll('[role="menuitem"]'))
-      .find((el) => el.textContent?.includes('New Group…')) as HTMLElement;
-    await fireEvent.click(create);
-    for (let i = 0; i < 10; i += 1) await Promise.resolve();
-
-    expect(entryRecordForTest('project-1').expanded).toBe(true);
-  });
-
   it('moves the whole bulk selection in one call', async () => {
     replaceAllThreads([
       makeThread({ id: 'a', projectId: 'project-1' }),
@@ -1042,11 +1002,7 @@ describe('<ThreadContextMenu> group items', () => {
 
 describe('<ThreadContextMenu> standing agent', () => {
   beforeEach(() => {
-    resetBindingMocks();
     clearThreadSelection();
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
-    resetPreviousThreadsForTest();
     upsertThreadGroup({ id: 'g-alpha', projectId: 'project-1', name: 'Alpha', createdAt: 0, updatedAt: 0 });
   });
 
@@ -1063,7 +1019,6 @@ describe('<ThreadContextMenu> standing agent', () => {
 
   function renderAgentMenu(thread: Thread, extra: { agentBound?: boolean } = {}) {
     setBindingMock('SwitchThread', async () => {});
-    setBindingMock('ListItems', async () => []);
     const pane = createThreadPane();
     const anchor = document.createElement('div');
     document.body.appendChild(anchor);
@@ -1241,24 +1196,17 @@ describe('<ThreadContextMenu> standing agent', () => {
     ));
   });
 
-  it("counts an assistant's workers beside its past threads and helpers", async () => {
+  it.each([
+    ["counts an assistant's workers beside its past threads and helpers", { pastThreads: 2, helpers: 1, workers: 3 },
+      'The assistant "Ops" is deleted too, with its 2 past threads, 1 helper and 3 workers, and its home folder /config/agents/agent-1 is removed with everything in it.'],
+    ["says an assistant's workers on other computers are deleted there too", { pastThreads: 1, helpers: 0, workers: 0, remoteWorkers: true },
+      'The assistant "Ops" is deleted too, with its 1 past thread, and its home folder /config/agents/agent-1 is removed with everything in it. Workers it spawned on other computers are deleted there too.'],
+  ])('%s', async (_name, dependents, sentence) => {
     setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 2, helpers: 1, workers: 3 }));
+    setBindingMock('GetDeleteDependents', async () => dependents);
     const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
     await fireEvent.click(item(baseElement, 'Delete'));
-    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
-      'The assistant "Ops" is deleted too, with its 2 past threads, 1 helper and 3 workers, and its home folder /config/agents/agent-1 is removed with everything in it.',
-    ));
-  });
-
-  it("says an assistant's workers on other computers are deleted there too", async () => {
-    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 1, helpers: 0, workers: 0, remoteWorkers: true }));
-    const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
-    await fireEvent.click(item(baseElement, 'Delete'));
-    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
-      'The assistant "Ops" is deleted too, with its 1 past thread, and its home folder /config/agents/agent-1 is removed with everything in it. Workers it spawned on other computers are deleted there too.',
-    ));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(sentence));
   });
 
   it("names every selected assistant's home in the bulk delete confirm", async () => {

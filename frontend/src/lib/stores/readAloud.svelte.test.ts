@@ -69,14 +69,12 @@ describe('read-aloud', () => {
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     setReadAloudPreference('enabled', true);
-    resetReadAloudForTest();
     fake = fakeEngine();
     watchReadAloudVoices(fake.engine);
     await settle();
   });
 
   afterEach(() => {
-    resetReadAloudForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
     vi.restoreAllMocks();
@@ -126,9 +124,12 @@ describe('read-aloud', () => {
     expect(fake.playbacks[2].from).toBe(0);
   });
 
-  it('returns a finished reply to the start', async () => {
+  it.each([
+    ['returns a finished reply to the start', 'ended'],
+    ['returns to idle when speech is stopped from outside', 'stopped'],
+  ] as const)('%s', async (_name, outcome) => {
     readAloud('a', REPLY, THREAD);
-    fake.playbacks[0].finish('ended');
+    fake.playbacks[0].finish(outcome);
     await settle();
     expect(readAloudPhase('a')).toBe('idle');
     expect(toggleReadAloud()).toBe(false);
@@ -193,13 +194,6 @@ describe('read-aloud', () => {
     expect(readAloudAvailable(null)).toBe(false);
     readAloud('a', REPLY, THREAD);
     expect(silent.playbacks).toHaveLength(0);
-  });
-
-  it('returns to idle when speech is stopped from outside', async () => {
-    readAloud('a', REPLY, THREAD);
-    fake.playbacks[0].finish('stopped');
-    await settle();
-    expect(readAloudPhase('a')).toBe('idle');
   });
 
   it('forgets a reading when the device loses its voices, and does not bring it back', async () => {

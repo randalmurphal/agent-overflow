@@ -135,7 +135,8 @@ describe('forge facts per applied snapshot', () => {
     const calls = heldResolver();
     const comments = Array.from({ length: 50 }, (_, c) => comment(`c${c}`, Array.from({ length: 200 }, (_, i) => `#${c * 200 + i + 1}`).join(' ')));
     observePRFacts(KEY, REF, snapshot('', comments));
-    expect(__forgeFactsHeldForTest(KEY)?.facts).toBe(MAX_FACTS_PER_PR);
+    // 10,000 keys named, 4096 held: the bodies hold those and no more.
+    expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: MAX_FACTS_PER_PR, bodyKeys: MAX_FACTS_PER_PR, bodies: 51 });
     expect(calls.reduce((sum, call) => sum + call.keys.length, 0)).toBe(MAX_FACTS_PER_PR);
     // A key past the cap is not asked for and reads as never asked.
     expect(forgeFactReader(KEY)!.get('ref:group/widget#10000')).toBeUndefined();
@@ -148,14 +149,6 @@ describe('forge facts per applied snapshot', () => {
     await settle();
     observePRFacts(KEY, REF, snapshot('#1', [comment('c1', '#1')]));
     expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: 1, bodies: 2 });
-  });
-
-  it('holds per body only the keys the PR holds a fact for', () => {
-    heldResolver();
-    const comments = Array.from({ length: 50 }, (_, c) => comment(`c${c}`, Array.from({ length: 200 }, (_, i) => `#${c * 200 + i + 1}`).join(' ')));
-    observePRFacts(KEY, REF, snapshot('', comments));
-    // 10,000 keys named, 4096 held: the bodies hold those and no more.
-    expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: MAX_FACTS_PER_PR, bodyKeys: MAX_FACTS_PER_PR, bodies: 51 });
   });
 
   it('asks for the keys the bound turned away in the frame that frees room for them, once', () => {
@@ -267,17 +260,6 @@ describe('answers', () => {
     expect(forgeFactReader(KEY)!.get(key)).not.toHaveProperty('lfs');
   });
 
-  it('reports a failed request by the kinds of the keys it was still out for', async () => {
-    const report = vi.spyOn(diagnostics, 'reportFrontendDiagnostic').mockImplementation(() => {});
-    const calls = heldResolver();
-    observePRFacts(KEY, REF, snapshot('#1 and ~bug'));
-    calls[0].reject(new Error('gone'));
-    await settle();
-    expect(report).toHaveBeenCalledTimes(1);
-    expect(report.mock.calls[0][1]).toBe('ref 1, labels 1; Error');
-    report.mockRestore();
-  });
-
   it('keeps a signature when an answer restates the same fact', async () => {
     const calls = heldResolver();
     observePRFacts(KEY, REF, snapshot('#1'));
@@ -336,18 +318,21 @@ describe('answers', () => {
     expect(calls.map((call) => call.keys)).toEqual([['ref:group/widget#1'], ['ref:group/widget#1']]);
   });
 
-  it('marks a rejected call\'s keys unavailable and reports kinds and counts only', async () => {
+  it.each([
+    ['a ref and a label', '#1 and ~bug', 'gone', 'ref:group/widget#1', 'ref 1, labels 1; Error'],
+    ['refs and a user the error names', '#1 #2 @secret-person', 'forge said no about @secret-person', 'user:secret-person', 'ref 2, user 1; Error'],
+  ])('marks a rejected call\'s keys unavailable and reports kinds and counts only, for %s', async (_name, body, error, key, expected) => {
     const report = vi.spyOn(diagnostics, 'reportFrontendDiagnostic').mockImplementation(() => {});
     try {
       const calls = heldResolver();
-      observePRFacts(KEY, REF, snapshot('#1 #2 @secret-person'));
-      calls[0].reject(new Error('forge said no about @secret-person'));
+      observePRFacts(KEY, REF, snapshot(body));
+      calls[0].reject(new Error(error));
       await settle();
-      expect(forgeFactReader(KEY)!.get('user:secret-person')).toMatchObject({ status: 'unavailable' });
+      expect(forgeFactReader(KEY)!.get(key)).toMatchObject({ status: 'unavailable' });
       expect(report).toHaveBeenCalledTimes(1);
       const [message, detail] = report.mock.calls[0];
       expect(message).toBe('forge facts: a request failed');
-      expect(detail).toBe('ref 2, user 1; Error');
+      expect(detail).toBe(expected);
       expect(`${message}${detail}`).not.toContain('secret');
     } finally {
       report.mockRestore();

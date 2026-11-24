@@ -26,9 +26,13 @@ func TestResolvePath(t *testing.T) {
 		wantErr   string
 	}{
 		{
+			// The project-open path: callers that hand over a project
+			// root with no workspace context (the sidebar's "Open in
+			// editor" menu) get the canonical absolute back unchanged,
+			// with no stat, so a missing or non-file target still passes.
 			name: "absolute canonical passes through",
-			path: "/etc/hosts",
-			want: "/etc/hosts",
+			path: "/tmp/project-root",
+			want: "/tmp/project-root",
 		},
 		{
 			name:    "absolute non-canonical rejected",
@@ -36,6 +40,8 @@ func TestResolvePath(t *testing.T) {
 			wantErr: "canonical",
 		},
 		{
+			// subdir/ does not exist: the new-file flow opens a
+			// not-yet-existing target inside the workspace.
 			name:      "relative joined against workspace",
 			path:      "subdir/file.go",
 			workspace: ws,

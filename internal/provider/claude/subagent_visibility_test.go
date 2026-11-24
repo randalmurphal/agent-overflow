@@ -11,22 +11,28 @@ import (
 // is a DROP or a WRONG SCOPE rather than a wrong number — the cases a
 // captured happy-path fixture cannot express.
 
-// TestParseTaskProgress_UnresolvableToolUseIsDropped covers the
-// reconnect case: a parser that came up mid-agent has no task binding,
-// and a tick whose envelope also omits `tool_use_id` names nothing
-// triage can update. It must be dropped, never emitted with an empty
-// ItemID — an empty-ItemID event would be silently discarded by triage
+// TestParseTask_UnattributableLineIsDropped: a task line that names no
+// launch the parser can resolve is dropped, never emitted with an empty
+// ItemID. An empty-ItemID event would be silently discarded by triage
 // anyway, but only after crossing the whole pipeline.
-func TestParseTaskProgress_UnresolvableToolUseIsDropped(t *testing.T) {
-	parser := NewParser()
-	events, err := parser.ParseLine(testThread, []byte(
-		`{"type":"system","subtype":"task_progress","task_id":"a-orphan",`+
-			`"description":"Working","usage":{"total_tokens":10,"tool_uses":1,"duration_ms":5}}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 0 {
-		t.Fatalf("expected the unattributable tick to be dropped, got %+v", events)
+func TestParseTask_UnattributableLineIsDropped(t *testing.T) {
+	for _, tc := range []struct{ name, line string }{
+		// The reconnect case: a parser that came up mid-agent has no task
+		// binding, and the tick's envelope also omits `tool_use_id`.
+		{"progress tick", `{"type":"system","subtype":"task_progress","task_id":"a-orphan",` +
+			`"description":"Working","usage":{"total_tokens":10,"tool_uses":1,"duration_ms":5}}`},
+		// The backgrounded event's entire payload is the launch it belongs to.
+		{"backgrounded patch", `{"type":"system","subtype":"task_updated","task_id":"a-orphan","patch":{"is_backgrounded":true}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events, err := NewParser().ParseLine(testThread, []byte(tc.line))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(events) != 0 {
+				t.Fatalf("expected the unattributable line to be dropped, got %+v", events)
+			}
+		})
 	}
 }
 
@@ -179,21 +185,6 @@ func TestParseTaskUpdated_TerminalStillWins(t *testing.T) {
 	}
 }
 
-// TestParseTaskUpdated_BackgroundedWithoutBindingIsDropped: the event's
-// entire payload is the launch it belongs to, so an unattributable
-// patch is dropped rather than emitted with an empty ItemID.
-func TestParseTaskUpdated_BackgroundedWithoutBindingIsDropped(t *testing.T) {
-	parser := NewParser()
-	events, err := parser.ParseLine(testThread, []byte(
-		`{"type":"system","subtype":"task_updated","task_id":"a-orphan","patch":{"is_backgrounded":true}}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 0 {
-		t.Fatalf("expected the unattributable patch to be dropped, got %+v", events)
-	}
-}
-
 // TestParseTaskUpdated_RunningPatchStaysSilent pins that the new branch
 // did not turn ordinary progress patches into events.
 func TestParseTaskUpdated_RunningPatchStaysSilent(t *testing.T) {
@@ -285,73 +276,41 @@ func TestParseControlRequest_AskUserQuestionCarriesAgentScope(t *testing.T) {
 	}
 }
 
-// TestAppendToolResultBlock_InlineSkillGetsNoForkStamp: a skill that did
-// NOT fork answers `{success, commandName}` with no status. Stamping it
-// would turn every inline skill into a phantom agent node.
-func TestAppendToolResultBlock_InlineSkillGetsNoForkStamp(t *testing.T) {
-	parser := NewParser()
-	events, err := parser.ParseLine(testThread, []byte(
-		`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_skill","type":"tool_result",`+
-			`"content":[{"type":"text","text":"Launching skill: handoff"}]}]},`+
-			`"tool_use_result":{"success":true,"commandName":"handoff"}}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 completion, got %d", len(events))
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-		t.Fatalf("decode meta: %v", err)
-	}
-	if _, stamped := meta["skillFork"]; stamped {
-		t.Errorf("an inline skill must not carry skillFork: %s", events[0].Meta)
-	}
-}
-
-// TestAppendToolResultBlock_ForkedSkillWithoutAgentIDIsNotStamped: the
-// id is the whole point of the stamp (it is what a later approval
-// addresses the fork by), so a `forked` result with no agentId is left
-// unstamped rather than stamped empty.
-func TestAppendToolResultBlock_ForkedSkillWithoutAgentIDIsNotStamped(t *testing.T) {
-	parser := NewParser()
-	events, err := parser.ParseLine(testThread, []byte(
-		`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_skill","type":"tool_result",`+
-			`"content":[{"type":"text","text":"Skill \"x\" completed (forked execution)."}]}]},`+
-			`"tool_use_result":{"success":true,"commandName":"x","status":"forked"}}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 completion, got %d", len(events))
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-		t.Fatalf("decode meta: %v", err)
-	}
-	if _, stamped := meta["skillFork"]; stamped {
-		t.Errorf("an agentId-less forked result must not be stamped: %s", events[0].Meta)
-	}
-}
-
-// TestAppendToolResultBlock_InlineAgentCompletionIsNotAFork guards the
-// discriminator: an inline agent's real completion carries `agentId`
-// and a `status`, but that status is `completed` — never `forked`.
-func TestAppendToolResultBlock_InlineAgentCompletionIsNotAFork(t *testing.T) {
-	parser := NewParser()
-	events, err := parser.ParseLine(testThread, []byte(
-		`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_agent","type":"tool_result",`+
-			`"content":[{"type":"text","text":"done"}]}]},`+
-			`"tool_use_result":{"agentId":"a1","agentType":"general-purpose","status":"completed","totalTokens":10}}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-		t.Fatalf("decode meta: %v", err)
-	}
-	if _, stamped := meta["skillFork"]; stamped {
-		t.Errorf("an inline agent completion must not be stamped as a fork: %s", events[0].Meta)
+// TestAppendToolResultBlock_NonForkResultIsNotStamped: only a forked
+// skill's result with an agentId carries skillFork.
+func TestAppendToolResultBlock_NonForkResultIsNotStamped(t *testing.T) {
+	for _, tc := range []struct{ name, toolUseID, text, result string }{
+		// A skill that did NOT fork answers `{success, commandName}` with no
+		// status. Stamping it would turn every inline skill into a phantom
+		// agent node.
+		{"inline skill", "toolu_skill", "Launching skill: handoff", `{"success":true,"commandName":"handoff"}`},
+		// The id is the whole point of the stamp (it is what a later approval
+		// addresses the fork by), so a `forked` result with no agentId is
+		// left unstamped rather than stamped empty.
+		{"forked skill without agentId", "toolu_skill", `Skill \"x\" completed (forked execution).`, `{"success":true,"commandName":"x","status":"forked"}`},
+		// The discriminator: an inline agent's real completion carries
+		// `agentId` and a `status`, but that status is `completed`, never
+		// `forked`.
+		{"inline agent completion", "toolu_agent", "done", `{"agentId":"a1","agentType":"general-purpose","status":"completed","totalTokens":10}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events, err := NewParser().ParseLine(testThread, []byte(
+				`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"`+tc.toolUseID+`","type":"tool_result",`+
+					`"content":[{"type":"text","text":"`+tc.text+`"}]}]},"tool_use_result":`+tc.result+`}`))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(events) != 1 {
+				t.Fatalf("expected 1 completion, got %d", len(events))
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("decode meta: %v", err)
+			}
+			if _, stamped := meta["skillFork"]; stamped {
+				t.Errorf("result must not carry skillFork: %s", events[0].Meta)
+			}
+		})
 	}
 }
 

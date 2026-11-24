@@ -11,7 +11,6 @@ import {
   clampThinkingBudget,
   thinkingChangeDefersRestart,
   thinkingPatch,
-  subagentLimitsAreEmpty,
   toolMemoryLimitError,
 } from './claudeSessionAxes';
 
@@ -51,12 +50,6 @@ describe('clampSubagentLimit', () => {
   it('floors and caps', () => {
     expect(clampSubagentLimit(3.9)).toBe(3);
     expect(clampSubagentLimit(CLAUDE_SUBAGENT_LIMIT_MAX + 1)).toBe(CLAUDE_SUBAGENT_LIMIT_MAX);
-  });
-
-  it('reports an all-zero group as empty', () => {
-    expect(subagentLimitsAreEmpty({})).toBe(true);
-    expect(subagentLimitsAreEmpty({ maxSpawnDepth: 0, maxConcurrent: 0 })).toBe(true);
-    expect(subagentLimitsAreEmpty({ maxConcurrent: 2 })).toBe(false);
   });
 });
 

@@ -5,17 +5,15 @@
 // parsePatchFiles, then render one DiffFileBlock per file in
 // meta.inlineDiff.files.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { tick } from 'svelte';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import DiffFileStack from './DiffFileStack.svelte';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
-import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
 import type { ToolResultMeta } from '../../types/models';
@@ -97,14 +95,8 @@ describe('<DiffFileStack>', () => {
   // collapseDiffPreviews off rather than riding the shipped default (which
   // collapses); the collapsed case below seeds it on for itself.
   beforeEach(async () => {
-    resetBindingMocks();
-    resetSettingsForTest();
     setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: false }));
     await loadSettings();
-  });
-
-  afterEach(() => {
-    resetSettingsForTest();
   });
 
   it('renders separate file rows from per-file preview metadata without fetching a byte prefix', async () => {

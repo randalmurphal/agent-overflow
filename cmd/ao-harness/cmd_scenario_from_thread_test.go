@@ -259,32 +259,30 @@ func TestReadRecordedTurnsWindowsToTheLastN(t *testing.T) {
 	db := newTimelineDB(t)
 	seedFiveTurns(t, db)
 
-	turns, err := readRecordedTurns(db, "th", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := turnIndexes(turns); !equalInts(got, []int{4, 5}) {
-		t.Fatalf("turn indexes = %v, want [4 5]", got)
-	}
-	for _, turn := range turns {
-		for _, item := range turn.Items {
-			if strings.HasPrefix(item.ID, "other") {
-				t.Fatalf("turn %d picked up another thread's item", turn.TurnIndex)
+	for _, tc := range []struct {
+		name string
+		n    int
+		want []int
+	}{
+		{"last two", 2, []int{4, 5}},
+		{"capped at what the thread has", 50, []int{1, 2, 3, 4, 5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			turns, err := readRecordedTurns(db, "th", tc.n)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	}
-}
-
-func TestReadRecordedTurnsCapsAtWhatTheThreadHas(t *testing.T) {
-	db := newTimelineDB(t)
-	seedFiveTurns(t, db)
-
-	turns, err := readRecordedTurns(db, "th", 50)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := turnIndexes(turns); !equalInts(got, []int{1, 2, 3, 4, 5}) {
-		t.Fatalf("turn indexes = %v", got)
+			if got := turnIndexes(turns); !equalInts(got, tc.want) {
+				t.Fatalf("turn indexes = %v, want %v", got, tc.want)
+			}
+			for _, turn := range turns {
+				for _, item := range turn.Items {
+					if strings.HasPrefix(item.ID, "other") {
+						t.Fatalf("turn %d picked up another thread's item", turn.TurnIndex)
+					}
+				}
+			}
+		})
 	}
 }
 

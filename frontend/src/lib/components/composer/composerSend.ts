@@ -4,7 +4,7 @@
 // guideline. Owns nothing reactive — each call captures the current
 // thread id / draft snapshot and delegates back to the pane + draft
 // store for state changes. Keeping this pure functional makes the send
-// path easy to trace from the click handler all the way to SendMessage.
+// path easy to trace from the click handler all the way to SendMessageWithOptions.
 
 import { SendMessageWithOptions } from '../../stores/bindings';
 import { trackDirectSend } from '../../stores/threadInterrupt.svelte';
@@ -46,7 +46,7 @@ export interface SendOptions {
 }
 
 /**
- * Drive a send: dispatch SendMessage and restore the draft on failure.
+ * Drive a send: dispatch SendMessageWithOptions and restore the draft on failure.
  * Callers are expected to set the pane's local `sending` flag around this
  * call so the UI reflects in-flight state — this function intentionally
  * knows nothing about it.
@@ -69,7 +69,7 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     // would sit idle for that whole window while
     // the agent is clearly "working" from the user's POV. Cleared by
     // applyTurnStarted (takeover on real backend signal) or by the
-    // catch branch below if SendMessage itself rejects.
+    // catch branch below if SendMessageWithOptions itself rejects.
     projectSendStarted(opts.threadId);
     sendStarted = true;
 

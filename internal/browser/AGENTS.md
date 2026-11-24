@@ -76,7 +76,7 @@ of the functions and types named below are their doc comments.
   boot's explicit request, never as a fallback for a windowless process.
 - Every engine reports a page it opened itself as `PopupOpened` before
   anything else of it, and every page's close and crash as it observes
-  them. The Manager alone adopts or discards a popup (`adoptPopup`), and an
+  them. The Manager alone adopts or discards a popup (`runAdoption`), and an
   engine keeps no download of its own for one (`popup_parked.go`).
 - The CDP engines answer the navigation policy browser-wide only
   (`profileOptions.Allow`); a page installs no interception of its own.

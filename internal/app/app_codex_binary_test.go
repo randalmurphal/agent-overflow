@@ -140,10 +140,10 @@ func TestDefaultCodexSettingSpawnsTheNpmWrappersNativeBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
 }
 

@@ -11,7 +11,7 @@ import {
   resetAppState,
   seedSidebarProject,
 } from './_helpers';
-import { getBindingMock, setBindingMock } from '../mocks/bindings-app';
+import { getBindingMock, setBindingMock, setReviewDiffMock } from '../mocks/bindings-app';
 import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../../lib/transport/scopes';
 import { IDLE_TRIM_CHECK_MS, IDLE_TRIM_THRESHOLD_MS } from '../../lib/utils/idleMemoryTrim';
 import { __setTransportStatusForTest } from '../../lib/stores/transportStatus.svelte';
@@ -88,6 +88,8 @@ describe('a saved pane restored before the bootstrap manifest resolves', () => {
     installThreadViewDefaults();
     installComposerDefaults(thread.id);
     installComposerDefaults(other.id);
+    // The restored review pane reads the workspace diff: no changes.
+    setReviewDiffMock('OpenWorkspaceDiff', () => '');
     setBindingMock('GetUIState', async () => ({
       paneLayout: JSON.stringify({
         version: 3,

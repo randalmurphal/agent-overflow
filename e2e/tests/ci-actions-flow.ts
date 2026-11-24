@@ -13,6 +13,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures.js';
 import { advanceForgeJob, expectEveryForgeCallHandled, forgeInvocations } from './forge-helpers.js';
 import { launchPullsHarness, openPage, seedProjects } from './pulls-page-flow.js';
+import { screenshot } from '../src/screenshot.js';
 
 export interface CIActionsSurface {
   compact: boolean;
@@ -50,7 +51,7 @@ export function registerCIActionsFlow({ compact }: CIActionsSurface): void {
         await row.hover();
         await expect.poll(() => opacity(page, 'review-ci-job-actions', 'unit')).toBe('1');
       }
-      await page.screenshot({ path: testInfo.outputPath('pipelines-ci-row-actions.png') });
+      await screenshot(page, { path: testInfo.outputPath('pipelines-ci-row-actions.png') });
       await actions.getByTestId('review-ci-job-retry_job').click();
       await expect(row.getByTestId('review-ci-job')).toContainText('pending');
       await expect(view.getByTestId('pipeline-view-status')).not.toHaveText('failed');

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/orphanreaper"
+	"agent-overflow/internal/orphanreaper/orphanreapertest"
 	"agent-overflow/internal/testutil/helperproc"
 )
 
@@ -80,6 +81,9 @@ func TestABackendsDeathEndsEveryProcessOfItsChromium(t *testing.T) {
 	leader := readPIDFile(t, filepath.Join(dir, "leader"))
 	child := readPIDFile(t, filepath.Join(dir, "child"))
 	t.Cleanup(func() { _ = syscall.Kill(-leader, syscall.SIGKILL) })
+	// The sidecar waits out its grace after the kill it sends.
+	sidecar := orphanreapertest.Of(t, backend.Process.Pid)
+	t.Cleanup(func() { helperproc.EndGroup(t, sidecar) })
 	if err := backend.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}

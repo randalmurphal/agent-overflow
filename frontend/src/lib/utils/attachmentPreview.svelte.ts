@@ -1,18 +1,12 @@
 import { untrack } from 'svelte';
 import { GetAttachmentThumbnail } from '../stores/bindings';
 import { fetchAttachmentBytes } from '../transport/attachmentTransfer';
-import {
-  parseUserMessageAttachments,
-  type AttachmentPreviewSource,
-} from './userMessageMeta';
+import type { AttachmentPreviewSource } from './userMessageMeta';
 import { base64ToBytes } from './base64';
 import { attachmentImageMenuTag } from './imageMenuActions';
 import { imageAttachments } from '../types/attachment';
 
-export {
-  parseUserMessageAttachments,
-  type AttachmentPreviewSource,
-};
+export type { AttachmentPreviewSource };
 
 export interface ImagePreviewItem {
   id: string;

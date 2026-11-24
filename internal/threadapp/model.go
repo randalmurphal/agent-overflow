@@ -31,30 +31,6 @@ func (u ModelUpdate) SelectionChanged() bool {
 		u.Previous.RuntimeMode != u.Thread.RuntimeMode
 }
 
-func (s *Service) UpdateModel(threadID, model string) (ModelUpdate, error) {
-	database, err := s.database("update model")
-	if err != nil {
-		return ModelUpdate{}, err
-	}
-	trimmedModel := strings.TrimSpace(model)
-	if trimmedModel == "" {
-		return ModelUpdate{}, fmt.Errorf("thread model cannot be empty")
-	}
-	thread, err := database.GetThread(threadID)
-	if err != nil {
-		return ModelUpdate{}, err
-	}
-	normalizedModel := provider.NormalizeModelSlug(thread.Provider, trimmedModel)
-	if thread.Model == normalizedModel {
-		return ModelUpdate{Previous: thread, Thread: thread}, nil
-	}
-	profile, err := s.profileForSelection(thread.Provider, normalizedModel)
-	if err != nil {
-		return ModelUpdate{}, err
-	}
-	return s.applyModelProfile(thread, profile)
-}
-
 func (s *Service) UpdateModelSelection(threadID, providerName, model string) (ModelUpdate, error) {
 	database, err := s.database("update model selection")
 	if err != nil {
@@ -86,32 +62,6 @@ func (s *Service) UpdateModelSelection(threadID, providerName, model string) (Mo
 	return s.applyModelProfile(thread, profile)
 }
 
-func (s *Service) UpdateProvider(threadID, providerName string) (ModelUpdate, error) {
-	database, err := s.database("update provider")
-	if err != nil {
-		return ModelUpdate{}, err
-	}
-	providerName = strings.TrimSpace(providerName)
-	if providerName == "" {
-		return ModelUpdate{}, fmt.Errorf("thread provider cannot be empty")
-	}
-	if !ValidProvider(providerName) {
-		return ModelUpdate{}, fmt.Errorf("%w: %q", store.ErrInvalidProvider, providerName)
-	}
-	thread, err := database.GetThread(threadID)
-	if err != nil {
-		return ModelUpdate{}, fmt.Errorf("update provider: %w", err)
-	}
-	if thread.Provider == providerName {
-		return ModelUpdate{Previous: thread, Thread: thread}, nil
-	}
-	profile, err := s.latestProviderProfile(providerName)
-	if err != nil {
-		return ModelUpdate{}, err
-	}
-	return s.applyModelProfile(thread, profile)
-}
-
 func ValidProvider(providerName string) bool {
 	return provider.IsKnownProvider(providerName)
 }
@@ -135,23 +85,6 @@ func (s *Service) profileForSelection(providerName, model string) (store.ChatMod
 		}
 	}
 	return models.Sanitize(chatmodel.FallbackProfileWith(models.ContextWindowOptions, providerName, model)), nil
-}
-
-func (s *Service) latestProviderProfile(providerName string) (store.ChatModelProfile, error) {
-	models, err := s.modelPolicy("load latest chat model profile")
-	if err != nil {
-		return store.ChatModelProfile{}, err
-	}
-	if s.deps.Store != nil {
-		profile, err := s.deps.Store.LatestChatModelProfileForProvider(providerName)
-		if err == nil {
-			return models.Sanitize(profile), nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return store.ChatModelProfile{}, fmt.Errorf("load latest chat model profile for provider %s: %w", providerName, err)
-		}
-	}
-	return models.Sanitize(chatmodel.FallbackProfileWith(models.ContextWindowOptions, providerName, models.DefaultModel(providerName))), nil
 }
 
 // modelSettingsFromProfile is the model configuration a chosen profile

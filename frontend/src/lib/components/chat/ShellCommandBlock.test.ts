@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { createThreadMessageUiState } from '../../stores/threadMessageUiState.svelte';
 import type { ShellOutputMeta } from '../../utils/shellInvocation';
@@ -24,9 +24,6 @@ function deferred<T>() {
 }
 
 describe('<ShellCommandBlock>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
 
   it('shows the command, how it ended and the preview without reading anything', () => {
     const read = setBindingMock('ReadShellAttachmentOutput', async () => ({}));

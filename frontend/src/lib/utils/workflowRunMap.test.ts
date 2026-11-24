@@ -518,7 +518,6 @@ describe('§5.1 skeleton ∪ records', () => {
       .toEqual([['plan', false], ['build', false], ['verify', true]]);
     expect(segments[2].status).toEqual({ kind: 'ghost' });
     expect(segments[2].signal).toBe('ghost');
-    expect(runMapTone(segments[2].signal)).toBe('text-fg-hint');
   });
 
   it('definition drift | records missing from the skeleton append with notInDefinition', () => {
@@ -598,7 +597,6 @@ describe('§5.1 skeleton ∪ records', () => {
     // Its OWN signal, never folded into `pending`: a status this build cannot
     // name must not be drawn as a queue the phase is not in.
     expect(node.signal).toBe('unknown');
-    expect(runMapTone(node.signal)).toBe('text-fg-muted');
   });
 
   it('§5.5 loop-back re-entry | an unrecorded phase BEFORE the furthest point is skipped, not future', () => {
@@ -687,10 +685,8 @@ describe('§5.8 records-only degradation (empty / undecodable snapshot)', () => 
       .toEqual([['second', false, false], ['first', false, false]]);
     expect(segments.some((node) => node.kind === 'decision')).toBe(false);
     expect(buildRunMap(view, NOW).loop).toBeNull();
-  });
-
-  it('still decides node kind from the records: units make it a fan', () => {
-    expect(nodeById(segmentsOf(view, 'root'), 'second').kind).toBe('fan');
+    // Node kind is still decided from the records: units make it a fan.
+    expect(nodeById(segments, 'second').kind).toBe('fan');
   });
 
   it('per-wave skeleton (§5.7): one wave degrading does not degrade the next', () => {
@@ -765,42 +761,35 @@ describe('§6 fan scale', () => {
     expect(fan.done.entries.map((chip) => chip.unitId)).toEqual(['port-a', 'port-e']);
     expect(fan.done.label).toBe('done ·1');
     expect(fan.done.droppedCount).toBe(1);
-  });
-
-  // §7: a queued group names WHICH lanes it stands for, not just how many. The
-  // range is the engine's own `unitIndex`, so it is the same coordinate the
-  // open columns beside it carry — and it holds no entries, because a queued
-  // lane has no record, no thread and no duration for a click to reveal.
-  it('queued lanes group into ONE node labelled by their contiguous range', () => {
-    const fan = fanOf(segmentsOf(fanView(), 'root'), 'port');
-    expect([fan.queued.label, fan.queued.count, fan.queued.entries]).toEqual(['ports 3 · queued', 1, []]);
-  });
-
-  it('a queued group whose lanes are not contiguous falls back to a count it can prove', () => {
-    // port-d (index 3) plus the even-indexed extras from 10 up: a range label
-    // would claim lanes 4–9 that are not in the group.
-    const fan = fanOf(segmentsOf(fanView({ width: 26 }), 'root'), 'port');
-    expect(fan.queued.label).toBe('14 units · queued');
-  });
-
-  it('join unit | renders as the merge node, never a column or a chip', () => {
-    const fan = fanOf(segmentsOf(fanView(), 'root'), 'port');
-    expect(fan.join?.unitId).toBe('port-join');
-    expect(fan.join?.isJoin).toBe(true);
-    expect(fan.columns.concat().some((column) => column.unit.isJoin)).toBe(false);
-    expect(fan.done.entries.some((chip) => chip.isJoin)).toBe(false);
-  });
-
-  it('unit `dropped` | struck entry inside the done chip expansion', () => {
-    const dropped = fanOf(segmentsOf(fanView(), 'root'), 'port').done.entries.find((chip) => chip.unitId === 'port-e');
+    // unit `dropped`: a struck entry inside the done chip expansion.
+    const dropped = fan.done.entries.find((chip) => chip.unitId === 'port-e');
     expect([dropped?.struck, dropped?.signal, dropped?.meta])
       .toEqual([true, 'dropped', 'dropped — join proceeded without it · 1s']);
-  });
-
-  it('unit `taken-over` | amber signal and its triage thread', () => {
-    const takenOver = fanOf(segmentsOf(fanView(), 'root'), 'port').columns.find((column) => column.unit.unitId === 'port-f');
+    // unit `taken-over`: the amber signal and its triage thread.
+    const takenOver = fan.columns.find((column) => column.unit.unitId === 'port-f');
     expect([takenOver?.unit.signal, takenOver?.unit.threadId]).toEqual(['parked', 't-f']);
-    expect(runMapTone(takenOver?.unit.signal ?? 'done')).toBe('text-warning');
+    // The join unit renders as the merge node, never a column or a chip.
+    expect([fan.join?.unitId, fan.join?.isJoin]).toEqual(['port-join', true]);
+    expect(fan.columns.some((column) => column.unit.isJoin)).toBe(false);
+    expect(fan.done.entries.some((chip) => chip.isJoin)).toBe(false);
+    // §7: the queued lanes group into ONE node that names WHICH lanes it
+    // stands for, not just how many. The range is the engine's own
+    // `unitIndex`, so it is the same coordinate the open columns beside it
+    // carry — and it holds no entries, because a queued lane has no record,
+    // no thread and no duration for a click to reveal.
+    expect([fan.queued.label, fan.queued.count, fan.queued.entries]).toEqual(['ports 3 · queued', 1, []]);
+    // The fan states no tally of its own any more — the wave's summary row
+    // already carries the unit count, and a second one under the same node
+    // was a number the reader had to reconcile with the first. What still has
+    // to hold is the PARTITION the count was standing in for: every non-join
+    // unit is drawn or counted exactly once, and the join is neither.
+    const placed = [
+      ...fan.columns.map((column) => column.unit.unitId),
+      ...fan.done.entries.map((chip) => chip.unitId),
+    ].sort();
+    expect(placed).toEqual(['port-a', 'port-b', 'port-c', 'port-e', 'port-f']);
+    // port-d is the sixth: queued, so it is counted rather than drawn.
+    expect(placed.length + fan.queued.count).toBe(6);
   });
 
   // The wording rule survives the grouping: a pending unit that EARNS a lane —
@@ -823,27 +812,14 @@ describe('§6 fan scale', () => {
     expect([queued.meta, queued.provider, queued.signal]).toEqual(['queued', 'claude', 'pending']);
   });
 
-  // The fan states no tally of its own any more — the wave's summary row
-  // already carries the unit count, and a second one under the same node was a
-  // number the reader had to reconcile with the first. What still has to hold
-  // is the PARTITION the count was standing in for: every non-join unit is
-  // drawn or counted exactly once, and the join is neither.
-  it('every unit lands in exactly one of column / done / queued, joins apart', () => {
-    const fan = fanOf(segmentsOf(fanView(), 'root'), 'port');
-    const placed = [
-      ...fan.columns.map((column) => column.unit.unitId),
-      ...fan.done.entries.map((chip) => chip.unitId),
-    ].sort();
-    expect(placed).toEqual(['port-a', 'port-b', 'port-c', 'port-e', 'port-f']);
-    // port-d is the sixth: queued, so it is counted rather than drawn.
-    expect([fan.queued.count, placed.length + fan.queued.count]).toEqual([1, 6]);
-    expect(fan.join?.unitId).toBe('port-join');
-  });
-
   it('fan-out at the width cap (32) | columns stay bounded, the bulk becomes arithmetic', () => {
     const fan = fanOf(segmentsOf(fanView({ width: 26 }), 'root'), 'port');
     expect(fan.columns).toHaveLength(3);
     expect(fan.queued.count).toBe(14);
+    // A queued group whose lanes are not contiguous falls back to a count it
+    // can prove: port-d (index 3) plus the even-indexed extras from 10 up, so
+    // a range label would claim lanes 4–9 that are not in the group.
+    expect(fan.queued.label).toBe('14 units · queued');
     expect(fan.done.count).toBe(14);
     expect(fan.done.entries).toHaveLength(15); // the 14 plus the dropped one
     // Every unit is accounted for exactly once, whether it is drawn or counted.
@@ -1814,14 +1790,6 @@ describe('adversarial shapes', () => {
     expect(fan.columns.map((column) => column.unit.unitId)).toEqual(['a', 'b', 'c']);
     expect(fan.join?.unitId).toBe('z-join');
   });
-
-  it('an orphaned run (parent absent from the view) still renders as its own map', () => {
-    const view = makeView([makeRun('orphan', {
-      parentItemId: 'gone', parentPhaseId: 'next', parentAttempt: 1,
-      state: 'running', skeleton: [skeletonPhase('plan')], phases: [makePhase('plan')],
-    })], 'orphan');
-    expect(buildRunMap(view, NOW).waves.map((wave) => [wave.itemId, wave.ordinal])).toEqual([['orphan', 1]]);
-  });
 });
 
 describe('runMapPosition — the header\'s narrow read', () => {
@@ -1881,7 +1849,8 @@ describe('ghostAttempt — the row a node with no records renders as', () => {
   }
 
   it('carries the node forward with nothing an attempt would have recorded', () => {
-    const node = nodeById(ghostNodes(), 'verify');
+    const nodes = ghostNodes();
+    const node = nodeById(nodes, 'verify');
     expect(node.attempts).toHaveLength(0);
     expect(ghostAttempt(node)).toEqual({
       key: node.key,
@@ -1902,19 +1871,15 @@ describe('ghostAttempt — the row a node with no records renders as', () => {
       chain: [],
       onFrontierPath: node.onFrontierPath,
     });
-  });
+    // Keyed on the node, so the ghost row is the row `now ▸` can mark.
+    expect(node.key).not.toBe('');
 
-  it('names a pre-expansion fan by where its units come from, never by a count', () => {
-    const fan = nodeById(ghostNodes(), 'port');
+    // A pre-expansion fan is named by where its units come from, never by a
+    // count.
+    const fan = nodeById(nodes, 'port');
     expect(fan.kind).toBe('fan');
     expect(ghostAttempt(fan).label).toBe(fan.kind === 'fan' ? fan.ghostLabel : '');
     expect(ghostAttempt(fan).label).not.toMatch(/\d/);
-  });
-
-  it('keys the ghost row on the node, so it is the row `now ▸` can mark', () => {
-    const node = nodeById(ghostNodes(), 'verify');
-    expect(ghostAttempt(node).key).toBe(node.key);
-    expect(ghostAttempt(node).key).not.toBe('');
   });
 });
 

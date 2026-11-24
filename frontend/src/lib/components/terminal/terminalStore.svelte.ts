@@ -16,12 +16,6 @@ export interface TerminalTabState {
   pendingOutput: Uint8Array[];
 }
 
-export interface ThreadTerminalState {
-  tabs: TerminalTabState[];
-  activeTerminalID: string | null;
-  drawerHeight: number;
-}
-
 /**
  * The slice of a mounted xterm that app commands drive through the handle
  * (terminal.clear). Kept to the actions used so the store never depends on

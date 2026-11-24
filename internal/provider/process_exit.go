@@ -88,9 +88,16 @@ func MarshalProcessExitMeta(err error, stderrTail string) json.RawMessage {
 	return data
 }
 
+// ExitWaiter is what WaitProcessExitErr reads: a *Process, or a test
+// transport standing in for one.
+type ExitWaiter interface {
+	Done() <-chan struct{}
+	Err() error
+}
+
 // WaitProcessExitErr waits briefly for the process waiter to publish its final
 // exit error. A timeout leaves the exit status unknown.
-func WaitProcessExitErr(proc *Process) error {
+func WaitProcessExitErr(proc ExitWaiter) error {
 	select {
 	case <-proc.Done():
 		return proc.Err()

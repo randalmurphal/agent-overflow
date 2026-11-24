@@ -7,6 +7,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 // A wake already handed to a live, mid-turn session waits there for the turn
@@ -20,7 +22,7 @@ func TestAStopThatTakesBackAnUnconfirmedWakeLeavesItsRequestUndelivered(t *testi
 	f.mockClaudeHoldingTheTurn(t, "mid-thought")
 	f.app.configureTriageQueueCallbacks()
 	t.Cleanup(func() { f.app.flushDispatch.wg.Wait() })
-	if err := f.app.SendMessage(t.Context(), f.caller.ID, "look into the backfill", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), f.caller.ID, "look into the backfill", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {

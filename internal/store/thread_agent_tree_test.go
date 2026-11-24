@@ -751,12 +751,14 @@ func referenceAgentTree(t *testing.T, s *Store, root string, depth int) []string
 
 // The listing matches the walk it replaced on random forests of spawns,
 // each thread reached by at most one, with sends between any threads and
-// settled rows, and lists every request once.
+// settled rows, lists every request once, and leaves the stored marks
+// equal to the walk's. The graphs share one store: no request joins two of
+// them, so each listing also passes over the rows of every graph before it.
 func TestListThreadAgentTreeMatchesTheWalkOnRandomForests(t *testing.T) {
 	t.Parallel()
 	random := rand.New(rand.NewPCG(7, 155))
+	s := newTestStore(t)
 	for graph := range 150 {
-		s := newTestStore(t)
 		threads := make([]string, 3+random.IntN(6))
 		for i := range threads {
 			threads[i] = fmt.Sprintf("g%d-t%d", graph, i)
@@ -799,7 +801,6 @@ func TestListThreadAgentTreeMatchesTheWalkOnRandomForests(t *testing.T) {
 			if !slices.Equal(got, want) {
 				t.Fatalf("graph %d depth %d:\n got %v\nwant %v", graph, depth, got, want)
 			}
-			assertAgentTreeMarks(t, s.db, fmt.Sprintf("graph %d", graph))
 			// Bounded, the listing is the walk's first rows; named, the
 			// walk's rows among those named, each where the walk put it.
 			limited := agentTreeRead(threads[0], depth)
@@ -832,6 +833,11 @@ func TestListThreadAgentTreeMatchesTheWalkOnRandomForests(t *testing.T) {
 			}
 		}
 	}
+	// The reads write nothing and no request joins two graphs, so the
+	// stored marks of every graph are checked once, against the walk over
+	// the whole store, after the last is seeded. A mark is named by its
+	// token, which names its graph.
+	assertAgentTreeMarks(t, s.db, "every graph")
 }
 
 // Below a spawn whose run ended, a worker's row shows only what that run

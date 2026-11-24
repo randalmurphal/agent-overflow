@@ -40,7 +40,7 @@ for (const compact of [false, true]) {
           'config/mcpServer/reload': '{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{}}',
         } },
       });
-      await harness.rpc('StartSession', thread);
+      await harness.startSession(thread);
       const mock = await awaitGate(harness, 'toggle-0', path);
       await harness.open(page);
       await page.getByText('MCP states', { exact: true }).click();

@@ -144,6 +144,9 @@ const store = createEntityStore<BackgroundTaskOutputTail, void>({
       };
     }
     if (watchId) liveWatches.set(key, { watchId, backend: minted, owner });
+    signal.addEventListener('abort', () => {
+      if (liveWatches.get(key)?.owner === owner) liveWatches.delete(key);
+    }, { once: true });
     apply(tailFromSnapshot(snapshot));
     // Frames the backend sent after its seed read and before this reply
     // landed continue the snapshot's seq; the rest it already carried. A
@@ -166,8 +169,6 @@ const store = createEntityStore<BackgroundTaskOutputTail, void>({
       if (liveWatches.get(key)?.owner === owner) store.invalidate(key);
     });
     return async () => {
-      const live = liveWatches.get(key);
-      if (live?.owner === owner) liveWatches.delete(key);
       // Every watch the reply named is released, an ended one included:
       // the backend answers an id it no longer holds with nothing, and
       // the id must not stay counted against the cap.
@@ -268,15 +269,14 @@ export function attachBackgroundTaskOutput(
   return store.attach(backgroundTaskOutputKey(threadId, launchId), undefined);
 }
 
-/** Diagnostics and tests: the launches currently held. */
+/** Tests: the launches currently held. */
 export function backgroundTaskOutputKeys(): string[] {
   return store.keys();
 }
 
 /** Test seam: drop every entry and watch, as a fresh module load would. */
 export function __resetBackgroundTaskOutputForTest(): void {
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
   liveWatches.clear();
   pendingFrames.clear();
 }

@@ -3,13 +3,13 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { prepareNativeShell } from './boot';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import { makeThread } from '../../test/helpers/chat';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { attachedBackends, backendById, syncAttachedBackends, __attachBackendForTest } from '../transport/backends';
 import { HOME_DESCRIPTOR } from '../transport/manifestBackends';
-import { storeBackendEndpoint, __resetHomeEndpointForTest } from '../transport/homeEndpoint';
+import { storeBackendEndpoint } from '../transport/homeEndpoint';
 import { Call } from '../transport/runtime';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { wsClient } from '../transport/wsClient';
@@ -17,7 +17,7 @@ import { resolveThreadBackend } from '../transport/entityIndex';
 import { getThreads } from '../stores/threads.svelte';
 import { getProjects } from '../stores/projects.svelte';
 import type { ProjectWithCounts } from '../types/models';
-import { __resetSelectedBackendForTest, selectedBackend, setSelectedBackend } from '../stores/selectedBackend.svelte';
+import { selectedBackend, setSelectedBackend } from '../stores/selectedBackend.svelte';
 import { __resetScopesForTest, hasScope } from '../transport/scopes';
 import { saveFrontendAssets } from '../stores/frontendAssets';
 import { readAppearanceFiles } from '../stores/appearanceFiles';
@@ -38,7 +38,6 @@ function savePairing(slot: string, computer: string, endpoint: string): void {
 
 beforeEach(() => {
   localStorage.clear();
-  __resetSelectedBackendForTest();
   vi.stubGlobal('Capacitor', { isNativePlatform: () => true });
 });
 
@@ -91,9 +90,7 @@ it('keeps the legacy computer selected when another saved host attaches before i
 afterEach(() => {
   localStorage.clear();
   vi.unstubAllGlobals();
-  __resetHomeEndpointForTest();
   __attachBackendForTest(HOME_DESCRIPTOR, wsClient);
-  resetStagedBackends();
 });
 
 it.each([false, true])('loads one Mac catalog and routes its draft after native boot (other computer=%s)', async (withGpu) => {
@@ -110,7 +107,6 @@ it.each([false, true])('loads one Mac catalog and routes its draft after native 
 
   await verifyCatalogsAndDrafts(computers);
 });
-
 
 async function verifyCatalogsAndDrafts(computers: string[]): Promise<void> {
   const catalogs: string[] = [];
@@ -154,7 +150,6 @@ async function verifyCatalogsAndDrafts(computers: string[]): Promise<void> {
   }
   expect(drafts).toEqual(computers);
 }
-
 
 it.each([true, false])('settles delayed legacy HOME identity before catalog reads (complete UUID pairing=%s)', async (completeUuid) => {
   // Old shells saved credentials before the session shape carried backendId.

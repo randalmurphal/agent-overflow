@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import EnvPicker from './EnvPicker.svelte';
@@ -6,14 +6,12 @@ import { createThreadPane } from '../../../stores/thread.svelte';
 import type { Project, Thread } from '../../../types/models';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
-import { resetForTest as resetWorktreeIntent } from '../../../stores/worktreeIntent.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 import { idleWorkspaceActivity, makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
 import { emitWailsEvent } from '../../../../test/mocks/wailsio-runtime';
-import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
+import { registerPaneForTest } from '../../../stores/panes.svelte';
 import { withEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
@@ -87,28 +85,16 @@ function buildPlaceholderPane(paneId?: string, workspacePath = '/tmp/wt-feature'
 }
 
 describe('<EnvPicker>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
-    resetPanesForTest();
-  });
 
-  it('labels the trigger Base at the project root', async () => {
-    const pane = await buildPane(makeThread({ workspacePath: '/repo' }));
+  it.each([
+    { name: 'labels the trigger Base at the project root', workspacePath: '/repo', label: /Base/, icon: 'folder' },
+    { name: 'labels the trigger with the worktree basename when off-root', workspacePath: '/tmp/wt-feature', label: /wt-feature/, icon: 'folder-git-2' },
+  ])('$name', async ({ workspacePath, label, icon }) => {
+    const pane = await buildPane(makeThread({ workspacePath, projectPath: '/repo' }));
     const { getByTestId } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
     const trigger = getByTestId('env-picker-trigger');
-    expect(trigger.textContent ?? '').toMatch(/Base/);
-    expect(trigger).toHaveAttribute('data-trigger-icon', 'folder');
-  });
-
-  it('labels the trigger with the worktree basename when off-root', async () => {
-    const pane = await buildPane(
-      makeThread({ workspacePath: '/tmp/wt-feature', projectPath: '/repo' }),
-    );
-    const { getByTestId } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
-    const trigger = getByTestId('env-picker-trigger');
-    expect(trigger.textContent ?? '').toMatch(/wt-feature/);
-    expect(trigger).toHaveAttribute('data-trigger-icon', 'folder-git-2');
+    expect(trigger.textContent ?? '').toMatch(label);
+    expect(trigger).toHaveAttribute('data-trigger-icon', icon);
   });
 
   it('lists worktrees on open and switches via UpdateThreadWorkspace', async () => {
@@ -368,41 +354,6 @@ describe('<EnvPicker>', () => {
     await waitFor(() => {
       expect(update).toHaveBeenCalledWith('thread-1', '/tmp/wt-feature');
     });
-  });
-
-  it('disables workspace changes while background tasks are running', async () => {
-    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
-    const workspaceLock = makeWorkspaceLock({
-      locked: true,
-      reason: 'Workspace changes are unavailable while background tasks are running.',
-      threadLocked: true,
-      threadReason: 'Workspace changes are unavailable while background tasks are running.',
-      runningBackgroundCount: 1,
-    });
-    setBindingMock('GitListWorktrees', async () => [
-      { path: '/repo', branch: 'main', head: 'abc' },
-      { path: '/tmp/wt-feature', branch: 'feat', head: 'def' },
-    ]);
-    setBindingMock('UpdateThreadWorkspace', async () =>
-      makeThread({ workspacePath: '/tmp/wt-feature' }),
-    );
-
-    const { getByTestId, findByRole } = render(EnvPicker, { props: { pane, workspaceLock } });
-    await fireEvent.click(getByTestId('env-picker-trigger'));
-    const newWorktreeRow = await findByRole('menuitem', { name: /New Worktree/ });
-    expect(newWorktreeRow).toHaveAttribute('aria-disabled', 'true');
-    const wtRow = await findByRole('menuitem', { name: /wt-feature/ });
-
-    await waitFor(() => {
-      expect(wtRow).toHaveAttribute('aria-disabled', 'true');
-      expect(wtRow).toHaveAttribute('title', expect.stringMatching(/background tasks/));
-    });
-
-    await fireEvent.click(wtRow);
-    await fireEvent.click(newWorktreeRow);
-
-    expect(getBindingMock('UpdateThreadWorkspace')).not.toHaveBeenCalled();
-    expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/Base/);
   });
 
   it('opens an inline confirm strip and removes a clean worktree', async () => {

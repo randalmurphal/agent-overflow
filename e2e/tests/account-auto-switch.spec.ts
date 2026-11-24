@@ -19,8 +19,8 @@
 // switching on the card, which also rules out an order switch outside the
 // case that tests one.
 //
-// AO_AUTO_SWITCH_SCREENSHOTS=<dir> saves the Accounts section with one card
-// unticked and the refused thread after its continue, for review.
+// With AO_E2E_SCREENSHOTS=1 the test output holds the Accounts section with
+// one card unticked and the refused thread after its continue, for review.
 
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { type Page } from '@playwright/test';
 import { expect, test } from './base-test.js';
 
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import type { HarnessMockEventData } from '../src/harness-app.js';
 import {
   RESULT_LINE,
@@ -47,11 +47,11 @@ import {
   openClaudeAccounts,
   seedNativeClaudeLogin,
 } from './provider-account-helpers.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 const A = 'pool-a@agent-overflow.test';
 const B = 'pool-b@agent-overflow.test';
 const CONTINUE_TEXT = 'Continue. The usage limit that stopped this thread no longer applies.';
-const SCRATCH = process.env.AO_AUTO_SWITCH_SCREENSHOTS;
 
 // The library's usage-limit refusal, so this spec replays the same wire
 // lines the scenario library pins.
@@ -229,7 +229,7 @@ test.describe.serial('Claude account auto-switch', () => {
   test.beforeAll(async ({ browser }) => {
     // The usage poll never ticks: every reading is one a case set, so what
     // a case asserts after a reading is that reading's doing.
-    harness = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},usage-poll=24h` } });
+    harness = await launchHarness({ env: harnessTiming({ 'usage-poll': '24h' }) });
     await seedNativeClaudeLogin(harness, A, Date.now() + 20 * 24 * 3600_000);
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: THREADS.map((spec) => ({
@@ -292,9 +292,9 @@ test.describe.serial('Claude account auto-switch', () => {
     await expect(section().getByTestId(`provider-account-auto-switch-${aId}`)).toBeChecked();
     await expect(hint).toBeVisible();
     expect(await autoSwitchOf(B)).toBe(false);
-    if (SCRATCH) {
+    if (screenshotsOn) {
       await section().scrollIntoViewIfNeeded();
-      await section().screenshot({ path: path.join(SCRATCH, 'accounts-one-unticked.png') });
+      await screenshot(section(), { path: test.info().outputPath('accounts-one-unticked.png') });
     }
 
     await bBox().check();
@@ -629,9 +629,7 @@ test.describe.serial('Claude account auto-switch', () => {
       expect.stringContaining('start the long job'),
       expect.stringContaining(CONTINUE_TEXT),
     ]);
-    if (SCRATCH) {
-      await timeline().screenshot({ path: path.join(SCRATCH, 'thread-switch-and-continue.png') });
-    }
+    await screenshot(timeline(), { path: test.info().outputPath('thread-switch-and-continue.png') });
   });
 
   test('a refused thread stays stopped when the setting is off', async () => {

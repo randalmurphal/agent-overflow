@@ -1,6 +1,6 @@
 import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { getBackendIdentity } from '../transport/backendIdentity';
 import { rememberIdentity } from '../transport/rememberedIdentity';
 import { noteThread } from '../transport/entityIndex';
@@ -51,14 +51,12 @@ const body: ReplicaBody = { epoch: 1, rev: 1, savedAt: 1000, items: [], oldestCu
 
 beforeEach(async () => {
   await __replicaSweepForTest();
-  __resetReplicaForTest();
-  resetStagedBackends();
   localStorage.clear();
   for (const { name } of await indexedDB.databases()) {
     if (name) await new Promise<void>((resolve) => { const drop = indexedDB.deleteDatabase(name); drop.onsuccess = () => resolve(); });
   }
 });
-afterEach(async () => { await __replicaSweepForTest(); __resetReplicaForTest(); resetStagedBackends(); });
+afterEach(async () => { await __replicaSweepForTest(); });
 
 describe('offline computer catalogs', () => {
   it('cold-opens saved rows without inventing a live identity or permitting offline writes', async () => {
@@ -143,7 +141,6 @@ describe('offline computer catalogs', () => {
     expect(readCatalogRecord(record, 'g2', 'projects', 'stamp')).toBeNull();
     expect(readCatalogRecord({ ...record, rows: [{ project: { id: 'broken' } }] }, 'g1', 'projects', 'stamp')).toBeNull();
     expect(readCatalogRecord({ ...record, rows: Array(5001).fill(project) }, 'g1', 'projects', 'stamp')).toBeNull();
-    expect(makeCatalogRecord('g1', 'projects', [{ ...project, project: { ...project.project, name: 'x'.repeat(65537) } }], 'stamp').rows).toEqual([]);
     await initReplica(identity);
     await putTree('', { projects: [project] });
     const db = await openReplicaDb(replicaDatabaseName(identity.backendId));

@@ -310,28 +310,6 @@ func TestProbeBootstrapStopsWhenCanceledDuringAWait(t *testing.T) {
 	}
 }
 
-func TestProbeBootstrapRetriesServiceUnavailable(t *testing.T) {
-	var attempts atomic.Int32
-	port, _ := probeBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		if attempts.Add(1) < 3 {
-			http.Error(w, "backend not ready", http.StatusServiceUnavailable)
-			return
-		}
-		writeManifest(w, r)
-	})
-	err := ProbeBootstrap(context.Background(), port, probeTestToken, ProbeConfig{
-		AttemptTimeout: 100 * time.Millisecond,
-		Deadline:       time.Second,
-		PollInterval:   time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("ProbeBootstrap: %v", err)
-	}
-	if got := attempts.Load(); got != 3 {
-		t.Fatalf("attempts = %d, want 3", got)
-	}
-}
-
 // TestProbeBootstrapAnsweredFailuresAreTerminal: once the backend answered
 // anything but 200 or 503 the port is reachable, the answer is final, and
 // it is never classified as unreachable.
@@ -417,8 +395,9 @@ func TestProbeBootstrapUnreachable(t *testing.T) {
 	}
 }
 
-// The first retries are cheap (an instant 503 while the backend finishes
-// starting), so the gap starts short and grows toward the cap.
+// A 503 is retried until the manifest answers. The first retries are cheap
+// (an instant 503 while the backend finishes starting), so the gap starts
+// short and grows toward the cap.
 func TestProbeBootstrapBacksOffFromTheInitialInterval(t *testing.T) {
 	var attempts atomic.Int32
 	port, _ := probeBackend(t, func(w http.ResponseWriter, r *http.Request) {
@@ -440,5 +419,8 @@ func TestProbeBootstrapBacksOffFromTheInitialInterval(t *testing.T) {
 	}
 	if len(gaps) != 2 || gaps[0] != bootstrapProbeInitialPollInterval || gaps[1] != 2*bootstrapProbeInitialPollInterval {
 		t.Fatalf("retry gaps = %v, want %s then %s", gaps, bootstrapProbeInitialPollInterval, 2*bootstrapProbeInitialPollInterval)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
 	}
 }

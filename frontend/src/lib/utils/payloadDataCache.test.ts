@@ -1,16 +1,11 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   __payloadCacheStatsForTest,
-  __resetPayloadCacheForTest,
   clearPayloadCacheForThread,
   payloadVersionKey,
   readPayloadCache,
   writePayloadCache,
 } from './payloadDataCache';
-
-afterEach(() => {
-  __resetPayloadCacheForTest();
-});
 
 describe('payloadDataCache', () => {
   it('round-trips an entry by (threadId, payloadId, version)', () => {
@@ -123,66 +118,25 @@ describe('payloadDataCache', () => {
     expect(__payloadCacheStatsForTest().bytes).toBe(3);
   });
 
-  it('does not collide threadId/payloadId boundaries', () => {
-    writePayloadCache('thread', '1', 1, {
-      chunks: ['boundary-a'], hasFullChunks: true, totalSize: 10, isComplete: true, loadedBytes: 10,
+  // Each row's first entry is owned by 'thread'; its second only looks
+  // like it under a naive id join.
+  it.each([
+    ['does not collide threadId/payloadId boundaries', ['thread', '1'], ['thread-1', '']],
+    ['does not collide when ids contain the old separator byte', ['thread', 'payload\0v1'], ['thread\0payload', 'v1']],
+  ] as const)('%s', (_name, [ownThread, ownPayload], [otherThread, otherPayload]) => {
+    writePayloadCache(ownThread, ownPayload, 1, {
+      chunks: ['own'], hasFullChunks: true, totalSize: 3, isComplete: true, loadedBytes: 3,
     });
-    writePayloadCache('thread-1', '', 1, {
-      chunks: ['boundary-b'], hasFullChunks: true, totalSize: 10, isComplete: true, loadedBytes: 10,
+    writePayloadCache(otherThread, otherPayload, 1, {
+      chunks: ['other'], hasFullChunks: true, totalSize: 5, isComplete: true, loadedBytes: 5,
     });
+
+    expect(readPayloadCache(ownThread, ownPayload, 1)?.chunks).toEqual(['own']);
+    expect(readPayloadCache(otherThread, otherPayload, 1)?.chunks).toEqual(['other']);
 
     clearPayloadCacheForThread('thread');
 
-    // Only the (threadId='thread', payloadId='1') entry is evicted.
-    expect(readPayloadCache('thread', '1', 1)).toBeUndefined();
-    expect(readPayloadCache('thread-1', '', 1)?.chunks).toEqual(['boundary-b']);
-  });
-
-  it('does not collide when ids contain the old separator byte', () => {
-    writePayloadCache('thread', 'payload\0v1', 1, {
-      chunks: ['nul-a'], hasFullChunks: true, totalSize: 5, isComplete: true, loadedBytes: 5,
-    });
-    writePayloadCache('thread\0payload', 'v1', 1, {
-      chunks: ['nul-b'], hasFullChunks: true, totalSize: 5, isComplete: true, loadedBytes: 5,
-    });
-
-    expect(readPayloadCache('thread', 'payload\0v1', 1)?.chunks).toEqual(['nul-a']);
-    expect(readPayloadCache('thread\0payload', 'v1', 1)?.chunks).toEqual(['nul-b']);
-
-    clearPayloadCacheForThread('thread');
-
-    expect(readPayloadCache('thread', 'payload\0v1', 1)).toBeUndefined();
-    expect(readPayloadCache('thread\0payload', 'v1', 1)?.chunks).toEqual(['nul-b']);
-  });
-
-  it('LRU touch on read moves the entry to the freshest slot', () => {
-    writePayloadCache('thread-1', 'payload-a', 1, {
-      chunks: ['a'], hasFullChunks: true, totalSize: 1, isComplete: true, loadedBytes: 1,
-    });
-    writePayloadCache('thread-1', 'payload-b', 1, {
-      chunks: ['b'], hasFullChunks: true, totalSize: 1, isComplete: true, loadedBytes: 1,
-    });
-
-    // Read 'a' so it's the freshest. We can't directly observe insertion
-    // order externally, but the LRU contract is: subsequent eviction
-    // pressure drops 'b' first (it's now the oldest). Cap is 16 MB so
-    // we can't stress-evict cheaply — but we CAN re-read both and
-    // verify both still resolve, which proves the LRU touch didn't
-    // accidentally drop the entry it touched.
-    expect(readPayloadCache('thread-1', 'payload-a', 1)?.chunks).toEqual(['a']);
-    expect(readPayloadCache('thread-1', 'payload-b', 1)?.chunks).toEqual(['b']);
-    expect(__payloadCacheStatsForTest().entries).toBe(2);
-  });
-
-  it('__resetPayloadCacheForTest wipes everything', () => {
-    writePayloadCache('thread-1', 'payload-a', 1, {
-      chunks: ['x'], hasFullChunks: true, totalSize: 1, isComplete: true, loadedBytes: 1,
-    });
-    expect(__payloadCacheStatsForTest().entries).toBe(1);
-
-    __resetPayloadCacheForTest();
-    expect(__payloadCacheStatsForTest().entries).toBe(0);
-    expect(__payloadCacheStatsForTest().bytes).toBe(0);
-    expect(readPayloadCache('thread-1', 'payload-a', 1)).toBeUndefined();
+    expect(readPayloadCache(ownThread, ownPayload, 1)).toBeUndefined();
+    expect(readPayloadCache(otherThread, otherPayload, 1)?.chunks).toEqual(['other']);
   });
 });

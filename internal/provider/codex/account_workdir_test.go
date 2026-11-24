@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -55,7 +56,10 @@ while IFS= read -r line; do
 done
 `
 			mockexec.Write(t, binary, script)
-			cfg := codex.ProbeConfig{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: parent, Env: map[string]string{"CODEX_HOME": selected, "AO_TEST_ACCOUNT_CWD": logPath}}
+			cfg := codex.ProbeConfig{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: parent, Env: provider.EnvInput{
+				Custom: map[string]string{"AO_TEST_ACCOUNT_CWD": logPath},
+				Pins:   map[provider.ReservedEnv]string{provider.CodexHomeEnv: selected},
+			}}
 			switch operation {
 			case "usage":
 				_, err = codex.ProbeAccount(t.Context(), cfg)
@@ -69,11 +73,11 @@ done
 					t.Fatalf("usage response lost: %+v", usage)
 				}
 			case "transfer":
-				cfg.Env["AO_TEST_ACCOUNT_READ_ID"] = "2"
+				cfg.Env.Custom["AO_TEST_ACCOUNT_READ_ID"] = "2"
 				err = codex.CheckTransferAccount(t.Context(), cfg)
 			case "login", "login-handshake-failure":
 				if operation == "login-handshake-failure" {
-					cfg.Env["AO_TEST_REJECT_INITIALIZE"] = "1"
+					cfg.Env.Custom["AO_TEST_REJECT_INITIALIZE"] = "1"
 				}
 				var session *codex.LoginSession
 				session, err = codex.StartLogin(t.Context(), codex.LoginConfig{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: parent, Env: cfg.Env})

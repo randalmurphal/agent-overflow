@@ -1,7 +1,6 @@
 package codex
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,39 +10,18 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
 const testThread = "thread-test"
 
-// -- Session lifecycle tests using cat subprocess --
-
-// newTestCodexSession creates a Session backed by `cat`, which echoes
-// stdin to stdout. readLoop is started, enabling end-to-end testing of
-// dispatch, notifications, responses, and server requests.
+// newTestCodexSession attaches a session to a fixture connection as a resume
+// of "codex-thread-1" and delivers its events on the returned channel.
 func newTestCodexSession(t *testing.T) (*Session, <-chan provider.ProviderEvent) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn cat: %v", err)
-	}
 	eventCh := make(chan provider.ProviderEvent, 100)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel: cancel,
-	}
-	s.setRootThreadID("codex-thread-1")
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		proc.Close()
+	s := fixtureSession(t, testThread, "codex-thread-1", func(evt provider.ProviderEvent) {
+		eventCh <- evt
 	})
 	return s, eventCh
 }

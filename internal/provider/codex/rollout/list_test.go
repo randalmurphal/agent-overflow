@@ -118,6 +118,8 @@ func TestListExcludesArchivedSubagentAndEmptyThreads(t *testing.T) {
 	home := t.TempDir()
 	keep := touchRollout(t, home, "keep.jsonl")
 	rows := []fixtureThread{
+		// The legacy `has_user_event` column keeps its default 0, as on every
+		// row current Codex writes: filtering on it would hide every session.
 		{id: "keep", rolloutPath: keep, source: "cli", preview: "hello", recencyMS: 900},
 		{id: "archived", rolloutPath: keep, source: "cli", preview: "hello", archived: 1, recencyMS: 800},
 		{id: "sub-by-source", rolloutPath: keep, source: `{"subagent":{"thread_spawn":{}}}`, preview: "hello", recencyMS: 700},
@@ -146,25 +148,6 @@ func TestListExcludesArchivedSubagentAndEmptyThreads(t *testing.T) {
 	}
 	if got[0].Model != "gpt-5.6-sol" || got[0].ReasoningEffort != "high" {
 		t.Fatalf("indexed fallback profile not carried: %+v", got[0])
-	}
-}
-
-// The legacy `has_user_event` column is 0 on every row current Codex writes.
-// Filtering on it (as an earlier plan did) would hide every session, so this
-// pins that a row with has_user_event=0 still lists.
-func TestListDoesNotFilterOnHasUserEvent(t *testing.T) {
-	home := t.TempDir()
-	keep := touchRollout(t, home, "keep.jsonl")
-	writeStateDB(t, home, fixtureSchema, []fixtureThread{
-		{id: "keep", rolloutPath: keep, source: "cli", preview: "hello", recencyMS: 900},
-	}, nil)
-
-	got, _, err := List(context.Background(), ListOptions{CodexHome: home})
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("has_user_event=0 row was filtered out: %+v", got)
 	}
 }
 

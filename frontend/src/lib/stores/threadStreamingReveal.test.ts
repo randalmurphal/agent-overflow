@@ -6,7 +6,7 @@ import { expectCleanTransitions } from '../../test/helpers/transitions';
 import { __setSmoothingClockForTest } from './threadPaneShared';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { StreamingAssistantRevealSink } from './streamingAssistantReveal';
-import { getSettings, resetSettingsForTest } from './settings.svelte';
+import { getSettings } from './settings.svelte';
 import { matchesProvenAppend } from '../markdown';
 
 class FakeSmoothingClock implements SmoothingClock {
@@ -113,7 +113,6 @@ function makeReveal(initialItems: Item[], onArm: () => void = () => {}) {
 
 afterEach(() => {
   __setSmoothingClockForTest(undefined);
-  resetSettingsForTest();
 });
 
 describe('streaming reveal live-updates toggle transitions', () => {
@@ -429,38 +428,23 @@ describe('thread streaming reveal cleanup', () => {
     expect(reveal.revealBoundary).toBeNull();
   });
 
-  it('drops the gate when patch disposal reports an error', () => {
-    __setSmoothingClockForTest(new FakeSmoothingClock());
-    const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
-    const { reveal } = makeReveal([item]);
-    const reset = vi.fn(() => { throw new Error('patch reset failed'); });
-    reveal.registerAssistantRevealSink(item.id, sink(reset));
-    reveal.appendStreamingDelta({ ...item, summary: '' }, 'pending words ', undefined, 1);
-    expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
-
-    expect(() => reveal.applyPatch(item.id, {
-      rev: 0,
-      status: 'completed',
-      summary: 'replacement ',
-    })).toThrow(/smoother disposal failed/);
-    expect(reveal.smootherCount()).toBe(0);
-    expect(reveal.revealBoundary).toBeNull();
-  });
-
-  it('disposes a snapped patch smoother even when sink cleanup fails', () => {
+  // A divergent completed summary and a killed snap both dispose the smoother.
+  it.each([
+    ['drops the gate when patch disposal reports an error', 'completed', 'replacement '],
+    ['disposes a snapped patch smoother even when sink cleanup fails', 'killed', 'interrupted'],
+  ] as const)('%s', (_name, status, summary) => {
     __setSmoothingClockForTest(new FakeSmoothingClock());
     const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
     const { reveal } = makeReveal([item]);
     reveal.registerAssistantRevealSink(item.id, sink(() => {
-      throw new Error('snap reset failed');
+      throw new Error('patch reset failed');
     }));
     reveal.appendStreamingDelta({ ...item, summary: '' }, 'pending words ', undefined, 1);
+    expect(reveal.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
 
-    expect(() => reveal.applyPatch(item.id, {
-      rev: 0,
-      status: 'killed',
-      summary: 'interrupted',
-    })).toThrow(/smoother disposal failed/);
+    expect(() => reveal.applyPatch(item.id, { rev: 0, status, summary })).toThrow(
+      /smoother disposal failed/,
+    );
     expect(reveal.smootherCount()).toBe(0);
     expect(reveal.revealBoundary).toBeNull();
   });

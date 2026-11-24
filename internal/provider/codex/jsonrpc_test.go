@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 func TestIsThreadNotFoundRequiresTheResumeErrorShape(t *testing.T) {
@@ -41,72 +39,66 @@ func TestIsThreadNotFoundRequiresTheResumeErrorShape(t *testing.T) {
 	}
 }
 
-// -- Session unit tests --
+// -- Session JSON-RPC over a fixture connection --
 
 func TestWriteNotificationFormat(t *testing.T) {
 	t.Parallel()
-	s, eventCh := newTestCodexSession(t)
+	fx := newConnFixture(t)
 
-	// Call the actual writeNotification method. With the cat-backed session,
-	// the JSON-RPC notification echoes back and is dispatched by readLoop.
-	// "initialized" is skipped by ClassifyNotification, so send a second
-	// known notification to verify end-to-end dispatch.
-	if err := s.writeNotification("initialized", nil); err != nil {
+	if err := fx.conn.writeNotification("initialized", nil); err != nil {
 		t.Fatalf("writeNotification(initialized): %v", err)
 	}
-
-	if err := s.writeNotification("turn/started", map[string]any{
-		"turn": map[string]any{"id": "turn-verify"},
-	}); err != nil {
-		t.Fatalf("writeNotification(turn/started): %v", err)
+	if err := fx.conn.writeNotification("test/method", map[string]any{"key": "value"}); err != nil {
+		t.Fatalf("writeNotification(test/method): %v", err)
 	}
 
-	evt := codexWaitEvent(t, eventCh)
-	if evt.Kind != provider.EventTurnStart {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventTurnStart)
+	bare := fx.nextWrite()
+	if bare["jsonrpc"] != "2.0" || bare["method"] != "initialized" {
+		t.Errorf("initialized frame = %v", bare)
 	}
-	if evt.TurnID != "turn-verify" {
-		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-verify")
+	if _, ok := bare["params"]; ok {
+		t.Errorf("a notification without params must omit the key: %v", bare)
+	}
+	if _, ok := bare["id"]; ok {
+		t.Errorf("a notification must carry no id: %v", bare)
+	}
+	withParams := fx.nextWrite()
+	params, _ := withParams["params"].(map[string]any)
+	if withParams["method"] != "test/method" || params["key"] != "value" {
+		t.Errorf("test/method frame = %v", withParams)
 	}
 }
 
 func TestDispatchLineResponse(t *testing.T) {
 	t.Parallel()
-	// Create a session with a pending request.
-	s := &Session{
-		pending: make(map[int64]chan json.RawMessage),
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
+
+	wait, err := s.startRequest("test/method", nil)
+	if err != nil {
+		t.Fatalf("startRequest: %v", err)
 	}
+	id := int64(fx.nextRequest("test/method")["id"].(float64))
+	fx.respond(id, map[string]any{"ok": true})
 
-	ch := make(chan json.RawMessage, 1)
-	s.pending[1] = ch
-
-	// Dispatch a response.
-	line := []byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)
-	s.dispatchLine(line)
-
-	select {
-	case resp := <-ch:
-		if resp == nil {
-			t.Fatal("expected non-nil response")
-		}
-	default:
-		t.Fatal("expected response to be routed to pending channel")
+	result, err := wait(context.Background())
+	if err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if string(result) != `{"ok":true}` {
+		t.Errorf("result = %s, want {\"ok\":true}", result)
 	}
 }
 
 func TestDispatchLineNotification(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "t1",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-	}
+	s := fixtureSession(t, "t1", "codex-thread-1", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
 
-	line := []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-1"}}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-1"}}}`)
+	feed(t, s, line)
 
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -118,59 +110,34 @@ func TestDispatchLineNotification(t *testing.T) {
 
 func TestDispatchLineInvalidJSON(t *testing.T) {
 	t.Parallel()
-	s := &Session{
-		pending: make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {},
-	}
+	s := fixtureSession(t, "", "codex-thread-1", nil)
 	// Should not panic — logs and returns.
-	s.dispatchLine([]byte(`not valid json`))
+	feed(t, s, []byte(`not valid json`))
 }
 
 func TestDispatchLineResponseNonIntegerID(t *testing.T) {
 	t.Parallel()
-	s := &Session{
-		pending: make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {},
-	}
+	s := fixtureSession(t, "", "codex-thread-1", nil)
 	// Float ID — Int64() fails, logged and returned.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","id":1.5,"result":{}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","id":1.5,"result":{}}`))
 }
 
 func TestDispatchLineResponseNoMatchingPending(t *testing.T) {
 	t.Parallel()
-	s := &Session{
-		pending: make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {},
-	}
-	// Valid response but no pending channel for id=999 — silently ignored.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","id":999,"result":{}}`))
+	s := fixtureSession(t, "", "codex-thread-1", nil)
+	// Valid response but no pending request for id=999 — silently ignored.
+	feed(t, s, []byte(`{"jsonrpc":"2.0","id":999,"result":{}}`))
 }
 
 func TestDispatchLineServerRequest(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "t1",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-	}
+	s := fixtureSession(t, "t1", "codex-thread-1", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
 
-	// Server request with id + method — routes to handleServerRequest.
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-	defer func() {
-		cancel()
-		proc.Close()
-	}()
-	s.proc = proc
-
-	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"item/commandExecution/requestApproval","params":{"threadId":"codex-thread-1","turnId":"turn-1","itemId":"item-1","command":"ls"}}`)
+	feed(t, s, line)
 
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -182,104 +149,50 @@ func TestDispatchLineServerRequest(t *testing.T) {
 
 func TestDispatchLineServerRequestNonIntegerID(t *testing.T) {
 	t.Parallel()
-	s := &Session{
-		pending: make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {},
-	}
+	s := fixtureSession(t, "", "codex-thread-1", nil)
 	// Server request with float ID — logged and returned.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","id":1.5,"method":"item/commandExecution/requestApproval","params":{}}`))
-}
-
-func TestCodexWriteNotification(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	if err := s.writeNotification("initialized", nil); err != nil {
-		t.Fatalf("writeNotification: %v", err)
-	}
-	if err := s.writeNotification("test/method", map[string]any{"key": "value"}); err != nil {
-		t.Fatalf("writeNotification with params: %v", err)
-	}
+	feed(t, s, []byte(`{"jsonrpc":"2.0","id":1.5,"method":"item/commandExecution/requestApproval","params":{"threadId":"codex-thread-1"}}`))
 }
 
 func TestCodexWriteResponse(t *testing.T) {
 	t.Parallel()
-	s, _ := newTestCodexSession(t)
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
 
 	if err := s.writeResponse(42, map[string]any{"ok": true}); err != nil {
 		t.Fatalf("writeResponse: %v", err)
 	}
-}
-
-func TestCodexReadLoopDispatchesNotification(t *testing.T) {
-	t.Parallel()
-	s, eventCh := newTestCodexSession(t)
-
-	// Write a turn/started notification through cat.
-	line := []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"turn-1"}}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	evt := codexWaitEvent(t, eventCh)
-	if evt.Kind != provider.EventTurnStart {
-		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventTurnStart)
-	}
-	if evt.TurnID != "turn-1" {
-		t.Errorf("turnID: got %q, want %q", evt.TurnID, "turn-1")
+	frame := fx.nextWrite()
+	result, _ := frame["result"].(map[string]any)
+	if frame["id"] != float64(42) || result["ok"] != true {
+		t.Errorf("response frame = %v", frame)
 	}
 }
 
-func TestCodexReadLoopRoutesResponseToPending(t *testing.T) {
+func TestCodexSendRequestReturnsRPCError(t *testing.T) {
 	t.Parallel()
-	s, _ := newTestCodexSession(t)
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
 
-	// Set up a pending request.
-	ch := make(chan json.RawMessage, 1)
-	s.mu.Lock()
-	s.pending[42] = ch
-	s.mu.Unlock()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := s.sendRequest(context.Background(), "test/method", map[string]any{"key": "value"})
+		errCh <- err
+	}()
+	id := fx.claimRequest()
+	fx.feed([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"error":{"code":-32601,"message":"Method not found"}}`, id)))
 
-	// Write a response with id=42 through cat.
-	respLine := []byte(`{"jsonrpc":"2.0","id":42,"result":{"ok":true}}`)
-	if err := s.proc.WriteLine(respLine); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	select {
-	case resp := <-ch:
-		if resp == nil {
-			t.Fatal("expected non-nil response")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for response on pending channel")
-	}
-
-	s.mu.Lock()
-	delete(s.pending, 42)
-	s.mu.Unlock()
-}
-
-func TestCodexSendRequestViaCat(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	// With cat: request echoes -> dispatchLine sees server request (id + method) ->
-	// handleServerRequest sends JSON-RPC error (unknown method) -> error echoes ->
-	// dispatchLine sees response -> routes to pending -> sendRequest receives it.
-	// After the handleServerRequest fix, error is at top level, so sendRequest returns error.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.sendRequest(ctx, "test/method", map[string]any{"key": "value"})
-	if err == nil {
-		t.Fatal("expected error from sendRequest (unknown method)")
+	err := <-errCh
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != -32601 {
+		t.Fatalf("sendRequest error = %v, want the RPC error", err)
 	}
 }
 
 func TestCodexSendRequestContextCancel(t *testing.T) {
 	t.Parallel()
-	s, _ := newTestCodexSession(t)
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -288,64 +201,21 @@ func TestCodexSendRequestContextCancel(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected context canceled error")
 	}
+	// The request reached the wire; its cancelled waiter answers nothing.
+	fx.claimRequest()
 }
 
 func TestCodexSendRequestReturnsErrorWhenSessionStops(t *testing.T) {
 	t.Parallel()
-	// The child marks the request line as read, so the session stops with
-	// the request on the wire rather than between registering and writing it.
-	received := filepath.Join(t.TempDir(), "received")
-	ctx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", `IFS= read -r line && : > "$0"; cat >/dev/null`, received},
-	})
-	if err != nil {
-		t.Fatalf("spawn quiet process: %v", err)
-	}
-
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
-		cancel:   cancelProc,
-	}
-	s.setRootThreadID("codex-thread-1")
-	go s.readLoop()
-
-	t.Cleanup(func() {
-		cancelProc()
-		_ = proc.Close()
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := s.sendRequest(ctx, "test/method", map[string]any{"key": "value"})
+		_, err := s.sendRequest(context.Background(), "test/method", map[string]any{"key": "value"})
 		errCh <- err
 	}()
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(received); err == nil {
-			break
-		} else if !errors.Is(err, os.ErrNotExist) {
-			t.Fatal(err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for the child to read the request")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	s.mu.Lock()
-	pendingCount := len(s.pending)
-	s.mu.Unlock()
-	if pendingCount != 1 {
-		t.Fatalf("pending requests = %d, want the written request", pendingCount)
-	}
+	fx.claimRequest()
 
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close(): %v", err)
@@ -356,326 +226,143 @@ func TestCodexSendRequestReturnsErrorWhenSessionStops(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected session stop error")
 		}
-		if !strings.Contains(err.Error(), "session stopped before request completed") {
-			t.Fatalf("error = %v, want session stop message", err)
+		if !strings.Contains(err.Error(), "before request completed") {
+			t.Fatalf("error = %v, want the stopped-before-completion message", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(fixtureWait):
 		t.Fatal("timeout waiting for sendRequest to fail")
 	}
 }
 
-// TestCodexSendRequestTimeoutDrainsLateResponse covers Bug E5. Before the
-// fix, a response that arrived between the timeout firing and the
-// deferred pending-delete ran into a buffer-1 channel that nobody read,
-// leaking a record into the goroutine's stack until GC. The fix calls
-// abandon() (delete-from-pending + drain channel) inside the timeout
-// case before returning, so a late response either (a) arrives before
-// the delete and is drained, or (b) arrives after the delete and is
-// dropped by dispatchLine's default branch.
-//
-// The test drives the path by overriding requestTimeoutOverride to a
-// short window, sending the request, waiting past the timeout, then
-// injecting a response for the now-abandoned id. Before the fix, the
-// channel would retain the unread payload; after the fix, the pending
-// map is empty and no channel is holding the payload. We also assert
-// that the goroutine count returns to baseline.
+// A response that arrives after its request timed out is dropped by the
+// connection's dispatch, and the timed-out request leaves no pending entry.
 func TestCodexSendRequestTimeoutDrainsLateResponse(t *testing.T) {
-	ctx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "cat >/dev/null"},
-	})
-	if err != nil {
-		t.Fatalf("spawn quiet process: %v", err)
-	}
-	s := &Session{
-		proc:                   proc,
-		threadID:               testThread,
-		pending:                make(map[int64]chan json.RawMessage),
-		onEvent:                func(provider.ProviderEvent) {},
-		cancel:                 cancelProc,
-		requestTimeoutOverride: 50 * time.Millisecond,
-	}
-	s.setRootThreadID("codex-thread-1")
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancelProc()
-		_ = proc.Close()
-	})
-
-	// Fire a request that we know will time out because the quiet
-	// subprocess never replies.
-	start := time.Now()
-	_, err = s.sendRequest(context.Background(), "test/method", map[string]any{"k": "v"})
-	if err == nil {
-		t.Fatal("expected timeout error")
-	}
-	if !strings.Contains(err.Error(), "timeout") {
-		t.Fatalf("err = %v, want timeout", err)
-	}
-	if elapsed := time.Since(start); elapsed < 40*time.Millisecond || elapsed > 2*time.Second {
-		t.Errorf("elapsed = %v, want ~50ms", elapsed)
-	}
-
-	// After the timeout returns, the pending map must no longer contain
-	// the request id. Without the fix, the defer eventually cleaned it
-	// up but only AFTER the response could have landed in the buffered
-	// channel — here we assert the immediate post-return invariant.
-	s.mu.Lock()
-	pendingCount := len(s.pending)
-	s.mu.Unlock()
-	if pendingCount != 0 {
-		t.Errorf("pending has %d entries after timeout, want 0", pendingCount)
-	}
-
-	// Simulate a late response arriving from dispatchLine with the
-	// abandoned id. It must be silently dropped by dispatchLine
-	// (pending map already emptied) — no panic, no hang.
-	lateResponse := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"too":"late"}}`, s.nextID.Load())
-	s.dispatchLine([]byte(lateResponse))
-
-	// After all of the above, the pending map must still be empty and
-	// the session healthy. A follow-up request must work.
-	s.mu.Lock()
-	pendingCount = len(s.pending)
-	s.mu.Unlock()
-	if pendingCount != 0 {
-		t.Errorf("pending has %d entries after late response, want 0", pendingCount)
-	}
-}
-
-// TestCodexSendRequestManyTimeoutsDoNotLeak ensures that N requests
-// that all time out and later see late responses do not accumulate
-// pending-map entries, buffered channel records, or goroutines.
-func TestCodexSendRequestManyTimeoutsDoNotLeak(t *testing.T) {
 	t.Parallel()
-	ctx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "cat >/dev/null"},
-	})
-	if err != nil {
-		t.Fatalf("spawn quiet process: %v", err)
-	}
-	s := &Session{
-		proc:                   proc,
-		threadID:               testThread,
-		pending:                make(map[int64]chan json.RawMessage),
-		onEvent:                func(provider.ProviderEvent) {},
-		cancel:                 cancelProc,
-		requestTimeoutOverride: 20 * time.Millisecond,
-	}
-	s.setRootThreadID("codex-thread-1")
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancelProc()
-		_ = proc.Close()
-	})
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
+	s.requestTimeoutOverride = time.Millisecond
 
 	const rounds = 10
 	for i := 0; i < rounds; i++ {
-		_, err := s.sendRequest(context.Background(), "test/method", nil)
-		if err == nil || !strings.Contains(err.Error(), "timeout") {
-			t.Fatalf("round %d: expected timeout, got %v", i, err)
+		_, err := s.sendRequest(context.Background(), "test/method", map[string]any{"k": "v"})
+		if !IsRequestTimeout(err, "test/method") {
+			t.Fatalf("round %d: err = %v, want a timeout", i, err)
 		}
-		// Inject a late response for the id we just abandoned. Should
-		// be dropped silently.
-		lateResponse := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{}}`, s.nextID.Load())
-		s.dispatchLine([]byte(lateResponse))
+		id := fx.claimRequest()
+		fx.feed([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"too":"late"}}`, id)))
 	}
 
-	s.mu.Lock()
-	pendingCount := len(s.pending)
-	s.mu.Unlock()
+	fx.conn.pendingMu.Lock()
+	pendingCount := len(fx.conn.pending)
+	fx.conn.pendingMu.Unlock()
 	if pendingCount != 0 {
-		t.Errorf("pending has %d entries after %d timeouts, want 0", pendingCount, rounds)
+		t.Errorf("pending has %d entries after %d timeouts and late responses, want 0", pendingCount, rounds)
 	}
 }
 
-func TestCodexReadLoopEmitsDisconnectedOnExit(t *testing.T) {
+func TestCodexReadLoopEmitsDisconnectedOnClose(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
 	eventCh := make(chan provider.ProviderEvent, 100)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel:   cancel,
-		readDone: make(chan struct{}),
-	}
-	s.setRootThreadID("test")
-	go s.readLoop()
-
-	s.Close()
-
-	var gotDisconnected bool
-	timeout := time.After(5 * time.Second)
-	for !gotDisconnected {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
-				gotDisconnected = true
-			}
-		case <-timeout:
-			t.Fatal("timeout waiting for disconnected event")
-		}
-	}
-}
-
-// TestCodexReadLoopEmitsErrorStatusOnCleanUnexpectedExit pins the
-// Codex-side mirror of the Claude quiet-disconnect bug fix. An
-// app-server that exits with status 0 without us asking it to close
-// is still abnormal — triage's handleSessionDied needs the "error"
-// signal to synthesize the truncated turn-complete so the FE working
-// indicator clears. The previous `exitErr != nil` gate dropped this
-// emission when the process exited cleanly or when WaitProcessExitErr
-// hit its 100ms timeout before the OS reaped the child.
-func TestCodexReadLoopEmitsErrorStatusOnCleanUnexpectedExit(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "sleep 0.05; exit 0"},
+	s := fixtureSession(t, testThread, "codex-thread-1", func(evt provider.ProviderEvent) {
+		eventCh <- evt
 	})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 
-	eventCh := make(chan provider.ProviderEvent, 100)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel:   cancel,
-		readDone: make(chan struct{}),
-	}
-	s.setRootThreadID("test")
-	go s.readLoop()
-
-	var gotError, gotDisconnected bool
-	timeout := time.After(5 * time.Second)
-	for !(gotError && gotDisconnected) {
+	for {
 		select {
 		case evt := <-eventCh:
-			if evt.Kind != provider.EventSessionStatus {
-				continue
+			if evt.Kind == provider.EventSessionStatus && evt.Content == "error" {
+				t.Fatalf("an asked-for close emitted an error status: %+v", evt)
 			}
-			switch evt.Content {
-			case "error":
-				gotError = true
-			case "disconnected":
-				gotDisconnected = true
+			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
+				return
 			}
-		case <-timeout:
-			t.Fatalf("timeout waiting for error+disconnected on clean unexpected exit (gotError=%v gotDisconnected=%v)", gotError, gotDisconnected)
+		default:
+			t.Fatal("Close returned before the disconnected status was emitted")
 		}
 	}
 }
 
+// An app-server that exits without being asked to is abnormal whatever its
+// status: triage's handleSessionDied needs the "error" signal to synthesize
+// the truncated turn-complete so the working indicator clears.
 func TestCodexReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	exitErr := exec.Command("sh", "-c", "exit 9").Run()
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantCode int
+	}{
+		{name: "clean exit", err: nil, wantCode: 0},
+		{name: "exit status 9", err: exitErr, wantCode: 9},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fx := newConnFixture(t)
+			var events []provider.ProviderEvent
+			fx.session(testThread, "codex-thread-1", func(evt provider.ProviderEvent) {
+				events = append(events, evt)
+			})
+			fx.pipe.exitErr = tc.err
 
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "sleep 0.05; exit 9"},
-	})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+			fx.exitAppServer()
 
-	eventCh := make(chan provider.ProviderEvent, 100)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel:   cancel,
-		readDone: make(chan struct{}),
-	}
-	s.setRootThreadID("test")
-	go s.readLoop()
-
-	var gotError, gotDisconnected bool
-	timeout := time.After(5 * time.Second)
-	for !(gotError && gotDisconnected) {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind != provider.EventSessionStatus {
-				continue
-			}
-			switch evt.Content {
-			case "error":
-				gotError = true
-				var meta provider.ProcessExitInfo
-				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-					t.Fatalf("unmarshal exit meta: %v", err)
+			var gotError, gotDisconnected bool
+			for _, evt := range events {
+				if evt.Kind != provider.EventSessionStatus {
+					continue
 				}
-				if meta.ExitCode != 9 {
-					t.Fatalf("exitCode = %d, want 9", meta.ExitCode)
+				switch evt.Content {
+				case "error":
+					gotError = true
+					var meta provider.ProcessExitInfo
+					if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+						t.Fatalf("unmarshal exit meta: %v", err)
+					}
+					if meta.ExitCode != tc.wantCode {
+						t.Errorf("exitCode = %d, want %d", meta.ExitCode, tc.wantCode)
+					}
+				case "disconnected":
+					gotDisconnected = true
 				}
-			case "disconnected":
-				gotDisconnected = true
 			}
-		case <-timeout:
-			t.Fatal("timeout waiting for unexpected-exit events")
-		}
+			if !gotError || !gotDisconnected {
+				t.Fatalf("events = %+v, want error and disconnected statuses", events)
+			}
+		})
 	}
 }
 
 func TestCodexReadLoopCleansPendingOnExit(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-	eventCh := make(chan provider.ProviderEvent, 100)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel: cancel,
-	}
-	s.setRootThreadID("test")
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
 
-	// Add a pending request before readLoop starts.
-	pendingCh := make(chan json.RawMessage, 1)
-	s.mu.Lock()
-	s.pending[99] = pendingCh
-	s.mu.Unlock()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := s.sendRequest(context.Background(), "test/method", nil)
+		errCh <- err
+	}()
+	fx.claimRequest()
 
-	go s.readLoop()
+	fx.exitAppServer()
 
-	// Kill the process — readLoop should clean up pending.
-	s.Close()
-
-	// The pending channel should be closed.
 	select {
-	case _, ok := <-pendingCh:
-		if ok {
-			t.Error("expected pending channel to be closed, got a value")
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("a request in flight when the app-server exited must fail")
 		}
-		// Channel was closed — correct.
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for pending channel to be closed")
+	case <-time.After(fixtureWait):
+		t.Fatal("the in-flight request was not released when the app-server exited")
 	}
+}
+
+// isThreadWriterConflict reports whether err is a writer-ownership refusal.
+func isThreadWriterConflict(err error) bool {
+	var conflict *ThreadWriterConflictError
+	return errors.As(err, &conflict)
 }

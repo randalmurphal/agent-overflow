@@ -124,56 +124,40 @@ func newTestDispatcher(t *testing.T, opts RegisterOptions) (*Dispatcher, *fakeAp
 	return d, app
 }
 
+// TestDispatcher_Register_PointerOnly refuses a value receiver and a nil
+// one.
 func TestDispatcher_Register_PointerOnly(t *testing.T) {
-	d := NewDispatcher()
-	if _, err := d.Register(fakeApp{}, RegisterOptions{}); err == nil {
-		t.Fatalf("expected non-pointer receiver to error")
+	for name, receiver := range map[string]any{"value receiver": fakeApp{}, "nil receiver": nil} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewDispatcher().Register(receiver, RegisterOptions{}); err == nil {
+				t.Fatalf("expected a %s to error", name)
+			}
+		})
 	}
 }
 
-func TestDispatcher_Register_NilReceiver(t *testing.T) {
-	d := NewDispatcher()
-	if _, err := d.Register(nil, RegisterOptions{}); err == nil {
-		t.Fatalf("expected nil receiver to error")
-	}
-}
-
-func TestDispatcher_Register_SkipsUnexported(t *testing.T) {
-	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
-	if _, ok := d.LookupName("privateMethod"); ok {
-		t.Fatalf("unexported method must not be registered")
-	}
-	// Sanity: Greet is reachable via the same path.
-	if _, ok := d.LookupName("Greet"); !ok {
-		t.Fatalf("Greet should be registered")
-	}
-}
-
-func TestDispatcher_Register_SkipList(t *testing.T) {
-	d, _ := newTestDispatcher(t, RegisterOptions{
-		Package:  "main",
-		TypeName: "App",
-		Skip:     map[string]bool{"Boom": true},
-	})
-	if _, ok := d.LookupName("Boom"); ok {
-		t.Fatalf("Boom should not be registered when in Skip")
-	}
-	if _, ok := d.LookupName("Greet"); !ok {
-		t.Fatalf("Greet should be registered")
-	}
-}
-
-func TestDispatcher_Register_AllowList(t *testing.T) {
-	d, _ := newTestDispatcher(t, RegisterOptions{
-		Package:   "main",
-		TypeName:  "App",
-		AllowList: map[string]bool{"Greet": true},
-	})
-	if _, ok := d.LookupName("Greet"); !ok {
-		t.Fatalf("Greet should be registered")
-	}
-	if _, ok := d.LookupName("Add"); ok {
-		t.Fatalf("Add should NOT be registered (AllowList excludes it)")
+// TestDispatcher_Register_FiltersMethods: an unexported method, a Skip
+// entry and a method outside the AllowList are each left unregistered,
+// while Greet stays reachable.
+func TestDispatcher_Register_FiltersMethods(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		opts   RegisterOptions
+		absent string
+	}{
+		{"unexported", RegisterOptions{Package: "main", TypeName: "App"}, "privateMethod"},
+		{"skip list", RegisterOptions{Package: "main", TypeName: "App", Skip: map[string]bool{"Boom": true}}, "Boom"},
+		{"allow list", RegisterOptions{Package: "main", TypeName: "App", AllowList: map[string]bool{"Greet": true}}, "Add"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _ := newTestDispatcher(t, tc.opts)
+			if _, ok := d.LookupName(tc.absent); ok {
+				t.Fatalf("%s must not be registered", tc.absent)
+			}
+			if _, ok := d.LookupName("Greet"); !ok {
+				t.Fatalf("Greet should be registered")
+			}
+		})
 	}
 }
 
@@ -278,15 +262,6 @@ func TestDispatcher_Invoke_BadParams(t *testing.T) {
 	if fe == nil || fe.Code != ErrCodeBadParams {
 		t.Fatalf("expected bad_params for type mismatch, got %v", fe)
 	}
-}
-
-func TestDispatcher_Invoke_BadParams_DoesNotLeakInternals(t *testing.T) {
-	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
-	m, _ := resolveLoopback(d, 0, "Greet")
-	_, fe := d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`123`)})
-	if fe == nil {
-		t.Fatalf("expected bad_params")
-	}
 	// Wire message must NOT include json.Unmarshal's verbose internals.
 	if strings.Contains(fe.Message, "json:") || strings.Contains(fe.Message, "main.App") {
 		t.Fatalf("error message leaked internals: %q", fe.Message)
@@ -318,6 +293,10 @@ func TestDispatcher_Invoke_MethodReturnsError(t *testing.T) {
 	}
 	if fe.Message != "save refused" {
 		t.Fatalf("method error text = %q, want the method's own error", fe.Message)
+	}
+	// The frame carries the reference for its server log entry.
+	if fe.Detail == nil || !regexp.MustCompile(`^[A-Za-z0-9_-]{4,}$`).MatchString(fe.Detail.Ref) {
+		t.Fatalf("detail = %+v; want a correlation id as its ref", fe.Detail)
 	}
 }
 
@@ -400,20 +379,6 @@ func TestDispatcher_Invoke_TwoReturnsWithError(t *testing.T) {
 	}
 	if !strings.Contains(fe.Message, "intentionally unhappy") {
 		t.Fatalf("method error text = %q, want the method's own error", fe.Message)
-	}
-}
-
-// TestDispatcher_Invoke_MethodErrorIncludesCorrelationID pins the
-// reference every method-error frame carries for its server log entry.
-func TestDispatcher_Invoke_MethodErrorIncludesCorrelationID(t *testing.T) {
-	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
-	m, _ := resolveLoopback(d, 0, "Save")
-	_, fe := d.Invoke(context.Background(), m, []json.RawMessage{json.RawMessage(`"fail"`)})
-	if fe == nil || fe.Detail == nil {
-		t.Fatalf("expected an error frame with a detail, got %+v", fe)
-	}
-	if !regexp.MustCompile(`^[A-Za-z0-9_-]{4,}$`).MatchString(fe.Detail.Ref) {
-		t.Fatalf("detail ref %q is not a correlation id", fe.Detail.Ref)
 	}
 }
 
@@ -673,18 +638,16 @@ type publicFailureApp struct{ err error }
 
 func (a *publicFailureApp) Fail() error { return fmt.Errorf("private wrapper: %w", a.err) }
 
-func TestDispatcherPublicErrorKeepsCodeAndHidesCauseOnEveryOrigin(t *testing.T) {
+func TestDispatcherPublicErrorKeepsCodeAndHidesCause(t *testing.T) {
 	cause := errors.New("secret /private/path?ticket=private-token")
 	d := NewDispatcher()
 	if _, err := d.Register(&publicFailureApp{errorsx.Public("remote_capacity", "All command slots are busy. Wait and retry.", cause)}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
 		t.Fatal(err)
 	}
 	method, _ := resolveLoopback(d, 0, "Fail")
-	for _, local := range []bool{false, true} {
-		_, frame := d.Invoke(context.Background(), method, nil)
-		if frame == nil || frame.Code != "remote_capacity" || frame.Message != "All command slots are busy. Wait and retry." {
-			t.Fatalf("origin %v: %+v", local, frame)
-		}
+	_, frame := d.Invoke(context.Background(), method, nil)
+	if frame == nil || frame.Code != "remote_capacity" || frame.Message != "All command slots are busy. Wait and retry." {
+		t.Fatalf("frame = %+v", frame)
 	}
 }
 
@@ -699,8 +662,8 @@ func (e *rateLimitRefusal) Unwrap() error                       { return e.publi
 func (e *rateLimitRefusal) RateLimitRelease() (bool, time.Time) { return e.reserve, e.until }
 
 // A forge rate limit refusal says whether it kept the reserve and when it
-// lifts, on every origin and only under forge_rate_limited.
-func TestDispatcherForgeRateLimitCarriesItsReleaseOnEveryOrigin(t *testing.T) {
+// lifts, and only under forge_rate_limited.
+func TestDispatcherForgeRateLimitCarriesItsRelease(t *testing.T) {
 	until := time.Date(2026, 10, 21, 9, 30, 0, 0, time.FixedZone("x", 3600))
 	cases := []struct {
 		code     string
@@ -717,11 +680,9 @@ func TestDispatcherForgeRateLimitCarriesItsReleaseOnEveryOrigin(t *testing.T) {
 			t.Fatal(err)
 		}
 		method, _ := resolveLoopback(d, 0, "Fail")
-		for _, local := range []bool{false, true} {
-			_, frame := d.Invoke(context.Background(), method, nil)
-			if frame == nil || frame.Code != tc.code || frame.Reserve != tc.reserve || frame.ResumeAt != tc.resumeAt {
-				t.Fatalf("%s origin %v: %+v", tc.code, local, frame)
-			}
+		_, frame := d.Invoke(context.Background(), method, nil)
+		if frame == nil || frame.Code != tc.code || frame.Reserve != tc.reserve || frame.ResumeAt != tc.resumeAt {
+			t.Fatalf("%s: %+v", tc.code, frame)
 		}
 	}
 }
@@ -735,9 +696,9 @@ func (e *agentRefusal) Error() string                            { return e.publ
 func (e *agentRefusal) Unwrap() error                            { return e.public }
 func (e *agentRefusal) RefusedBackgroundAgents() json.RawMessage { return e.agents }
 
-// A refused stop's agents reach every origin as backgroundAgents, and only
+// A refused stop's agents reach the caller as backgroundAgents, and only
 // under background_agents_running: another public code never carries them.
-func TestDispatcherBackgroundAgentRefusalCarriesTheAgentsOnEveryOrigin(t *testing.T) {
+func TestDispatcherBackgroundAgentRefusalCarriesTheAgents(t *testing.T) {
 	agents := json.RawMessage(`[{"launchItemId":"a1","description":"Scan","runState":"parked","transcriptRootId":"a1"}]`)
 	cases := []struct {
 		code string
@@ -753,21 +714,19 @@ func TestDispatcherBackgroundAgentRefusalCarriesTheAgentsOnEveryOrigin(t *testin
 			t.Fatal(err)
 		}
 		method, _ := resolveLoopback(d, 0, "Fail")
-		for _, local := range []bool{false, true} {
-			_, frame := d.Invoke(context.Background(), method, nil)
-			if frame == nil || frame.Code != tc.code || frame.Message != "Confirm to stop it." {
-				t.Fatalf("%s origin %v: %+v", tc.code, local, frame)
-			}
-			if string(frame.BackgroundAgents) != tc.want {
-				t.Fatalf("%s origin %v: backgroundAgents = %s, want %s", tc.code, local, frame.BackgroundAgents, tc.want)
-			}
-			wire, err := json.Marshal(frame)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if carried := strings.Contains(string(wire), `"backgroundAgents":`); carried != (tc.want != "") {
-				t.Fatalf("%s origin %v: wire %s", tc.code, local, wire)
-			}
+		_, frame := d.Invoke(context.Background(), method, nil)
+		if frame == nil || frame.Code != tc.code || frame.Message != "Confirm to stop it." {
+			t.Fatalf("%s: %+v", tc.code, frame)
+		}
+		if string(frame.BackgroundAgents) != tc.want {
+			t.Fatalf("%s: backgroundAgents = %s, want %s", tc.code, frame.BackgroundAgents, tc.want)
+		}
+		wire, err := json.Marshal(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if carried := strings.Contains(string(wire), `"backgroundAgents":`); carried != (tc.want != "") {
+			t.Fatalf("%s: wire %s", tc.code, wire)
 		}
 	}
 }

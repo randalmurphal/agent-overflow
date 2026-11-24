@@ -34,7 +34,8 @@ import (
 )
 
 // maxInvocations bounds the recorded log. A soak run polls PR state for
-// hours; the oldest entries go first and Dropped counts them.
+// hours; the oldest entries go first, and a read of the log counts those
+// it would have returned (InvocationLog.Dropped).
 const maxInvocations = 4096
 
 // defaultViewer is the signed-in user when the fixture names none.
@@ -134,8 +135,9 @@ func (inv Invocation) MarshalJSON() ([]byte, error) {
 // InvocationLog is a window of the recorded invocations.
 type InvocationLog struct {
 	Invocations []Invocation `json:"invocations"`
-	// Dropped counts invocations evicted by the log bound since the last
-	// reset.
+	// Dropped counts the invocations of the window, recorded after since
+	// and since the last reset, that the log bound evicted before this
+	// read: a reader that sees it nonzero has missed them.
 	Dropped int `json:"dropped"`
 }
 
@@ -195,7 +197,10 @@ type Engine struct {
 	traceRequests map[int64]int
 	log           []Invocation
 	seq           int
-	dropped       int
+	// resetSeq is seq at the last reset; evictedThrough is the Seq of the
+	// last invocation the log bound evicted, resetSeq when none has been
+	// since. The evicted ones are those in between.
+	resetSeq, evictedThrough int
 }
 
 // New builds an empty engine. Every invocation against it answers "not
@@ -274,7 +279,7 @@ func (e *Engine) Reset() {
 	clear(e.holds)
 	clear(e.traceRequests)
 	e.log = nil
-	e.dropped = 0
+	e.resetSeq, e.evictedThrough = e.seq, e.seq
 }
 
 // SetOffline makes the forge unreachable (or reachable again). While
@@ -302,17 +307,18 @@ func offlineResponse(c *call) response {
 	return response{route: "offline", stderr: stderr, exit: 1}
 }
 
-// Invocations returns the recorded invocations with Seq > since.
+// Invocations returns the recorded invocations with Seq > since. The log
+// is in Seq order, so the window starts where a search puts since rather
+// than after a scan of every retained row.
 func (e *Engine) Invocations(since int) InvocationLog {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	out := InvocationLog{Invocations: []Invocation{}, Dropped: e.dropped}
-	for _, inv := range e.log {
-		if inv.Seq > since {
-			inv.Args = slices.Clone(inv.Args)
-			inv.Variables = slices.Clone(inv.Variables)
-			out.Invocations = append(out.Invocations, inv)
-		}
+	first, _ := slices.BinarySearchFunc(e.log, since+1, func(inv Invocation, seq int) int { return inv.Seq - seq })
+	out := InvocationLog{Invocations: make([]Invocation, 0, len(e.log)-first), Dropped: max(0, e.evictedThrough-max(since, e.resetSeq))}
+	for _, inv := range e.log[first:] {
+		inv.Args = slices.Clone(inv.Args)
+		inv.Variables = slices.Clone(inv.Variables)
+		out.Invocations = append(out.Invocations, inv)
 	}
 	return out
 }
@@ -369,8 +375,8 @@ func (e *Engine) record(inv Invocation) {
 	}
 	e.log = append(e.log, inv)
 	if over := len(e.log) - maxInvocations; over > 0 {
+		e.evictedThrough = e.log[over-1].Seq
 		e.log = slices.Delete(e.log, 0, over)
-		e.dropped += over
 	}
 	e.mu.Unlock()
 

@@ -74,8 +74,9 @@ type guideCommand struct {
 	reply  chan response
 }
 type takeoverCommand struct {
-	itemID string
-	reply  chan response
+	itemID     string
+	parkedOnly bool
+	reply      chan response
 }
 type completeTakeoverCommand struct {
 	itemID string
@@ -367,7 +368,12 @@ func (e *Engine) loop() {
 			e.commandStarts = nil
 			command.reply <- response{err: guideErr}
 		case takeoverCommand:
-			err = errors.Join(e.takeOver(command.itemID), e.startWaiting())
+			// A parked-only takeover runs no scheduler pass: it acts only on an
+			// attempt whose park already released its capacity.
+			err = e.takeOver(command.itemID, command.parkedOnly)
+			if !command.parkedOnly {
+				err = errors.Join(err, e.startWaiting())
+			}
 			e.commandStarts = nil
 			command.reply <- response{err: err}
 		case completeTakeoverCommand:

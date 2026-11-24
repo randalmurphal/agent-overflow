@@ -7,54 +7,30 @@ import (
 	"agent-overflow/internal/store"
 )
 
-func TestFallbackProvider_EmptyProbeDefaultsToClaude(t *testing.T) {
-	// No probe data → Claude (canonical default, consistent error surface).
-	if got := FallbackProvider(); got != string(provider.Claude) {
-		t.Fatalf("FallbackProvider() = %q, want %q", got, provider.Claude)
-	}
-	if got := FallbackProvider([]string{}...); got != string(provider.Claude) {
-		t.Fatalf("FallbackProvider([]...) = %q, want %q", got, provider.Claude)
-	}
-}
-
-func TestFallbackProvider_BothAvailablePrefersClaude(t *testing.T) {
-	got := FallbackProvider(string(provider.Claude), string(provider.Codex))
-	if got != string(provider.Claude) {
-		t.Fatalf("FallbackProvider(both) = %q, want %q", got, provider.Claude)
-	}
-}
-
-func TestFallbackProvider_OnlyCodexAvailableReturnsCodex(t *testing.T) {
-	got := FallbackProvider(string(provider.Codex))
-	if got != string(provider.Codex) {
-		t.Fatalf("FallbackProvider(codex) = %q, want %q", got, provider.Codex)
-	}
-}
-
-func TestFallbackProvider_OnlyClaudeAvailableReturnsClaude(t *testing.T) {
-	got := FallbackProvider(string(provider.Claude))
-	if got != string(provider.Claude) {
-		t.Fatalf("FallbackProvider(claude) = %q, want %q", got, provider.Claude)
-	}
-}
-
-func TestFallbackProvider_UnknownProvidersIgnored(t *testing.T) {
-	// Probe with only unknown names → defaults to Claude.
-	got := FallbackProvider("bogus", "phantom")
-	if got != string(provider.Claude) {
-		t.Fatalf("FallbackProvider(unknown) = %q, want %q", got, provider.Claude)
-	}
-}
-
-func TestFallbackProvider_MixedKnownAndUnknown(t *testing.T) {
-	// Unknown names mixed with a known Codex → still picks Codex (Claude
-	// isn't in the list, the unknowns can't substitute).
-	if got := FallbackProvider("bogus", string(provider.Codex)); got != string(provider.Codex) {
-		t.Fatalf("FallbackProvider(bogus, codex) = %q, want %q", got, provider.Codex)
-	}
-	// Same with Claude in the list — Claude wins regardless of position.
-	if got := FallbackProvider("bogus", string(provider.Claude)); got != string(provider.Claude) {
-		t.Fatalf("FallbackProvider(bogus, claude) = %q, want %q", got, provider.Claude)
+func TestFallbackProvider(t *testing.T) {
+	claude, codex := string(provider.Claude), string(provider.Codex)
+	for _, tc := range []struct {
+		name      string
+		available []string
+		want      string
+	}{
+		// No probe data → Claude (canonical default, consistent error surface).
+		{"no probe", nil, claude},
+		{"empty probe", []string{}, claude},
+		{"both available prefers claude", []string{claude, codex}, claude},
+		{"only codex", []string{codex}, codex},
+		{"only claude", []string{claude}, claude},
+		{"only unknown names", []string{"bogus", "phantom"}, claude},
+		// Claude isn't in the list, and the unknowns can't substitute.
+		{"unknown and codex", []string{"bogus", codex}, codex},
+		// Claude wins regardless of position.
+		{"unknown and claude", []string{"bogus", claude}, claude},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FallbackProvider(tc.available...); got != tc.want {
+				t.Fatalf("FallbackProvider(%q) = %q, want %q", tc.available, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -287,18 +263,6 @@ func TestContextWindowSupported(t *testing.T) {
 	}
 	if ContextWindowSupported(nil, 100_000) {
 		t.Fatalf("nil options should reject everything")
-	}
-}
-
-func TestIsValidContextWindow(t *testing.T) {
-	if !IsValidContextWindow(1) {
-		t.Fatalf("positive should be valid")
-	}
-	if IsValidContextWindow(0) {
-		t.Fatalf("zero should be invalid")
-	}
-	if IsValidContextWindow(-100) {
-		t.Fatalf("negative should be invalid")
 	}
 }
 

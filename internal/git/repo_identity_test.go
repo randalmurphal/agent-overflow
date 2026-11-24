@@ -10,17 +10,6 @@ import (
 	"agent-overflow/internal/testutil"
 )
 
-// headCommit reads the current HEAD sha so a test can assert against the real
-// hash rather than a fixture value.
-func headCommit(t *testing.T, repo string) string {
-	t.Helper()
-	result, err := NewCore().run(repo, "rev-parse", "HEAD")
-	if err != nil || result.exitCode != 0 {
-		t.Fatalf("rev-parse HEAD in %s: %v (exit %d)", repo, err, result.exitCode)
-	}
-	return strings.TrimSpace(result.stdout)
-}
-
 func readIdentity(t *testing.T, core *Core, cwd string) RepoIdentity {
 	t.Helper()
 	identity, err := core.ReadRepoIdentity(context.Background(), cwd)

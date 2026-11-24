@@ -14,7 +14,8 @@ import type { Browser, Page } from '@playwright/test';
 import { realpath } from 'node:fs/promises';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
-import { methodIdByName } from './offhost-helpers.js';
+import { DRAFT_SAVE_DEBOUNCE_MS } from '../../frontend/src/lib/pageTiming.ts';
+import { methodIdByName, trackPageCalls } from './offhost-helpers.js';
 
 const PROJECT = 'draft-worktree-app';
 /** Committed by the fixture and left unchecked-out, so a worktree can attach it. */
@@ -102,7 +103,7 @@ async function stageNewWorktree(page: Page): Promise<void> {
   await expect(stripLabels(page).env).toHaveText('New Worktree');
 }
 
-test('worktree selection materializes a draft and create binds it to an existing branch', async ({
+test('worktree selection materializes a draft, create binds it to an existing branch, and a send from it reuses that thread', async ({
   harness,
   page,
 }) => {
@@ -137,33 +138,14 @@ test('worktree selection materializes a draft and create binds it to an existing
   await expect(stripLabels(page).branch).toHaveText(EXISTING_BRANCH);
   await expect(page.getByTestId('apply-worktree-intent-button')).toHaveCount(0);
 
-  const rows = await threadRows(harness);
-  expect(rows).toHaveLength(1);
-  await expectSameFilesystemPath(rows[0].workspacePath, worktree!.path);
-  await expectSameFilesystemPath(rows[0].worktreePath, worktree!.path);
-  expect(rows[0].branch).toBe(EXISTING_BRANCH);
-});
-
-test('sending from that draft reuses the thread already bound to the worktree', async ({
-  harness,
-  page,
-}) => {
-  const projectId = await seedProject(harness);
-  await openFreshDraft(harness, page);
-
-  await stageNewWorktree(page);
-  await page.getByTestId('branch-picker-trigger').click();
-  await page.getByRole('menuitem', { name: EXISTING_BRANCH }).click();
-  await page.getByTestId('apply-worktree-intent-button').click();
-  await expect(
-    page.getByRole('alert').filter({ hasText: `Created worktree on ${EXISTING_BRANCH}` }),
-  ).toBeVisible();
-  const worktree = await registeredWorktree(harness, projectId, EXISTING_BRANCH);
-  expect(worktree).toBeDefined();
   const rowsBeforeSend = await threadRows(harness);
   expect(rowsBeforeSend).toHaveLength(1);
+  await expectSameFilesystemPath(rowsBeforeSend[0].workspacePath, worktree!.path);
+  await expectSameFilesystemPath(rowsBeforeSend[0].worktreePath, worktree!.path);
+  expect(rowsBeforeSend[0].branch).toBe(EXISTING_BRANCH);
   const rowBeforeSend = rowsBeforeSend[0]!;
 
+  // Sending from that draft reuses the thread already bound to the worktree.
   await page.getByLabel('Message Input').fill('Where am I running?');
   await page.getByTestId('composer-send').click();
 
@@ -193,6 +175,7 @@ test('sending from that draft reuses the thread already bound to the worktree', 
   await expect(stripLabels(page).branch).toHaveText(EXISTING_BRANCH);
   await expect(page.getByTestId('thread-row')).toHaveCount(1);
 });
+
 
 test('a fresh draft binds its materialized row to a new worktree branch', async ({
   harness,
@@ -463,18 +446,28 @@ async function eraseWithDeleteHeld(harness: HarnessApp, page: Page, hold: Awaite
   return { input, original };
 }
 
+/**
+ * The composer's save debounce: every save a page still had due falls due
+ * within it, so moving a page clock this far runs them, and it is far short
+ * of anything else of the connection.
+ */
+const PAST_DRAFT_DEBOUNCE_MS = DRAFT_SAVE_DEBOUNCE_MS;
+
 test('typing again while the erased draft is being deleted keeps every character in the replacement thread', async ({
   harness,
   page,
 }) => {
   await seedProject(harness);
   const hold = await holdDeleteReply(page);
+  // The page clock runs as the real one does; the save debounce is crossed
+  // below by moving it on.
+  await page.clock.install();
   const { input, original } = await eraseWithDeleteHeld(harness, page, hold);
 
   await input.pressSequentially('typed again');
   // The hold outlasts the composer's save debounce, so the new text's save
   // falls due while the reply is outstanding.
-  await page.waitForTimeout(1500);
+  await page.clock.fastForward(PAST_DRAFT_DEBOUNCE_MS);
   hold.release();
 
   await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
@@ -512,23 +505,35 @@ test('text typed during the erased draft’s delete and left by opening another 
   await expect(input).toHaveValue('typed then left');
 });
 
-/** A page whose draft saves for one thread reach the server only when released. */
+/**
+ * A page whose draft saves for one thread reach the server only once
+ * released; after that every frame passes. `calls` is the page's own record
+ * of its calls, installed after the route so it sees the routed socket; a
+ * save the route holds stays open in it until released and answered.
+ */
 async function holdDraftSaves(page: Page, threadId: () => string) {
   const saveMethod = methodIdByName('SaveDraft');
   const held: Array<() => void> = [];
+  let holding = true;
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
-      const frame = JSON.parse(String(message)) as { type?: string; methodId?: number; params?: unknown[] };
-      if (frame.type === 'rpc' && frame.methodId === saveMethod && threadId() && frame.params?.[0] === threadId()) {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number; params?: unknown[] };
+      if (holding && frame.type === 'rpc' && frame.methodId === saveMethod && threadId() && frame.params?.[0] === threadId()) {
         held.push(() => server.send(message));
         return;
       }
       server.send(message);
     });
-    server.onMessage((message) => socket.send(message));
   });
-  return { count: () => held.length, release: () => held.splice(0).forEach((send) => send()) };
+  return {
+    calls: await trackPageCalls(page),
+    count: () => held.length,
+    release: () => {
+      holding = false;
+      held.splice(0).forEach((send) => send());
+    },
+  };
 }
 
 // Other screens on the same new thread keep typing while this one erases it.
@@ -541,10 +546,15 @@ test('text typed on other screens into a new thread this screen erases ends in a
   let shared = '';
   const others = await Promise.all([browser.newContext(), browser.newContext()]);
   try {
+    // Every page's clock runs as the real one does; the end moves them all
+    // on past the save debounce.
     const screens = await Promise.all(others.map(async (context) => {
       const other = await context.newPage();
+      await other.clock.install();
       return { page: other, saves: await holdDraftSaves(other, () => shared) };
     }));
+    await page.clock.install();
+    const calls = await trackPageCalls(page);
     await openFreshDraft(harness, page);
     await page.getByLabel('Message Input').fill('half a thought');
     await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
@@ -573,7 +583,13 @@ test('text typed on other screens into a new thread this screen erases ends in a
     }
     await expect(page.getByLabel('Message Input')).toHaveValue('');
     await expect(errorToasts(page)).toHaveCount(0);
-    await page.waitForTimeout(500);
+    // Nothing a page still had due makes another thread: every debounce has
+    // run, and every call it sent, which the page recorded as it sent it
+    // inside the clock move, is answered.
+    for (const view of [page, ...screens.map((screen) => screen.page)]) await view.clock.fastForward(PAST_DRAFT_DEBOUNCE_MS);
+    for (const pageCalls of [calls, ...screens.map((screen) => screen.saves.calls)]) {
+      await pageCalls.drain('a call a page made after the last save debounce was not answered');
+    }
     expect((await threadRows(harness)).length).toBe(2);
   } finally {
     await Promise.all(others.map((context) => context.close()));

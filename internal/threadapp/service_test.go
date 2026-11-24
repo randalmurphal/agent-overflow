@@ -16,6 +16,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 type testModels struct{}
@@ -118,11 +119,7 @@ func (r *recentRecorder) AddRecentWorkspace(bucket, class, path string) {
 
 func newServiceFixture(t *testing.T) (*Service, *store.Store, *testModels) {
 	t.Helper()
-	database, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
+	database := storetest.Clone(t)
 	if _, err := database.CreateProject(store.Project{
 		ID: "project", Path: "/repo", Name: "repo", CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
@@ -345,8 +342,8 @@ func TestModelSelectionClearsProviderStateAndHonorsProviderLock(t *testing.T) {
 	if err := database.InsertItem(store.Item{ID: "user", ThreadID: thread.ID, TurnIndex: 0, Kind: "user_text", Role: "user", Summary: "hello", CreatedAt: 1}); err != nil {
 		t.Fatalf("InsertItem: %v", err)
 	}
-	if _, err := service.UpdateProvider(thread.ID, "claude"); err == nil || err.Error() != "update provider: thread is locked to codex (start a new thread to use claude)" {
-		t.Fatalf("UpdateProvider locked error = %v", err)
+	if _, err := service.UpdateModelSelection(thread.ID, "claude", "claude-sonnet-4-6"); err == nil || err.Error() != "update provider: thread is locked to codex (start a new thread to use claude)" {
+		t.Fatalf("UpdateModelSelection locked error = %v", err)
 	}
 }
 

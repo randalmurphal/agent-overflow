@@ -464,6 +464,9 @@ type Conforms<Role, Impl extends Role> = Impl;
  * Purely a type — nothing constructs this. If a role drifts away from
  * the pane (a member renamed, a signature changed, a getter dropped),
  * the failing field names the role and the error names the member.
+ *
+ * @public Nothing imports it: the export only keeps noUnusedLocals from
+ * reporting the declaration that is the check.
  */
 export type ThreadPaneRoleConformance = {
   paneSession: Conforms<PaneSession, ThreadPane>;

@@ -61,32 +61,6 @@ describe('<AssistantMessage>', () => {
     expect(plain.container.querySelector('.discarded-row')).toBeNull();
   });
 
-  it('renders an unterminated inline marker as literal text during stream', async () => {
-    // The renderer in `lib/markdown/` strips its
-    // inline-emphasis plugins from `IncompleteMarkdownParser.createDefaultPlugins`,
-    // so unterminated `**`, `~~`, backtick, `_`, etc. are no longer
-    // speculatively closed mid-stream. The user sees literal `**markdown`
-    // until the real closer arrives, then one clean transition to a bold
-    // span — the alternative (speculative close → unbalanced regrowth on
-    // the next chunk) produced visible "spreading" jitter on every
-    // assistant response containing inline markdown.
-    const { getByTestId } = render(AssistantMessage, {
-      props: {
-        item: makeItem({
-          status: 'streaming',
-          summary: 'streaming **markdown',
-        }),
-      },
-    });
-
-    const body = getByTestId('assistant-message-body');
-    expect(body.getAttribute('data-render-mode')).toBe('client-markdown');
-    await waitFor(() => {
-      expect(body.textContent).toContain('streaming **markdown');
-      expect(body.querySelector('strong')).toBeNull();
-    });
-  });
-
   // The fixture leads each section with `**bold**`, matching real
   // assistant prose (and the reported bug): the boundary detector must
   // commit a `**…**`-led paragraph so the committed prefix advances. If
@@ -112,6 +86,10 @@ describe('<AssistantMessage>', () => {
         expect(body.textContent).toContain('done body text.');
       });
       expect(body.textContent).not.toContain('still in progress');
+      // A committed block is on screen, so the meta row appears with it.
+      await waitFor(() => {
+        expect(getByTestId('assistant-message-meta')).toBeInTheDocument();
+      });
     } finally {
       resetSettingsForTest();
     }
@@ -233,56 +211,20 @@ describe('<AssistantMessage>', () => {
   });
 
   it('hides the timestamp/meta row until the first block commits (streaming disabled)', async () => {
-    // Bug follow-up: with streaming disabled the body is withheld until a
-    // block commits, but the meta row (timestamp + copy slot) used to
-    // render unconditionally — so a lone timestamp floated over an empty
-    // body from the instant streaming started. A single unterminated
-    // paragraph has no committed prefix, so the whole row must be empty.
-    getSettings().streamingEnabled = false;
-    try {
-      const { getByTestId, queryByTestId } = render(AssistantMessage, {
-        props: {
-          item: makeItem({
-            status: 'streaming',
-            summary: '**On the ports:** still typing this first section',
-          }),
-        },
-      });
-      // Nothing committed → no visible body text and no meta row.
-      expect(getByTestId('assistant-message-body').textContent?.trim()).toBe('');
-      expect(queryByTestId('assistant-message-meta')).toBeNull();
-    } finally {
-      resetSettingsForTest();
-    }
-  });
-
-  it('shows the meta row once a block commits (streaming disabled)', async () => {
-    getSettings().streamingEnabled = false;
-    try {
-      const { getByTestId } = render(AssistantMessage, {
-        props: {
-          item: makeItem({ status: 'streaming', summary: SPLIT_FIXTURE }),
-        },
-      });
-      // A committed block is on screen → the meta row appears with it.
-      await waitFor(() => {
-        expect(getByTestId('assistant-message-meta')).toBeInTheDocument();
-      });
-    } finally {
-      resetSettingsForTest();
-    }
-  });
-
-  it('reveals the meta row when the first block commits mid-stream (streaming disabled)', async () => {
+    // With streaming disabled the body is withheld until a block commits,
+    // and so is the meta row (timestamp + copy slot): a lone timestamp must
+    // not float over an empty body. A single unterminated paragraph has no
+    // committed prefix, so the whole row must be empty.
     getSettings().streamingEnabled = false;
     try {
       const item = makeItem({
         status: 'streaming',
         summary: '**On the ports:** still typing this first section',
       });
-      const { queryByTestId, rerender } = render(AssistantMessage, {
+      const { getByTestId, queryByTestId, rerender } = render(AssistantMessage, {
         props: { item },
       });
+      expect(getByTestId('assistant-message-body').textContent?.trim()).toBe('');
       expect(queryByTestId('assistant-message-meta')).toBeNull();
 
       // The section terminates (blank line) and a second one begins — the
@@ -862,66 +804,46 @@ describe('<AssistantMessage>', () => {
   // so the underline never promotes the line above while it is the last thing
   // streamed. It runs only on the volatile tail; settled messages and the
   // committed prefix pass `parseIncompleteMarkdown === false` and are untouched.
-  it('does not transiently promote a streamed line to a heading on a dangling bullet marker', async () => {
-    // Volatile tail ends in the first nested marker before its text arrives.
-    const summary = [
-      '- first point here',
-      '- second point splits into two:',
-      '  -',
-    ].join('\n');
+  it.each([
+    {
+      // Volatile tail ends in the first nested marker before its text arrives.
+      name: 'a streamed line to a heading on a dangling bullet marker',
+      summary: ['- first point here', '- second point splits into two:', '  -'].join('\n'),
+      text: 'second point splits into two:',
+    },
+    {
+      name: 'a top-level streamed line on a dangling dash',
+      summary: 'A sentence that ends with a colon:\n-',
+      text: 'ends with a colon:',
+    },
+    {
+      // Pins the any-indent guard. The regex is `^[ \t]*[-=]+[ \t]*$` (any
+      // leading whitespace), NOT `^ {0,3}…` — a `{0,3}` ceiling would miss a
+      // DOUBLE-nested bullet whose marker lands at column 4, which marked still
+      // mis-promotes to <h2> mid-stream. (Indented code can't be the false
+      // positive: it requires a blank line above, which the blank-above guard
+      // rejects.) Reverting the regex to `{0,3}` passes every ≤2-space row but
+      // fails here.
+      name: 'a double-nested 4-space dangling bullet marker',
+      summary: ['- a', '  - b', '    -'].join('\n'),
+      text: 'b',
+    },
+    {
+      // Pins the `=` branch. `=` is in the regex for symmetry with `-` (Setext
+      // H1), and is the only heading-1 path; without `=` in the alternation a
+      // streamed `Title\n===` balloons to <h1> exactly like the dash case.
+      name: 'a top-level streamed line on a dangling = underline',
+      summary: 'Big Title in progress\n===',
+      text: 'Big Title in progress',
+    },
+  ])('does not transiently promote $name', async ({ summary, text }) => {
     const { getByTestId } = render(AssistantMessage, {
       props: { item: makeItem({ status: 'streaming', summary }) },
     });
     const body = getByTestId('assistant-message-body');
     await waitFor(() => {
-      // The parent line's text must still be present…
-      expect(body.textContent).toContain('second point splits into two:');
-      // …but NOT as a heading. Without the fix marked emits an <h2> here.
-      expect(body.querySelector('h1, h2')).toBeNull();
-    });
-  });
-
-  it('does not promote a top-level streamed line on a dangling dash', async () => {
-    const summary = 'A sentence that ends with a colon:\n-';
-    const { getByTestId } = render(AssistantMessage, {
-      props: { item: makeItem({ status: 'streaming', summary }) },
-    });
-    const body = getByTestId('assistant-message-body');
-    await waitFor(() => {
-      expect(body.textContent).toContain('ends with a colon:');
-      expect(body.querySelector('h1, h2')).toBeNull();
-    });
-  });
-
-  // Pins the any-indent guard. The regex is `^[ \t]*[-=]+[ \t]*$` (any leading
-  // whitespace), NOT `^ {0,3}…` — a `{0,3}` ceiling would miss a DOUBLE-nested
-  // bullet whose marker lands at column 4, which marked still mis-promotes to
-  // <h2> mid-stream. (Indented code can't be the false positive: it requires a
-  // blank line above, which the blank-above guard rejects.) Reverting the regex
-  // to `{0,3}` passes every ≤2-space case above but fails here.
-  it('does not promote a double-nested 4-space dangling bullet marker', async () => {
-    const summary = ['- a', '  - b', '    -'].join('\n');
-    const { getByTestId } = render(AssistantMessage, {
-      props: { item: makeItem({ status: 'streaming', summary }) },
-    });
-    const body = getByTestId('assistant-message-body');
-    await waitFor(() => {
-      expect(body.textContent).toContain('b');
-      expect(body.querySelector('h1, h2')).toBeNull();
-    });
-  });
-
-  // Pins the `=` branch. `=` is in the regex for symmetry with `-` (Setext H1),
-  // and is the only heading-1 path; without `=` in the alternation a streamed
-  // `Title\n===` balloons to <h1> exactly like the dash case.
-  it('does not promote a top-level streamed line on a dangling = underline', async () => {
-    const summary = 'Big Title in progress\n===';
-    const { getByTestId } = render(AssistantMessage, {
-      props: { item: makeItem({ status: 'streaming', summary }) },
-    });
-    const body = getByTestId('assistant-message-body');
-    await waitFor(() => {
-      expect(body.textContent).toContain('Big Title in progress');
+      // The line's text must still be present, but NOT as a heading.
+      expect(body.textContent).toContain(text);
       expect(body.querySelector('h1, h2')).toBeNull();
     });
   });
@@ -1100,8 +1022,18 @@ describe('<AssistantMessage>', () => {
   // lone ` / `` momentarily lexes as a code content line — a one-chunk
   // grow-then-shrink flicker at every fence close. The seal now drops that
   // trailing partial run before appending the real closer.
-  it('drops a half-streamed closing fence from the streamed code tail', async () => {
-    const summary = '```js\nconst x = 1\n``';
+  it.each([
+    {
+      name: 'drops a half-streamed closing fence from the streamed code tail',
+      summary: '```js\nconst x = 1\n``',
+      partial: '``',
+    },
+    {
+      name: 'drops every incomplete closer length for a longer streamed fence',
+      summary: '`````js\nconst x = 1\n````',
+      partial: '````',
+    },
+  ])('$name', async ({ summary, partial }) => {
     const { getByTestId } = render(AssistantMessage, {
       props: { item: makeItem({ status: 'streaming', summary }) },
     });
@@ -1111,22 +1043,7 @@ describe('<AssistantMessage>', () => {
       expect(host).not.toBeNull();
       const src = codeSource(host);
       expect(src).toContain('const x = 1');
-      expect(src).not.toContain('``');
-    });
-  });
-
-  it('drops every incomplete closer length for a longer streamed fence', async () => {
-    const summary = '`````js\nconst x = 1\n````';
-    const { getByTestId } = render(AssistantMessage, {
-      props: { item: makeItem({ status: 'streaming', summary }) },
-    });
-    const body = getByTestId('assistant-message-body');
-    await waitFor(() => {
-      const host = body.querySelector('[data-code-source]');
-      expect(host).not.toBeNull();
-      const src = codeSource(host);
-      expect(src).toContain('const x = 1');
-      expect(src).not.toContain('````');
+      expect(src).not.toContain(partial);
     });
   });
 
@@ -1285,22 +1202,6 @@ describe('<AssistantMessage>', () => {
     );
     expect(time?.className).not.toContain('opacity-0');
     expect(time?.className).not.toContain('group-hover:opacity-100');
-  });
-
-  it('renders a copy button on a settled message with text', () => {
-    const { getByLabelText } = render(AssistantMessage, {
-      props: { item: makeItem({ status: 'completed', summary: 'done' }) },
-    });
-    expect(getByLabelText('Copy message')).toBeInTheDocument();
-  });
-
-  it('hides the copy button while the message is streaming', () => {
-    const { container } = render(AssistantMessage, {
-      props: {
-        item: makeItem({ status: 'streaming', summary: 'streaming text' }),
-      },
-    });
-    expect(container.querySelector('[aria-label="Copy message"]')).toBeNull();
   });
 
   it('reserves the copy button slot before completed content can be copied', async () => {

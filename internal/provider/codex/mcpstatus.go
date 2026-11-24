@@ -32,7 +32,7 @@ import (
 type MCPStatusFetcher struct {
 	Binary  string
 	Args    []string // optional override; defaults to codexAppServerArgs
-	Env     []string
+	Env     provider.EnvInput
 	Cwd     string
 	Timeout time.Duration // 0 → DefaultMCPStatusTimeout
 }
@@ -64,7 +64,7 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	if f.Cwd != "" {
 		cmd.Dir = f.Cwd
 	}
-	cmd.Env = provider.FilterEnvironment(f.Env, "CODEX_HOME")
+	cmd.Env = provider.BuildEnvironment(f.Env.Clear(provider.CodexHomeEnv))
 	// Bound the post-cancel wait when grandchildren hold our stdout
 	// pipe open (mirrors the Claude fetcher rationale).
 	cmd.WaitDelay = 500 * time.Millisecond

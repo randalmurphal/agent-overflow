@@ -73,25 +73,6 @@ func TestOpenTerminalReturnsHandle(t *testing.T) {
 	}
 }
 
-func TestWriteTerminalDecodesBase64(t *testing.T) {
-	t.Parallel()
-	app := newAppWithTerminals(t, "thread-w")
-	t.Cleanup(func() { _ = app.terminals.Shutdown() })
-
-	handle, err := app.OpenTerminal("thread-w", TerminalOpenOptions{
-		Cwd:   t.TempDir(),
-		Shell: "/bin/sh",
-	})
-	if err != nil {
-		t.Fatalf("OpenTerminal: %v", err)
-	}
-
-	payload := base64.StdEncoding.EncodeToString([]byte("echo hi\n"))
-	if err := app.WriteTerminal(handle.TerminalID, payload); err != nil {
-		t.Fatalf("WriteTerminal: %v", err)
-	}
-}
-
 func TestWriteTerminalRejectsBadBase64(t *testing.T) {
 	t.Parallel()
 	app := newAppWithTerminals(t, "thread-b")

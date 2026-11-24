@@ -16,7 +16,8 @@ import (
 
 // The happy path, and the ordering that makes it work: the record is
 // published before the certificate authority is asked to read it, and
-// removed once it has.
+// removed once it has. Persistence is what makes the issuance worth doing:
+// the next boot serves this certificate instead of ordering another one.
 func TestIssuePublishesTheChallengeRecordThenRemovesIt(t *testing.T) {
 	dir := t.TempDir()
 	seedAccountKey(t, dir)
@@ -48,19 +49,7 @@ func TestIssuePublishesTheChallengeRecordThenRemovesIt(t *testing.T) {
 	if !material.Covers("backend.example") {
 		t.Fatal("the issued certificate is not valid for the domain it was ordered for")
 	}
-}
 
-// Persistence is what makes the issuance worth doing: the next boot
-// serves this certificate instead of ordering another one.
-func TestAnIssuedCertificateIsPersistedAndReloads(t *testing.T) {
-	dir := t.TempDir()
-	seedAccountKey(t, dir)
-	run := newIssuance(t, dir, nil)
-
-	issued, err := run.issuer.Issue(context.Background())
-	if err != nil {
-		t.Fatalf("Issue: %v", err)
-	}
 	reloaded, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -68,11 +57,11 @@ func TestAnIssuedCertificateIsPersistedAndReloads(t *testing.T) {
 	if !reloaded.Loaded() {
 		t.Fatal("nothing was persisted")
 	}
-	if reloaded.Certificate.Leaf.SerialNumber.Cmp(issued.Certificate.Leaf.SerialNumber) != 0 {
+	if reloaded.Certificate.Leaf.SerialNumber.Cmp(material.Certificate.Leaf.SerialNumber) != 0 {
 		t.Fatal("the reloaded certificate is not the one that was issued")
 	}
-	if !reloaded.NotAfter.Equal(issued.NotAfter) {
-		t.Fatalf("reloaded expiry %s, issued %s", reloaded.NotAfter, issued.NotAfter)
+	if !reloaded.NotAfter.Equal(material.NotAfter) {
+		t.Fatalf("reloaded expiry %s, issued %s", reloaded.NotAfter, material.NotAfter)
 	}
 	// The key came back with it, which is the half a chain-only file
 	// would have lost.
@@ -318,3 +307,6 @@ func TestNewNormalizesTheDomain(t *testing.T) {
 		t.Fatalf("Domain() = %q, want the trimmed lower-cased spelling", issuer.Domain())
 	}
 }
+
+// Domain is the name this issuer orders for, normalized.
+func (i *Issuer) Domain() string { return i.domain }

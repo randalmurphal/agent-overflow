@@ -32,24 +32,49 @@ func pendingEffortApply(t *testing.T, app *App, id, token, requested, prev strin
 	return pending
 }
 
-// The CLI writes `applied.effort` in whatever spelling its display layer
-// uses. AO stores the lowercase slug, so a raw string compare read "X-High"
-// as a REJECTION of the xhigh the session had in fact accepted — and the
-// decline path reverts launchOpts and restarts the session to "fix" it.
-func TestEffortReadBackAcceptsTheCLIsSpellingOfTheSameTier(t *testing.T) {
+// A high to xhigh apply the CLI accepted keeps launchOpts at xhigh, leaves
+// the effort axis trusted and restarts nothing, whatever form the read-back
+// took.
+func TestEffortReadBackConfirmsAnAcceptedApply(t *testing.T) {
 	t.Parallel()
-	for _, spelling := range []string{"xhigh", "X-High", "x high", "  XHIGH  ", "x_high"} {
-		t.Run(spelling, func(t *testing.T) {
+	const accepted = "Set effort level to xhigh (this session only)"
+	for _, tc := range []struct {
+		name    string
+		applied *claude.AppliedSettings
+		err     error
+	}{
+		// The CLI writes `applied.effort` in whatever spelling its display
+		// layer uses. AO stores the lowercase slug, so a raw string compare
+		// read "X-High" as a REJECTION of the xhigh the session had in fact
+		// accepted, and the decline path reverted launchOpts and restarted.
+		{name: "xhigh", applied: &claude.AppliedSettings{Effort: "xhigh"}},
+		{name: "X-High", applied: &claude.AppliedSettings{Effort: "X-High"}},
+		{name: "x high", applied: &claude.AppliedSettings{Effort: "x high"}},
+		{name: "  XHIGH  ", applied: &claude.AppliedSettings{Effort: "  XHIGH  "}},
+		{name: "x_high", applied: &claude.AppliedSettings{Effort: "x_high"}},
+		// An empty `applied.effort` is the wire's explicit null: an answer
+		// about the MODEL ("this one declares no tiers"), not about this
+		// request. Reading it as "the session runs a different tier" would
+		// restart on every apply against such a model, so the settle falls
+		// through to the CLI's reply text.
+		{name: "empty tier, confirming reply", applied: &claude.AppliedSettings{Effort: ""}},
+		// A read-back that FAILS is not a verdict either: the fallback is the
+		// reply text, and an unsupported subtype is expected rather than
+		// logged as failure.
+		{name: "unsupported read, confirming reply", err: claude.ErrGetSettingsUnsupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			app := newTestAppWithStore(t)
-			id, token := "thread-effort-spelling", "tok-spelling"
+			id, token := "thread-effort-confirmed", "tok-confirmed"
 			optimistic := provider.SessionOptions{ReasoningEffort: provider.EffortXHigh}
 			started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
 			pending := pendingEffortApply(t, app, id, token, "xhigh", string(provider.EffortHigh))
 
 			stubClaudeAppliedSettings(app, func(string, string) (*claude.AppliedSettings, error) {
-				return &claude.AppliedSettings{Effort: spelling}, nil
+				return tc.applied, tc.err
 			})
-			app.settleClaudeEffortApplyFromSettings(pending, "Set effort level to xhigh (this session only)")
+			app.settleClaudeEffortApplyFromSettings(pending, accepted)
 
 			if got := launchOptsForThread(t, app, id).ReasoningEffort; got != provider.EffortXHigh {
 				t.Fatalf("launchOpts effort = %q, want the confirmed xhigh", got)
@@ -57,101 +82,51 @@ func TestEffortReadBackAcceptsTheCLIsSpellingOfTheSameTier(t *testing.T) {
 			if app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{Effort: "xhigh"}) {
 				t.Fatal("a confirmed apply marked the effort axis degraded")
 			}
-			assertNoRestartWithin(t, started, 50*time.Millisecond, "the CLI reported the requested tier")
+			assertNoRestartWithin(t, started, 50*time.Millisecond, "the apply was confirmed")
 		})
 	}
 }
 
-// An empty `applied.effort` is the wire's explicit null: an answer about the
-// MODEL ("this one declares no tiers"), not about this request. Reading it as
-// "the session runs a different tier" would restart on every apply against
-// such a model, so the settle falls through to the CLI's reply text — which
-// is the only statement it made about the command.
-func TestEmptyAppliedEffortFallsBackToTheReplyText(t *testing.T) {
+// A high to xhigh apply the CLI did not take reverts launchOpts to high,
+// marks the effort axis degraded and restarts the session.
+func TestEffortReadBackDeclinesARejectedApply(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, token := "thread-effort-empty", "tok-empty"
-	optimistic := provider.SessionOptions{ReasoningEffort: provider.EffortXHigh}
-	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
-	pending := pendingEffortApply(t, app, id, token, "xhigh", string(provider.EffortHigh))
+	for _, tc := range []struct {
+		name    string
+		applied *claude.AppliedSettings
+		reply   string
+	}{
+		// An empty tier with a REJECTING reply text still declines, because
+		// the text is then the only evidence there is.
+		{name: "no tier, rejecting reply", reply: "Invalid argument: xhigh"},
+		// A tier the CLI genuinely did not adopt is the authoritative
+		// decline, even when the reply text looked like success: a settings
+		// layer AO does not control can outrank the request, and launchOpts
+		// must never claim a config the process is not running.
+		{name: "different tier, confirming reply", applied: &claude.AppliedSettings{Effort: "medium"}, reply: "Set effort level to xhigh (this session only)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			id, token := "thread-effort-declined", "tok-declined"
+			optimistic := provider.SessionOptions{ReasoningEffort: provider.EffortXHigh}
+			started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
+			pending := pendingEffortApply(t, app, id, token, "xhigh", string(provider.EffortHigh))
 
-	stubClaudeAppliedSettings(app, func(string, string) (*claude.AppliedSettings, error) {
-		return &claude.AppliedSettings{Effort: ""}, nil
-	})
-	app.settleClaudeEffortApplyFromSettings(pending, "Set effort level to xhigh (this session only)")
+			stubClaudeAppliedSettings(app, func(string, string) (*claude.AppliedSettings, error) {
+				return tc.applied, nil
+			})
+			app.settleClaudeEffortApplyFromSettings(pending, tc.reply)
 
-	if got := launchOptsForThread(t, app, id).ReasoningEffort; got != provider.EffortXHigh {
-		t.Fatalf("launchOpts effort = %q — an effortless model's null tier declined a good apply", got)
+			if got := launchOptsForThread(t, app, id).ReasoningEffort; got != provider.EffortHigh {
+				t.Fatalf("launchOpts effort = %q, want the reverted high", got)
+			}
+			if !app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{Effort: "xhigh"}) {
+				t.Fatal("a declined apply left the effort axis trusted")
+			}
+			waitRestart(t, started, id)
+		})
 	}
-	assertNoRestartWithin(t, started, 50*time.Millisecond, "the CLI said nothing about effort and its reply text confirmed")
-}
-
-// The other half of the same branch: an empty tier with a REJECTING reply
-// text still declines, because the text is then the only evidence there is.
-func TestEmptyAppliedEffortStillDeclinesOnARejectingReply(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, token := "thread-effort-empty-bad", "tok-empty-bad"
-	optimistic := provider.SessionOptions{ReasoningEffort: provider.EffortXHigh}
-	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
-	pending := pendingEffortApply(t, app, id, token, "xhigh", string(provider.EffortHigh))
-
-	stubClaudeAppliedSettings(app, func(string, string) (*claude.AppliedSettings, error) {
-		return nil, nil
-	})
-	app.settleClaudeEffortApplyFromSettings(pending, "Invalid argument: xhigh")
-
-	if got := launchOptsForThread(t, app, id).ReasoningEffort; got != provider.EffortHigh {
-		t.Fatalf("launchOpts effort = %q, want the reverted high", got)
-	}
-	waitRestart(t, started, id)
-}
-
-// A read-back that FAILS is not a verdict either — the fallback is the reply
-// text, and an unsupported subtype is expected rather than logged as failure.
-func TestFailedEffortReadBackFallsBackToTheReplyText(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, token := "thread-effort-err", "tok-err"
-	optimistic := provider.SessionOptions{ReasoningEffort: provider.EffortXHigh}
-	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
-	pending := pendingEffortApply(t, app, id, token, "xhigh", string(provider.EffortHigh))
-
-	stubClaudeAppliedSettings(app, func(string, string) (*claude.AppliedSettings, error) {
-		return nil, claude.ErrGetSettingsUnsupported
-	})
-	app.settleClaudeEffortApplyFromSettings(pending, "Set effort level to xhigh (this session only)")
-
-	if got := launchOptsForThread(t, app, id).ReasoningEffort; got != provider.EffortXHigh {
-		t.Fatalf("launchOpts effort = %q, want xhigh confirmed by the reply text", got)
-	}
-	assertNoRestartWithin(t, started, 50*time.Millisecond, "an old CLI cannot answer get_settings")
-}
-
-// A tier the CLI genuinely did not adopt is the authoritative decline, even
-// when the reply text looked like success: a settings layer AO does not
-// control can outrank the request, and launchOpts must never claim a config
-// the process is not running.
-func TestEffortReadBackDeclinesADifferentTier(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, token := "thread-effort-outranked", "tok-outranked"
-	optimistic := provider.SessionOptions{ReasoningEffort: provider.EffortXHigh}
-	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
-	pending := pendingEffortApply(t, app, id, token, "xhigh", string(provider.EffortHigh))
-
-	stubClaudeAppliedSettings(app, func(string, string) (*claude.AppliedSettings, error) {
-		return &claude.AppliedSettings{Effort: "medium"}, nil
-	})
-	app.settleClaudeEffortApplyFromSettings(pending, "Set effort level to xhigh (this session only)")
-
-	if got := launchOptsForThread(t, app, id).ReasoningEffort; got != provider.EffortHigh {
-		t.Fatalf("launchOpts effort = %q, want the reverted high", got)
-	}
-	if !app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{Effort: "xhigh"}) {
-		t.Fatal("a declined apply left the effort axis trusted")
-	}
-	waitRestart(t, started, id)
 }
 
 // B15: rapid effort changes interleave. The read-back for change #1 returns

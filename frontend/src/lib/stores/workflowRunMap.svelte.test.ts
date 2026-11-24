@@ -135,7 +135,6 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const hold of holds.splice(0)) hold.release();
-  __resetWorkflowRunMapStoreForTest();
   vi.useRealTimers();
 });
 
@@ -193,26 +192,6 @@ describe('workflowRunMap — attach, source, release', () => {
 });
 
 describe('workflowRunMap — patch equivalence', () => {
-  it('starts a queued unit and finishes it exactly as a refetch would', async () => {
-    await attached();
-
-    applyWorkflowRunMapPhaseState(phaseEvent({ unitId: 'beta', unitIndex: 1, status: 'running', occurredAt: 3_000 }));
-    applyWorkflowRunMapPhaseState(phaseEvent({ unitId: 'beta', unitIndex: 1, status: 'done', occurredAt: 3_800 }));
-
-    const expected = campaign();
-    expected.runs[1]!.units[1] = {
-      phaseId: 'ports', attempt: 1, unitId: 'beta', unitIndex: 1, kind: 'unit',
-      provider: 'claude', status: 'done', unitAttempt: 1, startedAt: 3_000, endedAt: 3_800,
-    };
-    // Patching is the whole point: both rows are right before anything refetches.
-    expect(peekWorkflowRunMap(ROOT)).toEqual(expected);
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(1);
-    // The `running` frame schedules ONE reconcile (the thread it cannot carry);
-    // the `done` frame inside the same window adds none.
-    await settleInvalidate();
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
-  });
-
   it('leaves the untouched runs and rows identical objects', async () => {
     const before = (await attached()).current!;
 
@@ -223,18 +202,6 @@ describe('workflowRunMap — patch equivalence', () => {
     expect(after.runs[0]).toBe(before.runs[0]);
     expect(after.runs[1]!.phases).toBe(before.runs[1]!.phases);
     expect(after.runs[1]!.units[0]).toBe(before.runs[1]!.units[0]);
-  });
-
-  it('opens a phase attempt on its running event — that IS attempt creation', async () => {
-    await attached();
-
-    applyWorkflowRunMapPhaseState(phaseEvent({ phaseId: 'ports', attempt: 2, status: 'running', occurredAt: 4_000 }));
-
-    const expected = campaign();
-    // Appended, which is where a refetch puts it too: the rows come back
-    // ordered by started_at and this one's is the newest.
-    expected.runs[1]!.phases.push({ phaseId: 'ports', attempt: 2, status: 'running', startedAt: 4_000 });
-    expect(peekWorkflowRunMap(ROOT)).toEqual(expected);
   });
 
   it('completes an open attempt in place', async () => {
@@ -327,6 +294,8 @@ const EQUIVALENT: Equivalence[] = [
   {
     name: 'an attempt is inserted by its running frame',
     events: [phaseEvent({ phaseId: 'ports', attempt: 2, status: 'running', occurredAt: 4_000 })],
+    // Appended, which is where a refetch puts it too: the rows come back
+    // ordered by started_at and this one's is the newest.
     persist: (view) => {
       view.runs[1]!.phases.push({ phaseId: 'ports', attempt: 2, status: 'running', startedAt: 4_000 });
     },
@@ -365,6 +334,17 @@ describe('workflowRunMap — reconciliation fallbacks', () => {
     expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
   });
 
+  it('reconciles a unit that runs and finishes inside one window exactly once', async () => {
+    await attached();
+    applyWorkflowRunMapPhaseState(phaseEvent({ unitId: 'beta', unitIndex: 1, status: 'running', occurredAt: 3_000 }));
+    applyWorkflowRunMapPhaseState(phaseEvent({ unitId: 'beta', unitIndex: 1, status: 'done', occurredAt: 3_800 }));
+    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(1);
+    // The `running` frame schedules ONE reconcile (the thread it cannot carry);
+    // the `done` frame inside the same window adds none.
+    await settleInvalidate();
+    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
+  });
+
   it('reconciles an attempt that just opened, for the same reason', async () => {
     await attached();
 
@@ -393,42 +373,29 @@ describe('workflowRunMap — reconciliation fallbacks', () => {
     expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(1);
   });
 
-  it('refetches rather than guessing at a phase status it cannot place', async () => {
-    await attached();
-
+  // Frames the patch cannot place, and the one it places as `unchanged`: the
+  // view stays exactly as fetched, and one refetch follows.
+  it.each<[string, WorkflowPhaseStateEvent]>([
     // Terminal statuses that carry an engine cause the event does not.
-    applyWorkflowRunMapPhaseState(phaseEvent({ phaseId: 'ports', attempt: 1, status: 'parked' }));
-    expect(peekWorkflowRunMap(ROOT)!.runs[1]!.phases[1]!.status).toBe('running');
-    await settleInvalidate();
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
-  });
-
-  it('refetches on a non-running event for an attempt it has never seen', async () => {
+    ['refetches rather than guessing at a phase status it cannot place',
+      phaseEvent({ phaseId: 'ports', attempt: 1, status: 'parked' })],
+    ['refetches on a non-running event for an attempt it has never seen',
+      phaseEvent({ phaseId: 'ports', attempt: 3, status: 'completed' })],
+    ['refetches on a unit it has never seen rather than inventing a branch',
+      phaseEvent({ unitId: 'gamma', unitIndex: 2, status: 'running' })],
+    ['refetches when a finished unit runs again — the attempt bump is unmodelable',
+      phaseEvent({ unitId: 'alpha', unitIndex: 0, status: 'running' })],
+    ['refetches on an unstamped phase event instead of stamping a client clock',
+      phaseEvent({ unitId: 'beta', unitIndex: 1, occurredAt: 0 })],
+    // A fetch delivered the attempt as running and threadless (the runner
+    // attaches the thread after the emit). The patch is then `unchanged`, and
+    // this frame is the only prompt anything has to go back for the thread.
+    ['reconciles a running frame the view already agrees with — that is the WORST case',
+      phaseEvent({ phaseId: 'ports', attempt: 1, status: 'running', occurredAt: 2_400 })],
+  ])('%s', async (_name, event) => {
     await attached();
-    applyWorkflowRunMapPhaseState(phaseEvent({ phaseId: 'ports', attempt: 3, status: 'completed' }));
-    await settleInvalidate();
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
-  });
-
-  it('refetches on a unit it has never seen rather than inventing a branch', async () => {
-    await attached();
-    applyWorkflowRunMapPhaseState(phaseEvent({ unitId: 'gamma', unitIndex: 2, status: 'running' }));
-    await settleInvalidate();
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
-  });
-
-  it('refetches when a finished unit runs again — the attempt bump is unmodelable', async () => {
-    await attached();
-    applyWorkflowRunMapPhaseState(phaseEvent({ unitId: 'alpha', unitIndex: 0, status: 'running' }));
-    expect(peekWorkflowRunMap(ROOT)!.runs[1]!.units[0]!.status).toBe('done');
-    await settleInvalidate();
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
-  });
-
-  it('refetches on an unstamped phase event instead of stamping a client clock', async () => {
-    await attached();
-    applyWorkflowRunMapPhaseState(phaseEvent({ unitId: 'beta', unitIndex: 1, occurredAt: 0 }));
-    expect(peekWorkflowRunMap(ROOT)!.runs[1]!.units[1]!.status).toBe('pending');
+    applyWorkflowRunMapPhaseState(event);
+    expect(peekWorkflowRunMap(ROOT)).toEqual(campaign());
     await settleInvalidate();
     expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
   });
@@ -446,36 +413,32 @@ describe('workflowRunMap — reconciliation fallbacks', () => {
     expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(4);
   });
 
-  it('reconciles a terminal run, whose endedAt no later event can carry', async () => {
-    await attached();
-
-    applyWorkflowRunMapItemState(itemEvent({ to: 'done' }));
-    // The state flips instantly — that is what the patch is for — and the
-    // refetch behind it is what brings endedAt and the tree's spend.
-    expect(peekWorkflowRunMap(ROOT)!.runs[1]!.state).toBe('done');
-    await settleInvalidate();
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
-  });
-
-  it('reconciles a park: the engine wrote endedAt and a cause the frame cannot carry', async () => {
+  // An item-state frame reconciles when it MOVED something: the row flips at
+  // once, and the refetch behind it brings what the frame cannot carry.
+  it.each<[string, WorkflowItemStateEvent, number]>([
+    // The refetch is what brings endedAt and the tree's spend.
+    ['reconciles a terminal run, whose endedAt no later event can carry',
+      itemEvent({ to: 'done' }), 2],
     // A park is a run-level write of state, reason, `ended_at` and (through the
-    // attempt teardown) an engine-diagnosed cause. The frame carries the first
-    // two, so the map flips instantly and the refetch behind it brings the rest.
-    await attached();
-    applyWorkflowRunMapItemState(itemEvent({ to: 'needs-human', reason: 'gate' }));
-    expect(peekWorkflowRunMap(ROOT)!.runs[1]!.state).toBe('needs-human');
-    await settleInvalidate();
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
-  });
-
-  it('does NOT reconcile a frame that restates the row exactly', async () => {
+    // attempt teardown) an engine-diagnosed cause. The frame carries the first two.
+    ['reconciles a park: the engine wrote endedAt and a cause the frame cannot carry',
+      itemEvent({ to: 'needs-human', reason: 'gate' }), 2],
+    // `engine.parkDisposition` moves a done run to needs-human(disposition) and
+    // stamps a fresh `ended_at` over the one the completion wrote. Nothing on
+    // the wire says so.
+    ['reconciles a disposition park, which REWRITES an endedAt the run already had',
+      itemEvent({ itemId: ROOT, from: 'done', to: 'needs-human', reason: 'disposition' }), 2],
     // The one item-state shape that says nothing new: a running continuation
     // the view already agrees with. Refetching for it would make the map's
     // refetch rate proportional to the channel rather than to what changed.
+    ['does NOT reconcile a frame that restates the row exactly',
+      itemEvent({ itemId: WAVE_2, from: 'running', to: 'running' }), 1],
+  ])('%s', async (_name, event, fetches) => {
     await attached();
-    applyWorkflowRunMapItemState(itemEvent({ itemId: WAVE_2, from: 'running', to: 'running' }));
+    applyWorkflowRunMapItemState(event);
+    expect(peekWorkflowRunMap(ROOT)!.runs.find((entry) => entry.itemId === event.itemId)!.state).toBe(event.to);
     await settleInvalidate();
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(1);
+    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(fetches);
   });
 
   it('reconciles a take-over: the REASON moved, and its intervention has no event', async () => {
@@ -492,28 +455,6 @@ describe('workflowRunMap — reconciliation fallbacks', () => {
     expect(peekWorkflowRunMap(ROOT)!.runs[1]!.reason).toBe('taken-over');
     await settleInvalidate();
     expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(3);
-  });
-
-  it('reconciles a disposition park, which REWRITES an endedAt the run already had', async () => {
-    // `engine.parkDisposition` moves a done run to needs-human(disposition) and
-    // stamps a fresh `ended_at` over the one the completion wrote. Nothing on
-    // the wire says so.
-    await attached();
-    applyWorkflowRunMapItemState(itemEvent({ itemId: ROOT, from: 'done', to: 'needs-human', reason: 'disposition' }));
-    await settleInvalidate();
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
-  });
-
-  it('reconciles a running frame the view already agrees with — that is the WORST case', async () => {
-    // A fetch delivered the attempt as running and threadless (the runner
-    // attaches the thread after the emit). The patch is then `unchanged`, and
-    // this frame is the only prompt anything has to go back for the thread.
-    await attached();
-    applyWorkflowRunMapPhaseState(phaseEvent({
-      phaseId: 'ports', attempt: 1, status: 'running', occurredAt: 2_400,
-    }));
-    await settleInvalidate();
-    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(2);
   });
 
   it('coalesces a burst of unplaceable events into ONE refetch per key', async () => {
@@ -700,12 +641,12 @@ describe('workflowRunMap — events during an outstanding fetch', () => {
     await attached();
     expect(mock.pending).toBe(1);
 
-    // The reset lands while that first fetch is still out. It re-sources the
-    // key nobody released, and THAT fetch answers.
-    __resetWorkflowRunMapStoreForTest();
-    await flush();
-    expect(mock.pending).toBe(2);
+    // The reset lands while that first fetch is still out, and the next
+    // attach's fetch answers first.
     const abandoned = mock.take();
+    __resetWorkflowRunMapStoreForTest();
+    await attached();
+    expect(mock.pending).toBe(1);
     mock.resolve(campaign());
     await flush();
     expect(peekWorkflowRunMap(ROOT)).not.toBeNull();

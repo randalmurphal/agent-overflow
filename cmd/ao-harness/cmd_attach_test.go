@@ -207,22 +207,19 @@ func TestAttachedPageIDIgnoresPagesThatWereAlreadyOpen(t *testing.T) {
 	}
 }
 
-func TestAttachRefusesPositionalArguments(t *testing.T) {
-	code, _, stderr := run(t, "attach", "http://example.test")
-	if code != exitUsage {
-		t.Fatalf("exit = %d, want %d (%s)", code, exitUsage, stderr)
-	}
-	if !strings.Contains(stderr, "no positional arguments") {
-		t.Fatalf("stderr = %q", stderr)
-	}
-}
-
-func TestAttachRefusesANonPositiveTimeout(t *testing.T) {
-	code, _, stderr := run(t, "attach", "--timeout", "0")
-	if code != exitUsage {
-		t.Fatalf("exit = %d, want %d (%s)", code, exitUsage, stderr)
-	}
-	if !strings.Contains(stderr, "--timeout") {
-		t.Fatalf("stderr = %q", stderr)
+func TestAttachRefusesBadArguments(t *testing.T) {
+	for want, args := range map[string][]string{
+		"no positional arguments": {"attach", "http://example.test"},
+		"--timeout":               {"attach", "--timeout", "0"},
+	} {
+		t.Run(want, func(t *testing.T) {
+			code, _, stderr := run(t, args...)
+			if code != exitUsage {
+				t.Fatalf("exit = %d, want %d (%s)", code, exitUsage, stderr)
+			}
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("stderr = %q", stderr)
+			}
+		})
 	}
 }

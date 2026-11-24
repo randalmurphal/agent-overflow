@@ -21,6 +21,7 @@
 // string in isolation) — that pre-existing upstream property is out of
 // scope here.
 import { describe, expect, it, vi } from 'vitest';
+import { seededRandom } from '../../test/helpers/seededRandom';
 import { expectCleanTransitions } from '../../test/helpers/transitions';
 import { describeFirstDivergence } from '../../test/helpers/firstDivergence';
 import {
@@ -213,14 +214,8 @@ const CHUNKINGS: Array<{ name: string; sizes: (docLen: number) => number[] }> = 
   {
     name: 'seeded random 3..80',
     sizes: () => {
-      // Deterministic LCG so failures reproduce.
-      let s = 42;
-      const out: number[] = [];
-      for (let i = 0; i < 4096; i++) {
-        s = (s * 1103515245 + 12345) % 2147483648;
-        out.push(3 + (s % 78));
-      }
-      return out;
+      const random = seededRandom(42);
+      return Array.from({ length: 4096 }, () => 3 + random(78));
     },
   },
 ];
@@ -382,37 +377,23 @@ describe('incrementalLex streamed equivalence', () => {
     expect(reuseChecked).toBeGreaterThan(20);
   });
 
-  it('handles grow → replace → grow transitions', () => {
-    const listA = bullets(10, (i) => `- alpha ${i}`);
-    const listB = bullets(10, (i) => `1. beta ${i}`);
+  it.each([
+    ['handles grow → replace → grow transitions', bullets(10, (i) => `1. beta ${i}`), 'list-append'],
+    ['handles a list replaced by a table and back', tableOf(10, (i) => `| ${i} | value ${i} | ok |`), 'table-append'],
+  ])('%s', (_name, replacement, descentPath) => {
     const cache = createIncrementalLexCache();
-    for (const prefix of prefixes(listA, [21])) {
+    for (const prefix of prefixes(bullets(10, (i) => `- alpha ${i}`), [21])) {
       incrementalLex(prefix, [], cache, parseIncompleteMarkdown);
     }
     // Wholesale replacement (thread switch, correction) must fall back to a
     // full lex, then resume descending on the new stream.
     let descentsAfterReplace = 0;
-    for (const prefix of prefixes(listB, [21])) {
+    for (const prefix of prefixes(replacement, [21])) {
       const tokens = incrementalLex(prefix, [], cache, parseIncompleteMarkdown);
       expect(JSON.stringify(tokens)).toBe(JSON.stringify(fullReference(prefix, true)));
-      if (cache.lastPath === 'list-append') descentsAfterReplace += 1;
+      if (cache.lastPath === descentPath) descentsAfterReplace += 1;
     }
     expect(descentsAfterReplace).toBeGreaterThan(0);
-  });
-
-  it('handles a list replaced by a table and back', () => {
-    const cache = createIncrementalLexCache();
-    const table = tableOf(10, (i) => `| ${i} | value ${i} | ok |`);
-    for (const prefix of prefixes(bullets(10, (i) => `- alpha ${i}`), [21])) {
-      incrementalLex(prefix, [], cache, parseIncompleteMarkdown);
-    }
-    let tableDescents = 0;
-    for (const prefix of prefixes(table, [21])) {
-      const tokens = incrementalLex(prefix, [], cache, parseIncompleteMarkdown);
-      expect(JSON.stringify(tokens)).toBe(JSON.stringify(fullReference(prefix, true)));
-      if (cache.lastPath === 'table-append') tableDescents += 1;
-    }
-    expect(tableDescents).toBeGreaterThan(0);
   });
 
   it('is idempotent for an unchanged input', () => {
@@ -962,36 +943,17 @@ describe('parseBlocks trailing-block descent', () => {
     expect(sawDescentState, `descent record must engage on a trailing ${kind}`).toBe(true);
   };
 
-  it('matches the fresh parse at every step of a growing list document', () => {
-    streamedBlocks(
-      `An opening paragraph that commits.\n\n${bullets(40, (i) => `- Item ${i} with \`inline\` and **markup** to lex.`)}`,
-      21,
-      'list',
-    );
-  });
-
-  it('matches the fresh parse at every step of a growing table document', () => {
-    streamedBlocks(
-      `An opening paragraph that commits.\n\n${tableOf(30, (i) => `| Item ${i} | detail \`${i}\` | ${i * 2} |`)}`,
-      21,
-      'table',
-    );
-  });
-
-  it('matches when the list closes and new blocks follow', () => {
-    streamedBlocks(
-      `${bullets(20, (i) => `- item ${i}`)}\n\nA paragraph after.\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n\n${bullets(6, (i) => `1. later ${i}`)}`,
-      17,
-      'list',
-    );
-  });
-
-  it('matches when the table closes and new blocks follow', () => {
-    streamedBlocks(
-      `${tableOf(16, (i) => `| ${i} | mid ${i} | end ${i} |`)}\n\nA paragraph after the table.\n\n${bullets(6, (i) => `- later ${i}`)}`,
-      17,
-      'table',
-    );
+  it.each([
+    ['matches the fresh parse at every step of a growing list document',
+      `An opening paragraph that commits.\n\n${bullets(40, (i) => `- Item ${i} with \`inline\` and **markup** to lex.`)}`, 21, 'list'],
+    ['matches the fresh parse at every step of a growing table document',
+      `An opening paragraph that commits.\n\n${tableOf(30, (i) => `| Item ${i} | detail \`${i}\` | ${i * 2} |`)}`, 21, 'table'],
+    ['matches when the list closes and new blocks follow',
+      `${bullets(20, (i) => `- item ${i}`)}\n\nA paragraph after.\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n\n${bullets(6, (i) => `1. later ${i}`)}`, 17, 'list'],
+    ['matches when the table closes and new blocks follow',
+      `${tableOf(16, (i) => `| ${i} | mid ${i} | end ${i} |`)}\n\nA paragraph after the table.\n\n${bullets(6, (i) => `- later ${i}`)}`, 17, 'table'],
+  ] as const)('%s', (_name, text, chunk, kind) => {
+    streamedBlocks(text, chunk, kind);
   });
 
   it('recovers across a wholesale content replacement', () => {
@@ -1006,27 +968,22 @@ describe('parseBlocks trailing-block descent', () => {
 });
 
 describe('open-fence append differential fuzz', () => {
-  const nextRandom = (state: { value: number }): number => {
-    state.value = (Math.imul(state.value, 1_664_525) + 1_013_904_223) >>> 0;
-    return state.value;
-  };
-
   const makeFenceDoc = (index: number): string => {
-    const state = { value: (0x9e37_79b9 ^ index) >>> 0 };
+    const random = seededRandom(0x9e37_79b9 ^ index);
     const char = index % 2 === 0 ? '`' : '~';
-    const length = 3 + (nextRandom(state) % 6);
+    const length = 3 + random(6);
     const fence = char.repeat(length);
     const lines = [`${' '.repeat(index % 4)}${fence}${char === '`' ? 'ts title=x' : 'python title=x'}`];
-    const lineCount = 3 + (nextRandom(state) % 10);
+    const lineCount = 3 + random(10);
     for (let line = 0; line < lineCount; line++) {
-      const shape = nextRandom(state) % 7;
+      const shape = random(7);
       if (shape === 0) lines.push(`${char.repeat(Math.max(1, length - 1))}`);
-      else if (shape === 1) lines.push(`${' '.repeat(nextRandom(state) % 4)}${char.repeat(length)}x`);
+      else if (shape === 1) lines.push(`${' '.repeat(random(4))}${char.repeat(length)}x`);
       else if (shape === 2) lines.push(`${char === '`' ? '~' : '`'}`.repeat(length + 2));
       else if (shape === 3) lines.push(`const emoji_${line} = "😀";`);
       else if (shape === 4) lines.push(`  nested ${char.repeat(2)} literal ${line}`);
       else if (shape === 5) lines.push('');
-      else lines.push(`value_${line} = compute(${nextRandom(state) % 10_000})`);
+      else lines.push(`value_${line} = compute(${random(10_000)})`);
     }
     if (index % 3 !== 0) {
       const trailing = index % 4 === 0
@@ -1034,7 +991,7 @@ describe('open-fence append differential fuzz', () => {
         : index % 4 === 1
           ? '\t '
           : '';
-      lines.push(`${' '.repeat(nextRandom(state) % 4)}${char.repeat(length + (index % 2))}${trailing}`);
+      lines.push(`${' '.repeat(random(4))}${char.repeat(length + (index % 2))}${trailing}`);
       lines.push('');
       lines.push(`paragraph after fence ${index}`);
     }
@@ -1047,11 +1004,11 @@ describe('open-fence append differential fuzz', () => {
       const source = makeFenceDoc(index);
       const blockCache = createParseBlocksCache();
       const lexCache = createIncrementalLexCache();
-      const state = { value: (0xa511_e9b3 ^ index) >>> 0 };
+      const random = seededRandom(0xa511_e9b3 ^ index);
       let previous = '';
       let offset = 0;
       while (offset < source.length) {
-        offset = Math.min(source.length, offset + 1 + (nextRandom(state) % 17));
+        offset = Math.min(source.length, offset + 1 + random(17));
         const prefix = source.slice(0, offset);
         const append = createProvenAppend(
           previous,

@@ -242,12 +242,6 @@ func readRouteFields(params json.RawMessage) (string, string) {
 	return turnID, itemID
 }
 
-func buildApprovalMeta(threadID, turnID, method string, rpcID int64, params json.RawMessage) json.RawMessage {
-	approval := buildApprovalRequest(threadID, turnID, method, rpcID, params)
-	data, _ := json.Marshal(approval)
-	return data
-}
-
 func buildApprovalRequest(threadID, turnID, method string, rpcID int64, params json.RawMessage) provider.ApprovalRequest {
 	var parsed map[string]json.RawMessage
 	_ = json.Unmarshal(params, &parsed)
@@ -284,13 +278,8 @@ func buildApprovalRequest(threadID, turnID, method string, rpcID int64, params j
 	if filePath, ok := parsed["filePath"]; ok {
 		var fp string
 		if json.Unmarshal(filePath, &fp) == nil {
-			if kind == "file-read" {
-				toolName = "file_read"
-				title = "File read"
-			} else {
-				toolName = "file_change"
-				title = "File change"
-			}
+			toolName = "file_change"
+			title = "File change"
 			description = fp
 			input = params
 		}
@@ -328,8 +317,6 @@ func approvalKindForMethod(method string) string {
 	switch method {
 	case "item/commandExecution/requestApproval", "execCommandApproval":
 		return "command"
-	case "item/fileRead/requestApproval":
-		return "file-read"
 	case "item/fileChange/requestApproval", "applyPatchApproval":
 		return "file-change"
 	default:

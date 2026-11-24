@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,58 +19,9 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflowhost"
 )
-
-// interruptAndRevertIfCleanMethodID is the method's FNV-1a id, which an
-// older client calls by number.
-const interruptAndRevertIfCleanMethodID = 753394581
-
-// An older client calls InterruptAndRevertIfClean for a Stop on a message
-// it just sent, with {expectedSendId, draft} as the second argument and []
-// as the third. The call decodes through the real dispatcher under its old
-// id, interrupts the turn exactly once, keeps the message and answers
-// reverted:false, which that client reads as a plain interrupt.
-func TestInterruptAndRevertIfCleanDecodesAnOlderClientsCall(t *testing.T) {
-	t.Parallel()
-	f := newClaudeAgentKillFixture(t)
-	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "never mind")
-	dispatcher := transport.NewDispatcher()
-	if _, err := dispatcher.Register(f.app, transport.RegisterOptions{Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList()}); err != nil {
-		t.Fatal(err)
-	}
-	method, ok := dispatcher.LookupID(interruptAndRevertIfCleanMethodID)
-	if !ok || method.Name != "InterruptAndRevertIfClean" {
-		t.Fatalf("method %d = %+v (found %v), want InterruptAndRevertIfClean", interruptAndRevertIfCleanMethodID, method, ok)
-	}
-	params := []json.RawMessage{
-		json.RawMessage(strconv.Quote(f.thread.ID)),
-		json.RawMessage(`{"expectedSendId":"send-1","draft":{"content":"never mind","attachmentIds":["att-1"],"terminalChips":[{"id":"term"}],"sourceProposedPlan":{"threadId":"t","itemId":"p"}}}`),
-		json.RawMessage(`[]`),
-	}
-	raw, frame := dispatcher.Invoke(context.Background(), method, params)
-	if frame != nil {
-		t.Fatalf("older client's Stop: frame %+v", frame)
-	}
-	var result map[string]any
-	if err := json.Unmarshal(raw, &result); err != nil {
-		t.Fatalf("decode result %s: %v", raw, err)
-	}
-	if reverted, present := result["reverted"]; !present || reverted != false {
-		t.Fatalf("result = %s, want reverted:false present", raw)
-	}
-	if n := f.interrupts(t); n != 1 {
-		t.Fatalf("interrupts = %d, want 1", n)
-	}
-	if _, found, err := f.app.store.GetThreadItem(f.thread.ID, "u:1"); err != nil || !found {
-		t.Fatalf("the message must stay: found=%v err=%v", found, err)
-	}
-	if _, found, err := f.app.store.GetThreadDraft(f.thread.ID); err != nil || found {
-		t.Fatalf("the Stop wrote a composer draft: found=%v err=%v", found, err)
-	}
-}
 
 // claudeTUINotices counts the thread's discarded-message notices.
 func claudeTUINotices(t *testing.T, st *store.Store, threadID string) int {
@@ -118,11 +68,6 @@ func TestInterruptNoticesAClaudeTUIMessageStoppedBeforeAReply(t *testing.T) {
 			stop: func(f *agentKillFixture) error {
 				return f.app.interruptTurnForWorkflow(context.Background(), f.thread.ID, workflowhost.InterruptForTakeover)
 			}},
-		{name: "claude-tui think-only, older client", provider: provider.ClaudeTUI, want: 1,
-			stop: func(f *agentKillFixture) error {
-				_, err := f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, nil)
-				return err
-			}},
 		{name: "claude-tui with a reply", provider: provider.ClaudeTUI, want: 0,
 			agent: &store.Item{ID: "a:0", Kind: "assistant_text", Summary: "Sure"},
 			stop:  func(f *agentKillFixture) error { return f.app.InterruptTurn(f.thread.ID, nil) }},
@@ -168,20 +113,29 @@ func TestInterruptNoticesAClaudeTUIMessageStoppedBeforeAReply(t *testing.T) {
 func TestClaudeTUIStopDiscardsMessageReadsTheTurnRows(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name string
-		rows []store.Item
-		want bool
+		name          string
+		rows          []store.Item
+		turn, pending int
+		want          bool
 	}{
-		{name: "message only", want: true},
-		{name: "api_retry", rows: []store.Item{{Kind: "api_retry", Role: "system"}}, want: true},
-		{name: "api_error", rows: []store.Item{{Kind: "api_error"}}, want: true},
-		{name: "error", rows: []store.Item{{Kind: "error", Role: "system"}}, want: true},
-		{name: "steered messages", rows: []store.Item{{Kind: "user_text", Role: "user"}}, want: true},
-		{name: "assistant_text", rows: []store.Item{{Kind: "assistant_text"}}},
-		{name: "notification", rows: []store.Item{{Kind: "notification", Role: "system"}}},
-		{name: "compaction", rows: []store.Item{{Kind: "compaction", Role: "system"}}},
-		{name: "wire-only user_text", rows: []store.Item{{Kind: "user_text", Role: "user", Meta: `{"wire_only":true}`}}},
-		{name: "subagent prompt", rows: []store.Item{{Kind: "user_text", Role: "user", ParentID: "task:0"}}},
+		{name: "message only", pending: -1, want: true},
+		{name: "api_retry", rows: []store.Item{{Kind: "api_retry", Role: "system"}}, pending: -1, want: true},
+		{name: "api_error", rows: []store.Item{{Kind: "api_error"}}, pending: -1, want: true},
+		{name: "error", rows: []store.Item{{Kind: "error", Role: "system"}}, pending: -1, want: true},
+		{name: "steered messages", rows: []store.Item{{Kind: "user_text", Role: "user"}}, pending: -1, want: true},
+		{name: "assistant_text", rows: []store.Item{{Kind: "assistant_text"}}, pending: -1},
+		{name: "notification", rows: []store.Item{{Kind: "notification", Role: "system"}}, pending: -1},
+		{name: "compaction", rows: []store.Item{{Kind: "compaction", Role: "system"}}, pending: -1},
+		{name: "wire-only user_text", rows: []store.Item{{Kind: "user_text", Role: "user", Meta: `{"wire_only":true}`}}, pending: -1},
+		{name: "subagent prompt", rows: []store.Item{{Kind: "user_text", Role: "user", ParentID: "task:0"}}, pending: -1},
+		{name: "no open turn", turn: anyOpenTurn, pending: -1},
+		// A queued message's row waits for its echo, so its pending send is
+		// the only sign of the message until then.
+		{name: "pending send whose row is deferred", turn: anyOpenTurn, pending: 1, want: true},
+		{name: "pending send on a turn with agent output", rows: []store.Item{{Kind: "assistant_text"}}, turn: anyOpenTurn, pending: 0},
+		// The pending send is sampled first, so a turn that opened since is
+		// the one read.
+		{name: "an open turn outranks the pending send", rows: []store.Item{{Kind: "assistant_text"}}, turn: 0, pending: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -199,53 +153,11 @@ func TestClaudeTUIStopDiscardsMessageReadsTheTurnRows(t *testing.T) {
 				appendTurnRow(t, app.store, row)
 			}
 			sess := session{Provider: string(provider.ClaudeTUI)}
-			if got := app.claudeTUIStopDiscardsMessage(thread.ID, sess, 0, -1); got != tc.want {
+			if got := app.claudeTUIStopDiscardsMessage(thread.ID, sess, tc.turn, tc.pending); got != tc.want {
 				t.Fatalf("discards = %v, want %v", got, tc.want)
 			}
 		})
 	}
-	t.Run("no open turn", func(t *testing.T) {
-		t.Parallel()
-		app := newTestApp(t)
-		thread := createAppTestThread(t, app, "tui-no-turn", string(provider.ClaudeTUI), t.TempDir())
-		insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
-		if app.claudeTUIStopDiscardsMessage(thread.ID, session{Provider: string(provider.ClaudeTUI)}, anyOpenTurn, -1) {
-			t.Fatal("a stop with no open turn noticed a discarded message")
-		}
-	})
-	// A queued message's row waits for its echo, so its pending send is the
-	// only sign of the message until then.
-	t.Run("pending send whose row is deferred", func(t *testing.T) {
-		t.Parallel()
-		app := newTestApp(t)
-		thread := createAppTestThread(t, app, "tui-deferred", string(provider.ClaudeTUI), t.TempDir())
-		insertUserItem(t, app.store, thread.ID, "u:0", 0, "answered long ago")
-		if !app.claudeTUIStopDiscardsMessage(thread.ID, session{Provider: string(provider.ClaudeTUI)}, anyOpenTurn, 1) {
-			t.Fatal("a stop of a pending send with no row yet noticed nothing")
-		}
-	})
-	t.Run("pending send on a turn with agent output", func(t *testing.T) {
-		t.Parallel()
-		app := newTestApp(t)
-		thread := createAppTestThread(t, app, "tui-pending-output", string(provider.ClaudeTUI), t.TempDir())
-		insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
-		appendTurnRow(t, app.store, store.Item{ID: "a:0", ThreadID: thread.ID, ItemIndex: 1, Kind: "assistant_text"})
-		if app.claudeTUIStopDiscardsMessage(thread.ID, session{Provider: string(provider.ClaudeTUI)}, anyOpenTurn, 0) {
-			t.Fatal("a pending send on a turn the agent answered noticed a discarded message")
-		}
-	})
-	// The pending send is sampled first, so a turn that opened since is the
-	// one read.
-	t.Run("an open turn outranks the pending send", func(t *testing.T) {
-		t.Parallel()
-		app := newTestApp(t)
-		thread := createAppTestThread(t, app, "tui-open-wins", string(provider.ClaudeTUI), t.TempDir())
-		insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
-		appendTurnRow(t, app.store, store.Item{ID: "a:0", ThreadID: thread.ID, ItemIndex: 1, Kind: "assistant_text"})
-		if app.claudeTUIStopDiscardsMessage(thread.ID, session{Provider: string(provider.ClaudeTUI)}, 0, 1) {
-			t.Fatal("the pending send's turn was read while a turn was open")
-		}
-	})
 	t.Run("no message", func(t *testing.T) {
 		t.Parallel()
 		app := newTestApp(t)
@@ -280,12 +192,12 @@ func newClaudeTUIInterruptThread(t *testing.T, closed bool) (*App, store.Thread)
 		Retention: claude.UserHomeRetention(0),
 		Binary:    binary,
 		WorkDir:   dir,
-		Env:       []string{"HOME=" + dir, "PATH=" + os.Getenv("PATH")},
+		Env:       provider.EnvInput{Custom: map[string]string{"HOME": dir}},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claudetui.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	if closed {
 		if err := sess.Close(); err != nil {
 			t.Fatalf("close TUI session: %v", err)
@@ -541,7 +453,7 @@ func TestInterruptTurnDropsIntentThatWaitedAcrossCodexRevert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "codex-stale-interrupt-token",

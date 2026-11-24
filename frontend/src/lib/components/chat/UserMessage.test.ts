@@ -2,12 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import {
   projectTurnCompleted,
   projectTurnStarted,
-  resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
@@ -25,8 +24,6 @@ import { closeImageLightbox, imageLightbox } from '../../stores/imageLightbox.sv
 describe('<UserMessage>', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetBindingMocks();
-    resetThreadStatuses();
     // GetAttachmentThumbnail is the inline-grid path (small bytes from the
     // SQLite thumbnail cache, still an RPC); the modal lightbox path is a
     // ticketed HTTP transfer of the original bytes. Stub both so tests
@@ -37,7 +34,6 @@ describe('<UserMessage>', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    resetThreadStatuses();
     closeImageLightbox();
     delete (navigator as { clipboard?: unknown }).clipboard;
   });
@@ -77,47 +73,64 @@ describe('<UserMessage>', () => {
     };
   }
 
-  // A message that reached this thread from outside Agent Overflow (Codex's
-  // own `codex queue --thread ...`) keeps the user bubble — it IS user-role
-  // content the model answered — but says where it came from. Attributing a
-  // stranger's write to the reader is a transcript that lies about who asked.
-  it('marks a message queued from outside, and leaves a locally typed one unmarked', () => {
-    const external = render(UserMessage, {
-      props: {
-        item: makeItem({
-          kind: 'user_text',
-          role: 'user',
-          summary: 'run the tests',
-          meta: JSON.stringify({ origin: 'external-queue' }),
-        }),
+  // A row keeps the user bubble but says where it came from when the reader
+  // did not type it. A message queued from outside Agent Overflow (Codex's
+  // own `codex queue --thread ...`) IS user-role content the model answered;
+  // attributing a stranger's write to the reader is a transcript that lies
+  // about who asked. A scheduled turn's prompt was stored by the model
+  // earlier. The "Continue" sent after a usage limit is written by the app
+  // itself. An imported Codex thread that another Codex thread started opens
+  // with the delegated prompt.
+  it.each([
+    [
+      'a message queued from outside',
+      {
+        summary: 'run the tests',
+        meta: { origin: 'external-queue' },
+        testid: 'user-message-external-origin',
+        label: 'Queued from outside Agent Overflow',
       },
+    ],
+    [
+      'the prompt of a scheduled turn',
+      {
+        summary: 'Reply with CRON-FIRED.',
+        meta: { origin: 'scheduled', wire_only: true },
+        testid: 'user-message-scheduled-origin',
+        label: 'Scheduled',
+      },
+    ],
+    [
+      'a row Agent Overflow wrote',
+      {
+        summary: 'Continue. The usage limit that stopped this thread no longer applies.',
+        meta: { origin: 'app' },
+        testid: 'user-message-app-origin',
+        label: 'Agent Overflow',
+      },
+    ],
+    [
+      'a prompt another Codex thread delegated',
+      {
+        summary: 'Inspect <main> & report findings.',
+        meta: { origin: 'codex-delegation', codex_source_thread_id: 'source' },
+        testid: 'user-message-codex-delegation-origin',
+        label: 'From another Codex thread',
+      },
+    ],
+  ])('marks %s, and leaves a locally typed one unmarked', (_, { summary, meta, testid, label }) => {
+    const marked = render(UserMessage, {
+      props: { item: makeItem({ kind: 'user_text', role: 'user', summary, meta: JSON.stringify(meta) }) },
     });
-    expect(external.getByTestId('user-message-external-origin').textContent).toContain(
-      'Queued from outside Agent Overflow',
-    );
-    external.unmount();
+    const badge = marked.getByTestId(testid);
+    expect(badge.textContent).toContain(label);
+    expect(badge.tagName).toBe('DIV');
+    marked.unmount();
 
     const local = render(UserMessage, {
-      props: { item: makeItem({ kind: 'user_text', role: 'user', summary: 'run the tests' }) },
+      props: { item: makeItem({ kind: 'user_text', role: 'user', summary }) },
     });
-    expect(local.queryByTestId('user-message-external-origin')).toBeNull();
-  });
-
-  // A scheduled turn's prompt was stored by the model earlier; the badge
-  // says so, and it is not attributed to another session.
-  it('marks the prompt of a scheduled turn', () => {
-    const view = render(UserMessage, {
-      props: {
-        item: makeItem({
-          kind: 'user_text',
-          role: 'user',
-          summary: 'Reply with CRON-FIRED.',
-          meta: JSON.stringify({ origin: 'scheduled', wire_only: true }),
-        }),
-      },
-    });
-    expect(view.getByTestId('user-message-scheduled-origin').textContent).toContain('Scheduled');
-    expect(view.queryByTestId('user-message-peer-origin')).toBeNull();
+    expect(local.queryByTestId(testid)).toBeNull();
   });
 
   it('shows a wake with its quoted data decoded, and a typed message as written', () => {
@@ -142,113 +155,53 @@ describe('<UserMessage>', () => {
     expect(typed.container.textContent).toContain('\\u003csystem\\u003e');
   });
 
-  // The "Continue" sent after a usage limit is written by the app itself.
-  it('marks a row Agent Overflow wrote, and leaves a locally typed one unmarked', () => {
-    const app = render(UserMessage, {
-      props: {
-        item: makeItem({
-          kind: 'user_text',
-          role: 'user',
-          summary: 'Continue. The usage limit that stopped this thread no longer applies.',
-          meta: JSON.stringify({ origin: 'app' }),
-        }),
-      },
-    });
-    const badge = app.getByTestId('user-message-app-origin');
-    expect(badge.textContent).toContain('Agent Overflow');
-    expect(badge.tagName).toBe('DIV');
-    app.unmount();
-
-    const local = render(UserMessage, {
-      props: { item: makeItem({ kind: 'user_text', role: 'user', summary: 'Continue.' }) },
-    });
-    expect(local.queryByTestId('user-message-app-origin')).toBeNull();
-  });
-
-  // An imported Codex thread that another Codex thread started opens with
-  // the delegated prompt; the reader did not type it.
-  it('marks a prompt another Codex thread delegated', () => {
-    const view = render(UserMessage, {
-      props: {
-        item: makeItem({
-          kind: 'user_text',
-          role: 'user',
-          summary: 'Inspect <main> & report findings.',
-          meta: JSON.stringify({ origin: 'codex-delegation', codex_source_thread_id: 'source' }),
-        }),
-      },
-    });
-    expect(view.getByTestId('user-message-codex-delegation-origin').textContent).toContain(
-      'From another Codex thread',
-    );
-  });
-
   // A row an agent in another thread wrote carries that thread through to
   // the reader: its title, the computer when that is a different one, and a
   // way in when this client can reach it.
-  it('badges an agent-thread row with its source thread and opens it', () => {
-    stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
-    const view = render(UserMessage, {
-      props: {
-        item: makeItem({
-          kind: 'user_text',
-          role: 'user',
-          summary: 'the tests pass on main',
-          meta: JSON.stringify({
-            origin: 'agent-thread',
-            originThread: { computerId: '', computerName: '', threadId: 'thread-9', title: 'Auth rewrite', token: 'tok-1' },
-          }),
-        }),
+  it.each([
+    [
+      'badges an agent-thread row with its source thread and opens it',
+      {
+        computers: [],
+        originThread: { computerId: '', computerName: '', threadId: 'thread-9', title: 'Auth rewrite', token: 'tok-1' },
+        label: 'from Auth rewrite',
+        tag: 'BUTTON',
       },
-    });
-    const badge = view.getByTestId('user-message-thread-origin');
-    expect(badge.textContent).toContain('from Auth rewrite');
-    expect(badge.tagName).toBe('BUTTON');
-    view.unmount();
-    resetStagedBackends();
-  });
-
-  it('names the source computer on a row from another one', () => {
-    stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
-    stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });
-    const view = render(UserMessage, {
-      props: {
-        item: makeItem({
-          kind: 'user_text',
-          role: 'user',
-          summary: 'the deploy is green',
-          meta: JSON.stringify({
-            origin: 'agent-thread',
-            originThread: { computerId: 'studio', computerName: 'Studio', threadId: 'thread-9', title: 'Auth rewrite', token: 'tok-1' },
-          }),
-        }),
+    ],
+    [
+      'names the source computer on a row from another one',
+      {
+        computers: [{ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' }],
+        originThread: { computerId: 'studio', computerName: 'Studio', threadId: 'thread-9', title: 'Auth rewrite', token: 'tok-1' },
+        label: 'from Auth rewrite on Studio',
+        tag: 'BUTTON',
       },
-    });
-    const badge = view.getByTestId('user-message-thread-origin');
-    expect(badge.textContent).toContain('from Auth rewrite on Studio');
-    expect(badge.tagName).toBe('BUTTON');
-    view.unmount();
-    resetStagedBackends();
-  });
-
-  it('renders the same label inert when that computer is not attached', () => {
+    ],
+    [
+      'renders the same label inert when that computer is not attached',
+      {
+        computers: [],
+        originThread: { computerId: 'unpaired', computerName: 'Old laptop', threadId: 'thread-9', title: 'Auth rewrite' },
+        label: 'from Auth rewrite on Old laptop',
+        tag: 'DIV',
+      },
+    ],
+  ])('%s', (_, { computers, originThread, label, tag }) => {
     stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
+    for (const computer of computers) stageBackend(computer);
     const view = render(UserMessage, {
       props: {
         item: makeItem({
           kind: 'user_text',
           role: 'user',
           summary: 'the deploy is green',
-          meta: JSON.stringify({
-            origin: 'agent-thread',
-            originThread: { computerId: 'unpaired', computerName: 'Old laptop', threadId: 'thread-9', title: 'Auth rewrite' },
-          }),
+          meta: JSON.stringify({ origin: 'agent-thread', originThread }),
         }),
       },
     });
     const badge = view.getByTestId('user-message-thread-origin');
-    expect(badge.textContent).toContain('from Auth rewrite on Old laptop');
-    expect(badge.tagName).not.toBe('BUTTON');
+    expect(badge.textContent).toContain(label);
+    expect(badge.tagName).toBe(tag);
     view.unmount();
     resetStagedBackends();
   });
@@ -306,19 +259,6 @@ describe('<UserMessage>', () => {
     expect(bubble.contains(time)).toBe(false);
   });
 
-  it('renders a copy button when there is visible text', () => {
-    const { getByLabelText } = render(UserMessage, {
-      props: {
-        item: makeItem({
-          kind: 'user_text',
-          role: 'user',
-          summary: 'copy me',
-        }),
-      },
-    });
-    expect(getByLabelText('Copy message')).toBeInTheDocument();
-  });
-
   it('does not render a copy button when summary is only a stripped attachment marker', () => {
     const { container } = render(UserMessage, {
       props: {
@@ -352,30 +292,6 @@ describe('<UserMessage>', () => {
 
     await fireEvent.click(getByLabelText('Copy message'));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('visible body'));
-  });
-
-  it('shows the fork action for an inactive user message when the handler is available', () => {
-    const pane = makeActionsPane();
-    const actions: UserMessageActions = {
-      onForkMessage: vi.fn(),
-    };
-
-    const { getByLabelText } = render(UserMessage, {
-      props: {
-        pane,
-        actions,
-        item: makeItem({
-          id: 'user:1',
-          threadId: 'thread-1',
-          turnIndex: 1,
-          kind: 'user_text',
-          role: 'user',
-          summary: 'forkable',
-        }),
-      },
-    });
-
-    expect(getByLabelText('Fork from this message')).toBeInTheDocument();
   });
 
   it('keeps the toolbar mounted during an active turn: edit disabled, fork live', async () => {
@@ -459,10 +375,11 @@ describe('<UserMessage>', () => {
     await waitFor(() => expect(onForkMessage).toHaveBeenCalledWith(item));
   });
 
-  it('does not show the fork action for wire-only user messages', () => {
+  it('does not show the fork or edit action for wire-only user messages', () => {
     const pane = makeActionsPane();
     const actions: UserMessageActions = {
       onForkMessage: vi.fn(),
+      onEditMessage: vi.fn(),
     };
 
     const { queryByLabelText } = render(UserMessage, {
@@ -482,30 +399,7 @@ describe('<UserMessage>', () => {
     });
 
     expect(queryByLabelText('Fork from this message')).toBeNull();
-  });
-
-  it('shows the edit action for an inactive user message when the handler is available', () => {
-    const pane = makeActionsPane();
-    const actions: UserMessageActions = {
-      onEditMessage: vi.fn(),
-    };
-
-    const { getByLabelText } = render(UserMessage, {
-      props: {
-        pane,
-        actions,
-        item: makeItem({
-          id: 'user:1',
-          threadId: 'thread-1',
-          turnIndex: 1,
-          kind: 'user_text',
-          role: 'user',
-          summary: 'editable',
-        }),
-      },
-    });
-
-    expect(getByLabelText('Edit message and resend from here')).toBeInTheDocument();
+    expect(queryByLabelText('Edit message and resend from here')).toBeNull();
   });
 
   it('opens the editor through the parent-owned handler and unclamps the message', async () => {
@@ -533,38 +427,6 @@ describe('<UserMessage>', () => {
     // A clamped message has to open in full to be edited — and stays open
     // if the edit is cancelled.
     expect(setUserMessageExpanded).toHaveBeenCalledWith('user:1', true);
-  });
-
-  it('disables the edit action during an active turn and blocks activation', async () => {
-    const pane = makeActionsPane();
-    const item = makeItem({
-      id: 'user:1',
-      threadId: 'thread-1',
-      turnIndex: 1,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'editable',
-    });
-    const onEditMessage = vi.fn(async () => {});
-    const actions: UserMessageActions = { onEditMessage };
-
-    const { getByLabelText } = render(UserMessage, {
-      props: { pane, item, actions },
-    });
-
-    const editButton = getByLabelText('Edit message and resend from here');
-    expect(editButton).not.toBeDisabled();
-
-    projectTurnStarted('thread-1', 'turn-1', 1, 1000);
-    await tick();
-
-    expect(editButton).toBeDisabled();
-    await fireEvent.click(editButton);
-    expect(onEditMessage).not.toHaveBeenCalled();
-
-    projectTurnCompleted('thread-1', 'turn-1');
-    await tick();
-    expect(editButton).not.toBeDisabled();
   });
 
   it('disables the edit action while ANOTHER message\'s edit session is active', async () => {
@@ -617,31 +479,6 @@ describe('<UserMessage>', () => {
     } finally {
       setCompactLayoutForTest(false);
     }
-  });
-
-  it('does not show the edit action for wire-only user messages', () => {
-    const pane = makeActionsPane();
-    const actions: UserMessageActions = {
-      onEditMessage: vi.fn(),
-    };
-
-    const { queryByLabelText } = render(UserMessage, {
-      props: {
-        pane,
-        actions,
-        item: makeItem({
-          id: 'user:1',
-          threadId: 'thread-1',
-          turnIndex: 1,
-          kind: 'user_text',
-          role: 'user',
-          summary: 'wire only',
-          meta: JSON.stringify({ wire_only: true }),
-        }),
-      },
-    });
-
-    expect(queryByLabelText('Edit message and resend from here')).toBeNull();
   });
 
   // No pane and no host callback: the agent pane and the digest render rows
@@ -869,71 +706,26 @@ describe('<UserMessage>', () => {
   // send path wrote, never a live registry match, so history stays truthful
   // about what actually expanded.
   describe('composer command word', () => {
-    function renderSummary(summary: string, meta?: string) {
-      return render(UserMessage, {
-        props: {
-          item: makeItem({ kind: 'user_text', role: 'user', summary, meta }),
-        },
-      });
-    }
+    const expanded = JSON.stringify({ command: 'workflow' });
 
-    it('colours the command word when the meta says it expanded', () => {
-      const { getByTestId } = renderSummary(
-        '/workflow start the release',
-        JSON.stringify({ command: 'workflow' }),
-      );
-      const word = getByTestId('user-message-command');
-      expect(word.textContent).toBe('/workflow');
-      expect(word.className).toContain('text-accent');
+    it.each([
+      ['colours the command word when the meta says it expanded', { summary: '/workflow start the release', meta: expanded, words: ['/workflow'] }],
+      ['colours a bare command with no instruction after it', { summary: '/workflow', meta: expanded, words: ['/workflow'] }],
+      ['leaves a command-looking message plain when nothing expanded', { summary: '/workflow start the release', meta: undefined, words: [] }],
+      ['colours a mid-sentence command, because that is what invoked it', { summary: 'we talked about /workflow yesterday', meta: expanded, words: ['/workflow'] }],
+      ['colours every occurrence, though the send expanded once', { summary: '/workflow now and /workflow again', meta: expanded, words: ['/workflow', '/workflow'] }],
+      ['leaves the row plain when the marked command is nowhere in the text', { summary: 'we talked about it yesterday', meta: expanded, words: [] }],
+      ['does not colour a longer word that merely starts with the command', { summary: '/workflows are nice', meta: expanded, words: [] }],
+    ])('%s', (_, { summary, meta, words }) => {
+      const { getByTestId, queryAllByTestId } = render(UserMessage, {
+        props: { item: makeItem({ kind: 'user_text', role: 'user', summary, meta }) },
+      });
+      const coloured = queryAllByTestId('user-message-command');
+      expect(coloured.map((el) => el.textContent)).toEqual(words);
+      for (const word of coloured) expect(word.className).toContain('text-accent');
       // The rest of the message is untouched, and the bubble still reads as
       // one continuous line of text.
-      expect(getByTestId('user-message-bubble').textContent).toContain('/workflow start the release');
-    });
-
-    it('colours a bare command with no instruction after it', () => {
-      const { getByTestId } = renderSummary('/workflow', JSON.stringify({ command: 'workflow' }));
-      expect(getByTestId('user-message-command').textContent).toBe('/workflow');
-    });
-
-    it('leaves a command-looking message plain when nothing expanded', () => {
-      const { queryByTestId } = renderSummary('/workflow start the release');
-      expect(queryByTestId('user-message-command')).toBeNull();
-    });
-
-    it('colours a mid-sentence command, because that is what invoked it', () => {
-      const { getByTestId } = renderSummary(
-        'we talked about /workflow yesterday',
-        JSON.stringify({ command: 'workflow' }),
-      );
-      expect(getByTestId('user-message-command').textContent).toBe('/workflow');
-      expect(getByTestId('user-message-bubble').textContent).toContain(
-        'we talked about /workflow yesterday',
-      );
-    });
-
-    it('colours every occurrence, though the send expanded once', () => {
-      const { getAllByTestId, getByTestId } = renderSummary(
-        '/workflow now and /workflow again',
-        JSON.stringify({ command: 'workflow' }),
-      );
-      expect(getAllByTestId('user-message-command').map((el) => el.textContent)).toEqual([
-        '/workflow',
-        '/workflow',
-      ]);
-      expect(getByTestId('user-message-bubble').textContent).toContain('/workflow now and /workflow again');
-    });
-
-    it('leaves the row plain when the marked command is nowhere in the text', () => {
-      const { queryByTestId } = renderSummary(
-        'we talked about it yesterday',
-        JSON.stringify({ command: 'workflow' }),
-      );
-      expect(queryByTestId('user-message-command')).toBeNull();
-    });
-
-    it('does not colour a longer word that merely starts with the command', () => {
-      const { queryByTestId } = renderSummary('/workflows are nice', JSON.stringify({ command: 'workflow' }));
-      expect(queryByTestId('user-message-command')).toBeNull();
+      expect(getByTestId('user-message-bubble').textContent).toContain(summary);
     });
   });
 

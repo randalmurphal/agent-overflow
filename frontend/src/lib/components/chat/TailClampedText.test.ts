@@ -1,13 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import TailClampedText from './TailClampedText.svelte';
 import { TAIL_WINDOW_CAP_CHARS, TAIL_WINDOW_MIN_KEEP_CHARS } from './tailWindow';
 
 describe('<TailClampedText>', () => {
-  afterEach(() => {
-    cleanup();
-  });
 
   it('renders the text and wires id + testId', () => {
     const { container } = render(TailClampedText, {

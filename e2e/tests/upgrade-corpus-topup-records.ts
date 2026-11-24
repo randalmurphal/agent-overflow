@@ -145,21 +145,21 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
     harness.waitForEvent<{ threadId?: string }>('provider:turn_completed', (ev) => ev.threadId === threadId, TURN_TIMEOUT_MS);
   const turn = async (message: string, tools: string[]) => {
     const ended = turnEnded(caller);
-    await harness.rpc('SendMessage', caller, message, null);
+    await harness.send(caller, message);
     for (const tool of tools) {
       const answer = await harness.awaitMcpResult({ server: THREAD_TOOLS_SERVER, tool, cwd, timeoutMs: TURN_TIMEOUT_MS });
       if (answer.report.isError) throw new Error(`top-up ${tool}: refused: ${answer.report.result ?? ''}`);
     }
     await ended;
   };
-  await harness.rpc('StartSession', caller);
+  await harness.startSession(caller);
   await turn('Ask the other thread.', ['thread_send']);
   await turn('Ask it once more.', ['thread_send']);
 
   // Two sends one target turn answers settle together, and their caller is
   // told once: one wake carries both, and the request that rode along names
   // the other's message.
-  await harness.rpc('SendMessage', target, 'Hold on to what arrives next.', null);
+  await harness.send(target, 'Hold on to what arrives next.');
   const parked = await harness.waitForEvent<{ mockId: string; cwd: string; report: { kind: string; detail?: string } }>(
     'harness:mock', (ev) => ev.report.kind === 'waiting_signal' && ev.report.detail === targetBusy && ev.cwd === cwd, TURN_TIMEOUT_MS);
   await turn('Ask it twice without waiting.', ['thread_send', 'thread_send']);
@@ -293,8 +293,7 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
       ],
       afterTurns: 'repeatLast',
     }));
-    await peer.rpc('StartSession', caller);
-    await peer.rpc('SendMessage', caller, 'Start all three on the other computer.', null);
+    await peer.send(caller, 'Start all three on the other computer.');
     for (const run of ['ends', 'stays open', 'is nudged']) {
       const answer = await awaitToolAnswer<{ thread_id: string }>(peer, { tool: 'thread_spawn', cwd: callerCwd, timeoutMs: TURN_TIMEOUT_MS });
       if (answer.isError || !answer.value) throw new Error(`top-up: the paired spawn whose run ${run} was refused: ${answer.text}`);
@@ -325,13 +324,13 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
   // first worker's new session runs its first turn, which ends; the
   // third's second turn arms a loop, which keeps its nudge open.
   const [ended, , nudged] = workers;
-  await harness.rpc('StopSession', ended);
-  await harness.rpc('StartSession', ended);
+  await harness.stopSession(ended);
+  await harness.startSession(ended);
   // The open nudge run is recorded when the message is taken, so the
   // receipts alone do not say the second worker's turn has ended.
   const nudgesAnswered = Promise.all([ended, nudged].map((worker) => awaitTurnCompleted(harness, worker, TURN_TIMEOUT_MS)));
-  await harness.rpc('SendMessage', ended, 'Check the notes once more.', null);
-  await harness.rpc('SendMessage', nudged, 'Keep an eye on the notes.', null);
+  await harness.send(ended, 'Check the notes once more.');
+  await harness.send(nudged, 'Keep an eye on the notes.');
   await nudgesAnswered;
   await expect.poll(() => receiptNudges(harness, [ended, nudged]), {
     message: "top-up: the paired spawns' links never kept one ended and one open nudge run",

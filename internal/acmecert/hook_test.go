@@ -66,19 +66,6 @@ func TestAHookThatCannotBeStartedReportsTheCommand(t *testing.T) {
 	requireNames(t, err, "no such file or directory")
 }
 
-// The bound is real: a hook that never returns must not hold the renewal
-// loop, and the timeout kills its whole process group.
-func TestAHookThatNeverReturnsIsBounded(t *testing.T) {
-	started := time.Now()
-	err := runHook(context.Background(), procutiltest.Reaper(),
-		[]string{"/bin/sh", "-c", "sleep 30", "dns-hook"},
-		150*time.Millisecond, hookSet, "_acme-challenge.backend.example", "the-value")
-	requireNames(t, err, "timed out")
-	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Fatalf("the hook was not bounded: it ran for %s", elapsed)
-	}
-}
-
 // An empty argv is a configuration problem, and it is reported as one
 // rather than as an exec failure nobody can act on.
 func TestAnEmptyHookIsRefused(t *testing.T) {

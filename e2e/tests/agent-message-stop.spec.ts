@@ -96,8 +96,7 @@ for (const provider of ['claude', 'codex'] as const) {
       ],
       afterTurns: 'silent',
     }));
-    await harness.rpc('StartSession', sender);
-    await harness.rpc('SendMessage', sender, 'send it over', null);
+    await harness.send(sender, 'send it over');
     const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
     expect(send.isError, send.text).toBe(false);
     const token = send.value!.token;

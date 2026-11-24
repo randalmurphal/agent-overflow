@@ -395,3 +395,10 @@ func TestAStatusAnswerSendsOnlyTheTextsTheAskerLacks(t *testing.T) {
 		t.Errorf("a holder of the first answer asking about the late reply got %+v, want the reply alone", got)
 	}
 }
+
+// callThreadRequestStatus asks one computer about requests this one made
+// there.
+func (a *App) callThreadRequestStatus(computerID string, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
+	reply, _, err := a.readThreadRequestStatus(computerID, poll)
+	return reply, err
+}

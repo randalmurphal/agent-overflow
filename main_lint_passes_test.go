@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // lintTarget is one system the exhaustive linter runs as, with the build tag
@@ -25,7 +27,7 @@ type lintTarget struct {
 
 // The exhaustive linter sees only the files a pass compiles, so a file whose
 // build constraint no pass satisfies is never checked. `make
-// go-lint-exhaustive` runs few passes on the strength of one fact about the
+// go-lint-whole-tree` runs few passes on the strength of one fact about the
 // tree: no file needs one tag on and another off. This test holds that fact.
 // It fails for a file that some combination of build tags compiles on a
 // linted system and that no pass compiles. The Windows passes name only the
@@ -39,14 +41,15 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 			wholeTree = append(wholeTree, target)
 		}
 	}
+	root := reporoot.Dir(t)
 	var unreached []string
-	walkErr := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
+	walkErr := reporoot.Walk(t, ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		name := entry.Name()
 		if entry.IsDir() {
-			if path != "." && (strings.HasPrefix(name, ".") || name == "node_modules") {
+			if path != root && strings.HasPrefix(name, ".") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -63,7 +66,8 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 			reach = wholeTree
 		}
 		if compiledBySomeBuild(expr, reach) && !compiledBySomePass(expr, reach) {
-			unreached = append(unreached, path+": "+expr.String())
+			rel, _ := filepath.Rel(root, path)
+			unreached = append(unreached, filepath.ToSlash(rel)+": "+expr.String())
 		}
 		return nil
 	})
@@ -72,30 +76,35 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 	}
 	if len(unreached) > 0 {
 		t.Fatalf("no exhaustive lint pass compiles these files; add a pass to the "+
-			"go-lint-exhaustive recipe whose build tags satisfy them:\n%s",
+			"go-lint-whole-tree recipe whose build tags satisfy them:\n%s",
 			strings.Join(unreached, "\n"))
 	}
 }
 
 // exhaustiveLintTargets reads the passes from where they are run: this
-// host's and the Windows launcher's from the go-lint-exhaustive recipe, and
+// host's and the Windows launcher's from the go-lint-whole-tree recipe, and
 // the macOS job's from the CI workflow.
 func exhaustiveLintTargets(t *testing.T) []lintTarget {
 	t.Helper()
-	recipe := makefileRecipe(t, "go-lint-exhaustive")
+	recipe := makefileRecipe(t, "go-lint-whole-tree")
 
 	var host [][]string
-	hostPass := regexp.MustCompile(`(?m)^\t\$\(GO_LINT_EXHAUSTIVE\)(?: --build-tags (\S+))? \./\.\.\.$`)
+	hostPass := regexp.MustCompile(`(?m)^\t\$\(GO_LINT_WHOLE_TREE\) --enable-only exhaustive(,unused)?(?: --build-tags (\S+))? \./\.\.\.$`)
 	for _, match := range hostPass.FindAllStringSubmatch(recipe, -1) {
-		host = append(host, splitTags(match[1]))
+		tags := splitTags(match[2])
+		// unused reads one file set: the untagged pass, and only it.
+		if (match[1] != "") != (len(tags) == 0) {
+			t.Fatalf("go-lint-whole-tree runs unused on the untagged pass only; the pass with tags %v has unused=%v", tags, match[1] != "")
+		}
+		host = append(host, tags)
 	}
 	if !slices.ContainsFunc(host, func(tags []string) bool { return len(tags) == 0 }) {
-		t.Fatalf("the go-lint-exhaustive recipe has no pass without build tags:\n%s", recipe)
+		t.Fatalf("the go-lint-whole-tree recipe has no exhaustive pass without build tags:\n%s", recipe)
 	}
 
 	windowsLoop := regexp.MustCompile(`for tags in ([^;]+); do`).FindStringSubmatch(recipe)
-	if windowsLoop == nil || !strings.Contains(recipe, "GOOS=windows CGO_ENABLED=0 $(GO_LINT_EXHAUSTIVE)") {
-		t.Fatalf("the go-lint-exhaustive recipe has no Windows launcher passes:\n%s", recipe)
+	if windowsLoop == nil || !strings.Contains(recipe, "GOOS=windows CGO_ENABLED=0 $(GO_LINT_WHOLE_TREE) --enable-only exhaustive") {
+		t.Fatalf("the go-lint-whole-tree recipe has no Windows launcher passes:\n%s", recipe)
 	}
 	var windows [][]string
 	for _, tags := range strings.Fields(windowsLoop[1]) {

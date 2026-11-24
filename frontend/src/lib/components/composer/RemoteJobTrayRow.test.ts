@@ -1,12 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import RemoteJobTrayRow from './RemoteJobTrayRow.svelte';
 import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { deriveTrayTasks, trayRemoteJob } from '../../utils/backgroundTray';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
+import { getToasts } from '../../stores/toast.svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -30,10 +30,6 @@ function remoteTask(input: Record<string, unknown> = {}, remoteJob = job) {
 const chunk = { text: 'epoch 10 complete', error: '', offset: 100, nextOffset: 117, expired: false };
 
 describe('remote jobs in the background tray', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetToastsForTest();
-  });
   afterEach(resetStagedBackends);
 
   it('presents the job as the remote_run call it came from and holds Stop while the computer is offline', async () => {

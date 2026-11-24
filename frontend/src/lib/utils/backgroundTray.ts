@@ -18,7 +18,6 @@ import {
 } from './subagentLaunch';
 
 export { extractClaudeTaskID } from './claudeTaskMeta';
-export { extractCodexProcessID } from './codexProcessMeta';
 
 export interface TrayTask {
   /** Stable id used for the row key and scroll-to-item request. */
@@ -174,30 +173,6 @@ export function trayTaskLabel(task: TrayTask): string {
   const fromCompletion = (task.completion?.summary ?? '').trim();
   if (fromCompletion) return fromCompletion;
   return 'Tool';
-}
-
-/** Status label rendered next to the glyph on a tray row. */
-export function statusLabel(status: TrayTask['status']): string {
-  if (status === 'running') return 'running';
-  if (status === 'errored') return 'failed';
-  if (status === 'declined') return 'declined';
-  if (status === 'killed') return 'stopped';
-  return '';
-}
-
-/**
- * Tailwind text-color class for the status span. `declined` shares
- * the error palette with ToolDecisionChip — a user-declined tool run
- * is not a success, and the rest of the UI already colors it the
- * same way a tool failure is colored. `killed` lands on muted-gray
- * text so it reads as a user-initiated terminal, distinct from the
- * red of an actual failure.
- */
-export function statusClass(status: TrayTask['status']): string {
-  if (status === 'running') return 'text-accent';
-  if (status === 'errored' || status === 'declined') return 'text-error';
-  if (status === 'killed') return 'text-text-secondary';
-  return 'rounded bg-success/10 px-1 py-px text-success';
 }
 
 /**

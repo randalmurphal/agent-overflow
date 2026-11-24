@@ -5,11 +5,9 @@ import BackgroundTaskTrayDigest from './BackgroundTaskTrayDigest.svelte';
 import { installTimelineScopeCapability, installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { flushMicrotasks } from '../../../test/helpers/threadPane';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
-import { __resetAgentPaneStateForTest } from '../../stores/agentPane.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { Item } from '../../types/models';
@@ -85,19 +83,13 @@ async function setup(items: Item[]): Promise<ThreadPane> {
 describe('<BackgroundTaskTrayDigest>', () => {
   beforeEach(async () => {
     installTimelineScopeCapability();
-    resetBindingMocks();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
-    __resetAgentPaneStateForTest();
     setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
-    setBindingMock('ListSubagentDescendants', async () => []);
     await loadSettings();
   });
 
   afterEach(() => {
     cleanup();
-    __resetAgentPaneStateForTest();
     vi.restoreAllMocks();
   });
 
@@ -171,16 +163,6 @@ describe('<BackgroundTaskTrayDigest>', () => {
     expect(digest.getAttribute('data-scope-id')).toBe('launch-1');
     await waitFor(() => expect(digest.querySelectorAll('[data-item-id]').length).toBeGreaterThanOrEqual(2));
     await tick();
-  });
-
-  it('loads tools without wholesale descendant hydration', async () => {
-    const listDescendants = vi.fn(async () => []);
-    setBindingMock('ListSubagentDescendants', listDescendants);
-    const launch = claudeLaunch({ meta: JSON.stringify({ task_id: 'task-1', subagentDescendantCount: 9 }) });
-    const pane = await setup([launch, ...children(launch.id)]);
-    const view = render(BackgroundTaskTrayDigest, { props: { pane, task: taskFor(launch), id: 'digest-1' } });
-    await waitFor(() => expect(view.getByTestId('background-task-tray-row-digest').querySelector('[data-item-id="read-1"]')).toBeTruthy());
-    expect(listDescendants).not.toHaveBeenCalled();
   });
 
   it('loads an out-of-window scope without changing the host window', async () => {

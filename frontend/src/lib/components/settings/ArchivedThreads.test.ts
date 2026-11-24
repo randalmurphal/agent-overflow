@@ -1,13 +1,12 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { stageBackend } from '../../../test/helpers/backends';
 import { makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetPanesForTest } from '../../stores/panes.svelte';
-import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { getToasts } from '../../stores/toast.svelte';
 import { getPinnedBackend } from '../../transport/backends';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { noteThread } from '../../transport/entityIndex';
 import { forgetGrantedScopes, setCarriedSessionScopes } from '../../transport/scopes';
 import ArchivedThreads from './ArchivedThreads.svelte';
 import { applySettingsSnapshot } from '../../stores/settings.svelte';
@@ -52,11 +51,6 @@ describe('<ArchivedThreads>', () => {
 // drops the row like any delete and shows the backend's sentence in place of
 // "Deleted", never "Failed to delete".
 describe('<ArchivedThreads> delete whose cleanup failed', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
-    resetToastsForTest();
-  });
 
   it('drops the row and shows the cleanup failure', async () => {
     const message = 'The thread was deleted, but an ask it sent to another thread could not be stopped and may keep running.';
@@ -76,10 +70,6 @@ describe('<ArchivedThreads> delete whose cleanup failed', () => {
 });
 
 describe('<ArchivedThreads> delete of a thread on a worktree', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
-  });
 
   // The confirmation names what goes with the thread and says nothing of
   // its worktree, which the delete keeps; no worktree is read or removed.
@@ -129,11 +119,6 @@ describe('<ArchivedThreads> delete of a thread on a worktree', () => {
 });
 
 describe('<ArchivedThreads> delete of a thread with workers', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
-    resetToastsForTest();
-  });
 
   it('names a thread under it that was not deleted', async () => {
     const archived = makeThread({ id: 'archived-owner', title: 'Owner', archived: true, projectId: 'project-1' });
@@ -159,17 +144,12 @@ describe('<ArchivedThreads> delete with two computers attached', () => {
   const worktree = '/tmp/wt/laptop';
 
   beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
-    resetToastsForTest();
     stageBackend();
     setCarriedSessionScopes('laptop', ['threads:operate', 'git:operate']);
   });
 
   afterEach(() => {
     forgetGrantedScopes('laptop');
-    resetStagedBackends();
-    __resetEntityIndexForTest();
   });
 
   // The project is archived too, so the project index never learns its

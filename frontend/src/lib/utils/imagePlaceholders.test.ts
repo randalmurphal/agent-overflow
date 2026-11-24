@@ -48,43 +48,14 @@ describe('imagePlaceholders', () => {
     expect(inserted.cursor).toBe('see [Image #1]'.length);
   });
 
-  it('removes a placeholder atomically when backspacing from its right edge', () => {
-    const result = removeImagePlaceholderForKey(
-      'before [Image #1] after',
-      [attachment('att-1')],
-      'before [Image #1]'.length,
-      'before [Image #1]'.length,
-      'Backspace',
-    );
-
+  it.each([
+    ['removes a placeholder atomically when backspacing from its right edge', 'before [Image #1]'.length, 'Backspace'],
+    ['removes a placeholder atomically when deleting from its left edge', 'before '.length, 'Delete'],
+    ['removes a placeholder when the cursor is inside it', 'before [Image'.length, 'Backspace'],
+  ] as const)('%s', (_name, cursor, key) => {
+    const result = removeImagePlaceholderForKey('before [Image #1] after', [attachment('att-1')], cursor, cursor, key);
     expect(result?.content).toBe('before after');
     expect(result?.attachmentIds).toEqual(['att-1']);
-  });
-
-  it('removes a placeholder atomically when deleting from its left edge', () => {
-    const result = removeImagePlaceholderForKey(
-      'before [Image #1] after',
-      [attachment('att-1')],
-      'before '.length,
-      'before '.length,
-      'Delete',
-    );
-
-    expect(result?.content).toBe('before after');
-    expect(result?.attachmentIds).toEqual(['att-1']);
-  });
-
-  it('removes a placeholder when the cursor is inside it', () => {
-    const cursor = 'before [Image'.length;
-    const result = removeImagePlaceholderForKey(
-      'before [Image #1] after',
-      [attachment('att-1')],
-      cursor,
-      cursor,
-      'Backspace',
-    );
-
-    expect(result?.content).toBe('before after');
   });
 
   it('removes every placeholder touched by a selection', () => {

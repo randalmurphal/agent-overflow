@@ -14,6 +14,8 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
+
+	"github.com/google/uuid"
 )
 
 // promptReuseFamily is one kind of prompt a person answers: how the mock
@@ -100,14 +102,14 @@ func TestAUsersAnswerIsWrittenOnlyToTheSessionThatAsked(t *testing.T) {
 			}
 			start := func(message string) {
 				t.Helper()
-				if err := app.StartSession(thread.ID); err != nil {
+				if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 					t.Fatalf("StartSession: %v", err)
 				}
-				if err := app.SendMessage(context.Background(), thread.ID, message, nil); err != nil {
+				if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, message, pageSendOptions(uuid.NewString())); err != nil {
 					t.Fatalf("SendMessage: %v", err)
 				}
 			}
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 			openOther := func(not provider.PromptOccurrence) provider.PromptOccurrence {
 				t.Helper()
 				var open provider.PromptOccurrence

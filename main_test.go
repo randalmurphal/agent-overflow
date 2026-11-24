@@ -95,31 +95,22 @@ func TestParseFlagsConnectMode(t *testing.T) {
 }
 
 // TestParseFlagsConnectAndListenRejected pins the explicit rejection of
-// `--connect` + `--listen`. The flags configure mutually exclusive
-// modes — --listen sets the local transport bind, --connect skips the
-// local transport entirely — so silently dropping one would be
-// confusing. The error message must point at the conflict so the
+// `--connect` with a flag of a mutually exclusive mode: --listen sets the
+// local transport bind and --print-url-fd its bootstrap channel, while
+// --connect skips the local transport entirely, so silently dropping one
+// would be confusing. The error message must point at the conflict so the
 // operator notices before the desktop window opens.
 func TestParseFlagsConnectAndListenRejected(t *testing.T) {
-	_, err := parseFlags([]string{"--connect", "ws://host:1234?token=t", "--listen", "127.0.0.1:0"})
-	if err == nil {
-		t.Fatal("parseFlags accepted --connect + --listen, want error")
-	}
-	if !strings.Contains(err.Error(), "--connect") || !strings.Contains(err.Error(), "--listen") {
-		t.Fatalf("error %q does not mention both flags", err)
-	}
-}
-
-// TestParseFlagsConnectAndPrintURLFDRejected covers the existing pair
-// of conflicting flags through the same surface; without it the
-// fatalf-to-error refactor could regress the original rejection.
-func TestParseFlagsConnectAndPrintURLFDRejected(t *testing.T) {
-	_, err := parseFlags([]string{"--connect", "ws://host:1234?token=t", "--print-url-fd", "3"})
-	if err == nil {
-		t.Fatal("parseFlags accepted --connect + --print-url-fd, want error")
-	}
-	if !strings.Contains(err.Error(), "--connect") || !strings.Contains(err.Error(), "--print-url-fd") {
-		t.Fatalf("error %q does not mention both flags", err)
+	for _, conflict := range [][]string{{"--listen", "127.0.0.1:0"}, {"--print-url-fd", "3"}} {
+		t.Run(conflict[0], func(t *testing.T) {
+			_, err := parseFlags(append([]string{"--connect", "ws://host:1234?token=t"}, conflict...))
+			if err == nil {
+				t.Fatalf("parseFlags accepted --connect + %s, want error", conflict[0])
+			}
+			if !strings.Contains(err.Error(), "--connect") || !strings.Contains(err.Error(), conflict[0]) {
+				t.Fatalf("error %q does not mention both flags", err)
+			}
+		})
 	}
 }
 

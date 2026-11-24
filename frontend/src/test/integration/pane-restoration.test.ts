@@ -294,19 +294,6 @@ describe('App integration - pane restoration', () => {
     });
   });
 
-  it('does not rewrite pane layout on pagehide when there is no pending layout write', async () => {
-    const left = makeThread({ id: 'left-thread', title: 'Left Thread' });
-    installThreadMocks([left]);
-    installUIStateWithPaneLayout(savePaneLayout([
-      { paneId: 'left', threadId: left.id, widthPx: 1 },
-    ], 'left'));
-
-    const rendered = render(App);
-    await waitFor(() => expect(rendered.getByTestId('pane-host')).toBeInTheDocument());
-    window.dispatchEvent(new Event('pagehide'));
-
-  });
-
   it('drops saved panes whose threads are no longer available', async () => {
     const kept = makeThread({ id: 'kept-thread', title: 'Kept Thread' });
     installThreadMocks([kept]);
@@ -341,6 +328,8 @@ describe('App integration - pane restoration', () => {
     const uiState = installUIStateWithPaneLayout(savePaneLayout([], null));
     const left = makeThread({ id: 'left-thread', title: 'Left Thread' });
     const right = makeThread({ id: 'right-thread', title: 'Right Thread' });
+    installComposerDefaults(left.id);
+    installComposerDefaults(right.id);
 
     const rendered = render(App);
     await waitFor(() => expect(rendered.getByTestId('pane-host-empty')).toBeInTheDocument());

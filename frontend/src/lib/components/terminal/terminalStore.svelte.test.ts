@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   createThreadTerminalState,
   getThreadTerminalState,
@@ -6,8 +6,6 @@ import {
   getTerminalFocused,
   notifyTerminalFocus,
   PENDING_OUTPUT_LIMITS,
-  resetThreadTerminalStatesForTest,
-  resetTerminalFocusForTest,
   terminalFocusRegion,
   TERMINAL_DRAWER_LIMITS,
 } from './terminalStore.svelte';
@@ -36,10 +34,7 @@ function makeSummary(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
   };
 }
 
-describe('ThreadTerminalState', () => {
-  beforeEach(() => {
-    resetThreadTerminalStatesForTest();
-  });
+describe('createThreadTerminalState', () => {
 
   it('adds a tab and marks it active', () => {
     const s = createThreadTerminalState();
@@ -309,21 +304,13 @@ describe('syncTabs', () => {
 describe('terminal focus registry', () => {
   const PANE = 'pane-a';
 
-  beforeEach(() => {
-    resetTerminalFocusForTest();
-  });
-
   it('starts unfocused', () => {
     expect(getTerminalFocused(PANE)).toBe(false);
   });
 
-  it('becomes focused on a single notifyTerminalFocus(pane, true)', () => {
+  it('becomes focused on a single notifyTerminalFocus(pane, true) and flips back to false when the paired false notification arrives', () => {
     notifyTerminalFocus(PANE, true);
     expect(getTerminalFocused(PANE)).toBe(true);
-  });
-
-  it('flips back to false when paired false notification arrives', () => {
-    notifyTerminalFocus(PANE, true);
     notifyTerminalFocus(PANE, false);
     expect(getTerminalFocused(PANE)).toBe(false);
   });

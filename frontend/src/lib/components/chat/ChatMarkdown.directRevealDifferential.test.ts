@@ -1,5 +1,6 @@
 import { render } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { seededRandom } from '../../../test/helpers/seededRandom';
 import DirectMarkdownDifferentialHarness from './DirectMarkdownDifferentialHarness.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
@@ -235,10 +236,9 @@ const PARSER_TRANSITION_CORPUS = [
 function variableChunks(source: string, seed: number): string[] {
   const chunks: string[] = [];
   let offset = 0;
-  let state = seed >>> 0;
+  const next = seededRandom(seed);
   while (offset < source.length) {
-    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-    const length = 1 + (state % 19);
+    const length = 1 + next(19);
     chunks.push(source.slice(offset, offset + length));
     offset += length;
   }
@@ -261,9 +261,13 @@ beforeEach(() => {
 // wedged-runtime tripwire, not a perf assertion — every lap is a bounded
 // loop that cannot spin forever on its own.
 describe('direct markdown reveal differential', () => {
-  it('matches authoritative markdown after every character', async () => {
-    const count = await assertEveryAppend(RICH_MARKDOWN, Array.from(RICH_MARKDOWN));
-    expect(count).toBeGreaterThan(100);
+  it.each([
+    { name: 'matches authoritative markdown after every character', corpus: [RICH_MARKDOWN] },
+    { name: 'matches authoritative output across parser transitions after every character', corpus: PARSER_TRANSITION_CORPUS },
+  ])('$name', async ({ corpus }) => {
+    let directAppends = 0;
+    for (const source of corpus) directAppends += await assertEveryAppend(source, Array.from(source));
+    expect(directAppends).toBeGreaterThan(100);
   });
 
   it('matches provider-shaped split words, links, tables, and delimiters', async () => {
@@ -293,14 +297,6 @@ describe('direct markdown reveal differential', () => {
       '|\n',
     ];
     expect(await assertEveryAppend(chunks.join(''), chunks)).toBe(1);
-  });
-
-  it('matches authoritative output across parser transitions after every character', async () => {
-    let directAppends = 0;
-    for (const source of PARSER_TRANSITION_CORPUS) {
-      directAppends += await assertEveryAppend(source, Array.from(source));
-    }
-    expect(directAppends).toBeGreaterThan(100);
   });
 
   it('matches authoritative output across mixed provider chunk boundaries', async () => {

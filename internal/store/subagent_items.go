@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -54,17 +53,6 @@ const (
 	// (backgroundSettleTriggersSQL).
 	metaKeyLiveBackgroundActive = "live_background_active"
 )
-
-// maxSubagentDescendants caps one expansion load, mirroring the
-// maxWindowItems resource limit on the window pagers (app_paging.go):
-// ListSubagentDescendants is a wire RPC, so its response must stay
-// bounded even when a remote caller requests a large subtree.
-// Real subagent transcripts run one to two orders of magnitude below
-// this. When the cap binds, the newest rows win — transcripts resolve
-// tail-first like every other capped read in this package — and the
-// collapsed card still reports the full total via
-// decorateSubagentAnchors.
-const maxSubagentDescendants = 2000
 
 type subagentAnchorAggregate struct {
 	descendantCount    int
@@ -1426,63 +1414,4 @@ func mergeSubagentAnchorMeta(itemMeta string, agg subagentAnchorAggregate) strin
 		return itemMeta
 	}
 	return string(data)
-}
-
-// ListSubagentDescendants returns the visible transitive descendants of
-// `rootItemID` in timeline order — the expand-on-demand companion to the
-// collapsed-card aggregates. The result includes nested launches and
-// their children, so a single call hydrates the whole group subtree, up
-// to maxSubagentDescendants rows (newest win; see the const for why).
-// Proposed-plan decoration applies the same way it does on window loads.
-// The walk grows with the agent's history, so it takes a history read slot.
-func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, error) {
-	return historyReadSnapshot(context.Background(), s, "subagent descendants", func(q sqlQueryer) ([]Item, error) {
-		return s.listSubagentDescendants(q, threadID, rootItemID)
-	})
-}
-
-func (s *Store) listSubagentDescendants(q sqlQueryer, threadID, rootItemID string) ([]Item, error) {
-	rootItemID = strings.TrimSpace(rootItemID)
-	if rootItemID == "" {
-		return []Item{}, nil
-	}
-	// A §E6 resume CARRIER has no subtree of its own: the agent's rows,
-	// round one's and every resumed round's, stay under the ORIGINAL
-	// launch (claude-wire.md §E6). Expanding one must walk from there, or
-	// the card that decorateSubagentAnchors just stamped with a count
-	// opens empty. ONE hop, because the stamp is always the fully
-	// resolved root — triage writes the walk's END, never the chain.
-	if anchor, found, err := s.getThreadItem(q, threadID, rootItemID); err != nil {
-		return nil, fmt.Errorf("store: resolve subagent walk root for %s/%s: %w", threadID, rootItemID, err)
-	} else if found {
-		if root := transcriptRootFromMeta(anchor.Meta); root != "" {
-			rootItemID = root
-		}
-	}
-	// The walk's ids are ordered and capped through the two physical
-	// arms, never through the timeline_items view (timeline_arms.go);
-	// queryHydratedTimelineItems then resolves the surviving ids the same
-	// way and keeps every statement on one read pool.
-	selectedSQL, selectedArgs, err := timelineIDSelection(q, threadID, timelineSelection{
-		Source:  "rel",
-		Where:   "items.id = rel.id",
-		OrderBy: "turn_index DESC, item_index DESC",
-		Limit:   maxSubagentDescendants,
-	})
-	if err != nil {
-		return nil, err
-	}
-	walk, walkArgs, err := descendantsWalk(q, threadID, []string{rootItemID}, visibleItemsFilterFor)
-	if err != nil {
-		return nil, err
-	}
-	items, err := queryHydratedTimelineItems(q, threadID, walk+"\n"+selectedSQL, append(walkArgs, selectedArgs...)...)
-	if err != nil {
-		return nil, fmt.Errorf("store: list subagent descendants for %s/%s: %w", threadID, rootItemID, err)
-	}
-	decorated, err := s.decorateProposedPlanItems(q, threadID, items)
-	if err != nil {
-		return nil, fmt.Errorf("store: decorate subagent descendants for %s/%s: %w", threadID, rootItemID, err)
-	}
-	return s.decorateCompletionLaunches(q, threadID, decorated)
 }

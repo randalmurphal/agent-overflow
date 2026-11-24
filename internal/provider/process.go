@@ -79,8 +79,7 @@ type SpawnConfig struct {
 	Binary           string
 	Args             []string
 	Dir              string
-	Env              map[string]string
-	UnsetEnv         []string
+	Env              EnvInput
 	EventLogger      *logging.Logger
 	EventLogRedactor EventLogRedactor
 	ThreadID         string
@@ -140,7 +139,7 @@ func Spawn(ctx context.Context, lifetime Lifetime, cfg SpawnConfig) (*Process, e
 		cmd.WaitDelay = killGrace
 	}
 
-	cmd.Env = BuildEnvironment(cfg.Env, cfg.UnsetEnv...)
+	cmd.Env = BuildEnvironment(cfg.Env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

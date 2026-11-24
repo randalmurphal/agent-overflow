@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -251,45 +250,6 @@ func TestHistoryReadsLeaveAConnectionForOtherReads(t *testing.T) {
 		if err := <-errs[i]; !errors.Is(err, context.Canceled) {
 			t.Errorf("%s: %v, want it still waiting for a slot until cancelled", tc.name, err)
 		}
-	}
-}
-
-// A subagent subtree read waits for a history read slot like a page: its
-// walk grows with the agent's history. It has no caller context, so it
-// waits until a slot frees.
-func TestSubagentDescendantsTakeAHistoryReadSlot(t *testing.T) {
-	s := newTestStore(t)
-	seedTimelineParityThread(t, s)
-	releases := holdHistoryReadSlots(t, s, true)
-	type result struct {
-		items []Item
-		err   error
-	}
-	done := make(chan result, 1)
-	go func() {
-		items, err := s.ListSubagentDescendants(timelineParityThreadID, "loc-launch-2")
-		done <- result{items, err}
-	}()
-	select {
-	case got := <-done:
-		t.Fatalf("subagent descendants read ran with every history read slot held: %d rows, %v", len(got.items), got.err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	requireReadRuns(t, "a single-statement read", func() error {
-		_, _, err := s.GetThreadItem(timelineParityThreadID, "loc-launch-2")
-		return err
-	})
-	releases[0]()
-	select {
-	case got := <-done:
-		if got.err != nil {
-			t.Fatal(got.err)
-		}
-		if ids := itemIDs(got.items); !slices.Equal(ids, []string{"loc-child-2", "loc-grandchild-2"}) {
-			t.Errorf("descendants = %v, want loc-child-2 and loc-grandchild-2", ids)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("subagent descendants read did not run after a slot freed")
 	}
 }
 

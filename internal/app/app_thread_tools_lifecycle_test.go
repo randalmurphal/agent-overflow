@@ -202,10 +202,9 @@ func TestCancellingADispatchedRequestStopsItsTurn(t *testing.T) {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
 	if _, err := f.app.sendMessageWithOptions(t.Context(), target.ID, "look at the crash report", sendMessageOptions{
-		SendID:            threadRequestSendID(token),
-		ReconcileBySendID: true,
-		QueueIfActive:     true,
-		PreserveDraft:     true,
+		SendID:        threadRequestSendID(token),
+		Admission:     admitQueueing,
+		PreserveDraft: true,
 	}); err != nil {
 		t.Fatalf("dispatch the request message: %v", err)
 	}
@@ -592,7 +591,7 @@ func TestSettlementReturnsAResponderToItsSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Token: token, Provider: string(provider.Claude), Claude: sess})
 
 	requestToken := "peer-request-token"

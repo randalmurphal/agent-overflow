@@ -136,5 +136,3 @@ func perfMeterMeasured(selected, unavailable []string, meter string) bool {
 	}
 	return false
 }
-
-func hasFrontendOnlyWork(w WorkloadShape) bool { return w.Name != "" }

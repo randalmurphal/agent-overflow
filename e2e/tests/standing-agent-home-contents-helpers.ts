@@ -267,7 +267,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   // serves, each with its memory folder under <configDir>/memory/projects.
   // The first prompt finds the start's record and delivers nothing.
   await setScenario(harness, home, agentScenario(provider, `${tag}-setup-${provider}`, [{ text: 'Home set up.' }]));
-  await harness.rpc('SendMessage', agent, 'Set up your home.', null);
+  await harness.send(agent, 'Set up your home.');
   await awaitTurnCompleted(harness, agent);
   const first = await sessionIn(harness, home, 0);
   const block = appended(provider, first.config);
@@ -292,19 +292,19 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   expect(started).not.toContain('### Project memory');
   expect(blockOf(started, '### Memory maintenance')).toBe(NO_WARNINGS);
   expect(started).not.toContain('[This part is');
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
 
   // ---- A resume of unchanged memory carries the same block and runs no
   // SessionStart hook: the resumed history already holds the delivery, and
   // its prompt delivers nothing.
   await setScenario(harness, home, agentScenario(provider, `${tag}-again-${provider}`, [{ text: 'Ready.' }]));
-  await harness.rpc('SendMessage', agent, 'Are you ready?', null);
+  await harness.send(agent, 'Are you ready?');
   await awaitTurnCompleted(harness, agent);
   const second = await sessionIn(harness, home, 1);
   expect(appended(provider, second.config)).toBe(block);
   expect(startRunsOf(second.runs)).toEqual([]);
   expectQuietPrompts(second.runs, 1);
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
 
   // ---- The agent writes a fact while its session runs. The session keeps
   // its block, and its next compaction delivers the new fact. Another
@@ -319,7 +319,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
       { text: 'Nothing new.' },
     ]),
   );
-  await harness.rpc('SendMessage', agent, 'Screenshots go to a secret gist from now on.', null);
+  await harness.send(agent, 'Screenshots go to a secret gist from now on.');
   const gate = await awaitGate(harness, 'remember', home);
   expectQuietPrompts((await sessionIn(harness, home, 2)).runs, 1);
   writeFileSync(join(memoryDir, 'evidence-in-gists.md'), fact('Screenshots go to a secret gist.'));
@@ -333,15 +333,15 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
     `${homeHeading}\nRulings:\n- Screenshots go to a secret gist. (evidence-in-gists.md)\n- Never use em dashes in anything committed. (no-em-dashes.md)`,
   );
   writeFileSync(join(memoryDir, 'release-branch.md'), fact('Release branches are cut on Mondays.'));
-  await harness.rpc('SendMessage', agent, 'Anything new?', null);
+  await harness.send(agent, 'Anything new?');
   await awaitTurnCompleted(harness, agent);
-  await harness.rpc('SendMessage', agent, 'And now?', null);
+  await harness.send(agent, 'And now?');
   await awaitTurnCompleted(harness, agent);
   const live = promptRunsOf((await sessionIn(harness, home, 2)).runs);
   expect(live).toHaveLength(3);
   expect(changesOf(live[1])).toBe(changesWith(`${homeHeading}\nNew or changed:\n- ruling: Release branches are cut on Mondays. (release-branch.md)`));
   expect(live[2].contexts).toEqual([]);
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
 
   // ---- An expired and a malformed fact land between sessions: the first
   // prompt of the resume delivers the maintenance warnings alone, neither
@@ -349,7 +349,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   writeFileSync(join(memoryDir, 'release-dates.md'), fact('The train leaves on Tuesdays.', 'context', 'expires: 2026-01-01\n'));
   writeFileSync(join(memoryDir, 'broken.md'), 'Remember the release train.\n');
   await setScenario(harness, home, agentScenario(provider, `${tag}-maintain-${provider}`, [{ text: 'Cleaning up next.' }]));
-  await harness.rpc('SendMessage', agent, 'Check your memory.', null);
+  await harness.send(agent, 'Check your memory.');
   await awaitTurnCompleted(harness, agent);
   const maintained = await sessionIn(harness, home, 3);
   expect(appended(provider, maintained.config)).toBe(block);
@@ -361,7 +361,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
     `- ${join(memoryDir, 'broken.md')}: it does not open with a --- frontmatter line. Fix its frontmatter or delete it.\n` +
     `- ${join(memoryDir, 'release-dates.md')} expired on 2026-01-01. Delete it, or move expires if it still holds.`;
   expect(changesOf(maintainedPrompts[0])).toBe(changesWith(`${fixThese}\n${fileWarnings}`));
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
 
   // ---- The agent spawns a worker with its verification file and messages
   // an ordinary thread.
@@ -422,7 +422,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
     ]),
   );
   const workerInput = awaitMockInput(harness, { cwd: workers.path, includes: 'Review the parser change on this branch.' });
-  await harness.rpc('SendMessage', agent, 'Hand the review off.', null);
+  await harness.send(agent, 'Hand the review off.');
   const spawned = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home, timeoutMs: 60_000 });
   expect(spawned.isError, spawned.text).toBe(false);
   const worker = spawned.value!.thread_id;
@@ -439,7 +439,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
 
   // Agent to ordinary thread: the role line, and no route.
   const toOrdinary = awaitMockInput(harness, { cwd: plain.path, includes: 'Please confirm the release notes.' });
-  await harness.rpc('SendMessage', agent, 'Ask the other thread about the release notes.', null);
+  await harness.send(agent, 'Ask the other thread about the release notes.');
   const ordinaryInput = (await toOrdinary).report.input ?? '';
   expect(ordinaryInput.startsWith(aoMessageOpening(`the agent in thread "Release lead" (${agent})`)), ordinaryInput).toBe(true);
   expect(ordinaryInput).toContain(`Agent request from thread "Release lead" (${agent}).`);
@@ -450,7 +450,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
 
   // Ordinary thread to agent: its footer is unchanged.
   const toAgent = awaitMockInput(harness, { cwd: home, includes: 'The release notes are ready for your review.' });
-  await harness.rpc('SendMessage', ordinary, 'Tell the lead the notes are ready.', null);
+  await harness.send(ordinary, 'Tell the lead the notes are ready.');
   const agentInput = (await toAgent).report.input ?? '';
   expect(agentInput.startsWith(aoMessageOpening(`the agent in thread "Ordinary" (${ordinary})`)), agentInput).toBe(true);
   expect(agentInput).toContain(`Agent request from thread "Ordinary" (${ordinary}).`);
@@ -458,7 +458,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   await awaitTurnCompleted(harness, agent);
   // Nothing changed, so none of the session's prompts delivered anything.
   expect(promptRunsOf((await sessionIn(harness, home, 4)).runs).every((run) => run.contexts.length === 0)).toBe(true);
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
 
   // ---- Past the size limit nothing is cut. Each section is a hook output
   // of its own, so sections over 10,000 bytes together, each under it,
@@ -485,7 +485,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
       { steps: [{ emitLines: compactionLines(provider) }], text: 'Read the rest myself.' },
     ]),
   );
-  await harness.rpc('SendMessage', agent, 'Your memory grew.', null);
+  await harness.send(agent, 'Your memory grew.');
   await awaitTurnCompleted(harness, agent);
   const grown = await sessionIn(harness, home, 5);
   expect(appended(provider, grown.config)).toBe(block);
@@ -502,7 +502,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   expect(blockOf(grownWhole, '### Memory maintenance')).toBe(`${fixThese}\n${fileWarnings}`);
 
   bulk(60, 160);
-  await harness.rpc('SendMessage', agent, 'It grew again.', null);
+  await harness.send(agent, 'It grew again.');
   await awaitTurnCompleted(harness, agent);
   const over = await sessionIn(harness, home, 5);
   const overRuns = startRunsOf(over.runs);
@@ -529,13 +529,13 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   }
   expect(blockOf(part(overRuns[1], 5), '### Memory maintenance')).toBe(`${fixThese}\n${overWarning}\n${fileWarnings}`);
   expect(promptRunsOf(over.runs)[1].contexts.some((context) => context.includes(overWarning))).toBe(true);
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
 
   // Every start, resume and compaction delivered what it ran: no error row,
   // and the one warning row is the size's, which the compaction reports off
   // its event.
   const rows = async (kind: string) =>
-    (await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', agent, true))
+    (await harness.items<{ kind: string; summary: string }>(agent, true))
       .filter((item) => item.kind === kind)
       .map((item) => item.summary);
   await expect
@@ -575,13 +575,13 @@ export async function runHomeHooksOff(harness: HarnessApp, provider: ProviderNam
   const session = async (name: string, hooksOff: boolean, turns: ScriptedTurn[], messages: string[]) => {
     await setScenario(harness, record.home, { ...agentScenario(provider, `${tag}-${name}-${provider}`, turns), sessionStartHooksOff: hooksOff });
     for (const message of messages) {
-      await harness.rpc('SendMessage', agent, message, null);
+      await harness.send(agent, message);
       await awaitTurnCompleted(harness, agent);
     }
   };
   const compacting: ScriptedTurn[] = [{ steps: [{ emitLines: compactionLines(provider) }], text: 'Compacted.' }, { text: 'Still here.' }];
   const errors = async () =>
-    (await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', agent, true))
+    (await harness.items<{ kind: string; summary: string }>(agent, true))
       .filter((item) => item.kind === 'error')
       .map((item) => item.summary);
   /** The one whole delivery the first prompt of session `index` made. */
@@ -595,12 +595,12 @@ export async function runHomeHooksOff(harness: HarnessApp, provider: ProviderNam
   await session('off', true, [{ text: 'Started.' }, ...compacting], ['Start up.']);
   expect(await errors()).toEqual([undeliveredWarning('start')]);
   for (const message of ['Compact now.', 'Carry on.']) {
-    await harness.rpc('SendMessage', agent, message, null);
+    await harness.send(agent, message);
     await awaitTurnCompleted(harness, agent);
   }
   expect(await errors()).toEqual([undeliveredWarning('start'), undeliveredWarning('compaction')]);
   expect((await sessionIn(harness, record.home, 0)).runs).toEqual([]);
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
 
   // Hooks on: the resume expects nothing, and its prompt, with no record,
   // delivers the whole memory.
@@ -609,15 +609,15 @@ export async function runHomeHooksOff(harness: HarnessApp, provider: ProviderNam
   if (provider === 'codex') expect(resumed.sessionConfig?.resumed).toBe(true);
   else expect(resumed.registration.resumeRef ?? '').not.toBe('');
   await wholeAtPrompt(1);
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
 
   // Hooks off again: the compaction's miss forgets the record the prompt
   // wrote, so the next session's first prompt delivers the whole memory.
   await session('off-again', true, compacting, ['Compact again.', 'Carry on again.']);
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
   await session('on-again', false, [{ text: 'Back.' }], ['Back again.']);
   await wholeAtPrompt(3);
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
   expect(await errors()).toEqual([undeliveredWarning('start'), undeliveredWarning('compaction'), undeliveredWarning('compaction')]);
   return { agent };
 }

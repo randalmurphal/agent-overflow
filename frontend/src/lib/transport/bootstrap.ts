@@ -25,7 +25,7 @@ import {
   readBackendDescriptors,
   setBackendManifestFetcher,
 } from './manifestBackends';
-import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap } from './harnessMode';
+import { readHarnessTimingFromBootstrap, setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap, setHarnessTimingFromBootstrap } from './harnessMode';
 import { setPasskeysAvailableFromBootstrap } from './passkey';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
@@ -177,6 +177,12 @@ export interface Bootstrap {
    * ./harnessMode.ts.
    */
   harness?: boolean;
+  /**
+   * A harness boot's frontend timer overrides in milliseconds, by
+   * AO_HARNESS_TIMING name (./harnessMode.ts `harnessInterval`). Read only
+   * with `harness`.
+   */
+  harnessTiming?: unknown;
   /** This page is the host's own window (./pageHost.ts isHostWindow). */
   hostWindow?: boolean;
   pageMarker?: string;
@@ -352,6 +358,9 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
     throw new Error('bootstrap response missing wsUrl');
   }
   validateWsUrl(data.wsUrl, originPartsOf(computerResponseURL(resp, url)) ?? homeOriginParts());
+  // Every check that can refuse the manifest runs before the first thing is
+  // published from it, so a refused manifest leaves the page as it was.
+  const harnessTiming = readHarnessTimingFromBootstrap(data.harness === true, data.harnessTiming);
   await observePairedComputerBootstrap(HOME_BACKEND, data.backendId, data.routes);
   data.remote = data.remote === true;
   // Locality is this page's half of the capability answer: a page served
@@ -365,6 +374,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   // The harness bridge registers its page synchronously when this latch
   // flips. Publish the marker first so that first-load registration cannot
   // race with the waiter callback.
+  setHarnessTimingFromBootstrap(harnessTiming);
   setHarnessSessionFromBootstrap(data.harness === true);
   // Re-validated on every manifest resolution, which is what makes a
   // mid-session generation re-mint (a restored backend) observable on
@@ -453,13 +463,12 @@ function wsUrlMatchesPageOrigin(
 // wave's whole change here. Origin still means "the one authority this
 // manifest is allowed to describe" — it is just that a shell page's
 // backend is not the page's own origin, and an ATTACHED backend's is
-// neither. `expected` defaults to the home backend's
-// (./homeEndpoint.ts, which answers this document's origin whenever no
-// endpoint is set), so every existing call is unchanged; the attached
-// fetcher below passes that backend's own.
+// neither. Each caller passes the authority it fetched the manifest
+// from, falling back to the home backend's (./homeEndpoint.ts, which
+// answers this document's origin whenever no endpoint is set).
 export function validateWsUrl(
   wsUrl: string,
-  expected: { protocol: string; host: string } | null = homeOriginParts(),
+  expected: { protocol: string; host: string } | null,
 ): void {
   let parsed: URL;
   try {

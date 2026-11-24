@@ -5,16 +5,15 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import '../../../app.css';
 import PaneFindBar from './PaneFindBar.svelte';
-import { closePaneFind, openPaneFind, registerPaneFindProvider, resetPaneFindForTest } from '../../stores/paneFind.svelte';
+import { closePaneFind, openPaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { fakeFindProvider } from '../../../test/helpers/paneFind.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { frontendErrorCaptureStateForTest, resetFrontendErrorCaptureForTest } from '../../utils/frontendErrorCapture';
+import { frontendErrorCaptureStateForTest } from '../../utils/frontendErrorCapture';
 
 let component: ReturnType<typeof mount> | null = null;
 
 beforeEach(() => {
-  resetPaneFindForTest();
   setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 600 }]);
   registerPaneFindProvider('a', fakeFindProvider());
   setBindingMock('ReportFrontendErrorBatch', async () => '');
@@ -23,8 +22,6 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
-  resetFrontendErrorCaptureForTest();
-  resetPaneFindForTest();
   resetPaneLayoutForTest();
   document.body.replaceChildren();
 });

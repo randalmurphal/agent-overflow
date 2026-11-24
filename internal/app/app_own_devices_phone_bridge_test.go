@@ -137,28 +137,10 @@ func TestOwnIntroductionSelectsReachableRouteBeforeRedemption(t *testing.T) {
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, true)
-	// Initial confirmed carrier admits A and establishes both public identities.
-	var catalog owndevices.List
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
-	if err := a.app.backends.CallOwnDevice(ctx, b.id, "ListOwnDevices", &catalog); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := MergeOwnDeviceSource(a.app, catalog); err != nil {
-		t.Fatal(err)
-	}
-	bkey, err := b.app.backends.OwnIdentity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	invite, err := a.app.MintOwnDeviceIntroduction(context.Background(), bkey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	link, err := deviceclient.DecodeLink(invite.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Initial confirmed carrier admits A and establishes both public identities.
+	_, _, link := mintOwnIntroduction(ctx, t, a, b)
 	available := computerroute.Route{Endpoint: link.Endpoint, CertFingerprint: link.CertFingerprint}
 	// A stored LAN address is unavailable from the recipient's network. Its
 	// other trusted route reaches the same real server and pinned certificate.

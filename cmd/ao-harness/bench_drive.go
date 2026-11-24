@@ -368,8 +368,8 @@ func driveOneTurn(ctx context.Context, run *benchRun) error {
 	// report itself as a turn that never completed instead of an incomplete
 	// renderer measurement.
 	turnCtx, cancel := context.WithTimeout(ctx, benchTurnTimeout)
-	if _, err := run.client.Call(turnCtx, "SendMessage", threadID,
-		fmt.Sprintf("bench %s run %d", run.workload.Name, run.index), nil); err != nil {
+	if err := run.client.Send(turnCtx, threadID,
+		fmt.Sprintf("bench %s run %d", run.workload.Name, run.index)); err != nil {
 		cancel()
 		return err
 	}
@@ -460,8 +460,8 @@ func driveMultiPaneStream(ctx context.Context, run *benchRun) error {
 	turnCtx, cancel := context.WithTimeout(ctx, benchTurnTimeout)
 	for i, threadID := range run.threadIDs {
 		run.startedThreadIDs = append(run.startedThreadIDs, threadID)
-		if _, err := run.client.Call(turnCtx, "SendMessage", threadID,
-			fmt.Sprintf("bench %s run %d pane %d", run.workload.Name, run.index, i+1), nil); err != nil {
+		if err := run.client.Send(turnCtx, threadID,
+			fmt.Sprintf("bench %s run %d pane %d", run.workload.Name, run.index, i+1)); err != nil {
 			cancel()
 			return err
 		}

@@ -257,23 +257,20 @@ func TestTranscriptMirrorRejectsChangingAgentMetadataOwner(t *testing.T) {
 	}
 }
 
-func TestInspectMirrorEntriesRejectsMixedTranscriptScopes(t *testing.T) {
-	_, err := inspectMirrorEntries([]json.RawMessage{
-		json.RawMessage(`{"uuid":"main","isSidechain":false}`),
-		json.RawMessage(`{"uuid":"child","isSidechain":true}`),
-	})
-	if err == nil || !strings.Contains(err.Error(), "mixes main-transcript and sidechain") {
-		t.Fatalf("mixed transcript scopes returned %v", err)
+func TestInspectMirrorEntriesRejectsInconsistentBatches(t *testing.T) {
+	cases := []struct {
+		name, first, second, wantErr string
+	}{
+		{"mixed transcript scopes", `{"uuid":"main","isSidechain":false}`, `{"uuid":"child","isSidechain":true}`, "mixes main-transcript and sidechain"},
+		{"conflicting agent_metadata owners", `{"type":"agent_metadata","toolUseId":"toolu-one"}`, `{"type":"agent_metadata","toolUseId":"toolu-two"}`, "conflicting agent_metadata"},
 	}
-}
-
-func TestInspectMirrorEntriesRejectsConflictingAgentMetadataOwners(t *testing.T) {
-	_, err := inspectMirrorEntries([]json.RawMessage{
-		json.RawMessage(`{"type":"agent_metadata","toolUseId":"toolu-one"}`),
-		json.RawMessage(`{"type":"agent_metadata","toolUseId":"toolu-two"}`),
-	})
-	if err == nil || !strings.Contains(err.Error(), "conflicting agent_metadata") {
-		t.Fatalf("conflicting metadata owners returned %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := inspectMirrorEntries([]json.RawMessage{json.RawMessage(tc.first), json.RawMessage(tc.second)})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("%s returned %v", tc.name, err)
+			}
+		})
 	}
 }
 
@@ -1072,25 +1069,19 @@ func TestTranscriptMirrorReleasesAParkedProjectionAtSessionEnd(t *testing.T) {
 	}
 }
 
-// A kill is final even with the shell still running (§E6b fixture E: the
-// killed agent gets no notification and never wakes).
-func TestTranscriptMirrorReleasesAKilledParkedAgent(t *testing.T) {
-	a := startParkedMirrorAgent(t)
-	a.parse(`{"type":"system","subtype":"task_updated","task_id":"` + parkedMirrorTask + `","patch":{"status":"killed","end_time":1790000002000}}`)
-	if !a.retired() {
-		t.Fatal("a killed agent's binding must be retired at the kill")
-	}
-}
-
 // An interrupt on a later turn kills a parked agent and its shell in one
 // burst (claude-wire.md §Background task ownership, spike D on 2.1.280).
 // The agent's second terminal names no tool_use_id; it must still reach
-// triage keyed to the launch, as must the shell's.
+// triage keyed to the launch, as must the shell's. A kill is final even
+// with the shell still running (§E6b fixture E: the killed agent gets no
+// notification and never wakes), so the binding retires at the kill.
 func TestInterruptKillOfAParkedAgentKeysBothTerminals(t *testing.T) {
 	a := startParkedMirrorAgent(t)
-	var events []provider.ProviderEvent
+	events := a.parse(`{"type":"system","subtype":"task_updated","task_id":"` + parkedMirrorTask + `","patch":{"status":"killed","end_time":1790000002000}}`)
+	if !a.retired() {
+		t.Fatal("a killed agent's binding must be retired at the kill")
+	}
 	for _, line := range []string{
-		`{"type":"system","subtype":"task_updated","task_id":"` + parkedMirrorTask + `","patch":{"status":"killed","end_time":1790000002000}}`,
 		`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`,
 		`{"type":"system","subtype":"task_updated","task_id":"shell-1","patch":{"status":"killed","end_time":1790000002001}}`,
 		`{"type":"system","subtype":"task_notification","task_id":"shell-1","tool_use_id":"` + parkedMirrorShell + `","status":"stopped","summary":"make gate"}`,

@@ -483,31 +483,28 @@ func TestTrialRunCommandChecksEachRetryAgainstWhatTheLastAttemptLeft(t *testing.
 		}
 	})
 	// A launcher that died before it recorded the commit retries a trial
-	// that prepared.
-	t.Run("written since a prepared attempt", func(t *testing.T) {
-		r := snapshotted(t)
-		if result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 1)); result.Outcome != UpdateOutcomePrepared {
-			t.Fatalf("attempt 1 = %+v", result)
-		}
-		r.out = &lockedBuffer{}
-		writeFile(t, r.db, "written after the trial prepared")
-		result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
-		if result.Outcome != UpdateOutcomeChanged {
-			t.Fatalf("retry = %+v", result)
-		}
-	})
-	t.Run("written since a rolled-back attempt", func(t *testing.T) {
-		r := snapshotted(t)
-		if result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndCrashes, 1)); result.Outcome != UpdateOutcomeRolledBack {
-			t.Fatalf("attempt 1 = %+v", result)
-		}
-		r.out = &lockedBuffer{}
-		writeFile(t, r.db, "written after the restore")
-		result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
-		if result.Outcome != UpdateOutcomeChanged {
-			t.Fatalf("retry = %+v", result)
-		}
-	})
+	// that prepared; a rolled-back trial is retried the same way.
+	for _, tc := range []struct {
+		name, first  string
+		firstOutcome UpdateOutcome
+		write        string
+	}{
+		{"written since a prepared attempt", trialWritesAndPrepares, UpdateOutcomePrepared, "written after the trial prepared"},
+		{"written since a rolled-back attempt", trialWritesAndCrashes, UpdateOutcomeRolledBack, "written after the restore"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := snapshotted(t)
+			if result := r.command("u1").TrialRun(context.Background(), r.trialOptions(tc.first, 1)); result.Outcome != tc.firstOutcome {
+				t.Fatalf("attempt 1 = %+v", result)
+			}
+			r.out = &lockedBuffer{}
+			writeFile(t, r.db, tc.write)
+			result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
+			if result.Outcome != UpdateOutcomeChanged {
+				t.Fatalf("retry = %+v", result)
+			}
+		})
+	}
 	// The command died with its trial: nothing recorded the end, and the
 	// trial's own writes cannot be told from anyone else's. The retry
 	// restores the snapshot, which ends the dead attempt, and runs on it.

@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -52,7 +53,7 @@ type Deps struct {
 	CodexSessions     func() []CodexLiveSession
 	ClaudeSessions    func(workspacePath string) []ClaudeLiveSession
 	ProviderBinary    func(providerName string) string
-	SessionProcessEnv func(providerName string) map[string]string
+	SessionProcessEnv func(providerName string) provider.EnvInput
 	// AgyCanonicalHome decides the home and login store of a canonical agy
 	// process, as it starts (agy.HomeSource).
 	AgyCanonicalHome func(ctx context.Context) (agy.Home, error)
@@ -142,9 +143,9 @@ func (a *Service) agyCanonicalHome(ctx context.Context) (agy.Home, error) {
 	return a.deps.AgyCanonicalHome(ctx)
 }
 
-func (a *Service) sessionProcessEnv(providerName string) map[string]string {
+func (a *Service) sessionProcessEnv(providerName string) provider.EnvInput {
 	if a == nil || a.deps.SessionProcessEnv == nil {
-		return nil
+		return provider.EnvInput{}
 	}
 	return a.deps.SessionProcessEnv(providerName)
 }
@@ -226,7 +227,7 @@ func (a *Service) StatusCache() *mcpstatus.Cache {
 // `mcp:status` event channel so the frontend store can update
 // reactively without polling. Failure to emit (transport not yet
 // wired during early startup) is silent — the cache state still
-// stands; the UI hydrates on the next ListMcpServerStatuses call.
+// stands; the UI hydrates on its next MCP server listing.
 type appMCPStatusBus struct {
 	app *Service
 }

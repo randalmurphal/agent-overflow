@@ -81,9 +81,9 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
   await harness.open(page);
   await awaitSidebarSettled(page);
 
-  await harness.rpc('StartSession', lead);
+  await harness.startSession(lead);
   const leadTurn = awaitTurnCompleted(harness, lead, 120_000);
-  await harness.rpc('SendMessage', lead, 'spawn two workers', null);
+  await harness.send(lead, 'spawn two workers');
   const spawned: string[] = [];
   for (let i = 0; i < 2; i++) {
     const answer = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadProject.path, timeoutMs: 60_000 });
@@ -152,8 +152,13 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
   await looseDone;
   expect((await threadRows(harness)).some((row) => row.id === loose)).toBe(true);
 
-  // ---- Nothing starts a session for a deleted thread.
-  await page.waitForTimeout(2_000);
+  // ---- Nothing starts a session for a deleted thread. Every start reads
+  // its thread's row before it registers a session (startSessionNow), so
+  // once the rows are gone, as asserted above, no later start can register
+  // one. A start that races the delete waits for its decision and starts
+  // nothing once it commits (internal/app
+  // TestACommitEndsEveryStartWaitingForIt). The counts cover any start up
+  // to the placed spawn's finished turn.
   expect(registered(leadProject.path)).toBe(before.lead);
   expect(registered(runningTree)).toBe(before.worker);
   expect(exited()).toBe(1);

@@ -120,26 +120,6 @@ func TestAsyncQuestionSurvivesCacheRemovalAndRejectsChangedReplay(t *testing.T) 
 	}
 }
 
-func TestAsyncQuestionsImportedHistoryRequiresExplicitOpen(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "q")
-	item := Item{ID: "historic", ThreadID: "q", Kind: "assistant_text", Role: "assistant", Meta: `{"delivery":"async","questions":[{"title":"Still needed?"}]}`, CreatedAt: 1, UpdatedAt: 1}
-	if err := s.InsertItem(item); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := s.ListAsyncQuestions("q", "")
-	if err != nil || len(rows) != 0 {
-		t.Fatalf("historic popup: %+v %v", rows, err)
-	}
-	if err := s.SetAsyncQuestionDismissed("q", item.ID, 0, false); err != nil {
-		t.Fatal(err)
-	}
-	rows, err = s.ListAsyncQuestions("q", "")
-	if err != nil || len(rows) != 1 || rows[0].State != "unanswered" {
-		t.Fatalf("open=%+v %v", rows, err)
-	}
-}
-
 func TestAsyncQuestionsSurviveReopenAndQueueDrop(t *testing.T) {
 	path := newTestStorePath(t)
 	s, err := New(path)

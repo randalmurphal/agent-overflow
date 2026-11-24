@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"agent-overflow/internal/provider"
 )
 
 func TestSetProviderEnvVarRoundTripsNameValueAndSensitiveFlag(t *testing.T) {
@@ -207,7 +209,7 @@ func TestReservedNamesAreScopedToTheirProvider(t *testing.T) {
 
 // ANTHROPIC_BASE_URL is the feature's primary use case. claude-tui pins the
 // child's copy, but that pin is routed to the gateway upstream instead of
-// reserving the name — see provider.ReservedEnvNames.
+// reserving the name — see provider.ClaudeBaseURLEnv.
 func TestBaseURLIsNotReserved(t *testing.T) {
 	svc := NewService(t.TempDir())
 	if _, err := svc.SetProviderEnvVar("claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
@@ -377,7 +379,43 @@ func assertEnvVars(t *testing.T, got, want []ProviderEnvVar) {
 	}
 }
 
-// A variable saved under a name now in the deny table is reported for its
+// A saved custom variable whose name is reserved keeps its exact refusal at
+// save and its exact log line at load.
+func TestReservedCustomVariableKeepsItsSaveErrorAndLoadLog(t *testing.T) {
+	const configHomeReason = `"CLAUDE_CONFIG_DIR" is reserved: Agent Overflow owns Claude's config home: every spawn clears this variable, and managed-account probes set it to a temporary home. Claude treats its PRESENCE (not its value) as "non-default home", which on macOS hashes into a different Keychain service`
+	const prefixReason = `"AO_TOKEN" is reserved: the AO_ prefix is how Agent Overflow passes its own session, harness, and hook-relay contract to provider processes`
+
+	svc := NewService(t.TempDir())
+	for name, reason := range map[string]string{"CLAUDE_CONFIG_DIR": configHomeReason, "AO_TOKEN": prefixReason} {
+		_, err := svc.SetProviderEnvVar("claude", name, "v", false)
+		if err == nil || err.Error() != "settings: "+reason {
+			t.Fatalf("save %s: error = %v, want %q", name, err, "settings: "+reason)
+		}
+	}
+
+	dir := t.TempDir()
+	raw := `{"claudeCustomEnv": [
+	  {"name": "GOOD", "value": "1"},
+	  {"name": "CLAUDE_CONFIG_DIR", "value": "/tmp/hijack"},
+	  {"name": "AO_TOKEN", "value": "stolen"}
+	]}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got Settings
+	logged := captureLog(t, func() { got = NewService(dir).Get() })
+	for _, line := range []string{
+		`settings: dropping invalid claudeCustomEnv entry "CLAUDE_CONFIG_DIR": ` + configHomeReason,
+		`settings: dropping invalid claudeCustomEnv entry "AO_TOKEN": ` + prefixReason,
+	} {
+		if !strings.Contains(logged, line+"\n") {
+			t.Errorf("load log = %q, want the line %q", logged, line)
+		}
+	}
+	assertEnvVars(t, got.ClaudeCustomEnv, []ProviderEnvVar{{Name: "GOOD", Value: "1"}})
+}
+
+// A variable saved under a name now in the reserved table is reported for its
 // provider, once, by the same rule the load drops it with. Names the load
 // drops for another reason (malformed,
 // AO_-prefixed, a duplicate of an allowed name, past the list's cap) are not.
@@ -446,15 +484,13 @@ func TestTheReservedProviderEnvNoticeIsBoundedAndNamesNoValue(t *testing.T) {
 		t.Fatal("a notice for nothing")
 	}
 
-	var longest []ReservedProviderEnv
-	for _, providerName := range []string{"claude", "codex", "agy"} {
-		for _, name := range ReservedProviderEnvNames(providerName) {
-			longest = append(longest, ReservedProviderEnv{Provider: "agy", Name: name})
-		}
-	}
-	slices.SortFunc(longest, func(a, b ReservedProviderEnv) int { return len(b.Name) - len(a.Name) })
-	for len(longest) < 120 {
-		longest = append(longest, longest[0])
+	// The worst case: every name as long as a refused name can be
+	// (provider.MaxRefusedEnvNameLength, which provider's table test
+	// enforces), under the longest provider label.
+	longestName := strings.Repeat("N", provider.MaxRefusedEnvNameLength)
+	longest := make([]ReservedProviderEnv, 120)
+	for i := range longest {
+		longest[i] = ReservedProviderEnv{Provider: "agy", Name: longestName}
 	}
 	worst := ReservedProviderEnvNotice(longest)
 	if n := utf8.RuneCountInString(worst); n > 500 {

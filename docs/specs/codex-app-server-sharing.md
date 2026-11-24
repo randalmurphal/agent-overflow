@@ -26,7 +26,7 @@ Its fix is part of this design and can ship first.
 Each finding is verified against codex-cli 0.162.1 by source at
 `rust-v0.162.1`; the instruction, channel and unload findings also by the
 spike in
-[`fixtures/codex/developer_instructions_shared_process_20261016.ndjson`](../references/fixtures/codex/developer_instructions_shared_process_20261016.ndjson)
+[`wirecaptures/codex/developer_instructions_shared_process_20261016.ndjson`](../internal/provider/wirecaptures/codex/developer_instructions_shared_process_20261016.ndjson)
 ([wire notes](../references/codex-wire.md#developer-instructions-across-a-restart-and-per-thread-channels-verified-01621)).
 
 ### Changed developer instructions do not reach a resumed thread
@@ -123,16 +123,14 @@ binary, its environment, its `-c` flags and its auth.
 Every notification and server request that concerns a thread carries
 `threadId`. `thread/started` also carries `sessionId`, "shared by threads
 that belong to the same session tree" (`v2/thread_data.rs`, present at
-0.143, below AO's floor), so a spawned child names its root. A `thread/start`
+0.143, below AO's floor), so an announced thread names its session tree. A `thread/start`
 attaches the thread's listener before it writes the response
 (`thread_processor.rs`), so frames of a new thread can precede the response
 that names it. A `thread/resume` names the thread in its request. Child
-frames can arrive before AO knows the child is a child: today's session
-holds them in a bounded quarantine until the root's ownership items claim
-the child (`routeChildWireEvent`, `child_routing.go:152`). Whether a real
-child's `thread/started` always comes first is not established, and the
-mock sends child `turn/started` and item frames with no `thread/started`
-at all (`agent-visibility-codex.spec.ts`, `codex-collab.spec.ts`).
+frames can arrive before AO knows the child is a child: the connection
+holds them in a bounded queue until the root's ownership items claim the
+child (`Conn.routeOrQuarantine`). A real child sends no `thread/started` at
+all ([codex-wire.md](../references/codex-wire.md)).
 
 ## Architecture
 
@@ -459,7 +457,7 @@ this change.
 | 1 | The `ao` credential is process environment | `app_session_runtime.go:248` `mintAOCredential`; `app_session.go:509` `sessionProcessEnv` | From stage 2, Codex carries it per thread in `shell_environment_policy.set`; the pool key never sees it | [Identity](#identity) |
 | 2 | A start is a cold resume | `session_start.go:168` `startOrResumeThread`; `session_helpers.go:18` `buildThreadParams` | A start on a connection where the thread is loaded first unloads it, so every override applies | Mock enforces Codex's rule that a resume of a loaded, subscribed thread ignores overrides; Go test that a restart on one connection sends `thread/unsubscribe`, waits for `thread/closed`, then resumes; harness spec that changes the runtime mode of a thread sharing a process and reads the mock's reported thread config |
 | 3 | A session owns the process, ids, pending map and read loop | `jsonrpc.go:23-130`, `:457-565`; `session_start.go:27-148` | `Conn` owns them; ids are unique per connection; closing a session never closes the pipe | Go test over a fake pipe: two sessions with concurrent requests, one closed mid-request, the other's responses still delivered |
-| 4 | Every frame on the pipe belongs to one root | `child_routing.go:85`, `:152`; `session_notifications.go:43-80`; `server_requests.go:56-67` | The connection routes by `threadId` to the owning session, and `thread/started` by `sessionId`. Frames for a thread no session owns go to the session whose `thread/start` is in flight (one at a time per connection); otherwise into today's deferred-child quarantine, lifted from the session to the connection with its deadline and its bounds kept per owning root (128 events per child, 512 events and 4 MiB per root, `child_routing.go:14-16`; a frame held before any claim counts against the root its `thread/started` `sessionId` names, or against an unattributed pool of the same size), until a session's ownership items claim the child and receive its held frames in order. At the deadline a held server request is rejected and notifications are dropped with a drift warning, as today. A server request with no `threadId` (`attestation/generate`, `account/chatgptAuthTokens/refresh`) is the connection's to answer, never a root's | Go replay of interleaved fixtures from two roots with collaboration children, with and without child `thread/started`, asserting no frame or server request reaches a non-owner and none is dropped while a claim is pending; `codex-collab.spec.ts` and `agent-visibility-codex.spec.ts` with a second thread on the same process |
+| 4 | Every frame on the pipe belongs to one root | `child_routing.go:43`; `conn.go:1249`; `session_notifications.go:43-67`; `server_requests.go:56-67` | The connection routes by `threadId` to the owning session, and `thread/started` by `sessionId`. Frames for a thread no session owns go to the session whose `thread/start` is in flight (one at a time per connection); otherwise into the connection's hold for that thread, the only place such frames wait, which also takes any frame a session receives for a thread the connection does not route to it (128 events per child, 512 events and 4 MiB per connection, `child_routing.go:10-12`), until a session's ownership items claim the child, after its spawn row, and receive its held frames in order. The bounds are shared by every session on the connection, not kept per root: a spawned child sends no `thread/started`, so its held frames name no root to count against. At the deadline a held server request is rejected, notifications are dropped, and the connection logs the thread, both counts, the frames refused for a full queue or budget, and the sessions on it; no thread shows a warning, because none can be named. A server request with no `threadId` (`attestation/generate`, `account/chatgptAuthTokens/refresh`) is the connection's to answer, never a root's | Go replay of interleaved fixtures from two roots with collaboration children, with and without child `thread/started`, asserting no frame or server request reaches a non-owner and none is dropped while a claim is pending; `codex-collab.spec.ts` and `agent-visibility-codex.spec.ts` with a second thread on the same process |
 | 5 | Process-wide notifications are per session | `session_notifications.go:31-41`; `protocol.go:180-193`; `protocol_thread.go:219`; `app_session.go:720-737` | Per the [connection-scoped table](#what-becomes-connection-scoped): process facts once per connection, thread-shown notices to every session, optional `threadId` routed when present; fanned-out events never bump `Liveness` | Go tests: one `skills/changed` on a three-session connection calls the handler once; one `account/rateLimits/updated` yields one `EventRateLimits` per session and leaves every session's activity stamp unchanged; a `configWarning` writes one warning row per session; `mcpServer/oauthLogin/completed` with a `threadId` reaches only that session |
 | 6 | A read loop's end is one thread's end | `jsonrpc.go:471-517`; `readloop.go:31` | Each session on a dead connection gets its own teardown | [Crash and restart](#crash-and-restart) |
 | 7 | Close, End Session and the orphan reaper act on a PID | `session.go:854-920`; `app_session_runtime.go:174`; `app_orphan_reaper.go:74-107`; `app_session_reaper.go:138` | Session close is the [End Session](#end-session) sequence; the reaper watches connections | Go tests for the close sequence and the bounded wait; harness spec: End Session on one of two threads leaves the other's turn running, kills only the ended thread's terminals, and the mock's loaded list drops only that thread |
@@ -645,9 +643,6 @@ row.
 - Whether unsubscribing a parent thread unloads or stops its spawned
   children by itself; the End Session sequence handles children explicitly
   until a spike shows otherwise.
-- Whether a real child thread's `thread/started` always precedes its
-  other frames. Row 4 does not depend on it, since the connection
-  quarantine holds frames until a claim; the spike is the stage-2 gate.
 - Memory and CPU of many concurrent turns on one process.
 - Whether `thread/inject_items` text is retained across compaction when
   `retain_client_developer_messages` is on; the design does not depend on

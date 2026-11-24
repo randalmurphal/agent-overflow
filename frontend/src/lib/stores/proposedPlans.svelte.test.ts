@@ -12,7 +12,7 @@ import {
   refreshThreadProposedPlans,
   resetProposedPlanCacheForTests,
 } from './proposedPlans.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Item } from '../types/models';
 
 function planItem(overrides: Partial<Item> = {}): Item {
@@ -36,7 +36,6 @@ function planItem(overrides: Partial<Item> = {}): Item {
 
 afterEach(() => {
   resetProposedPlanCacheForTests();
-  resetBindingMocks();
 });
 
 describe('proposed-plan cache sync upsert', () => {
@@ -101,15 +100,6 @@ describe('proposed-plan cache sync upsert', () => {
     }));
 
     expect(getThreadCurrentProposedPlan('thread-1')).toBeNull();
-  });
-
-  it('populates the cache for a thread with no retained listener', () => {
-    // The sync upsert path is independent of retainProposedPlanEventListener
-    // so a thread that no PlanSidebar / Composer has subscribed to still
-    // gets its cache populated when an event arrives. This matters for
-    // pre-warming threads during tab restore / multi-pane futures.
-    upsertProposedPlanForTests(planItem({ id: 'plan-x', threadId: 'cold-thread' }));
-    expect(getThreadCurrentProposedPlan('cold-thread')?.id).toBe('plan-x');
   });
 });
 

@@ -3,6 +3,7 @@ package harnessrpc
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/keybindings"
@@ -63,7 +64,14 @@ type Host interface {
 	// columns (IsDraft) and lists the thread, and no store write announces
 	// either.
 	BroadcastThreadRow(threadID string)
+	// StartSession brings the thread's provider session up without a
+	// message, under the thread's action lock, as the workflow runner's
+	// start does. A send starts one by itself.
+	StartSession(threadID string) error
 	StopSession(threadID string) error
+	// ListItems is the thread's items in order: the newest rows that fit
+	// the response budget, projected as the paged loads project them.
+	ListItems(threadID string, inlinePreviews bool) ([]store.Item, error)
 	// AwaitSessionEndWork waits for the work stopped sessions set off (a
 	// request a stop settled, the wake that answer owes another thread, and
 	// the session that wake starts) and returns the threads with a live
@@ -100,6 +108,9 @@ type Host interface {
 	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
 	// and drops its in-memory state; resume starts it again from nothing.
 	PauseMergedPRCleanup() (resume func())
+	// MergedPRPolled is when the merged pull request poll's last pass
+	// that ran to its end began; zero before one has.
+	MergedPRPolled() time.Time
 	// DropReviewDiffImages forgets the image bytes review diffs read and
 	// what their opens pinned, so a spec's URLs and file handles do not
 	// resolve in the next.
@@ -120,7 +131,12 @@ type Host interface {
 	CancelWorkflowItem(context.Context, string) error
 	SyncWorkflowEngine() error
 	PublishStoreIdentity(store.Identity)
-	SendMessage(threadID, message string) error
+	// Send sends text with the options the page's default send builds,
+	// through the composer's send under a fresh send id, as the caller of
+	// ctx. With atRestOnly a
+	// thread that is working refuses it, recording nothing; without, the
+	// message queues behind that work as the composer's does.
+	Send(ctx context.Context, threadID, text string, atRestOnly bool) (HarnessSendResult, error)
 	// PushSent answers what the harness push recorder has been handed, and
 	// ForgetPushSent drops it. Both answer harmlessly on a boot with no
 	// recorder, which is every shipping one.

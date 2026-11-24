@@ -57,25 +57,24 @@ describe('deriveComposerInputState', () => {
     });
   });
 
-  it('prioritizes diff-review comment copy over plan copy', () => {
-    expect(deriveComposerInputState(input({
-      hasDiffReviewSource: true,
-      hasDraftDiffReviewComments: true,
-      hasPlanSource: true,
-      hasDraftPlanComments: true,
-    })).placeholder).toBe('Add optional notes, or send the diff comments');
-  });
-
-  it('shows plan-comment copy when draft plan comments exist', () => {
-    expect(deriveComposerInputState(input({
-      hasPlanSource: true,
-      hasDraftPlanComments: true,
-    })).placeholder).toBe('Add optional notes, or send the plan comments');
-  });
-
-  it('shows plan refinement copy when only a plan source is active', () => {
-    expect(deriveComposerInputState(input({ hasPlanSource: true })).placeholder)
-      .toBe('Add feedback to refine the plan, or leave blank to implement it');
+  it.each([
+    {
+      case: 'prioritizes diff-review comment copy over plan copy',
+      overrides: { hasDiffReviewSource: true, hasDraftDiffReviewComments: true, hasPlanSource: true, hasDraftPlanComments: true },
+      placeholder: 'Add optional notes, or send the diff comments',
+    },
+    {
+      case: 'shows plan-comment copy when draft plan comments exist',
+      overrides: { hasPlanSource: true, hasDraftPlanComments: true },
+      placeholder: 'Add optional notes, or send the plan comments',
+    },
+    {
+      case: 'shows plan refinement copy when only a plan source is active',
+      overrides: { hasPlanSource: true },
+      placeholder: 'Add feedback to refine the plan, or leave blank to implement it',
+    },
+  ])('$case', ({ overrides, placeholder }) => {
+    expect(deriveComposerInputState(input(overrides)).placeholder).toBe(placeholder);
   });
 });
 
@@ -109,15 +108,12 @@ describe('deriveComposerInputState — an unreachable machine', () => {
 });
 
 describe('deriveComposerInputState, the page own backend being down', () => {
-  it('disables the input and says so, naming the machine when it is another one', () => {
+  it('disables the input and says the backend is disconnected', () => {
     expect(deriveComposerInputState(input({ sendAccess: 'offline' }))).toEqual({
       disabled: true,
       value: 'draft text',
       placeholder: 'Disconnected from the agent backend',
     });
-    expect(
-      deriveComposerInputState(input({ sendAccess: 'offline', unreachableTarget: 'Laptop' })).placeholder,
-    ).toBe('Laptop is offline');
   });
 
   it('outranks the approval prompt, which cannot be answered while offline', () => {

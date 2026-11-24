@@ -183,21 +183,53 @@ func TestPairRouteCarriesTheRedemptionAndAnswersAGrant(t *testing.T) {
 }
 
 // TestPairRouteAnswersTheTypedReason — the reason code is the whole
-// message, and it has to reach the client's presentation module intact.
+// message, and it has to reach the client's presentation module intact on
+// every credential route.
 func TestPairRouteAnswersTheTypedReason(t *testing.T) {
-	auth := &stubAuth{reason: "unknown_credential"}
+	auth := &stubAuth{}
 	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
-
-	resp := postJSON(t, f.srv.Addr(), AuthPairPath, PairingRedemption{Token: "nope"}, nil)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
-	var refusal authRefusal
-	if err := json.NewDecoder(resp.Body).Decode(&refusal); err != nil {
-		t.Fatalf("decode refusal: %v", err)
-	}
-	if refusal.Reason != "unknown_credential" {
-		t.Fatalf("reason = %q, want the endpoint's code", refusal.Reason)
+	for _, tc := range []struct {
+		name, path, reason string
+		body               any
+		status, begins     int
+	}{
+		{"pairing refusal", AuthPairPath, "unknown_credential", PairingRedemption{Token: "nope"}, http.StatusUnauthorized, 0},
+		// A backend that could not read its own store is not a verdict about
+		// the caller. Both clients classify on the status before the code —
+		// the Go client ends a pairing only on an authentication verdict and
+		// its confirmation wait ends on ANY typed refusal — so every
+		// credential route answers `temporarily_unavailable` under 503.
+		{"pairing unavailable", AuthPairPath, "temporarily_unavailable", PairingRedemption{Token: "x"}, http.StatusServiceUnavailable, 0},
+		{"renewal unavailable", AuthTokenPath, "temporarily_unavailable", map[string]string{"refreshSecret": "x"}, http.StatusServiceUnavailable, 0},
+		// A backend with no canonical domain has no relying party, so the
+		// route exists and answers the endpoint's typed refusal rather than
+		// coming and going with a setting — which would make a rebind part
+		// of naming a domain. The endpoint must be asked, not bypassed.
+		{"passkey begin with no relying party", AuthPasskeyBeginPath, "passkey_unavailable", nil, http.StatusUnauthorized, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth.mu.Lock()
+			auth.reason = tc.reason
+			begun := auth.beginCount
+			auth.mu.Unlock()
+			resp := postJSON(t, f.srv.Addr(), tc.path, tc.body, nil)
+			if resp.StatusCode != tc.status {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.status)
+			}
+			var refusal authRefusal
+			if err := json.NewDecoder(resp.Body).Decode(&refusal); err != nil {
+				t.Fatalf("decode refusal: %v", err)
+			}
+			if refusal.Reason != tc.reason {
+				t.Fatalf("reason = %q, want %q", refusal.Reason, tc.reason)
+			}
+			auth.mu.Lock()
+			begins := auth.beginCount - begun
+			auth.mu.Unlock()
+			if begins != tc.begins {
+				t.Fatalf("begin reached the endpoint %d times, want %d", begins, tc.begins)
+			}
+		})
 	}
 }
 
@@ -246,17 +278,20 @@ func TestPairRouteCarriesTheSignedProofFromTheHeader(t *testing.T) {
 	}
 }
 
+// Every route in this family answers POST and nothing else, and the
+// passkey pair is not an exception: a GET that started a ceremony would be
+// one a foreign page could trigger by navigation.
 func TestCredentialRoutesRefuseEverythingButPost(t *testing.T) {
-	auth := &stubAuth{}
+	auth := &stubAuth{passkeys: true}
 	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
-	for _, path := range []string{AuthPairPath, AuthTokenPath} {
+	for _, path := range []string{AuthPairPath, AuthTokenPath, AuthPasskeyBeginPath, AuthPasskeyFinishPath} {
 		resp, err := http.Get("http://" + f.srv.Addr() + path)
 		if err != nil {
 			t.Fatalf("get %s: %v", path, err)
 		}
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Fatalf("GET %s = %d, want 405", path, resp.StatusCode)
+			t.Errorf("GET %s = %d, want 405", path, resp.StatusCode)
 		}
 	}
 }
@@ -349,48 +384,33 @@ func getIntegrationBootstrap(t *testing.T, addr string) *http.Response {
 // TestTicketNamesTheSessionOnTheUpgrade is the whole point of the
 // primitive: the credential stays off the WS URL and a short-lived
 // single-use ticket rides it instead.
+//
+// A paired device holds no page credential after a backend restart — its
+// one-time ticket is spent and its page cookie died with the launch that
+// planted it — so the spent WS ticket alone must admit the upgrade. The
+// waiver is scoped to the ticket arm: the ambient-cookie arm still demands
+// the page credential.
 func TestTicketNamesTheSessionOnTheUpgrade(t *testing.T) {
-	f := newSessionFixture(t)
-	ticket := mintTicket(t, f)
-
-	url := "ws://" + f.addr + "/ws?token=integration-token&" + WSTicketParam + "=" + ticket
-	conn, _, err := websocket.Dial(context.Background(), url, nil)
-	if err != nil {
-		t.Fatalf("dial with a ticket: %v", err)
-	}
-	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for f.srv.SessionConns().CountForSession("sess-1") == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the ticketed connection never joined the live-session registry")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-// A paired device holds no page credential after a backend restart —
-// its one-time ticket is spent and its page cookie died with the launch
-// that planted it — so the spent WS ticket alone must admit the
-// upgrade. The waiver is scoped to the ticket arm: the ambient-cookie
-// arm still demands the page credential.
-func TestTicketAdmitsTheUpgradeWithoutAPageCredential(t *testing.T) {
-	f := newSessionFixture(t)
-	ticket := mintTicket(t, f)
-
-	url := "ws://" + f.addr + "/ws?" + WSTicketParam + "=" + ticket
-	conn, _, err := websocket.Dial(context.Background(), url, nil)
-	if err != nil {
-		t.Fatalf("dial with only a ticket: %v", err)
-	}
-	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for f.srv.SessionConns().CountForSession("sess-1") == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the ticket-only connection never joined the live-session registry")
-		}
-		time.Sleep(5 * time.Millisecond)
+	for _, tc := range []struct{ name, query string }{
+		{"with the page credential", "token=integration-token&"},
+		{"with only a ticket", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSessionFixture(t)
+			ticket := mintTicket(t, f)
+			conn, _, err := websocket.Dial(context.Background(), "ws://"+f.addr+"/ws?"+tc.query+WSTicketParam+"="+ticket, nil)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+			deadline := time.Now().Add(2 * time.Second)
+			for f.srv.SessionConns().CountForSession("sess-1") == 0 {
+				if time.Now().After(deadline) {
+					t.Fatal("the ticketed connection never joined the live-session registry")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		})
 	}
 }
 
@@ -441,23 +461,31 @@ func TestTicketRouteRefusesACallerNamingNoSession(t *testing.T) {
 
 // TestBootstrapPlantsTheSessionCookie — local clients get their session
 // credential over the exchange that already hands out the page cookie, so
-// neither needs a route of its own.
+// neither needs a route of its own. With no credential to hand, nothing is
+// planted.
 func TestBootstrapPlantsTheSessionCookie(t *testing.T) {
 	f := newSessionFixture(t)
-	f.setPageCredential("ao1.local-credential")
 	f.srv.MarkReady()
-
-	resp := getIntegrationBootstrap(t, f.addr)
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("bootstrap status = %d", resp.StatusCode)
-	}
-	var planted *http.Cookie
-	for _, cookie := range resp.Cookies() {
-		if strings.HasPrefix(cookie.Name, sessionCookiePrefix) {
-			planted = cookie
+	sessionCookie := func(t *testing.T) *http.Cookie {
+		t.Helper()
+		resp := getIntegrationBootstrap(t, f.addr)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("bootstrap status = %d", resp.StatusCode)
 		}
+		for _, cookie := range resp.Cookies() {
+			if strings.HasPrefix(cookie.Name, sessionCookiePrefix) {
+				return cookie
+			}
+		}
+		return nil
 	}
+
+	if planted := sessionCookie(t); planted != nil {
+		t.Fatalf("an empty credential was planted as %q", planted.Value)
+	}
+
+	f.setPageCredential("ao1.local-credential")
+	planted := sessionCookie(t)
 	if planted == nil {
 		t.Fatal("the bootstrap exchange planted no session cookie")
 	}
@@ -469,18 +497,6 @@ func TestBootstrapPlantsTheSessionCookie(t *testing.T) {
 	}
 	if planted.SameSite != http.SameSiteStrictMode {
 		t.Fatal("the session cookie rides requests another site initiates")
-	}
-}
-
-func TestBootstrapPlantsNoCookieWhenThereIsNoSession(t *testing.T) {
-	f := newSessionFixture(t)
-	f.srv.MarkReady()
-	resp := getIntegrationBootstrap(t, f.addr)
-	defer func() { _ = resp.Body.Close() }()
-	for _, cookie := range resp.Cookies() {
-		if strings.HasPrefix(cookie.Name, sessionCookiePrefix) {
-			t.Fatalf("an empty credential was planted as %q", cookie.Value)
-		}
 	}
 }
 
@@ -662,48 +678,6 @@ func TestPasskeyFinishNeverReadsAProofFromTheBody(t *testing.T) {
 	}
 }
 
-// A backend with no canonical domain has no relying party, so the route
-// exists and answers the typed refusal rather than coming and going with
-// a setting — which would make a rebind part of naming a domain.
-func TestPasskeyBeginAnswersATypedRefusalWithNoRelyingParty(t *testing.T) {
-	auth := &stubAuth{passkeys: false}
-	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
-
-	resp := postJSON(t, f.srv.Addr(), AuthPasskeyBeginPath, nil, nil)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401 — the refusal shape every credential route shares", resp.StatusCode)
-	}
-	var refusal authRefusal
-	if err := json.NewDecoder(resp.Body).Decode(&refusal); err != nil {
-		t.Fatalf("decode refusal: %v", err)
-	}
-	if refusal.Reason != "passkey_unavailable" {
-		t.Fatalf("reason = %q, want the typed code the client can explain", refusal.Reason)
-	}
-	if auth.beginCount != 1 {
-		t.Fatalf("begin reached the endpoint %d times; the route answered on its own", auth.beginCount)
-	}
-}
-
-// Every route in this family answers POST and nothing else, and the
-// passkey pair is not an exception: a GET that started a ceremony would be
-// one a foreign page could trigger by navigation.
-func TestPasskeyRoutesAnswerPostOnly(t *testing.T) {
-	auth := &stubAuth{passkeys: true}
-	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
-
-	for _, path := range []string{AuthPasskeyBeginPath, AuthPasskeyFinishPath} {
-		resp, err := http.Get("http://" + f.srv.Addr() + path)
-		if err != nil {
-			t.Fatalf("get %s: %v", path, err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Errorf("GET %s = %d, want 405", path, resp.StatusCode)
-		}
-	}
-}
-
 // Availability reaches the page that needs it through the manifest,
 // because a browser deciding whether to offer "sign in with a passkey"
 // holds no credential and has opened no socket.
@@ -784,25 +758,5 @@ func TestRecoverableTokenRouteRequiresCapabilityAndSuccessor(t *testing.T) {
 				t.Fatal("recovery path lost proof binding or successor")
 			}
 		})
-	}
-}
-
-// A backend that could not read its own store is not a verdict about the
-// caller. Both clients classify on the status before the code — the Go
-// client ends a pairing only on an authentication verdict and its
-// confirmation wait ends on ANY typed refusal — so every credential route
-// answers `temporarily_unavailable` under 503, never 401.
-func TestTemporarilyUnavailableIsNotAnAuthenticationVerdict(t *testing.T) {
-	auth := &stubAuth{reason: "temporarily_unavailable"}
-	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
-	for _, path := range []string{AuthPairPath, AuthTokenPath} {
-		resp := postJSON(t, f.srv.Addr(), path, map[string]string{"token": "x", "refreshSecret": "x"}, nil)
-		if resp.StatusCode != http.StatusServiceUnavailable {
-			t.Fatalf("%s: status = %d, want 503", path, resp.StatusCode)
-		}
-		var refusal authRefusal
-		if err := json.NewDecoder(resp.Body).Decode(&refusal); err != nil || refusal.Reason != "temporarily_unavailable" {
-			t.Fatalf("%s: refusal = %+v, %v", path, refusal, err)
-		}
 	}
 }

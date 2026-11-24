@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -18,9 +19,9 @@ func TestClaudeProbeConfigCarriesCleanupPeriodDays(t *testing.T) {
 		}
 		return claude.UserHomeRetention(90)
 	}})
-	for name, pins := range map[string]map[string]string{
+	for name, pins := range map[string]map[provider.ReservedEnv]string{
 		"canonical home": nil,
-		"pinned home":    {"CLAUDE_CONFIG_DIR": t.TempDir()},
+		"pinned home":    {provider.ClaudeConfigDirEnv: t.TempDir()},
 	} {
 		if got := manager.claudeProbeConfig("claude", pins).Retention.CleanupPeriodDays(); got != 90 {
 			t.Errorf("%s: CleanupPeriodDays = %d, want 90", name, got)

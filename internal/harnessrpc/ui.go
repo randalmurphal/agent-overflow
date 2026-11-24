@@ -256,13 +256,6 @@ func (b *harnessUIBridge) deliver(pageID, id string, result json.RawMessage) boo
 	return true
 }
 
-// pending reports how many queries are parked. Test-facing.
-func (b *harnessUIBridge) pending() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return len(b.waiters)
-}
-
 // HarnessUIQuery asks the attached frontend bridge one question and returns
 // its answer verbatim.
 //

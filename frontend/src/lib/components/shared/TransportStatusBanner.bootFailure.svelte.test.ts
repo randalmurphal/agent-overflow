@@ -16,10 +16,9 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
 
 import TransportStatusBanner from './TransportStatusBanner.svelte';
 import ComputerTransportStatus from './ComputerTransportStatus.svelte';
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { stageBackend } from '../../../test/helpers/backends';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
-import { __resetBootFailureNoticeForTest } from '../../stores/bootFailureNotice.svelte';
-import { __resetBundleNoticeForTest, noteBundleReady } from '../../stores/bundleNotice.svelte';
+import { noteBundleReady } from '../../stores/bundleNotice.svelte';
 
 const crashedTurns: BootFailure = {
   phase: 'app.recover_crashed_turns',
@@ -46,14 +45,9 @@ describe('<TransportStatusBanner> and failed boot phases', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     snapshot = { status: 'connected', nextAttemptAt: null };
-    __resetBootFailureNoticeForTest();
-    __resetBundleNoticeForTest();
   });
   afterEach(() => {
-    resetStagedBackends();
     __setTransportHelloForTest(null);
-    __resetBootFailureNoticeForTest();
-    __resetBundleNoticeForTest();
     vi.useRealTimers();
   });
 

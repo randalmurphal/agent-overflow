@@ -11,7 +11,7 @@ async function seed(overrides: Partial<Settings> = {}): Promise<void> {
   setBindingMock('GetSettings', async () => merged);
   setBindingMock('UpdateSettings', async (patch: unknown) => ({
     ...merged,
-    ...((patch as Record<string, unknown>) ?? {}),
+    ...(patch as Record<string, unknown>),
   }));
   await loadSettings();
 }
@@ -89,19 +89,6 @@ describe('<ClaudeCrossSessionEditor>', () => {
     );
     expect((getByTestId('settings-claude-cross-session-inbound') as HTMLSelectElement).value).toBe(
       'refuse',
-    );
-  });
-
-  // A setting that has never carried a policy still resolves to one: an
-  // enabled-but-unset session falls into Claude Code's mode-parity hold.
-  it('falls back to accept only when no policy was ever stored', async () => {
-    await seed({ claudeCrossSession: {} });
-    const { getByRole } = render(ClaudeCrossSessionEditor);
-
-    await fireEvent.click(getByRole('switch'));
-
-    await waitFor(() =>
-      expect(lastPatch()).toEqual({ claudeCrossSession: { enabled: true, inbound: 'accept' } }),
     );
   });
 

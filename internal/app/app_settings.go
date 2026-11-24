@@ -223,7 +223,7 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 		// stops (and is joined) or starts with the setting, no restart.
 		a.reconcileMergedPRPoll(0)
 	}
-	a.ReconfigureObservability(prev, next)
+	a.reconfigureObservability(prev, next)
 	if _, ok := patch["editor"]; ok {
 		// Editor preference touched — drop the cached catalog so the
 		// picker doesn't surface stale availability. Same invalidation
@@ -395,10 +395,6 @@ func (a *App) refreshCodexModelCatalog() {
 
 func (a *App) refreshAgyModelCatalog() {
 	a.providerDiscoveryService().RefreshAgyModelCatalog()
-}
-
-func (a *App) codexModelsForBinary(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
-	return a.providerDiscoveryService().CodexModelsForBinary(ctx, binary)
 }
 
 func (a *App) cachedCodexModelsForBinary(binary string) ([]provider.ModelInfo, error, bool) {

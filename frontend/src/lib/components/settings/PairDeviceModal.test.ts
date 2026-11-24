@@ -2,9 +2,9 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import PairDeviceModal from './PairDeviceModal.svelte';
-import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { TransportError } from '../../transport/wsClient';
-import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
+import { getToasts } from '../../stores/toast.svelte';
 
 const INVITE = {
   linkId: 'link-1',
@@ -31,12 +31,10 @@ function renderModal(props: Partial<{ remoteReachable: boolean; canEnrollOwnDevi
 
 describe('<PairDeviceModal>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     __setTransportHelloForTest(LEGACY_HELLO);
   });
 
   afterEach(() => {
-    resetBindingMocks();
     __setTransportHelloForTest(null);
     vi.useRealTimers();
   });
@@ -216,7 +214,7 @@ describe('<PairDeviceModal>', () => {
   });
 });
 
-afterEach(() => { __setTransportHelloForTest(null); resetBindingMocks(); });
+afterEach(() => { __setTransportHelloForTest(null); });
 
 function enableNetworkChoice(): void {
   __setTransportHelloForTest({
@@ -285,14 +283,11 @@ it('opens discovery pairing for another computer while preserving QR pairing for
 describe('<PairDeviceModal> across a reopen', () => {
   const PROPS = { remoteReachable: true, canEnrollOwnDevice: true, onChanged: () => {} };
   beforeEach(() => {
-    resetBindingMocks();
     __setTransportHelloForTest(LEGACY_HELLO);
   });
   afterEach(() => {
-    resetBindingMocks();
     __setTransportHelloForTest(null);
     vi.useRealTimers();
-    resetToastsForTest();
   });
 
   async function reopen(view: ReturnType<typeof renderModal>, onClose: () => void = () => {}): Promise<void> {
@@ -595,9 +590,7 @@ describe('<PairDeviceModal> across a reopen', () => {
 });
 
 describe('<PairDeviceModal> across a hello refresh', () => {
-  beforeEach(() => resetBindingMocks());
   afterEach(() => {
-    resetBindingMocks();
     __setTransportHelloForTest(null);
   });
 

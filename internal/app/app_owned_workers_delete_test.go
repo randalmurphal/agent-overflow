@@ -21,6 +21,8 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 // Deleting a thread deletes the workers it owns, down the lineage, as one
@@ -585,35 +587,6 @@ func exists(t *testing.T, path string) bool {
 	return err == nil
 }
 
-// A worker given a sidebar row by another client after the confirmation
-// read what the delete takes is the person's: the delete leaves its
-// session alone.
-func TestADeleteLeavesAWorkerPlacedAfterItsConfirmation(t *testing.T) {
-	t.Parallel()
-	f := newDeleteFixture(t)
-	owner := f.thread(t, "owner")
-	worker := f.thread(t, "worker")
-	recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
-	runningSession(t, f.app, worker.ID)
-	preview, err := f.app.GetDeleteDependents([]string{owner.ID})
-	if err != nil || preview.Workers != 1 {
-		t.Fatalf("GetDeleteDependents = %+v, %v; want the worker", preview, err)
-	}
-	if _, err := f.app.SetThreadPlacement([]string{worker.ID}, store.PlacementStandalone); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.app.DeleteThreads([]string{owner.ID}); err != nil {
-		t.Fatal(err)
-	}
-	if !gone(t, f.app, owner.ID) {
-		t.Error("the owner outlived its delete")
-	}
-	untouched(t, f.app, worker.ID)
-	if _, live := f.app.sessionManager().get(worker.ID); !live {
-		t.Error("the placed worker's session was stopped")
-	}
-}
-
 // What a delete confirmation counts is what the delete takes: an
 // assistant's past thread and the worker that past thread spawned. The
 // delete closes the worker's terminals and keeps the worktree it was on.
@@ -715,7 +688,7 @@ func TestAProjectRemovalRefusesWhileAWorkerOutsideRuns(t *testing.T) {
 				runningSession(t, f.app, worker.ID)
 			} else {
 				f.app.deleteClaimedForTest = func([]string) {
-					sendErr = f.app.SendMessage(context.Background(), worker.ID, "more", nil)
+					_, sendErr = f.app.SendMessageWithOptions(context.Background(), worker.ID, "more", pageSendOptions(uuid.NewString()))
 					runningSession(t, f.app, worker.ID)
 				}
 			}

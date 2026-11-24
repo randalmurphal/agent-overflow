@@ -13,20 +13,26 @@
 // --allowedTools, which the manual provider smoke covers.
 
 import { test, expect } from './fixtures.js';
-import type { ProviderName } from './thread-tools-helpers.js';
+import { awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 import {
   ALL_WORKFLOW_TOOLS,
   captureRunFromThread,
   START_RUN_PATTERN,
+  WORKFLOW_TOOLS_SERVER,
   answerPhasesDone,
   awaitWorkflowAnswer,
   doneFlowYaml,
+  finishMigration,
   inputsNaming,
+  migratorTurns,
   MODELS,
   otherProvider,
   seedToolsProject,
+  sendMigration,
   setPhaseScenario,
-  startAndWatchFromThread,
+  threadScenario,
+  type Migration,
+  type MockInput,
   type StartAnswer,
 } from './workflows-agent-tools-helpers.js';
 import { start, waitForWorkflowState, type WorkflowDetail } from './workflows-helpers.js';
@@ -49,36 +55,93 @@ for (const provider of PROVIDERS) {
       { title: 'Workflow driver', provider },
     );
 
-    const runs = await startAndWatchFromThread(harness, provider, project);
+    // Turn 1 lists the tools, starts `importer` and waits for its rest,
+    // then reads its outputs: the call is the delivery, so no wake follows.
+    // Turns 2 and 3 are the migrator's: its wait ends first, and its rest
+    // wakes the thread exactly once.
+    const W = WORKFLOW_TOOLS_SERVER;
+    await answerPhasesDone(harness, phaseProvider);
+    await setScenario(
+      harness,
+      project.path,
+      threadToolsScenario({
+        name: threadScenario(provider),
+        provider,
+        echoUserMessage: true,
+        turns: [
+          {
+            steps: [
+              { list: { server: W } },
+              {
+                call: {
+                  server: W,
+                  tool: 'run_start',
+                  args: { workflow_id: 'importer', goal: 'Ship the importer', seeds: { goal: 'Ship the importer' }, wait_seconds: 120 },
+                  timeoutMs: 150_000,
+                },
+              },
+              { capture: { var: 'RUN', from: '${MCP_RESULT}', pattern: START_RUN_PATTERN } },
+              { call: { server: W, tool: 'run_output', args: { run_id: '${RUN}' } } },
+            ],
+            text: 'The importer ran to completion while I waited.',
+          },
+          ...migratorTurns(),
+        ],
+        afterTurns: 'repeatLast',
+      }),
+    );
+    // A wake for the importer's rest names its workflow (wake/compose.go
+    // headline). Armed before the first send, since the run id is known only
+    // once the wait answers.
+    const importerWake = harness.watchEvents<MockInput>(
+      'harness:mock',
+      (event) =>
+        event.scenario === threadScenario(provider) &&
+        event.report.kind === 'user_input' &&
+        (event.report.input ?? '').includes('(workflow "importer")'),
+    );
+    await harness.send(project.threadId, 'Run the importer workflow and tell me how it went.');
+    const listing = await harness.awaitMcpTools({ server: W, cwd: project.path, timeoutMs: 60_000 });
+    expect(listing.isError, listing.error).toBe(false);
+    const restedAnswer = await awaitWorkflowAnswer<StartAnswer>(harness, 'run_start', { cwd: project.path, timeoutMs: 180_000 });
+    expect(restedAnswer.isError, restedAnswer.text).toBe(false);
+    const restedOutput = await awaitWorkflowAnswer(harness, 'run_output', { cwd: project.path });
+    expect(restedOutput.isError, restedOutput.text).toBe(false);
+    await awaitTurnCompleted(harness, project.threadId);
+    // The barrier is the whole migrator flow: a wake for the importer's
+    // rest would reach the thread with the next message, during its turn,
+    // or beside the migrator's own wake.
+    let migration!: Migration;
+    await importerWake.expectNoneThrough(async () => {
+      await sendMigration(harness, provider, project);
+      migration = await finishMigration(harness, provider, project);
+    }, 'the importer rest the wait returned also woke the thread');
 
     // An interactive thread in a project holds every tool, and its guide
     // is the one the server built for it.
-    expect(runs.tools).toEqual(ALL_WORKFLOW_TOOLS);
-    expect(runs.instructions).toContain('`run_start`');
+    expect(listing.tools).toEqual(ALL_WORKFLOW_TOOLS);
+    expect(listing.instructions).toContain('`run_start`');
 
     // D17: each run is bound to the thread that started it. The importer's
     // wait saw it rest; that answer is the delivery.
-    const rested = runs.rested;
+    const rested = restedAnswer.value!;
     expect(rested.start).toMatchObject({ workflowId: 'importer', workflowScope: 'project', boundThreadId: project.threadId });
     expect(rested.start.skipped ?? false).toBe(false);
     expect(rested.outcome).toBe('resting');
     expect(rested.run).toMatchObject({ itemId: rested.start.itemId, state: 'done', resting: true });
     expect(rested.notify).toBeUndefined();
-    expect(runs.restedOutput).toMatchObject({ itemId: rested.start.itemId, outputs: { verdict: true }, artifacts: [] });
-    // ...so the thread was never woken for it.
-    expect(inputsNaming(harness, provider, rested.start.itemId)).toBe(0);
+    expect(restedOutput.value).toMatchObject({ itemId: rested.start.itemId, outputs: { verdict: true }, artifacts: [] });
 
     // The migrator's wait ended first: the answer says the rest will arrive
     // as a message, and it did, exactly once.
-    const backgrounded = runs.backgrounded;
+    const backgrounded = migration.backgrounded;
     expect(backgrounded.start).toMatchObject({ workflowId: 'migrator', boundThreadId: project.threadId });
     expect(backgrounded.outcome).toBe('backgrounded');
     expect(backgrounded.run).toMatchObject({ itemId: backgrounded.start.itemId, resting: false });
     expect(backgrounded.notify?.armed).toBe(true);
-    expect(runs.backgroundedOutput).toMatchObject({ itemId: backgrounded.start.itemId, outputs: { verdict: true } });
+    expect(migration.output).toMatchObject({ itemId: backgrounded.start.itemId, outputs: { verdict: true } });
     await waitForWorkflowState(harness, backgrounded.start.itemId, 'done');
     expect(inputsNaming(harness, provider, backgrounded.start.itemId)).toBe(1);
-    expect(inputsNaming(harness, provider, rested.start.itemId)).toBe(0);
 
     await captureRunFromThread(
       harness,

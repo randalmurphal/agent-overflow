@@ -7,7 +7,6 @@ import (
 	"go/parser"
 	"go/token"
 	"path"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // The backend clients a test builds. Each pairing step asks the time its
@@ -147,12 +147,8 @@ func TestAppTestsBuildBackendClientsThroughTheirHelpers(t *testing.T) {
 		"agent-overflow/internal/deviceclient":     {"Pair": "pairTestDevice", "Redeem": "redeemTestDevice"},
 		"agent-overflow/internal/pairbootstrap":    {"Exchange": "nearbyTestExchange", "NewHTTPClient": "nearbyTestExchange"},
 	}
-	// TestMain runs this package from the repository root.
-	helperFile := filepath.Join("internal", "app", "app_test_backends_test.go")
-	names, err := filepath.Glob(filepath.Join("internal", "app", "*_test.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	const helperFile = "internal/app/app_test_backends_test.go"
+	names := reporoot.Files(t, "internal/app", "*_test.go")
 	if !slices.Contains(names, helperFile) {
 		t.Fatalf("the scan read %d files, none of them %s: it is not reading this package", len(names), helperFile)
 	}
@@ -162,7 +158,7 @@ func TestAppTestsBuildBackendClientsThroughTheirHelpers(t *testing.T) {
 		if name == helperFile {
 			continue
 		}
-		file, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		file, err := reporoot.ParseGoFile(t, fset, name, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatal(err)
 		}

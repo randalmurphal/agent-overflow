@@ -6,8 +6,6 @@ package app
 // rows of their own with counts of their own.
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +31,16 @@ func TestAWorkerRowRefreshesAsItsCountsMove(t *testing.T) {
 		t.Helper()
 		f.app.threadRequestsWG.Wait()
 		before := f.callerAgentFrames(t, f.caller.ID)
+		// The worker's progress frames at most every
+		// threadAgentActivityEvery. Its last frame is aged to leave 50 ms of
+		// that window, so the change's frame is still the deferred one
+		// without the test waiting out the whole window.
+		e := &f.app.threadAgentEmits
+		e.mu.Lock()
+		if _, framed := e.lastActivity[worker.ID]; framed {
+			e.lastActivity[worker.ID] = time.Now().Add(-threadAgentActivityEvery + 50*time.Millisecond)
+		}
+		e.mu.Unlock()
 		change()
 		waitUntil(t, 10*time.Second, func() bool { return f.callerAgentFrames(t, f.caller.ID) > before })
 		_ = what
@@ -88,10 +96,7 @@ func TestADelegatingWorkerRowCountsItsOwnSpend(t *testing.T) {
 	f := newRequestFixture(t)
 	f.watchAgentRows()
 	f.holdCallerSession()
-	data, err := os.ReadFile(filepath.Join("docs", "references", "fixtures", "claude", "subagent_usage_inclusion_20260703.ndjson"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := wireCapture(t, "claude/subagent_usage_inclusion_20260703.ndjson")
 	turn := strings.Split(strings.TrimSpace(string(data)), "\n")
 	installMockClaudeTurns(t, f.app, [][]string{turn})
 	ack := f.spawnWorker(t, "work out 17*23 with a helper")

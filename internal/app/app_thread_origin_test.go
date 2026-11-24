@@ -12,7 +12,9 @@ import (
 
 // The device id travels on the connection, not in any method's arguments, so
 // the only thing that can carry it into a bound method is the call context.
-// This is the end-to-end proof of that conduit for thread creation.
+// This is the end-to-end proof of that conduit for thread creation. It records
+// the device, not the per-page-load connection id, so the attribution outlives
+// a tab reload.
 func TestACreatedThreadRemembersTheScreenThatStartedIt(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(t)
@@ -28,27 +30,6 @@ func TestACreatedThreadRemembersTheScreenThatStartedIt(t *testing.T) {
 	}
 	if thread.CreatedByDevice != "laptop-1" {
 		t.Fatalf("createdByDevice = %q, want laptop-1", thread.CreatedByDevice)
-	}
-}
-
-// The connection id is per page load; the device id outlives it. Recording the
-// connection would make the attribution expire the moment the tab reloads,
-// which defeats the purpose of persisting it at all.
-func TestCreationAttributionIsTheDeviceNotTheConnection(t *testing.T) {
-	t.Parallel()
-	app := newTestApp(t)
-	project, err := app.ensureProjectForWorkspace(t.TempDir())
-	if err != nil {
-		t.Fatalf("ensureProjectForWorkspace: %v", err)
-	}
-	ctx := ctxFromClient(transport.ClientIdentity{DeviceID: "laptop-1", ConnectionID: "conn-9"})
-
-	thread, err := app.CreateThread(ctx, CreateThreadOptions{ProjectID: project.ID})
-	if err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	if thread.CreatedByDevice == "conn-9" {
-		t.Fatal("createdByDevice recorded the connection id; it must record the device id")
 	}
 }
 

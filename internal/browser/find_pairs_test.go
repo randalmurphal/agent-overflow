@@ -296,24 +296,15 @@ func TestFindEndInsideAnActionLandsAfterIt(t *testing.T) {
 	checkFindScripts(t, "inside.json", scripts)
 }
 
-// Named orders: a stop made after a start the Manager refused, or one dropped or left unanswered, ends the search shown before
-// it; a stop's failure, its retry's among them, never changes what the bar
-// shows.
+// Named orders: a stop made after a start left unanswered ends the search
+// shown before it; a stop's failure, its retry's among them, never changes
+// what the bar shows. A stop after a start the Manager refused is in the
+// pairs table.
 func TestFindNamedSequences(t *testing.T) {
 	sequences := []struct {
 		name, base string
 		run        func(t *testing.T, e *findTableEnv)
 	}{
-		{"a search, a replacement too long to start, then the bar closes", "search", func(t *testing.T, e *findTableEnv) {
-			a := e.providers["A"]
-			a.uiSearch(t, findOversizedQuery)
-			a.uiClear(t)
-		}},
-		{"a search, a replacement on a page already gone, then the bar closes", "search", func(t *testing.T, e *findTableEnv) {
-			a := e.providers["A"]
-			e.goneStart(t, a)
-			a.uiClear(t)
-		}},
 		{"a start answered late, its replacement answered, a query still debouncing, then the bar closes", "bar", func(t *testing.T, e *findTableEnv) {
 			a := e.providers["A"]
 			a.hold = "answer"

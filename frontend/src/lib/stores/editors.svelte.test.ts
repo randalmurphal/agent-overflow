@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   resolveDefault,
   ensureEditorsLoaded,
@@ -11,12 +11,10 @@ import {
   getEditorsLoadStatus,
   hasEditorsSnapshot,
   setEditorPreference,
-  resetEditorsForTest,
   resyncEditorPreference,
 } from './editors.svelte';
 import {
   setBindingMock,
-  resetBindingMocks,
 } from '../../test/mocks/bindings-app';
 import type { EditorInfo } from './bindings';
 import { DisconnectedError } from '../transport/wsClient';
@@ -34,49 +32,29 @@ function ed(
 }
 
 describe('resolveDefault', () => {
-  it('uses the saved preference when that editor is available', () => {
-    const list = [ed('code', true), ed('cursor', true)];
-    expect(resolveDefault(list, 'cursor')?.id).toBe('cursor');
-  });
-
-  it('ignores a preference that is not available and takes the first named', () => {
-    const list = [ed('code', true), ed('cursor', false)];
-    expect(resolveDefault(list, 'cursor')?.id).toBe('code');
-  });
-
-  it('with no preference takes the first available named editor in list order', () => {
-    // The list arrives in catalog priority order, so "first available
-    // named" is the catalog default.
-    const list = [ed('code', false), ed('cursor', true), ed('zed', true)];
-    expect(resolveDefault(list, '')?.id).toBe('cursor');
-  });
-
-  it('prefers a named editor over the env fallback', () => {
-    const list = [ed('env:editor', true, true), ed('code', true)];
-    expect(resolveDefault(list, '')?.id).toBe('code');
-  });
-
-  it('falls back to the env editor when nothing named is available', () => {
-    const list = [ed('code', false), ed('env:editor', true, true)];
-    expect(resolveDefault(list, '')?.id).toBe('env:editor');
-  });
-
-  it('honors a preference that points at the env fallback', () => {
-    const list = [ed('code', true), ed('env:visual', true, true)];
-    expect(resolveDefault(list, 'env:visual')?.id).toBe('env:visual');
-  });
-
-  it('returns null when nothing is available', () => {
-    const list = [ed('code', false), ed('cursor', false)];
-    expect(resolveDefault(list, 'code')).toBeNull();
+  // The list arrives in catalog priority order, so "first available named"
+  // is the catalog default.
+  it.each([
+    ['uses the saved preference when that editor is available',
+      [ed('code', true), ed('cursor', true)], 'cursor', 'cursor'],
+    ['ignores a preference that is not available and takes the first named',
+      [ed('code', true), ed('cursor', false)], 'cursor', 'code'],
+    ['with no preference takes the first available named editor in list order',
+      [ed('code', false), ed('cursor', true), ed('zed', true)], '', 'cursor'],
+    ['prefers a named editor over the env fallback',
+      [ed('env:editor', true, true), ed('code', true)], '', 'code'],
+    ['falls back to the env editor when nothing named is available',
+      [ed('code', false), ed('env:editor', true, true)], '', 'env:editor'],
+    ['honors a preference that points at the env fallback',
+      [ed('code', true), ed('env:visual', true, true)], 'env:visual', 'env:visual'],
+    ['returns null when nothing is available',
+      [ed('code', false), ed('cursor', false)], 'code', null],
+  ])('%s', (_name, list, preference, chosen) => {
+    expect(resolveDefault(list, preference)).toBe(list.find((editor) => editor.id === chosen) ?? null);
   });
 });
 
 describe('editors store', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetEditorsForTest();
-  });
 
   it('loads the catalog once even when ensureEditorsLoaded races', async () => {
     const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => [
@@ -325,10 +303,6 @@ describe('editors store', () => {
 // anywhere else left every open header icon pointing at the previous editor.
 // `settings:updated` naming the `editor` key is the trigger.
 describe('resyncEditorPreference', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetEditorsForTest();
-  });
 
   it('adopts the preference another client saved, without re-walking the catalog', async () => {
     const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => [

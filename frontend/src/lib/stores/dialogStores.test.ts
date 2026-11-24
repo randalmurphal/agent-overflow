@@ -1,101 +1,58 @@
-// Four near-identical open/close stores — palette, cheatSheet,
-// messageSearch, accountSwitcher — share a single test file because the shape
-// is identical and duplicating one test file per store is just noise.
+// The dialog open/close stores: palette, message search and thread picker
+// take a target pane, the cheat sheet and the account switcher do not.
+// Each store runs one sequence from the state its module starts in, so the
+// first assertion of each test is the store's initial state.
 
-import { describe, expect, it, beforeEach } from 'vitest';
-import {
-  closeCheatSheet,
-  isCheatSheetOpen,
-  openCheatSheet,
-  toggleCheatSheet,
-} from './cheatSheet.svelte';
-import {
-  closeMessageSearch,
-  isMessageSearchOpen,
-  openMessageSearch,
-  toggleMessageSearch,
-} from './messageSearch.svelte';
-import {
-  closePalette,
-  isPaletteOpen,
-  openPalette,
-  togglePalette,
-} from './palette.svelte';
-import {
-  closeAccountSwitcher,
-  isAccountSwitcherOpen,
-  openAccountSwitcher,
-  toggleAccountSwitcher,
-} from './accountSwitcher.svelte';
+import { expect, it } from 'vitest';
+import { closeAccountSwitcher, isAccountSwitcherOpen, toggleAccountSwitcher } from './accountSwitcher.svelte';
+import { closeCheatSheet, isCheatSheetOpen, openCheatSheet } from './cheatSheet.svelte';
+import { closeMessageSearch, getMessageSearchTargetPaneId, isMessageSearchOpen, openMessageSearch } from './messageSearch.svelte';
+import { closePalette, getPaletteTargetPaneId, isPaletteOpen, openPalette } from './palette.svelte';
+import { closeThreadPicker, getThreadPickerTargetPaneId, isThreadPickerOpen, openThreadPicker } from './threadPicker.svelte';
 
-describe.each([
-  {
-    name: 'cheatSheet',
-    isOpen: isCheatSheetOpen,
-    open: openCheatSheet,
-    close: closeCheatSheet,
-    toggle: toggleCheatSheet,
-  },
-  {
-    name: 'messageSearch',
-    isOpen: isMessageSearchOpen,
-    open: openMessageSearch,
-    close: closeMessageSearch,
-    toggle: toggleMessageSearch,
-  },
-  {
-    name: 'palette',
-    isOpen: isPaletteOpen,
-    open: openPalette,
-    close: closePalette,
-    toggle: togglePalette,
-  },
-  {
-    name: 'accountSwitcher',
-    isOpen: isAccountSwitcherOpen,
-    open: openAccountSwitcher,
-    close: closeAccountSwitcher,
-    toggle: toggleAccountSwitcher,
-  },
-])('$name store', ({ isOpen, open, close, toggle }) => {
-  beforeEach(() => {
-    // Each store is module-scoped singleton state — reset to closed
-    // before each test so leftover state from other tests (or from the
-    // previous iteration of describe.each) doesn't contaminate.
-    close();
-  });
+it.each([
+  { name: 'palette', isOpen: isPaletteOpen, target: getPaletteTargetPaneId, open: openPalette, close: closePalette },
+  { name: 'message search', isOpen: isMessageSearchOpen, target: getMessageSearchTargetPaneId, open: openMessageSearch, close: closeMessageSearch },
+  { name: 'thread picker', isOpen: isThreadPickerOpen, target: getThreadPickerTargetPaneId, open: openThreadPicker, close: closeThreadPicker },
+])('the $name opens on a pane, retargets, and closes', ({ isOpen, target, open, close }) => {
+  const state = () => ({ open: isOpen(), pane: target() });
+  expect(state()).toEqual({ open: false, pane: null });
+  open('pane-a');
+  expect(state()).toEqual({ open: true, pane: 'pane-a' });
+  open('pane-b');
+  expect(state()).toEqual({ open: true, pane: 'pane-b' });
+  open('pane-b');
+  expect(state()).toEqual({ open: true, pane: 'pane-b' });
+  open();
+  expect(state()).toEqual({ open: true, pane: null });
+  open('pane-a');
+  close();
+  expect(state()).toEqual({ open: false, pane: null });
+  close();
+  expect(state()).toEqual({ open: false, pane: null });
+});
 
-  it('starts closed', () => {
-    expect(isOpen()).toBe(false);
-  });
+it('the cheat sheet opens and closes', () => {
+  expect(isCheatSheetOpen()).toBe(false);
+  openCheatSheet();
+  expect(isCheatSheetOpen()).toBe(true);
+  openCheatSheet();
+  expect(isCheatSheetOpen()).toBe(true);
+  closeCheatSheet();
+  expect(isCheatSheetOpen()).toBe(false);
+  closeCheatSheet();
+  expect(isCheatSheetOpen()).toBe(false);
+});
 
-  it('open() flips open', () => {
-    open();
-    expect(isOpen()).toBe(true);
-  });
-
-  it('close() flips closed', () => {
-    open();
-    close();
-    expect(isOpen()).toBe(false);
-  });
-
-  it('toggle() cycles', () => {
-    toggle();
-    expect(isOpen()).toBe(true);
-    toggle();
-    expect(isOpen()).toBe(false);
-  });
-
-  it('open() is idempotent', () => {
-    open();
-    open();
-    expect(isOpen()).toBe(true);
-  });
-
-  it('close() is idempotent', () => {
-    close();
-    close();
-    expect(isOpen()).toBe(false);
-  });
+it('the account switcher toggles and closes', () => {
+  expect(isAccountSwitcherOpen()).toBe(false);
+  toggleAccountSwitcher();
+  expect(isAccountSwitcherOpen()).toBe(true);
+  toggleAccountSwitcher();
+  expect(isAccountSwitcherOpen()).toBe(false);
+  toggleAccountSwitcher();
+  closeAccountSwitcher();
+  expect(isAccountSwitcherOpen()).toBe(false);
+  closeAccountSwitcher();
+  expect(isAccountSwitcherOpen()).toBe(false);
 });

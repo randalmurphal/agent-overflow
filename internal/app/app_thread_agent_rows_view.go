@@ -28,8 +28,18 @@ type threadAgentView struct {
 func newThreadAgentView(a *App) threadAgentView {
 	return threadAgentView{
 		app: a, waiting: a.parkedRequestTokens(), live: a.liveWorkerThreads(),
-		since: time.Now().Add(-threadAgentSettledWindow).UnixMilli(),
+		since: time.Now().Add(-a.agentSettledWindowSpan()).UnixMilli(),
 	}
+}
+
+// agentSettledWindowSpan is how long a settled request stays in a listing:
+// threadAgentSettledWindow, or the window an isolated test boot set
+// (IsolationConfig.AgentSettledWindow).
+func (a *App) agentSettledWindowSpan() time.Duration {
+	if a.agentSettledWindowOverride > 0 {
+		return a.agentSettledWindowOverride
+	}
+	return threadAgentSettledWindow
 }
 
 // tree reads root's requests nested at most depth levels, or only those

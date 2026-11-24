@@ -19,6 +19,19 @@ import (
 	"agent-overflow/internal/harness/forgefake"
 )
 
+// HarnessMergedPRPoll reports the host's last completed pass in Unix
+// milliseconds, and 0 before there is one.
+func TestHarnessMergedPRPollReportsTheLastCompletedPass(t *testing.T) {
+	h, host := newHarnessTestHost(t)
+	if got, err := h.HarnessMergedPRPoll(); err != nil || got.LastPassStartedAt != 0 {
+		t.Fatalf("before a pass = %+v, %v", got, err)
+	}
+	host.mergedPRPolled = time.UnixMilli(1_700_000_000_123)
+	if got, err := h.HarnessMergedPRPoll(); err != nil || got.LastPassStartedAt != 1_700_000_000_123 {
+		t.Fatalf("after a pass = %+v, %v", got, err)
+	}
+}
+
 func TestHarnessForgeSeedIsStrictAndPositioned(t *testing.T) {
 	h, _ := newHarnessTestHost(t)
 	_, err := h.HarnessForgeSeed(json.RawMessage("{\n  \"repos\": [{\"forge\": \"github\", \"project\": \"a/b\", \"pullz\": []}]\n}"))

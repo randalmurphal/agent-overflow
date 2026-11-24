@@ -1644,16 +1644,10 @@ engaged (`internal/app/app_thread_archive.go`). The reaper's
 keep-alive-while-working choice stays (killing quiet-but-working
 sessions is rejected doctrine); what an unattended host adds is
 **visibility and control, not timeouts**:
-`ListRunningBackgroundWork` (wire-safe) reports the cross-thread
-inventory, unioning the same three sources `ListLiveBackgroundTasks`
-does (the store query, live Codex subagent launches, and the triage
-layer's in-memory Codex unified-exec tasks, which exist in no table),
-with per-thread unreadability carried in the payload rather than an
-error that would discard the rows; `StopThreadBackgroundWork`
-(LocalOnly) routes each row through the existing per-kind stop
-methods. The tray's 2-second completed-sibling retention is a
-live-tray tuning value, not an inventory history; the inventory
-reports what is running now.
+each thread's background tray (`ListLiveBackgroundTasks`) unions the
+store query, live Codex subagent launches, and the triage layer's
+in-memory Codex unified-exec tasks, which exist in no table, and each
+row stops through its per-kind stop method.
 
 Update is a genuine availability requirement once the machine is
 unattended, and a supply-chain risk if remotely triggerable. Resolution:
@@ -2786,7 +2780,7 @@ review-fix commit after them):
   presentation is dropped while the app is on screen; a retraction is
   never dropped. The socket presenter presents only while the lease is
   `background`. **The tray tag is `<backend>|<id>` on both paths**
-  (`push.TrayTag`, `TrayNotifier.tagFor`, `pushTag`), from the
+  (`TrayNotifier.tagFor`, `pushTag`), from the
   message's `backend` key and from the frame's origin respectively,
   which is what makes one moment told twice one notification and two
   machines' identical ids two; the agent's version tagged home's socket
@@ -4113,9 +4107,8 @@ re-dispatched. Residuals, recorded and left: `make apk` was not runnable
 on the WSL box (no JDK), so the manifest and rules file were reviewed by
 eye until the Mac pass ran the build and the emulator smoke (2026-09-03); an idle-reaper close of a thread whose queue
 held a requeued-after-failure message drops it, as it did before the
-row existed (the row now goes with it rather than resurrecting at boot);
-`triage.clearFlushQueueLocked` has no callers and is left for a triage
-cleanup. The former 64-message duplicate-detection cutoff was removed by v89: a
+row existed (the row now goes with it rather than resurrecting at boot).
+The former 64-message duplicate-detection cutoff was removed by v89: a
 retry from an offline frontend remains recognizable after newer messages arrive.
 
 **Quiet-when picker LANDED (2026-09-03).** The R5 pair

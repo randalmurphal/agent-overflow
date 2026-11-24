@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/harness/instanceinfo"
+	"agent-overflow/internal/harness/scenario"
 )
 
 func TestParseFlagsSoakDefaultsAnIsolatedDataDir(t *testing.T) {
@@ -160,9 +161,16 @@ func TestShouldSyncShellEnvSkipsSoak(t *testing.T) {
 	}
 }
 
+// The named scenario must be a Claude script in the embedded library: a
+// rename there would otherwise only surface as a failed arm hours into a
+// run.
 func TestSoakScenarioIsShipped(t *testing.T) {
-	if err := soakScenarioIsShipped(); err != nil {
+	_, definition, err := scenario.LoadLibrary(soakScenarioName)
+	if err != nil {
 		t.Fatalf("soak scenario %q: %v", soakScenarioName, err)
+	}
+	if definition.Provider != scenario.ProviderClaude {
+		t.Fatalf("soak scenario %q is a %s script, want claude", soakScenarioName, definition.Provider)
 	}
 }
 

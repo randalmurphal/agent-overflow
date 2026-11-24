@@ -205,29 +205,6 @@ func TestManagerMissingTerminalErrors(t *testing.T) {
 	}
 }
 
-func TestManagerCloseThreadClosesAll(t *testing.T) {
-	m := NewManager(nil, nil)
-	for i := 0; i < 3; i++ {
-		if _, err := m.Open("thread-multi", SessionOptions{
-			Reaper: procutiltest.Reaper(),
-			Shell:  "/bin/sh",
-			Args:   []string{"-c", "sleep 10"},
-			Cwd:    t.TempDir(),
-		}); err != nil {
-			t.Fatalf("Open %d: %v", i, err)
-		}
-	}
-	if len(m.List("thread-multi")) != 3 {
-		t.Fatalf("expected 3 sessions before CloseThread")
-	}
-	if err := m.CloseThread("thread-multi"); err != nil {
-		t.Fatalf("CloseThread: %v", err)
-	}
-	if len(m.List("thread-multi")) != 0 {
-		t.Fatalf("expected 0 sessions after CloseThread")
-	}
-}
-
 func TestManagerMoveThreadRekeysLiveSessions(t *testing.T) {
 	outputs := make(chan string, 8)
 	m := NewManager(

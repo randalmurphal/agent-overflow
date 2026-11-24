@@ -1,7 +1,6 @@
 package app
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -33,17 +32,6 @@ func TestContextSettingsResolveWireOnlyClaudeModels(t *testing.T) {
 		t.Fatalf("ContextWindow = %d, want the 1M family default %d", profile.ContextWindow, provider.ClaudeExtendedContextWindow)
 	}
 
-	updated, err := app.UpdateContextSettingsProfile(ContextSettingsUpdate{
-		Provider:      "claude",
-		Model:         "claude-fable-5-1",
-		ContextWindow: provider.ClaudeStandardContextWindow,
-	})
-	if err != nil {
-		t.Fatalf("UpdateContextSettingsProfile(claude-fable-5-1 → 200k): %v", err)
-	}
-	if updated.ContextWindow != provider.ClaudeStandardContextWindow {
-		t.Fatalf("updated ContextWindow = %d, want %d", updated.ContextWindow, provider.ClaudeStandardContextWindow)
-	}
 }
 
 // seedWireOnlyFable51 stages the probe-merged catalog the way the zero-token
@@ -103,11 +91,11 @@ func TestThreadDefaultsSeedWireOnlyClaudeModelFromCatalogDefault(t *testing.T) {
 	}
 
 	// Per-thread context settings validate against the same merged options.
-	switched, err := app.UpdateThreadContextSettings(thread.ID, ContextSettingsUpdate{
+	switched, err := app.updateThreadContextSettings(thread.ID, ContextSettingsUpdate{
 		ContextWindow: provider.ClaudeStandardContextWindow,
 	})
 	if err != nil {
-		t.Fatalf("UpdateThreadContextSettings(claude-fable-5-1 → 200k): %v", err)
+		t.Fatalf("updateThreadContextSettings(claude-fable-5-1 → 200k): %v", err)
 	}
 	if switched.ContextWindow != provider.ClaudeStandardContextWindow {
 		t.Fatalf("thread ContextWindow after update = %d, want %d", switched.ContextWindow, provider.ClaudeStandardContextWindow)
@@ -152,19 +140,25 @@ func TestGetContextSettingsReturnsProviderModelOptions(t *testing.T) {
 	}
 }
 
-func TestGetContextSettingsReturnsStandardOnlyForCodexGPT55(t *testing.T) {
+// gpt-5.5 and the single-window Codex defaults (gpt-5.2) offer only the
+// standard window.
+func TestGetContextSettingsReturnsStandardOnlyCodexWindows(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 
-	profile, err := app.GetContextSettings("codex", "gpt-5.5")
-	if err != nil {
-		t.Fatalf("GetContextSettings(codex/gpt-5.5): %v", err)
-	}
-	if profile.ContextWindow != provider.CodexStandardContextWindow {
-		t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.CodexStandardContextWindow)
-	}
-	if len(profile.ContextWindows) != 1 || profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
-		t.Fatalf("ContextWindows = %+v, want standard-only", profile.ContextWindows)
+	for _, model := range []string{"gpt-5.5", "gpt-5.2"} {
+		t.Run(model, func(t *testing.T) {
+			profile, err := app.GetContextSettings("codex", model)
+			if err != nil {
+				t.Fatalf("GetContextSettings(codex/%s): %v", model, err)
+			}
+			if profile.ContextWindow != provider.CodexStandardContextWindow {
+				t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.CodexStandardContextWindow)
+			}
+			if len(profile.ContextWindows) != 1 || profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
+				t.Fatalf("ContextWindows = %+v, want standard-only", profile.ContextWindows)
+			}
+		})
 	}
 }
 
@@ -212,47 +206,6 @@ func TestGetContextSettingsClampsStaleCodexGPT55Profile(t *testing.T) {
 	}
 }
 
-func TestGetContextSettingsReturnsSingleWindowCodexDefaults(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	profile, err := app.GetContextSettings("codex", "gpt-5.2")
-	if err != nil {
-		t.Fatalf("GetContextSettings(codex/gpt-5.2): %v", err)
-	}
-	if profile.ContextWindow != provider.CodexStandardContextWindow {
-		t.Fatalf("ContextWindow = %d, want %d", profile.ContextWindow, provider.CodexStandardContextWindow)
-	}
-	if len(profile.ContextWindows) != 1 || profile.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
-		t.Fatalf("ContextWindows = %+v, want standard-only", profile.ContextWindows)
-	}
-}
-
-func TestUpdateContextSettingsProfileValidatesPercentAndWindow(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	_, err := app.UpdateContextSettingsProfile(ContextSettingsUpdate{
-		Provider:                   "claude",
-		Model:                      "claude-sonnet-4-6",
-		ContextWindow:              1000000,
-		AutoCompactStandardPercent: 91,
-	})
-	if err == nil || !strings.Contains(err.Error(), "between 0 and 90") {
-		t.Fatalf("UpdateContextSettingsProfile percent error = %v, want range error", err)
-	}
-
-	_, err = app.UpdateContextSettingsProfile(ContextSettingsUpdate{
-		Provider:                   "codex",
-		Model:                      "gpt-5.4-mini",
-		ContextWindow:              provider.CodexExtendedContextWindow,
-		AutoCompactStandardPercent: 80,
-	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported context window") {
-		t.Fatalf("UpdateContextSettingsProfile unsupported window error = %v, want unsupported context window", err)
-	}
-}
-
 func TestUpdateThreadContextSettingsPersistsAndRemembersProfile(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -261,7 +214,7 @@ func TestUpdateThreadContextSettingsPersistsAndRemembersProfile(t *testing.T) {
 		t.Fatalf("createTestThread: %v", err)
 	}
 
-	updated, err := app.UpdateThreadContextSettings(thread.ID, ContextSettingsUpdate{
+	updated, err := app.updateThreadContextSettings(thread.ID, ContextSettingsUpdate{
 		Provider:                   "ignored",
 		Model:                      "ignored",
 		ContextWindow:              provider.CodexExtendedContextWindow,
@@ -269,7 +222,7 @@ func TestUpdateThreadContextSettingsPersistsAndRemembersProfile(t *testing.T) {
 		AutoCompactExtendedPercent: 88,
 	})
 	if err != nil {
-		t.Fatalf("UpdateThreadContextSettings: %v", err)
+		t.Fatalf("updateThreadContextSettings: %v", err)
 	}
 	if updated.ContextWindow != provider.CodexExtendedContextWindow {
 		t.Fatalf("ContextWindow = %d, want %d", updated.ContextWindow, provider.CodexExtendedContextWindow)
@@ -322,14 +275,14 @@ func TestUpdateThreadContextSettingsClearsLastTokenUsageAndEmitsReset(t *testing
 		emittedThreadID = evt.ThreadID
 	}
 
-	if _, err := app.UpdateThreadContextSettings(thread.ID, ContextSettingsUpdate{
+	if _, err := app.updateThreadContextSettings(thread.ID, ContextSettingsUpdate{
 		Provider:                   "codex",
 		Model:                      "gpt-5.5",
 		ContextWindow:              provider.CodexStandardContextWindow,
 		AutoCompactStandardPercent: 75,
 		AutoCompactExtendedPercent: 80,
 	}); err != nil {
-		t.Fatalf("UpdateThreadContextSettings: %v", err)
+		t.Fatalf("updateThreadContextSettings: %v", err)
 	}
 
 	if emittedAction != "reset" || emittedThreadID != thread.ID {
@@ -359,14 +312,14 @@ func TestUpdateThreadContextSettingsRestartsActiveSession(t *testing.T) {
 		return nil
 	}
 
-	if _, err := app.UpdateThreadContextSettings(thread.ID, ContextSettingsUpdate{
+	if _, err := app.updateThreadContextSettings(thread.ID, ContextSettingsUpdate{
 		Provider:                   "codex",
 		Model:                      "gpt-5.4",
 		ContextWindow:              provider.CodexExtendedContextWindow,
 		AutoCompactStandardPercent: 75,
 		AutoCompactExtendedPercent: 88,
 	}); err != nil {
-		t.Fatalf("UpdateThreadContextSettings: %v", err)
+		t.Fatalf("updateThreadContextSettings: %v", err)
 	}
 
 	select {
@@ -377,6 +330,6 @@ func TestUpdateThreadContextSettingsRestartsActiveSession(t *testing.T) {
 	// The restart runs on the deferred watcher, which re-checks a busy
 	// thread once per poll interval; allow several polls.
 	case <-time.After(5 * defaultConfigReconnectPollInterval):
-		t.Fatal("UpdateThreadContextSettings did not restart active session")
+		t.Fatal("updateThreadContextSettings did not restart active session")
 	}
 }

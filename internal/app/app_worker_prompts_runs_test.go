@@ -21,6 +21,8 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // acceptRequest writes caller's request of target as the tools accept one
@@ -164,8 +166,8 @@ func testWorkerPromptsByRun(t *testing.T, placement string) {
 			if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = app.StopSession(worker.ID) })
-			if err := app.SendMessage(context.Background(), worker.ID, "go", nil); err != nil {
+			t.Cleanup(func() { stopSessionChecked(t, app, worker.ID) })
+			if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, "go", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			if row := requestRow(t, app, "middle-worker"); !row.RunEnded() {
@@ -177,7 +179,7 @@ func testWorkerPromptsByRun(t *testing.T, placement string) {
 			})
 			var tokens []string
 			waitUntil(t, 10*time.Second, func() bool {
-				if err := app.drainWorkerPrompts(context.Background(), 5*time.Second); err != nil {
+				if err := app.drainWorkerPrompts(context.Background(), testutil.WaitBudget(t)); err != nil {
 					t.Fatal(err)
 				}
 				app.waitAgentNoticeWork()
@@ -217,8 +219,15 @@ func testWorkerPromptsByRun(t *testing.T, placement string) {
 			if !owned || c.toSpawner {
 				return
 			}
-			// The row reads the prompt as it is routed now.
+			// The row reads the prompt as it is routed now. waitUntil's
+			// timeout names no state, so a failed test logs the rows it
+			// last read.
 			var rows []ThreadAgentRow
+			t.Cleanup(func() {
+				if t.Failed() {
+					t.Logf("the middle thread's rows when the test ended: %+v", rows)
+				}
+			})
 			waitUntil(t, 10*time.Second, func() bool {
 				listing, err := app.ListThreadAgentRows(context.Background(), middle.ID)
 				if err != nil {

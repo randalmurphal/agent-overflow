@@ -3,7 +3,7 @@
 // pinned here is the reading this module adds on top of that rule — the
 // rows a history page would never return, which must not split a run.
 import { describe, expect, it } from 'vitest';
-import { groupActivityRunSpans, isActivityRailRow, spanHolding } from './activityRunSpans';
+import { groupActivityRunSpans, isActivityRailRow } from './activityRunSpans';
 import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
 import { AGENT_MESSAGE_MEMBERS_RULE } from './activityRunSpans';
@@ -57,12 +57,5 @@ describe('groupActivityRunSpans', () => {
 
   it('allocates nothing for a prose-only window', () => {
     expect(groupActivityRunSpans([prose('p0'), prose('p1')], AGENT_MESSAGE_MEMBERS_RULE)).toEqual([]);
-  });
-
-  it('finds the span holding an id', () => {
-    const spans = groupActivityRunSpans([row('t0'), prose('p0'), row('t1'), row('t2')], AGENT_MESSAGE_MEMBERS_RULE);
-    expect(spanHolding(spans, 't2')?.firstItemId).toBe('t1');
-    expect(spanHolding(spans, 'p0')).toBeNull();
-    expect(spanHolding(spans, '')).toBeNull();
   });
 });

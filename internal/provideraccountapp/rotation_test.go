@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 )
 
@@ -59,14 +60,14 @@ func TestClaudeProbeConfigAlwaysWiresTheRotationReader(t *testing.T) {
 	}
 
 	// A pinned probe runs the CLI against a different home, and the pin beats
-	// ProbeAccount's UnsetEnv — so the reader has to follow the pin or it
+	// ProbeAccount's clears — so the reader has to follow the pin or it
 	// would watch a file the spawned CLI never touches.
 	pinnedHome := t.TempDir()
 	pinned := []byte(`{"claudeAiOauth":{"accessToken":"pinned","refreshToken":"r","expiresAt":2}}`)
 	if err := os.WriteFile(filepath.Join(pinnedHome, ".credentials.json"), pinned, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := manager.claudeProbeConfig("claude", map[string]string{"CLAUDE_CONFIG_DIR": pinnedHome})
+	cfg := manager.claudeProbeConfig("claude", map[provider.ReservedEnv]string{provider.ClaudeConfigDirEnv: pinnedHome})
 	if cfg.ReadCredential == nil {
 		t.Fatal("a pinned Claude probe was built with no rotation reader")
 	}
@@ -93,9 +94,9 @@ func TestClaudeProbeReaderReportsAnAbsentCredentialAsNotExist(t *testing.T) {
 	if err := manager.Attach(accounts, credentials, ""); err != nil {
 		t.Fatal(err)
 	}
-	for name, pins := range map[string]map[string]string{
+	for name, pins := range map[string]map[provider.ReservedEnv]string{
 		"unpinned": nil,
-		"pinned":   {"CLAUDE_CONFIG_DIR": t.TempDir()},
+		"pinned":   {provider.ClaudeConfigDirEnv: t.TempDir()},
 	} {
 		_, err := manager.claudeProbeConfig("claude", pins).ReadCredential()
 		if !errors.Is(err, fs.ErrNotExist) {

@@ -149,7 +149,7 @@ func TestHandOffMovesAnUnreadRequest(t *testing.T) {
 	f := newAssistantFixture(t)
 	stdinLog := f.mockClaudeHoldingTheTurnRecording(t, "busy")
 	target, _ := f.assistantTarget(t, "Reviewer.")
-	if err := f.app.SendMessage(context.Background(), target.ID, "work on something", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(context.Background(), target.ID, "work on something", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {
@@ -226,7 +226,7 @@ func TestHandOffWhileATurnRuns(t *testing.T) {
 	f := newAssistantFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "busy")
 	f.assistantCaller(t)
-	if err := f.app.SendMessage(context.Background(), f.caller.ID, "start working", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(context.Background(), f.caller.ID, "start working", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {
@@ -254,7 +254,7 @@ func TestHandOffMovesALoopWakeTheOldSessionHadNotTakenIn(t *testing.T) {
 	f := newAssistantFixture(t)
 	stdinLog := f.mockClaudeHoldingTheTurnRecording(t, "busy")
 	target, _ := f.assistantTarget(t, "Reviewer.")
-	if err := f.app.SendMessage(context.Background(), target.ID, "work on something", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(context.Background(), target.ID, "work on something", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {
@@ -352,7 +352,7 @@ func TestASendThatFindsTheSessionGoneCarriesItsText(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = f.app.SendMessageWithOptions(t.Context(), thread.ID, "Anything new?", SendMessageOptions{SendID: uuid.NewString()})
+	_, err = f.app.SendMessageWithOptions(t.Context(), thread.ID, "Anything new?", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString()})
 	if code, _, ok := errorsx.PublicDetails(err); !ok || code != transport.ErrCodeAssistantSessionGone {
 		t.Fatalf("send = %v, want %s", err, transport.ErrCodeAssistantSessionGone)
 	}

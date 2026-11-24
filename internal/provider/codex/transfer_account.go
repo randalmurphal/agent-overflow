@@ -45,7 +45,7 @@ func readNativeAccount(ctx context.Context, cfg ProbeConfig, label string, refre
 	}
 	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
 		Binary: binary, Args: codexAppServerArgs(), Dir: cfg.WorkDir,
-		Env: cfg.Env, UnsetEnv: []string{"CODEX_HOME"},
+		Env: cfg.Env.Clear(provider.CodexHomeEnv),
 	})
 	if err != nil {
 		return nil, err

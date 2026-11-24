@@ -7,8 +7,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-
-	"agent-overflow/internal/provider"
 )
 
 const (
@@ -38,9 +36,4 @@ func ResolveBinary(configured string) string {
 		}
 	}
 	return DefaultBinaryName
-}
-
-// ProviderKind returns provider.Agy.
-func ProviderKind() provider.ProviderKind {
-	return provider.Agy
 }

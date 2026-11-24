@@ -8,8 +8,9 @@
 // collected the answer. The spawn's prompt is over the wire projection's
 // budget, so its header proves the clipped opening survives
 // (internal/itemwire). expandRow opens a row left with its toggle's center
-// less than a pixel above the "Jump to bottom" chip. Screenshots of every
-// row collapsed and expanded go to the test's output directory.
+// less than a pixel above the "Jump to bottom" chip. With AO_E2E_SCREENSHOTS=1,
+// screenshots of every row collapsed and expanded go to the test's output
+// directory.
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import {
@@ -22,6 +23,7 @@ import {
   jumpChipOf,
   openLead,
   shootRow,
+  shootRowBeforeOpening,
   toolRow,
 } from './ao-tool-rows-helpers.js';
 import {
@@ -45,13 +47,15 @@ for (const provider of ['claude', 'codex'] as const) {
     await openLead(harness, page);
     const shot = (name: string, target: import('@playwright/test').Locator) =>
       shootRow(target, test.info().outputPath(`${provider}-${name}.png`));
+    const shotClosed = (name: string, target: import('@playwright/test').Locator) =>
+      shootRowBeforeOpening(target, test.info().outputPath(`${provider}-${name}.png`));
 
     // Spawn: the new thread's title, from the reply. The answer's wake
     // lands once the spawned thread answers.
     const spawn = toolRow(page, 'spawn', SPAWN_TITLE);
     await expect(spawn).toHaveCount(1);
     await expect(spawn.getByTestId('tool-call-card-ao-live-hint')).toHaveText('(answer arrived)', { timeout: 30_000 });
-    await shot('spawn-collapsed', spawn);
+    await shotClosed('spawn-collapsed', spawn);
     await expandRow(spawn);
     const spawnOutcome = spawn.getByTestId('tool-call-card-ao-outcome');
     await expect(spawnOutcome).toContainText('backgrounded');
@@ -76,7 +80,7 @@ for (const provider of ['claude', 'codex'] as const) {
     const send = toolRow(page, 'send', `${TARGET_TITLE} · Rebase onto main`);
     await expect(send).toHaveCount(1);
     await expect(send.getByTestId('tool-call-card-ao-live-hint')).toHaveText('(answer arrived)', { timeout: 30_000 });
-    await shot('send-collapsed', send);
+    await shotClosed('send-collapsed', send);
     await expandRow(send);
     await expect(send.getByTestId('tool-call-card-ao-link')).toHaveText(TARGET_TITLE);
     await expect(send.locator('[data-testid="tool-call-card-ao-result-fact"][data-fact="notify"]')).toHaveText('armed');
@@ -85,7 +89,7 @@ for (const provider of ['claude', 'codex'] as const) {
     // Status: what was asked, then one line per request.
     const status = toolRow(page, 'status', '1 request');
     await expect(status).toHaveCount(1);
-    await shot('status-collapsed', status);
+    await shotClosed('status-collapsed', status);
     await expandRow(status);
     await expect(status.getByTestId('tool-call-card-ao-outcome')).toContainText('1 request');
     await expect(status.getByTestId('tool-call-card-ao-line')).toHaveCount(1);
@@ -95,7 +99,7 @@ for (const provider of ['claude', 'codex'] as const) {
     // Search: the query, then a count.
     const search = toolRow(page, 'search', '"Target"');
     await expect(search).toHaveCount(1);
-    await shot('search-collapsed', search);
+    await shotClosed('search-collapsed', search);
     await expandRow(search);
     await expect(search.getByTestId('tool-call-card-ao-outcome')).toContainText(/\d+ threads?|no threads/);
     await shot('search-expanded', search);
@@ -103,7 +107,7 @@ for (const provider of ['claude', 'codex'] as const) {
     // Show: the thread and the window, then the read's size and a link.
     const show = toolRow(page, 'read', `${TARGET_TITLE} · last answer`);
     await expect(show).toHaveCount(1);
-    await shot('show-collapsed', show);
+    await shotClosed('show-collapsed', show);
     await expandRow(show);
     await expect(show.getByTestId('tool-call-card-ao-outcome')).toContainText('last answer');
     await expect(show.getByTestId('tool-call-card-ao-link')).toHaveText(TARGET_TITLE);
@@ -112,7 +116,7 @@ for (const provider of ['claude', 'codex'] as const) {
     // Loop: its label, cadence and next fire.
     const loop = toolRow(page, 'loop', /^board · every 10m · next /);
     await expect(loop).toHaveCount(1);
-    await shot('loop-collapsed', loop);
+    await shotClosed('loop-collapsed', loop);
     // Left with its toggle's center less than a pixel above the "Jump to
     // bottom" chip, where a mouse press reaches neither, the row still
     // opens through expandRow.
@@ -125,7 +129,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(refused).toHaveCount(1);
     await expect(refused.getByTestId('row-error-code').first()).toHaveText('thread_not_found');
     await expect(refused).toContainText('No thread or assistant matches');
-    await shot('error-collapsed', refused);
+    await shotClosed('error-collapsed', refused);
     await expandRow(refused);
     await expect(refused.getByTestId('tool-call-card-ao-error')).not.toContainText('[thread_not_found]');
     await shot('error-expanded', refused);
@@ -134,13 +138,13 @@ for (const provider of ['claude', 'codex'] as const) {
     // and links it.
     const start = toolRow(page, 'start', /^digest · "Weekly summary"/);
     await expect(start).toHaveCount(1);
-    await shot('run-start-collapsed', start);
+    await shotClosed('run-start-collapsed', start);
     await expandRow(start);
     await expect(start.getByTestId('tool-call-card-ao-link')).toHaveAttribute('data-link-kind', 'run');
     await shot('run-start-expanded', start);
     const runStatus = toolRow(page, 'status', /digest/);
     await expect(runStatus).toHaveCount(1);
-    await shot('run-status-collapsed', runStatus);
+    await shotClosed('run-status-collapsed', runStatus);
     await expandRow(runStatus);
     await expect(runStatus.getByTestId('tool-call-card-ao-link')).toHaveAttribute('data-link-kind', 'run');
     await shot('run-status-expanded', runStatus);
@@ -206,14 +210,13 @@ for (const provider of ['claude', 'codex'] as const) {
       afterTurns: 'silent',
     }));
 
-    await harness.rpc('StartSession', leadId);
-    await harness.rpc('SendMessage', leadId, 'send the probe', null);
+    await harness.send(leadId, 'send the probe');
     const probeSend = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', cwd: lead.path });
     expect(probeSend.isError, probeSend.text).toBe(false);
     const probeToken = probeSend.value!.token;
     await awaitTurnCompleted(harness, leadId);
     await expect.poll(() => parkedOn(harness, probeToken), { message: 'nothing waits on the probe yet' }).toBe(false);
-    await harness.rpc('SendMessage', leadId, 'rebase the target', null);
+    await harness.send(leadId, 'rebase the target');
     const sent = await awaitToolAnswer<{ outcome: string }>(harness, { tool: 'thread_send', cwd: lead.path });
     await expect.poll(() => parkedOn(harness, probeToken), { timeout: 30_000, message: 'the status call parks' }).toBe(true);
     await releaseAfterBackgrounded(sent, { harness, gate: 'inline-answer', cwd: target.path });

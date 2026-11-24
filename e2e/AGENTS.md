@@ -13,18 +13,13 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   Each backend's dev-server scan is scoped to the launching worker's process
   tree and its own, so a fake dev server must listen in the worker or a
   descendant of it. Every launch passes `HARNESS_TIMING`
-  (`diagenv.HarnessTiming`), which shortens product cadences a spec should
-  not wait out (pairing probe, thread poll, transfer retry, PR update retry,
-  PR CI live, follow and log wait polls, the shortest loop or watch interval,
-  how long a watch keeps failing before it notifies, and the gap between two
-  usage probes of one provider); a spec that needs another value,
-  the PR update poll cadence (`pr-update`), the merged-PR cleanup poll
-  (`merged-pr-poll`), the first retry of a failed open-PR lookup
-  (`pr-lookup-retry`), a shortened idle-session reaper (`idle-reap`,
-  `idle-reap-sweep`, `wakeup-grace`), a longer remote-job watcher cadence
-  (`remote-watch-poll`), a shorter provider event drain stall bound
-  (`drain-stall`) or a usage poll tick no test reaches, so only its own
-  readings arrive (`usage-poll`), passes its own through `env`.
+  (`diagenv.HarnessTiming`): product intervals no spec is about, shortened.
+  Every knob, Go or frontend, is one row of `harnessTimers`
+  (`main_harness.go`), which the parser, the App's isolation and the
+  bootstrap manifest all read; a frontend timer reaches the page through
+  `harnessInterval` (`frontend/src/lib/transport/harnessMode.ts`). A spec
+  that needs another value passes `env: harnessTiming({ name: '500ms' })`,
+  which replaces the default of that name; an unknown name fails the launch.
 - `src/product-process.ts` starts every product binary (`bin/agent-overflow`
   and the `bin/ao-*` tools): `productBinary`, `spawnProduct`, `execProduct`,
   and `writeProductScript` for a launch a product process makes, such as a
@@ -36,12 +31,12 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 - `src/harness-launch-step.ts` bounds each step of starting a suite-owned
   process. A new launch path runs every step through `launchStep`; a bound
   that grows keeps `launchBudgetMs()` under the worker fixture timeout.
-- `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
-  wait until the previous context's page registration is gone; a leaked page is
-  a test failure. It extends `tests/base-test.ts`, the `test` every spec builds
-  on, which adds only the stalled-page capture; a spec that needs neither
-  backend nor page checks imports that one, never `@playwright/test`
-  (`tests/base-test-imports.spec.ts`).
+- `tests/base-test.ts` owns the `test` every spec builds on: the gate's
+  run-time rules (a page sleep throws; event watches end with their test) and
+  the stalled-page capture. A spec that launches its own harnesses imports it.
+  `tests/fixtures.ts` extends it with the worker backend, per-test reset, and
+  the page error and CSP checks. Before reset, wait until the previous
+  context's page registration is gone; a leaked page is a test failure.
 - `frontend-client-helpers.ts` owns production frontend-controller fixtures.
   Execution hosts remain separate harness processes, and cold-start cases reuse
   only the intended disposable device profile.
@@ -68,11 +63,18 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   about the launcher's side of an update extends it rather than spawning
   the backend itself.
 - `upgrade-corpus-*.ts` own the upgrade corpus: the generator, the top-up
-  the candidate writes after a migration, the schema coverage gate every
-  pull request runs, and the release upgrade check
+  the candidate writes after a migration, the schema coverage gate (run on
+  the pull requests `scripts/ci-suites.mjs` selects for it), and the
+  release upgrade check
   ([release upgrade check](../docs/architecture/release-upgrade-check.md)).
   A new mock scenario is listed in `upgrade-corpus-config.ts` as a top-up
   turn or excluded with the reason; the coverage spec fails until it is.
+
+A spec sends, starts or stops a session, and reads a thread's items through
+`HarnessApp.send`, `startSession`, `stopSession` and `items`
+(`src/harness-app.ts`), which own the call each makes; `send` sends as the
+page's default send does. Only a call against a saved older release binary
+names the release's own method.
 
 Calls such as `harness.rpc('MethodName', ...)` are not linked to Go signatures.
 Any bound-method signature change must sweep `e2e/tests` and `cmd/ao-harness`
@@ -113,6 +115,13 @@ record names. A backend a spec
 launches itself keeps its console in
 `<root>/agent-overflow/logs/harness-console.log` and is not copied.
 
+A run of the `desktop` and `compact` projects takes no evidence
+screenshots unless `AO_E2E_SCREENSHOTS=1`; every such capture goes through
+`src/screenshot.ts`. The checks a capture helper makes before its shot run
+either way; work done only for the picture runs only with screenshots on.
+A spec that asserts on a screenshot's pixels calls Playwright's own
+`screenshot`. The Android device smokes attach their screens on every run.
+
 A failed test also gets a `stalled page` attachment for each open page that
 did not answer a trivial evaluate: its paused JavaScript stack with source,
 or why none could be read. What it does not cover is listed in
@@ -123,8 +132,11 @@ WebKit without the Android emulator. See
 [mobile browser validation](../docs/references/mobile-browser-testing.md) for
 coverage boundaries, real visibility events and the real-phone check.
 
-Manual specs and boundary probes are evidence tools, not automatic gates. Keep
-their opt-in environment checks and report exactly which mode ran. Freeze
+Manual specs (`*.manual.spec.ts`, run with
+`bin/ao-harness-e2e --config=playwright.manual.config.ts tests/<spec>`), the
+boundary probes among them, are evidence tools, not automatic gates; an
+opt-in instrument is a manual spec, not a gate spec that skips. Keep their
+opt-in environment checks and report exactly which mode ran. Freeze
 reproduction fixtures may contain real conversations: generate them from a
 read-only database connection into a gitignored path and never commit them.
 
@@ -198,11 +210,27 @@ binaries.
 ## Writing specs
 
 - Assert the user-visible result and the production state or wire boundary that
-  caused it. Do not rely on arbitrary sleeps.
+  caused it.
+- Never sleep or wait for a timeout to pass. The launcher's source checks
+  (`scripts/check-waits.ts`, rules in `src/wait-scan.ts`) fail the run on
+  `waitForTimeout`, a timer-resolved promise, a wait whose timeout is turned
+  into a value, or a `test` taken from `@playwright/test` instead of
+  `tests/base-test.ts`; a page's `waitForTimeout` also throws at run time. A
+  product timer the spec crosses gets a `harnessTimers` knob, or the page
+  clock (`page.clock`) when it lives in the page alone; a settle polls its
+  condition; an absence ends at a barrier through `HarnessApp.watchEvents`, an
+  action ordered after the moment the event would have fired, and the barrier
+  is proved by breaking the product so the event fires and watching the spec
+  fail. A mock start held for a spec uses the scenario's `startupGate`. A spec
+  about a timer's length scales its bounds with the knob it sets. A page
+  value a spec moves the clock across or bounds a wait by is imported from
+  `frontend/src/lib/pageTiming.ts`, which its owner reads too, never copied.
+  A site that must hold for a time is a `WAIT_ALLOWED` entry with its reason.
 - Use unique IDs and await specific events so parallel workers cannot satisfy
   each other's assertions.
 - Register event waits before triggering operations that may complete inside an
-  RPC round trip.
+  RPC round trip. A wait the test has not awaited when it ends is cancelled
+  there, and fails a test that had no other error.
 - Close pages, browser contexts, clients, child processes, forwards, and temp
   roots through fixture-owned teardown, including failure paths.
 - A UI geometry or animation claim requires real Chromium or the shell WebView;

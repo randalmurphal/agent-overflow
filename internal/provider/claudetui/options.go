@@ -138,9 +138,10 @@ type Config struct {
 	// §E6 resume of it needs. Spawn-stamped by the app; nil reads as not
 	// found.
 	AgentLaunchByTask func(taskID string) (claude.AgentLaunchRecord, bool, error)
-	// Env is the base environment for the spawned claude. Empty means inherit
-	// the current process environment.
-	Env []string
+	// Env is what the spawned claude's environment is built from: the
+	// app's custom environment, pins and defaults. buildEnv adds the
+	// session's own.
+	Env provider.EnvInput
 	// Rows / Cols seed the PTY winsize; the drawer resizes on attach. Zero
 	// falls back to defaultRows / defaultCols.
 	Rows uint16

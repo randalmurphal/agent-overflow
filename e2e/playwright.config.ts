@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { MANUAL_SPEC, PROJECT_FILES, TEST_DIR } from './test-files.ts';
 
 // The harness suite boots one real backend per worker (see
 // tests/fixtures.ts); tests within a worker share it and reset state
@@ -21,12 +22,10 @@ function workerCount(): number {
 }
 
 export default defineConfig({
-  testDir: './tests',
-  // Operator-run investigation drivers (`*.manual.spec.ts`) are never part of
-  // the gate: they need locally generated, gitignored fixtures and they leave
-  // deliberately extreme state behind. `playwright.manual.config.ts` is how you
-  // run one — same rule as the frontend's `*.manual.ts` vitest drivers.
-  testIgnore: /.*\.manual\.spec\.ts$/,
+  // The files each project runs are ./test-files.ts, which the wait scan
+  // reads too.
+  testDir: TEST_DIR,
+  testIgnore: MANUAL_SPEC,
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
@@ -43,31 +42,21 @@ export default defineConfig({
     // spec's screenshot is looking at.
     colorScheme: 'dark',
   },
-  // Compact is a layout mode of the one app (frontend/AGENTS.md § Compact),
-  // so it is a second PROJECT over the same harness, not a second suite:
-  // the `compact-*` specs run under a phone descriptor (touch, coarse
-  // pointer, a 412px layout viewport), and everything else under a desktop
-  // one. A surface is done only when both projects pass. Playwright matches
-  // these patterns against the absolute path, so they anchor on the file
-  // name: a checkout whose directory names contain `compact-` must not move
-  // every spec into the compact project.
   projects: [
     {
       name: 'desktop',
       use: { ...devices['Desktop Chrome'] },
-      testIgnore: [/.*\.manual\.spec\.ts$/, /[\\/]compact-[^\\/]*\.spec\.ts$/],
+      ...PROJECT_FILES.desktop,
     },
     {
       name: 'compact',
       use: { ...devices['Pixel 7'] },
-      testMatch: /[\\/]compact-[^\\/]*\.spec\.ts$/,
+      ...PROJECT_FILES.compact,
     },
     {
       name: 'mobile-webkit',
       use: { ...devices['iPhone 13'] },
-      // The stalled-page capture spec runs its WebKit case here, the one
-      // project whose hosts provide WebKit.
-      testMatch: [/[\\/]compact-browser-lock\.spec\.ts$/, /[\\/]stalled-page-capture\.spec\.ts$/],
+      ...PROJECT_FILES['mobile-webkit'],
       grepInvert: /@chromium-lifecycle/,
     },
   ],

@@ -2,16 +2,15 @@
 // clear of the working presentation, the background-agent confirmation, and
 // the hold a Stop takes while this client's own send is unanswered.
 
-import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { createThreadPane } from './thread.svelte';
 import {
   isBenignInterruptError,
   reportNonBenignInterruptError,
-  resetDirectSendsForTest,
   runInterrupt,
   trackDirectSend,
 } from './threadInterrupt.svelte';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { noteThread } from '../transport/entityIndex';
 import { TransportError } from '../transport/wsClient';
 import {
   getActiveTurn,
@@ -25,13 +24,12 @@ import {
 import {
   cancelBackgroundKillConfirmationForThread,
   pendingBackgroundKillConfirmation,
-  resetForTest as resetBackgroundKillConfirmationForTest,
   resolveBackgroundKillConfirmation,
 } from './backgroundKillConfirmation.svelte';
-import { replaceSubagentRunStates, resetForTest as resetSubagentRunStatesForTest } from './subagentRunState.svelte';
+import { replaceSubagentRunStates } from './subagentRunState.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Item, Thread } from '../types/models';
-import { isThreadInterruptPending, resetThreadInterruptStateForTest } from './threadInterruptState.svelte';
+import { isThreadInterruptPending } from './threadInterruptState.svelte';
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 6; i++) await Promise.resolve();
@@ -53,7 +51,6 @@ function readyPane(threadId = 'thread-1'): ReturnType<typeof createThreadPane> {
     userInputs: [],
   }));
   setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListItems', async () => []);
   setBindingMock('ListThreadSliceAround', async () => ({
     items: [],
     oldestTurnIndex: -1,
@@ -108,7 +105,6 @@ function assistantItem(id: string, turnIndex: number, threadId = 'thread-1'): It
   } as Item;
 }
 
-
 describe('isBenignInterruptError', () => {
   // The transport redacts method-error text for every caller that is not on
   // loopback, so a remote client's error reads "method failed (id: ...)" and
@@ -151,8 +147,6 @@ describe('reportNonBenignInterruptError', () => {
 
 describe('runInterrupt on a running turn', () => {
   beforeEach(() => {
-    resetThreadInterruptStateForTest();
-    resetDirectSendsForTest();
     setBindingMock('GetThreadLiveState', async () => ({ threadId: 'thread-1', activeTurn: null }));
   });
 
@@ -215,11 +209,8 @@ describe('runInterrupt on a running turn', () => {
 // message is sent, never cancelled.
 describe('runInterrupt during an unanswered send', () => {
   beforeEach(() => {
-    resetThreadInterruptStateForTest();
-    resetDirectSendsForTest();
     setBindingMock('GetThreadLiveState', async () => ({ threadId: 'thread-1', activeTurn: null }));
   });
-  afterEach(() => __resetEntityIndexForTest());
 
   function sendingPane() {
     const pane = readyPane();
@@ -378,10 +369,6 @@ describe('runInterrupt with live background agents', () => {
   });
 
   beforeEach(() => {
-    resetThreadInterruptStateForTest();
-    resetDirectSendsForTest();
-    resetBackgroundKillConfirmationForTest();
-    resetSubagentRunStatesForTest();
     // The mounted pane hydrates live state; an unmocked read would land a
     // banner these tests assert stays empty.
     setBindingMock('GetThreadLiveState', async () => ({ threadId: 'thread-1', activeTurn: null }));

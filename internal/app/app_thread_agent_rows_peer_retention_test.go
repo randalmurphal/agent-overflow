@@ -17,6 +17,8 @@ import (
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // remoteLoopWorker spawns a thread on the pair's destination that answers,
@@ -198,9 +200,14 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 	}
 
 	// Its spawner's pane stays closed while the destination resumes.
-	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
+	if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "now also update the changelog", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
+	// The turn's row there reports the run open before its turn is open,
+	// so the check after Stop All waits for the turn first.
+	waitUntil(t, 10*time.Second, func() bool {
+		return threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
+	})
 	waitUntil(t, 20*time.Second, func() bool { return readRemoteSpawnRow(t, pair, spawn.Token).nested })
 	if listing, err := pair.source.ListThreadAgentRows(t.Context(), pair.caller.ID); err != nil || len(listing.Rows) != 0 {
 		t.Fatalf("listing %+v, %v; want no row for the person's run there", listing.Rows, err)
@@ -271,7 +278,7 @@ func TestDisconnectedOwnerKeepsRestingAnswerUntilReconciled(t *testing.T) {
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	spawn, child := remoteRestedWorker(t, pair)
-	if err := pair.dest.SendMessage(t.Context(), child, "continue this worker", nil); err != nil {
+	if _, err := pair.dest.SendMessageWithOptions(t.Context(), child, "continue this worker", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatal(err)
 	}
 	expirePastTheFloor(pair.source)

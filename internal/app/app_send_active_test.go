@@ -3,10 +3,10 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -163,51 +163,35 @@ func acknowledgeMockClaudeSend(t *testing.T, a *App, threadID string) {
 	t.Fatal("mock send has no user row to acknowledge")
 }
 
-// An older composer predicts user:<nextTurn> and cannot retire that placeholder
-// when authoritative admission queues the message. Refuse before accepting it
-// so its existing failure path restores the draft and removes the placeholder.
-func TestLegacyComposerBusySendIsNotAccepted(t *testing.T) {
+// A window older than v0.0.15 predicts its row as user:<nextTurn> and does
+// not send reconcileBySendId. Its send is refused before anything else, a
+// repeat of a send already recorded included, with the refusal a request the
+// computer cannot read gets: its existing failure path restores the draft and
+// removes the placeholder.
+func TestSendWithoutReconcileBySendIDIsRefused(t *testing.T) {
 	t.Parallel()
-	for _, p := range []provider.ProviderKind{provider.Claude, provider.Codex} {
-		for _, state := range []string{"active", "starting"} {
-			t.Run(string(p)+"/"+state, func(t *testing.T) {
-				a := newTestAppWithStore(t)
-				a.triage = triage.NewRouter(a.store, func(eventchan.Channel, any) {})
-				thread := testThread("legacy-busy")
-				thread.Provider = string(p)
-				if err := a.store.CreateThread(thread); err != nil {
-					t.Fatal(err)
-				}
-				if state == "active" {
-					if err := a.store.InsertTurn(store.Turn{TurnID: "active", ThreadID: thread.ID, TurnIndex: 3, StartedAt: 1}); err != nil {
-						t.Fatal(err)
-					}
-				} else {
-					a.triage.RegisterPendingSendWithExpectation(thread.ID, "user:3", 3, triage.PendingSendExpectation{})
-				}
-				if err := a.SaveDraft(t.Context(), thread.ID, "keep this draft", nil, nil, nil); err != nil {
-					t.Fatal(err)
-				}
-				_, err := a.SendMessageWithOptions(t.Context(), thread.ID, "not accepted", SendMessageOptions{SendID: "legacy-send"})
-				if err == nil || !strings.Contains(err.Error(), "already working") {
-					t.Fatalf("legacy send: %v", err)
-				}
-				if record, found, err := a.findRecordedSend(thread.ID, "legacy-send"); err != nil || found {
-					t.Fatalf("rejected send accepted: %+v, %v, %v", record, found, err)
-				}
-				queued, err := a.GetQueueState(thread.ID)
-				if err != nil || len(queued) != 0 {
-					t.Fatalf("rejected send queued: %+v, %v", queued, err)
-				}
-				rows, err := a.store.ListItems(thread.ID)
-				if err != nil || len(rows) != 0 {
-					t.Fatalf("rejected send persisted: %+v, %v", rows, err)
-				}
-				draft, err := a.GetDraft(thread.ID)
-				if err != nil || draft.Content != "keep this draft" {
-					t.Fatalf("rejected send changed draft: %+v, %v", draft, err)
-				}
-			})
-		}
+	a := newTestAppWithStore(t)
+	a.triage = triage.NewRouter(a.store, func(eventchan.Channel, any) {})
+	thread := testThread("legacy-send")
+	if err := a.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.RegisterQueueItem(t.Context(), thread.ID, "recorded", SendMessageOptions{SendID: "legacy-send", ReconcileBySendID: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SaveDraft(t.Context(), thread.ID, "keep this draft", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err := a.SendMessageWithOptions(t.Context(), thread.ID, "recorded", SendMessageOptions{SendID: "legacy-send"})
+	if err == nil || err.Error() != dispatchrefusal.Unreadable {
+		t.Fatalf("send without reconcileBySendId: %v, want %q", err, dispatchrefusal.Unreadable)
+	}
+	queued, err := a.GetQueueState(thread.ID)
+	if err != nil || len(queued) != 1 || queued[0].SendID != "legacy-send" {
+		t.Fatalf("queue after the refusal = %+v, %v, want the recorded send alone", queued, err)
+	}
+	draft, err := a.GetDraft(thread.ID)
+	if err != nil || draft.Content != "keep this draft" {
+		t.Fatalf("refused send changed draft: %+v, %v", draft, err)
 	}
 }

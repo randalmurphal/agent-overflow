@@ -240,6 +240,8 @@ func runProbe(t *testing.T) isolationProbe {
 	return probe
 }
 
+// One isolated probe run: the suite sees only lo and the private LAN,
+// reaches nothing off it, and holds no capabilities.
 func TestIsolatedSuiteSeesOnlyLoopbackAndPrivateLAN(t *testing.T) {
 	probe := runProbe(t)
 	if len(probe.Interfaces) != 2 {
@@ -288,6 +290,9 @@ func TestIsolatedSuiteSeesOnlyLoopbackAndPrivateLAN(t *testing.T) {
 			t.Fatalf("dial %s = %q, want connected", name, outcome)
 		}
 	}
+	if probe.CapEff != "0000000000000000" {
+		t.Fatalf("CapEff = %s, want none after the helper execs the suite", probe.CapEff)
+	}
 }
 
 // TestInsideRequiresTheHelpersOwnNamespace: the variable alone, or a value
@@ -309,12 +314,6 @@ func TestInsideRequiresTheHelpersOwnNamespace(t *testing.T) {
 	t.Setenv(EnvNamespace, id)
 	if Inside() != Contained() {
 		t.Fatalf("Inside() = %v with this namespace's identity, want Contained() = %v", Inside(), Contained())
-	}
-}
-
-func TestIsolatedSuiteHoldsNoCapabilities(t *testing.T) {
-	if capEff := runProbe(t).CapEff; capEff != "0000000000000000" {
-		t.Fatalf("CapEff = %s, want none after the helper execs the suite", capEff)
 	}
 }
 
@@ -359,6 +358,9 @@ type tempProbe struct {
 	GoTmpDirEnv  string
 	GoWorkFile   string
 	GoWorkError  string
+	DiskFile     string
+	DiskError    string
+	DiskFS       bool
 	NestedTemp   string
 	NestedSeen   bool
 	NestedStderr string
@@ -400,6 +402,17 @@ func runTempProbe(out io.Writer) int {
 		probe.GoWorkError = err.Error()
 	} else {
 		probe.GoWorkFile = file.Name()
+	}
+	if file, err := os.CreateTemp(DiskDir(), "probe-disk-"); err != nil {
+		probe.DiskError = err.Error()
+	} else if err := file.Close(); err != nil {
+		probe.DiskError = err.Error()
+	} else {
+		probe.DiskFile = file.Name()
+		var disk unix.Statfs_t
+		if err := unix.Statfs(DiskDir(), &disk); err == nil {
+			probe.DiskFS = disk.Type != unix.TMPFS_MAGIC && disk.Type != unix.RAMFS_MAGIC
+		}
 	}
 	probe.PdeathSig = parentDeathSignal()
 	return encodeProbe(out, probe)
@@ -513,19 +526,19 @@ func privateNamespaceWithGoWork(t *testing.T, userEnv string) (isolateCommand fu
 	}
 	t.Setenv("GOENV", userFile)
 	t.Setenv("GOTMPDIR", "")
-	dir, err := newGoWorkDir()
+	dir, goTmpDir, err := newGoWorkDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dir == nil {
-		t.Fatal("no Go work directory")
+	if !goTmpDir {
+		t.Fatal("the Go work directory is not GOTMPDIR")
 	}
 	t.Cleanup(func() {
 		if err := dir.Release(); err != nil {
 			t.Error(err)
 		}
 	})
-	return func(command *exec.Cmd) error { return isolate(command, helperOptions{goWork: dir.Dir}) }, dir.Dir
+	return func(command *exec.Cmd) error { return isolate(command, helperOptions{goWork: dir.Dir, goTmpDir: true}) }, dir.Dir
 }
 
 // probeBinary copies this test binary to a directory under /tmp. Under

@@ -119,9 +119,9 @@ export async function runOwnedWorkersSidebar(harness: HarnessApp, page: Page, la
   await expect(rowIn(page, seeded)).toHaveCount(0);
 
   // ---- The live spawns.
-  await harness.rpc('StartSession', lead);
+  await harness.startSession(lead);
   const leadTurn = awaitTurnCompleted(harness, lead, 120_000);
-  await harness.rpc('SendMessage', lead, 'spawn three workers', null);
+  await harness.send(lead, 'spawn three workers');
   const spawned: string[] = [];
   for (let i = 0; i < 3; i++) {
     const answer = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadProject.path, timeoutMs: 60_000 });

@@ -144,7 +144,6 @@ func TestForkPreparationPublication(t *testing.T) {
 							_, err := a.ListItemsAfterCursor(context.Background(), row.ID, store.TimelineCursor{}, 25, TimelinePageOptions{PageShape: PageShape{}})
 							return err
 						},
-						"subagent":   func() error { _, err := a.ListSubagentDescendants(row.ID, "root", true); return err },
 						"plans":      func() error { _, err := a.ListThreadProposedPlans(row.ID); return err },
 						"background": func() error { _, err := a.ListLiveBackgroundTasks(row.ID); return err },
 						"ticks":      func() error { _, err := a.GetThreadUserMessageTicks(row.ID); return err },
@@ -154,7 +153,7 @@ func TestForkPreparationPublication(t *testing.T) {
 						"projection": func() error { _, err := a.GetThreadItemProjectionSource(row.ID, "item"); return err },
 						"turns":      func() error { _, err := a.ListRecentTurns(row.ID, 10); return err },
 
-						"items": func() error { _, err := a.ListItems(row.ID, true); return err },
+						"items": func() error { _, err := a.listThreadItems(row.ID, true); return err },
 						"sync": func() error {
 							_, err := a.SyncThreadWindow(context.Background(), row.ID, SyncThreadWindowRequest{})
 							return err
@@ -180,7 +179,7 @@ func TestForkPreparationPublication(t *testing.T) {
 					if err != nil || persisted.ForkPreparing || persisted.PendingForkRef != row.PendingForkRef || persisted.SessionRef != row.SessionRef {
 						t.Errorf("ready state not durable: %+v %v", persisted, err)
 					}
-					items, err := a.ListItems(row.ID, true)
+					items, err := a.listThreadItems(row.ID, true)
 					if err != nil || len(items) != 1 || items[0].Summary != "first" {
 						t.Errorf("published history=%+v: %v", items, err)
 					}

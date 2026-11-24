@@ -4,14 +4,12 @@ import {
   isPullsPaneFocused,
   registerPullsBackHandler,
   registerPullsCommands,
-  resetPullsCommandsForTest,
   stepPullsBack,
 } from './pullsCommands.svelte';
-import { focusPane, resetPanesForTest } from './panes.svelte';
+import { focusPane } from './panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import { isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
-import { resetAppStorageForTest } from './appStorage';
-import { evaluateWhen, parseWhen } from './keybindingParser';
+import { isToolOpen } from './toolPanes.svelte';
+import { evaluateWhen, tryParseWhen } from './keybindingParser';
 import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
 
 function ctx(flags: Record<string, boolean> = {}): CommandContext {
@@ -21,10 +19,6 @@ function ctx(flags: Record<string, boolean> = {}): CommandContext {
 describe('pulls commands', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetAppStorageForTest();
-    resetPullsCommandsForTest();
-    resetToolPanesForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
     setPaneLayoutItemsForTest([]);
     registerPullsCommands();
@@ -40,7 +34,7 @@ describe('pulls commands', () => {
   it('pulls.escape is a surface dismissal gated on the pane and an open detail', () => {
     const command = getCommand('pulls.escape');
     expect(command?.dismissesSurface).toBe(true);
-    const when = parseWhen(command!.when!);
+    const when = tryParseWhen(command!.when!)!;
     expect(evaluateWhen(when, ctx().flags)).toBe(true);
     expect(evaluateWhen(when, ctx({ toolDetailOpen: false }).flags)).toBe(false);
     expect(evaluateWhen(when, ctx({ pullsPaneFocused: false }).flags)).toBe(false);

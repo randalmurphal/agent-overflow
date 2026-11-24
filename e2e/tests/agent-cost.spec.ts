@@ -186,7 +186,7 @@ async function measure(harness: HarnessApp, clients: Client[], n: number): Promi
 
   const mockId = await startMock(harness, threadId);
   const launchAt = Date.now();
-  await harness.rpc('SendMessage', threadId, 'sweep every shard', null);
+  await harness.send(threadId, 'sweep every shard');
   const launchEnd = await phaseEnd(harness, threadId, n, (evt) =>
     evt.item?.id && plan.launchIds.has(evt.item.id) ? evt.item.id : '',
   );
@@ -212,7 +212,7 @@ async function measure(harness: HarnessApp, clients: Client[], n: number): Promi
   // Ending the session runs the thread's pending wire refresh at once
   // (the quiet-point pushes the burst left); the barrier frame emitted
   // after it reaches each client behind everything emitted before it.
-  await harness.rpc('StopSession', threadId);
+  await harness.stopSession(threadId);
   const barrier = `cost-${n}-${Date.now()}`;
   const arrived = clients.map((client) =>
     client.wire.awaitEvent(BARRIER_CHANNEL, (data) => (data as { barrier?: string })?.barrier === barrier),

@@ -27,11 +27,10 @@ func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (_ provider.AccountInfo
 	defer cancel()
 
 	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
-		Binary:   binary,
-		Args:     buildProbeArgs(),
-		Dir:      cfg.WorkDir,
-		Env:      cfg.Env,
-		UnsetEnv: []string{"CODEX_HOME"},
+		Binary: binary,
+		Args:   buildProbeArgs(),
+		Dir:    cfg.WorkDir,
+		Env:    cfg.Env.Clear(provider.CodexHomeEnv),
 	})
 	if err != nil {
 		return provider.AccountInfo{}, err

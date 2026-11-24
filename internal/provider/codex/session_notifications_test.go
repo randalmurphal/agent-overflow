@@ -10,18 +10,14 @@ import (
 func TestDispatchLineChildNotificationSetsParentToolUseID(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"child-provider-1","turnId":"turn-child-1","itemId":"msg-1","delta":"working"}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"child-provider-1","turnId":"turn-child-1","itemId":"msg-1","delta":"working"}}`))
 
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -37,19 +33,15 @@ func TestDispatchLineChildNotificationSetsParentToolUseID(t *testing.T) {
 func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-provider-1","turn":{"id":"turn-child-1"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-provider-1","turn":{"id":"turn-child-1","status":"completed"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-provider-1","turn":{"id":"turn-child-1"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-provider-1","turn":{"id":"turn-child-1","status":"completed"}}}`))
 
 	if len(events) != 2 {
 		t.Fatalf("expected running and terminal child status events, got %+v", events)
@@ -68,35 +60,29 @@ func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
 	}
 }
 
-// TestDispatchLineChildTokenUsageBecomesScopedProgress replaces the old
-// TestDispatchLineSuppressesChildTokenUsage. A child's
-// `thread/tokenUsage/updated` is still forbidden from reaching the
+// A child's `thread/tokenUsage/updated` is forbidden from reaching the
 // PARENT's meter (ADR-002: Codex subagents flatten onto the parent, so
-// the child's window would overwrite it) — but dropping it entirely also
-// threw away the only live signal Codex gives for a running child. It is
-// now re-emitted as a scoped EventSubagentProgress naming the spawn
-// tool_use (docs/specs/agent-visibility.md).
+// the child's window would overwrite it), but it is the only live signal
+// Codex gives for a running child, so it is re-emitted as a scoped
+// EventSubagentProgress naming the spawn tool_use
+// (docs/specs/agent-visibility.md).
 func TestDispatchLineChildTokenUsageBecomesScopedProgress(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID:  "parent-thread",
-		pending:   make(map[int64]chan json.RawMessage),
-		usageAcct: newUsageAccounting(false),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.usageAcct = newUsageAccounting(false)
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 	}
 
 	// Real-shaped breakdown: a child on its third round, most of whose
 	// input is a cached re-read. `total.totalTokens` (147000) is the
 	// number the card used to show and the one this test now refuses.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-provider-1","tokenUsage":{` +
-		`"last":{"totalTokens":50000,"inputTokens":49000,"cachedInputTokens":46000,"cacheWriteInputTokens":500,"outputTokens":1000,"reasoningOutputTokens":400},` +
-		`"total":{"totalTokens":147000,"inputTokens":144000,"cachedInputTokens":138000,"cacheWriteInputTokens":500,"outputTokens":3000,"reasoningOutputTokens":1200},` +
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-provider-1","tokenUsage":{`+
+		`"last":{"totalTokens":50000,"inputTokens":49000,"cachedInputTokens":46000,"cacheWriteInputTokens":500,"outputTokens":1000,"reasoningOutputTokens":400},`+
+		`"total":{"totalTokens":147000,"inputTokens":144000,"cachedInputTokens":138000,"cacheWriteInputTokens":500,"outputTokens":3000,"reasoningOutputTokens":1200},`+
 		`"modelContextWindow":200000}}}`))
 
 	if len(events) != 1 {
@@ -144,19 +130,15 @@ func TestDispatchLineChildTokenUsageBecomesScopedProgress(t *testing.T) {
 func TestDispatchLineChildTokenUsageWithoutTotalEmitsNothing(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID:  "parent-thread",
-		pending:   make(map[int64]chan json.RawMessage),
-		usageAcct: newUsageAccounting(false),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.usageAcct = newUsageAccounting(false)
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-provider-1","tokenUsage":{"last":{"totalTokens":50000},"modelContextWindow":200000}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"child-provider-1","tokenUsage":{"last":{"totalTokens":50000},"modelContextWindow":200000}}}`))
 
 	if len(events) != 0 {
 		t.Fatalf("events = %+v, want none", events)
@@ -173,30 +155,26 @@ func TestDispatchLineChildTokenUsageWithoutTotalEmitsNothing(t *testing.T) {
 func TestDispatchLineNestedChildTokenUsageCarriesTheSpawnsOwnParent(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID:  "parent-thread",
-		pending:   make(map[int64]chan json.RawMessage),
-		usageAcct: newUsageAccounting(false),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.usageAcct = newUsageAccounting(false)
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{
+			"child-1":      "spawn-reviewer",
+			"grandchild-1": "spawn-deep",
 		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{
-				"child-1":      "spawn-reviewer",
-				"grandchild-1": "spawn-deep",
-			},
-			agentPathByThread: map[string]string{
-				"child-1":      "/root/reviewer",
-				"grandchild-1": "/root/reviewer/deep",
-			},
-			childParentByAgentPath: map[string]string{
-				"/root/reviewer":      "spawn-reviewer",
-				"/root/reviewer/deep": "spawn-deep",
-			},
+		agentPathByThread: map[string]string{
+			"child-1":      "/root/reviewer",
+			"grandchild-1": "/root/reviewer/deep",
+		},
+		childParentByAgentPath: map[string]string{
+			"/root/reviewer":      "spawn-reviewer",
+			"/root/reviewer/deep": "spawn-deep",
 		},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"grandchild-1","tokenUsage":{"last":{"inputTokens":1100,"outputTokens":40},"total":{"totalTokens":1200,"inputTokens":1100,"outputTokens":100},"modelContextWindow":200000}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"grandchild-1","tokenUsage":{"last":{"inputTokens":1100,"outputTokens":40},"total":{"totalTokens":1200,"inputTokens":1100,"outputTokens":100},"modelContextWindow":200000}}}`))
 
 	if len(events) != 1 {
 		t.Fatalf("events = %+v, want one progress tick", events)
@@ -212,20 +190,15 @@ func TestDispatchLineNestedChildTokenUsageCarriesTheSpawnsOwnParent(t *testing.T
 func TestDispatchLineParentTokenUsageStillMetersTheParent(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID:  "parent-thread",
-		pending:   make(map[int64]chan json.RawMessage),
-		usageAcct: newUsageAccounting(false),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "provider-parent", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.usageAcct = newUsageAccounting(false)
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 	}
-	s.setRootThreadID("provider-parent")
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"provider-parent","tokenUsage":{"last":{"totalTokens":8400},"total":{"totalTokens":11839},"modelContextWindow":200000}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"provider-parent","tokenUsage":{"last":{"totalTokens":8400},"total":{"totalTokens":11839},"modelContextWindow":200000}}}`))
 
 	if len(events) != 1 || events[0].Kind != provider.EventTokenUsage {
 		t.Fatalf("events = %+v, want one EventTokenUsage", events)
@@ -235,70 +208,47 @@ func TestDispatchLineParentTokenUsageStillMetersTheParent(t *testing.T) {
 	}
 }
 
-// TestDispatchLineSuppressesChildCompacted ensures child-thread compaction
-// notifications do not pollute parent state.
-func TestDispatchLineSuppressesChildCompacted(t *testing.T) {
+// TestDispatchLineSuppressesChildThreadNotifications ensures child-thread
+// compaction and name updates do not pollute parent state: no compaction
+// divider and no rename on the parent thread. Older Codex builds emitted
+// `thread/compacted`; current builds emit `item/completed` with item.type =
+// contextCompaction.
+func TestDispatchLineSuppressesChildThreadNotifications(t *testing.T) {
 	t.Parallel()
-	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
-	}
+	for _, tc := range []struct{ name, line string }{
+		{"thread/compacted", `{"jsonrpc":"2.0","method":"thread/compacted","params":{"threadId":"child-provider-1"}}`},
+		{"contextCompaction item", `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"child-provider-1","turnId":"child-turn-1","item":{"type":"contextCompaction","id":"compact-child-1"},"completedAtMs":1781709441420}}`},
+		{"thread/name/updated", `{"jsonrpc":"2.0","method":"thread/name/updated","params":{"threadId":"child-provider-1","threadName":"Subagent Title"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []provider.ProviderEvent
+			s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+				events = append(events, evt)
+			})
+			s.collab = sessionCollabState{
+				childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+			}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/compacted","params":{"threadId":"child-provider-1"}}`))
+			feed(t, s, []byte(tc.line))
 
-	if len(events) != 0 {
-		t.Fatalf("expected no events for child compaction, got %+v", events)
-	}
-}
-
-// TestDispatchLineSuppressesChildContextCompactionItem ensures the newer
-// `contextCompaction` item lifecycle cannot leak a child compaction divider
-// onto the parent thread. Older Codex builds emitted `thread/compacted`;
-// current builds emit `item/completed` with item.type = contextCompaction.
-func TestDispatchLineSuppressesChildContextCompactionItem(t *testing.T) {
-	t.Parallel()
-	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
-	}
-
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"child-provider-1","turnId":"child-turn-1","item":{"type":"contextCompaction","id":"compact-child-1"},"completedAtMs":1781709441420}}`))
-
-	if len(events) != 0 {
-		t.Fatalf("expected no events for child context compaction item, got %+v", events)
+			if len(events) != 0 {
+				t.Fatalf("expected no events for the child notification, got %+v", events)
+			}
+		})
 	}
 }
 
 func TestDispatchLineEmitsParentContextCompactionItem(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "provider-parent", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 	}
-	s.setRootThreadID("provider-parent")
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","turnId":"parent-turn-1","item":{"type":"contextCompaction","id":"compact-parent-1"},"completedAtMs":1781709692716}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","turnId":"parent-turn-1","item":{"type":"contextCompaction","id":"compact-parent-1"},"completedAtMs":1781709692716}}`))
 
 	if len(events) != 1 {
 		t.Fatalf("expected 1 parent compaction event, got %d: %+v", len(events), events)
@@ -314,46 +264,19 @@ func TestDispatchLineEmitsParentContextCompactionItem(t *testing.T) {
 	}
 }
 
-// TestDispatchLineSuppressesChildNameUpdated ensures child-thread name updates
-// don't rename the parent thread.
-func TestDispatchLineSuppressesChildNameUpdated(t *testing.T) {
-	t.Parallel()
-	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
-	}
-
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/name/updated","params":{"threadId":"child-provider-1","threadName":"Subagent Title"}}`))
-
-	if len(events) != 0 {
-		t.Fatalf("expected no events for child name update, got %+v", events)
-	}
-}
-
 // TestDispatchLineParentTokenUsageStillEmits is the positive control for
 // the suppression filter: parent-thread token usage must continue to flow.
 func TestDispatchLineParentTokenUsageStillEmits(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"provider-parent","tokenUsage":{"last":{"totalTokens":80000},"modelContextWindow":200000}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"provider-parent","tokenUsage":{"last":{"totalTokens":80000},"modelContextWindow":200000}}}`))
 
 	if len(events) != 1 {
 		t.Fatalf("expected one parent token usage event, got %+v", events)

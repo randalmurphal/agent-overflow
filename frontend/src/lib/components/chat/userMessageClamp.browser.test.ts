@@ -162,23 +162,30 @@ describe('user message clamp', () => {
     expect(toggle(host)?.textContent).toBe('Show more');
     expect(toggle(host)?.getAttribute('aria-expanded')).toBe('false');
     expect(toggle(host)?.getAttribute('aria-controls')).toBe(p.id);
-  });
-
-  it('fades the glyphs rather than painting a colour over the bubble', async () => {
-    // A gradient overlay would have to reproduce the bubble's translucent
-    // `bg-accent/15` tint composited over whatever is behind it; a mask lets
-    // the real background through, so it is right in both themes.
-    const host = await mountMessage(LONG);
-    expect(getComputedStyle(clip(host)).maskImage).toContain('linear-gradient');
+    // The fade masks the glyphs rather than painting a colour over the
+    // bubble: a gradient overlay would have to reproduce the bubble's
+    // translucent `bg-accent/15` tint composited over whatever is behind
+    // it; a mask lets the real background through, so it is right in both
+    // themes.
+    expect(getComputedStyle(p).maskImage).toContain('linear-gradient');
   });
 
   it('round-trips expand and collapse from the control', async () => {
-    const { pane } = makePane();
+    const { pane, anchors } = makePane();
     const host = await mountMessage(LONG, { pane });
-    const collapsedHeight = clip(host).clientHeight;
+    const p = clip(host);
+    const collapsedHeight = p.clientHeight;
 
     toggle(host)!.click();
     await waitFor(() => toggle(host)?.textContent === 'Show less', 'expanded');
+    // The toggle anchors on the text, not on the control below it: holding
+    // the button still would slide the message the reader just opened off
+    // the top of the viewport.
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]).toBe(p);
+    // The expansion is keyed to this message and does not carry onto another.
+    expect(pane.isUserMessageExpanded('item-1')).toBe(true);
+    expect(pane.isUserMessageExpanded('item-2')).toBe(false);
     expect(clip(host).clientHeight).toBe(clip(host).scrollHeight);
     expect(clip(host).clientHeight).toBeGreaterThan(collapsedHeight);
     expect(getComputedStyle(clip(host)).maskImage).toBe('none');
@@ -188,18 +195,6 @@ describe('user message clamp', () => {
     await waitFor(() => toggle(host)?.textContent === 'Show more', 'collapsed again');
     expect(clip(host).clientHeight).toBe(collapsedHeight);
     expect(clip(host).getAttribute('data-clamped')).toBe('true');
-  });
-
-  it('anchors the toggle on the text, not on the control below it', async () => {
-    const { pane, anchors } = makePane();
-    const host = await mountMessage(LONG, { pane });
-    const p = clip(host);
-
-    toggle(host)!.click();
-    await waitFor(() => anchors.length === 1, 'anchor recorded');
-    // Holding the button still would slide the message the reader just
-    // opened off the top of the viewport.
-    expect(anchors[0]).toBe(p);
   });
 
   it('keeps the expansion across a remount, the way windowing unmounts a row', async () => {
@@ -217,16 +212,6 @@ describe('user message clamp', () => {
     expect(toggle(second)?.textContent).toBe('Show less');
     expect(clip(second).clientHeight).toBe(clip(second).scrollHeight);
     expect(getComputedStyle(clip(second)).maskImage).toBe('none');
-  });
-
-  it('does not carry one message\'s expansion onto another', async () => {
-    const { pane } = makePane();
-    const host = await mountMessage(LONG, { pane });
-    toggle(host)!.click();
-    await waitFor(() => toggle(host)?.textContent === 'Show less', 'expanded');
-
-    expect(pane.isUserMessageExpanded('item-1')).toBe(true);
-    expect(pane.isUserMessageExpanded('item-2')).toBe(false);
   });
 
   it('re-measures when a narrower pane re-wraps the text past the threshold', async () => {

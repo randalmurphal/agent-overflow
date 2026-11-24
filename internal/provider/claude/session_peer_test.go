@@ -215,43 +215,63 @@ func TestRenamePeerSessionRefusesAnEmptySanitizedName(t *testing.T) {
 	}
 }
 
-// Skipping the redundant rename is what keeps the idle-edge sync from
-// writing a `/rename` after every single turn.
-//
-// The skip compares REQUESTS (peerRenameSettledName, the last name the CLI
-// consumed), not the confirmed peer-visible name: the question it answers is
-// "would sending this again change anything", and the CLI's answer to a
-// repeat of a request it already took is the answer it gave the first time.
-func TestRenamePeerSessionSkipsWhenTheNameAlreadyMatches(t *testing.T) {
-	s := &Session{
-		crossSessionEnabled:   true,
-		peerSessionName:       "AO Thread One",
-		peerRenameSettledName: "AO Thread One",
-	}
-	// Compared AFTER sanitization on both sides, so a name the CLI would
-	// normalize into the current one is also a skip. A real send here
-	// would nil-panic on the absent process, which is the assertion.
-	if err := s.RenamePeerSession(context.Background(), "  AO Thread​One  "); err != nil {
-		t.Fatalf("RenamePeerSession(equivalent name) = %v, want nil", err)
-	}
-}
-
-// The same skip on the case the confirmed/requested split exists for: the CLI
-// YIELDED, so the session answers to a name AO never asked for. Re-deriving
-// the skip from the confirmed name would send one `/rename` per turn boundary
-// for the whole life of that session — the CLI would keep answering "held by
-// another live session", AO would keep not matching, and the loop would never
-// close.
-func TestRenamePeerSessionSkipsARequestTheCLIAnsweredUnderAnotherName(t *testing.T) {
-	s := &Session{
-		crossSessionEnabled: true,
-		// What peers address: the variant the CLI chose on the collision.
-		peerSessionName: "AO Thread One (2)",
-		// What AO asked for and the CLI consumed.
-		peerRenameSettledName: "AO Thread One",
-	}
-	if err := s.RenamePeerSession(context.Background(), "AO Thread One"); err != nil {
-		t.Fatalf("RenamePeerSession(already-requested name) = %v, want a skip", err)
+// Skipping a redundant rename is what keeps the idle-edge sync, which calls
+// RenamePeerSession on EVERY completed turn, from writing a `/rename` after
+// every single turn. None of these sessions has a process: reaching Send at
+// all would nil-panic on the absent stdin, which is the assertion.
+func TestRenamePeerSessionSkipsARedundantRename(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		session *Session
+		request string
+	}{
+		{
+			// The skip compares REQUESTS (peerRenameSettledName, the last
+			// name the CLI consumed), not the confirmed peer-visible name,
+			// and AFTER sanitization on both sides: a name the CLI would
+			// normalize into the current one is also a skip.
+			name: "equivalent name already matches",
+			session: &Session{
+				crossSessionEnabled:   true,
+				peerSessionName:       "AO Thread One",
+				peerRenameSettledName: "AO Thread One",
+			},
+			request: "  AO Thread\u200bOne  ",
+		},
+		{
+			// The case the confirmed/requested split exists for: the CLI
+			// YIELDED, so peers address a variant AO never asked for.
+			// Re-deriving the skip from the confirmed name would send one
+			// `/rename` per turn boundary for the life of the session, the
+			// CLI answering "held by another live session" every time.
+			name: "request the CLI answered under another name",
+			session: &Session{
+				crossSessionEnabled:   true,
+				peerSessionName:       "AO Thread One (2)",
+				peerRenameSettledName: "AO Thread One",
+			},
+			request: "AO Thread One",
+		},
+		{
+			// An in-flight rename must not re-send the same command on
+			// each turn boundary until its bracket lands.
+			name: "in-flight rename",
+			session: &Session{
+				crossSessionEnabled: true,
+				peerSessionName:     "old-name",
+				peerRenameSeq:       1,
+				pendingPeerRenames: map[string]pendingPeerRename{
+					"rename-1": {name: "new-name", seq: 1},
+				},
+			},
+			request: "new-name",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.session.RenamePeerSession(context.Background(), tc.request); err != nil {
+				t.Fatalf("RenamePeerSession(%q) = %v, want a skip", tc.request, err)
+			}
+		})
 	}
 }
 
@@ -278,7 +298,7 @@ done
 		Binary:              scriptPath,
 		CrossSessionEnabled: true,
 		PeerSessionName:     "old-name",
-		Env:                 map[string]string{"CAPTURE_FILE": capturePath},
+		Env:                 provider.EnvInput{Custom: map[string]string{"CAPTURE_FILE": capturePath}},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -454,24 +474,6 @@ func TestRenamePeerSessionTargetsTheNewestStagedRename(t *testing.T) {
 	// No process: a re-send of the newest name would panic on nil stdin.
 	if err := s.RenamePeerSession(context.Background(), "second"); err != nil {
 		t.Fatalf("RenamePeerSession for the newest staged name: %v", err)
-	}
-}
-
-// The turn-boundary reconcile calls RenamePeerSession on EVERY completed
-// turn, so an in-flight rename must not re-send the same command on each one.
-func TestRenamePeerSessionSkipsAnInFlightRename(t *testing.T) {
-	s := &Session{
-		crossSessionEnabled: true,
-		peerSessionName:     "old-name",
-		peerRenameSeq:       1,
-		pendingPeerRenames: map[string]pendingPeerRename{
-			"rename-1": {name: "new-name", seq: 1},
-		},
-	}
-	// No process, no stdin: reaching Send at all would fail this test with a
-	// nil-pointer panic rather than an assertion, which is the point.
-	if err := s.RenamePeerSession(context.Background(), "new-name"); err != nil {
-		t.Fatalf("RenamePeerSession for the in-flight name: %v", err)
 	}
 }
 

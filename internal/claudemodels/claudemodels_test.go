@@ -1,7 +1,6 @@
 package claudemodels
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -20,7 +19,7 @@ import (
 func capturedWireModels(t *testing.T) []claude.WireModel {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.FromSlash(
-		"../../docs/references/fixtures/claude/initialize_models_20260802.json",
+		"../provider/wirecaptures/claude/initialize_models_20260802.json",
 	))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
@@ -847,25 +846,6 @@ func TestPickDefaultEffort(t *testing.T) {
 				t.Errorf("pickDefaultEffort = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-// TestFixtureIsTheRealEnvelope guards the fixture itself: if someone
-// regenerates it from a different capture shape, the parser tests and these
-// merge tests must both notice.
-func TestFixtureIsTheRealEnvelope(t *testing.T) {
-	raw, err := os.ReadFile(filepath.FromSlash(
-		"../../docs/references/fixtures/claude/initialize_models_20260802.json",
-	))
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
-	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, raw); err != nil {
-		t.Fatalf("fixture is not valid JSON: %v", err)
-	}
-	if !bytes.Contains(compact.Bytes(), []byte(`"type":"control_response"`)) {
-		t.Error("fixture must stay a captured control_response envelope")
 	}
 }
 

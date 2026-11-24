@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { grantBackendScopes } from '../../test/helpers/scopes';
 import { account, deferred } from '../../test/helpers/providerAccounts';
 import { makeSettings } from '../../test/helpers/settings';
@@ -8,25 +8,20 @@ import { modelCatalog } from '../../test/helpers/modelCatalog';
 import { takePinnedBackend } from '../transport/backends';
 import { setSelectedBackend } from './selectedBackend.svelte';
 import { getSettings, loadSettings, resetSettingsForTest, resyncSettings, updateSetting } from './settings.svelte';
-import { getProviderAccount, resetForTest as resetAccounts } from './accountInfo.svelte';
-import { getProviderRateLimit, resetForTest as resetLimits } from './rateLimitsInfo.svelte';
+import { getProviderAccount } from './accountInfo.svelte';
+import { getProviderRateLimitsForWindow } from './rateLimitsInfo.svelte';
 import { getProviderModels, refreshProviderModels } from './providerModels.svelte';
-import { getProviderAccountsFor, loadProviderAccounts, resetForTest, switchProviderAccount } from './providerAccounts.svelte';
+import { getProviderAccountsFor, loadProviderAccounts, switchProviderAccount } from './providerAccounts.svelte';
 import { applyProviderAccount, applyUsageEvent } from './eventsProvider';
 import type { Settings, ModelInfo } from '../types/settings';
 
 const GPU = 'gpu';
 const MAC = '';
 beforeEach(async () => {
-  resetStagedBackends();
   stageBackend({ id: GPU, name: 'GPU' });
   await grantBackendScopes(GPU, ['settings:read', 'settings:write', 'access:admin', 'threads:operate']);
-  resetSettingsForTest();
-  resetForTest();
-  resetAccounts();
-  resetLimits();
 });
-afterEach(() => { resetStagedBackends(); resetLimits(); setSelectedBackend(MAC); });
+afterEach(() => { setSelectedBackend(MAC); });
 
 describe('computer ownership', () => {
   it('keeps frontend preferences through remote echoes and a frontend restart', async () => {
@@ -121,8 +116,8 @@ describe('computer ownership', () => {
     }
     expect(getProviderAccountsFor('claude', GPU)[0].email).toBe('gpu@example.test');
     expect(getProviderAccount('claude', MAC)?.email).toBe('mac@example.test');
-    expect(getProviderRateLimit('claude', 300, undefined, GPU)?.usedPercent).toBe(70);
-    expect(getProviderRateLimit('claude', 300, undefined, MAC)?.usedPercent).toBe(10);
+    expect(getProviderRateLimitsForWindow('claude', 300, undefined, GPU).primary?.usedPercent).toBe(70);
+    expect(getProviderRateLimitsForWindow('claude', 300, undefined, MAC).primary?.usedPercent).toBe(10);
   });
 
   it('keeps model catalogs and account-change generations specific to their computer', async () => {

@@ -231,7 +231,7 @@ func TestForkThreadCodexCutsOutsideTheLiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	defer session.Close()
+	defer closeSessionChecked(t, session)
 	app.sessionManager().put(source.ID, sessionStateForCodex(session))
 
 	forked, err := app.ForkThread(t.Context(), source.ID, nil)
@@ -694,113 +694,75 @@ func TestForkThreadFromMessageRejectsMissingClaudeSessionForLaterTurn(t *testing
 	}
 }
 
+// The source's Claude session is sliced at the turn boundary whether the
+// source names it as its session or as the pending fork its first start
+// would make.
 func TestForkThreadFromMessageSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	home := testProviderHome(t, app)
-	workspace := filepath.Join(home, "workspace")
-	if err := os.MkdirAll(workspace, 0o700); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
-	}
-	const sessionID = "source-session"
-	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
-{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
-{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"source-session","message":{"role":"user","content":"second"}}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
-`)
-	source := testThread("thread-message-fork-slice-session")
-	source.Provider = string(provider.Claude)
-	source.SessionRef = sessionID
-	source.WorkspacePath = workspace
-	if err := app.store.CreateThread(source); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	for turn := 0; turn <= 1; turn++ {
-		id := fmt.Sprintf("user-%d", turn)
-		if err := app.store.InsertItem(store.Item{
-			ID:        id,
-			ThreadID:  source.ID,
-			TurnIndex: turn,
-			ItemIndex: 0,
-			Kind:      "user_text",
-			Role:      "user",
-			Summary:   id,
-			CreatedAt: time.Now().UnixMilli(),
-		}); err != nil {
-			t.Fatalf("InsertItem: %v", err)
-		}
-	}
-	seedMessageAnchor(t, app.store, source.ID, "user-1", 1, "u1", "")
+	for _, c := range []struct {
+		name, thread, sessionID, sessionRef, pendingForkRef string
+	}{
+		{name: "session ref", thread: "thread-message-fork-slice-session", sessionID: "source-session", sessionRef: "source-session"},
+		{name: "pending fork ref", thread: "thread-message-fork-pending-parent", sessionID: "pending-source-session", pendingForkRef: "pending-source-session"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			home := testProviderHome(t, app)
+			workspace := filepath.Join(home, "workspace")
+			if err := os.MkdirAll(workspace, 0o700); err != nil {
+				t.Fatalf("mkdir workspace: %v", err)
+			}
+			writeClaudeProjectSession(t, home, workspace, c.sessionID, strings.ReplaceAll(`{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"SID","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"SID","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"SID","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"SID","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+`, "SID", c.sessionID))
+			source := testThread(c.thread)
+			source.Provider = string(provider.Claude)
+			source.SessionRef, source.PendingForkRef = c.sessionRef, c.pendingForkRef
+			source.WorkspacePath = workspace
+			if err := app.store.CreateThread(source); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			for turn := 0; turn <= 1; turn++ {
+				id := fmt.Sprintf("user-%d", turn)
+				if err := app.store.InsertItem(store.Item{
+					ID:        id,
+					ThreadID:  source.ID,
+					TurnIndex: turn,
+					ItemIndex: 0,
+					Kind:      "user_text",
+					Role:      "user",
+					Summary:   id,
+					CreatedAt: time.Now().UnixMilli(),
+				}); err != nil {
+					t.Fatalf("InsertItem: %v", err)
+				}
+			}
+			seedMessageAnchor(t, app.store, source.ID, "user-1", 1, "u1", "")
 
-	forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-1")
-	if err != nil {
-		t.Fatalf("ForkThreadFromMessage: %v", err)
-	}
-	if forked.SessionRef == "" || forked.SessionRef == sessionID {
-		t.Fatalf("forked session ref = %q, want sliced fork session", forked.SessionRef)
-	}
-	assertClaudeSessionText(t, app, workspace, forked.SessionRef, []string{"first"}, []string{"second"})
-	items, err := app.store.ListItems(forked.ID)
-	if err != nil {
-		t.Fatalf("ListItems: %v", err)
-	}
-	if len(items) != 1 || items[0].Summary != "user-0" {
-		t.Fatalf("fork items = %+v, want only turn 0 user", items)
-	}
-	// The slice already happened, so a pending ref left behind would make
-	// the fork's first start fork the source a second time.
-	if forked.PendingForkRef != "" || forked.PendingForkResumeAt != "" {
-		t.Fatalf("sliced fork still pends a fork: %q/%q", forked.PendingForkRef, forked.PendingForkResumeAt)
-	}
-}
-
-func TestForkThreadFromMessageSlicesClaudeSessionFromPendingForkRef(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	home := testProviderHome(t, app)
-	workspace := filepath.Join(home, "workspace")
-	if err := os.MkdirAll(workspace, 0o700); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
-	}
-	const sessionID = "pending-source-session"
-	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"pending-source-session","message":{"role":"user","content":"first"}}
-{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"pending-source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
-{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"pending-source-session","message":{"role":"user","content":"second"}}
-`)
-	source := testThread("thread-message-fork-pending-parent")
-	source.Provider = string(provider.Claude)
-	source.PendingForkRef = sessionID
-	source.WorkspacePath = workspace
-	if err := app.store.CreateThread(source); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	for turn := 0; turn <= 1; turn++ {
-		id := fmt.Sprintf("user-%d", turn)
-		if err := app.store.InsertItem(store.Item{
-			ID:        id,
-			ThreadID:  source.ID,
-			TurnIndex: turn,
-			ItemIndex: 0,
-			Kind:      "user_text",
-			Role:      "user",
-			Summary:   id,
-			CreatedAt: time.Now().UnixMilli(),
-		}); err != nil {
-			t.Fatalf("InsertItem: %v", err)
-		}
-	}
-	seedMessageAnchor(t, app.store, source.ID, "user-1", 1, "u1", "")
-
-	forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-1")
-	if err != nil {
-		t.Fatalf("ForkThreadFromMessage: %v", err)
-	}
-	if forked.SessionRef == "" || forked.SessionRef == sessionID {
-		t.Fatalf("forked session ref = %q, want sliced session from pending fork source", forked.SessionRef)
-	}
-	assertClaudeSessionText(t, app, workspace, forked.SessionRef, []string{"first"}, []string{"second"})
-	if forked.PendingForkRef != "" {
-		t.Fatalf("forked pending ref = %q, want empty", forked.PendingForkRef)
+			forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-1")
+			if err != nil {
+				t.Fatalf("ForkThreadFromMessage: %v", err)
+			}
+			if forked.SessionRef == "" || forked.SessionRef == c.sessionID {
+				t.Fatalf("forked session ref = %q, want sliced fork session", forked.SessionRef)
+			}
+			assertClaudeSessionText(t, app, workspace, forked.SessionRef, []string{"first"}, []string{"second"})
+			items, err := app.store.ListItems(forked.ID)
+			if err != nil {
+				t.Fatalf("ListItems: %v", err)
+			}
+			if len(items) != 1 || items[0].Summary != "user-0" {
+				t.Fatalf("fork items = %+v, want only turn 0 user", items)
+			}
+			// The slice already happened, so a pending ref left behind would
+			// make the fork's first start fork the source a second time.
+			if forked.PendingForkRef != "" || forked.PendingForkResumeAt != "" {
+				t.Fatalf("sliced fork still pends a fork: %q/%q", forked.PendingForkRef, forked.PendingForkResumeAt)
+			}
+		})
 	}
 }
 
@@ -975,6 +937,11 @@ func TestForkThreadRollsBackOnResumeFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ForkThread to fail when source is missing SessionRef")
 	}
+	// The error names the resume problem, so the caller learns what was
+	// wrong rather than that something was.
+	if !containsText(err.Error(), "no resumable Claude session") {
+		t.Errorf("primary fork error not propagated: %v", err)
+	}
 
 	// The fork row must NOT survive. Walk the threads table.
 	list, err := app.store.ListThreads()
@@ -998,31 +965,6 @@ func TestForkThreadCleanupIsIdempotentOnMissingFork(t *testing.T) {
 	}
 	if err := app.cleanupForkThread(""); err != nil {
 		t.Errorf("cleanupForkThread on empty id should be nil, got %v", err)
-	}
-}
-
-// A fork that cannot resolve its resume state fails with the reason, so the
-// caller learns what was wrong rather than that something was.
-func TestForkThreadPropagatesResumeAndCleanupErrors(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	source := testThread("thread-cleanup-err-source")
-	source.Provider = string(provider.Claude)
-	// SessionRef empty causes resolveForkResumeState to fail.
-	if err := app.store.CreateThread(source); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	insertForkTestItems(t, app.store, source.ID)
-
-	_, err := app.ForkThread(t.Context(), source.ID, nil)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-
-	// The primary error must identify the resume problem.
-	if !containsText(err.Error(), "no resumable Claude session") {
-		t.Errorf("primary fork error not propagated: %v", err)
 	}
 }
 

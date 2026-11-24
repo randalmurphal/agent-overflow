@@ -29,7 +29,7 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => {
 import ChatView from './ChatView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
-import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import {
   getComposerDraftForPane,
   resetComposerDraftRegistryForTest,
@@ -43,7 +43,8 @@ import { getToasts } from '../../stores/toast.svelte';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
 import type { Item, Thread } from '../../types/models';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
 import {
   installPaneMocks,
@@ -85,6 +86,10 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  // The composer loads the thumbnail of each image a test uploads.
+  setAttachmentThumbnailMock();
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   Object.defineProperty(window, 'innerWidth', {
     configurable: true,
     writable: true,
@@ -95,7 +100,7 @@ beforeEach(() => {
   resetCompanionPanesForTest();
   resetPanesForTest();
   resetThreadStatuses();
-  resetComposerDraftSnapshotsForTest();
+  resetComposerDraftSnapshotStateForTest();
   resetComposerDraftRegistryForTest();
   resetResendRevertMarkersForTest();
   resetEditResendExecutionForTest();
@@ -1298,14 +1303,11 @@ describe('edit-and-resend flow — intercepted commands', () => {
     expect(claude.view.queryByTestId('user-message-edit-error')).toBeNull();
   });
 
-  it('sends an AO command word — the backend expands those on the wire', async () => {
-    const { view, resend } = await submitEdited(seedThread(), '/workflow start');
-    await waitFor(() => expect(resend).toHaveBeenCalledTimes(1));
-    expect(view.queryByTestId('user-message-edit-error')).toBeNull();
-  });
-
-  it('sends an intercepted name that is not at position 0', async () => {
-    const { view, resend } = await submitEdited(seedThread(), 'see /model docs');
+  it.each([
+    ['an AO command word — the backend expands those on the wire', '/workflow start'],
+    ['an intercepted name that is not at position 0', 'see /model docs'],
+  ])('sends %s', async (_, text) => {
+    const { view, resend } = await submitEdited(seedThread(), text);
     await waitFor(() => expect(resend).toHaveBeenCalledTimes(1));
     expect(view.queryByTestId('user-message-edit-error')).toBeNull();
   });

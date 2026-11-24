@@ -27,25 +27,30 @@ func TestGitLabForgeIDAndBinary(t *testing.T) {
 		t.Errorf("BinaryName() = %q, want glab", f.BinaryName())
 	}
 }
+
+// CreatePR returns the URL glab printed, and an error when glab fails or
+// prints no URL.
 func TestGitLabCreatePRReturnsURL(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script mock glab is unix-only")
 	}
 
 	repo := initGitRepo(t)
-	binDir := t.TempDir()
-	glabPath := filepath.Join(binDir, "glab")
-	script := "#!/bin/sh\necho 'https://gitlab.com/group/repo/-/merge_requests/12'\n"
-	mockexec.Write(t, glabPath, script)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, tc := range []struct{ name, script, wantURL, wantErr string }{
+		{"url", "#!/bin/sh\necho 'https://gitlab.com/group/repo/-/merge_requests/12'\n", "https://gitlab.com/group/repo/-/merge_requests/12", ""},
+		{"non-zero exit", "#!/bin/sh\necho 'auth failed' 1>&2\nexit 1\n", "", "glab mr create failed"},
+		{"empty url", "#!/bin/sh\necho ''\n", "", "empty URL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			mockexec.Write(t, filepath.Join(binDir, "glab"), tc.script)
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	core := NewCore()
-	url, err := core.ForgeByID("gitlab").CreatePR(t.Context(), repo, "Demo MR", "Body", "", false)
-	if err != nil {
-		t.Fatalf("CreatePR returned error: %v", err)
-	}
-	if url != "https://gitlab.com/group/repo/-/merge_requests/12" {
-		t.Fatalf("url = %q", url)
+			url, err := NewCore().ForgeByID("gitlab").CreatePR(t.Context(), repo, "Demo MR", "Body", "", false)
+			if url != tc.wantURL || (err == nil) != (tc.wantErr == "") || err != nil && !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("CreatePR = %q, %v; want %q and an error containing %q", url, err, tc.wantURL, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -112,28 +117,6 @@ func TestGitLabCreatePRRequiresTitle(t *testing.T) {
 	}
 }
 
-func TestGitLabCreatePRHandlesNonZeroExit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock glab is unix-only")
-	}
-
-	repo := initGitRepo(t)
-	binDir := t.TempDir()
-	glabPath := filepath.Join(binDir, "glab")
-	script := "#!/bin/sh\necho 'auth failed' 1>&2\nexit 1\n"
-	mockexec.Write(t, glabPath, script)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	core := NewCore()
-	_, err := core.ForgeByID("gitlab").CreatePR(t.Context(), repo, "Demo", "body", "", false)
-	if err == nil {
-		t.Fatal("expected error for non-zero exit")
-	}
-	if !strings.Contains(err.Error(), "glab mr create failed") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestGitLabCreatePRHandlesMissingGlab(t *testing.T) {
 	repo := initGitRepo(t)
 	t.Setenv("PATH", t.TempDir())
@@ -148,27 +131,6 @@ func TestGitLabCreatePRHandlesMissingGlab(t *testing.T) {
 	}
 }
 
-func TestGitLabCreatePRHandlesEmptyURL(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock glab is unix-only")
-	}
-	repo := initGitRepo(t)
-
-	binDir := t.TempDir()
-	glabPath := filepath.Join(binDir, "glab")
-	script := "#!/bin/sh\necho ''\n"
-	mockexec.Write(t, glabPath, script)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	core := NewCore()
-	_, err := core.ForgeByID("gitlab").CreatePR(t.Context(), repo, "Test MR", "body", "", false)
-	if err == nil {
-		t.Fatal("expected error for empty URL output")
-	}
-	if !strings.Contains(err.Error(), "empty URL") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
 func TestExtractMRCreateURL(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

@@ -25,9 +25,15 @@ func writeImportSource(t *testing.T, dir, name string, data []byte) string {
 	return path
 }
 
+// The import path carries no cap of its own: a file under the store's image
+// cap lands, and TestImportImageFromDirRefusesEmptyAndOversizedSources
+// refuses one past it with the store's number.
 func TestImportImageFromDirCopiesBytes(t *testing.T) {
 	attStore, meta := newTestStores(t)
 	seedThread(t, meta, "t1")
+	if got := attStore.MaxSizeFor(store.AttachmentKindImage); got != DefaultMaxSize {
+		t.Fatalf("image cap = %d, want DefaultMaxSize %d", got, DefaultMaxSize)
+	}
 	allowed := t.TempDir()
 	source := writeImportSource(t, allowed, "render.png", pngData(t))
 
@@ -194,22 +200,6 @@ func TestImportImageFromDirRefusesEmptyAndOversizedSources(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), strconv.FormatInt(maxSize, 10)) {
 		t.Fatalf("refusal must name the store's image cap %d: %v", maxSize, err)
-	}
-}
-
-// The import path must not carry a cap of its own: a file the store would
-// refuse has to be refused with the store's number, and one the store accepts
-// has to land.
-func TestImportImageFromDirUsesTheStoresImageCap(t *testing.T) {
-	attStore, meta := newTestStores(t)
-	seedThread(t, meta, "t1")
-	if got := attStore.MaxSizeFor(store.AttachmentKindImage); got != DefaultMaxSize {
-		t.Fatalf("image cap = %d, want DefaultMaxSize %d", got, DefaultMaxSize)
-	}
-	allowed := t.TempDir()
-	source := writeImportSource(t, allowed, "render.png", pngData(t))
-	if _, err := attStore.ImportImageFromDir("t1", allowed, source, time.Now().UnixMilli()); err != nil {
-		t.Fatalf("a file under the cap must import: %v", err)
 	}
 }
 

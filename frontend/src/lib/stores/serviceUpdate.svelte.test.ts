@@ -4,10 +4,9 @@
 // backend answers with frames rather than a return value.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import {
   emitWailsEvent,
-  resetWailsMocks,
   wailsListenerCount,
 } from '../../test/mocks/wailsio-runtime';
 import {
@@ -25,7 +24,6 @@ import {
 import { SCOPES } from '../transport/scopes';
 import { takePinnedBackend } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { __resetScopesForTest } from '../transport/scopes';
 import {
   canInstallSelectedRelease,
   hasPendingServiceUpdate,
@@ -36,7 +34,6 @@ import {
   machineUpdate,
   requestServiceUpdate,
   cancelServiceUpdate,
-  resetServiceUpdatesForTest,
   selectServiceRelease,
   supervisedMachines,
   type ReleaseSummary,
@@ -82,19 +79,12 @@ const LAPTOP_HELLO = {
 
 describe('serviceUpdate store', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWailsMocks();
-    resetServiceUpdatesForTest();
-    resetStagedBackends();
     resetToLocalPage();
   });
 
   afterEach(() => {
-    resetServiceUpdatesForTest();
-    resetStagedBackends();
     revokeBackendScopes('laptop');
     resetToLocalPage();
-    __resetScopesForTest();
   });
 
   describe('the passive load', () => {

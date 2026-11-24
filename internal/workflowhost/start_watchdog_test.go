@@ -323,6 +323,12 @@ func TestWorkflowStartGraceFallbackReportsAWedgedOpeningSendExactlyOnce(t *testi
 // hand-written `reported: true` would keep passing even if `reportDead` stopped
 // leaving the record where install looks — which is the whole mechanism, and
 // exactly what regressed once already.
+//
+// The start is a takeover-finalize one. Such a start never reaches the
+// wrapper's error path, so the grace fallback is the only thing left that can
+// release the thread's `transitioning` takeover registration. Without it, the
+// run parks and every steering send into that thread is rejected until process
+// restart.
 func TestWorkflowInstallRefusesAnAttemptTheFallbackAlreadyReportedDead(t *testing.T) {
 	fixture := newStartWatchdogFixture(t)
 	runKey := fixture.runKey()
@@ -330,10 +336,18 @@ func TestWorkflowInstallRefusesAnAttemptTheFallbackAlreadyReportedDead(t *testin
 	_, progress := fixture.runner.beginStartProgress(
 		context.Background(), key, func(outcome engine.Outcome) { fixture.outcomes <- outcome },
 	)
+	released := 0
+	// Written where the wrapper writes it: before the deadline is armed, which
+	// is the release `reportDead`'s mutex-guarded read pairs with.
+	progress.cancelTakeover = func() { released++ }
+
 	progress.expire()
 	fixture.awaitTimer(workflowStartGrace).fire()
 	if reported := <-fixture.outcomes; reported.Kind != engine.OutcomeSetupFailure {
 		t.Fatalf("fallback outcome = %+v, want the setup failure a blown start bound parks as", reported)
+	}
+	if released != 1 {
+		t.Fatalf("takeover registration released %d times by the fallback, want exactly once", released)
 	}
 
 	attempt := &workflowAttempt{
@@ -565,31 +579,6 @@ func TestWorkflowDisplacedStartProgressCannotTearDownItsReplacement(t *testing.T
 	}
 	if reported {
 		t.Fatal("the displaced record's fallback marked the replacement reported")
-	}
-}
-
-// A wedged takeover-finalize start never reaches the wrapper's error path, so
-// the grace fallback is the only thing left that can release the thread's
-// `transitioning` takeover registration. Without it, the run parks and every
-// steering send into that thread is rejected until process restart.
-func TestWorkflowStartGraceFallbackReleasesTheTakeoverRegistration(t *testing.T) {
-	fixture := newStartWatchdogFixture(t)
-	key := engine.RunKey{ItemID: fixture.itemID, PhaseID: fixture.phaseID, Attempt: 1}
-	_, progress := fixture.runner.beginStartProgress(
-		context.Background(), key, func(outcome engine.Outcome) { fixture.outcomes <- outcome },
-	)
-	released := 0
-	// Written where the wrapper writes it: before the deadline is armed, which
-	// is the release `reportDead`'s mutex-guarded read pairs with.
-	progress.cancelTakeover = func() { released++ }
-
-	progress.expire()
-	fixture.awaitTimer(workflowStartGrace).fire()
-	if outcome := <-fixture.outcomes; outcome.Kind != engine.OutcomeSetupFailure {
-		t.Fatalf("fallback outcome = %+v, want the setup failure a blown start bound parks as", outcome)
-	}
-	if released != 1 {
-		t.Fatalf("takeover registration released %d times by the fallback, want exactly once", released)
 	}
 }
 

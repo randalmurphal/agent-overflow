@@ -236,8 +236,9 @@ index 0000000..abc1234
 	}
 }
 
-func TestExtractDiffMetaDeletedFile(t *testing.T) {
-	patch := `diff --git a/old.go b/old.go
+func TestExtractDiffMetaChangeKind(t *testing.T) {
+	for _, tc := range []struct{ name, patch, want string }{
+		{"deleted", `diff --git a/old.go b/old.go
 deleted file mode 100644
 index abc1234..0000000
 --- a/old.go
@@ -246,24 +247,18 @@ index abc1234..0000000
 -package main
 -
 -func old() {}
-`
-	dm := ExtractDiffMeta(patch)
-
-	if dm.ChangeKind != "deleted" {
-		t.Errorf("changeKind: got %q, want %q", dm.ChangeKind, "deleted")
-	}
-}
-
-func TestExtractDiffMetaRenamed(t *testing.T) {
-	patch := `diff --git a/old.go b/new.go
+`, "deleted"},
+		{"renamed", `diff --git a/old.go b/new.go
 rename from old.go
 rename to new.go
 similarity index 100%
-`
-	dm := ExtractDiffMeta(patch)
-
-	if dm.ChangeKind != "renamed" {
-		t.Errorf("changeKind: got %q, want %q", dm.ChangeKind, "renamed")
+`, "renamed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExtractDiffMeta(tc.patch).ChangeKind; got != tc.want {
+				t.Errorf("changeKind: got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -301,86 +296,52 @@ func TestExtractDiffMetaEmpty(t *testing.T) {
 
 // -- CommandOutputMeta tests --
 
-func TestExtractCommandOutputMeta50Lines(t *testing.T) {
-	var lines []string
-	for i := 0; i < 50; i++ {
-		lines = append(lines, "output line")
-	}
-	output := strings.Join(lines, "\n")
-
-	cm := ExtractCommandOutputMeta(output, "go build", 0)
-
-	if cm.LineCount != 50 {
-		t.Errorf("lineCount: got %d, want 50", cm.LineCount)
-	}
-
-	if cm.Preview != "" {
-		t.Errorf("preview: got %q, want empty", cm.Preview)
-	}
-
-	if cm.Command != "go build" {
-		t.Errorf("command: got %q, want %q", cm.Command, "go build")
-	}
-	if cm.ExitCode != 0 {
-		t.Errorf("exitCode: got %d, want 0", cm.ExitCode)
-	}
-}
-
-func TestExtractCommandOutputMeta3Lines(t *testing.T) {
-	output := "line1\nline2\nline3"
-	cm := ExtractCommandOutputMeta(output, "echo hi", 1)
-
-	if cm.LineCount != 3 {
-		t.Errorf("lineCount: got %d, want 3", cm.LineCount)
-	}
-
-	if cm.Preview != "" {
-		t.Errorf("preview: got %q, want empty", cm.Preview)
-	}
-
-	if cm.ExitCode != 1 {
-		t.Errorf("exitCode: got %d, want 1", cm.ExitCode)
-	}
-}
-
-func TestExtractCommandOutputMetaEmpty(t *testing.T) {
-	cm := ExtractCommandOutputMeta("", "", 0)
-
-	// Empty string splits to [""] which is 1 element.
-	if cm.LineCount != 1 {
-		t.Errorf("lineCount: got %d, want 1", cm.LineCount)
+func TestExtractCommandOutputMeta(t *testing.T) {
+	for _, tc := range []struct {
+		name, output, command string
+		exitCode, wantLines   int
+	}{
+		{"50 lines", strings.Repeat("output line\n", 49) + "output line", "go build", 0, 50},
+		{"3 lines", "line1\nline2\nline3", "echo hi", 1, 3},
+		// Empty output still counts as one line.
+		{"empty", "", "", 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cm := ExtractCommandOutputMeta(tc.output, tc.command, tc.exitCode)
+			if cm.LineCount != tc.wantLines {
+				t.Errorf("lineCount: got %d, want %d", cm.LineCount, tc.wantLines)
+			}
+			if cm.Preview != "" {
+				t.Errorf("preview: got %q, want empty", cm.Preview)
+			}
+			if cm.Command != tc.command || cm.ExitCode != tc.exitCode {
+				t.Errorf("command/exitCode: got %q/%d, want %q/%d", cm.Command, cm.ExitCode, tc.command, tc.exitCode)
+			}
+		})
 	}
 }
 
 // -- ThinkingMeta tests --
 
-func TestExtractThinkingMeta500Chars(t *testing.T) {
-	content := strings.Repeat("a", 500)
-	tm := ExtractThinkingMeta(content)
-
-	if len(tm.Preview) != 203 { // 200 + "..."
-		t.Errorf("preview length: got %d, want 203", len(tm.Preview))
-	}
-	if !strings.HasSuffix(tm.Preview, "...") {
-		t.Error("preview should end with ...")
-	}
-}
-
-func TestExtractThinkingMeta100Chars(t *testing.T) {
-	content := strings.Repeat("b", 100)
-	tm := ExtractThinkingMeta(content)
-
-	if tm.Preview != content {
-		t.Errorf("preview: got %q, want full content", tm.Preview)
-	}
-}
-
-func TestExtractThinkingMetaTokenEstimate(t *testing.T) {
-	content := strings.Repeat("c", 400)
-	tm := ExtractThinkingMeta(content)
-
-	if tm.TokenCount != 100 {
-		t.Errorf("tokenCount: got %d, want 100 (400/4)", tm.TokenCount)
+func TestExtractThinkingMeta(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, wantPreview string
+		wantTokens                 int
+	}{
+		// The preview keeps 200 runes plus "..."; tokens estimate runes/4.
+		{"500 chars", strings.Repeat("a", 500), strings.Repeat("a", 200) + "...", 125},
+		{"400 chars", strings.Repeat("c", 400), strings.Repeat("c", 200) + "...", 100},
+		{"100 chars", strings.Repeat("b", 100), strings.Repeat("b", 100), 25},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tm := ExtractThinkingMeta(tc.content)
+			if tm.Preview != tc.wantPreview {
+				t.Errorf("preview: got %d bytes %q, want %d bytes", len(tm.Preview), tm.Preview, len(tc.wantPreview))
+			}
+			if tm.TokenCount != tc.wantTokens {
+				t.Errorf("tokenCount: got %d, want %d", tm.TokenCount, tc.wantTokens)
+			}
+		})
 	}
 }
 
@@ -579,13 +540,18 @@ func storedTodo(t *testing.T, st *store.Store, threadID string) (store.ThreadLiv
 
 func createTestThread(t *testing.T, st *store.Store, id string) {
 	t.Helper()
+	createTestThreadWithProvider(t, st, id, "claude")
+}
+
+func createTestThreadWithProvider(t *testing.T, st *store.Store, id, providerName string) {
+	t.Helper()
 	ensureTriageProject(t, st)
 	now := time.Now().UnixMilli()
 	err := st.CreateThread(store.Thread{
 		ID:            id,
 		ProjectID:     triageTestProjectID,
 		Title:         "Test",
-		Provider:      "claude",
+		Provider:      providerName,
 		WorkspacePath: "/tmp",
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -3944,85 +3910,17 @@ func TestTurnCompleteReturnsErrorOnClosedStore(t *testing.T) {
 
 // -- buildSummary tests --
 
-func TestBuildSummaryDiff(t *testing.T) {
-	meta := `{"filePath":"src/main.go","changeKind":"modified","insertions":5,"deletions":3,"preview":"..."}`
-	summary := buildSummary("diff", meta)
-
-	if summary != "modified: +5/-3 src/main.go" {
-		t.Errorf("got %q, want %q", summary, "modified: +5/-3 src/main.go")
-	}
-}
-
-func TestBuildSummaryCommandOutput(t *testing.T) {
-	meta := `{"command":"go build","exitCode":0,"lineCount":15,"preview":"..."}`
-	summary := buildSummary("command_output", meta)
-
-	if summary != "$ go build (exit 0, 15 lines)" {
-		t.Errorf("got %q, want %q", summary, "$ go build (exit 0, 15 lines)")
-	}
-}
-
-func TestBuildSummaryThinking(t *testing.T) {
-	meta := `{"tokenCount":100,"preview":"Let me think about this"}`
-	summary := buildSummary("thinking", meta)
-
-	if summary != "Let me think about this" {
-		t.Errorf("got %q, want %q", summary, "Let me think about this")
-	}
-}
-
-// TestCleanupThreadDropsLateEvents exercises Bug B5: events that arrive
-// AFTER CleanupThread has been called must not be persisted under the
-// stopped thread. The pre-fix router happily wrote rows into a thread
-// whose session had been stopped because CleanupThread only cleared
-// accumulator state.
-func TestCleanupThreadDropsLateEvents(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	// First event arrives and is persisted normally.
-	before := provider.ProviderEvent{
-		Kind:      provider.EventProposedPlan,
-		ThreadID:  "t1",
-		ItemID:    "plan-1",
-		Content:   "# Before\n\n- one",
-		Timestamp: time.Now(),
-	}
-	if err := router.Handle(before); err != nil {
-		t.Fatalf("handle before: %v", err)
-	}
-
-	items, err := st.ListItems("t1")
-	if err != nil {
-		t.Fatalf("list items before: %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("pre-stop items = %d, want 1 (setup broken)", len(items))
-	}
-
-	// Stop the thread: simulates StopSession cleanup.
-	router.CleanupThread("t1")
-
-	// Late event — would arrive from a readLoop draining in-flight
-	// stdout lines after StopSession returned.
-	after := provider.ProviderEvent{
-		Kind:      provider.EventProposedPlan,
-		ThreadID:  "t1",
-		ItemID:    "plan-2",
-		Content:   "# After\n\n- late",
-		Timestamp: time.Now(),
-	}
-	if err := router.Handle(after); err != nil {
-		t.Fatalf("handle after stop: %v", err)
-	}
-
-	// Persistence must have been suppressed.
-	items, err = st.ListItems("t1")
-	if err != nil {
-		t.Fatalf("list items after: %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("post-stop items = %d, want 1 (late event persisted under stopped thread)", len(items))
+func TestBuildSummary(t *testing.T) {
+	for _, tc := range []struct{ kind, meta, want string }{
+		{"diff", `{"filePath":"src/main.go","changeKind":"modified","insertions":5,"deletions":3,"preview":"..."}`, "modified: +5/-3 src/main.go"},
+		{"command_output", `{"command":"go build","exitCode":0,"lineCount":15,"preview":"..."}`, "$ go build (exit 0, 15 lines)"},
+		{"thinking", `{"tokenCount":100,"preview":"Let me think about this"}`, "Let me think about this"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			if got := buildSummary(tc.kind, tc.meta); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -4138,8 +4036,12 @@ func TestDuplicateTurnStartDoesNotReacceptRevisionComments(t *testing.T) {
 	}
 }
 
-// TestCleanupThreadDropsRapidInFlight exercises the tight race: many
-// events interleave with CleanupThread; no partial state remains.
+// TestCleanupThreadDropsRapidInFlight exercises Bug B5: events that
+// arrive AFTER CleanupThread has been called must not be persisted under
+// the stopped thread, while those before it persist normally. The pre-fix
+// router wrote rows into a thread whose session had been stopped because
+// CleanupThread only cleared accumulator state. Many events interleave
+// with CleanupThread; no partial state remains.
 func TestCleanupThreadDropsRapidInFlight(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "tight")

@@ -21,6 +21,7 @@ import { startTogether } from './launch-helpers.js';
 import { solePairedDevice } from './offhost-helpers.js';
 import { openAgents, openPast, pastRow } from './agents-tray-helpers.js';
 import { awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -125,8 +126,7 @@ test('a late reply the other computer dropped before it was collected reads as e
       text: 'They are written.',
     }],
   }));
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'have the release notes written over there', null);
+  await home.send(caller.threadIds[0], 'have the release notes written over there');
   const sent = await awaitToolAnswer<{ token: string; state: string }>(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 120_000 });
   expect(sent.isError, sent.text).toBe(false);
   expect(sent.value!.state).toBe('finished');
@@ -169,7 +169,7 @@ test('a late reply the other computer dropped before it was collected reads as e
   await row.getByTestId('agent-tray-row-details').click();
   await expect(row.getByTestId('agent-tray-row-digest-answer')).toHaveText('The notes are written.');
   await expect(row.getByTestId('agent-tray-row-digest-late-expired')).toContainText('expired there before it was collected');
-  await row.screenshot({ path: test.info().outputPath('late-reply-expired.png'), animations: 'disabled' });
+  await screenshot(row, { path: test.info().outputPath('late-reply-expired.png'), animations: 'disabled' });
 });
 
 test('a command running when the computer is paired again finishes under the new pairing, named as it names the computer', async ({ page }) => {
@@ -193,8 +193,7 @@ test('a command running when the computer is paired again finishes under the new
     ],
     afterTurns: 'silent',
   }));
-  await home.rpc('StartSession', builder.threadIds[0]);
-  await home.rpc('SendMessage', builder.threadIds[0], 'run the release build over there', null);
+  await home.send(builder.threadIds[0], 'run the release build over there');
   const started = await home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd: builder.path, timeoutMs: 60_000 });
   expect(started.report.isError, started.report.result).toBeFalsy();
   expect(started.report.result).toContain('"backgrounded":true');
@@ -237,7 +236,7 @@ test('a command running when the computer is paired again finishes under the new
   const card = timeline.getByTestId('tool-call-card').filter({ hasText: 'build.release' }).first();
   await expect(card.locator('[data-machine]').first()).toHaveText(`(${live.name})`);
   await expect(card.getByTestId('row-error-msg')).toHaveCount(0);
-  await card.screenshot({ path: test.info().outputPath('repaired-command-name.png'), animations: 'disabled' });
+  await screenshot(card, { path: test.info().outputPath('repaired-command-name.png'), animations: 'disabled' });
 
   // The next case starts under the new pairing, named as before.
   await home.rpc('RenameBackend', remoteID, 'GPU computer');
@@ -266,8 +265,7 @@ test('a command running on a computer that revokes this one is told once with it
     ],
     afterTurns: 'silent',
   }));
-  await home.rpc('StartSession', builder.threadIds[0]);
-  await home.rpc('SendMessage', builder.threadIds[0], 'run the nightly build over there', null);
+  await home.send(builder.threadIds[0], 'run the nightly build over there');
   const started = await home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd: builder.path, timeoutMs: 60_000 });
   expect(started.report.isError, started.report.result).toBeFalsy();
   expect(started.report.result).toContain('"backgrounded":true');
@@ -297,5 +295,5 @@ test('a command running on a computer that revokes this one is told once with it
   const card = timeline.getByTestId('tool-call-card').filter({ hasText: 'build.release' }).first();
   await expect(card.getByTestId('row-error-msg')).toContainText("The pairing with this computer ended, so this command's outcome is unknown.");
   await expect(card.locator('[data-machine]').first()).toHaveText('(GPU computer)');
-  await card.screenshot({ path: test.info().outputPath('command-outcome-unknown.png'), animations: 'disabled' });
+  await screenshot(card, { path: test.info().outputPath('command-outcome-unknown.png'), animations: 'disabled' });
 });

@@ -430,10 +430,6 @@ func (a *App) workflowRunTree(rootID string) ([]store.WorkItem, error) {
 	return a.workflowApplication().RunTree(rootID)
 }
 
-func (a *App) workflowRunTreeNodes(rootID string) ([]store.WorkItemNode, error) {
-	return a.workflowApplication().RunTreeNodes(rootID)
-}
-
 func (a *App) cancelWorkflowTreeMembers(members []store.WorkItem) ([]string, error) {
 	return a.workflowApplication().CancelTreeMembers(members)
 }
@@ -1321,20 +1317,6 @@ func (a *App) WorkflowTakeOverUnit(itemID, unitID string) error {
 		)
 	}
 	return nil
-}
-
-// workflowFailedUnits lists the units resting `failed` in a run's CURRENT phase
-// attempt — exactly the set WorkflowRetryFailedUnits acts on, and exactly the
-// ids WorkflowRetryUnit accepts. The join is one of them: its failure is the
-// failure of a unit of the attempt, and a human repairs it by name like any
-// other. The rule lives here so the surfaces that REPORT the set (the wake's
-// failed-unit references, `run_status`) cannot disagree with the
-// verbs that repair it.
-//
-// Earlier attempts are excluded for the same reason: their rows are history, and
-// the engine's repair only ever addresses the attempt the run is parked on.
-func (a *App) workflowFailedUnits(itemID string) ([]store.WorkItemUnit, error) {
-	return a.workflowApplication().FailedUnits(itemID)
 }
 
 // currentWorkflowUnit resolves one unit of a run's current phase attempt. Unit

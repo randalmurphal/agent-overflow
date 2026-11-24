@@ -41,6 +41,20 @@ the developer's running app; goals that launch an app (`make dev`,
 under `bin/ao-netns`, whose private temp directory and on-disk Go work
 directory are described with the
 [isolation](../specs/testing-harness.md#isolation-network-temp-directory-and-priority).
+
+Without `-parallel`, `internal/app` and `internal/store` run at most four
+parallel tests at once (`internal/testutil/testparallel`, from each
+TestMain); a `-parallel` given is kept. Their tests open many SQLite stores
+in one process, modernc.org/libc takes one process-wide lock for every
+allocation, and each connection parses the schema, so more tests at once
+cost CPU and finish later. `internal/app` alone, uncached, on 24 cores ran
+554 s at `-parallel 4` (user 1,160 s), 721 s at 8 (user 1,793 s) and 882 s
+at the default (user 2,658 s); `internal/store` ran 249 s at 4 (user
+303 s) and 279 s at the default (user 506 s). Measure again, and remove the
+cap if it no longer pays, once a modernc.org/sqlite release pins a libc
+with a per-thread allocator, or once `internal/app` is divided into
+packages.
+
 Go trims its build cache only by age, so `go-build`, `go-test` and
 `test-race` run a `cmd/ao-gocache-trim` pass before their build or test and
 another when it ends. A pass walks the cache at most every five minutes,
@@ -112,23 +126,64 @@ of the real-provider smoke tests.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every pull request and push to `main`.
-Every step calls a Make target, so the local command is the same check.
-The jobs fill the Free plan's 20 concurrent slots where the time is: one
-Linux job for `fmt-check`, `tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile`
-and `bindings-check`, a macOS `go-build` and `exhaustive` pass, one job
-for `go-lint`, `go-lint-exhaustive` and `go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
-in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus
-two with `GO_TEST_FLAGS='-tags noremote'`, the
-Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
-`make e2e` in eight Playwright shards with three workers each (`E2E_ARGS`,
-`AO_E2E_WORKERS`), and `make release-upgrade-check` as `upgrade-lineage`
-when the change reaches the store, the check or the version
-([release upgrade check](release-upgrade-check.md)).
+`.github/workflows/ci.yml` runs on every pull request, push to `main` and
+manual run. Every step calls a Make target, or a binary `make
+harness-build` built, so the local command is the same check. The
+`toolchain` job publishes the run's plan (`scripts/ci-suites.mjs`, which
+holds the rules): every other job, true or false, and the Playwright
+specs that test the suite's own tooling which the change cannot reach. A
+pull request runs the jobs its changed paths can reach, plus dependency
+review, and its Playwright shards skip those tooling specs; a push or a
+manual run runs every spec. A push to `main`
+runs every job but the upgrade lineage check, which its pull request ran,
+and then `cache-cleanup`. A manual run runs every job but dependency review
+and `cache-cleanup`. The jobs are one Linux job for `fmt-check`,
+`tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile` and
+`bindings-check`, a macOS `go-build` and `exhaustive` pass, one job for
+`go-lint`, `go-lint-whole-tree` and `go-vuln`, the
+frontend job (`check`, `build`, `frontend-deadcode`, `frontend-lint`),
+`go-test` in three shards by package weight
+(`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus `make go-test-noremote`, the
+Vitest projects as `make vitest-unit` and `make vitest-browser` (on a
+pull request with `VITEST_BASE`, so only the test files its diff can
+affect run), and one
+`make harness-build` whose output eight Playwright shards run with
+`bin/ao-harness-e2e --shard=N/8`, three workers each (`AO_E2E_WORKERS`)
+and the plan's `--grep-invert` of the skipped tooling specs.
+`upgrade-lineage` runs `scripts/release-upgrade-check.sh` on the same binaries when the change reaches the store, the check or the
+version ([release upgrade check](release-upgrade-check.md)). The `rest`
+shard also runs `make script-tests`. `CI result` passes only when every
+job the plan selected succeeded and every job it excluded was skipped, so
+a selected job that was skipped fails the run.
+
+The harness build job builds the binaries and the `frontend/dist` they
+embed, runs the suite's source checks (the typecheck and the wait rules)
+with `bin/ao-harness-e2e --typecheck`, and only then packs both into one
+artifact, kept 7 days, so a failed check publishes nothing. The Playwright
+shards and `upgrade-lineage` run that artifact with `AO_E2E_TYPECHECKED=1`,
+which makes the launcher skip both checks, so no shard compiles, bundles or
+typechecks. Elsewhere the launcher always runs them, with tsc's incremental
+state under `e2e/node_modules/.cache`. Re-running failed jobs reuses the run's
+artifact; after 7 days a shard fails at its first step and says to re-run
+the harness build job, which re-runs the jobs that need it.
+
+`build/test-inputs.mk` declares the test packages the Playwright suite
+runs and each browser set. `scripts/playwright-browsers.sh SET` is the one
+installer: the image installs `CI_IMAGE_BROWSERS` through it with the OS
+libraries, `.github/actions/setup` installs a job's set (a no-op on the
+image), and the Make targets install theirs (`make e2e-browsers`, `make
+release-upgrade-check`). The image carries the headless shell and WebKit;
+each Playwright shard installs the regular Chromium build after it
+unpacks the artifact, which saves every other Linux job pulling 403 MiB
+more in the image.
+
+The branch ruleset requires `CI result` alone. Moving a repository from
+per-job required checks to it is a step of this migration in the
+repository's settings: remove the old required checks and add `CI result`.
+
 The Linux jobs run in the toolchain image, `ghcr.io/<repo>/ci-toolchain`,
-built from `ci/Dockerfile`: Go, Node, pnpm, the GTK headers, the Playwright
-browsers with their OS libraries (Chromium as the headless shell the
-suites run), the Wails CLI, golangci-lint, the pnpm store and a Go module
+built from `ci/Dockerfile`: Go, Node, pnpm, the GTK headers, the
+`CI_IMAGE_BROWSERS` set with its OS libraries, the Wails CLI, golangci-lint, the pnpm store and a Go module
 cache holding what the tree imports under every tag set the Make targets
 use. The Make test targets prefetch that same set before entering the
 network namespace. A job pulls that one image instead of apt, the Go
@@ -146,9 +201,45 @@ that fallback until it merges. `toolchain-image.yml` publishes on pushes to
 image, module cache and package store. The macOS job runs on the bare
 runner; the setup action installs its toolchains from the same pins.
 
-Go build caches are saved only by pushes to `main`; a pull request restores
-the newest `main` cache for its job slot, so it rebuilds and retests what
-it changed. `codeql.yml` scans Go and
+Every job restores its caches and only a push to `main` saves them,
+through `.github/actions/cache-save` as the job's last step.
+`scripts/ci-cache.mjs` owns the cache list: every key starts with
+`ao-ci-`, and the script resolves each key and path once for both the
+restore and the save. The Go build cache has one slot per job; a pull
+request restores the newest `main` entry of its slot, and a push saves the
+entries that job used (`scripts/ci-go-cache.mjs`). Off the image a job
+also caches the Go module cache and the pnpm store. A save deletes
+nothing: `cache-cleanup`, the push's last job and the only one with
+`actions: write`, retires every slot's older entries. The jobs that
+compile or list the root package, which embeds `frontend/dist`, restore
+the bundle keyed by every file of `frontend/` the build reads, guide files
+aside. When those match what `main` has built, the job skips the install
+and the build; otherwise it builds as before. Two builds of one tree
+differ, since a build that is not a release stamps its version with the
+build time, and a job that sets a variable changing the build
+(`AO_RELEASE_BUILD`, `AO_SOURCEMAP`, the UI trace and oracle flags) is
+refused the cached bundle. The `store` Go test shard neither compiles
+nor lists the root package, so it sets up no bundle. The Go test cache then
+reports a package as `(cached)` when its code, its dependencies and the
+files its tests read are unchanged; `scripts/ci-stable-mtimes.mjs` sets the
+checkout's file times from content first, since Go compares a read file by
+size and time. A test that lists a directory also depends on its entries'
+times, so `make go-test` neither rewrites an unchanged tool in `bin/` nor
+lets a Go command run `git status`, which touches `.git`; a test walks the
+tree with `reporoot.Walk`, which leaves out build output, and writes nowhere
+inside the checkout (`netisolate.DiskDir` is the run's scratch directory on
+disk); each Go test shard ends by naming any stamped path that changed or
+was removed (`ci-stable-mtimes.mjs moved`). The root package, `cmd/ao-netns`
+and `internal/netisolate` rerun on every run: their tests read
+`AO_NETISOLATE_NS`, which names the run's own network namespace.
+`make go-test-noremote` runs, with `-tags noremote`, every package whose
+test binary the tag changes ([noremote build](noremote-build.md#testing)).
+`cache-cleanup` keeps each slot's newest entry, retires the rest, the key
+shapes this pipeline used before `ao-ci-` and entries of a slot it no
+longer names, never another key. It fails when the entries it keeps plus
+all others pass GitHub's 10 GB, and warns when two generations of this
+pipeline's caches would: a push's saves hold both until it runs
+(`scripts/ci-cache-cleanup.mjs`). `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` opens only security updates for Go, npm,
 Gradle and actions; `dependency-review-action` checks pull request
 dependency changes.
@@ -159,10 +250,11 @@ checked by `scripts/test-ci-change.sh`) and `go-lint` runs with
 `--new-from-patch`, while
 `frontend-lint` runs `--deny-warnings` on the changed frontend files. Both
 widen to the whole tree once the existing backlog is cleared
-(`make go-lint` and `make frontend-lint` show it). The `exhaustive` linter
-has none, so the `go-lint` job also runs it alone over the whole tree
-(`make go-lint-exhaustive`): a constant added to an enum fails at every
-switch that does not name it. The target reaches every Go file its host
+(`make go-lint` and `make frontend-lint` show it). The `exhaustive` and
+`unused` linters have none, so the `go-lint` job also runs them over the
+whole tree (`make go-lint-whole-tree`), in one golangci-lint process for
+the untagged file set. `exhaustive` fails at every switch that does not
+name a constant added to an enum. It reaches every Go file its host
 compiles in two passes, one with no build tag and one with `nogui`,
 `noremote`, `providersmoke` and `linearlive` together
 (`TestExhaustiveLintPassesReachEveryFile` fails for a file no pass
@@ -170,8 +262,22 @@ compiles), then lints the Windows
 launcher's packages as Windows compiles them. The macOS job runs the linter
 over the default file set alone, which holds every file only macOS
 compiles. A Windows-only file outside the
-launcher's packages is compiled by no job and is not checked. Branch protection
-requiring these checks is a repository setting, not part of the tree.
+launcher's packages is compiled by no job and is not checked.
+
+Dead code fails two whole-tree gates, neither with a backlog. `unused`
+reads the Linux file set with no build tag, test files included, and
+reports an unexported identifier nothing uses, which the new-issues gate
+misses when a change deletes the last use and not the identifier. A helper
+that only another platform or a build tag calls lives in that platform's
+or tag's files. The frontend job runs knip (`make frontend-deadcode`,
+configured in `knip.config.ts` at the root with the frontend's rules in
+`frontend/knip.workspace.ts`): a file, export, type or dependency nothing
+uses, tests and the Playwright suite's imports included, fails it, so a
+change to `e2e/` runs the frontend job. No gate reports an exported Go
+identifier nothing uses, or code that only tests reach:
+`golang.org/x/tools/cmd/deadcode` and knip's production mode find those,
+but on this tree each needs a long list of named exceptions for code
+reached through cgo, another platform or a test seam by design.
 
 ## Releases
 

@@ -155,82 +155,41 @@ describe('setItemSize', () => {
   describe('with offsets measured', () => {
     const offsets = [0, 10, 20, 30, 40, -1, -1, -1, -1, -1, -1];
 
-    it('should lower the watermark if size is changed before it', () => {
+    it.each([
+      ['should lower the watermark if size is changed before it', 1, 1],
+      ['should not lower the watermark if size is changed at it', 4, 4],
+      ['should not lower the watermark if size is changed after it', 5, 4],
+    ])('%s', (_, index, watermark) => {
       const store = storeWithOffsets(range(10, () => 20), flat(20), offsets);
-      setItemSize(store, 1, 123);
-      expect(store.sizes).toEqual([20, 123, 20, 20, 20, 20, 20, 20, 20, 20]);
+      setItemSize(store, index, 123);
+      expect(store.sizes).toEqual(range(10, (i) => (i === index ? 123 : 20)));
       expect(store.offsets).toEqual(offsets);
-      expect(store.offsetWatermark).toBe(1);
-    });
-
-    it('should not lower the watermark if size is changed at it', () => {
-      const store = storeWithOffsets(range(10, () => 20), flat(20), offsets);
-      setItemSize(store, 4, 123);
-      expect(store.offsets).toEqual(offsets);
-      expect(store.offsetWatermark).toBe(4);
-    });
-
-    it('should not lower the watermark if size is changed after it', () => {
-      const store = storeWithOffsets(range(10, () => 20), flat(20), offsets);
-      setItemSize(store, 5, 123);
-      expect(store.offsets).toEqual(offsets);
-      expect(store.offsetWatermark).toBe(4);
+      expect(store.offsetWatermark).toBe(watermark);
     });
   });
 
   describe('should return measurement status', () => {
-    it('should return false if already measured', () => {
-      const store = storeWithSizes(
-        range(10, () => 20),
-        flat(20),
-      );
-      expect(setItemSize(store, 0, 123)).toBe(false);
-    });
-
-    it('should return true if not measured', () => {
-      const store = storeWithSizes(
-        range(10, () => UNMEASURED),
-        flat(20),
-      );
-      expect(setItemSize(store, 0, 123)).toBe(true);
+    it.each([
+      ['should return false if already measured', 20, false],
+      ['should return true if not measured', UNMEASURED, true],
+    ])('%s', (_, initial, firstMeasurement) => {
+      const store = storeWithSizes(range(10, () => initial), flat(20));
+      expect(setItemSize(store, 0, 123)).toBe(firstMeasurement);
     });
   });
 });
 
 describe('getItemOffset', () => {
-  it('should get 0 if index is at start', () => {
-    const store = storeWithSizes(
-      range(10, () => 20),
-      flat(30),
-    );
-    expect(getItemOffset(store, 0)).toBe(0);
-    expect(store.offsets).toEqual([0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]);
-  });
-
-  it('should get 1 item if index is at start + 1', () => {
-    const store = storeWithSizes(
-      range(10, () => 20),
-      flat(30),
-    );
-    expect(getItemOffset(store, 1)).toBe(20);
-    expect(store.offsets).toEqual([0, 20, -1, -1, -1, -1, -1, -1, -1, -1, -1]);
-  });
-
-  it('should get total - 1 item if index is at last', () => {
-    const sizes = range(10, () => 20);
-    const store = storeWithSizes(sizes, flat(30));
-    const last = sizes.length - 1;
-    expect(getItemOffset(store, last)).toBe(sum(sizes) - sizes[last]);
-    expect(store.offsets).toEqual([0, 20, 40, 60, 80, 100, 120, 140, 160, 180, -1]);
-  });
-
-  it('should resolve estimated height', () => {
-    const store = storeWithSizes(
-      range(10, () => UNMEASURED),
-      flat(30),
-    );
-    expect(getItemOffset(store, 2)).toBe(60);
-    expect(store.offsets).toEqual([0, 30, 60, -1, -1, -1, -1, -1, -1, -1, -1]);
+  // 10 rows measured at 20px (or unmeasured, estimated at 30px), memo empty.
+  it.each([
+    ['should get 0 if index is at start', 20, 0, 0, [0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]],
+    ['should get 1 item if index is at start + 1', 20, 1, 20, [0, 20, -1, -1, -1, -1, -1, -1, -1, -1, -1]],
+    ['should get total - 1 item if index is at last', 20, 9, 180, [0, 20, 40, 60, 80, 100, 120, 140, 160, 180, -1]],
+    ['should resolve estimated height', UNMEASURED, 2, 60, [0, 30, 60, -1, -1, -1, -1, -1, -1, -1, -1]],
+  ])('%s', (_, size, index, offset, offsets) => {
+    const store = storeWithSizes(range(10, () => size), flat(30));
+    expect(getItemOffset(store, index)).toBe(offset);
+    expect(store.offsets).toEqual(offsets);
   });
 
   it('should return 0 if store length is 0', () => {
@@ -277,22 +236,15 @@ describe('getItemOffset', () => {
   describe('with cached offsets', () => {
     const offsets = [0, 11, 22, 33, -1, -1, -1, -1, -1, -1, -1];
 
-    it('should return cached offset if index is before the watermark', () => {
+    it.each([
+      ['should return cached offset if index is before the watermark', 2, 22, offsets],
+      ['should return cached offset if index is at the watermark', 3, 33, offsets],
+      ['should extend from cached offset if index is after the watermark', 5, 33 + 20 * 2,
+        [0, 11, 22, 33, 53, 73, -1, -1, -1, -1, -1]],
+    ])('%s', (_, index, offset, after) => {
       const store = storeWithOffsets(range(10, () => 20), flat(30), offsets);
-      expect(getItemOffset(store, 2)).toBe(22);
-      expect(store.offsets).toEqual(offsets);
-    });
-
-    it('should return cached offset if index is at the watermark', () => {
-      const store = storeWithOffsets(range(10, () => 20), flat(30), offsets);
-      expect(getItemOffset(store, 3)).toBe(33);
-      expect(store.offsets).toEqual(offsets);
-    });
-
-    it('should extend from cached offset if index is after the watermark', () => {
-      const store = storeWithOffsets(range(10, () => 20), flat(30), offsets);
-      expect(getItemOffset(store, 5)).toBe(33 + 20 * 2);
-      expect(store.offsets).toEqual([0, 11, 22, 33, 53, 73, -1, -1, -1, -1, -1]);
+      expect(getItemOffset(store, index)).toBe(offset);
+      expect(store.offsets).toEqual(after);
     });
   });
 });
@@ -409,44 +361,17 @@ describe('computeRange', () => {
   describe.each([[0], [Math.floor(CACHE_LENGTH / 2)], [CACHE_LENGTH - 1]])(
     'start from %i',
     (initialIndex) => {
-      it('should get start if offset is at start', () => {
-        expect(computeRange(measured(), 0, 100, initialIndex)).toEqual([0, 5]);
-      });
-
-      it('should get start + 1 if offset is at start + 1', () => {
-        expect(computeRange(measured(), 20, 20 + 100, initialIndex)).toEqual([1, 6]);
-      });
-
-      it('should get last if offset is at end', () => {
-        const store = measured();
-        const last = store.length - 1;
-        const start = sum(store.sizes);
-        expect(computeRange(store, start, start + 100, initialIndex)).toEqual([last, last]);
-      });
-
-      it('should get last if offset is at end - 1', () => {
-        const store = measured();
-        const last = store.length - 1;
-        const start = sum(store.sizes) - 20;
-        expect(computeRange(store, start, start + 100, initialIndex)).toEqual([last, last]);
-      });
-
-      it('should get last - 1 if offset is at end - 1 and more', () => {
-        const store = measured();
-        const last = store.length - 1;
-        const start = sum(store.sizes) - 20 - 1;
-        expect(computeRange(store, start, start + 100, initialIndex)).toEqual([last - 1, last]);
-      });
-
-      it('should get start if offset is before start', () => {
-        expect(computeRange(measured(), -1000, -1000 + 100, initialIndex)).toEqual([0, 0]);
-      });
-
-      it('should get last if offset is after end', () => {
-        const store = measured();
-        const last = store.length - 1;
-        const start = sum(store.sizes) + 1000;
-        expect(computeRange(store, start, start + 100, initialIndex)).toEqual([last, last]);
+      // 10 rows × 20px: the end is offset 200 and the last row is 9.
+      it.each([
+        ['should get start if offset is at start', 0, [0, 5]],
+        ['should get start + 1 if offset is at start + 1', 20, [1, 6]],
+        ['should get last if offset is at end', 200, [9, 9]],
+        ['should get last if offset is at end - 1', 200 - 20, [9, 9]],
+        ['should get last - 1 if offset is at end - 1 and more', 200 - 20 - 1, [8, 9]],
+        ['should get start if offset is before start', -1000, [0, 0]],
+        ['should get last if offset is after end', 200 + 1000, [9, 9]],
+      ])('%s', (_, start, expected) => {
+        expect(computeRange(measured(), start, start + 100, initialIndex)).toEqual(expected);
       });
 
       it('should get prevStartIndex if offset fits prevStartIndex', () => {

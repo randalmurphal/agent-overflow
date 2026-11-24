@@ -12,28 +12,19 @@ import (
 func TestDispatchLineRawSpawnOutputLabelsLaterWaitAgent(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread:    make(map[string]string),
-			childParentByAgentPath: make(map[string]string),
-			agentPathByThread:      make(map[string]string),
-			agentMetaByThread:      make(map[string]collabReceiverMeta),
-		},
-		rawCalls: sessionRawToolCallState{
-			byID: make(map[string]rawToolCall),
-		},
-	}
+	fx := newConnFixture(t)
+	// The spawn's child metadata read; the app-server reports the labels the
+	// raw spawn output already named.
+	fx.answer("thread/read", `{"thread":{"id":"child-provider-1","agentNickname":"Boyle","agentRole":"explorer"}}`)
+	s := fx.session("parent-thread", "parent-thread", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"agent_type\":\"explorer\",\"message\":\"Inspect parser\"}"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"spawn-1","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["child-provider-1"],"prompt":"Inspect parser","status":"completed"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"child-provider-1\",\"nickname\":\"Boyle\"}"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-1","arguments":"{\"targets\":[\"child-provider-1\"],\"timeout_ms\":10000}"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"status":"inProgress"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"agent_type\":\"explorer\",\"message\":\"Inspect parser\"}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"spawn-1","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["child-provider-1"],"prompt":"Inspect parser","status":"completed"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"child-provider-1\",\"nickname\":\"Boyle\"}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-1","arguments":"{\"targets\":[\"child-provider-1\"],\"timeout_ms\":10000}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"status":"inProgress"}}}`))
 
 	var waitEvent *provider.ProviderEvent
 	for i := range events {
@@ -68,26 +59,19 @@ func TestDispatchLineRawSpawnOutputLabelsLaterWaitAgent(t *testing.T) {
 func TestDispatchLineRawWaitCallPreservesRequestedReceiversOnTimeoutCompletion(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			agentMetaByThread: map[string]collabReceiverMeta{
-				"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
-				"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
-				"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
-			},
-		},
-		rawCalls: sessionRawToolCallState{
-			byID: make(map[string]rawToolCall),
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		agentMetaByThread: map[string]collabReceiverMeta{
+			"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+			"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+			"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
 		},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-1","arguments":"{\"targets\":[\"child-provider-1\"],\"timeout_ms\":10000}"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":[],"agentsStates":{},"status":"completed"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-1","arguments":"{\"targets\":[\"child-provider-1\"],\"timeout_ms\":10000}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":[],"agentsStates":{},"status":"completed"}}}`))
 
 	var waitEvent *provider.ProviderEvent
 	for i := range events {
@@ -125,26 +109,19 @@ func TestDispatchLineRawWaitCallPreservesRequestedReceiversOnTimeoutCompletion(t
 func TestDispatchLineRawWaitCallPreservesAllReceiversSeparatelyOnPartialCompletion(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			agentMetaByThread: map[string]collabReceiverMeta{
-				"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
-				"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
-				"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
-			},
-		},
-		rawCalls: sessionRawToolCallState{
-			byID: make(map[string]rawToolCall),
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		agentMetaByThread: map[string]collabReceiverMeta{
+			"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+			"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+			"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
 		},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-1","arguments":"{\"targets\":[\"child-provider-1\",\"child-provider-2\",\"child-provider-3\"],\"timeout_ms\":10000}"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"agentsStates":{"child-provider-1":{"status":"completed","message":"done"}},"status":"completed"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-1","arguments":"{\"targets\":[\"child-provider-1\",\"child-provider-2\",\"child-provider-3\"],\"timeout_ms\":10000}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"agentsStates":{"child-provider-1":{"status":"completed","message":"done"}},"status":"completed"}}}`))
 
 	var waitEvent *provider.ProviderEvent
 	for i := range events {
@@ -204,34 +181,27 @@ func TestRawWriteStdinWaitResultIgnoresSpoofedCommandOutput(t *testing.T) {
 
 func TestDispatchLineRawToolCallsAreBoundedAndCleared(t *testing.T) {
 	t.Parallel()
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
-		rawCalls: sessionRawToolCallState{
-			byID: make(map[string]rawToolCall),
-		},
-	}
+	s := fixtureSession(t, "parent-thread", "", func(provider.ProviderEvent) {})
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"unrelated","call_id":"ignored-1","arguments":"{}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"unrelated","call_id":"ignored-1","arguments":"{}"}}}`))
 	if len(s.rawCalls.byID) != 0 {
 		t.Fatalf("unrelated raw call retained: %+v", s.rawCalls.byID)
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"write_stdin","call_id":"wait-1","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"\"}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"write_stdin","call_id":"wait-1","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"\"}"}}}`))
 	if len(s.rawCalls.byID) != 1 {
 		t.Fatalf("write_stdin raw call count = %d, want 1", len(s.rawCalls.byID))
 	}
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"wait-1","output":"Process running with session ID pid-42\nOutput:\n"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"wait-1","output":"Process running with session ID pid-42\nOutput:\n"}}}`))
 	if len(s.rawCalls.byID) != 0 {
 		t.Fatalf("raw call not cleared after output: %+v", s.rawCalls.byID)
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-agent-1","arguments":"{\"targets\":[\"child-provider-1\"]}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-agent-1","arguments":"{\"targets\":[\"child-provider-1\"]}"}}}`))
 	if len(s.rawCalls.byID) != 1 {
 		t.Fatalf("wait_agent raw call count = %d, want 1", len(s.rawCalls.byID))
 	}
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"parent-thread","turn":{"id":"turn-1","status":"completed"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"parent-thread","turn":{"id":"turn-1","status":"completed"}}}`))
 	if len(s.rawCalls.byID) != 0 {
 		t.Fatalf("raw calls not cleared on turn complete: %+v", s.rawCalls.byID)
 	}
@@ -240,19 +210,12 @@ func TestDispatchLineRawToolCallsAreBoundedAndCleared(t *testing.T) {
 func TestDispatchLineRawExecCommandOutputEmitsModelResult(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		rawCalls: sessionRawToolCallState{
-			byID: make(map[string]rawToolCall),
-		},
-	}
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"exec_command","call_id":"cmd-1","arguments":"{\"cmd\":\"sleep 10\"}"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"cmd-1","output":"Chunk ID: abc\nWall time: 1.0000 seconds\nProcess running with session ID 17313\nOutput:\n"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"exec_command","call_id":"cmd-1","arguments":"{\"cmd\":\"sleep 10\"}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"cmd-1","output":"Chunk ID: abc\nWall time: 1.0000 seconds\nProcess running with session ID 17313\nOutput:\n"}}}`))
 
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1: %+v", len(events), events)

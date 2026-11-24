@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccountapp"
@@ -41,8 +42,8 @@ func startClaudeLoginMock(t *testing.T) (*claude.LoginSession, string) {
 	return session, configDir
 }
 
-func TestClaudeSignInMockAnswersBothLinks(t *testing.T) {
-	session, _ := startClaudeLoginMock(t)
+func TestClaudeSignInMockCompletesOnThePastedCode(t *testing.T) {
+	session, configDir := startClaudeLoginMock(t)
 	urls, err := session.Authenticate(t.Context())
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
@@ -56,14 +57,6 @@ func TestClaudeSignInMockAnswersBothLinks(t *testing.T) {
 	if state := mockLoginState(t, urls.ManualURL); state != mockLoginState(t, urls.AutomaticURL) {
 		t.Fatalf("the two links carry different state: %q vs %q",
 			state, mockLoginState(t, urls.AutomaticURL))
-	}
-}
-
-func TestClaudeSignInMockCompletesOnThePastedCode(t *testing.T) {
-	session, configDir := startClaudeLoginMock(t)
-	urls, err := session.Authenticate(t.Context())
-	if err != nil {
-		t.Fatalf("Authenticate: %v", err)
 	}
 	if err := session.SubmitCallback(t.Context(), mockClaudeLoginCode, mockLoginState(t, urls.ManualURL)); err != nil {
 		t.Fatalf("SubmitCallback: %v", err)
@@ -193,7 +186,7 @@ func startCodexLoginMock(t *testing.T) (*codex.LoginSession, *control.Server, st
 		Version:  scenario.CurrentVersion,
 		Name:     "codex-login",
 		Provider: scenario.ProviderCodex,
-		Turns:    []scenario.Turn{{Label: "idle", Steps: []scenario.Step{}}},
+		Turns:    []scenario.Turn{{Label: "idle", Steps: []scenario.Step{{DelayMs: 1}}}},
 	})
 	if err != nil {
 		t.Fatalf("marshal scenario: %v", err)
@@ -227,10 +220,9 @@ func startCodexLoginMock(t *testing.T) (*codex.LoginSession, *control.Server, st
 		Reaper:  procutiltest.Reaper(),
 		Binary:  mockBin,
 		WorkDir: t.TempDir(),
-		Env: map[string]string{
-			"CODEX_HOME":     home,
-			control.EnvAddr:  srv.Addr(),
-			control.EnvToken: srv.Token(),
+		Env: provider.EnvInput{
+			Custom: map[string]string{control.EnvAddr: srv.Addr(), control.EnvToken: srv.Token()},
+			Pins:   map[provider.ReservedEnv]string{provider.CodexHomeEnv: home},
 		},
 	})
 	if err != nil {
@@ -273,7 +265,7 @@ func TestCodexDeviceSignInMockCompletesOnTheControlTrigger(t *testing.T) {
 		Reaper:  procutiltest.Reaper(),
 		Binary:  mockBin,
 		WorkDir: t.TempDir(),
-		Env:     map[string]string{"CODEX_HOME": home},
+		Env:     provider.EnvInput{Pins: map[provider.ReservedEnv]string{provider.CodexHomeEnv: home}},
 	})
 	if err != nil {
 		t.Fatalf("ProbeAccount after sign-in: %v", err)

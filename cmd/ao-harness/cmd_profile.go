@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -98,7 +99,7 @@ func runProfileContext(ctx context.Context, e *env, args []string) error {
 			return fmt.Errorf("profile requires an active memory watchdog: %w", err)
 		}
 		if err := requireHarnessProtocol(client, capabilityRequirements{
-			Methods: []string{"HarnessSetScenario", "HarnessUIQuery", "HarnessEmit", "SendMessage"},
+			Methods: []string{"HarnessSetScenario", "HarnessUIQuery", "HarnessEmit", harnessclient.SendMethod},
 			Queries: []string{"element", "globals", "viewport"},
 		}); err != nil {
 			return err
@@ -180,7 +181,10 @@ type profileTurn struct {
 // scenario, drive one turn, stop. The scenario is installed AFTER the
 // profiler starts on purpose — installing it is an RPC that touches the
 // page not at all, and starting the profiler first means the very first
-// wire frame of the turn is already inside the sampled window.
+// wire frame of the turn is already inside the sampled window. A thread
+// that is working refuses the send, because its turn would be in the window
+// and the turn the message runs in could not be named; the profile then
+// fails with the scenario installed and the profiler stopped.
 func profileOneTurn(
 	ctx context.Context,
 	e *env,
@@ -221,9 +225,11 @@ func profileOneTurn(
 	}
 	turnCtx, cancel := context.WithTimeout(ctx, turn.timeout)
 	defer cancel()
-	if _, err := awaitTurnAfterSend(turnCtx, client, turn.threadID, turn.message); err != nil {
-		_, _ = stop()
-		return nil, err
+	if _, err := client.SendAndAwaitTurn(turnCtx, turn.threadID, turn.message); err != nil {
+		if _, stopErr := stop(); stopErr != nil {
+			return nil, errors.Join(fmt.Errorf("%w; scenario %s is installed", err, turn.scenario), fmt.Errorf("stop the profiler: %w", stopErr))
+		}
+		return nil, fmt.Errorf("%w; scenario %s is installed and the profiler stopped", err, turn.scenario)
 	}
 	// The profiler keeps running through the reveal drain. The turn closing
 	// is the WIRE finishing; the reveal queue then hands the result to the

@@ -364,3 +364,13 @@ func TestCancelThreadRemoteCommandsReturnsBothFailures(t *testing.T) {
 		t.Fatalf("err = %v, want the dismiss failure", err)
 	}
 }
+
+// err is the cleanup's failure, or nil when every part succeeded. The
+// public message is the outermost layer, so it is what every caller is
+// shown even when a cause carries public prose of its own.
+func (e threadCleanupError) err() error {
+	if e.Unwrap() == nil {
+		return nil
+	}
+	return errorsx.Public(threadtools.CodeCleanupFailed, e.message(), &e)
+}

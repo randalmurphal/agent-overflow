@@ -68,7 +68,7 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					t.Cleanup(func() { _ = entry.Claude.Close() })
+					t.Cleanup(func() { closeSessionChecked(t, entry.Claude) })
 				} else {
 					cfg := codex.ConfigFromOptions(opts)
 					cfg.Reaper = procutiltest.Reaper()
@@ -77,7 +77,7 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					t.Cleanup(func() { _ = entry.Codex.Close() })
+					t.Cleanup(func() { closeSessionChecked(t, entry.Codex) })
 				}
 				app.sessionManager().put(thread.ID, entry)
 				seedBackgroundLaunchRowE2E(t, app.store, thread.ID, "running-job", "Bash", "long job")
@@ -125,7 +125,6 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 				assertPreserved()
 				for i, selectModel := range []func() error{
 					func() error { _, err := app.UpdateThreadModelSelection(thread.ID, providerName, nextModel); return err },
-					func() error { _, err := app.UpdateThreadModel(thread.ID, nextModel); return err },
 				} {
 					meta, _ := json.Marshal(map[string]string{"fallbackModel": thread.Model})
 					if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventModelFallback, ThreadID: thread.ID, ItemID: string(rune('a' + i)), Meta: meta}); err != nil {
@@ -151,7 +150,8 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 						writes++
 					}
 				}
-				want := 3
+				// One write for the switch and one for the retry after a fallback.
+				want := 2
 				if providerName == "codex" && activeTurn {
 					want = 0
 				}
@@ -227,7 +227,7 @@ func TestDeferredConfigReconnectRechecksWorkAfterLiveApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: "claude", Token: "busy-token", Claude: sess, LaunchOptions: opts, Liveness: live})
 	restarted := false
 	app.startSessionFn = func(string) error { restarted = true; return nil }

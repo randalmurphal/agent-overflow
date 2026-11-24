@@ -6,14 +6,12 @@ import { createThreadPane } from '../../../stores/thread.svelte';
 import type { Project, RuntimeMode, Thread } from '../../../types/models';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { buildPane as buildRegisteredPane } from '../../../../test/helpers/chat';
 import { modelCatalog } from '../../../../test/helpers/modelCatalog';
 import {
   ensureProviderModels,
-  resetProviderModelsForTest,
 } from '../../../stores/providerModels.svelte';
 import type { ModelInfo } from '../../../types/settings';
 import { withEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
@@ -52,33 +50,47 @@ function makeProject(): Project {
 
 describe('<AccessToggle>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetProviderModelsForTest();
     setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   });
 
-  it('renders the current tier label', async () => {
-    const pane = await buildPane('approval-required');
+  // A workflow phase declaring `access: read-only` persists this mode on its
+  // thread row, so any surface that renders a thread must display it rather
+  // than silently falling back to the full-access label — which would show an
+  // unattended, restricted session as unrestricted.
+  it.each([
+    { name: 'renders the current tier label', mode: 'approval-required', label: 'Supervised' },
+    { name: 'exposes the current mode as a data attribute', mode: 'auto-accept-edits', label: 'Auto-accept edits' },
+    { name: 'renders the read-only tier rather than falling back', mode: 'read-only', label: 'Read-only' },
+  ] as const)('$name', async ({ mode, label }) => {
+    const pane = await buildPane(mode);
     const { getByTestId } = render(AccessToggle, { props: { pane } });
-    expect(getByTestId('composer-access-toggle').textContent ?? '').toMatch(/Supervised/);
+
+    const trigger = getByTestId('composer-access-toggle');
+    expect(trigger.getAttribute('data-mode')).toBe(mode);
+    expect(trigger.textContent).toContain(label);
+    expect(trigger.getAttribute('aria-label')).toBe(`Runtime Access Mode: ${label}`);
   });
 
-  it('persists a selected mode on a materialized thread', async () => {
-    const pane = await buildPane('approval-required');
-    const updated = makeThread('auto-accept-edits');
-    const update = setBindingMock('UpdateThreadRuntimeMode', async () => updated);
+  it.each([
+    { name: 'persists a selected mode on a materialized thread', from: 'approval-required', to: 'auto-accept-edits', item: /Auto-accept edits/ },
+    { name: 'persists a read-only selection', from: 'full-access', to: 'read-only', item: /Read-only/ },
+    // Exact name, not /Auto/ — that substring also matches "Auto-accept
+    // edits", and a picker that silently selected the neighbouring tier is
+    // precisely the bug the tier ordering could introduce.
+    { name: 'persists the auto tier on a materialized thread', from: 'approval-required', to: 'auto', item: /^Auto A model reviews/ },
+  ] as const)('$name', async ({ from, to, item }) => {
+    const pane = await buildPane(from);
+    const update = setBindingMock('UpdateThreadRuntimeMode', async () => makeThread(to));
     const { getByRole, getByTestId } = render(AccessToggle, { props: { pane } });
 
     await fireEvent.click(getByTestId('composer-access-toggle'));
-    await fireEvent.click(getByRole('menuitem', { name: /Auto-accept edits/ }));
+    await fireEvent.click(getByRole('menuitem', { name: item }));
 
-    expect(update).toHaveBeenCalledWith('thread-1', 'auto-accept-edits');
+    expect(update).toHaveBeenCalledWith('thread-1', to);
     await waitFor(() => {
-      expect(getByTestId('composer-access-toggle').getAttribute('data-mode')).toBe(
-        'auto-accept-edits',
-      );
+      expect(getByTestId('composer-access-toggle').getAttribute('data-mode')).toBe(to);
     });
-    expect(pane.thread?.runtimeMode).toBe('auto-accept-edits');
+    expect(pane.thread?.runtimeMode).toBe(to);
   });
 
   it('applies a mode picked during an empty-draft delete to the placeholder it leaves', async () => {
@@ -155,14 +167,6 @@ describe('<AccessToggle>', () => {
     expect(getBindingMock('UpdateThreadRuntimeMode')).not.toHaveBeenCalled();
   });
 
-  it('exposes the current mode as a data attribute', async () => {
-    const pane = await buildPane('auto-accept-edits');
-    const { getByTestId } = render(AccessToggle, { props: { pane } });
-    expect(getByTestId('composer-access-toggle').getAttribute('data-mode')).toBe(
-      'auto-accept-edits',
-    );
-  });
-
   it('shows tier descriptions in the access menu', async () => {
     const pane = await buildPane('full-access');
     const { getByText, getByTestId } = render(AccessToggle, { props: { pane } });
@@ -176,35 +180,6 @@ describe('<AccessToggle>', () => {
       getByText('A model reviews each action instead of you. Costs extra tokens, and it can refuse.'),
     ).toBeTruthy();
     expect(getByText('Allow commands and edits without prompts.')).toBeTruthy();
-  });
-
-  // A workflow phase declaring `access: read-only` persists this mode on its
-  // thread row, so any surface that renders a thread must display it rather
-  // than silently falling back to the full-access label — which would show an
-  // unattended, restricted session as unrestricted.
-  it('renders the read-only tier rather than falling back', async () => {
-    const pane = await buildPane('read-only');
-    const { getByTestId } = render(AccessToggle, { props: { pane } });
-
-    const trigger = getByTestId('composer-access-toggle');
-    expect(trigger.getAttribute('data-mode')).toBe('read-only');
-    expect(trigger.textContent).toContain('Read-only');
-    expect(trigger.getAttribute('aria-label')).toBe('Runtime Access Mode: Read-only');
-  });
-
-  it('persists a read-only selection', async () => {
-    const pane = await buildPane('full-access');
-    const updated = makeThread('read-only');
-    const update = setBindingMock('UpdateThreadRuntimeMode', async () => updated);
-    const { getByRole, getByTestId } = render(AccessToggle, { props: { pane } });
-
-    await fireEvent.click(getByTestId('composer-access-toggle'));
-    await fireEvent.click(getByRole('menuitem', { name: /Read-only/ }));
-
-    expect(update).toHaveBeenCalledWith('thread-1', 'read-only');
-    await waitFor(() => {
-      expect(getByTestId('composer-access-toggle').getAttribute('data-mode')).toBe('read-only');
-    });
   });
 
   // The order is the product decision, not incidental array order: the menu
@@ -230,24 +205,6 @@ describe('<AccessToggle>', () => {
       'Auto A model reviews each action instead of you',
       'Full access Allow commands and edits without prompts',
     ]);
-  });
-
-  it('persists the auto tier on a materialized thread', async () => {
-    const pane = await buildPane('approval-required');
-    const update = setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto'));
-    const { getByRole, getByTestId } = render(AccessToggle, { props: { pane } });
-
-    await fireEvent.click(getByTestId('composer-access-toggle'));
-    // Exact name, not /Auto/ — that substring also matches "Auto-accept
-    // edits", and a picker that silently selected the neighbouring tier is
-    // precisely the bug this ordering change could introduce.
-    await fireEvent.click(getByRole('menuitem', { name: /^Auto A model reviews/ }));
-
-    expect(update).toHaveBeenCalledWith('thread-1', 'auto');
-    await waitFor(() => {
-      expect(getByTestId('composer-access-toggle').getAttribute('data-mode')).toBe('auto');
-    });
-    expect(pane.thread?.runtimeMode).toBe('auto');
   });
 
   // The trigger's tooltip is where a user who never opens the menu meets the
@@ -296,8 +253,11 @@ describe('<AccessToggle>', () => {
       expect(getBindingMock('UpdateThreadRuntimeMode')).not.toHaveBeenCalled();
     });
 
-    it('keeps Auto selectable when the wire never answered', async () => {
-      setBindingMock('GetModelsForProvider', async () => modelCatalog([catalogRow()]));
+    it.each<{ name: string; model: ModelInfo }>([
+      { name: 'when the wire never answered', model: catalogRow() },
+      { name: 'for a model the catalog does not list', model: { slug: 'some-other-model', name: 'Other', provider: 'claude', supportsAutoMode: false } },
+    ])('keeps Auto selectable $name', async ({ model }) => {
+      setBindingMock('GetModelsForProvider', async () => modelCatalog([model]));
       await ensureProviderModels('claude');
       const pane = await buildPane('approval-required');
       const update = setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto'));
@@ -309,21 +269,6 @@ describe('<AccessToggle>', () => {
       expect(autoRow.getAttribute('aria-disabled')).toBeNull();
 
       await fireEvent.click(autoRow);
-      expect(update).toHaveBeenCalledWith('thread-1', 'auto');
-    });
-
-    it('keeps Auto selectable for a model the catalog does not list', async () => {
-      setBindingMock('GetModelsForProvider', async () => modelCatalog([
-        { slug: 'some-other-model', name: 'Other', provider: 'claude', supportsAutoMode: false },
-      ]));
-      await ensureProviderModels('claude');
-      const pane = await buildPane('approval-required');
-      const update = setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto'));
-      const { getByRole, getByTestId } = render(AccessToggle, { props: { pane } });
-
-      await fireEvent.click(getByTestId('composer-access-toggle'));
-      await fireEvent.click(getByRole('menuitem', { name: /^Auto\b(?!-)/ }));
-
       expect(update).toHaveBeenCalledWith('thread-1', 'auto');
     });
   });

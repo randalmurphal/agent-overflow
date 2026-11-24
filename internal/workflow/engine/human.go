@@ -16,11 +16,14 @@ import (
 // `workflowrunner.MaxFeedbackNoteRunes`.
 const MaxHumanNoteBytes = 16 * 1024
 
-func (e *Engine) takeOver(itemID string) error {
+func (e *Engine) takeOver(itemID string, parkedOnly bool) error {
 	item, tracked := e.items[itemID]
 	if tracked {
 		if State(item.item.State) != StateRunning {
 			return fmt.Errorf("take over item %q: invalid state %s", itemID, item.item.State)
+		}
+		if parkedOnly {
+			return fmt.Errorf("take over item %q: %w", itemID, ErrRunActive)
 		}
 	} else {
 		var err error

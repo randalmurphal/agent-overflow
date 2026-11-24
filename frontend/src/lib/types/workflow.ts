@@ -3,7 +3,6 @@ import type {
   ProjectDeletionPreview,
   ProjectDeletionResult,
   RetainedWorktree,
-  WorkflowArtifact,
   WorkflowDefinitionCatalog,
   WorkflowDefinitionInput,
   WorkflowDefinitionListing,
@@ -14,7 +13,6 @@ import type {
   WorkflowItemUnitView,
   WorkflowAgentRunBudget,
   WorkflowRunMapPhaseAttempt,
-  WorkflowRunMapRefusal,
   WorkflowRunMapRun,
   WorkflowRunMapSkeletonPhase,
   WorkflowRunMapUnit,
@@ -23,7 +21,6 @@ import type {
 } from '../../../bindings/agent-overflow/internal/app/models';
 import type {
   WorkItem,
-  WorkItemUsage,
 } from '../../../bindings/agent-overflow/internal/store/models';
 
 export type WorkflowItemDetail = WorkflowItemDetailView;
@@ -139,12 +136,6 @@ export interface WorkflowResolvedReceipt {
   costUsd: number;
 }
 
-export interface WorkflowDefinitionView {
-  projectId: string;
-  catalog: WorkflowDefinitionCatalog;
-  definition: WorkflowDefinitionListing;
-}
-
 export type {
   // Project deletion (D25) walks the same run trees the workflow surfaces do,
   // so its shapes live here rather than growing a parallel definition next to
@@ -154,8 +145,6 @@ export type {
   ProjectDeletionResult,
   RetainedWorktree,
   WorkItem,
-  WorkItemUsage,
-  WorkflowArtifact,
   WorkflowDefinitionCatalog,
   WorkflowDefinitionInput,
   WorkflowDefinitionListing,
@@ -166,7 +155,6 @@ export type {
   // through the same module as every other workflow type.
   WorkflowAgentRunBudget,
   WorkflowRunMapPhaseAttempt,
-  WorkflowRunMapRefusal,
   WorkflowRunMapRun,
   WorkflowRunMapSkeletonPhase,
   WorkflowRunMapUnit,

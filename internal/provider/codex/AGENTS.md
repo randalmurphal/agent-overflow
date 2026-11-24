@@ -44,14 +44,21 @@ reversible. An unclaimed `turn/started` is adopted as active with origin
 ## Routing and collaboration
 
 Notification routing resolves identity and ownership before classification.
-Hold unknown-child notifications and requests in the bounded pending queue
-until ownership resolves, and reject them when its deadline expires. Child
+The connection holds unknown-child notifications and requests in one bounded
+hold per thread until a spawn claims the thread, and rejects or drops them when
+the deadline expires. A session delivers a child's frame only when the
+connection routes that child to it. The route starts after the spawn row is
+emitted, stops at close_agent, and starts again after a completed resume_agent
+row; close_agent keeps the child's spawn identity. A frame the session receives
+for a thread routed to another session goes to that session, any other goes
+back to the hold, and the session keeps nothing for it. Child
 token usage may be re-scoped to the root; child lifecycle and content must not
 mutate root turn state.
 
-Recover collaboration ownership from persisted launches and verified descendant
-metadata. Bounded item-page reads may locate an original spawn when its event
-was missed; never replay unrelated transcript items or use a send as a spawn.
+Recover collaboration ownership on resume from persisted launches and verified
+descendant metadata. Bounded item-page reads may locate an original spawn when
+its event was missed; never replay unrelated transcript items or use a send as
+a spawn.
 Only an owned child's execution signals may settle current launch runtime.
 
 Use typed wire fields for background and collaboration ownership. Requested

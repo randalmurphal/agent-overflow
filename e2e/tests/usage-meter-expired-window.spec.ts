@@ -37,7 +37,7 @@ test('an expired usage window shows 0% with no reset countdown', async ({ harnes
   await harness.open(page);
   await page.getByTestId('thread-row').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'go', null);
+  await harness.send(threadId, 'go');
   await harness.waitForEvent('provider:turn_completed');
 
   const tooltipFor = async (window: '5h' | '7d') => {

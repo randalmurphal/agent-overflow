@@ -4,15 +4,13 @@
 // touch: the parameterized testids that let each pane surface keep its own
 // identity, and the no-thread gate.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PaneTitleHandle from './PaneTitleHandle.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetProjectsForTest } from '../../stores/projects.svelte';
-import { resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Thread } from '../../types/models';
 import { TransportError } from '../../transport/wsClient';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
@@ -36,12 +34,6 @@ async function buildPane(thread: Thread = makeThread(), paneId = 'main') {
 }
 
 describe('<PaneTitleHandle>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetProjectsForTest();
-    resetSidebarForTest();
-    resetPanesForTest();
-  });
 
   it('defaults to the pane-title testid and renders the thread title as a button', async () => {
     const pane = await buildPane(makeThread({ title: 'Defaulted' }));

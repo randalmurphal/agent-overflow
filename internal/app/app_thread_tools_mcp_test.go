@@ -2,6 +2,7 @@ package app
 
 import (
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 	"bufio"
 	"context"
@@ -186,7 +187,7 @@ func TestStartSession_ClaudeAllowsTheThreadToolsWithoutAPrompt(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -205,6 +206,7 @@ func writeCodexRequestLogBinary(t *testing.T, logPath string) string {
 		"  printf '%s\\n' \"$line\" >> '" + logPath + "'\n" +
 		"  id=$(printf '%s' \"$line\" | grep -o '\"id\":[0-9]*' | head -1 | grep -o '[0-9]*')\n" +
 		"  if [ -z \"$id\" ]; then continue; fi\n" +
+		testutil.MockCodexUnsubscribeShell +
 		"  if printf '%s' \"$line\" | grep -q '\"method\":\"config/read\"'; then\n" +
 		"    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"config\":{}}}\\n' \"$id\"\n" +
 		"  else\n" +
@@ -257,7 +259,7 @@ func TestStartSession_CodexCarriesTheThreadToolsEntryAndGuide(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": writeCodexRequestLogBinary(t, logPath)}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -314,7 +316,7 @@ func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	params := waitForCodexRequest(t, logPath, "thread/start")
@@ -337,7 +339,7 @@ func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) 
 	if _, err := app.settings.Update(map[string]any{"threadToolsEnabled": false}); err != nil {
 		t.Fatalf("disable thread tools: %v", err)
 	}
-	if err := app.StartSession(other.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), other.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	params = waitForCodexRequest(t, logPath, "thread/start")
@@ -371,7 +373,7 @@ func TestThreadToolsSwitchReachesLiveSessions(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(func() { _ = sess.Close() })
+				t.Cleanup(func() { closeSessionChecked(t, sess) })
 				app.sessionManager().put(thread.ID, session{Token: token, Provider: name, Claude: sess})
 			} else {
 				sess, err := newCodexSessionForThreadTools(t, ctx, thread, capture)
@@ -500,7 +502,7 @@ func newCodexSessionForThreadTools(t *testing.T, ctx context.Context, thread sto
 	if err != nil {
 		return nil, err
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	return sess, nil
 }
 

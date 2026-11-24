@@ -524,8 +524,8 @@ func (m *Manager) openCodexLoginFlow(
 		session, err := codex.StartLogin(ctx, codex.LoginConfig{
 			Binary:  run.attempt.binary,
 			WorkDir: providerProbeWorkDir(),
-			Env: m.providerLoginEnv(run.provider, map[string]string{
-				"CODEX_HOME": run.attempt.home.Path,
+			Env: m.providerLoginEnv(run.provider, map[provider.ReservedEnv]string{
+				provider.CodexHomeEnv: run.attempt.home.Path,
 			}),
 			Reaper: m.deps.Reaper,
 		})

@@ -116,7 +116,7 @@ function unsettled(items: Item[]): string[] {
 async function launchFleet(harness: HarnessApp, threadId: string, agents: number): Promise<string> {
   const mockId = await startMock(harness, threadId);
   const first = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'launch every agent', null);
+  await harness.send(threadId, 'launch every agent');
   await first;
   await waitForGate(harness, 'work');
   await harness.rpc('HarnessMockCommand', mockId, { type: 'advance', name: 'work' });
@@ -174,7 +174,7 @@ test('Stop kills 100 agents with 3 shells each: acked without a timeout, every r
 
   const threadId = await seedAgentThread(harness, 'stop-scale-app', 'Stop at scale');
   await launchFleet(harness, threadId, agents);
-  await harness.rpc('SendMessage', threadId, 'what next', null);
+  await harness.send(threadId, 'what next');
   await waitForGate(harness, 'never');
 
   const listed = await harness.rpc<Array<{ transcriptRootId: string }>>('RunningBackgroundAgents', threadId);
@@ -237,7 +237,7 @@ async function stopAllRun(harness: HarnessApp, page: Page, wire: WireRecorder, a
   await arrived;
   const tally = wire.stop();
   await expect(page.getByTestId('toast').filter({ hasText: /Failed to stop/ })).toHaveCount(0);
-  await harness.rpc('StopSession', threadId);
+  await harness.stopSession(threadId);
   return {
     agents,
     toTrayEmptyMs,

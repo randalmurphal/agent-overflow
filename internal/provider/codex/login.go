@@ -50,7 +50,7 @@ type LoginConfig struct {
 	// epilogue has decided where it goes. The rest of the map matters for the
 	// reason it matters to a probe — the environment picks which backend
 	// answers, and the account adopted must be the one authenticated.
-	Env map[string]string
+	Env provider.EnvInput
 }
 
 // LoginStart is what one account/login/start answered. Which fields are
@@ -136,15 +136,14 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	if binary == "" {
 		binary = "codex"
 	}
-	if strings.TrimSpace(cfg.Env["CODEX_HOME"]) == "" {
+	if strings.TrimSpace(cfg.Env.Pins[provider.CodexHomeEnv]) == "" {
 		return nil, errors.New("codex: sign-in requires an isolated CODEX_HOME")
 	}
 	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
 		Binary:   binary,
 		Args:     codexAppServerArgs(),
 		Dir:      cfg.WorkDir,
-		Env:      cfg.Env,
-		UnsetEnv: []string{"CODEX_HOME"},
+		Env:      cfg.Env.Clear(provider.CodexHomeEnv),
 		Provider: "codex",
 	})
 	if err != nil {

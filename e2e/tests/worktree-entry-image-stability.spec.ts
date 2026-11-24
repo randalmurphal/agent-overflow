@@ -235,7 +235,7 @@ async function run(harness: HarnessApp, page: Page, historyImagePath: string): P
   await startMock(harness, threadId);
 
   let completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'show me', null);
+  await harness.send(threadId, 'show me');
   await completed;
   const images = timeline.locator('img[data-markdown-image-src]');
   await expect(images).toHaveCount(3);
@@ -247,14 +247,20 @@ async function run(harness: HarnessApp, page: Page, historyImagePath: string): P
   await expect
     .poll(async () => await timeline.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop <= 1))
     .toBe(true);
-  await page.waitForTimeout(500);
 
   await installSampler(page);
   completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'build it', null);
+  await harness.send(threadId, 'build it');
   await completed;
   await expect(timeline.getByText('Done with the build.')).toBeVisible({ timeout: 20_000 });
-  await page.waitForTimeout(1500);
+  // The page has taken the move into the worktree, every image has painted
+  // again under it, and the sampler has seen frames after that.
+  await expect(page.getByTestId('env-picker-trigger')).toHaveText('read-aloud');
+  await expect
+    .poll(async () => await images.evaluateAll((all: HTMLImageElement[]) =>
+      all.map((img) => (img.complete ? img.naturalHeight : 0))))
+    .toEqual([HISTORY_PX, ABSOLUTE_PX, RELATIVE_PX]);
+  await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
 
   // The turn did what it is here to do: the narration left its run as
   // prose, and the thread followed the agent into the worktree.

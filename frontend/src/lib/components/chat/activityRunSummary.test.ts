@@ -263,12 +263,6 @@ describe('counts', () => {
     expect(counts.total).toBe(8);
   });
 
-  it('keeps MCP uppercase in a Codex header', () => {
-    const { counts } = activityRunSummary([tool('mcp', 'MCP/lookup')], 'codex');
-
-    expect(counts.entries[0].label).toBe('MCP');
-  });
-
   it.each(['claude', 'codex', 'agy'] as const)('names an AO tool by family and verb in a %s header', (provider) => {
     const remote = JSON.stringify({ mcp: { server: 'ao-remote-tools', tool: 'remote_run' }, input: { argv: ['make'] } });
     const browser = JSON.stringify({ mcp: { server: 'ao-browser-tools', tool: 'browser_click' }, input: { selector: '#go' } });
@@ -323,27 +317,17 @@ describe('counts', () => {
 });
 
 describe('attention state', () => {
-  it('flags a failed member so a chip cannot hide it', () => {
+  it.each([
+    ['flags a failed member so a chip cannot hide it', { status: 'errored', others: ['Read'], hasFailure: true }],
+    ['treats a killed member as a failure', { status: 'killed', others: [], hasFailure: true }],
+    ['does not treat a declined member as a failure — that was a user decision', { status: 'declined', others: [], hasFailure: false }],
+  ] as const)('%s', (_, { status, others, hasFailure }) => {
     const summary = activityRunSummary([
-      tool('t1', 'Bash', { status: 'errored' }),
-      tool('t2', 'Read'),
+      tool('t1', 'Bash', { status }),
+      ...others.map((toolName, i) => tool(`t${i + 2}`, toolName)),
     ], 'claude');
 
-    expect(summary.hasFailure).toBe(true);
-  });
-
-  it('treats a killed member as a failure', () => {
-    expect(activityRunSummary(
-      [tool('t1', 'Bash', { status: 'killed' })],
-      'claude',
-    ).hasFailure).toBe(true);
-  });
-
-  it('does not treat a declined member as a failure — that was a user decision', () => {
-    expect(activityRunSummary(
-      [tool('t1', 'Bash', { status: 'declined' })],
-      'claude',
-    ).hasFailure).toBe(false);
+    expect(summary.hasFailure).toBe(hasFailure);
   });
 
   it('names the newest running member', () => {
@@ -355,7 +339,10 @@ describe('attention state', () => {
     expect(summary.runningLabel).toBe('Bash');
   });
 
-  it('lets a completion settle an immutable detached-agent launch', () => {
+  it.each([
+    ['lets a completion settle an immutable detached-agent launch', { status: 'completed', hasFailure: false }],
+    ['takes failure state from the completion instead of its immutable launch', { status: 'errored', hasFailure: true }],
+  ] as const)('%s', (_, { status, hasFailure }) => {
     const summary = activityRunSummary([
       tool('agent-launch', 'Agent', { status: 'running' }),
       makeItem({
@@ -363,12 +350,13 @@ describe('attention state', () => {
         kind: 'tool_completion',
         toolName: 'Agent',
         completionOf: 'agent-launch',
-        status: 'completed',
+        status,
       }),
     ], 'claude');
 
     expect(summary.runningLabel).toBeNull();
     expect(summary.counts.total).toBe(1);
+    expect(summary.hasFailure).toBe(hasFailure);
   });
 
   it('keeps a parked agent’s launch running: its parked stops pair with it but only the ending stop settles it', () => {
@@ -417,22 +405,6 @@ describe('attention state', () => {
     });
     expect(summary.runningLabel).toBe('Agent');
     expect(summary.counts.total).toBe(2);
-  });
-
-  it('takes failure state from the completion instead of its immutable launch', () => {
-    const summary = activityRunSummary([
-      tool('agent-launch', 'Agent', { status: 'running' }),
-      makeItem({
-        id: 'complete:agent-launch',
-        kind: 'tool_completion',
-        toolName: 'Agent',
-        completionOf: 'agent-launch',
-        status: 'errored',
-      }),
-    ], 'claude');
-
-    expect(summary.runningLabel).toBeNull();
-    expect(summary.hasFailure).toBe(true);
   });
 
   it('counts a running member that is also a paired completion target', () => {

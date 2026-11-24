@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import McpElicitationPanel from './McpElicitationPanel.svelte';
 import { ApprovalResponse } from '../../../stores/bindings';
 import type { ApprovalRequest } from '../../../types/events';
-import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../../test/mocks/bindings-app';
 
 // Typed resolver so .mock.calls[0][0] is ApprovalResponse, not undefined.
 function makeResolver(
@@ -16,10 +16,6 @@ function makeResolver(
 // Composer approval elicitation suite; these tests exercise the panel in
 // isolation so regressions here don't silently coast on the dispatcher
 // wrapping it.
-
-beforeEach(() => {
-  resetBindingMocks();
-});
 
 function formApproval(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
   return {
@@ -170,7 +166,10 @@ describe('<McpElicitationPanel>', () => {
     expect(getByTestId('el-error-host').textContent).toMatch(/required/i);
   });
 
-  it('Decline sends a decline action with no content', async () => {
+  it.each([
+    ['Decline', 'decline'],
+    ['Cancel', 'cancel'],
+  ])('%s sends a %s action with no content', async (_label, action) => {
     const onResolve = makeResolver();
     const { getByTestId } = render(McpElicitationPanel, {
       props: {
@@ -179,28 +178,11 @@ describe('<McpElicitationPanel>', () => {
         onError: vi.fn(),
       },
     });
-    await fireEvent.click(getByTestId('elicitation-decline'));
+    await fireEvent.click(getByTestId(`elicitation-${action}`));
     await waitFor(() => expect(onResolve).toHaveBeenCalled());
     const response = onResolve.mock.calls[0][0] as ApprovalResponse;
     const el = response.elicitation as { action: string; content: unknown };
-    expect(el.action).toBe('decline');
-    expect(el.content).toBeUndefined();
-  });
-
-  it('Cancel sends a cancel action with no content', async () => {
-    const onResolve = makeResolver();
-    const { getByTestId } = render(McpElicitationPanel, {
-      props: {
-        approval: formApproval(),
-        onResolve,
-        onError: vi.fn(),
-      },
-    });
-    await fireEvent.click(getByTestId('elicitation-cancel'));
-    await waitFor(() => expect(onResolve).toHaveBeenCalled());
-    const response = onResolve.mock.calls[0][0] as ApprovalResponse;
-    const el = response.elicitation as { action: string; content: unknown };
-    expect(el.action).toBe('cancel');
+    expect(el.action).toBe(action);
     expect(el.content).toBeUndefined();
   });
 

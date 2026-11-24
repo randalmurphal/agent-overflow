@@ -344,3 +344,10 @@ func TestCodexResumeCollabLaunchesReturnsOnlyUnresolvedOwnership(t *testing.T) {
 		t.Fatalf("a spawn whose answer already landed returned ownership: %+v", launches)
 	}
 }
+
+// runSessionStart is runRegisteredSessionStart for a test that needs only
+// the start's error.
+func (a *App) runSessionStart(ctx context.Context, threadID string, start func() error) error {
+	_, err := a.runRegisteredSessionStart(ctx, threadID, start)
+	return err
+}

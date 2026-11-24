@@ -10,8 +10,8 @@ import (
 
 // Paging tests cover:
 //   - History windows, budgets, and probes count top-level rows only —
-//     subagent children load on demand via ListSubagentDescendants and
-//     are summarised on their anchor by decorateSubagentAnchors.
+//     subagent children load in their agent's scoped pages and are
+//     summarised on their anchor by decorateSubagentAnchors.
 //   - The cursor pagers (ListItemsBeforeCursor / ListItemsAfterCursor)
 //     respect their exclusive bound and report HasMoreOlder /
 //     HasMoreNewer consistently.
@@ -150,15 +150,11 @@ func seedPayloadItem(
 	}
 }
 
-// idForTurn and idForTurnItem synthesize stable ids for the seed helpers.
+// idForTurn synthesizes stable ids for the seed helpers.
 // Sequential ids make the ordered-slice assertions human-readable when a
 // test fails.
 func idForTurn(turn int) string {
 	return "turn-" + strconv.Itoa(turn)
-}
-
-func idForTurnItem(turn, item int) string {
-	return "t" + strconv.Itoa(turn) + "-i" + strconv.Itoa(item)
 }
 
 func collectIDs(items []Item) []string {
@@ -483,7 +479,7 @@ func TestListThreadSliceAround_ChildAnchorPositionsWindow(t *testing.T) {
 	// Subagent parent in turn 0; anchor child in turn 6. The child's
 	// coordinate positions the slice (scroll-to-item lands on its
 	// group), but the rows loaded are the top-level neighborhood — the
-	// child itself hydrates through ListSubagentDescendants.
+	// child itself loads in its agent's scoped page.
 	seedAnchorItem(t, s, "t", "parent", 0, 0)
 	for i := 1; i <= 5; i++ {
 		seedItem(t, s, "t", idForTurn(i), i, 0, "")
@@ -654,10 +650,6 @@ func TestListThreadSliceAround_FiltersPlanUpdateNotifications(t *testing.T) {
 	if !equalStringSlice(gotIDs, wantIDs) {
 		t.Errorf("items: got %v, want %v", gotIDs, wantIDs)
 	}
-}
-
-func idForItem(turn, idx int) string {
-	return fmt.Sprintf("t%d-i%d", turn, idx)
 }
 
 func equalStringSlice(a, b []string) bool {

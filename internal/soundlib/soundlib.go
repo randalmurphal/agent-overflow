@@ -41,14 +41,6 @@ const (
 	// property of the format instead of a property of whatever the user
 	// (or a runaway agent) left in the directory.
 	MaxSounds = 32
-
-	// MaxSoundsBytes is the resulting worst case for one listing, stated
-	// so the wire cost is readable without multiplying two constants in
-	// your head. There is no separate runtime check for it: every file
-	// admitted to the listing has already been bounded at MaxSoundBytes,
-	// so the count cap alone enforces this, and a second branch for it
-	// could never run. TestListingBoundIsTheCountCap pins that.
-	MaxSoundsBytes = MaxSounds * MaxSoundBytes
 )
 
 // privateDirPerm matches internal/atomicfile's directory mode: cue writes

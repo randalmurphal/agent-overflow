@@ -452,7 +452,7 @@ export async function triggerMcpAuth(target: MCPTarget, name: string): Promise<M
   return withBackendTarget(target.backend, () => TriggerWorkspaceMcpAuth(target.provider, target.workspacePath, name));
 }
 
-/** Diagnostics / tests: the entities currently held. */
+/** Tests: the entities currently held. */
 export function mcpServersKeys(): string[] {
   return store.keys();
 }
@@ -483,16 +483,10 @@ export function resyncMcpServersAfterGap(backend: BackendKey): void {
  * Drop every entry and permit, as a fresh module load would, and re-arm the
  * event listeners (the shared wails-runtime mock clears every subscriber
  * between tests, and this module registers at load time — which happens once
- * per file).
- *
- * suspend() releases every unheld entry; resetAll() then lifts the
- * suspension. An entry that survives both is one a test attached and never
- * released — resetAll re-sources it against the next test's binding mocks,
- * which is exactly the noise that should make the leak findable.
+ * per file). Calls no backend.
  */
 export function __resetMcpServersStoreForTest(): void {
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
   statusFetchHolds.clear();
   loadCounts.clear();
   sourceThreadIds.clear();

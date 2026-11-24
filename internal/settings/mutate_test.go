@@ -66,24 +66,8 @@ func TestRejectedUpdateAnnouncesNothing(t *testing.T) {
 	}
 }
 
-// The announcement names keys only. Sensitive environment values are
-// redacted on every read path, and a change set carrying values would be
-// the one place they left the backend in the clear.
-func TestChangeAnnouncementCarriesNoValues(t *testing.T) {
-	svc, seen := observedService(t)
-	const secret = "0123456789abcdef"
-	if _, err := svc.SetProviderEnvVar("claude", "MY_TOKEN", secret, true); err != nil {
-		t.Fatalf("SetProviderEnvVar: %v", err)
-	}
-	for _, change := range (*seen)[0] {
-		for _, key := range change.Keys {
-			if key == secret {
-				t.Fatalf("change set carried the value")
-			}
-		}
-	}
-}
-
+// The exact key list also proves the announcement names keys only: a change
+// set carrying a sensitive value would leave the backend in the clear.
 func TestProviderEnvMutatorsAnnounceTheirTier(t *testing.T) {
 	svc, seen := observedService(t)
 	if _, err := svc.SetProviderEnvVar("claude", "MY_VAR", "value", true); err != nil {

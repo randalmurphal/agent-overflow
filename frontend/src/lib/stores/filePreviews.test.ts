@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 
 const state = vi.hoisted(() => ({
   allowed: true, capable: true,
@@ -18,7 +18,6 @@ import { canPreviewFiles, openFilePreview } from './filePreviews';
 
 describe('computer-owned HTML previews', () => {
   beforeEach(() => {
-    resetBindingMocks();
     state.allowed = state.capable = true;
     state.owner = { status: { status: 'connected' } };
     state.target = '';

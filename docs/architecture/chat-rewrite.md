@@ -523,7 +523,7 @@ finishes during the wait, `task_updated` fires independently for
 task B and TaskOutput's returned content contains only task A.
 
 Fresh app-style spikes under
-`docs/references/fixtures/claude/` confirmed that TaskOutput does
+`internal/provider/wirecaptures/claude/` confirmed that TaskOutput does
 not consume or replace `task_updated`: when TaskOutput blocks on a
 running task, `task_updated` lands first and the TaskOutput
 `tool_result` lands second. If a task has already completed and its
@@ -909,12 +909,7 @@ releases. No client cache.
 - Frontend never loads more than 4MB per payload. Stage 2's full load
   renders in a `<pre>` with `overflow:auto`. Chrome/Firefox handle
   4MB of preformatted text fine (no virtual scrolling needed).
-- **Save-to-file escape hatch:** a small "Save to file..." button in
-  the dropdown header calls `SavePayloadToFile(threadId, payloadId)` which
-  writes the full captured payload (up to 4MB) to a user-chosen path
-  via the OS save-file dialog. For users who want to grep / diff /
-  editor-view the raw output. No larger-than-4MB recovery: what
-  wasn't captured is gone.
+- No larger-than-4MB recovery: what wasn't captured is gone.
 
 **For diffs with >10 files:** the file tree IS the stage-1 peek. Each
 file's unified-diff body is its own stage-2-style on-demand fetch when
@@ -1221,7 +1216,7 @@ func (r *Router) drainInterruptQueue(threadID string) {
 ### Turn lifecycle synthesis
 
 Turn boundaries enter the Go triage layer through provider-specific
-signals. `App.sendMessage` persists the user item and registers a
+signals. `App.sendMessageWithOptions` persists the user item and registers a
 pending-send marker before writing to the provider. Claude opens the
 logical turn when its wire `system/init` arrives and `handleInit`
 matches that marker; Codex opens the turn from native `turn/started`.
@@ -1232,7 +1227,7 @@ stays provider-independent.
 thread, not a provider turn id. Provider turn ids (Codex's
 `turn.id`, Claude's per-cycle identifiers) are opaque strings we
 don't mint. `turn_index` counts "send cycles" on our thread, one
-per `sendMessage` call. The two can diverge (e.g., Claude may
+per send. The two can diverge (e.g., Claude may
 internally loop through multiple API cycles under one of our
 turns), and that's fine: our `turn_index` is the UI unit, the
 provider's turn id is the wire unit.

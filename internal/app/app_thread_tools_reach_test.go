@@ -103,12 +103,6 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 	// A life a test can end, as shutdown does, set before anything reads it.
 	source.appCtx, source.appCancel = context.WithCancel(context.Background())
 	t.Cleanup(source.appCancel)
-	// What its archive or delete reports is what the destination did, which
-	// a busy machine must not turn into "did not answer in time". The bound
-	// is owned by TestADoorWhoseCallIsNotAnsweredInTimeReportsItPending (a
-	// door's own call) and TestADoorWhoseWaitRunsOutLeavesItsOperationToTheSweep
-	// (a door waiting for an earlier attempt), which set their own.
-	source.ownerOpReachOverride = time.Minute
 	source.configDir = t.TempDir()
 	source.installThreadRequestObserver()
 	sourceID := uuid.NewString()
@@ -874,10 +868,16 @@ func TestThreadToolsRemoteRequestsRunThereAndAreCollectedHere(t *testing.T) {
 	}
 }
 
-// Deleting the caller stops the ask it left running on another computer.
-// That cancel is a forwarded call like any other, so it has to name both
-// the thread and the computer it came from: without the computer the
-// destination refuses it and the hidden fork keeps running.
+// The scratch fork an ask makes on the other computer is the asking thread's
+// to read and nobody else's. The caller travels with a forwarded resolve: it
+// is a thread the destination has no row for, and without its identity on
+// the lookup the destination could only answer "not found" to the one thread
+// allowed to see it.
+//
+// Deleting the caller then stops the ask it left running. That cancel is a
+// forwarded call like any other, so it has to name both the thread and the
+// computer it came from: without the computer the destination refuses it and
+// the hidden fork keeps running.
 func TestThreadToolsDeletingTheCallerCancelsItsAskOnTheOtherComputer(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -914,6 +914,20 @@ func TestThreadToolsDeletingTheCallerCancelsItsAskOnTheOtherComputer(t *testing.
 		t.Fatal("an ask ran in the target thread instead of its own scratch fork")
 	}
 
+	shown := pair.call(t, "thread_show", `{"thread_id":"`+scratch+`","turns":1}`)
+	if shown["computer_id"] != pair.computer {
+		t.Fatalf("the asking thread's view of its fork = %v, want it found on %s", shown, pair.computer)
+	}
+	// Another thread on the source computer has no claim on the fork.
+	other := reachThread(t, pair.source, uuid.NewString(), "Bystander")
+	stranger := pair.callerIdentity()
+	stranger.ThreadID, stranger.Title = other.ID, other.Title
+	_, err = pair.source.threadToolsServer().Call(ctx, stranger, "thread_show",
+		json.RawMessage(`{"thread_id":"`+scratch+`","turns":1}`))
+	if code := publicCode(t, err); code != threadtools.CodeNotFound {
+		t.Fatalf("a bystander's view of the fork = %v, want %q", err, threadtools.CodeNotFound)
+	}
+
 	if err := pair.source.deleteThread(pair.caller.ID); err != nil {
 		t.Fatalf("delete the caller: %v", err)
 	}
@@ -934,56 +948,6 @@ func TestThreadToolsDeletingTheCallerCancelsItsAskOnTheOtherComputer(t *testing.
 	// The thread the question was about was never the request's to delete.
 	if _, err := pair.dest.store.GetThread(target); err != nil {
 		t.Errorf("the ask's target thread went with the fork: %v", err)
-	}
-}
-
-// TestThreadToolsRemoteAskForkIsVisibleToTheThreadThatAsked pins the caller
-// travelling with a forwarded resolve. The scratch fork an ask makes on the
-// other computer is that caller's to read and nobody else's, and the caller
-// is a thread the destination has no row for: without its identity on the
-// lookup the destination could only answer "not found" to the one thread
-// allowed to see it.
-func TestThreadToolsRemoteAskForkIsVisibleToTheThreadThatAsked(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
-	pair := newReachPair(t)
-	const done = "the spawn finished"
-	installMockClaudeReplies(t, pair.dest, done)
-	spawn := pair.spawnThere(t, "start work over there", nil)
-	target := pair.collect(t, spawn.Token, done)
-	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	ask, err := pair.adapter().Ask(ctx, pair.callerIdentity(), threadtools.AskCall{
-		ThreadID: target, ComputerID: pair.computer, Question: "what did you do?",
-	})
-	if err != nil {
-		t.Fatalf("remote ask: %v", err)
-	}
-	scratch := ""
-	waitUntilE2E(t, 30*time.Second, "the destination forks the ask", func() bool {
-		receipt, found, err := pair.dest.store.GetThreadRequestReceipt(ask.Token)
-		if err != nil || !found || receipt.TargetThreadID == "" {
-			return false
-		}
-		scratch = receipt.TargetThreadID
-		return true
-	})
-
-	shown := pair.call(t, "thread_show", `{"thread_id":"`+scratch+`","turns":1}`)
-	if shown["computer_id"] != pair.computer {
-		t.Fatalf("the asking thread's view of its fork = %v, want it found on %s", shown, pair.computer)
-	}
-
-	// Another thread on the source computer has no claim on the fork.
-	other := reachThread(t, pair.source, uuid.NewString(), "Bystander")
-	stranger := pair.callerIdentity()
-	stranger.ThreadID, stranger.Title = other.ID, other.Title
-	_, err = pair.source.threadToolsServer().Call(ctx, stranger, "thread_show",
-		json.RawMessage(`{"thread_id":"`+scratch+`","turns":1}`))
-	if code := publicCode(t, err); code != threadtools.CodeNotFound {
-		t.Fatalf("a bystander's view of the fork = %v, want %q", err, threadtools.CodeNotFound)
 	}
 }
 
@@ -2273,7 +2237,7 @@ func TestARemoteSpawnsFooterSaysItsSpawnerTakesTheWorkersPrompts(t *testing.T) {
 		}
 		ack := pair.spawnThere(t, "work over there", extra)
 		worker := pair.receipt(t, ack.Token).TargetThreadID
-		t.Cleanup(func() { _ = pair.dest.StopSession(worker) })
+		t.Cleanup(func() { stopSessionChecked(t, pair.dest, worker) })
 		var first string
 		waitUntil(t, 15*time.Second, func() bool {
 			items, err := pair.dest.store.ListItems(worker)

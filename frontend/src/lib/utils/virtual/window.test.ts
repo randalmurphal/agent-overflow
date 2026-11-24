@@ -12,33 +12,16 @@ const measuredStore = (count = 10, height = 100): SizeStore => {
 };
 
 describe('computeWindow', () => {
-  it('expands the visible range symmetrically by bufferSize', () => {
-    const store = measuredStore();
+  it.each([
     // Visible [350, 650] → buffered [150, 850] → rows 1..8.
-    expect(
-      computeWindow(store, { scrollOffset: 350, viewportSize: 300, bufferSize: 200 }, 0),
-    ).toEqual([1, 8]);
-  });
-
-  it('returns exactly the visible rows with bufferSize 0', () => {
-    const store = measuredStore();
-    expect(
-      computeWindow(store, { scrollOffset: 350, viewportSize: 300, bufferSize: 0 }, 0),
-    ).toEqual([3, 6]);
-  });
-
-  it('clamps at the top', () => {
-    const store = measuredStore();
-    expect(
-      computeWindow(store, { scrollOffset: 0, viewportSize: 300, bufferSize: 200 }, 0),
-    ).toEqual([0, 5]);
-  });
-
-  it('clamps at the bottom', () => {
-    const store = measuredStore();
-    expect(
-      computeWindow(store, { scrollOffset: 700, viewportSize: 300, bufferSize: 200 }, 0),
-    ).toEqual([5, 9]);
+    ['expands the visible range symmetrically by bufferSize', measuredStore(), 350, 300, 200, [1, 8]],
+    ['returns exactly the visible rows with bufferSize 0', measuredStore(), 350, 300, 0, [3, 6]],
+    ['clamps at the top', measuredStore(), 0, 300, 200, [0, 5]],
+    ['clamps at the bottom', measuredStore(), 700, 300, 200, [5, 9]],
+    ['returns EMPTY_WINDOW for an empty store', initSizeStore(0, () => 56), 0, 300, 200, EMPTY_WINDOW],
+    ['returns EMPTY_WINDOW before the viewport is measured', measuredStore(), 0, 0, 200, EMPTY_WINDOW],
+  ])('%s', (_, store, scrollOffset, viewportSize, bufferSize, expected) => {
+    expect(computeWindow(store, { scrollOffset, viewportSize, bufferSize }, 0)).toEqual(expected);
   });
 
   it('is prevStartIndex-independent in result (locality is only a hint)', () => {
@@ -48,20 +31,6 @@ describe('computeWindow', () => {
     expect(computeWindow(store, viewport, 5)).toEqual([1, 8]);
     expect(computeWindow(store, viewport, 9)).toEqual([1, 8]);
     expect(computeWindow(store, viewport, 999)).toEqual([1, 8]);
-  });
-
-  it('returns EMPTY_WINDOW for an empty store', () => {
-    const store = initSizeStore(0, () => 56);
-    expect(
-      computeWindow(store, { scrollOffset: 0, viewportSize: 300, bufferSize: 200 }, 0),
-    ).toEqual(EMPTY_WINDOW);
-  });
-
-  it('returns EMPTY_WINDOW before the viewport is measured', () => {
-    const store = measuredStore();
-    expect(
-      computeWindow(store, { scrollOffset: 0, viewportSize: 0, bufferSize: 200 }, 0),
-    ).toEqual(EMPTY_WINDOW);
   });
 });
 

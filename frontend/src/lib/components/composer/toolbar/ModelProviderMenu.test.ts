@@ -2,12 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 
 import ModelProviderMenu from './ModelProviderMenu.svelte';
-import { resetSettingsForTest } from '../../../stores/settings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../../test/helpers/settingsFixture';
 import type { Item, Thread } from '../../../types/models';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../../test/helpers/settings';
@@ -42,8 +40,6 @@ async function buildPane(thread: Thread, items: Item[] = []) {
 
 describe('<ModelProviderMenu>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetSettingsForTest();
     setBindingMock('ListChatBarFavorites', async () => []);
     setBindingMock('SetChatBarFavorite', async () => []);
   });
@@ -101,43 +97,23 @@ describe('<ModelProviderMenu>', () => {
   // rosette in the muted foreground. Both match t3-code's
   // providerIconClassName convention in
   // apps/web/src/components/chat/ProviderModelPicker.tsx.
-  it('renders the Claude brand mark when provider is Claude', async () => {
-    const pane = await buildPane(makeThread({ provider: 'claude' }));
+  // Class tokens, not a substring: `text-provider-claude` is a prefix of
+  // `text-provider-claude-tui`, so a substring match would accept the
+  // terminal-green tint as the Anthropic coral. The OpenAI mark must NOT
+  // carry the coral — it should read as one piece with the label's muted
+  // foreground instead.
+  it.each<{ name: string; thread: Partial<Thread>; mark: string; other: string; coral: boolean }>([
+    { name: 'renders the Claude brand mark when provider is Claude', thread: { provider: 'claude' }, mark: 'lucide-claude', other: 'lucide-openai', coral: true },
+    { name: 'renders the OpenAI brand mark when provider is Codex', thread: { provider: 'codex', model: 'gpt-5' }, mark: 'lucide-openai', other: 'lucide-claude', coral: false },
+  ])('$name', async ({ thread, mark, other, coral }) => {
+    const pane = await buildPane(makeThread(thread));
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
     const trigger = getByTestId('composer-model-menu-trigger');
-    expect(trigger.getAttribute('data-provider')).toBe('claude');
-    expect(trigger.querySelector('.lucide-claude')).not.toBeNull();
-    expect(trigger.querySelector('.lucide-openai')).toBeNull();
-  });
-
-  it('renders the OpenAI brand mark when provider is Codex', async () => {
-    const pane = await buildPane(makeThread({ provider: 'codex', model: 'gpt-5' }));
-    const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
-    const trigger = getByTestId('composer-model-menu-trigger');
-    expect(trigger.getAttribute('data-provider')).toBe('codex');
-    expect(trigger.querySelector('.lucide-openai')).not.toBeNull();
-    expect(trigger.querySelector('.lucide-claude')).toBeNull();
-  });
-
-  it('Claude mark is painted in the Anthropic coral (--provider-claude)', async () => {
-    const pane = await buildPane(makeThread({ provider: 'claude' }));
-    const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
-    const svg = getByTestId('composer-model-menu-trigger').querySelector('.lucide-claude')!;
-    // Class tokens, not a substring: `text-provider-claude` is a prefix of
-    // `text-provider-claude-tui`, so a substring match would accept the
-    // terminal-green tint as the Anthropic coral.
-    expect((svg.getAttribute('class') ?? '').split(/\s+/)).toContain('text-provider-claude');
-  });
-
-  it('OpenAI mark inherits the trigger foreground (no bespoke tint)', async () => {
-    const pane = await buildPane(makeThread({ provider: 'codex', model: 'gpt-5' }));
-    const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
-    const svg = getByTestId('composer-model-menu-trigger').querySelector('.lucide-openai')!;
-    // Must NOT carry the Anthropic coral — it should read as one piece
-    // with the label's muted foreground instead.
-    // Split into class tokens: `text-provider-claude` is a prefix of
-    // `text-provider-claude-tui`, so a substring match is the wrong test.
-    expect((svg.getAttribute('class') ?? '').split(/\s+/)).not.toContain('text-provider-claude');
+    expect(trigger.getAttribute('data-provider')).toBe(thread.provider);
+    expect(trigger.querySelector(`.${other}`)).toBeNull();
+    const svg = trigger.querySelector(`.${mark}`);
+    expect(svg).not.toBeNull();
+    expect((svg!.getAttribute('class') ?? '').split(/\s+/).includes('text-provider-claude')).toBe(coral);
   });
 
   it('warms the active provider cache on open', async () => {
@@ -323,40 +299,6 @@ describe('<ModelProviderMenu>', () => {
     );
   });
 
-  it('calls UpdateThreadModelSelection when switching providers', async () => {
-    const pane = await buildPane(
-      makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
-    );
-    setBindingMock('GetModelsForProvider', async (provider: unknown) => {
-      if (provider === 'codex') {
-        return modelCatalog([{ slug: 'gpt-5.4', name: 'GPT 5.4', provider: 'codex', capabilities: [] }]);
-      }
-      return modelCatalog([], 'shipped');
-    });
-    const modelUpdate = makeThread({ provider: 'codex', model: 'gpt-5.4' });
-    setBindingMock('UpdateThreadModelSelection', async () => modelUpdate);
-
-    const { getByTestId, findByRole } = render(ModelProviderMenu, { props: { pane } });
-    await fireEvent.click(getByTestId('composer-model-menu-trigger'));
-
-    // Hover the Codex submenu to trigger its load.
-    const codexRow = await findByRole('menuitem', { name: /Codex/i });
-    await fireEvent.click(codexRow);
-
-    const gptOption = await findByRole('menuitem', { name: /GPT 5.4/i });
-    await fireEvent.click(gptOption);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(getBindingMock('UpdateThreadModelSelection')!.mock.calls[0]).toEqual([
-      'thread-1',
-      'codex',
-      'gpt-5.4',
-    ]);
-    expect(getBindingMock('UpdateThreadProvider')?.mock.calls.length ?? 0).toBe(0);
-    expect(getBindingMock('UpdateThreadModel')?.mock.calls.length ?? 0).toBe(0);
-  });
-
   // Regression: Escape inside a nested submenu must close ONLY the
   // submenu, not the whole stack. After the portal-to-body fix every
   // open Popover attaches its own document-level keydown handler, and
@@ -447,8 +389,6 @@ describe('<ModelProviderMenu>', () => {
       'codex',
       'gpt-5.4',
     ]);
-    expect(getBindingMock('UpdateThreadProvider')?.mock.calls.length ?? 0).toBe(0);
-    expect(getBindingMock('UpdateThreadModel')?.mock.calls.length ?? 0).toBe(0);
   });
 
   // Provider lock: once a thread has been used (any item persisted), the

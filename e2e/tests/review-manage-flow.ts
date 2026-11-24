@@ -65,6 +65,7 @@ import {
   type ForgeHTTPInvocation,
   type ForgeRepo,
 } from './forge-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 export interface ManageSurface {
   /** The compact project: taps, the phone viewport. */
@@ -213,8 +214,25 @@ function setMutation(call: ForgeHTTPInvocation): [unknown, unknown] {
   return [call.variables?.mode, call.variables?.usernames ?? call.variables?.labelIds];
 }
 
+/**
+ * Presses the GitLab Merge section's Bypass on the changes-requested row,
+ * which GitLab answers: no error on the row, and the bypass settled.
+ */
+async function bypassChangeRequest(merge: Locator, press: (target: Locator) => Promise<void>): Promise<void> {
+  const changes = merge.locator('[data-testid="review-merge-blocker"][data-kind="changes_requested"]');
+  await press(changes.getByTestId('review-merge-row-bypass'));
+  await expect(changes.getByTestId('review-merge-change-request-error-message')).toHaveCount(0);
+  await expect(merge.locator('[data-testid="review-merge-settled"][data-kind="changes_requested"]')).toContainText('Requested changes bypassed');
+}
+
 export function reviewManageFlow({ compact }: ManageSurface): void {
-  for (const forge of ['gitlab', 'github'] as const) {
+  // The phone's taps and layout branch on no forge, and GitHub's run reaches
+  // every control GitLab's does but Bypass, and the dismiss and approve ones
+  // besides; Bypass's refusal and retry are the refused management read
+  // case's, which both layouts run. Each forge's own wire is the desktop
+  // run's.
+  const forges: readonly Forge[] = compact ? ['github'] : ['gitlab', 'github'];
+  for (const forge of forges) {
     test(`${forge}: the review pane edits, assigns, labels, closes, reopens and merges the PR`, async ({ harness, page }, testInfo: TestInfo) => {
       test.setTimeout(240_000);
       const thread = `Manage thread ${forge}`;
@@ -224,7 +242,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       const review = await openReview(page, thread, forge, compact);
       const press = (target: Locator) => (compact ? target.tap() : target.click());
       const reveal = async (row: Locator) => { if (!compact) await row.hover(); };
-      const shot = (target: Locator | Page, name: string) => target.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-${forge}-${name}.png`) });
+      const shot = (target: Locator | Page, name: string) => screenshot(target, { path: testInfo.outputPath(`${testInfo.project.name}-${forge}-${name}.png`) });
       const header = review.getByTestId('review-pr-header');
       const title = header.getByTestId('review-pr-title');
       const statePill = header.getByTestId('review-pr-state');
@@ -480,16 +498,8 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
         await reason.press('Enter');
         await expect(dismiss).toHaveCount(0);
       } else {
-        await refuseForgeRoute(harness, { route: 'glab graphql PRBypassChanges', status: 200, times: 1, body: { errors: [{ message: 'You do not have permission to override requested changes.' }] } });
-        const bypass = changes.getByTestId('review-merge-row-bypass');
-        await shot(merge, 'blocker-bypass');
-        await press(bypass);
-        await expect(changesError).not.toBeEmpty();
-        await expect(bypass).toBeFocused();
-        await shot(merge, 'blocker-bypass-refused');
-        await press(bypass);
-        await expect(changesError).toHaveCount(0);
-        await expect(merge.locator('[data-testid="review-merge-settled"][data-kind="changes_requested"]')).toContainText('Requested changes bypassed');
+        // The refused Bypass is the refused management read case's.
+        await bypassChangeRequest(merge, press);
       }
       await expect(changes).toHaveCount(0);
       await expect(mergeHeader).toBeFocused();
@@ -578,7 +588,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     'review-merge-row-bypass',
   ];
 
-  test('gitlab: a refused management read leaves the PR, says why in Details and offers no management control until it answers', async ({ harness, page }, testInfo: TestInfo) => {
+  test('gitlab: a refused management read leaves the PR, says why in Details and offers no management control until it answers; a refused Bypass keeps its button focused and the retry bypasses', async ({ harness, page }, testInfo: TestInfo) => {
     test.setTimeout(180_000);
     const thread = 'Manage unavailable thread';
     await seedPullRequest(harness, 'gitlab', thread);
@@ -603,7 +613,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await press(details.locator('button[aria-expanded]').first());
     await expect(details.getByTestId('review-details-unavailable')).not.toBeEmpty();
     await expect(details.getByTestId('review-details-rows')).toHaveCount(0);
-    await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-unavailable.png`) });
+    await screenshot(details, { path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-unavailable.png`) });
     for (const id of MANAGE_CONTROLS) await expect(page.getByTestId(id), id).toHaveCount(0);
 
     // The read answers again: the controls return with the next read of
@@ -615,6 +625,22 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-edit-reviewers', 'review-details-edit-assignees', 'review-details-edit-labels', 'review-merge-row-bypass']) {
       await expect(page.getByTestId(id), id).toBeAttached();
     }
+
+    // The returned Bypass, refused once: the forge's sentence on the
+    // changes-requested row and focus back on the button; the retry
+    // bypasses, the blocker clears and focus lands on the Merge header.
+    await refuseForgeRoute(harness, { route: 'glab graphql PRBypassChanges', status: 200, times: 1, body: { errors: [{ message: 'You do not have permission to override requested changes.' }] } });
+    const changes = merge.locator('[data-testid="review-merge-blocker"][data-kind="changes_requested"]');
+    const changesError = changes.getByTestId('review-merge-change-request-error-message');
+    const bypass = changes.getByTestId('review-merge-row-bypass');
+    await screenshot(merge, { path: testInfo.outputPath(`${testInfo.project.name}-gitlab-blocker-bypass.png`) });
+    await press(bypass);
+    await expect(changesError).not.toBeEmpty();
+    await expect(bypass).toBeFocused();
+    await screenshot(merge, { path: testInfo.outputPath(`${testInfo.project.name}-gitlab-blocker-bypass-refused.png`) });
+    await bypassChangeRequest(merge, press);
+    await expect(changes).toHaveCount(0);
+    await expect(merge.locator('button[aria-expanded]').first()).toBeFocused();
     await expectEveryForgeCallHandled(harness);
   });
 
@@ -675,7 +701,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       const details = review.getByTestId('review-pr-details');
       if ((await details.getAttribute('data-open')) !== 'true') await press(details.locator('button[aria-expanded]').first());
       await expect(details.locator('[data-testid="review-details-reviewer"][data-login="ao-viewer"]')).toHaveAttribute('data-state', state, { timeout: 30_000 });
-      await review.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-request-changes-${version}.png`) });
+      await screenshot(review, { path: testInfo.outputPath(`${testInfo.project.name}-gitlab-request-changes-${version}.png`) });
       await expectEveryForgeCallHandled(harness);
     });
   }
@@ -694,7 +720,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await expect(details.getByTestId('review-details-unavailable')).toContainText('runs 17.11; GitLab 18.0 or later is needed.');
     await expect(details.getByTestId('review-details-rows')).toHaveCount(0);
     for (const id of MANAGE_CONTROLS) await expect(page.getByTestId(id), id).toHaveCount(0);
-    await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
+    await screenshot(details, { path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
     await expectEveryForgeCallHandled(harness);
   });
 
@@ -806,7 +832,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await harness.open(page);
     const review = await openReview(page, thread, 'github', compact);
     const press = (target: Locator) => (compact ? target.tap() : target.click());
-    const shot = (target: Locator | Page, name: string) => target.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-github-${name}.png`) });
+    const shot = (target: Locator | Page, name: string) => screenshot(target, { path: testInfo.outputPath(`${testInfo.project.name}-github-${name}.png`) });
     await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
     const merge = await expandReviewSection(page, 'review-pr-merge');
     await expect(review.getByTestId('review-pr-readiness')).toHaveText('Ready to merge', { timeout: 30_000 });

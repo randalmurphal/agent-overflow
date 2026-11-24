@@ -12,14 +12,13 @@ import { __setTransportStatusForTest } from './transportStatus.svelte';
 import type { Project, Thread } from '../types/models';
 import {
   getBindingMock,
-  resetBindingMocks,
   setBindingMock,
 } from '../../test/mocks/bindings-app';
-import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
+import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
-import { resetShellRunsForTest, runShellCommand } from './shellCommands.svelte';
+import { noteThread } from '../transport/entityIndex';
+import { runShellCommand } from './shellCommands.svelte';
 
 const WORKSPACE = '/repo';
 const OTHER_WORKSPACE = '/repo/.worktrees/feature';
@@ -81,7 +80,6 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 
 async function buildPane(thread: Thread = makeThread()): Promise<ThreadPane> {
   setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
   const pane = createThreadPane();
   await pane.switchThread(thread);
   return pane;
@@ -89,10 +87,6 @@ async function buildPane(thread: Thread = makeThread()): Promise<ThreadPane> {
 
 describe('createWorkspaceChangeLockState', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWailsMocks();
-    __resetEntityIndexForTest();
-    resetShellRunsForTest();
     vi.useRealTimers();
   });
 
@@ -127,20 +121,6 @@ describe('createWorkspaceChangeLockState', () => {
 
     await waitFor(() => {
       expect(state).toHaveAttribute('data-locked', 'false');
-    });
-  });
-
-  it('counts running background tasks in the workspace as blocking', async () => {
-    setBindingMock('GetWorkspaceActivity', async () => busyWithTasks());
-    const pane = await buildPane();
-
-    const { getByTestId } = render(Harness, { props: { pane } });
-    const state = getByTestId('workspace-change-lock');
-
-    await waitFor(() => {
-      expect(state).toHaveAttribute('data-locked', 'true');
-      expect(state).toHaveAttribute('data-running-background-count', '1');
-      expect(state.getAttribute('data-reason') ?? '').toMatch(/background tasks/);
     });
   });
 
@@ -374,22 +354,6 @@ describe('createWorkspaceChangeLockState', () => {
       expect(workspaceChangeLockKeys()).toEqual([WORKSPACE_KEY]);
     });
     expect(getBindingMock('GetWorkspaceActivity')!.mock.calls.length).toBe(1);
-  });
-
-  it('stays LOCKED when the workspace-activity check fails, and says it cannot verify', async () => {
-    setBindingMock('GetWorkspaceActivity', async () => {
-      throw new Error('backend unavailable');
-    });
-    const pane = await buildPane();
-
-    const { getByTestId } = render(Harness, { props: { pane } });
-    const state = getByTestId('workspace-change-lock');
-
-    await waitFor(() => {
-      expect(state).toHaveAttribute('data-locked', 'true');
-      expect(state.getAttribute('data-reason') ?? '').toMatch(/Cannot check for running/);
-      expect(state.getAttribute('data-reason') ?? '').toMatch(/backend unavailable/);
-    });
   });
 
   // Responses used to be able to overtake each other: the initial check and

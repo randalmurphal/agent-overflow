@@ -163,7 +163,7 @@ func runProviderUpdateGroup(ctx context.Context, reaper procutil.Reaper, command
 	output := &providerUpdateOutput{tail: tail, done: command.Done, stop: stop}
 	outcome, err := procutil.RunGroup(runCtx, reaper, procutil.GroupCommand{
 		Dir:    command.Dir,
-		Env:    provider.BuildEnvironment(command.Env, command.UnsetEnv...),
+		Env:    provider.BuildEnvironment(command.Env),
 		Argv:   append([]string{command.Binary}, command.Args...),
 		Output: output,
 	})

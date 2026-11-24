@@ -1,6 +1,7 @@
 package clientmode
 
 import (
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -20,13 +21,14 @@ func TestStubShipsTheProductionPolicy(t *testing.T) {
 	srv := serveStub(t, Config{WSURL: "ws://h/", Token: "t"})
 	base := "http://" + srv.Addr()
 
+	// The shell's headers are checked in TestServe_ServesTheShellVerbatim.
 	for _, tc := range []struct {
 		name string
 		path string
+		body string
 	}{
-		{"spa shell", "/"},
-		{"hashed asset", "/assets/index-abc.js"},
-		{"root bundle file", "/boot-theme.js"},
+		{"hashed asset", "/assets/index-abc.js", "fake spa entry"},
+		{"root bundle file", "/boot-theme.js", "/* fake boot theme */"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := http.Get(base + tc.path)
@@ -42,6 +44,15 @@ func TestStubShipsTheProductionPolicy(t *testing.T) {
 			}
 			if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
 				t.Errorf("GET %s: X-Content-Type-Options = %q, want nosniff", tc.path, got)
+			}
+			// The stub only serves the local embedded webview, which loads
+			// the SPA once per process, and a cacheable script pins its
+			// decoded text in the renderer's in-memory HTTP cache.
+			if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "no-store") {
+				t.Errorf("GET %s: Cache-Control %q does not include no-store", tc.path, got)
+			}
+			if body, _ := io.ReadAll(resp.Body); !strings.Contains(string(body), tc.body) {
+				t.Errorf("GET %s: body %q does not contain %q", tc.path, body, tc.body)
 			}
 		})
 	}

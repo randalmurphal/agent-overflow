@@ -4,9 +4,9 @@ import "testing"
 
 func TestBuildTemporaryWorktreeBranchName(t *testing.T) {
 	t.Parallel()
-	branch := BuildTemporaryWorktreeBranchName()
-	if !IsTemporaryWorktreeBranch(branch) {
-		t.Fatalf("BuildTemporaryWorktreeBranchName() = %q, want ao-<8-hex>", branch)
+	branch := BuildTemporaryWorktreeBranchNameWithPrefix(AutoWorktreeBranchPrefix)
+	if !IsTemporaryWorktreeBranchWithPrefix(branch, AutoWorktreeBranchPrefix) {
+		t.Fatalf("BuildTemporaryWorktreeBranchNameWithPrefix(%q) = %q, want ao-<8-hex>", AutoWorktreeBranchPrefix, branch)
 	}
 }
 
@@ -26,8 +26,8 @@ func TestIsTemporaryWorktreeBranch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsTemporaryWorktreeBranch(tt.branch); got != tt.want {
-				t.Fatalf("IsTemporaryWorktreeBranch(%q) = %v, want %v", tt.branch, got, tt.want)
+			if got := IsTemporaryWorktreeBranchWithPrefix(tt.branch, AutoWorktreeBranchPrefix); got != tt.want {
+				t.Fatalf("IsTemporaryWorktreeBranchWithPrefix(%q) = %v, want %v", tt.branch, got, tt.want)
 			}
 		})
 	}
@@ -46,8 +46,8 @@ func TestBuildGeneratedWorktreeBranchName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := BuildGeneratedWorktreeBranchName(tt.raw); got != tt.want {
-			t.Fatalf("BuildGeneratedWorktreeBranchName(%q) = %q, want %q", tt.raw, got, tt.want)
+		if got := BuildGeneratedWorktreeBranchNameWithPrefix(tt.raw, AutoWorktreeBranchPrefix); got != tt.want {
+			t.Fatalf("BuildGeneratedWorktreeBranchNameWithPrefix(%q) = %q, want %q", tt.raw, got, tt.want)
 		}
 	}
 }

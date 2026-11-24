@@ -525,6 +525,17 @@ func TestSwitchingDictationOffEndsTheRetry(t *testing.T) {
 	binary := filepath.Join(dir, "mock-codex")
 	mockexec.Write(t, binary, "#!/bin/bash\ntouch '"+refreshing+"'\n"+
 		"while [ ! -e '"+release+"' ]; do sleep 0.01; done\ntouch '"+exited+"'\nexit 1\n")
+	// The mock waits for release, which a failed check before it would
+	// never write: release it however the test ends.
+	t.Cleanup(func() {
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Errorf("release the mock: %v", err)
+			return
+		}
+		if _, err := os.Stat(refreshing); err == nil {
+			waitForFile(t, exited)
+		}
+	})
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}

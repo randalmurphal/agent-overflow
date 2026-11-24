@@ -1,5 +1,5 @@
 import { takePinnedBackend, attachedBackendCount } from '../transport/backends';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import {
   addProjectLocal,
@@ -18,7 +18,6 @@ import {
   removeProjectLocal,
   reorderProjects,
   projectOrderPosition,
-  resetProjectsForTest,
   touchProjectActivity,
   updateProjectLocal,
 } from './projects.svelte';
@@ -47,9 +46,6 @@ function wrap(p: Project, threadCount = 0): ProjectWithCounts {
 }
 
 describe('projects store', () => {
-  beforeEach(() => {
-    resetProjectsForTest();
-  });
 
   it('disambiguates active and archived project names independently', () => {
     const active = makeProject('active', { name: 'app', path: '/Users/randy/repos/app' });
@@ -172,17 +168,6 @@ describe('projects store — merged entries (wave 7d)', () => {
   const home = () => makeProject('p-home', { name: 'app', path: '/home/me/app', repositoryID: 'github:github.com:1' });
   const laptop = () => makeProject('p-laptop', { name: 'app', path: '/Users/me/app', repositoryID: 'github:github.com:1' });
   const solo = () => makeProject('p-solo', { name: 'solo', path: '/Users/me/solo', repositoryID: 'github:github.com:3' });
-
-  beforeEach(() => {
-    resetProjectsForTest();
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-  });
-
-  afterEach(() => {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-  });
 
   async function load(rows: ProjectWithCounts[]): Promise<void> {
     setBindingMock('ListProjects', async () => {
@@ -327,7 +312,6 @@ describe('reorderProjects', () => {
   const stored = (): number[] => ['a', 'b', 'c'].map((id) => getProject(id)!.project.sortPosition);
 
   beforeEach(() => {
-    resetProjectsForTest();
     for (const [index, id] of ['a', 'b', 'c'].entries()) {
       addProjectLocal(makeProject(id, { name: id.toUpperCase(), sortPosition: index }));
     }

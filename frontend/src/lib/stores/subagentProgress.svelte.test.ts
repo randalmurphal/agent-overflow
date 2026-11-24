@@ -7,16 +7,12 @@ import {
   hydrateSubagentProgress,
   liveCodexAgent,
   clearSubagentProgressForThread,
-  dropSubagentProgress,
   liveSubagentProgress,
   resetForTest,
   subagentProgressRevision,
 } from './subagentProgress.svelte';
 
 describe('subagentProgress', () => {
-  beforeEach(() => {
-    resetForTest();
-  });
 
   it('is empty for every launch until a tick lands', () => {
     expect(liveSubagentProgress('t1', 'toolu_1')).toBeUndefined();
@@ -44,14 +40,6 @@ describe('subagentProgress', () => {
     applySubagentProgress({ threadId: '', itemId: 'x', updatedAt: 0, progress: {} });
     applySubagentProgress({ threadId: 't1', itemId: '', updatedAt: 0, progress: {} });
     expect(liveSubagentProgress('t1', 'x')).toBeUndefined();
-  });
-
-  it('drops one launch when its row settles', () => {
-    applySubagentProgress({ threadId: 't1', itemId: 'a', updatedAt: 1, progress: { toolUses: 1 } });
-    applySubagentProgress({ threadId: 't1', itemId: 'b', updatedAt: 1, progress: { toolUses: 1 } });
-    dropSubagentProgress('t1', 'a');
-    expect(liveSubagentProgress('t1', 'a')).toBeUndefined();
-    expect(liveSubagentProgress('t1', 'b')).toBeDefined();
   });
 
   it('drops every launch of a thread on clear and leaves other threads alone', () => {
@@ -89,14 +77,6 @@ describe('live progress hydration', () => {
     expect(liveSubagentProgress('t1', 'a')?.toolUses).toBe(9);
     expect(liveSubagentProgress('t1', 'b')?.toolUses).toBe(5);
     expect(liveSubagentProgress('t1', 'newer')?.toolUses).toBe(2);
-  });
-
-  it('does not bring back a launch that settled after the read', () => {
-    applySubagentProgress(tick('a', 1));
-    const revision = subagentProgressRevision('t1');
-    dropSubagentProgress('t1', 'a');
-    hydrateSubagentProgress('t1', [tick('a', 1)], revision);
-    expect(liveSubagentProgress('t1', 'a')).toBeUndefined();
   });
 
   it('refuses a snapshot read before the thread was cleared', () => {
@@ -143,12 +123,11 @@ describe('Codex runtime hydration', () => {
     hydrateCodexAgents('t1', [agent()], beforeClear);
     expect(liveCodexAgent('t1', 'spawn')).toBeUndefined();
   });
-  it('isolates revisions across threads and clears runtime after progress was dropped', () => {
+  it('isolates revisions across threads and clears one thread\'s runtime', () => {
     const revision = codexAgentRevision('t1');
     hydrateCodexAgents('t2', [agent('t2')], codexAgentRevision('t2'));
     hydrateCodexAgents('t1', [agent()], revision);
     expect(liveCodexAgent('t1', 'spawn')).toBeDefined();
-    dropSubagentProgress('t1', 'spawn');
     clearSubagentProgressForThread('t1');
     expect(liveCodexAgent('t1', 'spawn')).toBeUndefined();
     expect(liveCodexAgent('t2', 'spawn')).toBeDefined();

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { elementFocusScope, focusChosen, intendFocus, resetFocusIntentForTest } from './focusIntent';
+import { elementFocusScope, focusChosen, intendFocus } from './focusIntent';
 
 describe('the latest focus intent', () => {
   let area: HTMLElement;
@@ -12,7 +12,6 @@ describe('the latest focus intent', () => {
   afterEach(() => {
     area.remove();
     outside.remove();
-    resetFocusIntentForTest();
   });
 
   it('is canceled, with its callback, by a newer intent, and the newer one lands', () => {

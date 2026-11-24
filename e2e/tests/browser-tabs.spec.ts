@@ -53,7 +53,7 @@ test('the header button and a mod-clicked link open the browser from no tab', as
     }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await harness.open(page);
   await page.getByText('Browser tabs').click();
 
@@ -119,7 +119,7 @@ async function seedBrowserThread(harness: HarnessApp, title: string): Promise<st
     }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   return threadId;
 }
 
@@ -574,73 +574,45 @@ test('a tab dragged after a close to the right waits for it', async ({ harness, 
   await expect(tabs).toHaveCount(2);
 });
 
-// One closed and then reopened, and while the reopen is on its way four
-// dragged before three in the strip two three four the user sees, the move
-// reaching the backend first: the move waits for the reopen's turn and
-// lands beside three, so one two four three.
-test('a tab dropped beside another lands beside it after a reopen before it', async ({ harness, page }) => {
-  const wire = await holdBeforeMove(page, 'reopen');
-  const threadId = await seedBrowserThread(harness, 'Browser move after reopen');
-  const urls = ['https://example.test/one', 'https://example.test/two', 'https://example.test/three', 'https://example.test/four'];
-  for (const address of urls) {
-    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
-    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
-  }
-  await harness.open(page);
-  await page.getByText('Browser move after reopen').click();
-  const pane = page.getByTestId('browser-pane');
-  const tabs = pane.getByTestId('browser-tab');
-  await expect(tabs).toHaveCount(4);
+// A tab is closed and then reopened, and while the reopen is on its way four
+// is dragged beside the tab before it in the strip the user sees, the move
+// reaching the backend first. Either way it lands one two four three:
+// - one closed: in two three four, four dropped on the left half of three
+//   waits for the reopen's turn and lands beside three;
+// - three closed: in one two four, where four already follows two, four
+//   dropped on the right half of two is sent all the same, and at its turn,
+//   after the reopen put three back between two and four, moves after two.
+for (const { name, title, closed, side } of [
+  { name: 'a tab dropped beside another lands beside it after a reopen before it', title: 'Browser move after reopen', closed: 0, side: 0.25 },
+  { name: 'a tab dropped beside the tab it already follows is moved there at its turn', title: 'Browser move beside neighbor', closed: 2, side: 0.75 },
+]) {
+  test(name, async ({ harness, page }) => {
+    const wire = await holdBeforeMove(page, 'reopen');
+    const threadId = await seedBrowserThread(harness, title);
+    const urls = ['https://example.test/one', 'https://example.test/two', 'https://example.test/three', 'https://example.test/four'];
+    for (const address of urls) {
+      const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+      await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
+    }
+    await harness.open(page);
+    await page.getByText(title).click();
+    const pane = page.getByTestId('browser-pane');
+    const tabs = pane.getByTestId('browser-tab');
+    await expect(tabs).toHaveCount(4);
 
-  await tabs.nth(0).click({ button: 'right' });
-  await page.getByRole('menu', { name: 'Tab actions' }).getByTestId('browser-tab-menu-close').click();
-  await expect(tabs).toHaveCount(3);
-  await tabs.nth(0).click({ button: 'right' });
-  await page.getByRole('menu', { name: 'Tab actions' }).getByTestId('browser-tab-menu-reopen').click();
-  await expect.poll(() => wire.held()).toBe(true);
-  // Dropped on the left half of three, four lands before it.
-  const target = await tabs.nth(1).boundingBox();
-  if (!target) throw new Error('tab three has no box');
-  await tabs.nth(2).dragTo(tabs.nth(1), { targetPosition: { x: target.width * 0.25, y: target.height / 2 } });
-  await expect.poll(() => wire.sent()).toBe(2);
-  wire.release();
-  await expect.poll(() => wire.answered()).toBe(2);
-  expect(await tabURLs(harness, threadId)).toEqual([urls[0], urls[1], urls[3], urls[2]]);
-  await expect(tabs).toHaveCount(4);
-});
-
-// Three closed and then reopened, and while the reopen is on its way four
-// dragged after two in the strip one two four the user sees, where four is
-// already after two. The drop is sent all the same: at its turn, after the
-// reopen put three back between two and four, it moves four after two, so
-// one two four three.
-test('a tab dropped beside the tab it already follows is moved there at its turn', async ({ harness, page }) => {
-  const wire = await holdBeforeMove(page, 'reopen');
-  const threadId = await seedBrowserThread(harness, 'Browser move beside neighbor');
-  const urls = ['https://example.test/one', 'https://example.test/two', 'https://example.test/three', 'https://example.test/four'];
-  for (const address of urls) {
-    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
-    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
-  }
-  await harness.open(page);
-  await page.getByText('Browser move beside neighbor').click();
-  const pane = page.getByTestId('browser-pane');
-  const tabs = pane.getByTestId('browser-tab');
-  await expect(tabs).toHaveCount(4);
-
-  await tabs.nth(2).click({ button: 'right' });
-  await page.getByRole('menu', { name: 'Tab actions' }).getByTestId('browser-tab-menu-close').click();
-  await expect(tabs).toHaveCount(3);
-  await tabs.nth(0).click({ button: 'right' });
-  await page.getByRole('menu', { name: 'Tab actions' }).getByTestId('browser-tab-menu-reopen').click();
-  await expect.poll(() => wire.held()).toBe(true);
-  // Dropped on the right half of two, four lands after it.
-  const target = await tabs.nth(1).boundingBox();
-  if (!target) throw new Error('tab two has no box');
-  await tabs.nth(2).dragTo(tabs.nth(1), { targetPosition: { x: target.width * 0.75, y: target.height / 2 } });
-  await expect.poll(() => wire.sent()).toBe(2);
-  wire.release();
-  await expect.poll(() => wire.answered()).toBe(2);
-  expect(await tabURLs(harness, threadId)).toEqual([urls[0], urls[1], urls[3], urls[2]]);
-  await expect(tabs).toHaveCount(4);
-});
+    await tabs.nth(closed).click({ button: 'right' });
+    await page.getByRole('menu', { name: 'Tab actions' }).getByTestId('browser-tab-menu-close').click();
+    await expect(tabs).toHaveCount(3);
+    await tabs.nth(0).click({ button: 'right' });
+    await page.getByRole('menu', { name: 'Tab actions' }).getByTestId('browser-tab-menu-reopen').click();
+    await expect.poll(() => wire.held()).toBe(true);
+    const target = await tabs.nth(1).boundingBox();
+    if (!target) throw new Error('the second tab has no box');
+    await tabs.nth(2).dragTo(tabs.nth(1), { targetPosition: { x: target.width * side, y: target.height / 2 } });
+    await expect.poll(() => wire.sent()).toBe(2);
+    wire.release();
+    await expect.poll(() => wire.answered()).toBe(2);
+    expect(await tabURLs(harness, threadId)).toEqual([urls[0], urls[1], urls[3], urls[2]]);
+    await expect(tabs).toHaveCount(4);
+  });
+}

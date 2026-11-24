@@ -212,7 +212,7 @@ func (m *Manager) usageTransaction(
 	case string(provider.Codex):
 		probeCfg := m.codexProbeConfig(
 			m.providerBinaryPath(providerName),
-			map[string]string{"CODEX_HOME": ephemeral.Path},
+			map[provider.ReservedEnv]string{provider.CodexHomeEnv: ephemeral.Path},
 		)
 		probeCfg.OnSnapshot = func(value provider.RateLimitsSnapshot) {
 			snapshot = value

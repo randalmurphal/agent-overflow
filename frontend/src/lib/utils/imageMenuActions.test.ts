@@ -21,20 +21,25 @@ import { buildForgeAttachmentHref, parseForgeAttachmentHref } from './forgeAttac
 import type { ResolvedForgeAttachment } from './forgeAttachmentCache';
 import { buildLocalImageHref } from './pathLinkExtension';
 import { getPinnedBackend } from '../transport/backends';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { mockAttachmentDownload, mockGitBlobImage, mockLocalImage } from '../../test/mocks/attachmentTransfer';
 import { answerAsV0019, methodNotFound } from '../../test/helpers/olderComputer';
 import { buildRepositoryImageHref, type RepositoryImageClaim } from './repositoryImageHref';
 import { acquireRepositoryImage, repositoryImageCacheKey } from './repositoryImages';
-import { __resetForgeFactsForTest, noteForgeFactsWorkspace } from '../stores/forgeFacts.svelte';
-import { __resetImageTiersForTest, fullSizeMaxWidth, rememberImageTier } from './imageTiers';
-import { __resetMediaBlobCacheForTest } from './mediaBlobCache';
+import { noteForgeFactsWorkspace } from '../stores/forgeFacts.svelte';
+import { fullSizeMaxWidth, rememberImageTier } from './imageTiers';
 import { prKey } from './prReference';
 import { composeWorkspaceKey } from './workspaceKey';
 import type { WorkspaceRef } from '../types/git';
 
 const nativeShell = vi.hoisted(() => ({ value: false }));
 const webviewHosted = vi.hoisted(() => ({ value: false }));
+// Back to the desktop page before the between-test steps reset the
+// computers, which attach the page's own by what the platform says.
+afterEach(() => {
+  nativeShell.value = false;
+  webviewHosted.value = false;
+});
 const scopes = vi.hoisted(() => ({ host: false, write: true, git: true, files: true }));
 const forgeCache = vi.hoisted(() => ({ acquire: vi.fn(), release: vi.fn(), original: vi.fn() }));
 const openForge = vi.hoisted(() => vi.fn(async () => {}));
@@ -68,7 +73,8 @@ vi.mock('./forgeAttachmentCache', async (importOriginal) => ({
   acquirePaintedForgeAttachment: (...args: unknown[]) => forgeCache.acquire(...args),
   fetchForgeAttachmentBytes: (...args: unknown[]) => forgeCache.original(...args),
 }));
-vi.mock('./forgeAttachmentActions', () => ({
+vi.mock('./forgeAttachmentActions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./forgeAttachmentActions')>()),
   openForgeAttachment: (...args: unknown[]) => openForge(...(args as [])),
 }));
 vi.mock('./externalLinks', async (importOriginal) => ({
@@ -153,7 +159,6 @@ describe('copying an attachment image', () => {
     setClipboard(originalClipboard);
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
-    resetBindingMocks();
   });
 
   it('fetches the original bytes and re-encodes a non-PNG before writing', async () => {
@@ -209,7 +214,6 @@ describe('saving an attachment image', () => {
     scopes.write = true;
     toasts.length = 0;
     toastErrors.length = 0;
-    resetBindingMocks();
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -481,14 +485,12 @@ describe('local images', () => {
     scopes.files = true;
     toasts.length = 0;
     toastErrors.length = 0;
-    resetBindingMocks();
   });
   afterEach(() => {
     setClipboard(originalClipboard);
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
-    resetBindingMocks();
     document.body.innerHTML = '';
   });
 
@@ -770,18 +772,13 @@ describe('repository images', () => {
     toasts.length = 0;
     toastErrors.length = 0;
     openedExternally.length = 0;
-    resetBindingMocks();
     noteForgeFactsWorkspace(composeWorkspaceKey('gpu', prKey(PR)), WORKSPACE);
   });
   afterEach(() => {
     setClipboard(originalClipboard);
-    __resetMediaBlobCacheForTest();
-    __resetImageTiersForTest();
-    __resetForgeFactsForTest();
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
-    resetBindingMocks();
     document.body.innerHTML = '';
   });
 

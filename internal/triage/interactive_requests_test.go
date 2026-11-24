@@ -241,115 +241,76 @@ func mustMarshalJSON(t *testing.T, value any) json.RawMessage {
 
 // --- HasPendingWork tests ---
 
-func TestHasPendingWorkNilRouter(t *testing.T) {
-	var r *Router
-	if r.HasPendingWork("thread-1") {
-		t.Fatal("nil router returned true")
-	}
-}
-
-func TestHasPendingWorkEmptyThread(t *testing.T) {
-	r := NewRouter(nil, func(eventchan.Channel, any) {})
-	if r.HasPendingWork("") {
-		t.Fatal("empty threadID returned true")
-	}
-}
-
 func TestHasPendingWorkNoState(t *testing.T) {
-	r := NewRouter(nil, func(eventchan.Channel, any) {})
-	if r.HasPendingWork("thread-1") {
-		t.Fatal("fresh router returned true")
+	for _, tc := range []struct {
+		name     string
+		router   *Router
+		threadID string
+	}{
+		{"nil router", nil, "thread-1"},
+		{"empty thread id", NewRouter(nil, func(eventchan.Channel, any) {}), ""},
+		{"fresh router", NewRouter(nil, func(eventchan.Channel, any) {}), "thread-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.router.HasPendingWork(tc.threadID) {
+				t.Fatal("HasPendingWork returned true")
+			}
+		})
 	}
 }
 
+// A pending interactive request is pending work until its resolution.
 func TestHasPendingWorkPendingApproval(t *testing.T) {
-	r := NewRouter(nil, func(eventchan.Channel, any) {})
-
-	meta := mustMarshalJSON(t, provider.ApprovalRequest{
-		RequestID: "a-1",
-		ThreadID:  "thread-1",
-		ToolName:  "Bash",
-	})
-	if err := r.Handle(provider.ProviderEvent{
-		Kind:      provider.EventApprovalRequest,
-		ThreadID:  "thread-1",
-		ItemID:    "a-1",
-		Meta:      meta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-
-	if !r.HasPendingWork("thread-1") {
-		t.Fatal("pending approval: want true")
-	}
-
-	resolveMeta := mustMarshalJSON(t, map[string]any{
-		"requestId": "a-1",
-		"decision":  "approved",
-	})
-	if err := r.Handle(provider.ProviderEvent{
-		Kind:      provider.EventApprovalResolved,
-		ThreadID:  "thread-1",
-		ItemID:    "a-1",
-		Meta:      resolveMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("Handle resolve: %v", err)
-	}
-
-	if r.HasPendingWork("thread-1") {
-		t.Fatal("after resolve: want false")
-	}
-}
-
-func TestHasPendingWorkPendingUserInput(t *testing.T) {
-	r := NewRouter(nil, func(eventchan.Channel, any) {})
-
-	meta := mustMarshalJSON(t, provider.UserInputRequest{
-		RequestID: "ui-1",
-		ThreadID:  "thread-1",
-		ToolName:  "user_input",
-		Title:     "Choose",
-		Questions: []provider.UserInputQuestion{{
-			ID:       "q",
-			Header:   "Q",
-			Question: "Pick one",
-			Options: []provider.UserInputQuestionOption{
-				{Label: "A", Description: "First"},
+	for _, tc := range []struct {
+		name               string
+		requestKind        provider.EventKind
+		request            any
+		resolveKind        provider.EventKind
+		requestID          string
+		resolutionDecision string
+	}{
+		{
+			name:        "approval",
+			requestKind: provider.EventApprovalRequest,
+			request:     provider.ApprovalRequest{RequestID: "a-1", ThreadID: "thread-1", ToolName: "Bash"},
+			resolveKind: provider.EventApprovalResolved, requestID: "a-1", resolutionDecision: "approved",
+		},
+		{
+			name:        "user input",
+			requestKind: provider.EventUserInputRequest,
+			request: provider.UserInputRequest{
+				RequestID: "ui-1", ThreadID: "thread-1", ToolName: "user_input", Title: "Choose",
+				Questions: []provider.UserInputQuestion{{
+					ID: "q", Header: "Q", Question: "Pick one",
+					Options: []provider.UserInputQuestionOption{{Label: "A", Description: "First"}},
+				}},
 			},
-		}},
-	})
-	if err := r.Handle(provider.ProviderEvent{
-		Kind:      provider.EventUserInputRequest,
-		ThreadID:  "thread-1",
-		ItemID:    "ui-1",
-		Meta:      meta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+			resolveKind: provider.EventUserInputResolved, requestID: "ui-1", resolutionDecision: "answered",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRouter(nil, func(eventchan.Channel, any) {})
+			if err := r.Handle(provider.ProviderEvent{
+				Kind: tc.requestKind, ThreadID: "thread-1", ItemID: tc.requestID,
+				Meta: mustMarshalJSON(t, tc.request), Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			if !r.HasPendingWork("thread-1") {
+				t.Fatal("pending request: want true")
+			}
 
-	if !r.HasPendingWork("thread-1") {
-		t.Fatal("pending user input: want true")
-	}
-
-	resolveMeta := mustMarshalJSON(t, map[string]any{
-		"requestId": "ui-1",
-		"decision":  "answered",
-	})
-	if err := r.Handle(provider.ProviderEvent{
-		Kind:      provider.EventUserInputResolved,
-		ThreadID:  "thread-1",
-		ItemID:    "ui-1",
-		Meta:      resolveMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("Handle resolve: %v", err)
-	}
-
-	if r.HasPendingWork("thread-1") {
-		t.Fatal("after resolve: want false")
+			if err := r.Handle(provider.ProviderEvent{
+				Kind: tc.resolveKind, ThreadID: "thread-1", ItemID: tc.requestID,
+				Meta:      mustMarshalJSON(t, map[string]any{"requestId": tc.requestID, "decision": tc.resolutionDecision}),
+				Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("Handle resolve: %v", err)
+			}
+			if r.HasPendingWork("thread-1") {
+				t.Fatal("after resolve: want false")
+			}
+		})
 	}
 }
 
@@ -373,6 +334,9 @@ func TestHasPendingWorkPendingSend(t *testing.T) {
 
 	if !r.HasPendingWork("thread-1") {
 		t.Fatal("pending send: want true")
+	}
+	if r.HasPendingWork("thread-2") {
+		t.Fatal("unrelated thread returned true")
 	}
 }
 
@@ -399,15 +363,5 @@ func TestHasPendingWorkCleanupThreadClears(t *testing.T) {
 
 	if r.HasPendingWork("thread-1") {
 		t.Fatal("after CleanupThread: want false")
-	}
-}
-
-func TestHasPendingWorkIsolatesThreads(t *testing.T) {
-	r := NewRouter(nil, func(eventchan.Channel, any) {})
-
-	r.RegisterPendingSendWithExpectation("thread-1", "user:1", 1, PendingSendExpectation{})
-
-	if r.HasPendingWork("thread-2") {
-		t.Fatal("unrelated thread returned true")
 	}
 }

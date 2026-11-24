@@ -127,7 +127,7 @@ func (a *App) probeSwitchedProviderAccount(providerName string) {
 		switch providerName {
 		case string(provider.Claude):
 			probe = func() error {
-				_, err := a.ProbeClaudeAccount()
+				_, err := a.providerDiscoveryService().ProbeClaudeAccount()
 				return err
 			}
 		case string(provider.Agy):
@@ -287,13 +287,6 @@ func (a *App) FinishProviderAccountReset(
 		return provideraccountapp.ResetSpendResult{}, errors.New("provider account storage is unavailable")
 	}
 	return a.providerAccounts.FinishProviderAccountReset(ctx, providerName, accountID, spendID)
-}
-
-func (a *App) refreshProviderAccountUsage(ctx context.Context, providerName, accountID string) error {
-	if a.providerAccounts == nil {
-		return errors.New("provider account storage is unavailable")
-	}
-	return a.providerAccounts.RefreshProviderAccountUsageContext(ctx, providerName, accountID)
 }
 
 func managedProviderAccount(account provideraccountapp.ManagedAccount) ManagedProviderAccount {

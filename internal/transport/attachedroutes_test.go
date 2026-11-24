@@ -149,63 +149,59 @@ func TestAttachedBootstrapCarriesTheFarSidesIdentity(t *testing.T) {
 	}
 }
 
-// TestAttachedBootstrapReportsAnUnreachableMachineAsTransient — a sleeping
+// TestAttachedBootstrapTellsATransientFailureFromAVerdict — a sleeping
 // laptop must not read as one that has forgotten this device: the SPA's
 // terminal state is reserved for a verdict, and a 404 here is a verdict.
-func TestAttachedBootstrapReportsAnUnreachableMachineAsTransient(t *testing.T) {
+// An ended session is the one manifest failure the page must stop
+// retrying on (the far side refused the rotation that disambiguates a
+// refused manifest), so it gets the same 404 a removed profile gets.
+func TestAttachedBootstrapTellsATransientFailureFromAVerdict(t *testing.T) {
 	f, carrier := newAttachedFixture(t)
-	carrier.manifestErr = errors.New("dial: no route to host")
-	resp := do(t, attachedRequest(t, http.MethodGet, "http://"+f.srv.Addr()+"/bootstrap/mini.json"))
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"unreachable machine", errors.New("dial: no route to host"), http.StatusServiceUnavailable},
+		{"ended session", fmt.Errorf("%w: revoked_session", ErrAttachedSessionEnded), http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			carrier.manifestErr = tc.err
+			resp := do(t, attachedRequest(t, http.MethodGet, "http://"+f.srv.Addr()+"/bootstrap/mini.json"))
+			_ = resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.want)
+			}
+		})
 	}
 }
 
-// TestAttachedBootstrapReportsAnEndedSessionAsAVerdict — the far side
-// refused the rotation that disambiguates a refused manifest, so this is
-// the one manifest failure the page must stop retrying on: the same 404 a
-// removed profile gets, never the transient 503.
-func TestAttachedBootstrapReportsAnEndedSessionAsAVerdict(t *testing.T) {
+// TestAttachedRoutesRefuseAnUnknownBackendOrCredential — a page whose
+// manifest is a moment stale asks for a backend that has just been
+// removed, and gets the same unfingerprintable 404 a bad credential does.
+// The page credential is the whole admission: without it a local process
+// that is not this page could use this listener to reach a machine it
+// never paired with.
+func TestAttachedRoutesRefuseAnUnknownBackendOrCredential(t *testing.T) {
 	f, carrier := newAttachedFixture(t)
-	carrier.manifestErr = fmt.Errorf("%w: revoked_session", ErrAttachedSessionEnded)
-	resp := do(t, attachedRequest(t, http.MethodGet, "http://"+f.srv.Addr()+"/bootstrap/mini.json"))
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", resp.StatusCode)
-	}
-}
-
-// TestAttachedRoutesRefuseAnUnknownBackend — a page whose manifest is a
-// moment stale asks for a backend that has just been removed, and gets
-// the same unfingerprintable 404 a bad credential does.
-func TestAttachedRoutesRefuseAnUnknownBackend(t *testing.T) {
-	f, _ := newAttachedFixture(t)
-	for _, path := range []string{"/ws/backend/gone", "/bootstrap/gone.json", "/backend/gone/attachments/x"} {
-		resp := do(t, attachedRequest(t, http.MethodGet, "http://"+f.srv.Addr()+path))
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("%s answered %d for an unattached backend, want 404", path, resp.StatusCode)
-		}
-	}
-}
-
-// TestAttachedRoutesRefuseAWrongCredential — the page credential is the
-// whole admission. Without it a local process that is not this page could
-// use this listener to reach a machine it never paired with.
-func TestAttachedRoutesRefuseAWrongCredential(t *testing.T) {
-	f, carrier := newAttachedFixture(t)
-	for _, path := range []string{"/ws/backend/mini", "/bootstrap/mini.json", "/backend/mini/attachments/x"} {
-		req := attachedRequest(t, http.MethodGet, "http://"+f.srv.Addr()+path)
-		req.Header.Set("Authorization", "Bearer not-the-token")
-		resp := do(t, req)
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("%s answered %d for a wrong credential, want 404", path, resp.StatusCode)
-		}
-	}
-	if carrier.upgrades.Load() != 0 || carrier.transfers.Load() != 0 {
-		t.Fatal("a refused request still reached the carrier")
+	for _, tc := range []struct{ name, backend, token string }{
+		{"unknown backend", "gone", "test-token"},
+		{"wrong credential", "mini", "not-the-token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, path := range []string{"/ws/backend/" + tc.backend, "/bootstrap/" + tc.backend + ".json", "/backend/" + tc.backend + "/attachments/x"} {
+				req := attachedRequest(t, http.MethodGet, "http://"+f.srv.Addr()+path)
+				req.Header.Set("Authorization", "Bearer "+tc.token)
+				resp := do(t, req)
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusNotFound {
+					t.Errorf("%s answered %d, want 404", path, resp.StatusCode)
+				}
+			}
+			if carrier.upgrades.Load() != 0 || carrier.transfers.Load() != 0 {
+				t.Fatal("a refused request still reached the carrier")
+			}
+		})
 	}
 }
 

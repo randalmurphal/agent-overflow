@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import WebviewGPUVsyncField from './WebviewGPUVsyncField.svelte';
-import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetRunMode } from '../../../test/runMode';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 
@@ -24,13 +24,11 @@ async function settle(): Promise<void> {
 
 describe('<WebviewGPUVsyncField>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     clearToasts();
   });
 
   afterEach(() => {
-    resetBindingMocks();
     resetRunMode();
     clearToasts();
   });

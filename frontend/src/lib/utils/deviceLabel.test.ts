@@ -23,6 +23,8 @@ describe('suggestDeviceLabel', () => {
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
       ),
     ).toBe('iPhone');
+    // iPadOS user agents contain "like Mac OS X"; the order of the checks
+    // is what keeps an iPad from being named a Mac.
     expect(
       suggestDeviceLabel('Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15'),
     ).toBe('iPad');
@@ -42,13 +44,5 @@ describe('suggestDeviceLabel', () => {
 
   it('falls back to a generic label for anything else', () => {
     expect(suggestDeviceLabel('SomethingNobodyShips/1.0')).toBe('Browser');
-  });
-
-  it('reads iPad before the Mac token Safari also carries', () => {
-    // iPadOS user agents contain "like Mac OS X"; the order of the
-    // checks is what keeps an iPad from being named a Mac.
-    expect(
-      suggestDeviceLabel('Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15'),
-    ).toBe('iPad');
   });
 });

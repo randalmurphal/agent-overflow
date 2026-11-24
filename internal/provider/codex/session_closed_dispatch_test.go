@@ -2,12 +2,10 @@ package codex
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 // TestClosedSessionDispatchRefusesAsErrSessionClosed pins the regression
@@ -25,19 +23,8 @@ import (
 // caller classifies its error.
 func TestClosedSessionDispatchRefusesAsErrSessionClosed(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	// `cat` is a stand-in process, never a provider CLI: Close needs a real
-	// *provider.Process to close and this test must not spawn codex.
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		cancel:   cancel,
-	}
+	ctx := context.Background()
+	s := fixtureSession(t, testThread, "", nil)
 	// Satisfy Revert's preflights (thread id, app-server version, paginated
 	// history) so the test proves the closing guard refuses, not an earlier
 	// unrelated check.

@@ -127,8 +127,9 @@ our own code.
   models get only the Task\* family even when opted in. `TodoWrite`
   stays absent. AO opts every session in: headless via
   `claude.withClaudeSessionEnvDefaults`, the TUI via `claudetui.buildEnv`
-  (a user-overridable default on both paths, deliberately not a
-  reserved pin; see `internal/provider/pinnedenv.go`).
+  (a default the custom environment overrides on both paths, listed with
+  no refusal in `internal/provider/envtable.go`; the TUI also leaves a
+  value exported in Agent Overflow's own environment in place).
   Spike-verified on 2.1.233: sonnet-5 `system/init` listed none of the
   four Task\* tools bare and all four with the env var.
   `CLAUDE_CODE_ENABLE_TASKS=false` is the separate whole-feature

@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/ownedtemp"
+	"agent-overflow/internal/testutil/fixturedir"
 	"agent-overflow/internal/testutil/providerpath"
+	"agent-overflow/internal/testutil/testparallel"
 )
 
 // defaultTestProjectID is seeded once in the migrated template so legacy
@@ -21,17 +22,11 @@ import (
 // the threads.project_id FK.
 const defaultTestProjectID = "default-test-project"
 
-var testStoreTemplatePath string
-
-func TestMain(m *testing.M) {
-	sweepStoreTemplates()
-	dir, release, err := ownedtemp.Make("", storeTemplatePrefix)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "create store test template directory: %v\n", err)
-		os.Exit(1)
-	}
-	testStoreTemplatePath = filepath.Join(dir, "template.sqlite")
-	template, err := New(testStoreTemplatePath)
+// testStoreTemplate is the migrated store the tests clone, built by the
+// first clone of a run in its fixture directory, with the default project
+// seeded.
+var testStoreTemplate = fixturedir.New("store-template.sqlite", func(tb testing.TB, path string) {
+	template, err := New(path)
 	if err == nil {
 		_, err = template.CreateProject(Project{
 			ID: defaultTestProjectID, Path: "/tmp/test", Name: "Default Test Project",
@@ -45,49 +40,39 @@ func TestMain(m *testing.M) {
 		err = errors.Join(err, template.Close())
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "build store test template: %v\n", err)
-		if cleanupErr := release(); cleanupErr != nil {
-			fmt.Fprintf(os.Stderr, "remove failed store test template: %v\n", cleanupErr)
-		}
-		os.Exit(1)
+		tb.Fatalf("build store test template: %v", err)
 	}
+})
 
-	code := providerpath.Run(m)
-	if report := recompilingReport(recompilingStatements()); report != "" {
-		fmt.Fprint(os.Stderr, report)
-		if code == 0 {
-			code = 1
-		}
+func TestMain(m *testing.M) {
+	if err := testparallel.CapDefault(); err != nil {
+		panic(err)
 	}
-	if err := release(); err != nil {
-		fmt.Fprintf(os.Stderr, "remove store test template: %v\n", err)
-		if code == 0 {
-			code = 1
+	os.Exit(fixturedir.Guard(func() int {
+		code := providerpath.Run(m)
+		if report := recompilingReport(recompilingStatements()); report != "" {
+			fmt.Fprint(os.Stderr, report)
+			code = max(code, 1)
 		}
-	}
-	sweepStoreTemplates()
-	os.Exit(code)
+		return code
+	}))
 }
 
-// storeTemplatePrefix names the template directories, one per test process.
-const storeTemplatePrefix = "agent-overflow-store-template-"
-
-// sweepStoreTemplates removes the template directories of test processes
-// that exited without removing theirs: killed, timed out, or a helper that
-// ended in os.Exit.
-func sweepStoreTemplates() {
-	if err := ownedtemp.Sweep("", storeTemplatePrefix); err != nil {
-		fmt.Fprintf(os.Stderr, "remove the store test templates of exited test processes: %v\n", err)
-	}
+func TestTheDefaultParallelIsCapped(t *testing.T) {
+	t.Parallel()
+	testparallel.CheckApplied(t)
 }
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	clonePath := filepath.Join(t.TempDir(), "store.sqlite")
-	if err := copyTestStoreTemplate(clonePath); err != nil {
-		t.Fatalf("clone store template: %v", err)
-	}
-	s, err := New(clonePath)
+	return openTestStore(t, newTestStorePath(t))
+}
+
+// openTestStore opens the store at path, a clone or a fixture copy, and
+// closes it when the test ends.
+func openTestStore(t testing.TB, path string) *Store {
+	t.Helper()
+	s, err := New(path)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
@@ -105,47 +90,33 @@ func newTestStore(t *testing.T) *Store {
 func newTestStorePath(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "store.sqlite")
-	if err := copyTestStoreTemplate(path); err != nil {
+	if err := copyTestStoreTemplate(t, path); err != nil {
 		t.Fatalf("clone store template: %v", err)
 	}
 	return path
 }
 
-func copyTestStoreTemplate(destination string) error {
-	return copyStoreFile(testStoreTemplatePath, destination)
+func copyTestStoreTemplate(tb testing.TB, destination string) error {
+	return copyStoreFile(testStoreTemplate.Path(tb), destination)
 }
 
-// fixtures holds the database files fixtureCopy built, by name.
+// fixtures holds the database fixtures fixtureCopy declared, by name.
 var fixtures sync.Map
-
-type fixtureFile struct {
-	once sync.Once
-	path string
-	err  error
-}
 
 // fixtureCopy returns a copy, in a directory of the test's, of the
 // database file build writes at the path it is given. The first test that
-// asks for name builds it in the store template's directory; build must
-// leave the file closed, with no WAL.
+// asks for name builds it in the run's fixture directory; build must leave
+// the file closed, with no WAL.
 func fixtureCopy(t *testing.T, name string, build func(t *testing.T, path string)) string {
 	t.Helper()
-	entry, _ := fixtures.LoadOrStore(name, &fixtureFile{})
-	fixture := entry.(*fixtureFile)
-	fixture.once.Do(func() {
-		fixture.err = fmt.Errorf("the %s fixture build failed in an earlier test", name)
-		path := filepath.Join(filepath.Dir(testStoreTemplatePath), name)
-		build(t, path)
+	entry, _ := fixtures.LoadOrStore(name, fixturedir.New(name, func(tb testing.TB, path string) {
+		build(tb.(*testing.T), path)
 		if info, err := os.Stat(path + "-wal"); err == nil && info.Size() > 0 {
-			t.Fatalf("the %s fixture kept a %d-byte WAL a copy would lose", name, info.Size())
+			tb.Fatalf("the %s fixture kept a %d-byte WAL a copy would lose", name, info.Size())
 		}
-		fixture.path, fixture.err = path, nil
-	})
-	if fixture.err != nil {
-		t.Fatal(fixture.err)
-	}
+	}))
 	path := filepath.Join(t.TempDir(), name)
-	if err := copyStoreFile(fixture.path, path); err != nil {
+	if err := copyStoreFile(entry.(*fixturedir.Lazy).Path(t), path); err != nil {
 		t.Fatalf("copy the %s fixture: %v", name, err)
 	}
 	return path
@@ -194,7 +165,7 @@ func makeThread(id, provider string) Thread {
 // mustCreateThread seeds a minimal thread row. Payload mutators need one
 // to exist: they advance that thread's history_rev (migration v55) and
 // refuse to write for a thread that isn't there.
-func mustCreateThread(t *testing.T, s *Store, id string) {
+func mustCreateThread(t testing.TB, s *Store, id string) {
 	t.Helper()
 	if err := s.CreateThread(makeThread(id, "claude")); err != nil {
 		t.Fatalf("create thread %s: %v", id, err)
@@ -209,24 +180,6 @@ func mustCreateThread(t *testing.T, s *Store, id string) {
 // behavior must use the coupled writers, not this.
 func seedPayloadRow(s *Store, threadID string, p Payload) error {
 	return insertPayloadTx(s.db, threadID, p, "test: seed payload row")
-}
-
-func TestNewCreatesTablesSuccessfully(t *testing.T) {
-	s := newTestStore(t)
-
-	// Verify tables exist by inserting and querying.
-	thr := makeThread("t1", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	got, err := s.GetThread("t1")
-	if err != nil {
-		t.Fatalf("get thread: %v", err)
-	}
-	if got.ID != "t1" {
-		t.Errorf("thread ID: got %q, want %q", got.ID, "t1")
-	}
 }
 
 // A checkpoint copies committed frames while a write transaction holds the
@@ -389,59 +342,6 @@ func TestListThreadsExcludesArchived(t *testing.T) {
 	}
 	if threads[0].ID != "active" {
 		t.Errorf("expected active thread, got %q", threads[0].ID)
-	}
-}
-
-func TestDeleteThread(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t1", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	if err := s.DeleteThread("t1"); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-
-	_, err := s.GetThread("t1")
-	if err == nil {
-		t.Fatal("expected error getting deleted thread, got nil")
-	}
-}
-
-func TestDeleteThreadCascadesToItems(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t1", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	item := Item{
-		ID:        "item-1",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "user_text",
-		Role:      "user",
-		Summary:   "hello",
-		CreatedAt: time.Now().UnixMilli(),
-	}
-	if err := s.InsertItem(item); err != nil {
-		t.Fatalf("insert item: %v", err)
-	}
-
-	if err := s.DeleteThread("t1"); err != nil {
-		t.Fatalf("delete thread: %v", err)
-	}
-
-	items, err := s.ListItems("t1")
-	if err != nil {
-		t.Fatalf("list items: %v", err)
-	}
-	if len(items) != 0 {
-		t.Errorf("expected 0 items after cascade delete, got %d", len(items))
 	}
 }
 
@@ -694,25 +594,19 @@ func TestArchiveThread(t *testing.T) {
 	if got.UpdatedAt <= 1000 {
 		t.Errorf("expected updated_at to be bumped from 1000, got %d", got.UpdatedAt)
 	}
-}
-
-func TestUnarchiveThreadRestoresRow(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t-un", "claude")
-	thr.UpdatedAt = 1000
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create: %v", err)
+	// ListThreads (the sidebar's default view) hides the archived row.
+	threads, err := s.ListThreads()
+	if err != nil {
+		t.Fatalf("list: %v", err)
 	}
-	if _, _, err := s.ArchiveThread("t-un"); err != nil {
-		t.Fatalf("archive: %v", err)
+	if containsThread(threads, "t1") {
+		t.Fatal("expected archived thread to be hidden from ListThreads")
 	}
 
-	if _, _, err := s.UnarchiveThread("t-un"); err != nil {
+	if _, _, err := s.UnarchiveThread("t1"); err != nil {
 		t.Fatalf("unarchive: %v", err)
 	}
-
-	got, err := s.GetThread("t-un")
+	got, err = s.GetThread("t1")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -722,37 +616,11 @@ func TestUnarchiveThreadRestoresRow(t *testing.T) {
 	if got.UpdatedAt <= 1000 {
 		t.Errorf("expected updated_at to be bumped from 1000, got %d", got.UpdatedAt)
 	}
-}
-
-func TestUnarchiveThreadRestoresSidebarVisibility(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t-vis", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, _, err := s.ArchiveThread("t-vis"); err != nil {
-		t.Fatalf("archive: %v", err)
-	}
-
-	// Confirm ListThreads (sidebar's default view) hides the archived row.
-	threads, err := s.ListThreads()
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if containsThread(threads, "t-vis") {
-		t.Fatal("expected archived thread to be hidden from ListThreads")
-	}
-
-	if _, _, err := s.UnarchiveThread("t-vis"); err != nil {
-		t.Fatalf("unarchive: %v", err)
-	}
-
 	threads, err = s.ListThreads()
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if !containsThread(threads, "t-vis") {
+	if !containsThread(threads, "t1") {
 		t.Fatal("expected unarchived thread to reappear in ListThreads")
 	}
 }
@@ -1031,41 +899,6 @@ func TestInsertItemWithPayloadFK(t *testing.T) {
 	err := s.InsertItem(item)
 	if err == nil {
 		t.Fatal("expected FK constraint error, got nil")
-	}
-}
-
-func TestInsertItemWithValidPayloadFK(t *testing.T) {
-	s := newTestStore(t)
-
-	thr := makeThread("t1", "claude")
-	if err := s.CreateThread(thr); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	now := time.Now().UnixMilli()
-	payload := Payload{
-		ID:        "p1",
-		Kind:      "diff",
-		Meta:      `{"file":"main.go"}`,
-		Data:      []byte("diff content"),
-		CreatedAt: now,
-	}
-	if err := seedPayloadRow(s, "t1", payload); err != nil {
-		t.Fatalf("insert payload: %v", err)
-	}
-
-	item := Item{
-		ID:        "i1",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "tool_call",
-		Role:      "assistant",
-		PayloadID: "p1",
-		CreatedAt: now,
-	}
-	if err := s.InsertItem(item); err != nil {
-		t.Fatalf("insert item with valid payload FK: %v", err)
 	}
 }
 

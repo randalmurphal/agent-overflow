@@ -4,7 +4,6 @@ import type { ActivityRunNode } from '../utils/subagentGrouping';
 import { revealActivityRunItem } from '../utils/activityRunWindow';
 import {
   createThreadActivityRuns,
-  resetActivityRunAnchorReportsForTest,
 } from './threadActivityRuns.svelte';
 import type { PaneScrollController } from './threadPaneShared';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
@@ -844,24 +843,17 @@ describe('state across a sweep', () => {
     expect(runs.readerPinnedSpan('a', 'c')).toBe(true);
   });
 
-  it('is found again by the run tail when the prune cut its head', () => {
+  it.each([
+    ['is found again by the run tail when the prune cut its head', ['c', 'd', 'e']],
+    ['is found again by the run head when the prune cut its tail', ['a', 'b']],
+  ])('%s', (_name, back) => {
     const runs = registry();
     const [run] = pass(runs, [['a', 'b', 'c', 'd']]);
     runs.setCollapsed(run.runId, true);
 
     pass(runs, [['z']]);
 
-    expect(pass(runs, [['c', 'd', 'e']])[0].collapsed).toBe(true);
-  });
-
-  it('is found again by the run head when the prune cut its tail', () => {
-    const runs = registry();
-    const [run] = pass(runs, [['a', 'b', 'c', 'd']]);
-    runs.setCollapsed(run.runId, true);
-
-    pass(runs, [['z']]);
-
-    expect(pass(runs, [['a', 'b']])[0].collapsed).toBe(true);
+    expect(pass(runs, [back])[0].collapsed).toBe(true);
   });
 
   it('survives a thread switch and back', () => {
@@ -981,7 +973,6 @@ describe('window-anchor guard', () => {
 
   beforeEach(() => {
     // The once-per-run report ledger is module state.
-    resetActivityRunAnchorReportsForTest();
   });
 
   function fixture() {

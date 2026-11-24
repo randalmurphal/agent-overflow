@@ -37,30 +37,17 @@ function planItem(overrides: Partial<Item> = {}): Item {
 }
 
 describe('proposedPlanTitle', () => {
-  it('returns the first heading as the title', () => {
-    expect(proposedPlanTitle('# My plan\nbody')).toBe('My plan');
-  });
-
-  it('accepts H1–H6', () => {
-    expect(proposedPlanTitle('### Nested heading')).toBe('Nested heading');
-  });
-
-  it('trims leading whitespace up to 3 spaces before the heading marker', () => {
-    expect(proposedPlanTitle('   # Indented')).toBe('Indented');
-  });
-
-  it('returns null when no heading is found', () => {
-    expect(proposedPlanTitle('just body text')).toBeNull();
-  });
-
-  it('returns null for empty input', () => {
-    expect(proposedPlanTitle('')).toBeNull();
-  });
-
-  it('treats a heading deeper in the document the same as the first line', () => {
+  it.each([
+    ['returns the first heading as the title', '# My plan\nbody', 'My plan'],
+    ['accepts H1–H6', '### Nested heading', 'Nested heading'],
+    ['trims leading whitespace up to 3 spaces before the heading marker', '   # Indented', 'Indented'],
+    ['returns null when no heading is found', 'just body text', null],
+    ['returns null for empty input', '', null],
     // The regex uses the /m flag so any line that starts with a heading
     // marker qualifies — falls out of the match at the first one.
-    expect(proposedPlanTitle('body\n# Title later\nmore body')).toBe('Title later');
+    ['treats a heading deeper in the document the same as the first line', 'body\n# Title later\nmore body', 'Title later'],
+  ])('%s', (_name, input, want) => {
+    expect(proposedPlanTitle(input)).toBe(want);
   });
 });
 
@@ -111,45 +98,27 @@ describe('proposed plan body sizing helpers', () => {
 });
 
 describe('buildProposedPlanMarkdownFilename', () => {
-  it('slugifies the title into a lowercase kebab-case .md name', () => {
-    expect(buildProposedPlanMarkdownFilename('# Fix the login flow')).toBe('fix-the-login-flow.md');
-  });
-
-  it('drops punctuation and parentheses', () => {
-    expect(buildProposedPlanMarkdownFilename("# Don't touch (yet)!"))
-      .toBe('dont-touch-yet.md');
-  });
-
-  it('falls back to "plan.md" when the title has no usable characters', () => {
-    expect(buildProposedPlanMarkdownFilename('# !!!')).toBe('plan.md');
-  });
-
-  it('falls back to "plan.md" when no title is present', () => {
-    expect(buildProposedPlanMarkdownFilename('no heading here')).toBe('plan.md');
-  });
-
-  it('collapses runs of spaces into single hyphens', () => {
-    expect(buildProposedPlanMarkdownFilename('# Make    it   so')).toBe('make-it-so.md');
-  });
-
-  it('strips leading and trailing hyphens after sanitization', () => {
-    expect(buildProposedPlanMarkdownFilename('# ---wrap---')).toBe('wrap.md');
+  it.each([
+    ['slugifies the title into a lowercase kebab-case .md name', '# Fix the login flow', 'fix-the-login-flow.md'],
+    ['drops punctuation and parentheses', "# Don't touch (yet)!", 'dont-touch-yet.md'],
+    ['falls back to "plan.md" when the title has no usable characters', '# !!!', 'plan.md'],
+    ['falls back to "plan.md" when no title is present', 'no heading here', 'plan.md'],
+    ['collapses runs of spaces into single hyphens', '# Make    it   so', 'make-it-so.md'],
+    ['strips leading and trailing hyphens after sanitization', '# ---wrap---', 'wrap.md'],
+  ])('%s', (_name, input, want) => {
+    expect(buildProposedPlanMarkdownFilename(input)).toBe(want);
   });
 });
 
 describe('normalizePlanMarkdownForExport', () => {
-  it('ensures exactly one trailing newline', () => {
-    expect(normalizePlanMarkdownForExport('body')).toBe('body\n');
-    expect(normalizePlanMarkdownForExport('body\n')).toBe('body\n');
-    expect(normalizePlanMarkdownForExport('body\n\n\n')).toBe('body\n');
-  });
-
-  it('strips trailing whitespace on the last line', () => {
-    expect(normalizePlanMarkdownForExport('body   ')).toBe('body\n');
-  });
-
-  it('preserves interior blank lines', () => {
-    expect(normalizePlanMarkdownForExport('a\n\nb')).toBe('a\n\nb\n');
+  it.each([
+    ['adds the one trailing newline', 'body', 'body\n'],
+    ['keeps exactly one trailing newline', 'body\n', 'body\n'],
+    ['collapses trailing newlines to one', 'body\n\n\n', 'body\n'],
+    ['strips trailing whitespace on the last line', 'body   ', 'body\n'],
+    ['preserves interior blank lines', 'a\n\nb', 'a\n\nb\n'],
+  ])('%s', (_name, input, want) => {
+    expect(normalizePlanMarkdownForExport(input)).toBe(want);
   });
 });
 
@@ -217,25 +186,19 @@ describe('splitProposedPlanMarkdownBlocks', () => {
 });
 
 describe('buildPlanImplementationPrompt', () => {
-  it('prefixes the trimmed plan with PLEASE IMPLEMENT THIS PLAN', () => {
-    expect(buildPlanImplementationPrompt('# Ship feature\n\n- step\n')).toBe(
-      'PLEASE IMPLEMENT THIS PLAN:\n# Ship feature\n\n- step',
-    );
-  });
-
-  it('handles plans without a heading', () => {
-    expect(buildPlanImplementationPrompt('just steps')).toBe(
-      'PLEASE IMPLEMENT THIS PLAN:\njust steps',
-    );
+  it.each([
+    ['prefixes the trimmed plan with PLEASE IMPLEMENT THIS PLAN', '# Ship feature\n\n- step\n', 'PLEASE IMPLEMENT THIS PLAN:\n# Ship feature\n\n- step'],
+    ['handles plans without a heading', 'just steps', 'PLEASE IMPLEMENT THIS PLAN:\njust steps'],
+  ])('%s', (_name, input, want) => {
+    expect(buildPlanImplementationPrompt(input)).toBe(want);
   });
 });
 
 describe('buildPlanImplementationThreadTitle', () => {
-  it('uses the plan title as the implementation thread title', () => {
-    expect(buildPlanImplementationThreadTitle('# Ship feature\n\nbody')).toBe('Implement Ship feature');
-  });
-
-  it('falls back to a generic label when there is no heading', () => {
-    expect(buildPlanImplementationThreadTitle('- step one\n- step two')).toBe('Implement plan');
+  it.each([
+    ['uses the plan title as the implementation thread title', '# Ship feature\n\nbody', 'Implement Ship feature'],
+    ['falls back to a generic label when there is no heading', '- step one\n- step two', 'Implement plan'],
+  ])('%s', (_name, input, want) => {
+    expect(buildPlanImplementationThreadTitle(input)).toBe(want);
   });
 });

@@ -755,7 +755,7 @@ test('the shell boots at its own origin, pairs, unlocks, and navigates', async (
     ]),
   });
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'keep working', null);
+  await harness.send(threadId, 'keep working');
   await waitForGate(harness, 'finish-after-back');
   await expect(page.getByRole('button', { name: 'Interrupt current turn', exact: true })).toBeVisible();
   await page.getByLabel('Message Input').focus();
@@ -1586,7 +1586,7 @@ test('a real push crosses Google and lands in the tray', async ({ device, harnes
 
   // Background the app, complete a turn, and the wake must cross Google.
   await device.shell('input keyevent KEYCODE_HOME');
-  await harness.rpc('SendMessage', threadId, 'real push question', null);
+  await harness.send(threadId, 'real push question');
   await expect
     .poll(
       async () => (await device.shell('dumpsys notification --noredact')).toString(),

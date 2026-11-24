@@ -94,6 +94,9 @@ func validateBenchInvocation(opts *benchCLIOptions, rest []string) (benchWorkloa
 	if err != nil {
 		return benchWorkload{}, 0, nil, "", err
 	}
+	if err := validateMonitorLeg("--monitor-leg", "--monitor <id> of that leg", strings.TrimSpace(*opts.monitorLeg), *opts.monitors); err != nil {
+		return benchWorkload{}, 0, nil, "", err
+	}
 	resolvedLeg := strings.TrimSpace(*opts.leg)
 	if resolvedLeg == "" {
 		resolvedLeg = benchLegCorrectness
@@ -267,12 +270,6 @@ func finishManagedBenchWithCleanup(sup *harnessrun.Supervisor, ctx context.Conte
 	return cause
 }
 
-func runBenchDirect(e *env, args []string) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	return runBenchDirectContext(ctx, e, args)
-}
-
 func runBenchDirectContext(ctx context.Context, e *env, args []string) error {
 	opts, rest, err := parseBenchOptions(e, args)
 	if err != nil {
@@ -338,7 +335,7 @@ func runBenchDirectContext(ctx context.Context, e *env, args []string) error {
 	err = e.withClient(ctx, func(client *harnessclient.Client, t target, bs harnessclient.Bootstrap) error {
 		benchTarget = t
 		if err := requireHarnessProtocol(client, capabilityRequirements{
-			Methods: []string{"HarnessReset", "HarnessSeed", "HarnessSetScenario", "HarnessPerfStart", "HarnessPerfStop", "HarnessUIQuery", "HarnessEmit", "SendMessage"},
+			Methods: []string{"HarnessReset", "HarnessSeed", "HarnessSetScenario", "HarnessPerfStart", "HarnessPerfStop", "HarnessUIQuery", "HarnessEmit", harnessclient.SendMethod},
 			Actions: []string{"open", "reload"}, Queries: append([]string{"element", "open", "perf", "viewport"}, monitorQueryRequirement(perfSpec.Monitors)...),
 			Workloads: []string{workload.Name}, Meters: perfSpec.Meters,
 		}); err != nil {
@@ -405,7 +402,7 @@ func runBenchDirectContext(ctx context.Context, e *env, args []string) error {
 	if baseline == nil {
 		return nil
 	}
-	comparisons, unmeasured, unbudgeted := compareToBaselineDetailed(document.Aggregate, *baseline)
+	comparisons, unmeasured, unbudgeted := compareToBaseline(document.Aggregate, *baseline)
 	e.progressf("\n%s", renderBenchComparison(comparisons, unmeasured, unbudgeted, *opts.baselineFile))
 	return benchGateVerdict(comparisons, unbudgeted, *opts.baselineFile)
 }

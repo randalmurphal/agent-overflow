@@ -3,9 +3,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import '../../../app.css';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import ChatMarkdown from './ChatMarkdown.svelte';
-import { resetCodeSpanCacheForTest } from './markdown/codeSpanCache';
-import { resetCodeWrapStateForTest } from './markdown/codeWrapState';
-import { __resetStreamdownCodeHostForTest } from './markdown/StreamdownCodeHost.svelte';
 
 // Real-Chromium geometry for blocks that can be wider than their column.
 // The contract is "pan inside the block's own box, never clip, and change
@@ -48,9 +45,6 @@ function fadeWidths(el: Element): { start: string; end: string } {
 }
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
-  resetCodeWrapStateForTest();
-  __resetStreamdownCodeHostForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
   document.body.innerHTML = '';

@@ -107,3 +107,25 @@ func isTransferCollabTool(name string) bool {
 	}
 	return false
 }
+
+func decodeRuntimeObject(raw string) (map[string]json.RawMessage, error) {
+	if raw == "" {
+		return make(map[string]json.RawMessage), nil
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		return nil, fmt.Errorf("decode item meta: %w", err)
+	}
+	if meta == nil {
+		return nil, fmt.Errorf("decode item meta: expected JSON object")
+	}
+	return meta, nil
+}
+
+func encodeObject(meta map[string]json.RawMessage) (string, error) {
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return "", fmt.Errorf("encode item meta: %w", err)
+	}
+	return string(encoded), nil
+}

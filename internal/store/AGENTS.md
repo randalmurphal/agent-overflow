@@ -284,7 +284,10 @@ Every schema change needs a migration test that proves both shape and behavior.
 Query work on timeline, lifecycle, workflow, or restore paths needs result
 parity and a plan assertion when index use is part of the contract. Use
 `storetest` or a `t.TempDir()` database and never share a database file between
-tests.
+tests. A migrated store is a clone of the package's template (`storetest.Clone`,
+or `newTestStore` in this package); `New` on a new path or `":memory:"` replays
+the whole chain and belongs only in a test of opening itself. A migration test
+starts from `migrateThrough`, which builds each version once per process.
 
 
 Remote spawn changes, their restore-preserved issuance counter and revision-specific acknowledgments live in

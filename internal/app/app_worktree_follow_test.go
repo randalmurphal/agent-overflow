@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -437,10 +438,10 @@ func TestStartSessionSettlesTranscriptUnderWorkspace(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 	want := filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(t, workspace), sessionID+".jsonl")
 	if _, err := os.Stat(want); err != nil {
@@ -454,7 +455,7 @@ func TestStartSessionSettlesTranscriptUnderWorkspace(t *testing.T) {
 // Removing a Claude-entered worktree through AO: the CLI leaves it LOCKED,
 // so removal has to lift the lock, then the ordinary reattach moves the row
 // back to the project root.
-func TestGitRemoveWorktreeRemovesLockedProviderWorktree(t *testing.T) {
+func TestRemoveThreadWorktreeRemovesLockedProviderWorktree(t *testing.T) {
 	t.Parallel()
 	f := newFollowFixture(t, "thread-remove-locked")
 	worktree := f.cliWorktree(t, "feature-locked")
@@ -465,8 +466,8 @@ func TestGitRemoveWorktreeRemovesLockedProviderWorktree(t *testing.T) {
 		t.Fatalf("UpdateThread(moved): %v", err)
 	}
 
-	if _, err := f.app.GitRemoveWorktree(f.thread.ID); err != nil {
-		t.Fatalf("GitRemoveWorktree on the CLI's locked worktree: %v", err)
+	if _, err := f.app.RemoveOtherWorktree(attachedWorktreeRemoval(t, f.app, f.thread.ID)); err != nil {
+		t.Fatalf("RemoveOtherWorktree on the CLI's locked worktree: %v", err)
 	}
 
 	row, err := f.app.store.GetThread(f.thread.ID)

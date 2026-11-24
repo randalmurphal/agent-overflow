@@ -17,9 +17,12 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+
+	"github.com/google/uuid"
 )
 
 // remoteNudgedWorker is a worker the pair's caller spawned on the
@@ -68,7 +71,7 @@ func nudgeThere(t *testing.T, pair *reachPair, by, child string) {
 	t.Helper()
 	switch by {
 	case "the person there":
-		if err := pair.dest.SendMessage(context.Background(), child, "also check the docs", nil); err != nil {
+		if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "also check the docs", pageSendOptions(uuid.NewString())); err != nil {
 			t.Fatalf("SendMessage there: %v", err)
 		}
 	case "a thread there":
@@ -103,7 +106,7 @@ func nudgeThere(t *testing.T, pair *reachPair, by, child string) {
 func (p *agentPeerPair) openNudgeRow(t *testing.T) ThreadAgentRow {
 	t.Helper()
 	var listing ThreadAgentRows
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, testutil.WaitBudget(t), func() bool {
 		cache := &p.source.threadAgentPeers
 		cache.mu.Lock()
 		if entry, ok := cache.entries[p.spawn.Token]; ok {
@@ -123,7 +126,7 @@ func (p *agentPeerPair) openNudgeRow(t *testing.T) ThreadAgentRow {
 func (p *agentPeerPair) nudgeEnded(t *testing.T, token string) store.ThreadRequest {
 	t.Helper()
 	var row store.ThreadRequest
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, testutil.WaitBudget(t), func() bool {
 		p.askAgainUntil(t, func(store.ThreadRequest) bool { return true })
 		row = p.request(t, token)
 		return row.RunEnded()

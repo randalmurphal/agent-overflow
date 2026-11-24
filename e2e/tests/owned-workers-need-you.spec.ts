@@ -50,8 +50,7 @@ test('a worker waiting on the user badges its assistant row until answered', asy
   await page.emulateMedia({ colorScheme: 'dark' });
   await harness.open(page);
   await awaitSidebarSettled(page);
-  await harness.rpc('StartSession', agent);
-  await harness.rpc('SendMessage', agent, 'rotate the logs', null);
+  await harness.send(agent, 'rotate the logs');
   const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home });
   const worker = spawn.value!.thread_id;
   // Shown in the sidebar, as Show in Sidebar does.
@@ -64,10 +63,10 @@ test('a worker waiting on the user badges its assistant row until answered', asy
 
   // The agent's next session reads the wake and holds its first frame, so
   // the wake is never confirmed; its exit hands the approval back.
-  await harness.rpc('StopSession', agent);
+  await harness.stopSession(agent);
   await setScenario(harness, home, {
     ...threadToolsScenario({ name: 'need-you-slow', provider: 'claude', turns: [{ text: 'unreached' }] }),
-    startupDelayMs: 30_000,
+    startupGate: 'held-start',
   });
   await advanceGate(harness, askGate.mockId, 'ask');
   const wake = await wakeInput(harness, home, 'It asks for approval to use');

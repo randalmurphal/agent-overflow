@@ -2,20 +2,18 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import AgentRow from './AgentRow.svelte';
 import GenericToolCallRow from './GenericToolCallRow.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
 import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
 import type { Item } from '../../types/models';
 import {
   REMOTE_BACKEND_UUID,
-  resetStagedBackends,
   stageBackend,
 } from '../../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
-import { __resetRemoteJobsForTest } from '../../stores/remoteJobs.svelte';
-import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
+import { applyBrowserCompanionState } from '../../stores/browserCompanion.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 
 // Minimal fake pane that satisfies the expansion-registry surface
@@ -43,7 +41,6 @@ function expectBefore(left: Element, right: Element) {
 
 describe('<GenericToolCallRow> editor-link wiring', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
   });
 
@@ -128,14 +125,14 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
 
-  it('suppresses the dropdown for Read rows even when a payload exists', async () => {
-    const item = makeItem({
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'Read',
-      summary: 'src/lib/foo.ts',
-      payloadId: 'p-read',
-    });
+  // TaskOutput retrieves the same stdout already shown on the originating
+  // Bash row, so the row keeps the stable header shell but has no
+  // expandable body.
+  it.each([
+    ['Read', 'tool_call', 'src/lib/foo.ts', 'p-read'],
+    ['TaskOutput', 'tool_completion', 'TaskOutput', 'p-task-output'],
+  ] as const)('suppresses the dropdown for %s rows even when a payload exists', async (toolName, kind, summary, payloadId) => {
+    const item = makeItem({ kind, status: 'completed', toolName, summary, payloadId });
     const { queryByTestId, getByTestId } = render(GenericToolCallRow, { props: { item } });
     const toggle = getByTestId('tool-call-card-toggle');
     expect(toggle).toHaveAttribute('aria-disabled', 'true');
@@ -377,25 +374,6 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(previewText).toContain('Explore');
     expect(previewText).toContain('fallback preview');
     expect(previewText).not.toContain('Agent: fallback preview');
-  });
-
-  it('suppresses the dropdown for TaskOutput rows even when a payload exists', async () => {
-    // TaskOutput retrieves the same stdout already shown on the
-    // originating Bash row, so the row keeps the stable header shell but
-    // has no expandable body.
-    const item = makeItem({
-      kind: 'tool_completion',
-      status: 'completed',
-      toolName: 'TaskOutput',
-      summary: 'TaskOutput',
-      payloadId: 'p-task-output',
-    });
-    const { queryByTestId, getByTestId } = render(GenericToolCallRow, { props: { item } });
-    const toggle = getByTestId('tool-call-card-toggle');
-    expect(toggle).toHaveAttribute('aria-disabled', 'true');
-    expect(toggle).toHaveAttribute('tabindex', '-1');
-    await fireEvent.click(toggle);
-    expect(queryByTestId('tool-call-card-body')).toBeNull();
   });
 
   it('renders header-only with no expandable transcript body (agent-visibility)', async () => {
@@ -673,9 +651,6 @@ describe('<AgentRow> background launch indicator', () => {
 });
 
 describe('<GenericToolCallRow> empty-body message', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
 
   // A row that advertises a payload whose expansion resolves none lands in
   // ExpandablePayloadBody's empty branch — where an imported item whose tool
@@ -686,41 +661,29 @@ describe('<GenericToolCallRow> empty-body message', () => {
     return render(GenericToolCallRow, { props: { pane, item } });
   }
 
-  it('uses the row default when nothing marks the item as an import casualty', async () => {
+  it.each([
+    ['uses the row default when nothing marks the item as an import casualty',
+      undefined, 'No stored payload for this tool result.'],
+    ['says the payload did not come across when the importer stamped the item',
+      JSON.stringify({ import_unavailable: 'tool-output-gc' }), 'Not available from import.'],
+  ])('%s', async (_name, meta, expected) => {
     const { getByTestId } = renderWithUnresolvedPayload(makeItem({
       kind: 'tool_completion',
       status: 'completed',
       toolName: 'Bash',
       payloadId: 'p-missing',
+      meta,
     }));
 
     await fireEvent.click(getByTestId('tool-call-card-toggle'));
     await waitFor(() => {
-      expect(getByTestId('tool-call-card-body').textContent?.trim())
-        .toBe('No stored payload for this tool result.');
-    });
-  });
-
-  it('says the payload did not come across when the importer stamped the item', async () => {
-    const { getByTestId } = renderWithUnresolvedPayload(makeItem({
-      kind: 'tool_completion',
-      status: 'completed',
-      toolName: 'Bash',
-      payloadId: 'p-missing',
-      meta: JSON.stringify({ import_unavailable: 'tool-output-gc' }),
-    }));
-
-    await fireEvent.click(getByTestId('tool-call-card-toggle'));
-    await waitFor(() => {
-      expect(getByTestId('tool-call-card-body').textContent?.trim())
-        .toBe('Not available from import.');
+      expect(getByTestId('tool-call-card-body').textContent?.trim()).toBe(expected);
     });
   });
 });
 
 describe('<GenericToolCallRow> permission-denial chip', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
   });
 
@@ -775,9 +738,6 @@ describe('<GenericToolCallRow> browser tools on another machine', () => {
   }
 
   beforeEach(() => {
-    resetBindingMocks();
-    resetStagedBackends();
-    __resetEntityIndexForTest();
     setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
   });
 
@@ -838,11 +798,6 @@ describe('<GenericToolCallRow> AO tools', () => {
   });
 
   beforeEach(() => {
-    resetBindingMocks();
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    __resetRemoteJobsForTest();
-    resetBrowserCompanionForTest();
     setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
     setBindingMock('ListThreadRemoteCommands', vi.fn(async () => []));
     noteThread(THREAD, HOME_BACKEND);
@@ -999,7 +954,6 @@ describe('<GenericToolCallRow> AO tools', () => {
 
 describe('<GenericToolCallRow> SendMessage ack line', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: '', size: 0, isComplete: true })));
   });
 

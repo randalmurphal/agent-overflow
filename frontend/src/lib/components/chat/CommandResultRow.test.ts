@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import CommandResultRow from './CommandResultRow.svelte';
 import TimelineLeaf from './TimelineLeaf.svelte';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Item } from '../../types/models';
 
 const INLINE_TEXT = 'Current session\n  Tokens:  12,345 in / 6,789 out\n  Cost:    $0.00';
@@ -60,13 +60,6 @@ function agentResultItem(overrides: Partial<Item> = {}): Item {
 }
 
 describe('<CommandResultRow>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
-  });
 
   it('renders the whole output inline, monospaced, with no fetch affordance', () => {
     const { getByTestId, queryByTestId, container } = render(CommandResultRow, {
@@ -111,7 +104,7 @@ describe('<CommandResultRow>', () => {
     );
   });
 
-  it('fetches the payload on expand and grows the block in place', async () => {
+  it('fetches the payload on expand, grows the block in place, and collapses back to the inline preview', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: FULL_TEXT,
       nextOffset: FULL_TEXT.length,
@@ -134,22 +127,6 @@ describe('<CommandResultRow>', () => {
     expect(getByTestId('command-result-show-full').getAttribute('aria-expanded')).toBe('true');
     expect(getByTestId('command-result-show-full').textContent).toContain('Show less');
     expect(queryByTestId('command-result-show-more')).toBeNull();
-  });
-
-  it('collapses back to the inline preview', async () => {
-    setBindingMock('GetPayloadPreview', async () => ({
-      data: FULL_TEXT,
-      nextOffset: FULL_TEXT.length,
-      totalSize: FULL_TEXT.length,
-      isComplete: true,
-    }));
-
-    const { getByTestId } = render(CommandResultRow, { props: { item: truncatedItem() } });
-
-    await fireEvent.click(getByTestId('command-result-show-full'));
-    await waitFor(() => {
-      expect(getByTestId('command-result-output').textContent).toBe(FULL_TEXT);
-    });
 
     await fireEvent.click(getByTestId('command-result-show-full'));
     await waitFor(() => {
@@ -243,13 +220,6 @@ describe('<CommandResultRow>', () => {
 });
 
 describe('<TimelineLeaf> command_result dispatch', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
-  });
 
   it('renders the command row, never the assistant fallback', async () => {
     const item = inlineItem();

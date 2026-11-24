@@ -6,32 +6,11 @@ import (
 	"time"
 )
 
-// TestShutdownBackendHandsTheRequestOffAndAnswersFirst pins the shape the
-// launcher depends on: the RPC returns while the shutdown is still to come,
-// so the acknowledgement reaches the caller over a transport the teardown
-// is about to drain.
-func TestShutdownBackendHandsTheRequestOffAndAnswersFirst(t *testing.T) {
-	t.Parallel()
-	requested := make(chan struct{})
-	a := &App{}
-	ConfigureBackendShutdown(a, func() error {
-		close(requested)
-		return nil
-	})
-
-	if err := a.ShutdownBackend(); err != nil {
-		t.Fatalf("ShutdownBackend: %v", err)
-	}
-	select {
-	case <-requested:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the installed shutdown path was never asked to run")
-	}
-}
-
 // TestShutdownBackendRepeatsSafely covers the launcher retrying, or a
 // window close racing its own backstop: every call reaches the installed
-// path, which owns the once-only teardown.
+// path, which owns the once-only teardown. The RPC hands each request off
+// and answers, so the acknowledgement reaches the caller over a transport
+// the teardown is about to drain.
 func TestShutdownBackendRepeatsSafely(t *testing.T) {
 	t.Parallel()
 	requests := make(chan struct{}, 4)

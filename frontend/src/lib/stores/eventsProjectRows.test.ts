@@ -1,16 +1,16 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { applyProjectUpdated } from './eventsProjectRows';
 import {
   addProjectDeletedObserver,
   addProjectLocal,
   getProject,
   getProjects,
-  resetProjectsForTest,
 } from './projects.svelte';
-import { createPane, getAllPanes, resetPanesForTest, revealPane } from './panes.svelte';
+import { createPane, getAllPanes, revealPane } from './panes.svelte';
 import { getCompactScreen, setCompactLayoutForTest } from './layoutMode.svelte';
 import type { Project } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import { getThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 
 function makeProject(id: string, overrides: Partial<Project> = {}): Project {
@@ -27,10 +27,6 @@ function makeProject(id: string, overrides: Partial<Project> = {}): Project {
 }
 
 describe('applyProjectUpdated — project:updated convergence', () => {
-  beforeEach(() => {
-    resetProjectsForTest();
-    resetPanesForTest();
-  });
 
   it("inserts a row this client does not have on 'listed'", () => {
     applyProjectUpdated({ action: 'listed', project: makeProject('p1') });
@@ -44,10 +40,15 @@ describe('applyProjectUpdated — project:updated convergence', () => {
     expect(getProject('p1')?.project.name).toBe('New');
   });
 
-  it("converges a known row on 'full'", () => {
-    addProjectLocal(makeProject('p1', { name: 'Old' }));
+  it("converges a known row on 'full', keeping its thread counts", async () => {
+    // The counts come from the catalog read; the frame carries none.
+    setBindingMock('ListProjects', async () => [
+      { project: makeProject('p1', { name: 'Old' }), threadCount: 3, lastActive: 42 },
+    ]);
+    await readSidebarCatalogs();
     applyProjectUpdated({ action: 'full', project: makeProject('p1', { name: 'Renamed' }) });
     expect(getProject('p1')?.project.name).toBe('Renamed');
+    expect(getProject('p1')).toMatchObject({ threadCount: 3, lastActive: 42 });
   });
 
   it("does not invent a row it has never seen on 'full'", () => {
@@ -55,15 +56,6 @@ describe('applyProjectUpdated — project:updated convergence', () => {
     // this client is not supposed to be listing.
     applyProjectUpdated({ action: 'full', project: makeProject('ghost') });
     expect(getProjects()).toHaveLength(0);
-  });
-
-  it("preserves thread counts when converging a row", () => {
-    addProjectLocal(makeProject('p1'));
-    // addProjectLocal wraps with zero counts; simulate a refresh having filled
-    // them in by asserting the applier goes through updateProjectLocal, which
-    // keeps the wrapper.
-    applyProjectUpdated({ action: 'full', project: makeProject('p1', { name: 'Renamed' }) });
-    expect(getProject('p1')).toMatchObject({ threadCount: 0, lastActive: 0 });
   });
 
   it("drops an archived row on 'unlisted'", () => {

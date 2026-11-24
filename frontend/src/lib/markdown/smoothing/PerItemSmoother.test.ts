@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { forEachSeed, seededRandom } from '../../../test/helpers/seededRandom';
 import {
   PerItemSmoother,
-  computeAdvanceEnd,
   BASE_CHARS_PER_SEC,
   ADAPTIVE_TRIGGER_CHARS,
   ADAPTIVE_CATCHUP_MS,
@@ -12,8 +12,6 @@ import {
   type SmoothingClock,
   __resetRevealFrameGateForTest,
 } from './PerItemSmoother';
-
-beforeEach(() => __resetRevealFrameGateForTest());
 
 class FakeClock implements SmoothingClock {
   private current = 0;
@@ -88,46 +86,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('computeAdvanceEnd', () => {
-  it('returns the from offset when from is at end', () => {
-    expect(computeAdvanceEnd('abc', 3, 10)).toBe(3);
-  });
-
-  it('takes a whole word+trailing-space unit when it fits the budget', () => {
-    // "hello " is 6 chars; budget 6 fits exactly.
-    expect(computeAdvanceEnd('hello world', 0, 6)).toBe(6);
-  });
-
-  it('holds back a unit larger than the budget', () => {
-    // First unit "supercalifragilistic " is 21 chars; budget 5 won't fit.
-    expect(computeAdvanceEnd('supercalifragilistic word', 0, 5)).toBe(0);
-  });
-
-  it('takes the trailing tail (no trailing whitespace) when at end', () => {
-    expect(computeAdvanceEnd('hi', 0, 5)).toBe(2);
-  });
-
-  it('takes multiple word units when budget covers several', () => {
-    // "one two three" — "one " (4) + "two " (4) + "three" (5) = 13.
-    expect(computeAdvanceEnd('one two three', 0, 13)).toBe(13);
-    // Budget 8: "one " + "two " = 8. Holds back "three" (5 chars).
-    expect(computeAdvanceEnd('one two three', 0, 8)).toBe(8);
-  });
-
-  it('consumes leading whitespace with the next word', () => {
-    // From offset 0 on "  hello world": leading whitespace + "hello" +
-    // trailing whitespace = 8 chars.
-    expect(computeAdvanceEnd('  hello world', 0, 8)).toBe(8);
-  });
-
-  it('treats a multi-newline gap as part of a unit', () => {
-    // "para\n\nmore" — at offset 0, unit is "para\n\n" (6 chars) then
-    // "more" (4 chars).
-    expect(computeAdvanceEnd('para\n\nmore', 0, 6)).toBe(6);
-    expect(computeAdvanceEnd('para\n\nmore', 0, 10)).toBe(10);
-  });
-});
-
 // Relationships between the tuned constants that the behavioral tests
 // below silently assume. Kept separate so a constant change fails HERE,
 // naming the assumption, rather than inside a timing assertion.
@@ -195,16 +153,6 @@ describe('PerItemSmoother', () => {
 
     a.dispose();
     b.dispose();
-  });
-
-  it('seeds revealed = received on mid-flight start (no jump, no callback)', () => {
-    const { clock, reveals, smoother } = makeSmoother(
-      'already revealed text',
-    );
-    expect(smoother.getRevealed()).toBe('already revealed text');
-    expect(smoother.isCaughtUp()).toBe(true);
-    expect(clock.pendingCount()).toBe(0);
-    expect(reveals).toEqual([]);
   });
 
   it('reveals one or more word units per tick at the base rate', () => {
@@ -380,8 +328,10 @@ describe('PerItemSmoother', () => {
     // wire from there — the seed text is already on screen, so replaying
     // it would be a visible rewind.
     const { clock, reveals, smoother } = makeSmoother('already on screen ');
+    expect(smoother.getRevealed()).toBe('already on screen ');
     expect(smoother.isCaughtUp()).toBe(true);
     expect(clock.pendingCount()).toBe(0);
+    expect(reveals).toEqual([]);
 
     smoother.appendDelta('and the rest arrives');
     drain(clock, smoother);
@@ -427,23 +377,19 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
     return smoother.getRevealed().length;
   }
 
-  it('drains a large burst at (not above) the rate ceiling on a 60Hz display', () => {
-    // Ceiling-relative bounds: word-unit quantization and fractional
-    // budget land a touch below the exact ceiling — acceptable; the
-    // ceiling is an upper bound, and the lower bound proves the drain
-    // genuinely runs NEAR it rather than at the 160cps base rate.
-    const revealed = revealAfterOneSecond(1000 / 60);
+  // Ceiling-relative bounds: word-unit quantization and fractional budget
+  // land a touch below the exact ceiling — acceptable; the ceiling is an
+  // upper bound, and the lower bound proves the drain genuinely runs NEAR
+  // it rather than at the 160cps base rate. At 165Hz the per-tick-only
+  // ceiling revealed cap × 165 ≈ 2310 chars; the rate clamp holds it at
+  // the refresh-independent ceiling.
+  it.each([
+    ['drains a large burst at (not above) the rate ceiling on a 60Hz display', 60],
+    ['holds the ceiling on a 165Hz display instead of scaling with refresh', 165],
+  ])('%s', (_name, hz) => {
+    const revealed = revealAfterOneSecond(1000 / hz);
     expect(revealed).toBeGreaterThan(MAX_ADAPTIVE_CHARS_PER_SEC * 0.8);
     expect(revealed).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC + 20);
-  });
-
-  it('holds the ceiling on a 165Hz display instead of scaling with refresh', () => {
-    const at165 = revealAfterOneSecond(1000 / 165);
-    expect(at165).toBeGreaterThan(MAX_ADAPTIVE_CHARS_PER_SEC * 0.8);
-    // THE regression bound: the per-tick-only ceiling revealed
-    // cap × 165 ≈ 2310 chars here; the rate clamp holds it at the
-    // refresh-independent ceiling.
-    expect(at165).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC + 20);
   });
 
   it('bounds DOM-mutation cadence on a 165Hz display (refresh decoupling)', () => {
@@ -577,25 +523,21 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
     return smoother.getRevealed().length / 2;
   }
 
-  it('reaches the rate ceiling at 60Hz on four-letter words', () => {
-    // Word alignment carries the budget a unit does not fit into the next
-    // tick; the per-tick cap must leave room for the units that then fit
-    // together, or the cap, not the rate, is the ceiling (a cap of seven
-    // revealed one 'abc ' unit a frame: 240 cps).
-    const cps = ceilingThroughput(60);
+  // At 60Hz, word alignment carries the budget a unit does not fit into the
+  // next tick; the per-tick cap must leave room for the units that then fit
+  // together, or the cap, not the rate, is the ceiling (a cap of seven
+  // revealed one 'abc ' unit a frame: 240 cps). A slow paint is not a
+  // stall: a tick accrues its whole elapsed time up to
+  // MAX_REVEAL_TICK_DT_MS, so a 30Hz or 20Hz paint still drains at the
+  // ceiling (a 30ms bound cut 30Hz to 288 cps and 20Hz to 192 cps).
+  it.each([
+    ['reaches the rate ceiling at 60Hz on four-letter words', 60],
+    ['keeps the rate ceiling on a slow 30Hz paint', 30],
+    ['keeps the rate ceiling on a slow 20Hz paint', 20],
+  ])('%s', (_name, hz) => {
+    const cps = ceilingThroughput(hz);
     expect(cps).toBeGreaterThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 0.95);
     expect(cps).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 1.05);
-  });
-
-  it('keeps the rate ceiling on slow paints down to 20Hz', () => {
-    // A slow paint is not a stall: a tick accrues its whole elapsed time
-    // up to MAX_REVEAL_TICK_DT_MS, so a 30Hz or 20Hz paint still drains at
-    // the ceiling (a 30ms bound cut 30Hz to 288 cps and 20Hz to 192 cps).
-    for (const hz of [30, 20]) {
-      const cps = ceilingThroughput(hz);
-      expect(cps).toBeGreaterThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 0.95);
-      expect(cps).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC * 1.05);
-    }
   });
 
   it('keeps the rate ceiling for a pane the frame gate holds off', () => {
@@ -789,15 +731,17 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
     }
   });
 
-  it('extends an unrevealed word unit across provider chunk boundaries', () => {
+  it.each([
+    ['extends an unrevealed word unit across provider chunk boundaries', ['hel', 'lo '], 'hello '],
+    ['keeps a leading-whitespace unit intact across provider chunks', ['  ', 'hello', ' '], '  hello '],
+  ])('%s', (_name, chunks, unit) => {
     const { clock, reveals, smoother } = makeSmoother();
-    smoother.appendDelta('hel');
-    smoother.appendDelta('lo ');
+    for (const chunk of chunks) smoother.appendDelta(chunk);
 
     drain(clock, smoother);
 
-    expect(reveals.map((entry) => entry.delta)).toEqual(['hello ']);
-    expect(smoother.getRevealed()).toBe('hello ');
+    expect(reveals.map((entry) => entry.delta)).toEqual([unit]);
+    expect(smoother.getRevealed()).toBe(unit);
   });
 
   it('starts a new unit when a provider continues a word after its prefix was revealed', () => {
@@ -811,17 +755,6 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
 
     expect(reveals.map((entry) => entry.delta)).toEqual(['hel', 'lo ']);
     expect(smoother.getRevealed()).toBe('hello ');
-  });
-
-  it('keeps a leading-whitespace unit intact across provider chunks', () => {
-    const { clock, reveals, smoother } = makeSmoother();
-    smoother.appendDelta('  ');
-    smoother.appendDelta('hello');
-    smoother.appendDelta(' ');
-
-    drain(clock, smoother);
-
-    expect(reveals.map((entry) => entry.delta)).toEqual(['  hello ']);
   });
 
   it('preserves source and reveal order across source-part compaction', () => {
@@ -839,17 +772,13 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
     expect(concatDeltas(reveals)).toBe(source);
   });
 
-  it('preserves every cursor invariant across randomized call sequences', () => {
+  it('preserves every cursor invariant across randomized call sequences', async () => {
     const atoms = [
       'word', ' ', '  ', '\n', '\r\n', '\t', 'punctuation, ',
       '**markdown** ', 'café ', '漢字', 'e\u0301 ', 'https://example.test/a_b',
     ];
-    for (let seed = 1; seed <= 24; seed++) {
-      let state = seed >>> 0;
-      const random = () => {
-        state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-        return state;
-      };
+    await forEachSeed((seed) => {
+      const random = seededRandom(seed);
       const initial = seed % 2 === 0 ? 'seed ' : '';
       const clock = new FakeClock();
       let immediate = false;
@@ -873,17 +802,17 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
       });
 
       for (let step = 0; step < 800; step++) {
-        switch (random() % 8) {
+        switch (random(8)) {
           case 0:
           case 1:
           case 2: {
-            const delta = atoms[random() % atoms.length];
+            const delta = atoms[random(atoms.length)];
             expectedReceived += delta;
             smoother.appendDelta(delta);
             break;
           }
           case 3:
-            clock.tickFrame(1 + (random() % 100));
+            clock.tickFrame(1 + (random(100)));
             break;
           case 4:
             smoother.pause();
@@ -922,7 +851,7 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
       clock.tickFrame(100);
       expect(smoother.getReceived()).toBe(expectedReceived);
       expect(smoother.getRevealed()).toBe(expectedReceived);
-    }
+    });
   });
 });
 

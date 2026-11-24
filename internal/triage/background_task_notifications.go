@@ -809,14 +809,6 @@ func allowedClaudeOutputRoots() []string {
 	return allowedClaudeOutputRootsCache
 }
 
-// resetAllowedClaudeOutputRootsForTest clears the memoised roots so
-// subsequent calls recompute them. Test-only — production code never
-// calls this.
-func resetAllowedClaudeOutputRootsForTest() {
-	allowedClaudeOutputRootsOnce = sync.Once{}
-	allowedClaudeOutputRootsCache = nil
-}
-
 // computeAllowedClaudeOutputRoots builds the resolved set of allowed
 // roots for `output_file` payloads. Two surfaces are valid:
 //

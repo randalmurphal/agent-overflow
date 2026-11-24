@@ -591,16 +591,3 @@ func (r *Router) identityIfPresent(threadID string) *threadIdentity {
 	defer r.identitiesMu.Unlock()
 	return r.identities[threadID]
 }
-
-// activeTurnSpanCountLocked reports how many threads currently hold an
-// open turn span. Test-only helper: with the spans living per-thread
-// there is no single map to len(). Caller holds r.mu.
-func (r *Router) activeTurnSpanCountLocked() int {
-	n := 0
-	for _, st := range r.threads {
-		if st.turnSpan != nil {
-			n++
-		}
-	}
-	return n
-}

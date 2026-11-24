@@ -62,12 +62,12 @@ test('a live mock turn runs the full pipeline and renders', async ({ harness, pa
   });
   const threadId = seed.projects[0].threadIds[0];
 
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) => ev.report.kind === 'registered',
   );
-  await harness.rpc('SendMessage', threadId, 'Say hello', null);
+  await harness.send(threadId, 'Say hello');
 
   // Deterministic wait on the wire, then semantic assertions in the DOM.
   await harness.waitForEvent('provider:turn_completed');
@@ -81,7 +81,7 @@ test('a live mock turn runs the full pipeline and renders', async ({ harness, pa
   // Second turn: waitForEvent consumes matches, so this wait observes
   // the SECOND turn_completed — not the first one replayed from the
   // event log.
-  await harness.rpc('SendMessage', threadId, 'Say hello again', null);
+  await harness.send(threadId, 'Say hello again');
   await harness.waitForEvent('provider:turn_completed');
   await expect(
     page.getByText('Hello! This reply is streaming from the mock provider (turn 2).'),
@@ -98,13 +98,13 @@ test('step-gated scenario advances frame by frame via HarnessMockCommand', async
   });
   const threadId = seed.projects[0].threadIds[0];
 
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const registered = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) => ev.report.kind === 'registered',
   );
   expect(registered.scenario).toBe('step-gated');
-  await harness.rpc('SendMessage', threadId, 'stream carefully', null);
+  await harness.send(threadId, 'stream carefully');
 
   // The scenario parks at its first gate; the user message has landed,
   // so the thread is sidebar-visible while zero frames have streamed.
@@ -190,7 +190,7 @@ test('a session-scoped scenario rule binds only after the session resumes', asyn
   // and "the session rule won" cannot be confused with "the default ran".
   await harness.rpc('HarnessSetScenario', { name: 'thinking-then-text' });
 
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const firstSpawn = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) => ev.report.kind === 'registered',
@@ -198,7 +198,7 @@ test('a session-scoped scenario rule binds only after the session resumes', asyn
   expect(firstSpawn.scenario).toBe('thinking-then-text');
 
   // The session id only exists once a turn has run against the provider.
-  await harness.rpc('SendMessage', threadId, 'first turn', null);
+  await harness.send(threadId, 'first turn');
   await harness.waitForEvent('provider:turn_completed');
   const thread = await harness.rpc<{ sessionRef: string }>('GetThread', threadId);
   expect(thread.sessionRef).not.toBe('');
@@ -210,8 +210,8 @@ test('a session-scoped scenario rule binds only after the session resumes', asyn
     sessionRef: thread.sessionRef,
   });
 
-  await harness.rpc('StopSession', threadId);
-  await harness.rpc('StartSession', threadId);
+  await harness.stopSession(threadId);
+  await harness.startSession(threadId);
   const resumedSpawn = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) => ev.report.kind === 'registered',

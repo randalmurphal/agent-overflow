@@ -90,7 +90,7 @@ describe('answerHarnessQuery', () => {
       kind: 'element',
       selector: '#target',
     })) as { first: { scroll?: unknown } };
-    expect(plain.first.scroll).toBeUndefined();
+    expect(plain.first).not.toHaveProperty('scroll');
 
     const withScroll = (await answerHarnessQuery({
       v: 1,

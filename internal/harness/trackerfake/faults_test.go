@@ -145,37 +145,31 @@ func TestHoldAndRelease(t *testing.T) {
 	}
 }
 
-func TestHoldDropAndReset(t *testing.T) {
-	for _, end := range []string{"drop", "reset", "close", "clear"} {
+// A dropped hold fails its request without applying the write; cleared
+// faults let it through. TestEveryWorldEndMeetsEveryRequestState covers a
+// hold that a reset or close ends.
+func TestHoldDropAndClear(t *testing.T) {
+	for _, end := range []string{"drop", "clear"} {
 		t.Run(end, func(t *testing.T) {
 			w := newWorld(t)
 			w.arm(t, Fault{Origin: jiraOrigin, Route: commentRoute, Kind: FaultHold})
 			answered := w.comment(context.Background())
 			w.await(t, held)
-			switch end {
-			case "drop":
-				if err := w.e.Release(jiraOrigin, commentRoute, true); err != nil {
-					t.Fatal(err)
-				}
-			case "reset":
-				w.e.Reset()
-			case "close":
-				w.e.Close()
-			case "clear":
-				w.e.ClearFaults(jiraOrigin, commentRoute)
-			}
-			got := <-answered
 			if end == "clear" {
-				if got.err != nil || got.r.status != 201 {
+				w.e.ClearFaults(jiraOrigin, commentRoute)
+				if got := <-answered; got.err != nil || got.r.status != 201 {
 					t.Fatalf("cleared: %+v", got)
 				}
 				return
 			}
-			if got.err == nil {
-				t.Fatalf("a %s hold answered %d", end, got.r.status)
+			if err := w.e.Release(jiraOrigin, commentRoute, true); err != nil {
+				t.Fatal(err)
 			}
-			if end != "reset" && w.comments(t) != 0 {
-				t.Fatalf("a %s hold applied its write", end)
+			if got := <-answered; got.err == nil {
+				t.Fatalf("a dropped hold answered %d", got.r.status)
+			}
+			if w.comments(t) != 0 {
+				t.Fatal("a dropped hold applied its write")
 			}
 		})
 	}

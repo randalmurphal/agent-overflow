@@ -51,20 +51,6 @@ func headCommit(ctx context.Context, workspace string) (string, error) {
 	return strings.TrimSpace(stdout), nil
 }
 
-// OpenWorktreeDiff opens the patch of everything currently uncommitted in
-// the workspace: tracked changes against HEAD plus untracked-not-ignored
-// files, in one diff stream. Mirrors `git status` semantics — the caller
-// wants to see manual edits alongside agent work. On a fresh-init repo with
-// no HEAD the diff runs against the empty tree, so untracked files still
-// show. The snapshot lives in a directory under tempRoot until Close.
-func OpenWorktreeDiff(ctx context.Context, workspace, tempRoot string, opts Options) (*Diff, error) {
-	sides, err := WorktreeSides(ctx, workspace, tempRoot)
-	if err != nil {
-		return nil, err
-	}
-	return sides.OpenDiff(opts), nil
-}
-
 // emptyTreeOID writes (into the temp object dir the env points at) and
 // returns the empty tree, the old side of a fresh-init workspace diff.
 func emptyTreeOID(ctx context.Context, workspace string, env []string) (string, error) {
@@ -77,19 +63,6 @@ func emptyTreeOID(ctx context.Context, workspace string, env []string) (string, 
 		return "", errors.New("gitdiff: mktree returned empty oid")
 	}
 	return oid, nil
-}
-
-// OpenBranchBaseDiff opens the patch a PR from HEAD plus the current
-// worktree would carry onto baseBranch. It diffs the merge-base of
-// baseBranch and HEAD against a synthetic tree of the current worktree so
-// committed changes, unstaged/staged changes, and untracked-not-ignored
-// files all share one patch stream.
-func OpenBranchBaseDiff(ctx context.Context, workspace, tempRoot, baseBranch string, opts Options) (*Diff, error) {
-	sides, err := BranchBaseSides(ctx, workspace, tempRoot, baseBranch)
-	if err != nil {
-		return nil, err
-	}
-	return sides.OpenDiff(opts), nil
 }
 
 func captureSyntheticWorktreeTree(ctx context.Context, workspace, tempRoot string) (syntheticWorktreeTree, error) {

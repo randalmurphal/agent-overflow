@@ -7,19 +7,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Composer from './Composer.svelte';
-import { createComposerDraftStore, resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { DictationEnvironment } from '../../dictation/dictationSession.svelte';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backends';
 
 const scripted = vi.hoisted(() => ({ env: null as DictationEnvironment | null }));
 vi.mock('../../dictation/browserDictation', () => ({
@@ -31,11 +31,12 @@ vi.mock('../../dictation/browserDictation', () => ({
 const { dictationFixture } = await import('../../../test/helpers/dictation');
 
 function installComposerMocks(): void {
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('GetDraft', async (threadId: string) => ({
     threadId, content: '', attachmentIds: [], terminalChips: [], updatedAt: 0,
   }));
   setBindingMock('SaveDraft', async () => {});
-  setBindingMock('ClearDraft', async () => {});
   setBindingMock('DeleteEmptyDraftThread', async () => false);
   setBindingMock('ListAttachments', async () => []);
   mockAttachmentDownload();
@@ -59,9 +60,6 @@ async function mountComposer() {
 
 describe('<Composer> dictation', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
     resetToLocalPage();
     installComposerMocks();
@@ -70,8 +68,6 @@ describe('<Composer> dictation', () => {
     resetToLocalPage();
     setCompactLayoutForTest(false);
     scripted.env = null;
-    resetStagedBackends();
-    __resetEntityIndexForTest();
   });
 
   // Dictation spends the computer's credentials, so a thread two computers
@@ -152,40 +148,12 @@ describe('<Composer> dictation', () => {
     expect(cancel).toHaveBeenCalledWith('rec-1');
   });
 
-  it('shows no mic where the engine cannot record', async () => {
-    scripted.env = dictationFixture({ format: null }).env;
-    const sources = setBindingMock('DictationSources', async () => ({ subscription: true }));
-    const { queryByTestId, findByTestId } = await mountComposer();
-    await findByTestId('composer-send');
-    await expect.poll(() => sources.mock.calls.length).toBeGreaterThan(0);
-    expect(queryByTestId('composer-dictate')).toBeNull();
-  });
-
-  it('dictates live when only the API key source is on, sending the PCM as base64', async () => {
-    const f = dictationFixture();
-    scripted.env = f.env;
-    setBindingMock('DictationSources', async () => ({ subscription: false, live: true }));
-    setBindingMock('BeginLiveDictation', async () => 'live-1');
-    const append = setBindingMock('AppendLiveDictation', async () => 'Hearing');
-    setBindingMock('FinishLiveDictation', async () => 'spoken live');
-    const begin = setBindingMock('BeginDictation', async () => 'rec-1');
-
-    const { findByTestId } = await mountComposer();
-    const mic = await findByTestId('composer-dictate');
-    await fireEvent.click(mic);
-    await expect.poll(() => mic.dataset.phase).toBe('recording');
-    f.pcm().emit(0x48, 0x69);
-    await expect.poll(() => append.mock.calls.length).toBe(1);
-    expect(append.mock.calls[0]).toEqual(['live-1', 0, 'SGk=']);
-    f.tick();
-    await fireEvent.click(mic);
-    await expect.poll(() => mic.dataset.phase).toBe('idle');
-    expect(begin).not.toHaveBeenCalled();
-  });
-
-  it('shows no mic where only the live source is on and the engine cannot stream', async () => {
-    scripted.env = dictationFixture({ streamsPcm: false }).env;
-    const sources = setBindingMock('DictationSources', async () => ({ subscription: false, live: true }));
+  it.each([
+    { name: 'shows no mic where the engine cannot record', engine: { format: null }, served: { subscription: true } },
+    { name: 'shows no mic where only the live source is on and the engine cannot stream', engine: { streamsPcm: false }, served: { subscription: false, live: true } },
+  ])('$name', async ({ engine, served }) => {
+    scripted.env = dictationFixture(engine).env;
+    const sources = setBindingMock('DictationSources', async () => served);
     const { queryByTestId, findByTestId } = await mountComposer();
     await findByTestId('composer-send');
     await expect.poll(() => sources.mock.calls.length).toBeGreaterThan(0);
@@ -210,9 +178,6 @@ describe('<Composer> dictation', () => {
 
 describe('<Composer> live caption', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
-    resetPanesForTest();
     resetPaneLayoutForTest();
     resetToLocalPage();
     installComposerMocks();
@@ -222,13 +187,14 @@ describe('<Composer> live caption', () => {
     scripted.env = null;
   });
 
-  it('shows what a live recording has heard above the card, and clears it when the recording ends', async () => {
+  it('dictates live when only the API key source is on, sending the PCM as base64 and showing what it heard above the card until the recording ends', async () => {
     const f = dictationFixture();
     scripted.env = f.env;
     setBindingMock('DictationSources', async () => ({ subscription: false, live: true }));
     setBindingMock('BeginLiveDictation', async () => 'live-1');
-    setBindingMock('AppendLiveDictation', async (_id: string, seq: number) => `Hearing ${seq}`);
+    const append = setBindingMock('AppendLiveDictation', async (_id: string, seq: number) => `Hearing ${seq}`);
     setBindingMock('FinishLiveDictation', async () => 'spoken live');
+    const begin = setBindingMock('BeginDictation', async () => 'rec-1');
 
     const { findByTestId, queryByTestId, getByTestId } = await mountComposer();
     const mic = await findByTestId('composer-dictate');
@@ -240,6 +206,7 @@ describe('<Composer> live caption', () => {
 
     f.pcm().emit(0x48, 0x69);
     await expect.poll(() => queryByTestId('composer-dictation-caption-text')?.textContent).toBe('Hearing 0');
+    expect(append.mock.calls).toEqual([['live-1', 0, 'SGk=']]);
     // Out of the card's flow: a sibling of the card, not inside it.
     const caption = getByTestId('composer-dictation-caption');
     expect(getByTestId('composer-root').contains(caption)).toBe(false);
@@ -249,5 +216,6 @@ describe('<Composer> live caption', () => {
     await fireEvent.click(mic);
     await expect.poll(() => mic.dataset.phase).toBe('idle');
     expect(queryByTestId('composer-dictation-caption')).toBeNull();
+    expect(begin).not.toHaveBeenCalled();
   });
 });

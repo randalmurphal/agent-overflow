@@ -114,11 +114,13 @@ separate events and never settle a newer execution. Legacy waits and terminal
 notifications retain their own typed completion evidence. See the
 [immutable agent history contract](../specs/agent-visibility.md#immutable-agent-history).
 
-Every non-root Codex provider thread is quarantined at the session boundary.
-Until a V1 spawn completion or V2 started activity maps it to a spawn item,
-its notifications and server requests are quarantined with bounded storage
-and an ownership deadline; expired server requests are rejected rather than
-stalling the provider indefinitely. Known child turn
+Every non-root Codex provider thread is held on the shared connection until a
+V1 spawn completion or V2 started activity maps it to a spawn item and the
+spawn row is emitted; a session that receives a frame for a thread the
+connection does not route to it returns it to the same hold.
+The queue has bounds and an ownership deadline: expired server requests are
+rejected rather than stalling the provider indefinitely, and expired
+notifications are dropped and logged. Known child turn
 lifecycle and thread-wide state never enter the parent projection; only
 transcript-bearing events cross with `ParentToolUseID`. The same rule applies
 recursively when a child spawns a grandchild.
@@ -597,7 +599,7 @@ the subagent scope: the main thread's write head is a later turn
 than the one the agent's rows keep landing on, so a sibling placed
 there would sort after everything the agent writes afterwards. The
 tray renders it on its own retention clock. See
-`docs/references/fixtures/claude/ndjson_outlives.log` for a captured example.
+`internal/provider/wirecaptures/claude/ndjson_outlives.log` for a captured example.
 
 ### Desired chat-history contract
 
@@ -627,7 +629,7 @@ One-to-one with a user → assistant round-trip. The authoritative
 ### Participants
 
 **Claude**:
-- Turn start: `SendMessage` registers a pending-send marker, then
+- Turn start: a send registers a pending-send marker, then
   Claude's wire `system/init` drives `handleTurnStart` through
   `handleInit`. The start claims the first pending send that has not
   opened a turn (`OpenedTurn`) and uses its index; a send that is never
@@ -1257,9 +1259,7 @@ counterpart "retry succeeded" wire signal from either provider.
   signal, not on "all tools done."
 - **Probing session liveness for turn state.** See §Non-goals.
 - **Rewriting tool_use_id between start and complete.** Breaks the
-  tool-lifecycle invariant. See `internal/provider/codex/session.go`'s
-  close_agent rewrite. It's symmetric (both start AND complete
-  rewrite), but even that pattern is a smell; prefer one-shot upserts.
+  tool-lifecycle invariant; prefer one-shot upserts.
 - **Consuming a tool's `tool_result` in another code path.** This
   was the TaskOutput bug's root cause. The standard completion path
   always runs; enrichments are additive.
@@ -1273,5 +1273,5 @@ counterpart "retry succeeded" wire signal from either provider.
 - Event taxonomy full routing: [`triage-routing.md`](triage-routing.md).
 - Data flow end-to-end: [`data-flow.md`](data-flow.md).
 - Invariants (authoritative guardrails): [`invariants.md`](invariants.md).
-- Captured wire samples: `docs/references/fixtures/claude/*.log`,
-  `docs/references/fixtures/claude/taskoutput_multi.ndjson`.
+- Captured wire samples: `internal/provider/wirecaptures/claude/*.log`,
+  `internal/provider/wirecaptures/claude/taskoutput_multi.ndjson`.

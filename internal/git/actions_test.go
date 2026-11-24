@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -295,43 +296,27 @@ func TestRenameBranchAddsSuffixWhenTargetExists(t *testing.T) {
 	}
 }
 
-func TestCreateBranchRequiresName(t *testing.T) {
-	t.Parallel()
-	repo := initGitRepo(t)
-	core := NewCore()
-
-	if err := core.CreateBranch(repo, "  "); err == nil {
-		t.Fatal("expected error for empty branch name")
-	}
-}
-
-func TestCheckoutRequiresBranchName(t *testing.T) {
-	t.Parallel()
-	repo := initGitRepo(t)
-	core := NewCore()
-
-	if err := core.Checkout(repo, "  "); err == nil {
-		t.Fatal("expected error for empty branch name")
-	}
-}
-
 func TestCheckoutRejectsInvalidBranchName(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)
-	core := NewCore()
-
-	if err := core.Checkout(repo, "--flag"); err == nil {
-		t.Fatal("expected error for flag-like branch name")
+	for _, tc := range []struct{ name, branch string }{{"blank", "  "}, {"flag-like", "--flag"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := NewCore().Checkout(repo, tc.branch); err == nil {
+				t.Fatalf("Checkout(%q) succeeded, want an error", tc.branch)
+			}
+		})
 	}
 }
 
 func TestCreateBranchRejectsInvalidName(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)
-	core := NewCore()
-
-	if err := core.CreateBranch(repo, "--malicious"); err == nil {
-		t.Fatal("expected error for flag-like branch name")
+	for _, tc := range []struct{ name, branch string }{{"blank", "  "}, {"flag-like", "--malicious"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := NewCore().CreateBranch(repo, tc.branch); err == nil {
+				t.Fatalf("CreateBranch(%q) succeeded, want an error", tc.branch)
+			}
+		})
 	}
 }
 
@@ -361,22 +346,20 @@ func TestValidateBranchName(t *testing.T) {
 	}
 }
 
-func TestCommitBodyOmittedWhenEmpty(t *testing.T) {
+func TestCommitArgs(t *testing.T) {
 	t.Parallel()
-	args := commitArgs("subject only", "")
-	if len(args) != 3 {
-		t.Fatalf("len(args) = %d, want 3 (no body -m flag)", len(args))
-	}
-}
-
-func TestCommitBodyIncludedWhenPresent(t *testing.T) {
-	t.Parallel()
-	args := commitArgs("subject", "body text")
-	if len(args) != 5 {
-		t.Fatalf("len(args) = %d, want 5 (subject + body -m flags)", len(args))
-	}
-	if args[4] != "body text" {
-		t.Fatalf("body arg = %q, want body text", args[4])
+	for _, tc := range []struct {
+		name, subject, body string
+		want                []string
+	}{
+		{"empty body", "subject only", "", []string{"commit", "-m", "subject only"}},
+		{"body", "subject", "body text", []string{"commit", "-m", "subject", "-m", "body text"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commitArgs(tc.subject, tc.body); !slices.Equal(got, tc.want) {
+				t.Fatalf("commitArgs(%q, %q) = %q, want %q", tc.subject, tc.body, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,5 +132,32 @@ func expectReport(t *testing.T, reports <-chan control.Report, kind string) cont
 		case <-deadline:
 			t.Fatalf("report %q never arrived; saw %v", kind, seen)
 		}
+	}
+}
+
+// TestAnAssignedScenarioThatCannotRunFailsTheStart: a control assignment
+// the mock cannot run ends the process with the reason rather than running
+// the builtin script under the harness's control.
+func TestAnAssignedScenarioThatCannotRunFailsTheStart(t *testing.T) {
+	srv, err := control.NewServer(control.ServerConfig{
+		Resolve: func(control.Registration) (control.Assignment, error) {
+			return control.Assignment{ScenarioName: "broken", ScenarioJSON: json.RawMessage(`{"version":1,"name":"broken","provider":"claude"}`)}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	p := startMock(t, claudeSessionArgs, []string{control.EnvAddr + "=" + srv.Addr(), control.EnvToken + "=" + srv.Token()}, t.TempDir())
+	p.expectExit(1, testTimeout)
+	if !strings.Contains(p.stderr.String(), "control-assigned scenario invalid") {
+		t.Fatalf("the start did not fail with the reason:\n%s", p.stderr.String())
 	}
 }

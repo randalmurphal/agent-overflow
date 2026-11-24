@@ -8,10 +8,11 @@ package.
 
 ## Process and probe rules
 
-`BuildEnvironment`, `FilterEnvironment`, and version detection must apply
-`appimage.Scrub`. Build additive `PATH` values from the scrubbed base.
-`ReservedEnvNames` is the source of truth for values AO pins or clears; keep
-the settings copy and its drift test synchronized.
+`BuildEnvironment` and version detection must apply `appimage.Scrub`. Build
+additive `PATH` values from the scrubbed base. Every variable a spawn path
+pins, defaults or clears is a `ReservedEnv` from the table in `envtable.go`;
+a spawn cannot name one outside it, and settings refuses a custom value from
+the same table.
 
 `Spawn` takes a required `Lifetime`: `Watched` for a process that runs until
 its owner closes it, `Bounded` for one that finishes within its context's

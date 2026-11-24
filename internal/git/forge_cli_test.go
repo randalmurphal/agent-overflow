@@ -3,7 +3,6 @@ package git
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/testutil/fixturedir"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/testutil/providerpath"
 )
@@ -42,12 +42,7 @@ func TestMain(m *testing.M) {
 		})
 		os.Exit(0)
 	}
-	code := providerpath.Run(m)
-	if err := removeRepoTemplate(); err != nil {
-		fmt.Fprintf(os.Stderr, "remove template repository: %v\n", err)
-		code = 1
-	}
-	os.Exit(code)
+	os.Exit(fixturedir.Guard(func() int { return providerpath.Run(m) }))
 }
 
 // installTrapCLIs puts executables named gh and glab first on PATH. Each

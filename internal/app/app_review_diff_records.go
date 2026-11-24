@@ -98,8 +98,11 @@ type reviewDiffRecords struct {
 	byID      map[string]*reviewDiffRecord
 	bindings  int
 	pathBytes int
-	// pins counts pin goroutines; shutdown joins them.
-	pins sync.WaitGroup
+	// pins counts pin goroutines, which start from any request while
+	// shutdown or the harness reset waits on them; shutdown joins them. It
+	// is never closed (closed refuses the records), so Go always starts its
+	// member.
+	pins workGroup
 	// closed refuses new records once shutdown has removed them all
 	// (close).
 	closed bool
@@ -236,12 +239,6 @@ func (r *reviewDiffRecords) removeAllLocked() []*reviewDiffRecord {
 		removed = append(removed, r.removeLocked(r.lru.Back().Value.(*reviewDiffRecord)))
 	}
 	return removed
-}
-
-func (r *reviewDiffRecords) len() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.byID)
 }
 
 func (r *reviewDiffRecords) removeLocked(record *reviewDiffRecord) *reviewDiffRecord {

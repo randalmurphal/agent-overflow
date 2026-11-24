@@ -130,7 +130,7 @@ func TestPhaseStateEventsHaveOneConstructionPath(t *testing.T) {
 // the `eventchan.<constant>` selector every emit site uses, and a bare string
 // literal equal to the channel's wire name — the latter would still compile
 // (Go assigns an untyped literal to any string type), so it stays policed here
-// as well as by the repo-wide TestEmitSitesNameAnEventChannelConstant.
+// as well as by the repo-wide TestEveryGoFile/EmitSitesNameAnEventChannelConstant.
 func requireSingleChannelSite(t *testing.T, channel eventchan.Channel, constant, emitter string) {
 	t.Helper()
 	fset := token.NewFileSet()

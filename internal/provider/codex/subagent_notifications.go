@@ -194,23 +194,19 @@ func parseInterAgentMailboxEnvelope(author, recipient, text string) (subagentNot
 // and humans might paste multi-line bodies during reproduction.
 var subagentNotificationPattern = regexp.MustCompile(`(?s)<subagent_notification>\s*(.*?)\s*</subagent_notification>`)
 
-// parseSubagentNotifications extracts every
+// parseSubagentNotificationsWithCarrierRemainder extracts every
 // <subagent_notification>...</subagent_notification> tag in text,
 // JSON-decoding each body into a subagentNotification. Malformed tags
 // (body isn't JSON, or missing agent_path / status) are silently
 // skipped — surfacing a parse error would leak a Codex-core detail
 // into our UI and a single broken notification should not block the
 // user turn from rendering. Multiple tags per text are supported and
-// returned in the order they appear.
+// returned in the order they appear, with the text that is left once the
+// recognized tags are cut out.
 //
 // The production wire field is `agent_path`; an older `agent_id`
 // field is accepted as a fallback so pre-rename Codex builds still
 // round-trip correctly.
-func parseSubagentNotifications(text string) []subagentNotification {
-	notifications, _ := parseSubagentNotificationsWithCarrierRemainder(text)
-	return notifications
-}
-
 func parseSubagentNotificationsWithCarrierRemainder(text string) ([]subagentNotification, string) {
 	if text == "" || !strings.Contains(text, "<subagent_notification>") {
 		return nil, text
@@ -318,9 +314,10 @@ func canonicalSubagentStatus(status string) string {
 	}
 }
 
-// extractSubagentNotificationsFromUserMessage inspects an item/completed
-// params envelope and returns any subagent notifications the
-// user-message's content carries. Returns nil when the item is not a
+// extractSubagentNotificationsAndRemainderFromUserMessage inspects an
+// item/completed params envelope and returns any subagent notifications the
+// user-message's content carries, with the content text left once the
+// recognized tags are cut out. Returns nil when the item is not a
 // userMessage, the content array is missing, or no tags are present.
 // The wire shape is:
 //
@@ -330,11 +327,6 @@ func canonicalSubagentStatus(status string) string {
 // We concatenate every text UserInput entry before running the regex so
 // a notification split across multiple entries (shouldn't happen today
 // but cheap to tolerate) is still detected.
-func extractSubagentNotificationsFromUserMessage(params json.RawMessage) []subagentNotification {
-	notifications, _ := extractSubagentNotificationsAndRemainderFromUserMessage(params)
-	return notifications
-}
-
 func extractSubagentNotificationsAndRemainderFromUserMessage(params json.RawMessage) ([]subagentNotification, string) {
 	item := readNestedObject(params, "item")
 	if item == nil {

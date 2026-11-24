@@ -4,20 +4,16 @@ import {
   getUsagePeriod,
   periodFromMillis,
   readPersistedPeriod,
-  resetUsagePeriodForTest,
   setUsagePeriod,
   syncUsagePeriodFromSettings,
 } from './usagePeriod.svelte';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 
 const STORAGE_KEY = 'agent-overflow:usage:period';
 
 describe('usage period store', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetSettingsForTest();
-    resetUsagePeriodForTest();
     // setUsagePeriod writes through to Go settings; default the RPC to
     // a no-op so tests that aren't about persistence stay quiet.
     setBindingMock('UpdateSettings', async () => null);
@@ -105,31 +101,18 @@ describe('usage period store', () => {
       expect(readPersistedPeriod()).toBe('month');
     });
 
-    it('returns default when the stored value is garbage', () => {
-      localStorage.setItem(STORAGE_KEY, 'garbage');
-      expect(readPersistedPeriod()).toBe('month');
-    });
-
-    it('returns default when the stored value is empty', () => {
-      localStorage.setItem(STORAGE_KEY, '');
-      expect(readPersistedPeriod()).toBe('month');
-    });
-
-    it('round-trips a valid stored value', () => {
-      localStorage.setItem(STORAGE_KEY, 'week');
-      expect(readPersistedPeriod()).toBe('week');
-    });
-
-    it('migrates the pre-calendar rolling-window values', () => {
-      // Users who persisted a period before the calendar-alignment
-      // change must land on the closest calendar period, not the
-      // default.
-      localStorage.setItem(STORAGE_KEY, '1d');
-      expect(readPersistedPeriod()).toBe('day');
-      localStorage.setItem(STORAGE_KEY, '1w');
-      expect(readPersistedPeriod()).toBe('week');
-      localStorage.setItem(STORAGE_KEY, '30d');
-      expect(readPersistedPeriod()).toBe('month');
+    // A period persisted before the calendar-alignment change lands on the
+    // closest calendar period, not the default.
+    it.each([
+      ['returns default when the stored value is garbage', 'garbage', 'month'],
+      ['returns default when the stored value is empty', '', 'month'],
+      ['round-trips a valid stored value', 'week', 'week'],
+      ['migrates the pre-calendar rolling-window value 1d', '1d', 'day'],
+      ['migrates the pre-calendar rolling-window value 1w', '1w', 'week'],
+      ['migrates the pre-calendar rolling-window value 30d', '30d', 'month'],
+    ])('%s', (_name, stored, expected) => {
+      localStorage.setItem(STORAGE_KEY, stored);
+      expect(readPersistedPeriod()).toBe(expected);
     });
   });
 
@@ -139,31 +122,18 @@ describe('usage period store', () => {
     // tzOffsetMinutes), so fixtures use the local Date constructor.
     const now = new Date(2026, 6, 3, 15, 30, 0).getTime();
 
-    it('"all" is unbounded (0)', () => {
-      expect(periodFromMillis('all', now)).toBe(0);
-    });
-
-    it('"day" is local midnight of today', () => {
-      expect(periodFromMillis('day', now)).toBe(new Date(2026, 6, 3).getTime());
-    });
-
-    it('"week" is local midnight of the most recent Sunday', () => {
-      // 2026-07-03 is a Friday; the week started Sunday 2026-06-28.
-      expect(periodFromMillis('week', now)).toBe(new Date(2026, 5, 28).getTime());
-    });
-
-    it('"week" on a Sunday is that Sunday\'s own midnight', () => {
-      const sundayAfternoon = new Date(2026, 5, 28, 14, 0, 0).getTime();
-      expect(periodFromMillis('week', sundayAfternoon)).toBe(new Date(2026, 5, 28).getTime());
-    });
-
-    it('"month" is local midnight of the 1st', () => {
-      expect(periodFromMillis('month', now)).toBe(new Date(2026, 6, 1).getTime());
-    });
-
-    it('"month" on the 1st is that day\'s own midnight', () => {
-      const firstMorning = new Date(2026, 6, 1, 9, 0, 0).getTime();
-      expect(periodFromMillis('month', firstMorning)).toBe(new Date(2026, 6, 1).getTime());
+    // 2026-07-03 is a Friday; its week started Sunday 2026-06-28.
+    it.each([
+      ['"all" is unbounded (0)', 'all', now, 0],
+      ['"day" is local midnight of today', 'day', now, new Date(2026, 6, 3).getTime()],
+      ['"week" is local midnight of the most recent Sunday', 'week', now, new Date(2026, 5, 28).getTime()],
+      ['"week" on a Sunday is that Sunday\'s own midnight', 'week',
+        new Date(2026, 5, 28, 14, 0, 0).getTime(), new Date(2026, 5, 28).getTime()],
+      ['"month" is local midnight of the 1st', 'month', now, new Date(2026, 6, 1).getTime()],
+      ['"month" on the 1st is that day\'s own midnight', 'month',
+        new Date(2026, 6, 1, 9, 0, 0).getTime(), new Date(2026, 6, 1).getTime()],
+    ] as const)('%s', (_name, period, instant, start) => {
+      expect(periodFromMillis(period, instant)).toBe(start);
     });
   });
 });

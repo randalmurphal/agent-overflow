@@ -1,13 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, render } from '@testing-library/svelte';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import '../../../app.css';
 import ActivityRailHost from '../../../test/mocks/ActivityRailTestHost.svelte';
 import { buildPane } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   projectSendStarted,
-  resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
 
 function nextFrame(): Promise<void> {
@@ -16,14 +15,7 @@ function nextFrame(): Promise<void> {
 
 describe('activity rail pending-send handoff', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetThreadStatuses();
     setBindingMock('ListLiveBackgroundTasks', async () => []);
-  });
-
-  afterEach(() => {
-    cleanup();
-    resetThreadStatuses();
   });
 
   it('keeps the working chip width and label nodes stable when the provider starts', async () => {

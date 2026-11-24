@@ -334,6 +334,16 @@ func TestThreadUpdateNamesAPendingWorkerAndTheSweepDeliversIt(t *testing.T) {
 		t.Fatalf("note = %q", result.Note)
 	}
 	p.peer.asleep.Store(false)
+	// The refused attempt put the archive on the retry ladder; it comes due
+	// now, so the sweep's first pass is the one that delivers it. That the
+	// sweep wakes for one due later is TestTheSweepWakesForAnOwedOperation.
+	owed := p.owed(t)
+	if len(owed) != 1 || !owed[0].Sent || owed[0].NextAt <= time.Now().UnixMilli() {
+		t.Fatalf("owed = %+v, want the archive rescheduled after its refused attempt", owed)
+	}
+	if _, err := p.source.store.RescheduleOwnerOp(owed[0].Token, owed[0].Seq, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
 	// The running sweep, not a test's pass, delivers it.
 	p.source.startThreadRequestSweeps()
 	waitUntil(t, 30*time.Second, func() bool { return archivedThere(t, p, p.worker) })
@@ -508,7 +518,7 @@ func TestAnArchiveAdmittedWhoseAnswerWasLostIsNotAppliedTwice(t *testing.T) {
 	if _, err := p.dest.UnarchiveThread(p.worker); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.dest.StartSession(p.worker); err != nil {
+	if err := p.dest.startSessionTakingLock(context.Background(), p.worker); err != nil {
 		t.Fatal(err)
 	}
 	p.peer.asleep.Store(false)
@@ -917,15 +927,36 @@ func TestADoorWhoseWaitRunsOutLeavesItsOperationToTheSweep(t *testing.T) {
 	}
 }
 
-// A door waits five seconds for what it owes before it reports, unless a
-// test sets another bound.
-func TestOwnerOpReachIsFiveSecondsUnlessATestSetsIt(t *testing.T) {
+// An App nothing configured waits for another party as the product does: a
+// door five seconds for what it owes, a forwarded listing five seconds and
+// the listing it reads from a computer further on half that, and a session
+// stop five seconds for its event worker. An App a fixture builds waits the
+// test's budget (waitOutOtherParties), and a set listing bound halves for
+// the listing further on.
+func TestTheLimitsOnOtherPartiesKeepTheirProductValues(t *testing.T) {
 	t.Parallel()
-	if got := (&App{}).ownerOpReach(); got != 5*time.Second {
-		t.Fatalf("ownerOpReach = %v, want 5s", got)
-	}
-	if got := (&App{ownerOpReachOverride: 250 * time.Millisecond}).ownerOpReach(); got != 250*time.Millisecond {
-		t.Fatalf("ownerOpReach with an override = %v, want 250ms", got)
+	product := &App{}
+	fixture := newTestApp(t)
+	set := &App{threadAgentPeerListOverride: 300 * time.Millisecond, ownerOpReachOverride: 250 * time.Millisecond}
+	for _, c := range []struct {
+		name                  string
+		read                  func(*App) time.Duration
+		product, fixture, set time.Duration
+	}{
+		{"ownerOpReach", (*App).ownerOpReach, 5 * time.Second, 0, 250 * time.Millisecond},
+		{"threadAgentPeerListBound", (*App).threadAgentPeerListBound, 5 * time.Second, 0, 300 * time.Millisecond},
+		{"threadAgentPeerServeBound", (*App).threadAgentPeerServeBound, 2500 * time.Millisecond, 0, 150 * time.Millisecond},
+		{"drainStallBound", func(a *App) time.Duration { return a.providerEvents.drainStallBound() }, 5 * time.Second, 0, 5 * time.Second},
+	} {
+		if got := c.read(product); got != c.product {
+			t.Errorf("%s of an unconfigured App = %v, want %v", c.name, got, c.product)
+		}
+		if got := c.read(fixture); got <= c.product {
+			t.Errorf("%s of a fixture's App = %v, want the test's budget, past the product %v", c.name, got, c.product)
+		}
+		if got := c.read(set); got != c.set {
+			t.Errorf("%s with a bound set = %v, want %v", c.name, got, c.set)
+		}
 	}
 }
 

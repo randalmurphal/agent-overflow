@@ -23,7 +23,7 @@ vi.mock('../terminal/terminalXterm', async (importOriginal) => {
 });
 
 import TakeControlTerminal from './TakeControlTerminal.svelte';
-import { closePaneFind, getPaneFindProvider, resetPaneFindForTest, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import { closePaneFind, getPaneFindProvider, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 
 const PANE = 'tc-overlay';
@@ -40,7 +40,6 @@ async function frames(): Promise<void> {
 }
 
 beforeEach(async () => {
-  resetPaneFindForTest();
   captured.term = null;
   setBindingMock('ProviderTerminalAttach', async () => ({
     terminalID: 'term-overlay',
@@ -67,7 +66,6 @@ afterEach(() => {
   if (component) unmount(component);
   component = null;
   captured.term = null;
-  resetPaneFindForTest();
   document.body.replaceChildren();
 });
 

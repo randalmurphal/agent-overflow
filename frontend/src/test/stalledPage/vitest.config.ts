@@ -3,6 +3,7 @@
 import { configDefaults, defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
 import { StalledPageWatchdog } from '../stalledPageWatchdog.ts';
+import { STALL_FIXTURES } from '../../../scripts/check-stalled-page-watchdog.mjs';
 
 // scripts/check-stalled-page-watchdog.mjs expects this bound in the report.
 const CHECK_BOUND_MS = 8_000;
@@ -21,7 +22,8 @@ export default defineConfig({
   ],
   test: {
     reporters: [...configDefaults.reporters, new StalledPageWatchdog({ boundMs: CHECK_BOUND_MS, checkEveryMs: 1_000 })],
-    include: ['src/test/stalledPage/*.fixture.ts'],
+    // The files the check's scenarios run.
+    include: STALL_FIXTURES.map((file) => `src/test/stalledPage/${file}`),
     testTimeout: 5_000,
     hookTimeout: 5_000,
     browser: {

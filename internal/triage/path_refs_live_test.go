@@ -15,11 +15,12 @@ import (
 
 // TestStreamingTextEmitsPathRefsMidStream proves the LIVE pathRefs
 // validator fires from the byte-threshold flush in
-// bufferStreamPersistence — not just from the settle path at
-// content_block_stop. This is the regression guard for the
-// "linkify AS it streams" bug.
+// bufferStreamPersistence, not just from the settle path at
+// content_block_stop, and follows the per-row dedupe cache through the
+// settle. This is the regression guard for the "linkify AS it streams"
+// bug.
 //
-// Drives three text deltas:
+// Drives four text deltas and a settle:
 //
 //  1. small first delta carries the path token; creates the row,
 //     emits an upsert, does NOT pass through the buffer
@@ -28,15 +29,24 @@ import (
 //     streamPersistByteThreshold; staged text persistence flushes
 //     after the wire delta, enrichStreamingPathRefsAndEmit runs
 //     against the combined summary, sees src/foo.ts in the prior text,
-//     and emits a meta event BEFORE we touch the block-stop boundary
+//     and emits a meta event BEFORE the block-stop boundary
 //  3. another non-path delta over the threshold; flushes again but
 //     the per-row dedupe cache short-circuits the meta emit because
 //     the merged pathRefs JSON is byte-identical
+//  4. a small (sub-threshold) non-path delta whose bytes commit only on
+//     settle's flushStreamingItem call, then the settle
 //
-// content_block_stop is intentionally NOT sent. The assertion is
-// that the meta event already exists in the emissions buffer at
-// this point — proving that linkification fires while the stream
-// is in flight rather than only at settle.
+// Step 4 pins the load-bearing defer ordering in doSettleStreamingText:
+// clearStreamingPathRefs runs AFTER the in-body flushStreamingItem, so
+// the final-flush emit sees the prior merged hash and short-circuits when
+// settle has nothing new to validate. A regression that cleared the cache
+// BEFORE the final flush would emit a redundant action:"meta" +
+// UpdateItemMeta for every settled text row carrying paths. The tail
+// delta matters: an empty buffer at settle makes settle's flush a no-op
+// (takeStreamPersistenceLocked returns nil) and the enrich never runs.
+// After the settle the cache entry is gone, so a re-stream under the same
+// itemID (e.g., a Claude system.init resend after interrupt) sees a fresh
+// dedupe state.
 func TestStreamingTextEmitsPathRefsMidStream(t *testing.T) {
 	wsRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(wsRoot, "src"), 0o755); err != nil {
@@ -153,97 +163,22 @@ func TestStreamingTextEmitsPathRefsMidStream(t *testing.T) {
 	if got := filterItemEventMetas(emissions.snapshot()); len(got) != 1 {
 		t.Fatalf("expected per-row dedupe to hold meta count at 1 across no-new-path flush; got %d: %+v", len(got), got)
 	}
-}
-
-// TestStreamingTextDedupeSurvivesSettle pins the load-bearing defer
-// ordering in doSettleStreamingText. The defer-clear-after-finishSettle
-// stack means clearStreamingPathRefs runs AFTER the in-body
-// flushStreamingItem, so the final-flush emit can see the prior merged
-// hash and short-circuit when settle has nothing new to validate.
-// A regression that cleared the cache BEFORE the final flush would
-// emit a redundant action:"meta" + UpdateItemMeta for every settled
-// text row carrying paths — silent on the wire but observable through
-// the emission count.
-//
-// The test must NOT rely on delta2's inline threshold flush leaving an
-// empty buffer at settle time — that path makes settle's flush a no-op
-// (takeStreamPersistenceLocked returns nil) and `enrichStreamingPathRefsAndEmit`
-// is never called, so a defer-order regression would slip through. We
-// queue a third small (sub-threshold) delta whose bytes only commit on
-// settle's flushStreamingItem call. That forces the settle-time enrich
-// call where the dedupe cache state matters.
-func TestStreamingTextDedupeSurvivesSettle(t *testing.T) {
-	wsRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(wsRoot, "src"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(wsRoot, "src", "foo.ts"), nil, 0o644); err != nil {
-		t.Fatalf("seed file: %v", err)
+	if got := liveCacheSize(router); got == 0 {
+		t.Fatalf("expected streamingPathRefsLast to be populated mid-stream; got 0 entries")
 	}
 
-	router, st, emissions := newTestRouter(t)
-	ensureTriageProject(t, st)
-	now := time.Now().UnixMilli()
-	if err := st.CreateThread(store.Thread{
-		ID:            "t1",
-		ProjectID:     triageTestProjectID,
-		Title:         "live-pathrefs-settle",
-		Provider:      "claude",
-		WorkspacePath: wsRoot,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	// First two deltas: small with path + large to trip threshold.
-	// After this, exactly one meta event has fired and the cache
-	// holds the merged JSON.
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTextDelta,
-		ThreadID:  "t1",
-		Content:   "see src/foo.ts and ",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("delta 1: %v", err)
-	}
-	padding := strings.Repeat("x", streamPersistByteThreshold+1)
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTextDelta,
-		ThreadID:  "t1",
-		Content:   padding,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("delta 2: %v", err)
-	}
-	if got := filterItemEventMetas(emissions.snapshot()); len(got) != 1 {
-		t.Fatalf("expected 1 mid-stream meta after delta 2, got %d: %+v", len(got), got)
-	}
-
-	// Delta 3 — small, no new paths, BELOW threshold. The buffer
-	// accumulates these bytes and schedules a 250ms timer flush but
-	// does NOT flush inline. Settle is forced before the timer fires,
-	// so settle's flushStreamingItem is the only path that drains the
-	// buffer and triggers enrichStreamingPathRefsAndEmit. THAT'S the
-	// emit whose dedupe behavior the defer-order invariant gates.
+	// Delta 4: small, no new paths, BELOW threshold. The buffer holds
+	// these bytes behind a 250ms timer; the settle runs first, so settle's
+	// flushStreamingItem is the only path that drains them and triggers
+	// enrichStreamingPathRefsAndEmit against the cached hash.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventTextDelta,
 		ThreadID:  "t1",
 		Content:   " tail",
 		Timestamp: time.Now(),
 	}); err != nil {
-		t.Fatalf("delta 3: %v", err)
+		t.Fatalf("delta 4: %v", err)
 	}
-
-	// Settle. doSettleStreamingText runs flushStreamingItem against the
-	// buffered delta-3 bytes; that flush calls enrichStreamingPathRefsAndEmit
-	// against the row whose summary now includes delta3. No NEW path
-	// validates (just appended " tail"), so the merged pathRefs JSON is
-	// byte-identical to the cached one — previous == merged short-circuits
-	// the emit. Then defer-clear fires (LIFO after finishSettle).
-	// Regression mode: if clearStreamingPathRefs ran BEFORE flushStreamingItem
-	// in doSettleStreamingText, previous would be "" and the dedupe would
-	// fail open — count would jump from 1 to 2.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventContentBlockStop,
 		ThreadID:  "t1",
@@ -255,32 +190,34 @@ func TestStreamingTextDedupeSurvivesSettle(t *testing.T) {
 	router.WaitForPendingSettles()
 
 	if got := filterItemEventMetas(emissions.snapshot()); len(got) != 1 {
-		t.Fatalf("expected dedupe to hold meta count at 1 across settle's drain of delta 3; got %d: %+v", len(got), got)
+		t.Fatalf("expected dedupe to hold meta count at 1 across settle's drain of delta 4; got %d: %+v", len(got), got)
+	}
+	if got := liveCacheSize(router); got != 0 {
+		t.Fatalf("expected streamingPathRefsLast empty after settle; got %d entries", got)
 	}
 
-	// Post-settle row sanity: completed, summary absorbed delta 3,
-	// pathRefs preserved.
-	row := firstItemByKind(t, st, "t1", itemKindAssistantText)
+	// Post-settle row: completed, summary absorbed delta 4, pathRefs
+	// preserved.
+	row = firstItemByKind(t, st, "t1", itemKindAssistantText)
 	if row.Status != statusCompleted {
 		t.Fatalf("post-settle status: got %q, want %q", row.Status, statusCompleted)
 	}
 	if !strings.HasSuffix(row.Summary, " tail") {
-		t.Fatalf("post-settle summary did not absorb delta 3 (settle did not flush buffer); ends with %q", row.Summary[max(0, len(row.Summary)-32):])
+		t.Fatalf("post-settle summary did not absorb delta 4 (settle did not flush buffer); ends with %q", row.Summary[max(0, len(row.Summary)-32):])
 	}
-	var meta struct {
-		PathRefs []pathlinks.PathRef `json:"pathRefs"`
-	}
-	if err := json.Unmarshal([]byte(row.Meta), &meta); err != nil {
+	metaPayload.PathRefs = nil
+	if err := json.Unmarshal([]byte(row.Meta), &metaPayload); err != nil {
 		t.Fatalf("unmarshal post-settle meta %q: %v", row.Meta, err)
 	}
-	if len(meta.PathRefs) != 1 || meta.PathRefs[0].Path != "src/foo.ts" {
-		t.Fatalf("post-settle pathRefs: got %#v, want single src/foo.ts", meta.PathRefs)
+	if len(metaPayload.PathRefs) != 1 || metaPayload.PathRefs[0].Path != "src/foo.ts" {
+		t.Fatalf("post-settle pathRefs: got %#v, want single src/foo.ts", metaPayload.PathRefs)
 	}
 }
 
 // TestStreamingTextSettleFlushEmitsForNewPath is the complementary case
-// to TestStreamingTextDedupeSurvivesSettle. The buffered settle-time
-// delta introduces a NEW validated path. Settle's flushStreamingItem
+// to the settle step of TestStreamingTextEmitsPathRefsMidStream. The
+// buffered settle-time delta introduces a NEW validated path. Settle's
+// flushStreamingItem
 // drains the buffer, enrichStreamingPathRefsAndEmit runs, merged
 // pathRefs JSON differs from the cache, so the dedupe legitimately
 // emits a second meta event. This proves the cache state (not just the
@@ -377,73 +314,6 @@ func TestStreamingTextSettleFlushEmitsForNewPath(t *testing.T) {
 	}
 	if !paths["src/foo.ts"] || !paths["src/bar.ts"] {
 		t.Fatalf("expected settle-flush meta to carry both src/foo.ts and src/bar.ts; got %#v", metaPayload.PathRefs)
-	}
-}
-
-// TestStreamingTextLiveCacheClearedOnSettle confirms the per-row
-// cache entry doesn't outlive the row. After settle, streamingPathRefsLast
-// for that key must be empty (cleared by defer in doSettleStreamingText)
-// so a subsequent re-stream under the same itemID — e.g., a Claude
-// system.init resend after interrupt — sees a fresh dedupe state.
-func TestStreamingTextLiveCacheClearedOnSettle(t *testing.T) {
-	wsRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(wsRoot, "src"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(wsRoot, "src", "foo.ts"), nil, 0o644); err != nil {
-		t.Fatalf("seed file: %v", err)
-	}
-
-	router, st, _ := newTestRouter(t)
-	ensureTriageProject(t, st)
-	now := time.Now().UnixMilli()
-	if err := st.CreateThread(store.Thread{
-		ID:            "t1",
-		ProjectID:     triageTestProjectID,
-		Title:         "live-pathrefs-clear",
-		Provider:      "claude",
-		WorkspacePath: wsRoot,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTextDelta,
-		ThreadID:  "t1",
-		Content:   "see src/foo.ts and ",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("delta 1: %v", err)
-	}
-	padding := strings.Repeat("x", streamPersistByteThreshold+1)
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTextDelta,
-		ThreadID:  "t1",
-		Content:   padding,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("delta 2: %v", err)
-	}
-
-	// Sanity: cache populated mid-stream.
-	if got := liveCacheSize(router); got == 0 {
-		t.Fatalf("expected streamingPathRefsLast to be populated mid-stream; got 0 entries")
-	}
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventContentBlockStop,
-		ThreadID:  "t1",
-		Meta:      json.RawMessage(`{"blockType":"text"}`),
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("content block stop: %v", err)
-	}
-	router.WaitForPendingSettles()
-
-	if got := liveCacheSize(router); got != 0 {
-		t.Fatalf("expected streamingPathRefsLast empty after settle; got %d entries", got)
 	}
 }
 

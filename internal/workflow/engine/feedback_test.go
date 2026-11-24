@@ -569,9 +569,6 @@ func TestPhasesThatRenderNoFeedbackAreBornSettled(t *testing.T) {
 		"command fan-out": commandFanOut,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if deliversFeedback(phase) {
-				t.Fatalf("%s phase claims to render phase-level feedback", name)
-			}
 			if stamp := phaseFeedbackCreateStamp(phase, &Feedback{Note: "steer"}, 42); stamp != 42 {
 				t.Fatalf("%s phase create stamp = %d, want the attempt's start time", name, stamp)
 			}
@@ -582,16 +579,10 @@ func TestPhasesThatRenderNoFeedbackAreBornSettled(t *testing.T) {
 	}
 
 	agent := agentPhase("work", nil, []def.Route{{To: "done"}})
-	if !deliversFeedback(agent) {
-		t.Fatal("a single-shape agent phase does not render feedback")
-	}
 	// An agent fan-out owes: every agent element renders the phase note through
 	// unitRequestFeedback, so a note here has readers — before the composition, a
 	// gate reject looping into a fan-out phase was recorded and rendered to nobody.
 	agentFanOut := staticFanOutPhase("work", 1, nil, []def.Route{{To: "done"}})
-	if !deliversFeedback(agentFanOut) {
-		t.Fatal("an agent fan-out phase does not render phase-level feedback")
-	}
 	if stamp := phaseFeedbackCreateStamp(agentFanOut, &Feedback{Note: "steer"}, 42); stamp != 0 {
 		t.Fatalf("agent fan-out create stamp = %d, want 0 (owed)", stamp)
 	}

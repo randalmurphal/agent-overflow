@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -116,5 +117,66 @@ func TestSetDisabledHandlesNullEntryAndConcurrentWrites(t *testing.T) {
 	}
 	if !disabled["nullServer"] || !disabled["a"] || !disabled["b"] {
 		t.Fatalf("expected all three servers disabled after concurrent writes, got %+v", disabled)
+	}
+}
+
+// A file another program wrote, replaced with one of the same size and
+// time, or deleted between the read and the write is not written over or
+// back: the write is refused as a concurrent write, and what the other
+// program left stays.
+func TestModifyRefusesAFileChangedSinceItsRead(t *testing.T) {
+	const original = `{"mcpServers":{"a":{"command":"a"}}}`
+	for _, tc := range []struct {
+		name    string
+		outside func(t *testing.T, path string)
+		want    string // "" for absent
+	}{
+		{"written", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte(`{"mcpServers":{"theirs":{}}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, `{"mcpServers":{"theirs":{}}}`},
+		{"replaced with the same size and time", func(t *testing.T, path string) {
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			other := path + ".other"
+			if err := os.WriteFile(other, []byte(strings.Replace(original, `"a"`, `"b"`, 2)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(other, info.ModTime(), info.ModTime()); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(other, path); err != nil {
+				t.Fatal(err)
+			}
+		}, strings.Replace(original, `"a"`, `"b"`, 2)},
+		{"deleted", func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "mcp_config.json")
+			if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := New(path).modify(func(data []byte, exists bool) ([]byte, error) {
+				tc.outside(t, path)
+				return []byte(`{"mcpServers":{"ours":{}}}`), nil
+			})
+			if !errors.Is(err, ErrConcurrentWrite) {
+				t.Fatalf("modify = %v, want ErrConcurrentWrite", err)
+			}
+			got, readErr := os.ReadFile(path)
+			switch {
+			case tc.want == "" && !errors.Is(readErr, os.ErrNotExist):
+				t.Fatalf("the deleted config is back: %q (%v)", got, readErr)
+			case tc.want != "" && string(got) != tc.want:
+				t.Fatalf("config = %q (%v), want the other program's", got, readErr)
+			}
+		})
 	}
 }

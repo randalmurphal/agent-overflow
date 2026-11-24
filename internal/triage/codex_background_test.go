@@ -15,10 +15,7 @@ import (
 
 func createCodexBackgroundTestThread(t *testing.T, st *store.Store, id string) {
 	t.Helper()
-	createTestThread(t, st, id)
-	if err := st.UpdateProvider(id, "codex"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	createTestThreadWithProvider(t, st, id, "codex")
 }
 
 func buildUnifiedExecStartMeta(t *testing.T, processID, command string) json.RawMessage {
@@ -375,106 +372,64 @@ func TestCodexUnifiedExecBackgroundCompletionPersistsCommandRow(t *testing.T) {
 }
 
 func TestCodexUnifiedExecIdleCompletionAfterTurnCompleteClearsTransientStateWithoutHistory(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createCodexBackgroundTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
+	for _, tc := range []struct {
+		name         string
+		turnComplete *provider.WireTurnCompleteMeta
+	}{
+		{"normal turn end", normalTurnCompleteMeta()},
+		{"interrupted turn", &provider.WireTurnCompleteMeta{StopReason: "interrupted", Aborted: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, emissions := newTestRouter(t)
+			createCodexBackgroundTestThread(t, st, "t1")
+			seedOpenTurn(t, router, st, "t1", 0)
 
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-late",
-		ItemType: "commandExecution", TurnID: "t1:0",
-		Meta:      buildUnifiedExecStartMeta(t, "pid-late", "sleep 10 && echo done"),
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("tool start: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:         provider.EventTurnComplete,
-		ThreadID:     "t1",
-		TurnID:       "t1:0",
-		TurnComplete: normalTurnCompleteMeta(),
-		Timestamp:    time.Now(),
-	}); err != nil {
-		t.Fatalf("turn complete: %v", err)
-	}
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-late",
+				ItemType: "commandExecution", TurnID: "t1:0",
+				Meta:      buildUnifiedExecStartMeta(t, "pid-late", "sleep 10 && echo done"),
+				Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("tool start: %v", err)
+			}
+			if err := router.Handle(provider.ProviderEvent{
+				Kind:         provider.EventTurnComplete,
+				ThreadID:     "t1",
+				TurnID:       "t1:0",
+				TurnComplete: tc.turnComplete,
+				Timestamp:    time.Now(),
+			}); err != nil {
+				t.Fatalf("turn complete: %v", err)
+			}
 
-	completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-late", "sleep 10 && echo done", 0)
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-late",
-		ItemType: "commandExecution", TurnID: "t1:0", Content: "done\n",
-		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("command output: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-late",
-		ItemType: "commandExecution", TurnID: "t1:0", Meta: completeMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("tool complete: %v", err)
-	}
+			completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-late", "sleep 10 && echo done", 0)
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-late",
+				ItemType: "commandExecution", TurnID: "t1:0", Content: "done\n",
+				Meta: completeMeta, Replace: true, Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("command output: %v", err)
+			}
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-late",
+				ItemType: "commandExecution", TurnID: "t1:0", Meta: completeMeta,
+				Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("tool complete: %v", err)
+			}
 
-	if _, found, err := st.GetThreadItem("t1", "cmd-late"); err != nil || found {
-		t.Fatalf("idle late completion should not persist history row: found=%v err=%v", found, err)
-	}
-	if live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0); len(live) != 0 {
-		t.Fatalf("idle late completion should clear live tray: %+v", live)
-	}
-	for _, item := range filterItemEventUpserts(emissions.snapshot()) {
-		if item.ID == "cmd-late" {
-			t.Fatalf("idle late completion emitted history upsert: %+v", item)
-		}
-	}
-}
-
-func TestCodexUnifiedExecIdleCompletionAfterInterruptedTurnClearsTransientStateWithoutHistory(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createCodexBackgroundTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-interrupted-late",
-		ItemType: "commandExecution", TurnID: "t1:0",
-		Meta:      buildUnifiedExecStartMeta(t, "pid-interrupted-late", "sleep 10 && echo done"),
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("tool start: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:         provider.EventTurnComplete,
-		ThreadID:     "t1",
-		TurnID:       "t1:0",
-		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "interrupted", Aborted: true},
-		Timestamp:    time.Now(),
-	}); err != nil {
-		t.Fatalf("turn complete: %v", err)
-	}
-
-	completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-interrupted-late", "sleep 10 && echo done", 0)
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-interrupted-late",
-		ItemType: "commandExecution", TurnID: "t1:0", Content: "done\n",
-		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("command output: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-interrupted-late",
-		ItemType: "commandExecution", TurnID: "t1:0", Meta: completeMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("tool complete: %v", err)
-	}
-
-	if _, found, err := st.GetThreadItem("t1", "cmd-interrupted-late"); err != nil || found {
-		t.Fatalf("interrupted late completion should not persist history row: found=%v err=%v", found, err)
-	}
-	if live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0); len(live) != 0 {
-		t.Fatalf("interrupted late completion should clear live tray: %+v", live)
-	}
-	for _, item := range filterItemEventUpserts(emissions.snapshot()) {
-		if item.ID == "cmd-interrupted-late" {
-			t.Fatalf("interrupted late completion emitted history upsert: %+v", item)
-		}
+			if _, found, err := st.GetThreadItem("t1", "cmd-late"); err != nil || found {
+				t.Fatalf("idle late completion should not persist history row: found=%v err=%v", found, err)
+			}
+			if live := router.ListLiveCodexBackgroundTasks("t1", time.Now().UnixMilli(), 0); len(live) != 0 {
+				t.Fatalf("idle late completion should clear live tray: %+v", live)
+			}
+			for _, item := range filterItemEventUpserts(emissions.snapshot()) {
+				if item.ID == "cmd-late" {
+					t.Fatalf("idle late completion emitted history upsert: %+v", item)
+				}
+			}
+		})
 	}
 }
 
@@ -540,56 +495,6 @@ func TestCodexUnifiedExecCompletionDuringLaterActiveTurnPersistsAtObservedTurn(t
 	}
 	if !foundUpsert {
 		t.Fatalf("later active completion did not emit provider:item_event upsert; emissions=%+v", emissions.snapshot())
-	}
-}
-
-func TestCodexUnifiedExecYieldResultBackgroundsBeforeCompletion(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createCodexBackgroundTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "cmd-bg",
-		ItemType: "commandExecution", TurnID: "turn-0",
-		Meta:      buildUnifiedExecStartMeta(t, "pid-bg", "sleep 1; echo done"),
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("tool start: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventCodexExecResult, ThreadID: "t1", ItemID: "cmd-bg",
-		ItemType: "commandExecution", TurnID: "turn-0",
-		Meta:      buildCodexExecResultMeta(t, codexExecResultRunning, "pid-bg", "sleep 1; echo done"),
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("codex exec result: %v", err)
-	}
-
-	completeMeta := buildUnifiedExecCompleteMeta(t, "completed", "pid-bg", "sleep 1; echo done", 0)
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-bg",
-		ItemType: "commandExecution", TurnID: "turn-0", Content: "done\n",
-		Meta: completeMeta, Replace: true, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("command output: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "cmd-bg",
-		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("tool complete: %v", err)
-	}
-
-	row, found, err := st.GetThreadItem("t1", "cmd-bg")
-	if err != nil || !found {
-		t.Fatalf("yielded command row missing: found=%v err=%v", found, err)
-	}
-	if row.Status != statusCompleted || row.PayloadKind != "command_output" {
-		t.Fatalf("yielded command row status/payload = %+v", row)
-	}
-	if siblings := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(siblings) != 0 {
-		t.Fatalf("yielded command created sibling rows: %+v", siblings)
 	}
 }
 
@@ -1138,6 +1043,9 @@ func TestCodexSubagentRunningChildBackgroundsImmediately(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("spawn start: %v", err)
 	}
+	if _, found, err := st.GetThreadItem("t1", "spawn-1"); err != nil || found {
+		t.Fatalf("spawn start should not persist timeline row: found=%v err=%v", found, err)
+	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-1",
 		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
@@ -1152,25 +1060,6 @@ func TestCodexSubagentRunningChildBackgroundsImmediately(t *testing.T) {
 	}
 	if !row.IsBackground || row.Status != statusCompleted {
 		t.Fatalf("spawn row did not settle as a backgrounded launch event: %+v", row)
-	}
-}
-
-func TestCodexSpawnStartIsPendingOnly(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createCodexBackgroundTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-
-	spawnMeta := buildSpawnAgentMeta(t, "child-pending", "running")
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-pending",
-		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("spawn start: %v", err)
-	}
-
-	if _, found, err := st.GetThreadItem("t1", "spawn-pending"); err != nil || found {
-		t.Fatalf("spawn start should not persist timeline row: found=%v err=%v", found, err)
 	}
 }
 
@@ -2074,6 +1963,40 @@ func TestCodexSubagentWaitCompletionCarriesFinalOutputPayload(t *testing.T) {
 			t.Errorf("%s row agentsStates status = %q, want completed", label, status)
 		}
 	}
+
+	// A duplicate blank completion for the same launch keeps the payload
+	// and wait carrier the wait completion stamped.
+	completionID := ToolCompletionID("spawn-wait")
+	if subagentSibling.ID != completionID {
+		t.Fatalf("subagent sibling id = %q, want %q", subagentSibling.ID, completionID)
+	}
+	if err := router.synthesizeCodexBackgroundCompletion(provider.ProviderEvent{
+		ThreadID:  "t1",
+		ItemID:    "spawn-wait",
+		Content:   "\n",
+		Meta:      subagentStatusToItemStatusMeta("completed"),
+		Timestamp: time.Now(),
+	}, "spawn-wait", codexBackgroundCompletionOptions{}); err != nil {
+		t.Fatalf("duplicate blank completion: %v", err)
+	}
+	after, found, err := st.GetThreadItem("t1", completionID)
+	if err != nil || !found {
+		t.Fatalf("subagent sibling missing after duplicate: found=%v err=%v", found, err)
+	}
+	if after.PayloadID != subagentSibling.PayloadID {
+		t.Fatalf("payload id changed after duplicate: %q, want %q", after.PayloadID, subagentSibling.PayloadID)
+	}
+	afterMeta := decodeItemMetaMap(t, after.Meta)
+	if afterMeta["wait_carrier_id"] != "wait-child" {
+		t.Fatalf("wait_carrier_id after duplicate = %v, want wait-child", afterMeta["wait_carrier_id"])
+	}
+	data, err = st.GetPayloadData(after.ThreadID, after.PayloadID)
+	if err != nil {
+		t.Fatalf("payload data after duplicate: %v", err)
+	}
+	if string(data) != "Final child output" {
+		t.Fatalf("payload after duplicate = %q, want final child output", string(data))
+	}
 }
 
 // persistedAgentState decodes a persisted item meta and returns the
@@ -2099,86 +2022,6 @@ func persistedAgentState(t *testing.T, metaJSON, childID string) (status string,
 	}
 	_, hasMessage = entry["message"]
 	return status, hasMessage
-}
-
-func TestCodexSubagentDuplicateBlankCompletionPreservesPayload(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createCodexBackgroundTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-
-	spawnMeta := buildSpawnAgentMeta(t, "child-blank-dup", "running")
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-blank-dup",
-		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("spawn start: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "spawn-blank-dup",
-		ItemType: "collab_agent", TurnID: "turn-0", Meta: spawnMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("spawn complete: %v", err)
-	}
-
-	waitMeta := buildWaitAgentMetaWithMessage(t, "child-blank-dup", "completed", "Final child output")
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "wait-blank-dup",
-		ItemType: "wait_agent", TurnID: "turn-0", Meta: waitMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("wait start: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "wait-blank-dup",
-		ItemType: "wait_agent", TurnID: "turn-0", Content: "Final child output",
-		Meta: waitMeta, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("wait complete: %v", err)
-	}
-
-	completionID := ToolCompletionID("spawn-blank-dup")
-	before, found, err := st.GetThreadItem("t1", completionID)
-	if err != nil || !found {
-		t.Fatalf("subagent sibling missing before duplicate: found=%v err=%v", found, err)
-	}
-	if before.PayloadID == "" {
-		t.Fatalf("subagent sibling missing payload before duplicate")
-	}
-	beforeMeta := decodeItemMetaMap(t, before.Meta)
-	if beforeMeta["wait_carrier_id"] != "wait-blank-dup" {
-		t.Fatalf("wait_carrier_id before duplicate = %v, want wait-blank-dup", beforeMeta["wait_carrier_id"])
-	}
-
-	if err := router.synthesizeCodexBackgroundCompletion(provider.ProviderEvent{
-		ThreadID:  "t1",
-		ItemID:    "spawn-blank-dup",
-		Content:   "\n",
-		Meta:      subagentStatusToItemStatusMeta("completed"),
-		Timestamp: time.Now(),
-	}, "spawn-blank-dup", codexBackgroundCompletionOptions{}); err != nil {
-		t.Fatalf("duplicate blank completion: %v", err)
-	}
-
-	after, found, err := st.GetThreadItem("t1", completionID)
-	if err != nil || !found {
-		t.Fatalf("subagent sibling missing after duplicate: found=%v err=%v", found, err)
-	}
-	if after.PayloadID != before.PayloadID {
-		t.Fatalf("payload id changed after duplicate: %q, want %q", after.PayloadID, before.PayloadID)
-	}
-	afterMeta := decodeItemMetaMap(t, after.Meta)
-	if afterMeta["wait_carrier_id"] != "wait-blank-dup" {
-		t.Fatalf("wait_carrier_id after duplicate = %v, want wait-blank-dup", afterMeta["wait_carrier_id"])
-	}
-	data, err := st.GetPayloadData(after.ThreadID, after.PayloadID)
-	if err != nil {
-		t.Fatalf("payload data after duplicate: %v", err)
-	}
-	if string(data) != "Final child output" {
-		t.Fatalf("payload after duplicate = %q, want final child output", string(data))
-	}
 }
 
 func TestCodexSubagentWaitCompletionPersistsImmediatelyWithActiveStream(t *testing.T) {

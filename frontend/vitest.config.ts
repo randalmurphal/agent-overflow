@@ -1,11 +1,14 @@
-import { defineConfig, configDefaults } from 'vitest/config';
+import { defineConfig, defineProject, configDefaults } from 'vitest/config';
+import type { InlineConfig } from 'vitest/node';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { playwright } from '@vitest/browser-playwright';
 import { globSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Plugin } from 'vite';
-import { OPEN_THREAD_PANES_KEY } from './src/test/openThreadPanes.ts';
+import { threadPaneTracker } from './src/test/config/threadPaneTracker.ts';
+import { testResetsPlugin } from './src/test/config/testResetsPlugin.ts';
+import { rawImportsPlugin } from './src/test/config/rawImportsPlugin.ts';
+import { importTrackerPlugin } from './src/test/config/importTrackerPlugin.ts';
 import { StalledPageWatchdog } from './src/test/stalledPageWatchdog.ts';
 import { PAGE_VERSION_GLOBAL } from './scripts/bundleId.ts';
 
@@ -41,32 +44,11 @@ const happyDomResolve = {
   ],
 };
 
-// Records every pane `createThreadPane` makes in the happy-dom projects, so
-// the shared teardown (src/test/openThreadPanes.ts) can clear the ones a test
-// left open. The record is appended to the store's compiled module, so the
-// app's code carries no test hook.
-const threadStore = resolve(import.meta.dirname, 'src/lib/stores/thread.svelte.ts');
-function threadPaneTracker(): Plugin {
-  const record = `
-;{
-  const createUntracked = createThreadPane;
-  const open = (globalThis[Symbol.for(${JSON.stringify(OPEN_THREAD_PANES_KEY)})] ??= []);
-  createThreadPane = (...args) => {
-    const pane = createUntracked(...args);
-    open.push(pane);
-    return pane;
-  };
-}
-`;
-  return {
-    name: 'thread-pane-tracking',
-    enforce: 'post',
-    transform(code, id) {
-      if (id.split('?')[0] !== threadStore) return null;
-      return { code: code + record, map: null };
-    },
-  };
-}
+// Tests import repository files outside frontend/ with `?raw` (Go sources,
+// shared test vectors, harness scenarios), which Vite refuses for a file
+// outside `server.fs.allow`. Only the test projects allow the repository;
+// the app's dev server is configured in vite.config.ts.
+const repoServer = { fs: { allow: ['..'] } };
 
 const unitInclude = ['src/**/*.{test,spec}.{ts,js}'];
 // Real-browser layout tests run in the `browser` project below.
@@ -87,6 +69,11 @@ const moduleMockFiles = globSync(unitInclude, {
 // hang: it sits far above any test's run time on a loaded CI runner, where
 // a correct test can take several times longer than locally.
 const HANG_TIMEOUT_MS = 60_000;
+
+// Vitest blanks every CSS module in these projects, and its test matches
+// `.css?raw` too, so a test reading a stylesheet as text would read ''.
+// Processing `?raw` ids leaves them to Vite, which returns the text.
+const rawCss = { include: [/[?&]raw\b/] };
 
 // A browser page that stops running JavaScript cannot fire its own test or
 // hook timeout, so its run would wait for the CI job's. A live page fails any
@@ -115,6 +102,7 @@ const unitTestOptions = {
     },
   },
   globals: false,
+  css: rawCss,
   setupFiles: ['./src/test/scrollGridMock.ts', './src/test/setup.ts'],
   // Svelte 5 component imports are ESM-first; keep transforms minimal.
   server: {
@@ -122,7 +110,29 @@ const unitTestOptions = {
       inline: [/@testing-library\/svelte/, /svelte/],
     },
   },
-} as const;
+} satisfies InlineConfig;
+
+// One worker process and happy-dom window run many files. Its runner
+// retires each file before the next starts (src/test/sharedWorkerRunner.ts)
+// and fails a file that leaves a global changed; the import tracker lets it
+// wait for the dynamic imports a file started. Exported for the runner's
+// own test, which runs fixture files in this project's setting
+// (src/test/sharedWorker/vitest.config.ts).
+export const unitProject = defineProject({
+  plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin(), importTrackerPlugin(import.meta.dirname)],
+  server: repoServer,
+  resolve: happyDomResolve,
+  define: pageVersionDefine,
+  test: {
+    ...unitTestOptions,
+    name: 'unit',
+    isolate: false,
+    runner: './src/test/sharedWorkerRunner.ts',
+    setupFiles: [...unitTestOptions.setupFiles, './src/test/sharedWorkerStart.ts'],
+    include: unitInclude,
+    exclude: [...unitExclude, ...moduleMockFiles],
+  },
+});
 
 // Projects:
 //  - `unit` and `unit-isolated`: the default happy-dom component/store suite,
@@ -151,26 +161,29 @@ const unitTestOptions = {
 // `pnpm test:manual`.
 export default defineConfig({
   test: {
+    // `--changed` selects the test files whose imports reach a changed file.
+    // These inputs reach every test file without an import, so a change to
+    // one runs everything: the frontend's lockfile (dependency versions), its
+    // TypeScript config (transform options), and the files this config
+    // loads: those in src/test/config/ (the transforms and the between-test
+    // contract) and the stalled-page watchdog, with its package.json and
+    // this config. Vitest follows a project's runner itself. They
+    // are this directory's own: Vitest's defaults match any package.json and
+    // config in the repository, so e2e/package.json would run every file.
+    forceRerunTriggers: [
+      resolve(import.meta.dirname, 'package.json'),
+      resolve(import.meta.dirname, '{vitest,vite}.config.*'),
+      resolve(import.meta.dirname, 'pnpm-lock.yaml'),
+      resolve(import.meta.dirname, 'tsconfig*.json'),
+      resolve(import.meta.dirname, 'src/test/config/**'),
+      resolve(import.meta.dirname, 'src/test/stalledPageWatchdog.ts'),
+    ],
     reporters: [...configDefaults.reporters, new StalledPageWatchdog({ boundMs: STALLED_PAGE_MS })],
     projects: [
+      unitProject,
       {
-        plugins: [svelte(svelteOptions), threadPaneTracker()],
-        resolve: happyDomResolve,
-        define: pageVersionDefine,
-        test: {
-          ...unitTestOptions,
-          name: 'unit',
-          // One worker process and happy-dom window run many files.
-          // sharedWorker.ts returns each file's worker to the state a fresh
-          // one would have, and fails a file that leaves a global changed.
-          isolate: false,
-          setupFiles: ['./src/test/sharedWorker.ts', ...unitTestOptions.setupFiles, './src/test/sharedWorkerStart.ts'],
-          include: unitInclude,
-          exclude: [...unitExclude, ...moduleMockFiles],
-        },
-      },
-      {
-        plugins: [svelte(svelteOptions), threadPaneTracker()],
+        plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
+        server: repoServer,
         resolve: happyDomResolve,
         define: pageVersionDefine,
         test: {
@@ -192,7 +205,8 @@ export default defineConfig({
         // mount throws. tailwindcss stays so app.css compiles against the real
         // cascade. Order: svelte first so .svelte transforms run before tailwind
         // post-processes the emitted CSS.
-        plugins: [svelte(svelteOptions), tailwindcss()],
+        plugins: [svelte(svelteOptions), tailwindcss(), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
+        server: repoServer,
         resolve: happyDomResolve,
         define: pageVersionDefine,
         // Scan the browser test files (and their component imports) up front
@@ -255,13 +269,15 @@ export default defineConfig({
         // reach the same mocked bindings — with a disjoint include glob and a
         // timeout that lets a long sweep finish rather than being cut off
         // mid-corpus.
-        plugins: [svelte(svelteOptions), threadPaneTracker()],
+        plugins: [svelte(svelteOptions), threadPaneTracker(import.meta.dirname), testResetsPlugin(import.meta.dirname), rawImportsPlugin()],
+        server: repoServer,
         resolve: happyDomResolve,
         define: pageVersionDefine,
         test: {
           name: 'manual',
           environment: 'happy-dom',
           globals: false,
+          css: rawCss,
           setupFiles: ['./src/test/scrollGridMock.ts', './src/test/setup.ts'],
           include: ['src/**/*.manual.ts'],
           testTimeout: 300_000,

@@ -1,9 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { methodNotFound } from '../../../test/helpers/olderComputer';
 import { render, fireEvent, waitFor, within } from '@testing-library/svelte';
 import CommitDialog from './CommitDialog.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
-import { resetBindingMocks, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import type { CommitFile, CommitFiles, GitActionOutcome, GitActionResult, GitStatus } from '../../types/git';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
@@ -95,11 +94,6 @@ async function mount(
     },
   };
 }
-
-beforeEach(() => {
-  resetPanesForTest();
-  resetBindingMocks();
-});
 
 describe('<CommitDialog> — file selection', () => {
   it('lists the changed files with nothing selected and refuses to commit until one is', async () => {
@@ -222,9 +216,18 @@ describe('<CommitDialog> — file selection', () => {
     await fireEvent.click(m.check('z.txt'));
 
     files = [THREE[0], file('appeared.ts', { status: 'A' })];
-    __seedGitStatusForTest(WORKSPACE, status({ fileCount: 2, insertions: 9 }));
-    await waitFor(() => expect(m.rows()).toHaveLength(2));
+    // The refresh waits out the scheduler's interval after the first
+    // listing (a second), on a fake clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      __seedGitStatusForTest(WORKSPACE, status({ fileCount: 2, insertions: 9 }));
+      await vi.advanceTimersByTimeAsync(1_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await waitFor(() => expect(m.list).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(m.row('appeared.ts').getAttribute('aria-selected')).toBe('false'));
+    expect(m.rows()).toHaveLength(2);
     expect(m.row('src/a.ts').getAttribute('aria-selected')).toBe('true');
     expect(m.getByTestId('commit-dialog-selection').textContent?.trim()).toBe('1 of 2 files selected');
   });
@@ -264,16 +267,26 @@ describe('<CommitDialog> — file selection', () => {
     let files = [THREE[0]];
     const m = await mount(() => listing(files));
     await waitFor(() => expect(m.diff).toHaveBeenCalledTimes(1));
+    // A listing after one that just ran waits out the scheduler's interval
+    // (a second), on a fake clock from here.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      // Another status change with the same file content reads nothing.
+      __seedGitStatusForTest(WORKSPACE, status({ aheadCount: 1 }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(m.list).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(m.diff).toHaveBeenCalledTimes(1);
 
-    // Another status change with the same file content reads nothing.
-    __seedGitStatusForTest(WORKSPACE, status({ aheadCount: 1 }));
-    // A listing after one that just ran waits out the scheduler's interval.
-    await waitFor(() => expect(m.list).toHaveBeenCalledTimes(2), { timeout: 3_000 });
-    expect(m.diff).toHaveBeenCalledTimes(1);
-
-    files = [{ ...THREE[0], version: '100644:edited' }];
-    __seedGitStatusForTest(WORKSPACE, status({ aheadCount: 2 }));
-    await waitFor(() => expect(m.diff).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+      files = [{ ...THREE[0], version: '100644:edited' }];
+      __seedGitStatusForTest(WORKSPACE, status({ aheadCount: 2 }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(m.list).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(m.diff).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says how many files are not shown when the list is bounded', async () => {
@@ -371,9 +384,12 @@ describe('<CommitDialog> — pending operation notice', () => {
     expect(commit).toHaveBeenCalledWith(m.pane.workspace, 'Merge', '', { all: true, files: [] }, expect.any(String));
   });
 
-  it('names a pending revert', async () => {
-    const m = await mount(listing(THREE, { wholeOnly: true }), status({ pendingOperation: 'revert' }));
-    expect(m.getByTestId('commit-dialog-pending-operation').textContent).toContain('A revert is in progress.');
+  it.each([
+    ['revert', 'A revert is in progress.'],
+    ['cherry-pick', 'A cherry-pick is in progress.'],
+  ])('names a pending %s', async (op, text) => {
+    const m = await mount(listing(THREE, { wholeOnly: true }), status({ pendingOperation: op }));
+    expect(m.getByTestId('commit-dialog-pending-operation').textContent).toContain(text);
   });
 
   it('shows why a commit of files that changed was refused and lists them again', async () => {
@@ -397,11 +413,6 @@ describe('<CommitDialog> — pending operation notice', () => {
     expect(m.onClose).not.toHaveBeenCalled();
   });
 
-  it('names a pending cherry-pick', async () => {
-    const m = await mount(listing(THREE, { wholeOnly: true }), status({ pendingOperation: 'cherry-pick' }));
-    expect(m.getByTestId('commit-dialog-pending-operation').textContent).toContain('A cherry-pick is in progress.');
-  });
-
   it('lists again on each opening, with the selection of the last one gone', async () => {
     const m = await mount();
     await waitFor(() => expect(m.rows()).toHaveLength(3));
@@ -419,10 +430,20 @@ describe('<CommitDialog> — pending operation notice', () => {
   });
 
   it('lists once on open, not once per effect', async () => {
-    const m = await mount();
-    await waitFor(() => expect(m.rows()).toHaveLength(3));
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    expect(m.list).toHaveBeenCalledTimes(1);
+    // On the fake clock from before the mount, so a second listing that an
+    // effect asks for during it waits on this clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const m = await mount();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(m.rows()).toHaveLength(3);
+      // Past the scheduler's delay (250 ms), its longest wait (1 s) and its
+      // spacing between listings (1 s): a second listing would have run.
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(m.list).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders no notice when no operation is pending', async () => {

@@ -98,7 +98,7 @@ func measureScale(t *testing.T, rec *mirrorWriteRecorder, prepare func(rep int),
 func mirrorAtScale(t *testing.T, size benchMirrorSize) {
 	issues := size.boards * size.issues
 	path := filepath.Join(t.TempDir(), "store.sqlite")
-	if err := copyTestStoreTemplate(path); err != nil {
+	if err := copyTestStoreTemplate(t, path); err != nil {
 		t.Fatal(err)
 	}
 	base, err := os.Stat(path)

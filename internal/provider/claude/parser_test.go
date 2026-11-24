@@ -11,37 +11,6 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-func TestParseInvalidJSON(t *testing.T) {
-	_, err := ParseLine(testThread, []byte(`not json`))
-	if err == nil {
-		t.Fatal("expected error for invalid JSON, got nil")
-	}
-}
-
-func TestParseUnknownType(t *testing.T) {
-	line := []byte(`{"type":"some_future_event","data":{}}`)
-
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for unknown type, got %d", len(events))
-	}
-}
-
-func TestParseUserTypeSkipped(t *testing.T) {
-	line := []byte(`{"type":"user","message":{"role":"user","content":"hi"}}`)
-
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for user type, got %d", len(events))
-	}
-}
-
 // TestParseRealCLIFixture validates the parser against real Claude CLI
 // output. The fixture predates `--include-partial-messages`, so text
 // reaches triage via `stream_event` deltas now rather than via the
@@ -193,4 +162,16 @@ func TestParseLineUnknownEnvelopeOnNilParserIsSilent(t *testing.T) {
 	if out != "" {
 		t.Fatalf("nil parser logged %q, want silence", out)
 	}
+}
+
+// isBackground reports whether the given tool_use ID was marked (either
+// origin). The Claude tool_use ↔ tool_result correlation is one-shot;
+// callers that consume a correlated event should also call
+// clearBackground to release the entry.
+func (p *Parser) isBackground(toolUseID string) bool {
+	return p.backgroundOrigin(toolUseID) != 0
+}
+
+func (r *recentMap[V]) len() int {
+	return len(r.current) + len(r.previous)
 }

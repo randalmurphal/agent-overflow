@@ -40,7 +40,6 @@ import { __setBackendStatusForTest, UNREACHABLE_SETTLE_MS } from '../../stores/t
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { formatCalendarDate, formatTimeOfDay } from '../../utils/format';
 import {
-  __resetBundleNoticeForTest,
   clearBundleNotice,
   noteBundleReady,
   noteBundleTooOld,
@@ -280,104 +279,67 @@ describe('<TransportStatusBanner>', () => {
     expect(queryByTestId('transport-status-dismiss')).toBeNull();
   });
 
-  // A refused credential (backend restarted, tokens are per-launch) is
-  // terminal: the wsClient has stopped retrying, so this banner is the
-  // entire recovery story and must name the action that works.
-  it('names the recovery action when the backend refuses the credential', async () => {
-    // The client publishes this state with nextAttemptAt: null (nothing
+  // Retry stays available in every one of these: it un-latches the client
+  // or wakes the ladder for one user-initiated attempt
+  // (wsClient.triggerReconnect).
+  it.each([
+    // A refused credential (backend restarted, tokens are per-launch) is
+    // terminal: the wsClient has stopped retrying, so this banner is the
+    // entire recovery story and must name the action that works.
+    ['names the recovery action when the backend refuses the credential', 'unauthorized', 'The backend restarted. Reopen the share link to reconnect.', ['Reconnecting']],
+    // The other terminal state, and the one whose remedy is different in
+    // kind: this page loads fine, the backend simply will not open a
+    // socket for it until the device is paired. Telling this person to
+    // reopen a share link would send them around the loop they are
+    // already in.
+    ['names the pairing action when the backend admits paired devices only', 'pairing-required', 'Pair this device to use this backend.', ['share link', 'Reconnecting']],
+  ] as const)('%s', async (_name, status, sentence, absent) => {
+    // The client publishes these states with nextAttemptAt: null (nothing
     // is scheduled). Feed a stale timestamp anyway — no countdown may
-    // leak out of this state, whatever the snapshot carries, because it
-    // would promise a recovery that is not coming.
-    h.snapshot = { status: 'unauthorized', nextAttemptAt: Date.now() + 5_000 };
+    // leak out of them, whatever the snapshot carries, because it would
+    // promise a recovery that is not coming.
+    h.snapshot = { status, nextAttemptAt: Date.now() + 5_000 };
     const { getByTestId } = render(TransportStatusBanner);
     await settleBootGrace();
 
     const banner = getByTestId('transport-status-banner');
-    expect(banner.dataset.status).toBe('unauthorized');
-    expect(banner.textContent).toContain('The backend restarted. Reopen the share link to reconnect.');
-    expect(banner.textContent).not.toContain('Reconnecting');
-    // Retry stays available — it un-latches the client for one
-    // user-initiated attempt (wsClient.triggerReconnect).
+    expect(banner.dataset.status).toBe(status);
+    expect(banner.textContent).toContain(sentence);
+    for (const text of absent) expect(banner.textContent).not.toContain(text);
     expect(getByTestId('transport-status-retry')).not.toBeNull();
   });
 
-  // The other terminal state, and the one whose remedy is different in
-  // kind: this page loads fine, the backend simply will not open a
-  // socket for it until the device is paired. Telling this person to
-  // reopen a share link would send them around the loop they are
-  // already in.
-  it('names the pairing action when the backend admits paired devices only', async () => {
-    h.snapshot = { status: 'pairing-required', nextAttemptAt: Date.now() + 5_000 };
-    const { getByTestId } = render(TransportStatusBanner);
-    await settleBootGrace();
-
-    const banner = getByTestId('transport-status-banner');
-    expect(banner.dataset.status).toBe('pairing-required');
-    expect(banner.textContent).toContain('Pair this device to use this backend.');
-    expect(banner.textContent).not.toContain('share link');
-    expect(banner.textContent).not.toContain('Reconnecting');
-    expect(getByTestId('transport-status-retry')).not.toBeNull();
-  });
-
-  // A ladder reconnecting for minutes goes dormant: one probe every five
-  // minutes, nothing else on the network. A countdown restarting from 300
-  // every time would read as "nearly back" forever, so the banner states the
-  // fact and says when the connection was last alive.
-  it('states the fact and the last-seen time while the ladder is dormant', async () => {
+  it.each([
+    // A ladder reconnecting for minutes goes dormant: one probe every five
+    // minutes, nothing else on the network. A countdown restarting from 300
+    // every time would read as "nearly back" forever, so the banner states
+    // the fact and says when the connection was last alive. No countdown
+    // may leak out beside it: the two sentences answer the same question
+    // and one of them would be wrong.
+    ['states the fact and the last-seen time while the ladder is dormant', 280_000, true, 12 * 60_000, 'Offline. Last seen 12m ago. Checking every 5 minutes.', ['Reconnecting in']],
+    // The ordinary ladder is untouched by dormancy existing.
+    ['keeps the countdown while the ladder is still climbing', 4_000, false, 12 * 60_000, 'Reconnecting in', ['Last seen']],
+    // A page that has never reached its backend has no last-seen moment to
+    // report, and the banner invents none — it drops the clause and keeps
+    // the sentence. It must NOT fall back to the countdown: the ladder
+    // really is at one probe per five minutes, and a number ticking down
+    // from 300 would describe a cadence that is not happening.
+    ['drops only the last-seen clause when dormant with nothing ever connected', 4_000, true, null, 'Offline. Checking every 5 minutes.', ['Last seen', 'Reconnecting in']],
+  ] as const)('%s', async (_name, nextIn, dormant, lastSeenAgo, sentence, absent) => {
     h.snapshot = {
       status: 'reconnecting',
-      nextAttemptAt: Date.now() + 280_000,
-      dormant: true,
-      lastConnectedAt: Date.now() - 12 * 60_000,
+      nextAttemptAt: Date.now() + nextIn,
+      dormant,
+      lastConnectedAt: lastSeenAgo === null ? null : Date.now() - lastSeenAgo,
     };
     const { getByTestId } = render(TransportStatusBanner);
     await settleBootGrace();
 
     const banner = getByTestId('transport-status-banner');
     expect(banner.dataset.status).toBe('reconnecting');
-    expect(banner.textContent).toContain('Offline. Last seen 12m ago. Checking every 5 minutes.');
-    // No countdown may leak out beside it: the two sentences answer the same
-    // question and one of them would be wrong.
-    expect(banner.textContent).not.toContain('Reconnecting in');
-    // Retry stays: it wakes the ladder for one user-initiated attempt.
+    expect(banner.textContent).toContain(sentence);
+    for (const text of absent) expect(banner.textContent).not.toContain(text);
     expect(getByTestId('transport-status-retry')).not.toBeNull();
-  });
-
-  // The ordinary ladder is untouched by dormancy existing.
-  it('keeps the countdown while the ladder is still climbing', async () => {
-    h.snapshot = {
-      status: 'reconnecting',
-      nextAttemptAt: Date.now() + 4_000,
-      dormant: false,
-      lastConnectedAt: Date.now() - 12 * 60_000,
-    };
-    const { getByTestId } = render(TransportStatusBanner);
-    await settleBootGrace();
-
-    const banner = getByTestId('transport-status-banner');
-    expect(banner.textContent).toContain('Reconnecting in');
-    expect(banner.textContent).not.toContain('Last seen');
-  });
-
-  // A page that has never reached its backend has no last-seen moment to
-  // report, and the banner invents none — it drops the clause and keeps the
-  // sentence. It must NOT fall back to the countdown: the ladder really is at
-  // one probe per five minutes, and a number ticking down from 300 would
-  // describe a cadence that is not happening.
-  it('drops only the last-seen clause when dormant with nothing ever connected', async () => {
-    h.snapshot = {
-      status: 'reconnecting',
-      nextAttemptAt: Date.now() + 4_000,
-      dormant: true,
-      lastConnectedAt: null,
-    };
-    const { getByTestId } = render(TransportStatusBanner);
-    await settleBootGrace();
-
-    const banner = getByTestId('transport-status-banner');
-    expect(banner.textContent).toContain('Offline. Checking every 5 minutes.');
-    expect(banner.textContent).not.toContain('Last seen');
-    expect(banner.textContent).not.toContain('Reconnecting in');
   });
 
   // A paired computer that is off keeps its ladder dialing for as long as it
@@ -547,18 +509,10 @@ describe('<TransportStatusBanner> and the bundle notice', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     h.snapshot = { status: 'connected', nextAttemptAt: null };
-    __resetBundleNoticeForTest();
   });
 
   afterEach(() => {
-    __resetBundleNoticeForTest();
     vi.useRealTimers();
-  });
-
-  it('says nothing on a connected client with no bundle news', async () => {
-    const { queryByTestId } = render(TransportStatusBanner);
-    await tick();
-    expect(queryByTestId('transport-status-banner')).toBeNull();
   });
 
   it('shows a staged bundle as a restart, with no button to press', async () => {

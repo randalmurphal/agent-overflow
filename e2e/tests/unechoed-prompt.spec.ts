@@ -35,6 +35,7 @@ import {
   setScenario,
   threadToolsScenario,
 } from './thread-tools-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 const QUOTED = 'Why does the log print `<task-notification>` before every report?';
 
@@ -70,7 +71,7 @@ async function send(page: Page, text: string): Promise<void> {
 }
 
 async function capture(page: Page, testInfo: TestInfo, name: string): Promise<void> {
-  await page.screenshot({ path: testInfo.outputPath(name) });
+  await screenshot(page, { path: testInfo.outputPath(name) });
 }
 
 test('a typed prompt the CLI does not echo lands, settles, and the next turns keep their rows', async ({
@@ -163,8 +164,7 @@ test('a wake that quotes the tag reaches an idle thread and settles it', async (
 
   await harness.open(page);
   await page.getByText('Unechoed wake').click();
-  await harness.rpc('StartSession', threadId);
-  await harness.rpc('SendMessage', threadId, 'remind me to check the task ids', null);
+  await harness.send(threadId, 'remind me to check the task ids');
   const remind = await awaitToolAnswer(harness, { tool: 'thread_remind', timeoutMs: 60_000 });
   expect(remind.isError, remind.text).toBe(false);
   await awaitTurnCompleted(harness, threadId);

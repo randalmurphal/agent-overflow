@@ -10,7 +10,6 @@ import '../../../app.css';
 import { applyThemeClass } from '../../utils/theme';
 import {
   applyTheme,
-  resetThemeApplyForTest,
   USER_THEME_STYLE_ID,
 } from '../../theme/themeApply.svelte';
 import { parseTheme } from '../../theme/themeParse';
@@ -49,14 +48,12 @@ let priorClass = '';
 beforeEach(() => {
   priorClass = document.documentElement.className;
   resetXtermThemeCache();
-  resetThemeApplyForTest();
 });
 
 afterEach(() => {
   document.documentElement.className = priorClass;
   document.getElementById(USER_THEME_STYLE_ID)?.remove();
   resetXtermThemeCache();
-  resetThemeApplyForTest();
 });
 
 describe('getXtermTheme (real cascade)', () => {

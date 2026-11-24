@@ -229,14 +229,10 @@ func generatedImageSummary(prompt string) string {
 	return prompt
 }
 
-// generatedImageMeta is the row's stored metadata. `attachments` is the
+// generatedImageMetaForProvider is the row's stored metadata. `attachments` is the
 // established shape (the same one parseUserMessageAttachments reads and
 // itemmeta.TransferAttachments rewrites); `generatedImage` is the provenance
 // and the failure reason, which only this row's renderer reads.
-func generatedImageMeta(threadID, toolItemID, prompt string, imported *GeneratedImage, failure string) string {
-	return generatedImageMetaForProvider("codex", threadID, toolItemID, prompt, imported, failure)
-}
-
 func generatedImageMetaForProvider(providerName, threadID, toolItemID, prompt string, imported *GeneratedImage, failure string) string {
 	if strings.TrimSpace(providerName) == "" {
 		providerName = "codex"

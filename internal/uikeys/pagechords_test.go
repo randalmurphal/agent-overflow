@@ -2,6 +2,7 @@ package uikeys
 
 import (
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -181,4 +182,10 @@ func TestTrustedPageAcceptsOnlyThePageOrigin(t *testing.T) {
 			t.Errorf("%s: TrustedPage = %v, want %v", tc.name, got, tc.want)
 		}
 	}
+}
+
+// ReloadAppMessage is the message document document posts when a chord the
+// window handed over ran nothing there.
+func ReloadAppMessage(document uint64) string {
+	return reloadAppMessage + strconv.FormatUint(document, 10)
 }

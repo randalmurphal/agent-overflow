@@ -83,51 +83,40 @@ func TestDefaultsIncludeNewHelpSearchAndInterruptBindings(t *testing.T) {
 	}
 }
 
-// TestAccountSwitcherDefaultIsContextFree pins that the account-switcher
-// chord ships with no `when` gate: switching provider accounts is reachable
-// from anywhere, including with no thread open. Only the frontend's
-// editable-target rules and the command's own view-only gate narrow it.
-func TestAccountSwitcherDefaultIsContextFree(t *testing.T) {
-	var matches []Keybinding
-	for _, b := range Defaults {
-		if b.Command == "provider.switchAccount" {
-			matches = append(matches, b)
-		}
-	}
-	if len(matches) != 1 {
-		t.Fatalf("want exactly one provider.switchAccount binding, got %d: %+v", len(matches), matches)
-	}
-	if matches[0].When != "" {
-		t.Errorf("provider.switchAccount When = %q, want empty", matches[0].When)
-	}
-}
-
-// TestSoundMuteDefaultIsContextFreeAndUncontested pins both halves of the
-// quick-mute chord choice. The row carries no `when` (silencing this screen
-// is reachable from the composer, from a view-only device and with no thread
-// open), so ANY other default on the same chord would be shadowed by it or
-// shadow it depending on list order. The uniqueness check is what would have
-// caught mod+shift+m, which composer.picker.model already owns.
-func TestSoundMuteDefaultIsContextFreeAndUncontested(t *testing.T) {
-	var mute []Keybinding
-	for _, b := range Defaults {
-		if b.Command == "sound.toggleMute" {
-			mute = append(mute, b)
-		}
-	}
-	if len(mute) != 1 {
-		t.Fatalf("want exactly one sound.toggleMute binding, got %d: %+v", len(mute), mute)
-	}
-	if mute[0].When != "" {
-		t.Errorf("sound.toggleMute When = %q, want empty", mute[0].When)
-	}
-	for _, b := range Defaults {
-		if b.Command == "sound.toggleMute" {
-			continue
-		}
-		if b.Key == mute[0].Key {
-			t.Errorf("%s shares the sound.toggleMute chord %q (when=%q)", b.Command, b.Key, b.When)
-		}
+// TestContextFreeDefaultsAreUncontested pins chords that ship with no `when`
+// gate. Each is the command's only row, and because an un-gated row matches
+// everywhere, ANY other default on the same chord would be shadowed by it or
+// shadow it depending on list order.
+func TestContextFreeDefaultsAreUncontested(t *testing.T) {
+	for _, tc := range []struct{ command, key string }{
+		// Switching provider accounts is reachable from anywhere, including
+		// with no thread open. Only the frontend's editable-target rules and
+		// the command's own view-only gate narrow it.
+		{"provider.switchAccount", "mod+shift+u"},
+		// Silencing this screen is reachable from the composer, from a
+		// view-only device and with no thread open. The uniqueness check is
+		// what would have caught mod+shift+m, which composer.picker.model
+		// already owns.
+		{"sound.toggleMute", "alt+shift+m"},
+		// The maximize chord: un-gated so it escapes a focused terminal.
+		{"pane.togglePromoted", "alt+shift+enter"},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			var matches []Keybinding
+			for _, b := range Defaults {
+				if b.Command == tc.command {
+					matches = append(matches, b)
+				} else if b.Key == tc.key {
+					t.Errorf("%s shares the %s chord %q (when=%q)", b.Command, tc.command, b.Key, b.When)
+				}
+			}
+			if len(matches) != 1 {
+				t.Fatalf("want exactly one %s binding, got %d: %+v", tc.command, len(matches), matches)
+			}
+			if matches[0].Key != tc.key || matches[0].When != "" {
+				t.Errorf("%s = {Key:%q When:%q}, want {%s, \"\"}", tc.command, matches[0].Key, matches[0].When, tc.key)
+			}
+		})
 	}
 }
 
@@ -201,24 +190,6 @@ func TestModWClosesPaneAndYieldsToTerminalFocus(t *testing.T) {
 	}
 }
 
-// TestPanePromoteDefaultIsUngatedAndUncontested pins the maximize chord:
-// un-gated so it escapes a focused terminal, and the only default on its
-// chord so no other row shadows it or is shadowed by it.
-func TestPanePromoteDefaultIsUngatedAndUncontested(t *testing.T) {
-	var matches []Keybinding
-	for _, b := range Defaults {
-		if b.Key == "alt+shift+enter" {
-			matches = append(matches, b)
-		}
-	}
-	if len(matches) != 1 {
-		t.Fatalf("want exactly one alt+shift+enter binding, got %d: %+v", len(matches), matches)
-	}
-	if matches[0].Command != "pane.togglePromoted" || matches[0].When != "" {
-		t.Errorf("alt+shift+enter = {Command:%q When:%q}, want {pane.togglePromoted, \"\"}", matches[0].Command, matches[0].When)
-	}
-}
-
 // TestPaneNavDefaultsUseVimChordsOnly pins the macOS-friendly default: alt+h/l
 // navigate panes, while alt+arrow is left to native text-editing word motion.
 // The vim pane-nav chords are UN-gated (no !terminalFocus) so they bubble out of
@@ -262,35 +233,6 @@ func TestPaneNavDefaultsUseVimChordsOnly(t *testing.T) {
 	}
 }
 
-// TestTerminalRefreshDefaultBinding pins the in-terminal repaint chord. The
-// chord is behaviour-critical and NOT free to change silently: alt+shift+r is
-// deliberate because the webview reserves Ctrl/Cmd+R and Ctrl/Cmd+Shift+R for
-// reload (internal/uikeys), so a regression moving terminal.refresh to a mod+r
-// chord would be swallowed by the webview and never reach the SPA. The
-// terminalFocus gate scopes it to the recovery press from inside the terminal.
-// Both properties pass every generic Defaults test, so pin them explicitly.
-func TestTerminalRefreshDefaultBinding(t *testing.T) {
-	var refresh []Keybinding
-	for _, b := range Defaults {
-		if b.Command == "terminal.refresh" {
-			refresh = append(refresh, b)
-		}
-	}
-	if len(refresh) != 1 {
-		t.Fatalf("want exactly one terminal.refresh binding, got %d: %+v", len(refresh), refresh)
-	}
-	b := refresh[0]
-	if b.Key != "alt+shift+r" {
-		t.Errorf("terminal.refresh Key = %q, want %q (mod+r chords are reserved by the webview reload)", b.Key, "alt+shift+r")
-	}
-	if b.When != "terminalFocus" {
-		t.Errorf("terminal.refresh When = %q, want %q (scopes the chord to the in-terminal recovery press)", b.When, "terminalFocus")
-	}
-	if b.DefaultID != "terminal.refresh" {
-		t.Errorf("terminal.refresh DefaultID = %q, want %q", b.DefaultID, "terminal.refresh")
-	}
-}
-
 // TestTerminalTabAndPaneDefaultBindings pins the terminal tab/pane management
 // chords. terminal.newPane is UN-gated (no !terminalFocus) so Ctrl+Shift+~ opens
 // a terminal pane from inside a focused terminal too — TerminalBody's key handler
@@ -323,7 +265,7 @@ func TestTerminalTabAndPaneDefaultBindings(t *testing.T) {
 		t.Errorf("terminal.newPane When = %q, want \"\" (un-gated so Ctrl+Shift+~ opens a pane from inside a focused terminal)", newPane.When)
 	}
 
-	// Tab management: gated terminalFocus, exact chords.
+	// Tab management and repaint: gated terminalFocus, exact chords.
 	cases := []struct {
 		command string
 		key     string
@@ -333,6 +275,12 @@ func TestTerminalTabAndPaneDefaultBindings(t *testing.T) {
 		{"terminal.nextTab", "ctrl+tab"},
 		{"terminal.prevTab", "ctrl+shift+tab"},
 		{"terminal.clear", "mod+shift+l"},
+		// The in-terminal repaint chord. alt+shift+r is deliberate: the
+		// webview reserves Ctrl/Cmd+R and Ctrl/Cmd+Shift+R for reload
+		// (internal/uikeys), so a mod+r chord would be swallowed by the
+		// webview and never reach the SPA. The terminalFocus gate scopes it
+		// to the recovery press from inside the terminal.
+		{"terminal.refresh", "alt+shift+r"},
 	}
 	for _, tc := range cases {
 		b := only(tc.command)

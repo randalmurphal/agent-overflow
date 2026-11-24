@@ -26,49 +26,10 @@ func TestCallDepthResolvesForPromptsAndPredicates(t *testing.T) {
 	}
 }
 
-// A unit and a join read the phase's declarations, so the reserved name has to
-// reach them without any per-unit declaration — the rule `history.<phase>` and
-// `units` already follow.
-func TestCallDepthReachesUnitsAndJoins(t *testing.T) {
-	phase := Phase{ID: "wave", Inputs: map[string]Variable{"goal": {Schema: JSONSchema{Type: "string"}}}}
-	for name, declarations := range map[string]map[string]Variable{
-		"phase": PhaseDeclarations(phase),
-		"unit":  UnitDeclarations(phase, nil),
-		"join":  JoinDeclarations(phase),
-	} {
-		if errors := ValidateTemplate("wave {{call-depth}}", declarations); len(errors) != 0 {
-			t.Errorf("%s declarations reject {{call-depth}}: %v", name, errors)
-		}
-		if got := declarations[CallDepthVariable].Schema.Type; got != "number" {
-			t.Errorf("%s call-depth type = %q, want number", name, got)
-		}
-		if declarations[CallDepthVariable].Optional {
-			t.Errorf("%s call-depth is optional; every run has a depth and a root's is 0", name)
-		}
-	}
-}
-
 // The reservation is a REFUSAL, not a silent shadow: an author who declares the
-// name has to learn that what they wrote is read by nothing.
-func TestCallDepthIsRefusedAtEveryDeclarationSite(t *testing.T) {
-	t.Run("workflow input", func(t *testing.T) {
-		resolved := writableValidFixture(t)
-		resolved.Workflow.Inputs[CallDepthVariable] = Variable{Schema: JSONSchema{Type: "number"}}
-		result := Validate(resolved, validBindings(), nil)
-		if !hasFinding(result.Findings, "input.reserved", `input "call-depth"`) {
-			t.Fatalf("a workflow input named %q was accepted:\n%s", CallDepthVariable, formatFindings(result.Findings))
-		}
-	})
-
-	t.Run("phase input", func(t *testing.T) {
-		resolved := writableValidFixture(t)
-		resolved.Workflow.Phases[0].Inputs[CallDepthVariable] = Variable{Schema: JSONSchema{Type: "number"}}
-		result := Validate(resolved, validBindings(), nil)
-		if !hasFinding(result.Findings, "input.reserved", `phase "plan" input "call-depth"`) {
-			t.Fatalf("a phase input named %q was accepted:\n%s", CallDepthVariable, formatFindings(result.Findings))
-		}
-	})
-
+// name has to learn that what they wrote is read by nothing. The input sites
+// are in TestReservedReadsAreRefusedAsInputs.
+func TestCallDepthIsRefusedAsAPhaseNameOrBinding(t *testing.T) {
 	// The other end of the namespace. A phase named for a reserved read produces
 	// `call-depth.<output>` references, and the engine binds the bare name LAST —
 	// so the reserved number would silently overwrite the phase's whole output

@@ -525,60 +525,38 @@ func TestMaybeGenerateThreadTitleCASesAgainstStoredBytes(t *testing.T) {
 	waitForThreadTitle(t, app, thread.ID, "Padded thread titled")
 }
 
-// TestMaybeGenerateThreadTitleSkipsWhenTitleCustom ensures a thread that has
-// already been renamed (title is NOT the default) is left alone.
-func TestMaybeGenerateThreadTitleSkipsWhenTitleCustom(t *testing.T) {
+// A thread that has already been renamed (title is NOT the default) is left
+// alone, and a blank message never asks the configured text-generation
+// provider to title a no-op message.
+func TestMaybeGenerateThreadTitleSkipsACustomTitleOrBlankMessage(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
+	for name, test := range map[string]struct{ title, message string }{
+		"custom title":  {"Custom user title", "pick me"},
+		"blank message": {threadtitle.Default, "   \n\t"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread("thread-title-skip")
+			thread.Title = test.title
+			thread.Provider = string(provider.Claude)
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread() error = %v", err)
+			}
+			calls := make(chan struct{}, 1)
+			app.generateThreadTitleFn = func(store.Thread, string, []store.Attachment) (string, error) {
+				calls <- struct{}{}
+				return "Regenerated", nil
+			}
 
-	thread := testThread("thread-title-custom")
-	thread.Title = "Custom user title"
-	thread.Provider = string(provider.Claude)
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
+			app.maybeGenerateThreadTitleWithAttachments(thread, test.message, nil, false)
 
-	calls := make(chan struct{}, 1)
-	app.generateThreadTitleFn = func(store.Thread, string, []store.Attachment) (string, error) {
-		calls <- struct{}{}
-		return "Regenerated", nil
-	}
-
-	app.maybeGenerateThreadTitleWithAttachments(thread, "pick me", nil, false)
-
-	select {
-	case <-calls:
-		t.Fatal("generateThreadTitleFn called when title is not default")
-	case <-time.After(150 * time.Millisecond):
-	}
-}
-
-// TestMaybeGenerateThreadTitleSkipsOnBlankContent covers the empty-message
-// guard that prevents the configured text-generation provider from being asked
-// to title a no-op message.
-func TestMaybeGenerateThreadTitleSkipsOnBlankContent(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	thread := testThread("thread-title-blank")
-	thread.Title = threadtitle.Default
-	thread.Provider = string(provider.Claude)
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	calls := make(chan struct{}, 1)
-	app.generateThreadTitleFn = func(store.Thread, string, []store.Attachment) (string, error) {
-		calls <- struct{}{}
-		return "Unexpected", nil
-	}
-
-	app.maybeGenerateThreadTitleWithAttachments(thread, "   \n\t", nil, false)
-
-	select {
-	case <-calls:
-		t.Fatal("generateThreadTitleFn called on blank content")
-	case <-time.After(150 * time.Millisecond):
+			select {
+			case <-calls:
+				t.Fatal("generateThreadTitleFn was called")
+			case <-time.After(150 * time.Millisecond):
+			}
+		})
 	}
 }
 

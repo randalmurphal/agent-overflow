@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,7 +88,7 @@ func TestStartSession_ClaudeCarriesTheAppGuideAndSnapshotOptOut(t *testing.T) {
 	}
 	app.providerBinaries.storeInstalled(string(provider.Claude), providerBinaryVersion{identity: identity, version: "2.1.284"})
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	argv := spawnedClaudeArgv(t, argvPath)
@@ -121,7 +122,7 @@ func TestStartSession_ClaudeCarriesTheAppGuideAndSnapshotOptOut(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"agentGuideEnabled": false}); err != nil {
 		t.Fatalf("disable guide: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	argv = spawnedClaudeArgv(t, argvPath)
@@ -148,7 +149,7 @@ func TestStartSession_ClaudeOmitsTheSnapshotFlagWithoutAKnownVersion(t *testing.
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	argv := spawnedClaudeArgv(t, argvPath)

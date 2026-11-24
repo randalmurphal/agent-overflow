@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/coder/websocket"
 
@@ -28,16 +27,17 @@ import (
 //   - SpeechStalls never answers the response.
 //   - SpeechAnswers answers instead of reading, every time.
 //   - SpeechAnswersOnce answers instead of reading on the first request for
-//     a given text, reads it on the next, and so on alternately.
+//     a given text under a key from Key, reads it on the next, and so on
+//     alternately.
 //   - SpeechFails sends an error event whose message carries a key-shaped
 //     string, which the client must scrub.
 //   - SpeechIncomplete ends the response with status "incomplete".
 //   - SpeechRunsLong sends SpeechRunsLongSeconds of audio, past
 //     openai.MaxSpeechSeconds.
 //
-// RefusedKey is refused at the handshake, as for live transcription. A
-// session opened with SpeechConfigStallsKey is never told its
-// configuration was accepted.
+// A key starting with RefusedKey is refused at the handshake, as for live
+// transcription. A session opened with a key starting with
+// SpeechConfigStallsKey is never told its configuration was accepted.
 const SpeechConfigStallsKey = "sk-fake-speech-config-stalls"
 
 const (
@@ -83,55 +83,6 @@ type SpeechAsk struct {
 	Text  string
 }
 
-type speechLog struct {
-	mu         sync.Mutex
-	asks       []SpeechAsk
-	open       int
-	configured int
-}
-
-// speechLogs maps a key to what sessions opened with it asked for.
-var speechLogs sync.Map
-
-func logFor(key string) *speechLog {
-	found, _ := speechLogs.LoadOrStore(key, &speechLog{})
-	return found.(*speechLog)
-}
-
-// SpeechAsks lists the voice and text every speech session opened with key
-// asked for, in order. Use a key no other test uses.
-func SpeechAsks(key string) []SpeechAsk {
-	log := logFor(key)
-	log.mu.Lock()
-	defer log.mu.Unlock()
-	return append([]SpeechAsk(nil), log.asks...)
-}
-
-// OpenSpeechSessions counts speech sessions opened with key whose
-// connection the fake has not yet seen close.
-func OpenSpeechSessions(key string) int {
-	log := logFor(key)
-	log.mu.Lock()
-	defer log.mu.Unlock()
-	return log.open
-}
-
-// SpeechSessionsConfigured counts the session.update events sessions
-// opened with key sent, accepted or not.
-func SpeechSessionsConfigured(key string) int {
-	log := logFor(key)
-	log.mu.Lock()
-	defer log.mu.Unlock()
-	return log.configured
-}
-
-// answersOnce counts the requests per SpeechAnswersOnce text, so odd ones
-// answer and even ones read.
-var (
-	answersOnceMu sync.Mutex
-	answersOnce   = map[string]int{}
-)
-
 // IsSpeech reports whether req is the speech handshake: the Realtime
 // endpoint with a model and no intent.
 func IsSpeech(req *http.Request) bool {
@@ -154,7 +105,8 @@ func serveSpeech(conn net.Conn) {
 		return
 	}
 	writer := &hijackable{conn: conn, buffered: buffered, header: http.Header{}}
-	if req.Header.Get("Authorization") == "Bearer "+RefusedKey {
+	key := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	if strings.HasPrefix(key, RefusedKey) {
 		http.Error(writer, `{"error":{"message":"Incorrect API key provided: refused."}}`, http.StatusUnauthorized)
 		return
 	}
@@ -167,22 +119,26 @@ func serveSpeech(conn net.Conn) {
 		return
 	}
 	defer func() { _ = ws.CloseNow() }()
-	key := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
-	log := logFor(key)
-	log.mu.Lock()
-	log.open++
-	log.mu.Unlock()
-	defer func() {
-		log.mu.Lock()
-		log.open--
-		log.mu.Unlock()
-	}()
-	(&speechSession{session: session{ws: ws}, log: log, configStalls: key == SpeechConfigStallsKey}).run(context.Background())
+	record := recordOf(key)
+	record.note(func() { record.open++ })
+	defer record.note(func() { record.open-- })
+	(&speechSession{session: session{ws: ws}, record: record, configStalls: strings.HasPrefix(key, SpeechConfigStallsKey)}).run(context.Background())
+}
+
+// note runs change under the record's lock; a session opened with a key
+// Key did not return has no record and notes nothing.
+func (r *keyRecord) note(change func()) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	change()
 }
 
 type speechSession struct {
 	session
-	log          *speechLog
+	record       *keyRecord
 	voice        string
 	configStalls bool
 }
@@ -204,9 +160,7 @@ func (s *speechSession) run(ctx context.Context) {
 		}
 		switch event.Type {
 		case "session.update":
-			s.log.mu.Lock()
-			s.log.configured++
-			s.log.mu.Unlock()
+			s.record.note(func() { s.record.configured++ })
 			voice, problem := checkSpeechSession(event.Session)
 			if problem != "" {
 				s.fail(ctx, "invalid_value", problem)
@@ -229,9 +183,7 @@ func (s *speechSession) run(ctx context.Context) {
 				s.fail(ctx, "invalid_value", problem)
 				continue
 			}
-			s.log.mu.Lock()
-			s.log.asks = append(s.log.asks, SpeechAsk{Voice: s.voice, Text: text})
-			s.log.mu.Unlock()
+			s.record.note(func() { s.record.asks = append(s.record.asks, SpeechAsk{Voice: s.voice, Text: text}) })
 			if strings.Contains(text, SpeechStalls) {
 				// Never answer; return once the client closes.
 				_, _, _ = s.ws.Read(ctx)
@@ -254,10 +206,15 @@ func (s *speechSession) respond(ctx context.Context, text string) {
 	case strings.Contains(text, SpeechAnswers):
 		transcript = SpeechAnswer
 	case strings.Contains(text, SpeechAnswersOnce):
-		answersOnceMu.Lock()
-		answersOnce[text]++
-		odd := answersOnce[text]%2 == 1
-		answersOnceMu.Unlock()
+		if s.record == nil {
+			s.fail(ctx, "server_error", "openaifake: "+SpeechAnswersOnce+" counts its requests under a key from openaifake.Key")
+			return
+		}
+		odd := false
+		s.record.note(func() {
+			s.record.answersOnce[text]++
+			odd = s.record.answersOnce[text]%2 == 1
+		})
 		if odd {
 			transcript = SpeechAnswer
 		}

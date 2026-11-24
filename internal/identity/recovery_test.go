@@ -11,7 +11,7 @@ import (
 )
 
 func TestRecoveryCodesAreMintedShownOnceAndSpentOnce(t *testing.T) {
-	sessions, _, _, owner, device := newFixture(t)
+	sessions, st, _, owner, device := newFixture(t)
 	codes, err := sessions.MintRecoveryCodes(owner.ID)
 	if err != nil {
 		t.Fatalf("MintRecoveryCodes: %v", err)
@@ -32,7 +32,7 @@ func TestRecoveryCodesAreMintedShownOnceAndSpentOnce(t *testing.T) {
 
 	// A code minted works exactly as displayed — the dashes and the case
 	// are presentation, and the hash is over the normalized form.
-	got, err := sessions.ConsumeRecoveryCode(codes[0], device.ID, "127.0.0.1")
+	got, err := sessions.ConsumeRecoveryCode(codes[0], device.ID, "10.0.0.4")
 	if err != nil {
 		t.Fatalf("ConsumeRecoveryCode: %v", err)
 	}
@@ -40,8 +40,30 @@ func TestRecoveryCodesAreMintedShownOnceAndSpentOnce(t *testing.T) {
 		t.Fatalf("code admitted %q, want the owner", got)
 	}
 	// The replay.
-	if _, err := sessions.ConsumeRecoveryCode(codes[0], device.ID, "127.0.0.1"); !errors.Is(err, ErrRecoveryCodeRefused) {
+	if _, err := sessions.ConsumeRecoveryCode(codes[0], device.ID, "10.0.0.4"); !errors.Is(err, ErrRecoveryCodeRefused) {
 		t.Fatalf("replayed code = %v, want ErrRecoveryCodeRefused", err)
+	}
+	// The mint, the spend and the refused replay are each audited.
+	entries, err := st.ListRecentAuthAudit(50)
+	if err != nil {
+		t.Fatalf("ListRecentAuthAudit: %v", err)
+	}
+	audited := map[string]store.AuthAuditEntry{}
+	for _, entry := range entries {
+		audited[entry.Event] = entry
+	}
+	for _, want := range []AuditEvent{
+		AuditRecoveryCodesMinted, AuditRecoveryCodeConsumed, AuditRecoveryCodeRefused,
+	} {
+		if _, ok := audited[string(want)]; !ok {
+			t.Fatalf("no %q entry in the credential log", want)
+		}
+	}
+	if audited[string(AuditRecoveryCodeRefused)].Outcome != store.AuthAuditOutcomeRefused {
+		t.Fatal("a refused code was logged as allowed")
+	}
+	if audited[string(AuditRecoveryCodeConsumed)].Peer != "10.0.0.4" {
+		t.Fatal("consumption was logged without peer attribution")
 	}
 	// A code that never existed answers identically, because the backend
 	// genuinely cannot tell the two apart.
@@ -113,41 +135,6 @@ func TestRecoveryCodeConsumptionHasOneWinner(t *testing.T) {
 	wg.Wait()
 	if got := winners.Load(); got != 1 {
 		t.Fatalf("%d callers spent the same code, want exactly 1", got)
-	}
-}
-
-func TestRecoveryCodeEventsAreAudited(t *testing.T) {
-	sessions, st, _, owner, device := newFixture(t)
-	codes, err := sessions.MintRecoveryCodes(owner.ID)
-	if err != nil {
-		t.Fatalf("MintRecoveryCodes: %v", err)
-	}
-	if _, err := sessions.ConsumeRecoveryCode(codes[0], device.ID, "10.0.0.4"); err != nil {
-		t.Fatalf("ConsumeRecoveryCode: %v", err)
-	}
-	if _, err := sessions.ConsumeRecoveryCode(codes[0], device.ID, "10.0.0.4"); err == nil {
-		t.Fatal("a replay succeeded")
-	}
-	entries, err := st.ListRecentAuthAudit(50)
-	if err != nil {
-		t.Fatalf("ListRecentAuthAudit: %v", err)
-	}
-	seen := map[string]store.AuthAuditEntry{}
-	for _, entry := range entries {
-		seen[entry.Event] = entry
-	}
-	for _, want := range []AuditEvent{
-		AuditRecoveryCodesMinted, AuditRecoveryCodeConsumed, AuditRecoveryCodeRefused,
-	} {
-		if _, ok := seen[string(want)]; !ok {
-			t.Fatalf("no %q entry in the credential log", want)
-		}
-	}
-	if seen[string(AuditRecoveryCodeRefused)].Outcome != store.AuthAuditOutcomeRefused {
-		t.Fatal("a refused code was logged as allowed")
-	}
-	if seen[string(AuditRecoveryCodeConsumed)].Peer != "10.0.0.4" {
-		t.Fatal("consumption was logged without peer attribution")
 	}
 }
 

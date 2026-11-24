@@ -116,6 +116,14 @@ type IsolationConfig struct {
 	// asserts what the readings it sets did can keep the poll from taking
 	// one of its own in between. Zero keeps the product tick.
 	UsagePollInterval time.Duration
+	// ThreadWakeRetryBase replaces threadWakeRetryBase, the first wait
+	// before an undelivered wake is tried again; the ceiling keeps its
+	// product ratio (threadWakeRetryDelay). Zero keeps the product wait.
+	ThreadWakeRetryBase time.Duration
+	// AgentSettledWindow replaces threadAgentSettledWindow, how long a
+	// settled request stays in an Agents listing. Zero keeps the product
+	// window.
+	AgentSettledWindow time.Duration
 	// OmitOwnerOps makes this computer answer agent_owner_op as a build
 	// before owner operations does, an unknown write call, so a paired
 	// spawner's archive or delete names it as running an older version.
@@ -170,7 +178,12 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.agentWakes.floorOverride = config.AgentWakeFloor
 	a.agentWakes.failures.windowOverride = config.AgentWatchFailureWindow
 	a.remoteWatchPoll = config.RemoteWatchPoll
-	a.providerEvents.drainStall = config.ProviderEventDrainStall
+	a.wakeRetryBaseOverride = config.ThreadWakeRetryBase
+	a.agentSettledWindowOverride = config.AgentSettledWindow
+	// Unset keeps what the App has: a test fixture's own budget.
+	if config.ProviderEventDrainStall > 0 {
+		a.providerEvents.drainStall = config.ProviderEventDrainStall
+	}
 	a.mergedPRs.interval = config.MergedPRPollInterval
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network

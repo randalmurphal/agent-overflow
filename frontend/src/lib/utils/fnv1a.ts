@@ -83,11 +83,6 @@ export function fnv1a64(input: string): Fnv1a64 {
   return { hi, lo };
 }
 
-/** 16 lowercase hex characters, the wire form of a 64-bit digest. */
-export function fnv1a64Hex(input: string): string {
-  return formatFnv1a64(fnv1a64(input));
-}
-
 /** Render a folded value as the digest's 16 lowercase hex characters. */
 export function formatFnv1a64(value: Fnv1a64): string {
   return (

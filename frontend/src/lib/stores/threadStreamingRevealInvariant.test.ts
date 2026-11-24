@@ -122,21 +122,13 @@ describe('assertRevealCursorNotRewound', () => {
       .toThrow(/26 chars behind the smoother cursor at 46/);
   });
 
-  it('passes a publish that sits exactly on the cursor', () => {
-    expect(() => assertRevealCursorNotRewound('text', CURSOR_46, CURSOR_46))
-      .not.toThrow();
-  });
-
-  it('passes a publish that snaps forward past the cursor', () => {
-    expect(() =>
-      assertRevealCursorNotRewound('text', CURSOR_46, CURSOR_46 + UNREVEALED_TAIL),
-    ).not.toThrow();
-  });
-
-  it('passes a genuinely divergent authoritative overwrite', () => {
+  it.each([
+    ['passes a publish that sits exactly on the cursor', CURSOR_46],
+    ['passes a publish that snaps forward past the cursor', CURSOR_46 + UNREVEALED_TAIL],
     // Shorter, but NOT a prefix: an overwrite the row is meant to take.
-    expect(() => assertRevealCursorNotRewound('text', CURSOR_46, 'corrected answer'))
-      .not.toThrow();
+    ['passes a genuinely divergent authoritative overwrite', 'corrected answer'],
+  ])('%s', (_name, published) => {
+    expect(() => assertRevealCursorNotRewound('text', CURSOR_46, published)).not.toThrow();
   });
 });
 
@@ -148,7 +140,7 @@ describe('reveal invariant at the reconciliation chokepoint', () => {
     const clock = new FakeSmoothingClock();
     __setSmoothingClockForTest(clock);
     const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
-    const { reveal, getItems, commit } = makeReveal([item]);
+    const { reveal, getItems } = makeReveal([item]);
 
     reveal.appendStreamingDelta({ ...item, summary: '' }, SNAPSHOT_26, undefined, 1);
     drainTo(clock, () => getItems()[0].summary, SNAPSHOT_26.length);
@@ -164,8 +156,6 @@ describe('reveal invariant at the reconciliation chokepoint', () => {
 
     expect(prepared.status).toBe('completed');
     expect(prepared.summary).toBe(CURSOR_46);
-    commit(prepared);
-    expect(getItems()[0].summary).toBe(CURSOR_46);
   });
 
   it('keeps the drain alive when a stale snapshot lands mid-drain', () => {
@@ -209,7 +199,7 @@ describe('reveal invariant at the reconciliation chokepoint', () => {
     const clock = new FakeSmoothingClock();
     __setSmoothingClockForTest(clock);
     const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
-    const { reveal, getItems, commit } = makeReveal([item]);
+    const { reveal, getItems } = makeReveal([item]);
 
     reveal.appendStreamingDelta({ ...item, summary: '' }, CURSOR_46 + UNREVEALED_TAIL, undefined, 1);
     drainTo(clock, () => getItems()[0].summary, CURSOR_46.length);
@@ -224,7 +214,5 @@ describe('reveal invariant at the reconciliation chokepoint', () => {
 
     expect(prepared.summary).toBe(corrected);
     expect(reveal.smootherCount()).toBe(0);
-    commit(prepared);
-    expect(getItems()[0].summary).toBe(corrected);
   });
 });

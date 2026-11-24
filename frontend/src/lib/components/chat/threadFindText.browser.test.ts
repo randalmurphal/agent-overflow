@@ -3,7 +3,7 @@ import { mount, unmount, tick } from 'svelte';
 import '../../../app.css';
 import TimelineLeaf from './TimelineLeaf.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import agentMessages from '../../../../../internal/app/testdata/agent_message_labels.json';
 import { AGENT_MESSAGE_ROW, FIND_CANDIDATE_ROWS, FIND_TEXT_ROWS, FIND_TEXT_WORKSPACE, type FindTextRow } from '../../../test/fixtures/findTextRows';
 import { paneWorkspacePath } from '../../stores/threadPaneShared';
@@ -20,7 +20,6 @@ let host: HTMLDivElement;
 const mounted: ReturnType<typeof mount>[] = [];
 
 beforeEach(() => {
-  resetBindingMocks();
   host = document.createElement('div');
   host.style.width = '720px';
   document.body.append(host);

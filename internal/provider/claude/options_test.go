@@ -2,6 +2,8 @@ package claude
 
 import (
 	"encoding/json"
+	"maps"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -169,62 +171,44 @@ func TestConfigFromOptionsUnsetContextWindowUsesModelDefault(t *testing.T) {
 	}
 }
 
-func TestConfigFromOptionsAutoCompactPercentExtendedTier(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:                   "claude",
-		Model:                      "claude-opus-4-7",
-		ContextWindow:              provider.ClaudeExtendedContextWindow,
-		AutoCompactExtendedPercent: 80,
-	})
-	if cfg.AutoCompactPercent != 80 {
-		t.Fatalf("AutoCompactPercent = %d, want 80 (extended tier)", cfg.AutoCompactPercent)
-	}
-}
-
-func TestConfigFromOptionsAutoCompactPercentStandardTier(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:                   "claude",
-		Model:                      "claude-opus-4-7",
-		ContextWindow:              provider.ClaudeStandardContextWindow,
-		AutoCompactStandardPercent: 50,
-	})
-	if cfg.AutoCompactPercent != 50 {
-		t.Fatalf("AutoCompactPercent = %d, want 50 (standard tier)", cfg.AutoCompactPercent)
-	}
-}
-
+// TestBuildArgsAutoCompactRendersThroughSettingsFlag pins the tier's percent
+// on the Config and the companion CLAUDE_CODE_AUTO_COMPACT_WINDOW value to the
+// thread's RESOLVED window: claude ≥2.1.201 refuses to auto-compact at all
+// unless an explicit auto-compact window resolves, so the pct override alone
+// is a no-op. The extended tier must send 1000000, not the 200k default.
 func TestBuildArgsAutoCompactRendersThroughSettingsFlag(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:                   "claude",
-		Model:                      "claude-opus-4-7",
-		ContextWindow:              provider.ClaudeStandardContextWindow,
-		AutoCompactStandardPercent: 50,
-	})
-	args := buildArgs(cfg, "", "")
-	joined := strings.Join(args, " ")
-	want := `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`
-	if !strings.Contains(joined, want) {
-		t.Fatalf("args missing autocompact-via-flag-settings: got=%v\nwant substring=%q", args, want)
+	tests := []struct {
+		name         string
+		opts         provider.SessionOptions
+		wantPercent  int
+		wantSettings string
+	}{
+		{
+			name:         "standard tier",
+			opts:         provider.SessionOptions{ContextWindow: provider.ClaudeStandardContextWindow, AutoCompactStandardPercent: 50},
+			wantPercent:  50,
+			wantSettings: `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"200000"}}`,
+		},
+		{
+			name:         "extended tier",
+			opts:         provider.SessionOptions{ContextWindow: provider.ClaudeExtendedContextWindow, AutoCompactExtendedPercent: 40},
+			wantPercent:  40,
+			wantSettings: `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"1000000"}}`,
+		},
 	}
-}
-
-// TestBuildArgsAutoCompactSendsWindowForExtendedTier pins the companion
-// CLAUDE_CODE_AUTO_COMPACT_WINDOW value to the thread's RESOLVED window:
-// claude ≥2.1.201 refuses to auto-compact at all unless an explicit
-// auto-compact window resolves, so the pct override alone is a no-op.
-// The extended tier must send 1000000, not the 200k default.
-func TestBuildArgsAutoCompactSendsWindowForExtendedTier(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:                   "claude",
-		Model:                      "claude-opus-4-7",
-		ContextWindow:              provider.ClaudeExtendedContextWindow,
-		AutoCompactExtendedPercent: 40,
-	})
-	args := buildArgs(cfg, "", "")
-	joined := strings.Join(args, " ")
-	want := `--settings {"crossSessionInbound":"refuse","env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40","CLAUDE_CODE_AUTO_COMPACT_WINDOW":"1000000"}}`
-	if !strings.Contains(joined, want) {
-		t.Fatalf("args missing extended-tier autocompact settings: got=%v\nwant substring=%q", args, want)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.opts.Provider = "claude"
+			tc.opts.Model = "claude-opus-4-7"
+			cfg := ConfigFromOptions(tc.opts)
+			if cfg.AutoCompactPercent != tc.wantPercent {
+				t.Fatalf("AutoCompactPercent = %d, want %d", cfg.AutoCompactPercent, tc.wantPercent)
+			}
+			args := buildArgs(cfg, "", "")
+			if !strings.Contains(strings.Join(args, " "), tc.wantSettings) {
+				t.Fatalf("args missing autocompact settings: got=%v\nwant substring=%q", args, tc.wantSettings)
+			}
+		})
 	}
 }
 
@@ -326,9 +310,9 @@ func TestCrossSessionOptionsRenderGateNameAndPolicy(t *testing.T) {
 		if !strings.Contains(joined, "--name AO Thread One") {
 			t.Fatalf("policy %q: missing --name: %s", policy, joined)
 		}
-		env := withClaudeCrossSessionEnv(nil, cfg)
-		if env[claudeHarborKiteEnv] != "1" {
-			t.Fatalf("policy %q: gate variable = %q, want \"1\"", policy, env[claudeHarborKiteEnv])
+		env := withClaudeCrossSessionEnv(provider.EnvInput{}, cfg)
+		if env.Pins[provider.ClaudeCrossSessionGateEnv] != "1" {
+			t.Fatalf("policy %q: gate variable = %q, want \"1\"", policy, env.Pins[provider.ClaudeCrossSessionGateEnv])
 		}
 	}
 }
@@ -353,8 +337,8 @@ func TestCrossSessionOptionsDisabledEmitOnlyTheRefusal(t *testing.T) {
 	if strings.Contains(joined, "--name") {
 		t.Fatalf("disabled cross-session rendered --name: %s", joined)
 	}
-	if env := withClaudeCrossSessionEnv(map[string]string{"KEEP": "1"}, cfg); env[claudeHarborKiteEnv] != "" {
-		t.Fatalf("disabled cross-session set the gate variable: %v", env)
+	if env := withClaudeCrossSessionEnv(provider.EnvInput{Custom: map[string]string{"KEEP": "1"}}, cfg); env.Pins != nil {
+		t.Fatalf("disabled cross-session set the gate variable: %+v", env)
 	}
 }
 
@@ -443,70 +427,73 @@ func TestBuildArgsOmitsZeroSubagentLimits(t *testing.T) {
 	}
 }
 
-func TestConfigFromOptionsRuntimeModeFullAccessFlag(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:    "claude",
-		RuntimeMode: provider.RuntimeFullAccess,
-	})
-	want := []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}
-	if !slices.Equal(cfg.PermissionFlags, want) {
-		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, want)
+// TestConfigFromOptionsRuntimeMode pins each tier's launch config. Flags are
+// compared exactly, so a stray --allow-dangerously-skip-permissions on any
+// restricted tier fails here.
+func TestConfigFromOptionsRuntimeMode(t *testing.T) {
+	tests := []struct {
+		mode      provider.RuntimeMode
+		wantFlags []string
+		wantBase  string
+		wantTools []string
+	}{
+		{
+			mode:      provider.RuntimeFullAccess,
+			wantFlags: []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"},
+			wantBase:  "bypassPermissions",
+		},
+		// Approval-required sends no flag at all (nil, not empty).
+		{mode: provider.RuntimeApprovalRequired, wantBase: "default"},
+		{mode: provider.RuntimeAutoAcceptEdits, wantFlags: []string{"--permission-mode", "acceptEdits"}, wantBase: "acceptEdits"},
+		// Auto: `--permission-mode auto` and nothing else.
+		//
+		//   - No `--allow-dangerously-skip-permissions`. Auto is not a bypass;
+		//     the classifier can DENY, and pairing the two would hand the
+		//     session an escape hatch the tier does not promise.
+		//   - No `--disallowedTools`. Auto's reviewer needs to SEE a write to
+		//     rule on it; removing the write tools would replace review with a
+		//     blanket refusal and (per PlanLiveUpdate) force a restart on every
+		//     transition.
+		//
+		// Verified against claude 2.1.219: the CLI echoes
+		// `permissionMode:"auto"` on `system/init` for exactly this argv. See
+		// claudeAutoPermissionMode.
+		{mode: provider.RuntimeAuto, wantFlags: []string{"--permission-mode", "auto"}, wantBase: "auto"},
+		// Read-only: both halves are load-bearing and neither is sufficient
+		// alone:
+		//
+		//   - `--permission-mode dontAsk` turns every would-be prompt into an
+		//     immediate denial, so an unattended turn is refused rather than
+		//     left hanging on a CanUseTool control_request nobody answers.
+		//   - `--disallowedTools Write,Edit,NotebookEdit` removes the write
+		//     tools from the session outright. dontAsk only converts "ask" to
+		//     "deny", so an action a settings source already ALLOWS never
+		//     becomes an ask and would be permitted — a user's
+		//     `permissions.allow: ["Write"]` would otherwise let a read-only
+		//     session write files.
+		//
+		// Verified against claude 2.1.219; transcript in
+		// docs/references/claude-wire.md §"Permission modes for read-only sessions".
+		{
+			mode:      provider.RuntimeReadOnly,
+			wantFlags: []string{"--permission-mode", "dontAsk"},
+			wantBase:  "dontAsk",
+			wantTools: []string{"Write", "Edit", "NotebookEdit"},
+		},
 	}
-	if cfg.BasePermissionMode != "bypassPermissions" {
-		t.Errorf("BasePermissionMode = %q, want bypassPermissions", cfg.BasePermissionMode)
-	}
-}
-
-func TestConfigFromOptionsRuntimeModeApprovalRequiredNoFlag(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:    "claude",
-		RuntimeMode: provider.RuntimeApprovalRequired,
-	})
-	if cfg.PermissionFlags != nil {
-		t.Errorf("PermissionFlags = %v, want nil for approval-required", cfg.PermissionFlags)
-	}
-}
-
-func TestConfigFromOptionsRuntimeModeAutoAcceptEdits(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:    "claude",
-		RuntimeMode: provider.RuntimeAutoAcceptEdits,
-	})
-	want := []string{"--permission-mode", "acceptEdits"}
-	if !slices.Equal(cfg.PermissionFlags, want) {
-		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, want)
-	}
-}
-
-// TestConfigFromOptionsRuntimeModeAuto pins the auto tier's launch config.
-// The flag is the whole mapping: `--permission-mode auto` and nothing else.
-//
-//   - No `--allow-dangerously-skip-permissions`. Auto is not a bypass; the
-//     classifier can DENY, and pairing the two would hand the session an
-//     escape hatch the tier does not promise.
-//   - No `--disallowedTools`. Auto's reviewer needs to SEE a write to rule on
-//     it; removing the write tools would replace review with a blanket refusal
-//     and (per PlanLiveUpdate) force a restart on every transition.
-//
-// Verified against claude 2.1.219: the CLI echoes `permissionMode:"auto"` on
-// `system/init` for exactly this argv. See claudeAutoPermissionMode.
-func TestConfigFromOptionsRuntimeModeAuto(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:    "claude",
-		RuntimeMode: provider.RuntimeAuto,
-	})
-	want := []string{"--permission-mode", "auto"}
-	if !slices.Equal(cfg.PermissionFlags, want) {
-		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, want)
-	}
-	if cfg.BasePermissionMode != "auto" {
-		t.Errorf("BasePermissionMode = %q, want auto", cfg.BasePermissionMode)
-	}
-	if len(cfg.DisallowedTools) != 0 {
-		t.Errorf("DisallowedTools = %v, want none for auto", cfg.DisallowedTools)
-	}
-	if slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions") {
-		t.Error("auto must not carry --allow-dangerously-skip-permissions")
+	for _, tc := range tests {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", RuntimeMode: tc.mode})
+			if !reflect.DeepEqual(cfg.PermissionFlags, tc.wantFlags) {
+				t.Errorf("PermissionFlags = %#v, want %#v", cfg.PermissionFlags, tc.wantFlags)
+			}
+			if cfg.BasePermissionMode != tc.wantBase {
+				t.Errorf("BasePermissionMode = %q, want %q", cfg.BasePermissionMode, tc.wantBase)
+			}
+			if !slices.Equal(cfg.DisallowedTools, tc.wantTools) {
+				t.Errorf("DisallowedTools = %v, want %v", cfg.DisallowedTools, tc.wantTools)
+			}
+		})
 	}
 }
 
@@ -580,39 +567,40 @@ func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 	}
 }
 
-// TestMcpConfigForCLIBackfillsHTTPType pins the contract that lets the
+// TestMcpConfigForCLIBackfillsTransportType pins the contract that lets the
 // app layer share one MCPServer struct between Codex (untagged
 // {"url":...} via inline mcp_servers) and Claude (--mcp-config requires
 // `"type": "http"`). The shared shape is the canonical untagged one;
-// this helper is what makes Claude's CLI accept it.
-func TestMcpConfigForCLIBackfillsHTTPType(t *testing.T) {
-	cfg := Config{
-		Reaper: procutiltest.Reaper(),
-		MCPServers: map[string]any{
-			"browser": map[string]any{
-				"url": "http://127.0.0.1:1234/mcp/thread-A",
-			},
-		},
+// this helper is what makes Claude's CLI accept it. Every other field
+// passes through unchanged, and an explicit type is never clobbered.
+func TestMcpConfigForCLIBackfillsTransportType(t *testing.T) {
+	tests := []struct {
+		name     string
+		server   map[string]any
+		wantType string
+	}{
+		{name: "url backfills http", server: map[string]any{"url": "http://127.0.0.1:1234/mcp/thread-A"}, wantType: "http"},
+		{name: "explicit type preserved", server: map[string]any{"type": "sse", "url": "http://example.com/sse"}, wantType: "sse"},
+		{name: "command backfills stdio", server: map[string]any{"command": "/usr/local/bin/my-mcp", "args": []any{"--flag"}}, wantType: "stdio"},
 	}
-	out, ok := mcpConfigForCLI(cfg)
-	if !ok {
-		t.Fatal("mcpConfigForCLI returned ok=false for non-empty servers")
-	}
-	var payload struct {
-		MCPServers map[string]map[string]any `json:"mcpServers"`
-	}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("unmarshal: %v\nout: %s", err, out)
-	}
-	server := payload.MCPServers["browser"]
-	if server == nil {
-		t.Fatalf("browser server missing from %s", out)
-	}
-	if got := server["type"]; got != "http" {
-		t.Fatalf("server type = %v, want \"http\" — Claude CLI rejects http servers without it (%s)", got, out)
-	}
-	if got := server["url"]; got != "http://127.0.0.1:1234/mcp/thread-A" {
-		t.Fatalf("server url = %v, want unchanged passthrough", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, ok := mcpConfigForCLI(Config{Reaper: procutiltest.Reaper(), MCPServers: map[string]any{"srv": tc.server}})
+			if !ok {
+				t.Fatal("mcpConfigForCLI returned ok=false for non-empty servers")
+			}
+			var payload struct {
+				MCPServers map[string]map[string]any `json:"mcpServers"`
+			}
+			if err := json.Unmarshal([]byte(out), &payload); err != nil {
+				t.Fatalf("unmarshal: %v\nout: %s", err, out)
+			}
+			want := maps.Clone(tc.server)
+			want["type"] = tc.wantType
+			if got := payload.MCPServers["srv"]; !reflect.DeepEqual(got, want) {
+				t.Fatalf("server = %v, want %v (%s)", got, want, out)
+			}
+		})
 	}
 }
 
@@ -639,50 +627,6 @@ func TestBuildArgsCanMergeFirstPartyMCPWithNativeDiscovery(t *testing.T) {
 	}
 }
 
-func TestMcpConfigForCLIPreservesExplicitType(t *testing.T) {
-	cfg := Config{
-		Reaper: procutiltest.Reaper(),
-		MCPServers: map[string]any{
-			"sse-server": map[string]any{
-				"type": "sse",
-				"url":  "http://example.com/sse",
-			},
-		},
-	}
-	out, _ := mcpConfigForCLI(cfg)
-	var payload struct {
-		MCPServers map[string]map[string]any `json:"mcpServers"`
-	}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := payload.MCPServers["sse-server"]["type"]; got != "sse" {
-		t.Fatalf("explicit type clobbered: got %v, want \"sse\"", got)
-	}
-}
-
-func TestMcpConfigForCLIBackfillsStdioType(t *testing.T) {
-	cfg := Config{
-		Reaper: procutiltest.Reaper(),
-		MCPServers: map[string]any{
-			"local": map[string]any{
-				"command": "/usr/local/bin/my-mcp",
-				"args":    []any{"--flag"},
-			},
-		},
-	}
-	out, _ := mcpConfigForCLI(cfg)
-	var payload struct {
-		MCPServers map[string]map[string]any `json:"mcpServers"`
-	}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := payload.MCPServers["local"]["type"]; got != "stdio" {
-		t.Fatalf("stdio backfill missing: got %v, want \"stdio\"", got)
-	}
-}
-
 func TestBuildArgsAutoCompactClampsAbove90(t *testing.T) {
 	// Direct Config construction bypasses ConfigFromOptions's upstream
 	// normalizer so we exercise inlineSettingsForCLI's defensive clamp
@@ -697,43 +641,6 @@ func TestBuildArgsAutoCompactClampsAbove90(t *testing.T) {
 	}
 	if strings.Contains(joined, `"150"`) {
 		t.Fatalf("unclamped 150 leaked into --settings: %v", args)
-	}
-}
-
-// TestConfigFromOptionsRuntimeModeReadOnly pins the verified read-only
-// launch config. Both halves are load-bearing and neither is sufficient
-// alone:
-//
-//   - `--permission-mode dontAsk` turns every would-be prompt into an
-//     immediate denial, so an unattended turn is refused rather than left
-//     hanging on a CanUseTool control_request nobody answers.
-//   - `--disallowedTools Write,Edit,NotebookEdit` removes the write tools
-//     from the session outright. dontAsk only converts "ask" to "deny", so
-//     an action a settings source already ALLOWS never becomes an ask and
-//     would be permitted — a user's `permissions.allow: ["Write"]` would
-//     otherwise let a read-only session write files.
-//
-// Verified against claude 2.1.219; transcript in
-// docs/references/claude-wire.md §"Permission modes for read-only sessions".
-func TestConfigFromOptionsRuntimeModeReadOnly(t *testing.T) {
-	cfg := ConfigFromOptions(provider.SessionOptions{
-		Provider:    "claude",
-		RuntimeMode: provider.RuntimeReadOnly,
-	})
-	wantFlags := []string{"--permission-mode", "dontAsk"}
-	if !slices.Equal(cfg.PermissionFlags, wantFlags) {
-		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, wantFlags)
-	}
-	wantTools := []string{"Write", "Edit", "NotebookEdit"}
-	if !slices.Equal(cfg.DisallowedTools, wantTools) {
-		t.Errorf("DisallowedTools = %v, want %v", cfg.DisallowedTools, wantTools)
-	}
-	if cfg.BasePermissionMode != "dontAsk" {
-		t.Errorf("BasePermissionMode = %q, want dontAsk", cfg.BasePermissionMode)
-	}
-	// The bypass escape hatch must never ride along with a restricted mode.
-	if slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions") {
-		t.Error("read-only must not carry --allow-dangerously-skip-permissions")
 	}
 }
 
@@ -836,37 +743,37 @@ func envLookup(env []string, key string) (string, bool) {
 // `crossSessionInbound: "refuse"` does not cover that; it blocks DELIVERY,
 // not discovery.
 func TestCrossSessionGateIsNotInheritedWhenDisabled(t *testing.T) {
-	t.Setenv(claudeHarborKiteEnv, "1")
-	t.Setenv(claudePeerSessionNameEnv, "someone-elses-name")
+	t.Setenv(provider.ClaudeCrossSessionGateEnv.Name(), "1")
+	t.Setenv(provider.ClaudePeerSessionNameEnv.Name(), "someone-elses-name")
 
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
 	cfg.Reaper = procutiltest.Reaper()
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
+	env := claudeChildEnv(cfg)
 
-	if value, found := envLookup(env, claudeHarborKiteEnv); found {
-		t.Fatalf("%s = %q in the child environment, want it absent — the setting says off", claudeHarborKiteEnv, value)
+	if value, found := envLookup(env, provider.ClaudeCrossSessionGateEnv.Name()); found {
+		t.Fatalf("%s = %q in the child environment, want it absent — the setting says off", provider.ClaudeCrossSessionGateEnv.Name(), value)
 	}
 	// The name is AO's to state, in both directions: an inherited one would
 	// register a thread under a label the app never chose.
-	if value, found := envLookup(env, claudePeerSessionNameEnv); found {
-		t.Fatalf("%s = %q in the child environment, want it absent", claudePeerSessionNameEnv, value)
+	if value, found := envLookup(env, provider.ClaudePeerSessionNameEnv.Name()); found {
+		t.Fatalf("%s = %q in the child environment, want it absent", provider.ClaudePeerSessionNameEnv.Name(), value)
 	}
 }
 
 // The task list is keyed by thread on every Claude spawn: the id travels
 // SessionOptions.ThreadID -> Config.TaskListID -> CLAUDE_CODE_TASK_LIST_ID,
 // and it outranks a caller value because it is the thread's identity, not a
-// preference (provider.ReservedEnvNames).
+// preference (a reserved name in internal/settings/providerenv.go).
 func TestTaskListIDIsPinnedToTheThread(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", ThreadID: "thread-1", Model: "claude-opus-4-7"})
 	cfg.Reaper = procutiltest.Reaper()
 	if cfg.TaskListID != "thread-1" {
 		t.Fatalf("TaskListID = %q, want thread-1", cfg.TaskListID)
 	}
-	cfg.Env = map[string]string{claudeTaskListIDEnvVar: "someone-elses-list", "FOO": "bar"}
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
-	if value, found := envLookup(env, claudeTaskListIDEnvVar); !found || value != "thread-1" {
-		t.Fatalf("%s = %q (present=%v), want thread-1", claudeTaskListIDEnvVar, value, found)
+	cfg.Env = provider.EnvInput{Custom: map[string]string{provider.ClaudeTaskListIDEnv.Name(): "someone-elses-list", "FOO": "bar"}}
+	env := claudeChildEnv(cfg)
+	if value, found := envLookup(env, provider.ClaudeTaskListIDEnv.Name()); !found || value != "thread-1" {
+		t.Fatalf("%s = %q (present=%v), want thread-1", provider.ClaudeTaskListIDEnv.Name(), value, found)
 	}
 	if value, _ := envLookup(env, "FOO"); value != "bar" {
 		t.Fatalf("FOO = %q, want the caller's value untouched", value)
@@ -874,8 +781,8 @@ func TestTaskListIDIsPinnedToTheThread(t *testing.T) {
 
 	// A hand-built Config without an id states nothing, so the CLI keeps its
 	// own session-keyed default rather than an empty directory name.
-	if got := withClaudeTaskListEnv(map[string]string{"FOO": "bar"}, ""); len(got) != 1 || got["FOO"] != "bar" {
-		t.Fatalf("empty id changed the environment: %v", got)
+	if got := withClaudeTaskListEnv(provider.EnvInput{Custom: map[string]string{"FOO": "bar"}}, ""); got.Pins != nil {
+		t.Fatalf("empty id changed the environment: %+v", got)
 	}
 }
 
@@ -883,21 +790,21 @@ func TestTaskListIDIsPinnedToTheThread(t *testing.T) {
 // explicitly rather than relying on what it happened to inherit, so the value
 // is exactly "1" no matter what the host exported.
 func TestCrossSessionGateIsStatedExplicitlyWhenEnabled(t *testing.T) {
-	t.Setenv(claudeHarborKiteEnv, "totally-bogus")
-	t.Setenv(claudePeerSessionNameEnv, "someone-elses-name")
+	t.Setenv(provider.ClaudeCrossSessionGateEnv.Name(), "totally-bogus")
+	t.Setenv(provider.ClaudePeerSessionNameEnv.Name(), "someone-elses-name")
 
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:           "claude",
 		Model:              "claude-opus-4-7",
 		ClaudeCrossSession: provider.ClaudeCrossSession{Enabled: true, Inbound: "accept"},
 	})
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
+	env := claudeChildEnv(cfg)
 
-	if value, found := envLookup(env, claudeHarborKiteEnv); !found || value != "1" {
-		t.Fatalf("%s = %q (present=%v), want \"1\"", claudeHarborKiteEnv, value, found)
+	if value, found := envLookup(env, provider.ClaudeCrossSessionGateEnv.Name()); !found || value != "1" {
+		t.Fatalf("%s = %q (present=%v), want \"1\"", provider.ClaudeCrossSessionGateEnv.Name(), value, found)
 	}
-	if value, found := envLookup(env, claudePeerSessionNameEnv); found {
-		t.Fatalf("%s = %q, want it absent — AO passes the name as --name", claudePeerSessionNameEnv, value)
+	if value, found := envLookup(env, provider.ClaudePeerSessionNameEnv.Name()); found {
+		t.Fatalf("%s = %q, want it absent — AO passes the name as --name", provider.ClaudePeerSessionNameEnv.Name(), value)
 	}
 }
 
@@ -944,14 +851,14 @@ func TestSpawnEnvRaisesTheMCPDescriptionCap(t *testing.T) {
 	}
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", ThreadID: "thread-1", Model: "claude-opus-4-7"})
 	cfg.Reaper = procutiltest.Reaper()
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
-	if value, found := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv); !found || value != want {
-		t.Fatalf("%s = %q (present=%v), want %s", provider.ClaudeMCPDescriptionLengthEnv, value, found, want)
+	env := claudeChildEnv(cfg)
+	if value, found := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv.Name()); !found || value != want {
+		t.Fatalf("%s = %q (present=%v), want %s", provider.ClaudeMCPDescriptionLengthEnv.Name(), value, found, want)
 	}
 
-	cfg.Env = map[string]string{provider.ClaudeMCPDescriptionLengthEnv: "8192"}
-	env = provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
-	if value, _ := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv); value != "8192" {
-		t.Fatalf("%s = %q, want the user's 8192 to outrank AO's default", provider.ClaudeMCPDescriptionLengthEnv, value)
+	cfg.Env = provider.EnvInput{Custom: map[string]string{provider.ClaudeMCPDescriptionLengthEnv.Name(): "8192"}}
+	env = claudeChildEnv(cfg)
+	if value, _ := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv.Name()); value != "8192" {
+		t.Fatalf("%s = %q, want the user's 8192 to outrank AO's default", provider.ClaudeMCPDescriptionLengthEnv.Name(), value)
 	}
 }

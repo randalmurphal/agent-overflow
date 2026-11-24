@@ -9,13 +9,6 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-func TestAuditNestedMailboxMustBeRecognized(t *testing.T) {
-	t.Parallel()
-	_, ok := parseInterAgentMailboxEnvelope("/root/worker/helper", "/root/worker", "Message Type: FINAL_ANSWER\nTask name: /root/worker\nSender: /root/worker/helper\nPayload:\ndone")
-	if !ok {
-		t.Fatal("valid nested child-to-parent delivery rejected")
-	}
-}
 func TestAuditDistinctProviderDeliveryIDsMustRemainDistinct(t *testing.T) {
 	t.Parallel()
 	parse := func(id string) subagentNotification {
@@ -37,7 +30,7 @@ func TestChildRuntimeIgnoresStaleAndDuplicateTurnBoundaries(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
-	s.registerChildOwnership("root-provider-thread", "child", "/root/worker", "spawn")
+	ownChild(t, s, "root-provider-thread", "child", "/root/worker", "spawn")
 	for _, frame := range []string{
 		`{"threadId":"child","turn":{"id":"A"}}`,
 		`{"threadId":"child","turn":{"id":"B"}}`,
@@ -58,8 +51,8 @@ func TestNestedMailboxRoutesToRecipientAndDeduplicatesNativeID(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
-	s.registerChildOwnership("root-provider-thread", "worker", "/root/worker", "spawn-worker")
-	s.registerChildOwnership("worker", "helper", "/root/worker/helper", "spawn-helper")
+	ownChild(t, s, "root-provider-thread", "worker", "/root/worker", "spawn-worker")
+	ownChild(t, s, "worker", "helper", "/root/worker/helper", "spawn-helper")
 	makeParams := func(id, recipient, author string) json.RawMessage {
 		b, err := json.Marshal(map[string]any{"threadId": "worker", "item": map[string]any{"id": id, "type": "agent_message", "author": author, "recipient": recipient, "content": []map[string]string{{"type": "input_text", "text": "Message Type: MESSAGE\nTask name: " + recipient + "\nSender: " + author + "\nPayload:\n"}, {"type": "encrypted_content", "encrypted_content": "secret-ciphertext"}}}})
 		if err != nil {
@@ -87,7 +80,7 @@ func TestChildThreadStatusIsScopedAndPreservesActiveFlags(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(e provider.ProviderEvent) { events = append(events, e) })
-	s.registerChildOwnership("root-provider-thread", "child", "/root/worker", "spawn")
+	ownChild(t, s, "root-provider-thread", "child", "/root/worker", "spawn")
 	s.dispatchNotification("thread/status/changed", json.RawMessage(`{"threadId":"child","status":{"type":"active","activeFlags":["waitingOnApproval"]}}`))
 	if len(events) != 1 || events[0].Kind != provider.EventSubagentStatus || events[0].ItemID != "spawn" || !strings.Contains(string(events[0].Meta), "waitingOnApproval") {
 		t.Fatalf("events=%+v", events)
@@ -133,7 +126,7 @@ func TestRootMailboxTailRetainsUnknownSenderAndRejectsForeignRecipient(t *testin
 	if events[0].ItemID != "" || events[0].ParentToolUseID != "" || events[0].Timestamp.Format(time.RFC3339) != "2026-09-08T10:11:12Z" {
 		t.Fatalf("receipt=%+v", events[0])
 	}
-	s.registerHistoricalChildOwnership("root-provider-thread", "late-child", "/root/unknown", "late-spawn")
+	ownHistoricalChild(t, s, "root-provider-thread", "late-child", "/root/unknown", "late-spawn")
 	if s.emitSubagentNotificationsFromRolloutLine(line) || len(events) != 1 {
 		t.Fatal("late sender ownership duplicated native delivery")
 	}

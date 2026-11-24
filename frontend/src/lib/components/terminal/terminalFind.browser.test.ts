@@ -11,7 +11,7 @@ import type { IBuffer, IBufferLine, IDisposable, IMarker, Terminal } from '@xter
 import { page } from 'vitest/browser';
 import '../../../app.css';
 import { applyThemeClass } from '../../utils/theme';
-import { applyTheme, resetThemeApplyForTest } from '../../theme/themeApply.svelte';
+import { applyTheme } from '../../theme/themeApply.svelte';
 import { buildTerminal, type BuiltTerminal } from './terminalXterm';
 import { getXtermFindColors, getXtermTheme, resetXtermThemeCache } from './terminalTheme';
 import { TERMINAL_FIND_ACTIVE_CLASS, TERMINAL_FIND_MATCH_CLASS } from './terminalFindLayer';
@@ -28,7 +28,6 @@ import {
   closePaneFind,
   getPaneFindProvider,
   openPaneFind,
-  resetPaneFindForTest,
   setPaneFindQuery,
   stepPaneFind,
 } from '../../stores/paneFind.svelte';
@@ -142,8 +141,6 @@ function register(): void {
 beforeEach(() => {
   priorClass = document.documentElement.className;
   resetXtermThemeCache();
-  resetThemeApplyForTest();
-  resetPaneFindForTest();
   applyMode('dark');
 });
 
@@ -152,10 +149,8 @@ afterEach(() => {
   registration = null;
   term.dispose();
   mount.remove();
-  resetPaneFindForTest();
   document.documentElement.className = priorClass;
   resetXtermThemeCache();
-  resetThemeApplyForTest();
 });
 
 describe('terminal find on a real xterm', () => {
@@ -379,12 +374,15 @@ describe('terminal find text on a real xterm', () => {
     return term.buffer.active.length;
   }
 
-  it('matches across a wrap and paints both rows', async () => {
-    await findIn(`${'x'.repeat(78)}needle`, 'needle');
+  it.each([
+    ['matches across a wrap and paints both rows', `${'x'.repeat(78)}needle`, 'needle', { x: 78, width: 2 }, { x: 0, width: 4 }],
+    ['a wide character wrapped to the next row leaves no gap in the text', `${'x'.repeat(79)}漢needle`, 'x漢', { x: 78, width: 1 }, { x: 0, width: 2 }],
+  ])('%s', async (_name, text, query, first, second) => {
+    await findIn(text, query);
     expect(result().count).toBe(1);
     expect(term.buffer.active.getLine(1)?.isWrapped).toBe(true);
-    expect(painted(0, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 78, width: 2 }]);
-    expect(painted(1, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 0, width: 4 }]);
+    expect(painted(0, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([first]);
+    expect(painted(1, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([second]);
   });
 
   it('places matches after wide, combining and emoji characters in their cells', async () => {
@@ -397,14 +395,6 @@ describe('terminal find text on a real xterm', () => {
     await frames();
     expect(result().count).toBe(2);
     expect(painted(3, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 3, width: 4 }]);
-  });
-
-  it('a wide character wrapped to the next row leaves no gap in the text', async () => {
-    await findIn(`${'x'.repeat(79)}漢needle`, 'x漢');
-    expect(term.buffer.active.getLine(1)?.isWrapped).toBe(true);
-    expect(result().count).toBe(1);
-    expect(painted(0, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 78, width: 1 }]);
-    expect(painted(1, TERMINAL_FIND_ACTIVE_CLASS)).toEqual([{ x: 0, width: 2 }]);
   });
 
   it('folds case by the app\'s match rule', async () => {

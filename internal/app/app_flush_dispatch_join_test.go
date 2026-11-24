@@ -145,7 +145,7 @@ func TestDispatchFlush_Claude_JoinsDrainIntoOneMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
@@ -378,7 +378,7 @@ func TestDispatchFlush_Claude_JoinFailureBeforeWriteRequeuesEveryMember(t *testi
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
@@ -468,7 +468,7 @@ func TestDispatchFlush_Claude_RedispatchKeepsInheritedSendIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
@@ -807,7 +807,7 @@ func startReviewDispatchOf(t *testing.T, name string, messages ...reviewMessage)
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(d.thread.ID, session{Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now())})
 	dispatchThroughWorker(app, d.thread.ID, items)
 	d.row = d.messageRow(t)
@@ -884,76 +884,58 @@ func (d reviewDispatch) wantStatus(t *testing.T, app *App, status, when string) 
 	}
 }
 
-// A session death whose composer write fails changes nothing: the composer
-// write, the row's removal and the return of its comments are one write. The
-// message is requeued naming its row, which still holds its comments; the
-// resend retires the row and claims the comments again: the provider sees
-// the text once, with each comment once.
-func TestRequeueAfterAFailedDraftWriteSendsTheReviewCommentsOnce(t *testing.T) {
+// A session death whose composer write fails, or that cannot delete the
+// message's row, changes nothing: the composer write, the row's removal and
+// the return of its comments are one write. The message is requeued naming
+// its row, which still holds its comments; the resend retires the row and
+// claims the comments again: the provider sees the text once, with each
+// comment once.
+func TestRequeueAfterAFailedRestoreSendsTheReviewCommentsOnce(t *testing.T) {
 	t.Parallel()
-	d := startReviewDispatch(t, "requeue-failed-draft-write")
-	execOnStore(t, d.dbPath, `CREATE TRIGGER refuse_draft_insert BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`)
-	execOnStore(t, d.dbPath, `CREATE TRIGGER refuse_draft_update BEFORE UPDATE ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`)
-	requeued := d.app.restoreUnconfirmedQueueOnSessionDeath(d.thread.ID)
-	if len(requeued) != 1 || requeued[0].StaleUserItemID != d.row.ID {
-		t.Fatalf("requeued = %+v, want the message back on the queue naming its row", requeued)
-	}
-	if _, found, err := d.app.store.GetThreadItem(d.thread.ID, d.row.ID); err != nil || !found {
-		t.Fatalf("row after the failed restore: found=%v err=%v, want it kept", found, err)
-	}
-	d.wantStatus(t, d.app, "sent", "while the row holds them")
-	execOnStore(t, d.dbPath, `DROP TRIGGER refuse_draft_insert`)
-	execOnStore(t, d.dbPath, `DROP TRIGGER refuse_draft_update`)
-
-	d.resend(t)
-	d.wantEnvelope(t, 2)
-	waitForCondition(t, "the resend to claim the comments", func() bool {
-		got, err := d.app.store.GetDiffReviewComment(store.ThreadReviewOwner(d.thread.ID), d.drafts[1].ID)
-		return err == nil && got.Status == "sent"
-	})
-	d.wantStatus(t, d.app, "sent", "after the resend")
-	row := d.messageRow(t)
-	for _, draft := range d.drafts {
-		if got := strings.Count(row.Summary, draft.Body); got != 1 {
-			t.Fatalf("resent row renders %q %d times, want once:\n%s", draft.Body, got, row.Summary)
-		}
-	}
-}
-
-// A session death that cannot delete the message's row requeues it with
-// the row still holding its comments. The resend retires the old row and
-// claims again the comments it returns: the provider sees each once.
-func TestRequeueAfterAFailedRowCleanupResolvesItsReviewComments(t *testing.T) {
-	t.Parallel()
-	d := startReviewDispatch(t, "requeue-failed-cleanup")
-	execOnStore(t, d.dbPath, fmt.Sprintf(`CREATE TRIGGER refuse_row_delete BEFORE DELETE ON items WHEN OLD.id = '%s' BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`, d.row.ID))
-	requeued := d.app.restoreUnconfirmedQueueOnSessionDeath(d.thread.ID)
-	if len(requeued) != 1 || requeued[0].StaleUserItemID != d.row.ID {
-		t.Fatalf("requeued = %+v, want the message back on the queue naming its row", requeued)
-	}
-	d.wantStatus(t, d.app, "sent", "while the old row holds them")
-	execOnStore(t, d.dbPath, `DROP TRIGGER refuse_row_delete`)
-
-	d.resend(t)
-	d.wantEnvelope(t, 2)
-	waitForCondition(t, "the resend to replace the old row", func() bool {
-		items, err := d.app.store.ListItems(d.thread.ID)
-		if err != nil {
-			return false
-		}
-		n := 0
-		for _, item := range items {
-			if item.Kind == "user_text" && strings.Contains(item.Summary, reviewDispatchText) {
-				n++
+	for _, failure := range reviewRequeueFailures {
+		t.Run(failure.name, func(t *testing.T) {
+			t.Parallel()
+			d := startReviewDispatch(t, "requeue-failed-restore")
+			undo := failure.inject(t, d)
+			requeued := d.app.restoreUnconfirmedQueueOnSessionDeath(d.thread.ID)
+			if len(requeued) != 1 || requeued[0].StaleUserItemID != d.row.ID {
+				t.Fatalf("requeued = %+v, want the message back on the queue naming its row", requeued)
 			}
-		}
-		return n == 1
-	})
-	d.wantStatus(t, d.app, "sent", "after the resend")
-	if released, err := d.app.store.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 2 {
-		// The resend's claims wait for the provider's confirmation, which
-		// the fake CLI never sends; both belong to the new row.
-		t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want the resend's two claims", released, err)
+			if _, found, err := d.app.store.GetThreadItem(d.thread.ID, d.row.ID); err != nil || !found {
+				t.Fatalf("row after the failed restore: found=%v err=%v, want it kept", found, err)
+			}
+			d.wantStatus(t, d.app, "sent", "while the row holds them")
+			undo()
+
+			d.resend(t)
+			d.wantEnvelope(t, 2)
+			waitForCondition(t, "the resend to replace the old row and claim the comments", func() bool {
+				items, err := d.app.store.ListItems(d.thread.ID)
+				if err != nil {
+					return false
+				}
+				n := 0
+				for _, item := range items {
+					if item.Kind == "user_text" && strings.Contains(item.Summary, reviewDispatchText) {
+						n++
+					}
+				}
+				got, err := d.app.store.GetDiffReviewComment(store.ThreadReviewOwner(d.thread.ID), d.drafts[1].ID)
+				return n == 1 && err == nil && got.Status == "sent"
+			})
+			d.wantStatus(t, d.app, "sent", "after the resend")
+			row := d.messageRow(t)
+			for _, draft := range d.drafts {
+				if got := strings.Count(row.Summary, draft.Body); got != 1 {
+					t.Fatalf("resent row renders %q %d times, want once:\n%s", draft.Body, got, row.Summary)
+				}
+			}
+			if released, err := d.app.store.ReleaseUnsettledDiffReviewClaims(); err != nil || released != 2 {
+				// The resend's claims wait for the provider's confirmation,
+				// which the fake CLI never sends; both belong to the new row.
+				t.Fatalf("ReleaseUnsettledDiffReviewClaims = %d, %v; want the resend's two claims", released, err)
+			}
+		})
 	}
 }
 

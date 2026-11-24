@@ -332,7 +332,7 @@ async function openLiveCut(harness: HarnessApp, page: Page, hold: PagingHold): P
   await expect(scroller.getByText('Earlier answer.', { exact: true }).last()).toBeVisible();
 
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'Cut question', null);
+  await harness.send(threadId, 'Cut question');
   await awaitTurnCompleted(harness, threadId);
   await expectRevealedInOrder(scroller, [LIVE_RETRY_TEXT, ...LIVE_NOTES, LIVE_LAST_TEXT]);
   await expect(scroller.getByText(LIVE_LAST_TEXT, { exact: true })).toBeVisible();
@@ -355,17 +355,11 @@ async function openLiveCut(harness: HarnessApp, page: Page, hold: PagingHold): P
   return { scroller, cutRow, record };
 }
 
-test('a live discarded row keeps its mark after the window cut drops its record', async ({ harness, page }) => {
-  const hold = await holdPaging(page, 1);
-  const { scroller, cutRow, record } = await openLiveCut(harness, page, hold);
-  await expectMarkedAtNewestEdge(scroller, cutRow, record, hold, LIVE_CUT_TEXT);
-  await expect(scroller.getByText(LIVE_RETRY_TEXT, { exact: true })).toBeVisible();
-});
-
-// The order CI once reached by chance: while the newer page is out, the
-// reader reaches the top and an older page starts (held here for good).
-// The newer page extends the other edge, so it still lands on release, and
-// auto-load at the newest edge keeps firing after it.
+// A live discarded row keeps its mark after the window cut drops its
+// record, and in the order CI once reached by chance: while the newer page
+// is out, the reader reaches the top and an older page starts (held here
+// for good). The newer page extends the other edge, so it still lands on
+// release, and auto-load at the newest edge keeps firing after it.
 test('a newer page held while an older page starts still lands, and paging newer continues', async ({ harness, page }) => {
   const hold = await holdPaging(page, 1);
   const { scroller, cutRow, record } = await openLiveCut(harness, page, hold);

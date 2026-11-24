@@ -123,8 +123,8 @@ test('both providers get the seventeen tools and the guide, in every runtime mod
   // is gated on; boot runs it too, but off the critical path, so it is run
   // here before the sessions start rather than raced.
   await harness.rpc('GetProviderStatuses');
-  await harness.rpc('StartSession', claudeThread);
-  await harness.rpc('StartSession', codexThread);
+  await harness.startSession(claudeThread);
+  await harness.startSession(codexThread);
   const [claudeConfig] = await sessionConfigs(harness, 'claude', 1);
   const [codexConfig] = await sessionConfigs(harness, 'codex', 1);
   expect(claudeConfig.mcpServers).toContain(THREAD_TOOLS_SERVER);
@@ -148,7 +148,7 @@ test('both providers get the seventeen tools and the guide, in every runtime mod
   const rows = await harness.rpc<McpRow[]>('ListThreadMcpServers', claudeThread);
   expect(rows).toContainEqual(expect.objectContaining({ name: THREAD_TOOLS_SERVER, disabled: false }));
 
-  await harness.rpc('SendMessage', claudeThread, 'list your thread tools', null);
+  await harness.send(claudeThread, 'list your thread tools');
   const claudeListing = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER });
   expect(claudeListing.isError).toBe(false);
   expect(claudeListing.tools).toEqual(TOOL_NAMES);
@@ -158,7 +158,7 @@ test('both providers get the seventeen tools and the guide, in every runtime mod
   expect(claudeListing.instructions).not.toContain('Other computers');
   expect(claudeListing.instructions).not.toContain('computer_id');
 
-  await harness.rpc('SendMessage', codexThread, 'list your thread tools', null);
+  await harness.send(codexThread, 'list your thread tools');
   const codexListing = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER });
   expect(codexListing.tools).toEqual(TOOL_NAMES);
   // Codex never shows a server's instructions to the model, so the same
@@ -188,8 +188,8 @@ test('the app guide switch is spawn-only and leaves the server guides to their s
   await harness.rpc('GetProviderStatuses');
   try {
     await harness.rpc('UpdateSettings', { agentGuideEnabled: false });
-    await harness.rpc('StartSession', claudeThread);
-    await harness.rpc('StartSession', codexThread);
+    await harness.startSession(claudeThread);
+    await harness.startSession(codexThread);
     const [claudeConfig] = await sessionConfigs(harness, 'claude', 1);
     const [codexConfig] = await sessionConfigs(harness, 'codex', 1);
     expect(claudeConfig.appendSystemPrompt ?? '').toBe('');
@@ -233,19 +233,19 @@ test('the switch removes and restores the tools inside one running session', asy
     }),
   );
 
-  await harness.rpc('StartSession', caller);
+  await harness.startSession(caller);
   const registered = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) => ev.report.kind === 'registered',
   );
 
-  await harness.rpc('SendMessage', caller, 'first look', null);
+  await harness.send(caller, 'first look');
   expect((await harness.awaitMcpTools({ mockId: registered.mockId })).tools).toEqual(TOOL_NAMES);
   await harness.waitForEvent('provider:turn_completed');
 
   try {
     await harness.rpc('UpdateSettings', { threadToolsEnabled: false });
-    await harness.rpc('SendMessage', caller, 'second look', null);
+    await harness.send(caller, 'second look');
     const off = await harness.awaitMcpTools({ mockId: registered.mockId });
     expect(off.isError).toBe(false);
     expect(off.tools).toEqual([]);
@@ -258,7 +258,7 @@ test('the switch removes and restores the tools inside one running session', asy
     await harness.rpc('UpdateSettings', { threadToolsEnabled: true });
   }
 
-  await harness.rpc('SendMessage', caller, 'third look', null);
+  await harness.send(caller, 'third look');
   expect((await harness.awaitMcpTools({ mockId: registered.mockId })).tools).toEqual(TOOL_NAMES);
   await harness.waitForEvent('provider:turn_completed');
 
@@ -305,7 +305,7 @@ test('the composer MCP toggle turns the server off for one conversation', async 
       ],
     }),
   );
-  await harness.rpc('StartSession', caller);
+  await harness.startSession(caller);
 
   await harness.open(page);
   await page.getByText('Composer caller').click();
@@ -325,7 +325,7 @@ test('the composer MCP toggle turns the server off for one conversation', async 
 
   // The session this conversation is already running offers nothing from
   // the server: the endpoint is still wired, and it lists no tools.
-  await harness.rpc('SendMessage', caller, 'look after the toggle', null);
+  await harness.send(caller, 'look after the toggle');
   const off = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER });
   expect(off.isError, off.error).toBe(false);
   expect(off.tools).toEqual([]);
@@ -339,7 +339,7 @@ test('the composer MCP toggle turns the server off for one conversation', async 
     })
     .toBe(false);
 
-  await harness.rpc('SendMessage', caller, 'look once more', null);
+  await harness.send(caller, 'look once more');
   const back = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER });
   expect(back.isError, back.error).toBe(false);
   expect(back.tools).toEqual(TOOL_NAMES);
@@ -405,8 +405,7 @@ test('thread_options renders the catalogs with per-model efforts, and a model th
       ],
     }),
   );
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'what can you spawn?', null);
+  await harness.send(caller, 'what can you spawn?');
 
   // With no paired computer the answer inlines the one computer's fields
   // and says nothing about computers at all.
@@ -492,8 +491,7 @@ test('a self-send and a self-ask are refused by name', async ({ harness }) => {
       ],
     }),
   );
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'talk to yourself', null);
+  await harness.send(caller, 'talk to yourself');
 
   const send = await awaitToolAnswer(harness, { tool: 'thread_send' });
   expect(send.isError).toBe(true);
@@ -563,8 +561,7 @@ test('thread_spawn opens a visible thread, delivers the prompt with its footer a
     }),
   );
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'have another thread audit the launcher', null);
+  await harness.send(caller, 'have another thread audit the launcher');
 
   interface SpawnAnswer {
     token: string;
@@ -652,8 +649,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await setScenario(harness, target.path, plainScenario({
       name: 'defaults-child', provider, texts: ['Done.'],
     }));
-    await harness.rpc('StartSession', caller.threadIds[0]);
-    await harness.rpc('SendMessage', caller.threadIds[0], 'start a reader', null);
+    await harness.send(caller.threadIds[0], 'start a reader');
     const answer = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn' });
     expect(answer.isError, answer.text).toBe(false);
     const child = (await threadRows(harness)).find(row => row.id === answer.value!.thread_id)!;
@@ -749,12 +745,10 @@ test('thread_send queues into a busy thread, thread_reply settles it, and a late
     }),
   );
 
-  await harness.rpc('StartSession', target);
-  await harness.rpc('SendMessage', target, 'start on the first task', null);
+  await harness.send(target, 'start on the first task');
   await harness.waitForEvent('provider:turn_completed');
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'ask the other thread about the stall', null);
+  await harness.send(caller, 'ask the other thread about the stall');
 
   interface SendAnswer {
     token: string;
@@ -873,8 +867,7 @@ test('the read tools find a thread, render its window and read inside one item',
       ],
     }),
   );
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'find out what the tokenizer thread learned', null);
+  await harness.send(caller, 'find out what the tokenizer thread learned');
 
   interface SearchAnswer {
     rows: Array<{ thread_id: string; title: string; item_id?: string; snippet?: string }>;
@@ -1030,8 +1023,7 @@ test('thread_show windows, pages and exports a thread of 38k items', async ({ ha
       ],
     }),
   );
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'read the middle of the sweep thread', null);
+  await harness.send(caller, 'read the middle of the sweep thread');
 
   interface SearchAnswer {
     rows: Array<{ thread_id: string; item_id?: string }>;
@@ -1096,7 +1088,7 @@ test('thread_show windows, pages and exports a thread of 38k items', async ({ ha
   const pages: ShowAnswer[] = [];
   let done = false;
   while (!done) {
-    await harness.rpc('SendMessage', caller, `page ${pages.length + 1} of the sweep thread`, null);
+    await harness.send(caller, `page ${pages.length + 1} of the sweep thread`);
     const answer = await awaitToolAnswer<ShowAnswer>(harness, {
       tool: 'thread_show',
       timeoutMs: 120_000,
@@ -1189,8 +1181,7 @@ test('a multi-megabyte tool output is clipped in the transcript and read in rang
       ],
     }),
   );
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'what did the fuzzer crash on?', null);
+  await harness.send(caller, 'what did the fuzzer crash on?');
 
   interface ShowAnswer {
     transcript?: string;
@@ -1281,8 +1272,7 @@ test('thread_ask answers from a hidden read-only fork that is deleted once it ha
       texts: ['The profiler blames decodeChunk for 68% of the time.'],
     }),
   );
-  await harness.rpc('StartSession', target);
-  await harness.rpc('SendMessage', target, 'profile the import path', null);
+  await harness.send(target, 'profile the import path');
   await harness.waitForEvent('provider:turn_completed');
   const targetThread = await harness.rpc<{ sessionRef: string }>('GetThread', target);
   expect(targetThread.sessionRef).not.toBe('');
@@ -1339,8 +1329,7 @@ test('thread_ask answers from a hidden read-only fork that is deleted once it ha
     }),
   );
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'ask the profiler thread what it found', null);
+  await harness.send(caller, 'ask the profiler thread what it found');
 
   interface AskAnswer {
     token: string;
@@ -1499,8 +1488,7 @@ test('thread_status lists the caller requests, watches a thread and carries a la
     }),
   );
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'ask the other thread where the leak is', null);
+  await harness.send(caller, 'ask the other thread where the leak is');
 
   interface SendAnswer {
     token: string;
@@ -1569,7 +1557,7 @@ test('thread_status lists the caller requests, watches a thread and carries a la
 
   // The late reply: the responder answers a token whose request already
   // settled, and it still reaches the sender.
-  await harness.rpc('SendMessage', target, 'now answer the caller properly', null);
+  await harness.send(target, 'now answer the caller properly');
   interface ReplyAnswer {
     token: string;
     accepted: boolean;
@@ -1653,8 +1641,7 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
       codexResponses: CODEX_STEER_NOT_STEERABLE,
     }),
   );
-  await harness.rpc('StartSession', queuedTarget);
-  await harness.rpc('SendMessage', queuedTarget, 'own work', null);
+  await harness.send(queuedTarget, 'own work');
   const queuedMock = await awaitGate(harness, 'hold-queued', queuedPath);
 
   // The busy thread parks inside the turn the request starts, so the
@@ -1718,8 +1705,7 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
     }),
   );
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'send something we can take back', null);
+  await harness.send(caller, 'send something we can take back');
 
   interface SendAck {
     token: string;
@@ -1749,7 +1735,7 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
     effect: string;
   }
   await awaitTurnCompleted(harness, caller);
-  await harness.rpc('SendMessage', caller, 'take it back', null);
+  await harness.send(caller, 'take it back');
   const byToken = await awaitToolAnswer<CancelAnswer>(harness, { tool: 'thread_cancel' });
   expect(byToken.isError, byToken.text).toBe(false);
   expect(byToken.value!.token).toBe(queuedAck.value!.token);
@@ -1762,7 +1748,7 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
   const queuedDone = awaitTurnCompleted(harness, queuedTarget);
   await advanceGate(harness, queuedMock.mockId, 'hold-queued');
   await queuedDone;
-  const queuedItems = await harness.rpc<Array<{ summary?: string }>>('ListItems', queuedTarget, true);
+  const queuedItems = await harness.items<{ summary?: string }>(queuedTarget, true);
   expect(queuedItems.some((item) => (item.summary ?? '').includes('Own work done.'))).toBe(true);
   expect(queuedItems.some((item) => (item.summary ?? '').includes('queued work nobody wants'))).toBe(false);
 
@@ -1773,7 +1759,7 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
   // The other half: a turn this caller's own message started, stopped by
   // thread id.
   await awaitTurnCompleted(harness, caller);
-  await harness.rpc('SendMessage', caller, 'give the other thread the long job', null);
+  await harness.send(caller, 'give the other thread the long job');
   const busyMock = await awaitGate(harness, 'hold-busy', busyPath);
   expect(busyMock.mockId).not.toBe('');
   const startedAck = await awaitToolAnswer<SendAck>(harness, { tool: 'thread_send' });
@@ -1786,7 +1772,7 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
     (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === busyPath,
   );
   await awaitTurnCompleted(harness, caller);
-  await harness.rpc('SendMessage', caller, 'now stop it', null);
+  await harness.send(caller, 'now stop it');
   const byThread = await awaitToolAnswer<CancelAnswer>(harness, {
     tool: 'thread_cancel',
     timeoutMs: 60_000,
@@ -1797,7 +1783,7 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
   await interrupted;
 
   // The parked turn never reaches its own completion text.
-  const busyItems = await harness.rpc<Array<{ summary?: string }>>('ListItems', busyTarget, true);
+  const busyItems = await harness.items<{ summary?: string }>(busyTarget, true);
   expect(busyItems.some((item) => (item.summary ?? '').includes('Long job done.'))).toBe(false);
 });
 
@@ -1854,8 +1840,7 @@ test('thread_remind wakes the caller later and a pending reminder can be cancell
     }),
   );
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'watch the deploy and remind me', null);
+  await harness.send(caller, 'watch the deploy and remind me');
 
   interface RemindAck {
     token: string;
@@ -1919,7 +1904,7 @@ test('thread_remind wakes the caller later and a pending reminder can be cancell
   // reminder is there, settled, and the cancelled one is gone. The wake's
   // turn has to end first: a composer send into a working thread is refused.
   await awaitTurnCompleted(harness, caller);
-  await harness.rpc('SendMessage', caller, 'what is still outstanding?', null);
+  await harness.send(caller, 'what is still outstanding?');
   const ledger = await awaitToolAnswer<StatusAnswer>(harness, {
     tool: 'thread_status',
     timeoutMs: 60_000,
@@ -2038,8 +2023,7 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
   );
 
   await harness.open(page);
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'tidy up the notes threads', null);
+  await harness.send(caller, 'tidy up the notes threads');
 
   interface UpdateAnswer {
     results: Array<{
@@ -2130,7 +2114,7 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
 
   // Deleting a group ungroups its threads, exactly as the sidebar does.
   await awaitTurnCompleted(harness, caller);
-  await harness.rpc('SendMessage', caller, 'drop the group again', null);
+  await harness.send(caller, 'drop the group again');
   const deleted = await awaitToolAnswer<GroupAnswer>(harness, {
     tool: 'thread_group',
     timeoutMs: 60_000,
@@ -2168,8 +2152,7 @@ for (const provider of ['claude', 'codex'] as const) {
       threadToolsScenario({ name, provider, echoUserMessage: true, turns: [{ text }], afterTurns: 'silent' });
 
     await setScenario(harness, targetPath, reply(`tt-live-archive-target-${provider}`, 'Done for today.'));
-    await harness.rpc('StartSession', target);
-    await harness.rpc('SendMessage', target, 'wrap up', null);
+    await harness.send(target, 'wrap up');
     await awaitTurnCompleted(harness, target);
     const live = await harness.waitForEvent<HarnessMockEvent>(
       'harness:mock',
@@ -2192,8 +2175,7 @@ for (const provider of ['claude', 'codex'] as const) {
         afterTurns: 'silent',
       }),
     );
-    await harness.rpc('StartSession', caller);
-    await harness.rpc('SendMessage', caller, 'archive the finished thread', null);
+    await harness.send(caller, 'archive the finished thread');
     const archived = await awaitToolAnswer<{ results: Array<{ thread_id: string; updated: boolean; error?: string }> }>(
       harness,
       { tool: 'thread_update', cwd: callerPath, timeoutMs: 30_000 },
@@ -2211,7 +2193,7 @@ for (const provider of ['claude', 'codex'] as const) {
 
     await harness.rpc('UnarchiveThread', target);
     await setScenario(harness, targetPath, reply(`tt-live-archive-back-${provider}`, 'Back at it.'));
-    await harness.rpc('SendMessage', target, 'one more thing', null);
+    await harness.send(target, 'one more thing');
     const next = await harness.waitForEvent<HarnessMockEvent>(
       'harness:mock',
       (ev) => ev.cwd === targetPath && ev.report.kind === 'user_input' && (ev.report.input ?? '').includes('one more thing'),
@@ -2258,8 +2240,7 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
   );
   // The fork is cut from a live session, so the source runs one real turn
   // before anything forks it.
-  await harness.rpc('StartSession', source);
-  await harness.rpc('SendMessage', source, 'explain the approach you took', null);
+  await harness.send(source, 'explain the approach you took');
   await awaitTurnCompleted(harness, source);
   expect((await harness.rpc<{ sessionRef: string }>('GetThread', source)).sessionRef).not.toBe('');
 
@@ -2343,8 +2324,7 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
     }),
   );
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'open a thread on its own branch', null);
+  await harness.send(caller, 'open a thread on its own branch');
 
   interface SpawnAnswer {
     token: string;
@@ -2377,7 +2357,7 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
   expect(inWorktree.report.input).toContain('Try the lock-free version');
 
   await awaitTurnCompleted(harness, caller);
-  await harness.rpc('SendMessage', caller, 'now fork the source thread', null);
+  await harness.send(caller, 'now fork the source thread');
   const forkSpawn = await awaitToolAnswer<SpawnAnswer>(harness, {
     tool: 'thread_spawn',
     timeoutMs: 60_000,
@@ -2396,7 +2376,7 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
   expect(forkRow.groupId).toBeTruthy();
   expect(forkRow.groupId).not.toBe(worktreeRow.groupId);
 
-  const items = await harness.rpc<Array<{ summary?: string }>>('ListItems', forked, true);
+  const items = await harness.items<{ summary?: string }>(forked, true);
   expect(items.some((item) => (item.summary ?? '').includes('The original approach used a mutex.'))).toBe(
     true,
   );
@@ -2407,7 +2387,7 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
   // A branch that exists is checked out as it is in a fresh worktree,
   // not cut as a new branch, and the thread runs there.
   await awaitTurnCompleted(harness, caller);
-  await harness.rpc('SendMessage', caller, 'review the existing branch', null);
+  await harness.send(caller, 'review the existing branch');
   const existingSpawn = await awaitToolAnswer<SpawnAnswer>(harness, {
     tool: 'thread_spawn',
     timeoutMs: 60_000,
@@ -2427,7 +2407,7 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
 
   // A branch already checked out runs in the checkout that has it.
   await awaitTurnCompleted(harness, caller);
-  await harness.rpc('SendMessage', caller, 'continue on the experiment branch', null);
+  await harness.send(caller, 'continue on the experiment branch');
   const againSpawn = await awaitToolAnswer<SpawnAnswer>(harness, {
     tool: 'thread_spawn',
     timeoutMs: 60_000,
@@ -2475,8 +2455,7 @@ test('thread_spawn forks a live Codex thread on a process of its own, and the fo
       texts: ['The Codex source answered first.'],
     }),
   );
-  await harness.rpc('StartSession', source);
-  await harness.rpc('SendMessage', source, 'answer once, then stay up', null);
+  await harness.send(source, 'answer once, then stay up');
   await awaitTurnCompleted(harness, source);
   const sourceRef = (await harness.rpc<{ sessionRef: string }>('GetThread', source)).sessionRef;
   expect(sourceRef).not.toBe('');
@@ -2508,8 +2487,7 @@ test('thread_spawn forks a live Codex thread on a process of its own, and the fo
     }),
   );
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'fork the live codex thread', null);
+  await harness.send(caller, 'fork the live codex thread');
   const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, {
     tool: 'thread_spawn',
     timeoutMs: 60_000,
@@ -2530,13 +2508,13 @@ test('thread_spawn forks a live Codex thread on a process of its own, and the fo
   expect(delivered.report.sessionRef).toMatch(new RegExp(`^${sourceRef}-fork-\\d+-[0-9a-f]{4}$`));
   const forkRow = (await threadRows(harness)).find((row) => row.id === forked)!;
   expect(forkRow.forkedFromThreadId).toBe(source);
-  const items = await harness.rpc<Array<{ kind: string; summary?: string }>>('ListItems', forked, true);
+  const items = await harness.items<{ kind: string; summary?: string }>(forked, true);
   expect(items.filter((item) => item.kind === 'error').map((item) => item.summary)).toEqual([]);
   expect(items.some((item) => (item.summary ?? '').includes('The Codex source answered first.'))).toBe(true);
 
   // The source kept its session and its thread: a later message still
   // runs there, on the same Codex thread id.
-  await harness.rpc('SendMessage', source, 'and again', null);
+  await harness.send(source, 'and again');
   const again = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) =>
@@ -2677,8 +2655,7 @@ test('a wait ends as blocked when the target stops to ask the user', async ({ ha
     request?: { requestId: string; threadId: string };
   }>('provider:approval', (ev) => ev.action === 'request' && ev.request?.threadId === target);
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'have the other thread write the note', null);
+  await harness.send(caller, 'have the other thread write the note');
 
   interface SendAck {
     token: string;
@@ -2711,7 +2688,7 @@ test('a wait ends as blocked when the target stops to ask the user', async ({ ha
     decision: 'allow',
   });
   const held = await awaitGate(harness, 'hold-write', targetPath);
-  await harness.rpc('SendMessage', caller, 'watch it until it is done', null);
+  await harness.send(caller, 'watch it until it is done');
   await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) =>
@@ -2762,8 +2739,7 @@ test('a backgrounded ask arrives as a message and thread_status returns the same
       texts: ['The retry budget is three attempts.'],
     }),
   );
-  await harness.rpc('StartSession', target);
-  await harness.rpc('SendMessage', target, 'look at the retry budget', null);
+  await harness.send(target, 'look at the retry budget');
   await awaitTurnCompleted(harness, target);
 
   // The fork holds its answer past the caller's wait, so the ask
@@ -2827,8 +2803,7 @@ test('a backgrounded ask arrives as a message and thread_status returns the same
     }),
   );
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'ask the other thread about the retry budget', null);
+  await harness.send(caller, 'ask the other thread about the retry budget');
 
   interface AskAck {
     token: string;
@@ -2856,7 +2831,7 @@ test('a backgrounded ask arrives as a message and thread_status returns the same
   // reaches the thread as a message of its own, attributed to the thread
   // that answered, without the caller having asked for it again.
   const findWakeRow = async () =>
-    (await harness.rpc<TimelineItem[]>('ListItems', caller, true)).find(
+    (await harness.items<TimelineItem>(caller, true)).find(
       (item) => item.kind === 'user_text' && (item.meta ?? '').includes(wakeSendId),
     );
   // A turn boundary plus the queued write behind it is past expect's 10s
@@ -2897,7 +2872,7 @@ test('a backgrounded ask arrives as a message and thread_status returns the same
   // The wake's own turn runs to its end, so the thread is left idle.
   await expect
     .poll(async () =>
-      (await harness.rpc<TimelineItem[]>('ListItems', caller, true)).some((item) =>
+      (await harness.items<TimelineItem>(caller, true)).some((item) =>
         (item.summary ?? '').includes('Read the wake message as well.'),
       ),
       { timeout: 30_000 },
@@ -3011,15 +2986,13 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
     }),
   );
 
-  await harness.rpc('StartSession', target);
-  await harness.rpc('SendMessage', target, 'start on the first task', null);
+  await harness.send(target, 'start on the first task');
   const targetMock = await awaitGate(harness, 'hold-target', targetPath);
 
   // A person is half-way through a message in that thread's composer.
   await harness.rpc('SaveDraft', target, draft, [], [], null);
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'tell the busy thread about the crash report', null);
+  await harness.send(caller, 'tell the busy thread about the crash report');
 
   interface SendAck {
     token: string;
@@ -3041,7 +3014,7 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
     kind: string;
     summary?: string;
   }
-  const targetItems = async () => await harness.rpc<TimelineItem[]>('ListItems', target, true);
+  const targetItems = async () => await harness.items<TimelineItem>(target, true);
   const landedRequest = async () =>
     (await targetItems()).find((item) => (item.summary ?? '').includes('look at the crash report too'));
   // The request takes the queued path into a thread that is mid-turn: the
@@ -3088,7 +3061,7 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
   // The wake's own turn runs to its end, so both threads are left idle.
   await expect
     .poll(async () =>
-      (await harness.rpc<TimelineItem[]>('ListItems', caller, true)).some((item) =>
+      (await harness.items<TimelineItem>(caller, true)).some((item) =>
         (item.summary ?? '').includes('Read the answer when it arrived.'),
       ),
       { timeout: 30_000 },
@@ -3177,12 +3150,10 @@ for (const provider of ['claude', 'codex'] as const) {
       }),
     );
 
-    await harness.rpc('StartSession', target);
-    await harness.rpc('SendMessage', target, 'start on the first task', null);
+    await harness.send(target, 'start on the first task');
     const targetMock = await awaitGate(harness, 'hold-target', targetPath);
 
-    await harness.rpc('StartSession', caller);
-    await harness.rpc('SendMessage', caller, 'ask the busy thread about the stall', null);
+    await harness.send(caller, 'ask the busy thread about the stall');
     const send = await awaitToolAnswer<{ token: string; outcome: string }>(harness, {
       tool: 'thread_send',
       timeoutMs: 60_000,
@@ -3224,7 +3195,7 @@ for (const provider of ['claude', 'codex'] as const) {
 
     // Both threads run to rest, and the caller was woken exactly once.
     const targetItems = async () =>
-      await harness.rpc<Array<{ summary?: string }>>('ListItems', target, true);
+      await harness.items<{ summary?: string }>(target, true);
     const lastTargetText = provider === 'claude' ? 'Answered the caller.' : 'Read the request; the stall is in the watchdog.';
     await expect
       .poll(async () => (await targetItems()).some((item) => (item.summary ?? '').includes(lastTargetText)), { timeout: 30_000 })
@@ -3232,7 +3203,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect
       .poll(
         async () =>
-          (await harness.rpc<Array<{ summary?: string }>>('ListItems', caller, true)).some((item) =>
+          (await harness.items<{ summary?: string }>(caller, true)).some((item) =>
             (item.summary ?? '').includes('Read the answer when it arrived.'),
           ),
         { timeout: 30_000 },
@@ -3286,10 +3257,9 @@ test('a write inside the ask fork is refused by its session and the refusal come
       ],
     }),
   );
-  await harness.rpc('StartSession', target);
-  await harness.rpc('SendMessage', target, 'describe the migration', null);
+  await harness.send(target, 'describe the migration');
   await awaitTurnCompleted(harness, target);
-  await harness.rpc('SendMessage', target, 'now run the long job', null);
+  await harness.send(target, 'now run the long job');
   const targetMock = await awaitGate(harness, 'target-busy', targetPath);
 
   // The fork tries to write, is refused before any prompt (read-only
@@ -3393,8 +3363,7 @@ test('a write inside the ask fork is refused by its session and the refusal come
     }),
   );
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'ask the migration thread about rollback', null);
+  await harness.send(caller, 'ask the migration thread about rollback');
 
   const forkMock = await awaitGate(harness, 'fork-refused', targetPath);
 
@@ -3414,7 +3383,7 @@ test('a write inside the ask fork is refused by its session and the refusal come
   }
   await expect
     .poll(async () => {
-      const items = await harness.rpc<TimelineItem[]>('ListItems', fork!.id, true);
+      const items = await harness.items<TimelineItem>(fork!.id, true);
       const notice = items.find((item) => item.id === 'permission-denied:tu-forkwrite');
       if (!notice) return null;
       return {
@@ -3461,7 +3430,7 @@ test('a write inside the ask fork is refused by its session and the refusal come
 
   // Nothing was written, the thread that was asked is still running its
   // own turn, and the fork is gone once its answer was stored.
-  const noteExists = await harness.rpc<TimelineItem[]>('ListItems', target, true);
+  const noteExists = await harness.items<TimelineItem>(target, true);
   expect(
     noteExists.some((item) => (item.summary ?? '').includes('what does the migration do')),
   ).toBe(false);
@@ -3593,8 +3562,7 @@ test('cancelling a request blocked on an approval clears the prompt in the sideb
   await page.getByText('Cancel approval target').click();
   const row = page.locator(`[data-sidebar-thread-id="${target}"]`);
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'have the other thread write the note', null);
+  await harness.send(caller, 'have the other thread write the note');
 
   interface SendAck {
     token: string;
@@ -3628,7 +3596,7 @@ test('cancelling a request blocked on an approval clears the prompt in the sideb
     20_000,
   );
   const targetDone = awaitTurnCompleted(harness, target);
-  await harness.rpc('SendMessage', caller, 'stop it', null);
+  await harness.send(caller, 'stop it');
 
   interface CancelReport {
     token: string;
@@ -3719,9 +3687,8 @@ test('a thread_reply reaches a sender that asked for no wait and no notification
     }),
   );
 
-  await harness.rpc('StartSession', target);
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'ask the other thread about the stall', null);
+  await harness.startSession(target);
+  await harness.send(caller, 'ask the other thread about the stall');
 
   interface SendAnswer {
     token: string;
@@ -3803,8 +3770,7 @@ test('a spawn git refuses says why in its own result and sends no message afterw
     }),
   );
 
-  await harness.rpc('StartSession', caller);
-  await harness.rpc('SendMessage', caller, 'open a review thread on a branch', null);
+  await harness.send(caller, 'open a review thread on a branch');
 
   const spawn = await awaitToolAnswer(harness, { tool: 'thread_spawn' });
   expect(spawn.isError).toBe(true);

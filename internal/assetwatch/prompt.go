@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/fswatch"
 )
 
 const promptDebounce = 250 * time.Millisecond
@@ -19,11 +21,7 @@ type PromptWatcher struct {
 
 // NewPromptWatcher arms a production prompts-directory watcher.
 func NewPromptWatcher(dir string, emit func()) (*PromptWatcher, error) {
-	return newPromptWatcher(dir, promptDebounce, emit)
-}
-
-func newPromptWatcher(dir string, debounce time.Duration, emit func()) (*PromptWatcher, error) {
-	core, err := newWatcher("prompt watcher", dir, debounce, promptFileRelevant, emit)
+	core, err := newWatcher("prompt watcher", dir, promptFileRelevant, fswatch.Config{Debounce: promptDebounce, Emit: emit}, fswatch.FromWatcher)
 	if err != nil {
 		return nil, err
 	}
@@ -35,10 +33,6 @@ func (w *PromptWatcher) Close() error {
 		return nil
 	}
 	return w.core.Close()
-}
-
-func (w *PromptWatcher) relevant(path string) bool {
-	return w != nil && w.core != nil && relevantInDir(w.core.dir, path, promptFileRelevant)
 }
 
 // promptFileRelevant admits prompt texts. A .md file no entry names is

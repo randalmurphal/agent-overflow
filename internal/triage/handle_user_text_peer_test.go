@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claude"
 )
 
 // A message another Claude session sent to this one reaches the same
@@ -142,24 +141,5 @@ func TestHandleUserText_PeerMessage_IsIdempotentAcrossReplay(t *testing.T) {
 	}
 	if peerRows != 1 {
 		t.Fatalf("got %d peer rows across two Handle calls, want 1", peerRows)
-	}
-}
-
-// The origin vocabulary is duplicated across the provider boundary on
-// purpose — triage is provider-agnostic by contract and may not reach
-// into a provider package for a term — so the two definitions are pinned
-// against each other here rather than left to drift. The frontend
-// branches on this exact string.
-func TestPeerMessageOriginMatchesTheProviderConstant(t *testing.T) {
-	if crossSessionMessageOrigin != claude.PeerTurnOrigin {
-		t.Fatalf("triage origin %q != claude.PeerTurnOrigin %q", crossSessionMessageOrigin, claude.PeerTurnOrigin)
-	}
-}
-
-// Same pin for the scheduled-turn origin: the frontend badges a row by
-// this exact string.
-func TestScheduledTurnOriginMatchesTheProviderConstant(t *testing.T) {
-	if scheduledTurnOrigin != claude.ScheduledTurnOrigin {
-		t.Fatalf("triage origin %q != claude.ScheduledTurnOrigin %q", scheduledTurnOrigin, claude.ScheduledTurnOrigin)
 	}
 }

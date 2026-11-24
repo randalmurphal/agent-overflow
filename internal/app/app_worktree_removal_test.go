@@ -198,20 +198,20 @@ func TestWorktreeRemovalMovesTheRowBeforeTheSessionStops(t *testing.T) {
 	}
 }
 
-// GitRemoveWorktree returns its own thread's row and every sibling's.
-func TestGitRemoveWorktreeReturnsEveryMovedRow(t *testing.T) {
+// Removing a thread's worktree returns its own row and every sibling's.
+func TestRemoveThreadWorktreeReturnsEveryMovedRow(t *testing.T) {
 	t.Parallel()
 	f := newWatchFixture(t)
 	owner := f.thread(t, "thread-git-remove-owner", f.repo, "main")
-	worktree, err := f.app.GitCreateWorktree(owner.ID, "feature/git-remove-rows")
+	worktree, err := worktreePathOf(f.app.PrepareThreadWorktree(owner.ID, "", "feature/git-remove-rows", false))
 	if err != nil {
-		t.Fatalf("GitCreateWorktree: %v", err)
+		t.Fatalf("PrepareThreadWorktree: %v", err)
 	}
 	sibling := f.thread(t, "thread-git-remove-sibling", worktree, "feature/git-remove-rows")
 
-	removal, err := f.app.GitRemoveWorktree(owner.ID)
+	removal, err := f.app.RemoveOtherWorktree(attachedWorktreeRemoval(t, f.app, owner.ID))
 	if err != nil {
-		t.Fatalf("GitRemoveWorktree: %v", err)
+		t.Fatalf("RemoveOtherWorktree: %v", err)
 	}
 	var ids []string
 	for _, row := range removal.Reattached {

@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { pngHeader } from '../../test/pngHeader';
 import {
-  __resetCustomSpinnersForTest,
   ensureCustomSpinners,
   peekCustomSpinners,
 } from './spinners.svelte';
@@ -27,8 +26,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetCustomSpinnersForTest();
-  resetBindingMocks();
   vi.unstubAllGlobals();
 });
 

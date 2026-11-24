@@ -16,8 +16,6 @@
 // test can register a source without importing the review tree.
 export const FORGE_ATTACHMENT_SOURCE_CONTEXT = 'agent-overflow:forge-attachment-source';
 
-export type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
-
 /** What `getContext(FORGE_ATTACHMENT_SOURCE_CONTEXT)` answers. */
 export type ForgeAttachmentSourceReader = () =>
   | import('../../../utils/forgeAttachments').ForgeAttachmentSource

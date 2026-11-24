@@ -1,13 +1,17 @@
 package codexconfig
 
 import (
-	"github.com/BurntSushi/toml"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 func newStoreWithFile(t *testing.T, body string) *Store {
@@ -126,27 +130,34 @@ env.B = "2"
 	}
 }
 
-func TestConcurrentWriteDetected(t *testing.T) {
+// Codex rewrites the file while a mutation is between its read and its
+// write. modify, which every mutation goes through, must refuse to write
+// over that version, read again and run the mutation once more, so both
+// writes survive.
+func TestModifyRetriesOverAWriteMadeSinceItsRead(t *testing.T) {
 	store := newStoreWithFile(t, "[mcp_servers.foo]\ncommand = \"/bin/foo\"\n")
-	snap, err := store.load()
+	calls := 0
+	err := store.modify(func(data []byte) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			if err := os.WriteFile(store.path, []byte("[mcp_servers.foo]\ncommand = \"/bin/foo\"\n[notice]\nfoo = true\n"), 0o600); err != nil {
+				t.Fatalf("outside write: %v", err)
+			}
+		}
+		return append(data, []byte("[mine]\nbar = true\n")...), nil
+	})
 	if err != nil {
-		t.Fatalf("load: %v", err)
+		t.Fatalf("modify: %v", err)
 	}
-	// External writer mutates the file out-of-band.
-	if err := os.WriteFile(store.path, []byte("[mcp_servers.foo]\ncommand = \"/bin/foo\"\n[notice]\nfoo = true\n"), 0o600); err != nil {
-		t.Fatalf("external write: %v", err)
+	if calls != 2 {
+		t.Fatalf("the mutation ran %d times, want once more after the outside write", calls)
 	}
-	// Bump mtime so the stat detects the change.
-	mt := snap.stat.ModTime().Add(2 * 1000 * 1000 * 1000)
-	if err := os.Chtimes(store.path, mt, mt); err != nil {
-		t.Fatalf("chtimes: %v", err)
-	}
-	ok, err := writeIfUnchanged(store.path, []byte("x"), snap.stat)
+	raw, err := os.ReadFile(store.path)
 	if err != nil {
-		t.Fatalf("writeIfUnchanged: %v", err)
+		t.Fatal(err)
 	}
-	if ok {
-		t.Fatalf("write should have been refused on stale snapshot")
+	if !strings.Contains(string(raw), "[notice]") || !strings.Contains(string(raw), "[mine]") {
+		t.Fatalf("file = %s, want the outside write and the mutation both kept", raw)
 	}
 }
 
@@ -164,11 +175,8 @@ enabled = false
 	}
 }
 
+// ListServers sorts by name: the file lists the servers out of order.
 func TestSortedNamesStable(t *testing.T) {
-	// Defensive: sort behaviour can drift across Go versions when
-	// values include equal-precedence strings. Codex names are
-	// distinct in our package — just verify the sort path is
-	// stable order for the public list method.
 	store := newStoreWithFile(t, `[mcp_servers.beta]
 command = "/b"
 
@@ -183,11 +191,6 @@ command = "/c"
 	want := []string{"alpha", "beta", "charlie"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("order = %v, want %v", names, want)
-	}
-	// Reverse-sanity: confirm sort.Strings agrees.
-	sort.Strings(names)
-	if !reflect.DeepEqual(names, want) {
-		t.Errorf("post-sort order = %v, want %v", names, want)
 	}
 }
 
@@ -283,5 +286,33 @@ enabled = "false"
 	}
 	if string(again) != want {
 		t.Fatal("repeated enable changed the configuration")
+	}
+}
+
+// A write that committed with its directory sync failed is done: modify
+// succeeds with the mutation in place and logs the sync's failure.
+func TestModifyTreatsAWriteWhoseDirectorySyncFailedAsDone(t *testing.T) {
+	store := newStoreWithFile(t, "model = \"x\"\n")
+	failure := errors.New("injected sync failure")
+	store.writeIfUnchanged = func(path string, data []byte, before os.FileInfo) (bool, error) {
+		committed, err := atomicfile.WriteIfUnchanged(path, data, before)
+		if !committed || err != nil {
+			t.Errorf("the real write = %v, %v", committed, err)
+		}
+		return true, failure
+	}
+	var logged strings.Builder
+	store.logf = func(format string, args ...any) { fmt.Fprintf(&logged, format, args...) }
+
+	if err := store.modify(func(data []byte) ([]byte, error) {
+		return append(data, []byte("[mine]\nbar = true\n")...), nil
+	}); err != nil {
+		t.Fatalf("modify = %v, want the committed write reported done", err)
+	}
+	if raw, _ := os.ReadFile(store.path); !strings.Contains(string(raw), `[mine]`) {
+		t.Fatalf("file = %s, want the mutation written", raw)
+	}
+	if !strings.Contains(logged.String(), "codexconfig: injected sync failure") {
+		t.Fatalf("logged %q, want the sync's failure", logged.String())
 	}
 }

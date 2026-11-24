@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { tick } from 'svelte';
 import {
-  __resetBackgroundTaskOutputForTest,
   applyBackgroundTaskOutputFrame,
   attachBackgroundTaskOutput,
   backgroundTaskOutputKeys,
@@ -12,7 +11,7 @@ import { applyBackgroundTaskOutputEvent } from './eventsBackgroundTaskOutput';
 import { applyTransportGap } from './eventsTransportGap';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { noteThread } from '../transport/entityIndex';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import type { BackgroundTaskOutputEvent } from '../types/events';
 
@@ -40,8 +39,6 @@ function frame(overrides: Partial<BackgroundTaskOutputEvent>): BackgroundTaskOut
 }
 
 beforeEach(() => {
-  __resetBackgroundTaskOutputForTest();
-  __resetEntityIndexForTest();
   noteThread(THREAD, HOME_BACKEND);
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
 });
@@ -233,46 +230,32 @@ describe('backgroundTaskOutput store', () => {
     await flush();
   });
 
-  it('re-acquires the watch when more frames landed before the reply than it holds', async () => {
+  it.each([
+    {
+      when: 'more frames landed before the reply than it holds',
+      held: Array.from({ length: 600 }, (_, i) => [i + 1, `${i + 1}\n`] as const),
+      seed: 'line 1\n', reread: { seq: 700, data: 'all of it\n' },
+    },
+    { when: 'the held frames skip a seq', held: [[1, 'b\n'], [3, 'd\n']] as const, seed: 'a\n', reread: { seq: 3, data: 'a\nb\nc\n' } },
+  ])('re-acquires the watch when $when', async ({ held, seed, reread }) => {
     let resolveWatch: (value: unknown) => void = () => {};
     let calls = 0;
     const watch = setBindingMock('WatchBackgroundTaskOutput', () => new Promise((resolve) => {
       calls += 1;
       if (calls === 1) resolveWatch = resolve;
-      else resolve(snapshot({ watchId: `w-${calls}`, seq: 700, data: 'all of it\n' }));
+      else resolve(snapshot({ watchId: `w-${calls}`, ...reread }));
     }));
     setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
     const attachment = attachBackgroundTaskOutput(THREAD, LAUNCH);
     await flush();
-    for (let seq = 1; seq <= 600; seq += 1) {
-      applyBackgroundTaskOutputEvent(frame({ seq, append: `${seq}\n` }), { backendId: '' });
+    for (const [seq, append] of held) {
+      applyBackgroundTaskOutputEvent(frame({ seq, append }), { backendId: '' });
     }
-    resolveWatch(snapshot());
+    resolveWatch(snapshot({ data: seed }));
     await flush();
     expect(watch).toHaveBeenCalledTimes(2);
-    expect(attachment.current?.text).toBe('all of it\n');
-    expect(attachment.current?.seq).toBe(700);
-    attachment.release();
-    await flush();
-  });
-
-  it('re-acquires the watch when the held frames skip a seq', async () => {
-    let resolveWatch: (value: unknown) => void = () => {};
-    let calls = 0;
-    const watch = setBindingMock('WatchBackgroundTaskOutput', () => new Promise((resolve) => {
-      calls += 1;
-      if (calls === 1) resolveWatch = resolve;
-      else resolve(snapshot({ watchId: `w-${calls}`, seq: 3, data: 'a\nb\nc\n' }));
-    }));
-    setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
-    const attachment = attachBackgroundTaskOutput(THREAD, LAUNCH);
-    await flush();
-    applyBackgroundTaskOutputEvent(frame({ seq: 1, append: 'b\n' }), { backendId: '' });
-    applyBackgroundTaskOutputEvent(frame({ seq: 3, append: 'd\n' }), { backendId: '' });
-    resolveWatch(snapshot({ data: 'a\n' }));
-    await flush();
-    expect(watch).toHaveBeenCalledTimes(2);
-    expect(attachment.current?.text).toBe('a\nb\nc\n');
+    expect(attachment.current?.text).toBe(reread.data);
+    expect(attachment.current?.seq).toBe(reread.seq);
     attachment.release();
     await flush();
   });

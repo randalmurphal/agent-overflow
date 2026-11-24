@@ -1,11 +1,10 @@
 import { flushSync } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   composerPickerSelectionLabel,
   isAnyComposerPickerOpen,
   registerComposerPicker,
   registerComposerPickerFallbackAnchor,
-  resetComposerPickerRegistryForTest,
   resolvePickerAnchor,
   toggleComposerPicker,
   type ComposerPickerHandle,
@@ -38,8 +37,6 @@ function makeHandle(): {
 }
 
 describe('composerPickerRegistry', () => {
-  beforeEach(() => resetComposerPickerRegistryForTest());
-  afterEach(() => resetComposerPickerRegistryForTest());
 
   it('reacts to selection, registration, and cleanup without leaking across panes', () => {
     let label = $state('High');
@@ -136,21 +133,16 @@ describe('composerPickerRegistry', () => {
       const b = makeHandle();
       const cleanupA = registerComposerPicker('pane-main', 'model', a.handle);
       registerComposerPicker('pane-main', 'model', b.handle);
+      // Re-registering the same key overwrites the previous handle.
+      toggleComposerPicker('pane-main', 'model');
+      expect(b.open).toHaveBeenCalledTimes(1);
+      expect(a.open).not.toHaveBeenCalled();
       cleanupA();
-      // B should still be the active handle.
-      toggleComposerPicker('pane-main', 'model');
-      expect(b.open).toHaveBeenCalledTimes(1);
+      // B should still be the active handle: the toggle closes it.
+      expect(toggleComposerPicker('pane-main', 'model')).toBe(true);
+      expect(b.close).toHaveBeenCalledTimes(1);
       expect(a.open).not.toHaveBeenCalled();
-    });
-
-    it('re-registering the same key overwrites the previous handle', () => {
-      const a = makeHandle();
-      const b = makeHandle();
-      registerComposerPicker('pane-main', 'model', a.handle);
-      registerComposerPicker('pane-main', 'model', b.handle);
-      toggleComposerPicker('pane-main', 'model');
-      expect(b.open).toHaveBeenCalledTimes(1);
-      expect(a.open).not.toHaveBeenCalled();
+      expect(a.close).not.toHaveBeenCalled();
     });
   });
 
@@ -184,7 +176,6 @@ describe('composerPickerRegistry', () => {
 // trigger, which has no geometry: it hangs from the roll-up instead.
 describe('resolvePickerAnchor', () => {
   afterEach(() => {
-    resetComposerPickerRegistryForTest();
     document.body.innerHTML = '';
   });
 

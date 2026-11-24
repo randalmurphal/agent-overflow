@@ -9,8 +9,7 @@ import { scanReviewFind, type ReviewFindContent } from '../../lib/utils/reviewFi
 export function shownOf(content: ReviewFindContent): ReviewFindShown {
   return {
     files: content.files,
-    drafts: content.drafts,
-    prThreads: content.prThreads,
+    comments: content.comments,
     commentRuns: (body, rowKey) => content.commentText(body, rowKey),
     editing: content.editing ?? new Set(),
     foldLines: content.foldLines,

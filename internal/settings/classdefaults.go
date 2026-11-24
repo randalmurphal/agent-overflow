@@ -3,7 +3,6 @@ package settings
 import (
 	"encoding/json"
 	"log"
-	"maps"
 	"slices"
 	"sync"
 )
@@ -31,8 +30,7 @@ import (
 //
 // So the CALLER converts. internal/app already holds both packages, and
 // TestSettingsDeviceClassesMirrorTheIdentityVocabulary there fails in both
-// directions on drift, which is the same shape as the provider deny-list's
-// root-package cross-check.
+// directions on drift.
 type DeviceClass string
 
 const (
@@ -123,17 +121,4 @@ var classRows = sync.OnceValue(func() map[DeviceClass]map[string]string {
 // reads, and every caller in this package goes through it.
 func classOverrides(class DeviceClass) map[string]string {
 	return classRows()[class]
-}
-
-// classDefaultKeys is every key named by any class row, sorted. Test-facing
-// today; it exists so a guard can enumerate the table without reaching into
-// its internals and without a second spelling of the traversal.
-func classDefaultKeys() []string {
-	keys := map[string]struct{}{}
-	for _, overrides := range classDefaults {
-		for key := range overrides {
-			keys[key] = struct{}{}
-		}
-	}
-	return slices.Sorted(maps.Keys(keys))
 }

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"os"
 	"strconv"
 
@@ -102,17 +101,17 @@ type Config struct {
 	DisallowedTools []string
 	// DisableTodoReminders exports CLAUDE_CODE_TODO_REMINDER_MODE=off so
 	// the CLI stops nudging the model to use the todo tools (see
-	// claudeTodoReminderModeEnvVar). Spawn-time only, like every session
+	// withClaudeSessionEnvDefaults). Spawn-time only, like every session
 	// env value; a change lands on the next session, and PlanLiveUpdate's
 	// trailing DeepEqual reports it as a restart.
 	DisableTodoReminders bool
 	// CommandTimeoutHours exports BASH_MAX_TIMEOUT_MS (hours in ms) as the
 	// ceiling on a Bash/PowerShell command's timeout, background commands
-	// included (see claudeBashMaxTimeoutEnvVar). Zero exports nothing.
+	// included (see WithCommandTimeoutEnv). Zero exports nothing.
 	// Spawn-time only, like DisableTodoReminders.
 	CommandTimeoutHours int
 	// TaskListID keys the CLI's Task* list (`~/.claude/tasks/<id>/`) and is
-	// exported as CLAUDE_CODE_TASK_LIST_ID (claudeTaskListIDEnvVar). Always
+	// exported as CLAUDE_CODE_TASK_LIST_ID (withClaudeTaskListEnv). Always
 	// the AO thread id via ConfigFromOptions; empty only for a Config built
 	// by hand, which leaves the CLI keying the list by session id.
 	TaskListID string
@@ -229,7 +228,7 @@ type Config struct {
 	// CLAUDE_CODE_TODO_REMINDER_MODE=off) and pins the names it owns
 	// (withClaudeTaskListEnv). Anything Claude exposes via `settings.env`
 	// should go through AutoCompactPercent's inline settings path instead.
-	Env         map[string]string
+	Env         provider.EnvInput
 	EventLogger *logging.Logger
 	// Reaper ends the session's process group if the backend dies first
 	// (provider.SpawnConfig.Reaper).
@@ -252,14 +251,14 @@ type Config struct {
 	AgentLaunchByTask func(taskID string) (launch AgentLaunchRecord, found bool, err error)
 }
 
-// claudeSpawnEnv and launchUnsetEnv are the two halves of a Claude
+// claudeSpawnEnv and launchClears are the two halves of a Claude
 // child's environment, named so a test can assert what the child actually
 // receives without spawning one. The pair is what makes "off means off"
 // true: the overrides SET the gate when the feature is on, and the unset
 // list REMOVES an inherited gate in both states — a variable AO never set
 // but the host exported would otherwise bind the peer inbox behind the
-// setting's back (see CrossSessionUnsetEnv).
-func claudeSpawnEnv(cfg Config) map[string]string {
+// setting's back (see crossSessionClears).
+func claudeSpawnEnv(cfg Config) provider.EnvInput {
 	env := withClaudeTaskListEnv(withClaudeCrossSessionEnv(cfg.Env, cfg), cfg.TaskListID)
 	env = WithCommandTimeoutEnv(env, cfg.CommandTimeoutHours)
 	return withClaudeSessionEnvDefaults(env, cfg.DisableTodoReminders)
@@ -283,18 +282,54 @@ func NativeMemoryOffEnv(off bool) map[string]string {
 
 // withClaudeTaskListEnv pins CLAUDE_CODE_TASK_LIST_ID to taskListID,
 // overriding any caller value: the id is the thread's identity, not a
-// preference (provider.ReservedEnvNames). An empty id leaves env alone.
-func withClaudeTaskListEnv(env map[string]string, taskListID string) map[string]string {
+// preference, and a reserved name (internal/provider/envtable.go). An
+// empty id leaves env alone.
+//
+// CLAUDE_CODE_TASK_LIST_ID names the directory the CLI keeps a session's
+// Task* list in (`~/.claude/tasks/<id>/`, sanitized to [A-Za-z0-9_-]).
+// Unset, the CLI keys the list by session id, so any path that mints a
+// new session id for the same thread (AO's rollback slice, a provider
+// round-trip) would orphan the list while the thread's activity rail and
+// threads.live_todo still described it. Pinned to the AO thread id on both
+// Claude spawn paths, the list follows the thread. The CLI reads the
+// variable ahead of its team-name and session-id fallbacks (2.1.257
+// binary analysis; honored end to end since the 2.1.233 spike).
+func withClaudeTaskListEnv(env provider.EnvInput, taskListID string) provider.EnvInput {
 	if taskListID == "" {
 		return env
 	}
-	merged := make(map[string]string, len(env))
-	maps.Copy(merged, env)
-	merged[claudeTaskListIDEnvVar] = taskListID
-	return merged
+	return env.Pin(provider.ClaudeTaskListIDEnv, taskListID)
 }
 
-// claudeCodeEntrypointEnv tags spawned `claude` processes so the
+// WithCommandTimeoutEnv returns env with BASH_MAX_TIMEOUT_MS defaulted to
+// hours in ms, unless hours is not positive. As a default the setting
+// outranks an inherited host value and a custom value outranks the setting.
+// Exported for the claude-tui spawn, which the app configures.
+//
+// BASH_MAX_TIMEOUT_MS is the CLI's ceiling on a Bash/PowerShell command's
+// timeout in ms (2.1.300). Unset, a foreground command may ask for at most
+// 10 min, and a headless session (2.1.285+) stops a background command at
+// its timeout: 30 min by default, at most 2 h. Set, the foreground ceiling
+// becomes the value and the background ceiling max(2 h, value), clamped at
+// 2147483647 ms, and the Bash tool description tells the model the new
+// maximum. claude-tui is interactive, so there it is the foreground ceiling
+// only.
+//
+// A default, not a pin, like CLAUDE_CODE_TODO_REMINDER_MODE: a user value in
+// the provider's custom environment wins over the setting.
+func WithCommandTimeoutEnv(env provider.EnvInput, hours int) provider.EnvInput {
+	if hours <= 0 {
+		return env
+	}
+	return env.Default(provider.ClaudeBashMaxTimeoutEnv, strconv.FormatInt(int64(hours)*3_600_000, 10))
+}
+
+// withClaudeSessionEnvDefaults returns a copy of env with the entrypoint
+// marker pinned and AO's session-environment defaults added; a default
+// applies only where the custom environment does not name it, so a user can
+// opt out per variable.
+//
+// CLAUDE_CODE_ENTRYPOINT tags spawned `claude` processes so the
 // resulting session JSONL header records `entrypoint: agent-overflow`
 // instead of the auto-detected `sdk-cli` (which the CLI's resume
 // picker filters out — see [docs/references/claude.md](../../../docs/references/claude.md)).
@@ -308,9 +343,18 @@ func withClaudeTaskListEnv(env map[string]string, taskListID string) map[string]
 // The value itself is `provider.ClaudeEntrypointOrigin`: the session
 // importer reads it back out of transcripts, so writer and reader share
 // one declaration rather than two literals that can drift apart.
-const claudeCodeEntrypointEnvVar = "CLAUDE_CODE_ENTRYPOINT"
+func withClaudeSessionEnvDefaults(env provider.EnvInput, disableTodoReminders bool) provider.EnvInput {
+	env = env.Pin(provider.ClaudeEntrypointEnv, provider.ClaudeEntrypointOrigin)
+	env = env.Default(provider.ClaudeMCPDescriptionLengthEnv, provider.ClaudeMCPDescriptionLengthValue)
+	return WithTodoDefaults(env, disableTodoReminders)
+}
 
-// claudeTodoToolsEnvVar opts the session into the TodoWrite / Task*
+// WithTodoDefaults returns env with the todo tool surface defaulted on and,
+// when disableReminders is set, the todo reminder defaulted off. As defaults
+// they outrank an inherited host value, and a custom value outranks them.
+// Exported for the claude-tui spawn, which applies the same defaults.
+//
+// CLAUDE_CODE_ENABLE_TODO_TOOLS opts the session into the TodoWrite / Task*
 // tool surface. Claude ≥2.1.233 removes those tools for modern models
 // (opus ≥4.8; sonnet/fable/mythos ≥5 — older families keep them
 // unconditionally) unless the session opts back in: this variable
@@ -322,13 +366,12 @@ const claudeCodeEntrypointEnvVar = "CLAUDE_CODE_ENTRYPOINT"
 // tools produce, so a session spawned without the opt-in silently
 // loses the feature.
 //
-// Deliberately NOT in provider.ReservedEnvNames: it is a default, not
-// a pin — a user who wants the vendor's stock tool surface can set it
-// to "false" in the provider's custom environment, which lands in
-// cfg.Env before withClaudeSessionEnvDefaults applies.
-const claudeTodoToolsEnvVar = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
-
-// claudeTodoReminderModeEnvVar controls the CLI's periodic "track your
+// A default, not a pin: internal/provider/envtable.go lists it with no
+// refusal, so a user who wants the vendor's stock tool surface can set it
+// to "false" in the provider's custom environment, which outranks the
+// default WithTodoDefaults adds.
+//
+// CLAUDE_CODE_TODO_REMINDER_MODE controls the CLI's periodic "track your
 // work with the todo tools" nudge. "off" silences it while keeping the
 // tools; unset, the CLI defaults the mode from a remote feature gate
 // (baseline = nudge every 10 turns without a task write, verified on
@@ -336,81 +379,12 @@ const claudeTodoToolsEnvVar = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
 // user turned reminders off in Settings (Config.DisableTodoReminders),
 // and like the opt-in above it is a default, not a pin: a user value in
 // the provider's custom environment wins.
-const claudeTodoReminderModeEnvVar = "CLAUDE_CODE_TODO_REMINDER_MODE"
-
-// claudeTaskListIDEnvVar names the directory the CLI keeps a session's
-// Task* list in (`~/.claude/tasks/<id>/`, sanitized to [A-Za-z0-9_-]).
-// Unset, the CLI keys the list by session id, so any path that mints a
-// new session id for the same thread (AO's rollback slice, a provider
-// round-trip) would orphan the list while the thread's activity rail and
-// threads.live_todo still described it. Pinned to the AO thread id on both
-// Claude spawn paths, the list follows the thread. The CLI reads the
-// variable ahead of its team-name and session-id fallbacks (2.1.257
-// binary analysis; honored end to end since the 2.1.233 spike).
-const claudeTaskListIDEnvVar = "CLAUDE_CODE_TASK_LIST_ID"
-
-// BashMaxTimeoutEnv is the CLI's ceiling on a Bash/PowerShell command's
-// timeout in ms (2.1.300). Unset, a foreground command may ask for at most
-// 10 min, and a headless session (2.1.285+) stops a background command at
-// its timeout: 30 min by default, at most 2 h. Set, the foreground ceiling
-// becomes the value and the background ceiling max(2 h, value), clamped at
-// 2147483647 ms, and the Bash tool description tells the model the new
-// maximum. claude-tui is interactive, so there it is the foreground ceiling
-// only.
-//
-// A default, not a pin, like CLAUDE_CODE_TODO_REMINDER_MODE: a user value in
-// the provider's custom environment wins over the setting.
-const BashMaxTimeoutEnv = "BASH_MAX_TIMEOUT_MS"
-
-// WithCommandTimeoutEnv returns env with BASH_MAX_TIMEOUT_MS set to hours
-// in ms, unless env already names it or hours is not positive. env is the
-// override map (the custom environment plus AO's own values), so the
-// setting outranks an inherited host value and a custom value outranks the
-// setting. Exported for the claude-tui spawn, whose Config carries a whole
-// environment rather than an override map.
-func WithCommandTimeoutEnv(env map[string]string, hours int) map[string]string {
-	if hours <= 0 {
-		return env
+func WithTodoDefaults(env provider.EnvInput, disableReminders bool) provider.EnvInput {
+	env = env.Default(provider.ClaudeTodoToolsEnv, "true")
+	if disableReminders {
+		env = env.Default(provider.ClaudeTodoReminderModeEnv, "off")
 	}
-	if _, ok := env[BashMaxTimeoutEnv]; ok {
-		return env
-	}
-	merged := make(map[string]string, len(env)+1)
-	maps.Copy(merged, env)
-	merged[BashMaxTimeoutEnv] = strconv.FormatInt(int64(hours)*3_600_000, 10)
-	return merged
-}
-
-// withClaudeSessionEnvDefaults returns a copy of env with AO's
-// session-environment defaults applied — each only when the caller did
-// not already provide the name, so user custom env (and tests) can opt
-// out per variable.
-func withClaudeSessionEnvDefaults(env map[string]string, disableTodoReminders bool) map[string]string {
-	defaults := []struct{ name, value string }{
-		{claudeCodeEntrypointEnvVar, provider.ClaudeEntrypointOrigin},
-		{claudeTodoToolsEnvVar, "true"},
-		{provider.ClaudeMCPDescriptionLengthEnv, strconv.Itoa(provider.ClaudeMCPDescriptionLengthLimit)},
-	}
-	if disableTodoReminders {
-		defaults = append(defaults, struct{ name, value string }{claudeTodoReminderModeEnvVar, "off"})
-	}
-	missing := 0
-	for _, d := range defaults {
-		if _, ok := env[d.name]; !ok {
-			missing++
-		}
-	}
-	if missing == 0 {
-		return env
-	}
-	merged := make(map[string]string, len(env))
-	maps.Copy(merged, env)
-	for _, d := range defaults {
-		if _, ok := merged[d.name]; !ok {
-			merged[d.name] = d.value
-		}
-	}
-	return merged
+	return env
 }
 
 // WriteSystemPromptFile materializes a prompt in dir for

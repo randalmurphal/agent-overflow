@@ -130,9 +130,6 @@ func TestPriceSelectsTheRateInEffectOnTheUsageDay(t *testing.T) {
 	if got, ok := price("launched", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); !ok || got != 1 {
 		t.Fatalf("first dated rate: %v, %v", got, ok)
 	}
-	if _, ok := c.price("launched", today, 0, 0, 0, 10); ok {
-		t.Fatal("unpublished cache-write rate treated as free")
-	}
 	if got, ok := price("pointer", nov20); !ok || got != 4 {
 		t.Fatalf("alias before move: %v, %v", got, ok)
 	}

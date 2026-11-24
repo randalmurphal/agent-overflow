@@ -2,12 +2,10 @@
 // olderComputer.ts): an action that release has goes through its method,
 // a read of a feature it lacks answers empty, and every other failure is
 // still the caller's.
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import generated from '../../../bindings/agent-overflow/app.ts?raw';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { answerAsV0019, METHODS_AFTER_V0_0_19, methodNotFound, SETTINGS_AFTER_V0_0_19, settingsAsV0019 } from '../../test/helpers/olderComputer';
-import { SRC_ROOT } from '../../test/sourceScan';
 import { getPinnedBackend, withBackendTarget } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
 import { methodId } from '../transport/methodId';
@@ -45,13 +43,9 @@ import { userFacingError } from '../utils/userFacingError';
 import { errorReport, errorReportText } from '../utils/errorReport';
 import type { WorkspaceRef } from '../types/git';
 
-const generated = readFileSync(resolve(SRC_ROOT, '..', 'bindings', 'agent-overflow', 'app.ts'), 'utf8');
-
 beforeEach(() => {
-  resetBindingMocks();
   answerAsV0019();
 });
-afterEach(() => resetBindingMocks());
 
 describe('the methods v0.0.19 lacks', () => {
   it('are bindings this build has, called by the id the generator gives them', () => {

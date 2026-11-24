@@ -302,7 +302,7 @@ func TestSendsDuringAFailedReturnEndInTheNextSuccessor(t *testing.T) {
 		return f.app.threadApplication().MutationRefs(threadID) == 2
 	})
 	// The client sends what its composer held, and consumes only that.
-	_, third := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
+	_, third := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
 	unlock()
 	<-ended
 	if code, _, _ := errorsx.PublicDetails(third); code != transport.ErrCodeAssistantSessionGone {
@@ -325,42 +325,6 @@ func TestSendsDuringAFailedReturnEndInTheNextSuccessor(t *testing.T) {
 	}
 	if old := draftContent(t, f.app, threadID); old != "" {
 		t.Errorf("past thread's composer = %q, want it empty", old)
-	}
-}
-
-// A failed session-loss handoff puts the carried sends back in the old
-// composer in one write, holding the old thread's mutation lock, so the
-// composer move of a handoff a send starts meanwhile finds them in place.
-func TestAFailedSessionLossHandOffReturnsTheTextsUnderTheComposerLock(t *testing.T) {
-	t.Parallel()
-	f, threadID, _ := lostSessionAssistant(t)
-	var mu sync.Mutex
-	lockedAtReturn := []bool{}
-	f.app.testEmitHook = func(name string, data any) {
-		if evt, ok := data.(DraftUpdatedEvent); ok && name == "draft:updated" && evt.ThreadID == threadID {
-			locked := f.app.threadApplication().MutationRefs(threadID) > 0
-			mu.Lock()
-			lockedAtReturn = append(lockedAtReturn, locked)
-			mu.Unlock()
-		}
-	}
-	// An archived assistant refuses the handoff.
-	release := holdSessionLossHandOff(t, f.app, func() {
-		if _, _, err := f.app.store.ArchiveThread(threadID); err != nil {
-			t.Error(err)
-		}
-	})
-	sendFindingTheSessionGone(t, f.app, threadID, "first message")
-	sendFindingTheSessionGone(t, f.app, threadID, "second message")
-	release()
-	f.app.waitAgentNoticeWork()
-	if got := draftContent(t, f.app, threadID); got != "first message\n\nsecond message" {
-		t.Fatalf("old composer = %q, want the carried texts in order", got)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(lockedAtReturn) != 1 || !lockedAtReturn[0] {
-		t.Fatalf("composer lock held at each write of the returned texts: %v, want one write, held", lockedAtReturn)
 	}
 }
 

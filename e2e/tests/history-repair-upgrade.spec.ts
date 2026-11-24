@@ -48,6 +48,10 @@ test('an upgrade from v118 repairs stored history in the background', async ({ p
 
     host = await launchHarness({ dataDir: root });
     expect(host.bootstrap.dataDir).toBe(path.dirname(dbPath));
+    // The deferred phases wait for a client's first catalog reads, or 15 s
+    // without one (internal/app/app_first_reads.go): read them as a page would.
+    await host.rpc('ListThreads');
+    await host.rpc('ListProjects');
     // Every deferred phase of this build, not a fixed version: a later
     // migration with a phase of its own moves the last watermark.
     const settled = await awaitDeferredSettled(host, 60_000);

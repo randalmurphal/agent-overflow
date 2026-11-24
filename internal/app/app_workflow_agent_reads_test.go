@@ -15,6 +15,14 @@ import (
 	"time"
 )
 
+// The digest budgets and session vocabulary workflowapp applies, as the
+// wire answers these tests read are expected to show them.
+const (
+	maxDigestOutputs         = 8
+	maxDigestValueRunes      = 200
+	workflowSessionContinued = "continued"
+)
+
 // The two reads behind `run_inspect` and `run_narrative`. They are projections
 // over records the engine already writes, so the fixture writes those records
 // directly: what is under test is what the projections answer, not how a run
@@ -719,7 +727,7 @@ func TestWorkflowWatchTreeResolvesThroughSnapshotFreeRows(t *testing.T) {
 		Snapshot: snapshot, Seeds: json.RawMessage(`{"task":"y"}`)})
 	wanted[grandchild.ID] = true
 
-	nodes, err := h.app.workflowRunTreeNodes(root.ID)
+	nodes, err := h.app.workflowApplication().RunTreeNodes(root.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

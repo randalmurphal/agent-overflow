@@ -65,11 +65,16 @@ func TestApprovalDeduperNonPositiveCapUsesDefault(t *testing.T) {
 	if !d.IsResolved("a") || !d.IsResolved("b") {
 		t.Fatal("zero-value deduper dropped entries before reaching default cap")
 	}
+}
 
-	negative := NewApprovalDeduper(-5)
-	negative.MarkResolved("a")
-	negative.MarkResolved("b")
-	if !negative.IsResolved("a") || !negative.IsResolved("b") {
-		t.Fatal("negative cap should fall back to DefaultApprovalDedupCap")
+// NewApprovalDeduper returns a deduper that resets its set once it
+// reaches softCap entries. A non-positive softCap falls back to
+// DefaultApprovalDedupCap so a zero-value ApprovalDeduper (e.g. a
+// session struct field without explicit initialization) still behaves
+// correctly.
+func NewApprovalDeduper(softCap int) ApprovalDeduper {
+	if softCap <= 0 {
+		softCap = DefaultApprovalDedupCap
 	}
+	return ApprovalDeduper{softCap: softCap}
 }

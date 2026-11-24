@@ -1,8 +1,13 @@
-import { readFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SRC_ROOT, walkSources } from '../../../../test/sourceScan';
-import { MD_BLOCK_MARKER, chatMarkdownTheme } from './streamdownTheme';
+import { SRC_ROOT, scannedSources } from '../../../../test/sourceScan';
+import { chatMarkdownTheme } from './streamdownTheme';
+
+// What this suite scans (test/sourceScan.ts).
+const SCANNED = scannedSources(import.meta.glob<string>(
+  ['/src/lib/markdown/render/**/*.{ts,js,svelte}', '/src/lib/components/chat/markdown/**/*.{ts,js,svelte}', '!/src/test/**', '!**/*.{test,spec}.{ts,js}', '!**/*.manual.ts'],
+  { query: '?raw', import: 'default', eager: true },
+));
 
 // Completeness tripwire for the ONE first-party markdown theme table.
 //
@@ -37,9 +42,8 @@ const RENDER_PATH_ROOTS = [
 function renderPathSources(): Array<{ path: string; text: string }> {
   const files: Array<{ path: string; text: string }> = [];
   for (const root of RENDER_PATH_ROOTS) {
-    for (const file of walkSources(root, /\.(ts|js|svelte)$/)) {
-      if (/\.(test|spec)\.[a-z]+$|\.manual\.ts$/.test(file)) continue;
-      files.push({ path: file.split(sep).join('/'), text: readFileSync(file, 'utf8') });
+    for (const file of SCANNED.files(/\.(ts|js|svelte)$/, root)) {
+      files.push({ path: file.split(sep).join('/'), text: SCANNED.text(file) });
     }
   }
   return files;
@@ -264,7 +268,7 @@ describe('md-blk block marker', () => {
   // else does. Streamdown uses it to find the two direct edge blocks and
   // publishes explicit `sd-trim-*` classes. app.css therefore needs no
   // structural pseudo whose invalidation set reacts to nested syntax-span
-  // changes. See the MD_BLOCK_MARKER doc in streamdownTheme.ts.
+  // changes. See the `md-blk` comment in streamdownTheme.ts.
   //
   // A block-level key missing the marker keeps its own edge margin when it
   // lands first/last in a message; an inline key carrying it would hand the
@@ -292,7 +296,7 @@ describe('md-blk block marker', () => {
     'ul.base',
   ];
 
-  const markerRe = new RegExp(`(?:^|\\s)${MD_BLOCK_MARKER}(?:\\s|$)`);
+  const markerRe = /(?:^|\s)md-blk(?:\s|$)/;
 
   function valueOf(key: string): string | undefined {
     const [group, slot] = key.split('.') as [string, string];

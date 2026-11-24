@@ -4,20 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
+	"fmt"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 func TestApprovalResponseResolvesPendingCodex(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"codex-thread-1","command":"ls"}}`)
+	feed(t, s, line)
 
 	for {
 		select {
@@ -45,279 +44,111 @@ respond:
 	}
 }
 
-func TestCodexCloseResolvesPendingApprovalAsLost(t *testing.T) {
+// TestCodexPendingRequestsResolveWhenTheTurnOrSessionEnds covers each drain
+// path: a pending approval or user-input request must emit its resolved event
+// so the frontend's panel clears. Interrupt resolves it as "cancel" (beyond
+// t3-code's CodexSessionRuntime.interruptTurn, which leaves the local Deferred
+// parked); Close and a provider exit resolve it as "lost". A user-input
+// resolution also carries an empty `answers` map, which the frontend type
+// contract requires on every UserInputResolved meta.
+func TestCodexPendingRequestsResolveWhenTheTurnOrSessionEnds(t *testing.T) {
 	t.Parallel()
-	s, eventCh := newTestCodexSession(t)
-
-	line := []byte(`{"jsonrpc":"2.0","id":9,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
-	s.dispatchLine(line)
-
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventApprovalRequest {
-				goto closeNow
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("no approval event")
+	approval := func(id int) []byte {
+		return fmt.Appendf(nil, `{"jsonrpc":"2.0","id":%d,"method":"item/commandExecution/requestApproval","params":{"threadId":"codex-thread-1","command":"ls"}}`, id)
+	}
+	userInput := func(id int) []byte {
+		return fmt.Appendf(nil, `{"jsonrpc":"2.0","id":%d,"method":"item/tool/requestUserInput","params":{"threadId":"codex-thread-1","questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`, id)
+	}
+	// Interrupt attempts the RPC only with an active turn; before that gate
+	// it returns "no active turn".
+	withActiveTurn := func(s *Session) *Session {
+		s.mu.Lock()
+		s.turn.activeTurnID = "turn-1"
+		s.mu.Unlock()
+		return s
+	}
+	await := func(t *testing.T, s *Session, eventCh <-chan provider.ProviderEvent, line []byte, kind provider.EventKind) {
+		t.Helper()
+		feed(t, s, line)
+		if evt := codexWaitEvent(t, eventCh); evt.Kind != kind {
+			t.Fatalf("kind: got %q, want %q", evt.Kind, kind)
 		}
 	}
-closeNow:
-	if err := s.Close(); err != nil {
-		t.Logf("close returned %v (acceptable)", err)
-	}
-
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case evt, ok := <-eventCh:
-			if !ok {
-				t.Fatal("event channel closed before approval resolved")
-			}
-			if evt.Kind != provider.EventApprovalResolved {
-				continue
-			}
-			var meta map[string]any
-			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-				t.Fatalf("unmarshal resolved meta: %v", err)
-			}
-			if meta["decision"] != "lost" {
-				t.Fatalf("decision = %v, want lost", meta["decision"])
-			}
-			return
-		case <-deadline:
-			t.Fatal("pending approval was not resolved on close")
+	interrupt := func(t *testing.T, s *Session) {
+		t.Helper()
+		fixtureFor(t, s).answer("turn/interrupt", `{}`)
+		if err := s.Interrupt(context.Background()); err != nil {
+			t.Fatalf("Interrupt: %v", err)
 		}
 	}
-}
-
-// TestCodexInterruptDrainsPendingApproval covers the Interrupt-drain
-// path: when the user clicks stop while a sandbox approval is pending,
-// the session must emit EventApprovalResolved with decision="cancel" so
-// the frontend's approval panel clears immediately. This is the bug-fix
-// beyond t3-code's CodexSessionRuntime.interruptTurn, which leaves the
-// local Deferred parked.
-func TestCodexInterruptDrainsPendingApproval(t *testing.T) {
-	t.Parallel()
-	s, eventCh := newTestCodexSession(t)
-
-	// Need an active turn for Interrupt to attempt the RPC at all —
-	// before that gate the function returns "no active turn".
-	s.mu.Lock()
-	s.turn.activeTurnID = "turn-1"
-	s.mu.Unlock()
-
-	line := []byte(`{"jsonrpc":"2.0","id":11,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
-	s.dispatchLine(line)
-
-	// Drain incoming events until we see the approval request.
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventApprovalRequest {
-				goto interrupt
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("no approval event")
+	closeSession := func(t *testing.T, s *Session) {
+		if err := s.Close(); err != nil {
+			t.Logf("close returned %v (acceptable)", err)
 		}
 	}
-interrupt:
-	// Interrupt itself returns an error (cat echoes our request back
-	// as a server-request shape, which falls to the default error case
-	// — fine for this test). The drain runs regardless.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = s.Interrupt(ctx)
-
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind != provider.EventApprovalResolved {
-				continue
+	expectResolved := func(t *testing.T, eventCh <-chan provider.ProviderEvent, kind provider.EventKind, requestID, decision string) {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case evt := <-eventCh:
+				if evt.Kind != kind {
+					continue
+				}
+				var meta map[string]any
+				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+					t.Fatalf("unmarshal resolved meta: %v", err)
+				}
+				if meta["requestId"] != requestID || meta["decision"] != decision {
+					t.Fatalf("requestId/decision = %v/%v, want %s/%s", meta["requestId"], meta["decision"], requestID, decision)
+				}
+				if kind == provider.EventUserInputResolved {
+					if answers, ok := meta["answers"].(map[string]any); !ok || len(answers) != 0 {
+						t.Fatalf("answers = %v, want an empty map for the user-input variant", meta["answers"])
+					}
+				}
+				return
+			case <-deadline:
+				t.Fatalf("no %s for request %s", kind, requestID)
 			}
-			var meta struct {
-				RequestID string `json:"requestId"`
-				Decision  string `json:"decision"`
-			}
-			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-				t.Fatalf("unmarshal resolved meta: %v", err)
-			}
-			if meta.RequestID != "11" {
-				t.Fatalf("requestId = %q, want 11", meta.RequestID)
-			}
-			if meta.Decision != "cancel" {
-				t.Fatalf("decision = %q, want cancel", meta.Decision)
-			}
-			return
-		case <-deadline:
-			t.Fatal("no EventApprovalResolved after Interrupt")
 		}
 	}
-}
 
-// TestCodexInterruptDrainsPendingUserInput is the user-input twin of
-// TestCodexInterruptDrainsPendingApproval. The resolved event must
-// carry decision="cancel" AND answers={} so the frontend's user-input
-// panel clears with a well-formed payload.
-func TestCodexInterruptDrainsPendingUserInput(t *testing.T) {
-	t.Parallel()
-	s, eventCh := newTestCodexSession(t)
-
-	s.mu.Lock()
-	s.turn.activeTurnID = "turn-1"
-	s.mu.Unlock()
-
-	line := []byte(`{"jsonrpc":"2.0","id":12,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
-	s.dispatchLine(line)
-
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventUserInputRequest {
-				goto interrupt
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("no user-input request event")
-		}
-	}
-interrupt:
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = s.Interrupt(ctx)
-
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind != provider.EventUserInputResolved {
-				continue
-			}
-			var meta struct {
-				RequestID string         `json:"requestId"`
-				Decision  string         `json:"decision"`
-				Answers   map[string]any `json:"answers"`
-			}
-			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-				t.Fatalf("unmarshal resolved meta: %v", err)
-			}
-			if meta.RequestID != "12" {
-				t.Fatalf("requestId = %q, want 12", meta.RequestID)
-			}
-			if meta.Decision != "cancel" {
-				t.Fatalf("decision = %q, want cancel", meta.Decision)
-			}
-			if meta.Answers == nil {
-				t.Fatalf("answers field absent; want empty map for user-input variant")
-			}
-			if len(meta.Answers) != 0 {
-				t.Fatalf("answers = %v, want empty map", meta.Answers)
-			}
-			return
-		case <-deadline:
-			t.Fatal("no EventUserInputResolved after Interrupt")
-		}
-	}
-}
-
-// TestCodexCloseDrainsPendingUserInputWithAnswers verifies the Close
-// drain emits an EventUserInputResolved that carries the empty
-// `answers` map alongside the historic decision="lost". The frontend
-// type contract requires the field on every UserInputResolved meta.
-func TestCodexCloseDrainsPendingUserInputWithAnswers(t *testing.T) {
-	t.Parallel()
-	s, eventCh := newTestCodexSession(t)
-
-	line := []byte(`{"jsonrpc":"2.0","id":13,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
-	s.dispatchLine(line)
-
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventUserInputRequest {
-				goto closeNow
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("no user-input request event")
-		}
-	}
-closeNow:
-	if err := s.Close(); err != nil {
-		t.Logf("close returned %v (acceptable)", err)
-	}
-
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case evt, ok := <-eventCh:
-			if !ok {
-				t.Fatal("event channel closed before resolved event")
-			}
-			if evt.Kind != provider.EventUserInputResolved {
-				continue
-			}
-			var meta struct {
-				RequestID string         `json:"requestId"`
-				Decision  string         `json:"decision"`
-				Answers   map[string]any `json:"answers"`
-			}
-			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-				t.Fatalf("unmarshal resolved meta: %v", err)
-			}
-			if meta.RequestID != "13" {
-				t.Fatalf("requestId = %q, want 13", meta.RequestID)
-			}
-			if meta.Decision != "lost" {
-				t.Fatalf("decision = %q, want lost (Close path)", meta.Decision)
-			}
-			if meta.Answers == nil {
-				t.Fatalf("answers field absent; want empty map")
-			}
-			return
-		case <-deadline:
-			t.Fatal("no EventUserInputResolved after Close")
-		}
-	}
-}
-
-func TestCodexProviderExitResolvesPendingUserInputAsLost(t *testing.T) {
-	t.Parallel()
-	s, eventCh := newTestCodexSession(t)
-
-	line := []byte(`{"jsonrpc":"2.0","id":14,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
-	s.dispatchLine(line)
-
-	evt := codexWaitEvent(t, eventCh)
-	if evt.Kind != provider.EventUserInputRequest {
-		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventUserInputRequest)
-	}
-
-	if err := s.proc.Close(); err != nil {
-		t.Fatalf("close provider process: %v", err)
-	}
-
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind != provider.EventUserInputResolved {
-				continue
-			}
-			var meta map[string]any
-			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-				t.Fatalf("unmarshal resolved meta: %v", err)
-			}
-			if meta["decision"] != "lost" {
-				t.Fatalf("decision = %v, want lost", meta["decision"])
-			}
-			if _, ok := meta["answers"].(map[string]any); !ok {
-				t.Fatalf("answers missing or wrong type: %v", meta["answers"])
-			}
-			return
-		case <-deadline:
-			t.Fatal("pending user input was not resolved after provider exit")
-		}
-	}
+	t.Run("close resolves a pending approval as lost", func(t *testing.T) {
+		t.Parallel()
+		s, eventCh := newTestCodexSession(t)
+		await(t, s, eventCh, approval(9), provider.EventApprovalRequest)
+		closeSession(t, s)
+		expectResolved(t, eventCh, provider.EventApprovalResolved, "9", "lost")
+	})
+	t.Run("interrupt cancels a pending approval", func(t *testing.T) {
+		t.Parallel()
+		s, eventCh := newTestCodexSession(t)
+		await(t, withActiveTurn(s), eventCh, approval(11), provider.EventApprovalRequest)
+		interrupt(t, s)
+		expectResolved(t, eventCh, provider.EventApprovalResolved, "11", "cancel")
+	})
+	t.Run("interrupt cancels a pending user input", func(t *testing.T) {
+		t.Parallel()
+		s, eventCh := newTestCodexSession(t)
+		await(t, withActiveTurn(s), eventCh, userInput(12), provider.EventUserInputRequest)
+		interrupt(t, s)
+		expectResolved(t, eventCh, provider.EventUserInputResolved, "12", "cancel")
+	})
+	t.Run("close resolves a pending user input as lost", func(t *testing.T) {
+		t.Parallel()
+		s, eventCh := newTestCodexSession(t)
+		await(t, s, eventCh, userInput(13), provider.EventUserInputRequest)
+		closeSession(t, s)
+		expectResolved(t, eventCh, provider.EventUserInputResolved, "13", "lost")
+	})
+	t.Run("provider exit resolves a pending user input as lost", func(t *testing.T) {
+		t.Parallel()
+		s, eventCh := newTestCodexSession(t)
+		await(t, s, eventCh, userInput(14), provider.EventUserInputRequest)
+		fixtureFor(t, s).exitAppServer()
+		expectResolved(t, eventCh, provider.EventUserInputResolved, "14", "lost")
+	})
 }
 
 // TestCodexDrainWritesTurnTransitionError verifies the wire shape of
@@ -329,33 +160,8 @@ func TestCodexProviderExitResolvesPendingUserInputAsLost(t *testing.T) {
 // error" and (for MCP elicitation) pick the wrong action.
 func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
 	t.Parallel()
-	capturePath := t.TempDir() + "/wire.jsonl"
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args: []string{"-c", `
-			while IFS= read -r line; do
-				printf '%s\n' "$line" >> "$CAPTURE_PATH"
-			done
-		`},
-		Env: map[string]string{"CAPTURE_PATH": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture sh: %v", err)
-	}
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
-		cancel:   cancel,
-	}
-	s.setRootThreadID("codex-thread-1")
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		_ = proc.Close()
-	})
+	fx := newConnFixture(t)
+	s := fx.session(testThread, "codex-thread-1", nil)
 
 	// Seed a pending approval (rpcID 99) so the drain has something
 	// to write a response for.
@@ -363,19 +169,7 @@ func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
 
 	s.drainPendingApprovals("cancel", false, true)
 
-	// Give the capture script a moment to flush, then read.
-	deadline := time.Now().Add(2 * time.Second)
-	var data []byte
-	for time.Now().Before(deadline) {
-		data, _ = os.ReadFile(capturePath)
-		if len(data) > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(data) == 0 {
-		t.Fatalf("no wire bytes captured")
-	}
+	data := fx.written(1)[0]
 	var frame struct {
 		ID    int64 `json:"id"`
 		Error struct {
@@ -398,4 +192,12 @@ func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
 	if frame.Error.Code == 0 {
 		t.Fatalf("error.code is zero — JSON-RPC error frames must carry a non-zero code")
 	}
+}
+
+// trackPendingApproval registers an interactive request. Uses the numeric
+// JSON-RPC id rendered as a string so dedup (Bug B9) and response routing
+// both use the same key — and so writeDrainResponse can parse it back into
+// the id the JSON-RPC reply has to carry.
+func (s *Session) trackPendingApproval(rpcID int64, resolveKind provider.EventKind, decisions ...*[]json.RawMessage) {
+	s.trackPendingApprovalScoped(rpcID, resolveKind, s.rootThreadID(), decisions...)
 }

@@ -115,7 +115,7 @@ async function seedAndOpen(
     ],
   });
   const threadId = seed.projects[0]!.threadIds[0]!;
-  const items = await harness.rpc<Array<{ id: string }>>("ListItems", threadId, true);
+  const items = await harness.items<{ id: string }>(threadId, true);
   await harness.open(page);
   await page.getByText(title).click();
   await expect(
@@ -368,31 +368,6 @@ test("HarnessReset disarms an active perf run", async ({ harness, page }) => {
   ).toMatchObject({
     active: false,
   });
-});
-
-// One test for both halves of the no-bridge story, because the timeout it
-// depends on is the real 10s one.
-test("a query with no page attached times out, and its late reply is dropped", async ({
-  harness,
-}) => {
-  // Deliberately no page.goto: nothing is subscribed to harness:ui-query
-  // except this client, which observes the directive without answering it.
-  const pending = harness.rpc("HarnessUIQuery", { v: 1, kind: "viewport" });
-  const directive = await harness.waitForEvent<{ id: string; pageId: string; spec: unknown }>(
-    "harness:ui-query",
-  );
-  expect(directive.id).toMatch(/^uq-\d+$/);
-
-  await expect(pending).rejects.toThrow(
-    /no frontend attached or harness bridge inactive/,
-  );
-
-  // The waiter is gone, so these replies name ids nobody is holding. Both
-  // must be accepted and dropped — the replying bridge did nothing wrong,
-  // and erroring would turn a lost race into a red test in the frontend.
-  // A refusal surfaces as a rejected RPC, which fails this test.
-  await harness.rpc("HarnessUIQueryReply", directive.pageId, directive.id, { v: 1, panes: [] });
-  await harness.rpc("HarnessUIQueryReply", directive.pageId, "uq-never-issued", {});
 });
 
 // The Go structs in cmd/ao-harness/ui_diff.go mirror

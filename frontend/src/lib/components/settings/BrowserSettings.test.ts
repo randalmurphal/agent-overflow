@@ -33,55 +33,36 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
 // field is a plain path input rather than a toggle, and why an empty value
 // has to stay meaningful (search PATH) instead of being an error.
 describe("<BrowserSettings> — Chromium path", () => {
-  it("shows the saved path, and the PATH hint when there is none", async () => {
-    await seed();
+  it.each([
+    ["shows the saved path, and the PATH hint when there is none", ""],
+    ["renders the configured path", "/opt/chromium/chrome"],
+  ])("%s", async (_name, saved) => {
+    await seed({ browserChromiumPath: saved });
     const { findByTestId } = render(BrowserSettings);
 
     const input = (await findByTestId(
       "settings-browser-chromium-path",
     )) as HTMLInputElement;
-    expect(input.value).toBe("");
+    expect(input.value).toBe(saved);
     expect(input.placeholder).toBe("Found on PATH when empty");
-  });
-
-  it("renders the configured path", async () => {
-    await seed({ browserChromiumPath: "/opt/chromium/chrome" });
-    const { findByTestId } = render(BrowserSettings);
-
-    const input = (await findByTestId(
-      "settings-browser-chromium-path",
-    )) as HTMLInputElement;
-    expect(input.value).toBe("/opt/chromium/chrome");
-  });
-
-  it("saves the path on change", async () => {
-    await seed();
-    const { findByTestId } = render(BrowserSettings);
-
-    const input = await findByTestId("settings-browser-chromium-path");
-    await fireEvent.change(input, {
-      target: { value: "/usr/bin/chromium-browser" },
-    });
-
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls.at(-1)![0]).toEqual({
-      browserChromiumPath: "/usr/bin/chromium-browser",
-    });
   });
 
   // Clearing the field is how an operator goes back to searching PATH, so
   // the empty string has to reach the backend as a value rather than being
   // dropped as falsy.
-  it("saves an emptied path", async () => {
-    await seed({ browserChromiumPath: "/opt/chromium/chrome" });
+  it.each([
+    ["the path on change", "", "/usr/bin/chromium-browser"],
+    ["an emptied path", "/opt/chromium/chrome", ""],
+  ])("saves %s", async (_name, saved, entered) => {
+    await seed({ browserChromiumPath: saved });
     const { findByTestId } = render(BrowserSettings);
 
     const input = await findByTestId("settings-browser-chromium-path");
-    await fireEvent.change(input, { target: { value: "" } });
+    await fireEvent.change(input, { target: { value: entered } });
 
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock!.mock.calls.at(-1)![0]).toEqual({ browserChromiumPath: "" });
+    expect(getBindingMock("UpdateSettings")!.mock.calls.at(-1)![0]).toEqual({
+      browserChromiumPath: entered,
+    });
   });
 });
 

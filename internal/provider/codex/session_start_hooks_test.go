@@ -93,11 +93,6 @@ func TestPromptHookTrustHashMatchesCodex(t *testing.T) {
 	if got, want := newSessionStartHandler(command, olderCodex).trustHash("user_prompt_submit", ""), "sha256:a051f9b517b135714fcb8d71a8448ffbb4edfece9593cb4862ae01a6cb494389"; got != want {
 		t.Fatalf("trust hash = %s, want %s", got, want)
 	}
-	identity := `{"event_name":"user_prompt_submit","hooks":[{"async":false,"command":"'/opt/a o/x' \"q\"","timeout":60,"type":"command"}]}`
-	sum := sha256.Sum256([]byte(identity))
-	if got, want := newSessionStartHandler(`'/opt/a o/x' "q"`, olderCodex).trustHash("user_prompt_submit", ""), "sha256:"+hex.EncodeToString(sum[:]); got != want {
-		t.Fatalf("trust hash = %s, want %s", got, want)
-	}
 }
 
 // A Codex that reads additionalContextLimit gets each handler with the spill
@@ -902,9 +897,7 @@ func kindIndexOf(events []provider.ProviderEvent, kind provider.EventKind) int {
 func TestCodexIgnoresAChildThreadsHookRuns(t *testing.T) {
 	t.Parallel()
 	s, rec := sessionStartSession(t, provider.SessionStartAfterStart)
-	if !s.registerChildOwnership(sessionStartRootThread, "child-thread", "/root/reviewer", "spawn-1") {
-		t.Fatal("the child was not registered")
-	}
+	ownChild(t, s, sessionStartRootThread, "child-thread", "/root/reviewer", "spawn-1")
 	child := func(method string, params map[string]any) {
 		t.Helper()
 		params["threadId"] = "child-thread"

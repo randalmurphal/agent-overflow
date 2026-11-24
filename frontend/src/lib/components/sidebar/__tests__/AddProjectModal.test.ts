@@ -2,12 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import AddProjectModal from '../AddProjectModal.svelte';
-import { resetProjectsForTest } from '../../../stores/projects.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { addComputerProject, projectAtComputerPath } from '../../../stores/computerProjects';
-import { noteProject, __resetEntityIndexForTest } from '../../../transport/entityIndex';
+import { noteProject } from '../../../transport/entityIndex';
 import { takePinnedBackend } from '../../../transport/backends';
-import { getToasts, resetToastsForTest } from '../../../stores/toast.svelte';
+import { getToasts } from '../../../stores/toast.svelte';
 
 // Flush the focus-trap + effect queue so the modal is fully mounted and
 // the browser has kicked off its initial BrowseDirectory.
@@ -42,9 +41,6 @@ function mockBrowseDirectory(
 
 describe('<AddProjectModal>', () => {
   beforeEach(() => {
-    resetProjectsForTest();
-    __resetEntityIndexForTest();
-    resetToastsForTest();
     mockBrowseDirectory();
   });
 
@@ -190,19 +186,6 @@ describe('<AddProjectModal>', () => {
     expect(createProject).toHaveBeenCalledWith('', '/Users/me');
     expect(create).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it('adds the folder once registration accepts it', async () => {
-    const onCreated = vi.fn();
-    const created = { id: 'new-p', path: '/Users/me', name: 'me', sortPosition: 0, createdAt: 1, updatedAt: 1, archived: false };
-    setBindingMock('CreateProject', async () => created);
-    const { getByTestId } = render(AddProjectModal, {
-      props: { open: true, onClose: () => {}, onCreated },
-    });
-    await flushModalBoot();
-    await fireEvent.click(getByTestId('add-project-submit'));
-    for (let i = 0; i < 5; i += 1) await tick();
-    expect(onCreated).toHaveBeenCalledWith(created);
   });
 
   it('warns when git could not read the identity of the folder it added', async () => {

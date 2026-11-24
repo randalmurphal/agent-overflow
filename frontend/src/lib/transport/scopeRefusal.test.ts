@@ -11,7 +11,7 @@ import {
   scopeRefusalMessage,
   scopeRefusalPresentation,
 } from './scopeRefusal';
-import { SCOPES, allOfGrants, anyOfGrants } from './scopes';
+import { allOfGrants, anyOfGrants } from './scopes';
 
 function refusal(scope?: string): TransportError {
   return new TransportError('scope_required', 'not authorized', { scope });
@@ -51,32 +51,19 @@ describe('scopeRefusal', () => {
     expect(presentation?.hint).toContain('Devices');
   });
 
-  it('has a sentence for every capability this build knows', () => {
-    // A capability with no sentence would fall through to the generic
-    // refusal, which is the degradation reserved for names this build has
-    // never heard of — not for ones it gates on.
-    for (const scope of SCOPES) {
-      const presentation = presentScope(scope);
-      expect(presentation.title).not.toBe('');
-      expect(presentation.hint).not.toBe('');
-    }
-  });
-
-  it('degrades an unknown capability name to the generic sentence', () => {
-    // A tab stays loaded across a backend update, so a newer backend can
-    // refuse with a name this bundle has no word for. Saying so vaguely
-    // beats a surface that silently does not work.
-    expect(scopeRefusalPresentation(refusal('quantum:entangle'))).toEqual(UNKNOWN_SCOPE_REFUSAL);
-    expect(scopeRefusalPresentation(refusal(undefined))).toEqual(UNKNOWN_SCOPE_REFUSAL);
-    expect(scopeRefusalPresentation(refusal(''))).toEqual(UNKNOWN_SCOPE_REFUSAL);
-  });
-
-  it('does not read a prototype property as a capability name', () => {
-    // The lookup is a plain object, so `constructor` and `toString` would
-    // type as capability names under an `in` check and hand back a
-    // function where a sentence belongs.
-    expect(scopeRefusalPresentation(refusal('constructor'))).toEqual(UNKNOWN_SCOPE_REFUSAL);
-    expect(scopeRefusalPresentation(refusal('toString'))).toEqual(UNKNOWN_SCOPE_REFUSAL);
+  // A tab stays loaded across a backend update, so a newer backend can
+  // refuse with a name this bundle has no word for. Saying so vaguely beats
+  // a surface that silently does not work. The lookup is a plain object, so
+  // `constructor` and `toString` would type as capability names under an
+  // `in` check and hand back a function where a sentence belongs.
+  it.each([
+    ['an unknown capability name', 'quantum:entangle'],
+    ['a refusal that names no capability', undefined],
+    ['an empty capability name', ''],
+    ['the prototype property constructor', 'constructor'],
+    ['the prototype property toString', 'toString'],
+  ])('degrades %s to the generic sentence', (_name, scope) => {
+    expect(scopeRefusalPresentation(refusal(scope))).toEqual(UNKNOWN_SCOPE_REFUSAL);
   });
 
   it('answers `host` with the presence remedy, not a grant one', () => {

@@ -9,10 +9,8 @@
 // decode FAILS rather than being skipped — a case added for a preference only
 // one gate knows about would otherwise pass there and quietly not run here,
 // which is the drift the shared file exists to prevent.
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import gateCases from '../../../../internal/notify/testdata/gate_cases.json?raw';
 
 import { SETTINGS_DEFAULTS } from '../generated/settingsDefaults';
 import { defaultSettings } from '../stores/settingsDefaults';
@@ -25,10 +23,6 @@ import {
   type NotificationScreenFacts,
 } from './gate';
 
-const GATE_CASES = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  '../../../../internal/notify/testdata/gate_cases.json',
-);
 
 /** The answers a case may name. Anything else is a case this side cannot run. */
 const REFUSALS: readonly NotificationRefusal[] = ['suppressed', 'hidden_thread', 'screen_attended'];
@@ -121,7 +115,7 @@ function parseCase(raw: unknown, index: number): GateCase {
 }
 
 function loadGateCases(): GateCase[] {
-  const parsed: unknown = JSON.parse(readFileSync(GATE_CASES, 'utf8'));
+  const parsed: unknown = JSON.parse(gateCases);
   if (!Array.isArray(parsed)) throw new Error('the shared gate table must be a JSON array of cases');
   if (parsed.length === 0) throw new Error('the shared gate table holds no cases, so neither gate is under test');
   return parsed.map(parseCase);

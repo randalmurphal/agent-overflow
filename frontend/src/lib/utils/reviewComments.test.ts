@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { commentSnippet, countReviewComments, visibleBody } from './reviewComments';
+import { indexReviewComments } from './reviewRows';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 
 function thread(overrides: Partial<ReviewThread> = {}): ReviewThread {
@@ -44,79 +45,56 @@ describe('commentSnippet', () => {
     expect(commentSnippet(long).endsWith('…')).toBe(true);
   });
 
-  it('skips bot badge lines and surfaces the bolded finding title', () => {
+  it.each([
     // CodeRabbit-shaped body from a real GitLab MR review.
-    const body = [
-      '_🛠️ Functional Correctness_ | _🟠 Major_ | _⚡ Quick win_',
-      '',
-      "**Do not infer the primary leg's provider from `primary_tier` alone.**",
-      '',
-      '`primary_provider_models` is still a runtime setting…',
-    ].join('\n');
-    expect(commentSnippet(body)).toBe(
+    [
+      'skips bot badge lines and surfaces the bolded finding title',
+      [
+        '_🛠️ Functional Correctness_ | _🟠 Major_ | _⚡ Quick win_',
+        '',
+        "**Do not infer the primary leg's provider from `primary_tier` alone.**",
+        '',
+        '`primary_provider_models` is still a runtime setting…',
+      ].join('\n'),
       "Do not infer the primary leg's provider from primary_tier alone.",
-    );
-  });
-
-  it('strips inline markdown but keeps snake_case identifiers intact', () => {
-    expect(commentSnippet('**Bold** with `code` and [a link](https://x) and _emph_')).toBe(
-      'Bold with code and a link and emph',
-    );
-    expect(commentSnippet('Derive from `primary_provider_models` instead')).toBe(
-      'Derive from primary_provider_models instead',
-    );
-  });
-
-  it('skips HTML comments, tags, table rows, and fenced code', () => {
-    const body = [
-      '<!-- fingerprint:abc123 -->',
-      '<details><summary>🤖 Prompt for AI Agents</summary>',
-      '| col | col2 |',
-      '|-----|------|',
-      '```suggestion',
-      'code_line = 1',
-      '```',
+    ],
+    ['strips inline markdown', '**Bold** with `code` and [a link](https://x) and _emph_', 'Bold with code and a link and emph'],
+    ['keeps snake_case identifiers intact', 'Derive from `primary_provider_models` instead', 'Derive from primary_provider_models instead'],
+    [
+      'skips HTML comments, tags, table rows, and fenced code',
+      [
+        '<!-- fingerprint:abc123 -->',
+        '<details><summary>🤖 Prompt for AI Agents</summary>',
+        '| col | col2 |',
+        '|-----|------|',
+        '```suggestion',
+        'code_line = 1',
+        '```',
+        'The actual point of the comment.',
+      ].join('\n'),
       'The actual point of the comment.',
-    ].join('\n');
-    expect(commentSnippet(body)).toBe('The actual point of the comment.');
-  });
-
-  it('strips heading, blockquote, and list markers', () => {
-    expect(commentSnippet('## Walkthrough')).toBe('Walkthrough');
-    expect(commentSnippet('> quoted intro')).toBe('quoted intro');
-    expect(commentSnippet('- first bullet point')).toBe('first bullet point');
-  });
-
-  it('skips pipe-less italic category labels', () => {
-    const body = ['_⚠️ Potential issue_', '', '**Race in the retry loop.**'].join('\n');
-    expect(commentSnippet(body)).toBe('Race in the retry loop.');
-  });
-
-  it('returns empty for bodies with no prose', () => {
-    expect(commentSnippet('🎉 ✅ | 🚀')).toBe('');
-    expect(commentSnippet('')).toBe('');
-  });
-
-  it('unwraps badge rows (a link wrapping an image) with no syntax residue', () => {
-    expect(commentSnippet('[![Build passing](https://img/b.svg)](https://ci/run) ready to merge')).toBe(
-      'Build passing ready to merge',
-    );
+    ],
+    ['strips a heading marker', '## Walkthrough', 'Walkthrough'],
+    ['strips a blockquote marker', '> quoted intro', 'quoted intro'],
+    ['strips a list marker', '- first bullet point', 'first bullet point'],
+    ['skips pipe-less italic category labels', '_⚠️ Potential issue_\n\n**Race in the retry loop.**', 'Race in the retry loop.'],
+    ['returns empty for a body with no prose', '🎉 ✅ | 🚀', ''],
+    ['returns empty for an empty body', '', ''],
+    ['unwraps badge rows (a link wrapping an image) with no syntax residue', '[![Build passing](https://img/b.svg)](https://ci/run) ready to merge', 'Build passing ready to merge'],
+  ])('%s', (_name, body, want) => {
+    expect(commentSnippet(body)).toBe(want);
   });
 });
 
 describe('visibleBody', () => {
-  it('is empty for marker-only bot replies', () => {
-    expect(visibleBody('<!-- coderabbit resolve -->')).toBe('');
-    expect(visibleBody(' <!-- a -->\n<!-- b --> ')).toBe('');
-    expect(visibleBody('')).toBe('');
-  });
-
-  it('strips markers glued to real prose and keeps the prose', () => {
-    expect(visibleBody('<!-- fingerprint:abc -->\nReal reply.')).toBe('Real reply.');
-  });
-
-  it('drops an unterminated trailing comment', () => {
-    expect(visibleBody('Prose first.\n<!-- truncated marker')).toBe('Prose first.');
+  it.each([
+    ['is empty for a marker-only bot reply', '<!-- coderabbit resolve -->', ''],
+    ['is empty for several padded markers', ' <!-- a -->\n<!-- b --> ', ''],
+    ['is empty for an empty body', '', ''],
+    ['strips markers glued to real prose and keeps the prose', '<!-- fingerprint:abc -->\nReal reply.', 'Real reply.'],
+    ['drops an unterminated trailing comment', 'Prose first.\n<!-- truncated marker', 'Prose first.'],
+  ])('%s', (_name, body, want) => {
+    expect(visibleBody(body)).toBe(want);
   });
 
   it('keeps fenced code whole: a comment opener there is code', () => {
@@ -147,8 +125,8 @@ describe('visibleBody', () => {
 
 describe('countReviewComments', () => {
   it('counts per file and overall, unresolved for every open resolvable thread, outdated included', () => {
-    const counts = countReviewComments({
-      prThreads: [
+    const counts = countReviewComments(indexReviewComments(
+      [
         thread({ id: 't1', path: 'src/a.ts' }),
         thread({ id: 't2', path: 'src/a.ts', isResolved: true }),
         // Outdated but open: the code moved, the question is still asked.
@@ -156,8 +134,8 @@ describe('countReviewComments', () => {
         // A PR-level comment: neutral, never unresolved.
         thread({ id: 'conv', path: '', line: null, side: '', isResolvable: false }),
       ],
-      drafts: [draft({ id: 'd1', filePath: 'src/b.ts' })],
-    });
+      [draft({ id: 'd1', filePath: 'src/b.ts' })],
+    ));
 
     expect(counts.byFile.get('src/a.ts')).toEqual({ total: 3, unresolved: 2 });
     expect(counts.byFile.get('src/b.ts')).toEqual({ total: 1, unresolved: 0 });
@@ -166,8 +144,17 @@ describe('countReviewComments', () => {
     expect(counts.tally).toEqual({ unresolved: 2, drafts: 1, total: 5 });
   });
 
+  it('counts a held reply in its thread\'s file, and in the file it was held on once the thread is gone', () => {
+    const reply = { ...draft({ id: 'r1', filePath: 'src/a.ts', side: 'reply', newLine: 0 }), replyThreadId: 't1' };
+    const moved = countReviewComments(indexReviewComments([thread({ id: 't1', path: 'src/b.ts' })], [reply]));
+    expect(moved.byFile.get('src/b.ts')).toEqual({ total: 2, unresolved: 1 });
+    expect(moved.byFile.has('src/a.ts')).toBe(false);
+    const gone = countReviewComments(indexReviewComments([], [reply]));
+    expect(gone.byFile.get('src/a.ts')).toEqual({ total: 1, unresolved: 0 });
+  });
+
   it('is empty with nothing to count', () => {
-    const counts = countReviewComments({ prThreads: [], drafts: [] });
+    const counts = countReviewComments(indexReviewComments([], []));
     expect(counts.byFile.size).toBe(0);
     expect(counts.tally).toEqual({ unresolved: 0, drafts: 0, total: 0 });
   });

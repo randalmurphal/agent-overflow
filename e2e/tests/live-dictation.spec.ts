@@ -68,6 +68,28 @@ function countLiveAudio(page: Page): () => number {
   return () => bytes;
 }
 
+/**
+ * Keeps every capture the page opens; the answer says whether the page
+ * opened one and every track of every one has ended.
+ */
+async function recordCaptures(page: Page): Promise<() => Promise<boolean>> {
+  await page.addInitScript(() => {
+    const captures: MediaStream[] = [];
+    (window as unknown as { __captures: MediaStream[] }).__captures = captures;
+    const media = navigator.mediaDevices;
+    const open = media.getUserMedia.bind(media);
+    media.getUserMedia = async (constraints) => {
+      const stream = await open(constraints);
+      captures.push(stream);
+      return stream;
+    };
+  });
+  return () => page.evaluate(() => {
+    const captures = (window as unknown as { __captures: MediaStream[] }).__captures;
+    return captures.length > 0 && captures.every((stream) => stream.getTracks().every((track) => track.readyState === 'ended'));
+  });
+}
+
 /** Counts recordings uploaded for the subscription source. */
 function countUploads(page: Page): () => number {
   let pieces = 0;
@@ -139,6 +161,7 @@ test('switching live off mid-recording stops the stream even with the other sour
   await harness.rpc('UpdateSettings', { dictationAPIEnabled: true });
   const streamed = countLiveAudio(page);
   const uploads = countUploads(page);
+  const captureEnded = await recordCaptures(page);
   await openThread(harness, page, 'Switch off live');
 
   await mic(page).click();
@@ -152,8 +175,9 @@ test('switching live off mid-recording stops the stream even with the other sour
   await expect(mic(page)).toHaveAttribute('data-phase', 'idle');
   await expect(mic(page)).not.toHaveAttribute('data-error', 'true');
   const stopped = streamed();
-  // A second of capture would add 48 KB if anything still streamed.
-  await page.waitForTimeout(1000);
+  // Nothing streams once the capture has ended, and nothing was sent after
+  // the recording went idle.
+  await expect.poll(captureEnded, { message: 'the microphone capture is still open' }).toBe(true);
   expect(streamed()).toBe(stopped);
   expect(uploads()).toBe(0);
   await expect(input(page)).toHaveValue('');

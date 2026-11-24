@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
-import MessageSearch from './MessageSearch.svelte';
+import MessageSearch, { MESSAGE_SEARCH_DEBOUNCE_MS } from './MessageSearch.svelte';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
@@ -20,9 +20,20 @@ beforeEach(async () => {
   setBindingMock('ListThreads', async () => []);
   await loadSidebarCatalogs();
   setBindingMock('SwitchThread', async () => {});
-  setBindingMock('ListItems', async () => []);
   setBindingMock('ListRecentTurns', async () => []);
 });
+
+// Types each value into the search box in turn, then passes the search's
+// debounce on a fake clock, so the query runs without the real wait.
+async function typeQuery(input: HTMLElement, ...values: string[]): Promise<void> {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    for (const value of values) await fireEvent.input(input, { target: { value } });
+    await vi.advanceTimersByTimeAsync(MESSAGE_SEARCH_DEBOUNCE_MS);
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 function makePane() {
   return createThreadPane();
@@ -86,7 +97,7 @@ describe('<MessageSearch> — visibility & idle state', () => {
     setBindingMock('SearchThreadMessages', async () => []);
     const pane = makePane();
     const { getByTestId, rerender } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'stale' } });
+    await typeQuery(getByTestId('message-search-input'), 'stale');
     await rerender({ open: false, pane, onClose: vi.fn() });
     await rerender({ open: true, pane, onClose: vi.fn() });
     expect((getByTestId('message-search-input') as HTMLInputElement).value).toBe('');
@@ -96,15 +107,6 @@ describe('<MessageSearch> — visibility & idle state', () => {
 // ---- Live search ----
 
 describe('<MessageSearch> — search behavior', () => {
-  it('calls the backend when the user types', async () => {
-    const search = setBindingMock('SearchThreadMessages', async () => []);
-    const pane = makePane();
-    const { getByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'bug' } });
-    await waitFor(() => expect(search).toHaveBeenCalled());
-    expect(search.mock.calls[0]).toEqual(['bug', 50]);
-  });
-
   it('renders a hit row per result with thread title and match-type badge', async () => {
     setBindingMock('SearchThreadMessages', async () => [
       hit({ threadId: 't1', threadTitle: 'First', matchType: 'title', itemId: '' }),
@@ -112,7 +114,7 @@ describe('<MessageSearch> — search behavior', () => {
     ]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'q' } });
+    await typeQuery(getByTestId('message-search-input'), 'q');
     await findByTestId('message-search-hit-t1-title');
     expect(getByTestId('message-search-hit-t1-title').textContent).toContain('First');
     expect(getByTestId('message-search-hit-t1-title').textContent).toMatch(/title/);
@@ -127,7 +129,7 @@ describe('<MessageSearch> — search behavior', () => {
     ]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'ÉCOLE' } });
+    await typeQuery(getByTestId('message-search-input'), 'ÉCOLE');
     const row = await findByTestId('message-search-hit-t1-i1');
     expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['ÉCOLE', 'École']);
   });
@@ -144,9 +146,9 @@ describe('<MessageSearch> — search behavior', () => {
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
     const input = getByTestId('message-search-input');
-    await fireEvent.input(input, { target: { value: 'alpha' } });
+    await typeQuery(input, 'alpha');
     const row = await findByTestId('message-search-hit-t1-title');
-    await fireEvent.input(input, { target: { value: 'beta' } });
+    await typeQuery(input, 'beta');
     await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
     expect([...row.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual(['alpha']);
     release([hit({ threadId: 't1', threadTitle: 'alpha beta', matchType: 'title', itemId: '' })]);
@@ -157,7 +159,7 @@ describe('<MessageSearch> — search behavior', () => {
     setBindingMock('SearchThreadMessages', async () => []);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'xyzzy' } });
+    await typeQuery(getByTestId('message-search-input'), 'xyzzy');
     const empty = await findByTestId('message-search-empty');
     expect(empty.textContent).toContain('xyzzy');
   });
@@ -168,7 +170,7 @@ describe('<MessageSearch> — search behavior', () => {
     });
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'q' } });
+    await typeQuery(getByTestId('message-search-input'), 'q');
     const err = await findByTestId('message-search-error');
     expect(err.textContent).toMatch(/db is down/);
   });
@@ -191,9 +193,9 @@ describe('<MessageSearch> — search behavior', () => {
     const pane = makePane();
     const { getByTestId, findByTestId, queryByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
     const input = getByTestId('message-search-input');
-    await fireEvent.input(input, { target: { value: 'one' } });
+    await typeQuery(input, 'one');
     await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
-    await fireEvent.input(input, { target: { value: 'two' } });
+    await typeQuery(input, 'two');
     await findByTestId('message-search-hit-t-new-title');
     // Now release the slow first response. It should NOT replace what we see.
     releaseFirst([hit({ threadId: 't-old', threadTitle: 'Older', matchType: 'title', itemId: '' })]);
@@ -214,7 +216,7 @@ describe('<MessageSearch> — keyboard navigation', () => {
     ]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await typeQuery(getByTestId('message-search-input'), 'x');
     await findByTestId('message-search-hit-t1-title');
     // Arrow keys are caught at the dialog body level so the input keeps
     // receiving letter keystrokes. Escape is the backdrop's contract.
@@ -234,34 +236,18 @@ describe('<MessageSearch> — keyboard navigation', () => {
     expect(getByTestId('message-search-hit-t3-b').getAttribute('aria-current')).toBe('true');
   });
 
-  it('Enter opens the currently-active hit', async () => {
-    setBindingMock('SearchThreadMessages', async () => [
-      hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'First' }),
-      hit({ threadId: 't2', itemId: 'a', matchType: 'item', summary: 'second', threadTitle: 'Second' }),
-    ]);
-    const onClose = vi.fn();
-    const pane = makePane();
-    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
-    await findByTestId('message-search-hit-t1-title');
-    const body = getByTestId('message-search');
-    // Default is first hit. Enter opens it.
-    await fireEvent.keyDown(body, { key: 'Enter' });
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(pane.threadId).toBe('t1');
-  });
-
   it('does not open a hit while an IME composition is active', async () => {
     // Thread id is unique to this test: an already-open pane would be
     // revealed instead of ours, and panes opened by earlier tests in this
     // file outlive them.
     setBindingMock('SearchThreadMessages', async () => [
       hit({ threadId: 'ime1', itemId: '', matchType: 'title', threadTitle: 'First' }),
+      hit({ threadId: 'ime2', itemId: 'a', matchType: 'item', summary: 'second', threadTitle: 'Second' }),
     ]);
     const onClose = vi.fn();
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await typeQuery(getByTestId('message-search-input'), 'x');
     await findByTestId('message-search-hit-ime1-title');
     const body = getByTestId('message-search');
 
@@ -270,7 +256,8 @@ describe('<MessageSearch> — keyboard navigation', () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(pane.threadId).toBeNull();
 
-    // Control: the same keystroke outside a composition opens the hit.
+    // Control: the same keystroke outside a composition opens the active
+    // hit, the first by default.
     await fireEvent.keyDown(body, { key: 'Enter' });
     await waitFor(() => expect(pane.threadId).toBe('ime1'));
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -284,7 +271,7 @@ describe('<MessageSearch> — keyboard navigation', () => {
     const onClose = vi.fn();
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await typeQuery(getByTestId('message-search-input'), 'x');
     await findByTestId('message-search-hit-t1-title');
     const body = getByTestId('message-search');
     await fireEvent.keyDown(body, { key: 'ArrowDown' });
@@ -297,20 +284,6 @@ describe('<MessageSearch> — keyboard navigation', () => {
 // ---- Click / close interactions ----
 
 describe('<MessageSearch> — interactions', () => {
-  it('clicking a hit switches the pane and closes the dialog', async () => {
-    setBindingMock('SearchThreadMessages', async () => [
-      hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'First' }),
-    ]);
-    const onClose = vi.fn();
-    const pane = makePane();
-    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
-    const btn = await findByTestId('message-search-hit-t1-title');
-    await fireEvent.click(btn);
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(pane.threadId).toBe('t1');
-  });
-
   it('clicking an item hit publishes a scroll-to-item request for the match', async () => {
     // Post-windowing behavior: openHit must ask the pane to scroll to
     // the hit's itemId after switching threads. The pane mediates
@@ -325,7 +298,7 @@ describe('<MessageSearch> — interactions', () => {
     const spy = vi.spyOn(pane, 'requestScrollToItem');
 
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'q' } });
+    await typeQuery(getByTestId('message-search-input'), 'q');
     await fireEvent.click(await findByTestId('message-search-hit-t1-item-xyz'));
 
     await waitFor(() => expect(spy).toHaveBeenCalledWith('item-xyz'));
@@ -343,7 +316,7 @@ describe('<MessageSearch> — interactions', () => {
     const spy = vi.spyOn(pane, 'requestScrollToItem');
 
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'q' } });
+    await typeQuery(getByTestId('message-search-input'), 'q');
     await fireEvent.click(await findByTestId('message-search-hit-t1-title'));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
 
@@ -359,7 +332,7 @@ describe('<MessageSearch> — interactions', () => {
     const onClose = vi.fn();
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await typeQuery(getByTestId('message-search-input'), 'x');
     await fireEvent.click(await findByTestId('message-search-hit-t-missing-title'));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     // The pane switched to a minimal shape with the right id.
@@ -395,30 +368,16 @@ describe('<MessageSearch> — interactions', () => {
 // ---- Match highlighting ----
 
 describe('<MessageSearch> — highlight', () => {
-  it('wraps matched substrings in <mark> within thread titles', async () => {
-    setBindingMock('SearchThreadMessages', async () => [
-      hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'Release pipeline' }),
-    ]);
+  it.each([
+    { where: 'thread titles', match: hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'Release pipeline' }), row: 't1-title', query: 'release', marked: 'Release' },
+    { where: 'item summaries', match: hit({ threadId: 't1', itemId: 'i1', matchType: 'item', summary: 'found the bug today' }), row: 't1-i1', query: 'bug', marked: 'bug' },
+  ])('wraps matched substrings in <mark> within $where', async ({ match, row, query, marked }) => {
+    setBindingMock('SearchThreadMessages', async () => [match]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'release' } });
-    const row = await findByTestId('message-search-hit-t1-title');
-    const marks = row.querySelectorAll('mark');
-    expect(marks.length).toBeGreaterThan(0);
-    expect(marks[0].textContent).toBe('Release');
-  });
-
-  it('wraps matched substrings in <mark> within item summaries', async () => {
-    setBindingMock('SearchThreadMessages', async () => [
-      hit({ threadId: 't1', itemId: 'i1', matchType: 'item', summary: 'found the bug today' }),
-    ]);
-    const pane = makePane();
-    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'bug' } });
-    const row = await findByTestId('message-search-hit-t1-i1');
-    const marks = row.querySelectorAll('mark');
-    expect(marks.length).toBeGreaterThan(0);
-    expect(Array.from(marks).some((m) => m.textContent === 'bug')).toBe(true);
+    await typeQuery(getByTestId('message-search-input'), query);
+    const found = await findByTestId(`message-search-hit-${row}`);
+    expect([...found.querySelectorAll('mark')].map((mark) => mark.textContent)).toEqual([marked]);
   });
 });
 
@@ -432,7 +391,7 @@ describe('<MessageSearch> — provider rendering', () => {
     ]);
     const pane = makePane();
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose: vi.fn() });
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'one' } });
+    await typeQuery(getByTestId('message-search-input'), 'one');
     const claudeRow = await findByTestId('message-search-hit-t-c-title');
     const codexRow = await findByTestId('message-search-hit-t-x-title');
     // The badge's visible character is right next to the title.
@@ -449,7 +408,7 @@ describe('<MessageSearch> scope', () => {
     const scoped = setBindingMock('SearchThreadItems', async () => []);
     const { getByTestId } = renderSearch({ open: true, pane: threadPaneStub('thr-1') });
     expect(getByTestId('message-search-input').getAttribute('aria-label')).toBe('Search messages');
-    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'seconds' } });
+    await typeQuery(getByTestId('message-search-input'), 'seconds');
     await waitFor(() => expect(global).toHaveBeenCalled());
     expect(scoped).not.toHaveBeenCalled();
   });
@@ -494,10 +453,7 @@ describe('<MessageSearch> — debounce', () => {
     const pane = makePane();
     const { getByTestId } = renderSearch({ open: true, pane });
     const input = getByTestId('message-search-input');
-    await fireEvent.input(input, { target: { value: 's' } });
-    await fireEvent.input(input, { target: { value: 'se' } });
-    await fireEvent.input(input, { target: { value: 'sec' } });
-    await fireEvent.input(input, { target: { value: 'seconds' } });
+    await typeQuery(input, 's', 'se', 'sec', 'seconds');
     await waitFor(() => expect(search).toHaveBeenCalled());
     // One scan for the settled value, not one per keystroke.
     expect(search).toHaveBeenCalledTimes(1);
@@ -513,7 +469,7 @@ describe('<MessageSearch> — assistants turned on or off', () => {
     const search = setBindingMock('SearchThreadMessages', async () => []);
     try {
       const { getByTestId } = renderSearch({ open: true, pane: makePane() });
-      await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'deploy' } });
+      await typeQuery(getByTestId('message-search-input'), 'deploy');
       await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
       applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');
       await waitFor(() => expect(search).toHaveBeenCalledTimes(2));

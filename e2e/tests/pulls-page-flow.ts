@@ -31,7 +31,7 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   clearForgeRefusal,
@@ -43,6 +43,7 @@ import {
   type ForgeRepo,
 } from './forge-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 export interface PullsSurface {
   compact: boolean;
@@ -138,7 +139,7 @@ export async function seedProjects(harness: HarnessApp): Promise<Seeded> {
 export function launchPullsHarness(): Promise<HarnessApp> {
   // The list pump's product cadence is 45 s; the activity and refusal
   // steps wait for a tick.
-  return launchHarness({ env: { AO_HARNESS_TIMING: [...HARNESS_TIMING.split(','), 'pr-update=1s'].join(',') } });
+  return launchHarness({ env: harnessTiming({ 'pr-update': '1s' }) });
 }
 
 export function row(page: Page, number: number): Locator {
@@ -158,12 +159,13 @@ export async function pickFilter(page: Page, pane: Locator, value: 'needs_you' |
 }
 
 async function useDarkTheme(page: Page): Promise<void> {
+  if (!screenshotsOn) return;
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveClass(/\bdark\b/);
 }
 
 async function shoot(target: Page | Locator, testInfo: TestInfo, name: string): Promise<void> {
-  await target.screenshot({ path: testInfo.outputPath(`${name}.png`) });
+  await screenshot(target, { path: testInfo.outputPath(`${name}.png`) });
 }
 
 export async function openPage(page: Page): Promise<Locator> {

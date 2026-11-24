@@ -6,7 +6,6 @@ import { trace } from './trace';
 import { SpringMotion, SPRING_MAX_CATCHUP_STEPS } from './motion';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import {
-  __resetAnimationFrameCoordinatorForTest,
   createAnimationFrameBatcher,
 } from '../animationFrameBatcher';
 import type { ScrollWriteCaller } from './types';
@@ -68,7 +67,6 @@ let springFrameBatcher = createAnimationFrameBatcher(
 );
 
 export function __resetSpringFrameBatcherForTest(): void {
-  __resetAnimationFrameCoordinatorForTest();
   springFrameBatcher = createAnimationFrameBatcher(
     'scroll-spring',
     'before-dom-update',
@@ -141,7 +139,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       zeroStepTicks: 0,
       sentinelTicks: 0,
       maxGapMs: 0,
-      gapBuckets: new Array<number>(CHASE_GAP_BUCKET_BOUNDS_MS.length + 1).fill(0),
+      gapBuckets: Array.from({ length: CHASE_GAP_BUCKET_BOUNDS_MS.length + 1 }, () => 0),
       catchupClamps: 0,
       distanceJumps: 0,
       targetChanges: 0,

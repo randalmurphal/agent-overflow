@@ -11,16 +11,12 @@ import { render, waitFor } from '@testing-library/svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
 import { makeSettings } from '../../../test/helpers/settings';
-import { resetSettingsForTest } from '../../stores/settings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { ToolResultMeta } from '../../types/models';
-import { resetCodeSpanCacheForTest } from './markdown/codeSpanCache';
-import { resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
 import { contentKey } from '../../utils/fnv1a';
 import {
   ensureHighlightSchemaVersion,
   ensureSyntaxClassNames,
-  resetSyntaxClassNamesForTest,
 } from '../../utils/syntaxSpans';
 import AssistantMessage from './AssistantMessage.svelte';
 import DiffFileStack from './DiffFileStack.svelte';
@@ -93,14 +89,10 @@ async function warmTables(): Promise<void> {
 }
 
 beforeEach(async () => {
-  resetCodeSpanCacheForTest();
-  resetDiffSpanCacheForTest();
-  resetSyntaxClassNamesForTest();
   setBindingMock('HighlightSchemaVersion', async () => HV);
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
   // The diff case asserts on painted body spans, so the stack has to be
   // expanded: collapseDiffPreviews defaults on and would render header-only.
-  resetSettingsForTest();
   setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: false }));
   await loadSettings();
 });

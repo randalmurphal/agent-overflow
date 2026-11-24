@@ -20,7 +20,7 @@ type MCPAuthConfig struct {
 	// Reaper ends the process if the backend dies first. Required.
 	Reaper         procutil.Reaper
 	WorkDir        string
-	Env            map[string]string
+	Env            provider.EnvInput
 	RequestTimeout time.Duration
 }
 

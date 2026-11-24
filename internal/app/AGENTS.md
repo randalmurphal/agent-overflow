@@ -78,8 +78,7 @@ operation whose owning package defines the outcome of a cut at every point
 and tests it. List it in
 `callerBoundMethods` with what its context reaches; when in doubt, do not.
 Work past a method's first effect that must also survive shutdown runs on
-`context.WithoutCancel(ctx)`, or `ctxutil.Detach` onto its owner's lifetime,
-under its own timeout.
+`context.WithoutCancel(ctx)` under its own timeout.
 
 Per-screen settings must be obtained through `settingsCaller(ctx)` so bucket
 and device class come from one derivation. Backend work for the local screen
@@ -381,7 +380,9 @@ when it sets the environment, replaces a package-level variable such as a
 the global logger, counts process-wide goroutines or memory, or must act
 inside a fixed real-time window such as a triage flush timer.
 
-Application tests run with the repository root as their working directory for
-whole-tree contracts and committed fixtures. Prefer `t.TempDir()` and explicit
-paths in new tests. Test responsibility-owned behavior in its narrower
+Application tests run in the package directory, where go test starts them,
+since the test cache records each file a test opens by that directory; a
+test reads a file elsewhere in the checkout, such as a committed fixture or
+a whole-tree contract's sources, through `internal/testutil/reporoot`.
+Prefer `t.TempDir()` and explicit paths in new tests. Test responsibility-owned behavior in its narrower
 package; keep tests here for binding, lifecycle, and multi-service composition.

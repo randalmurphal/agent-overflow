@@ -260,18 +260,6 @@ func (a *App) ProviderTerminalResize(threadID string, rows uint16, cols uint16) 
 	return sess.ResizeTerminal(rows, cols)
 }
 
-// ProviderTerminalRefresh forces the TUI to repaint a glitched frame via a
-// winsize nudge (the visible grid is unchanged).
-//
-//ao:scope terminal:operate
-func (a *App) ProviderTerminalRefresh(threadID string) error {
-	sess, err := a.claudetuiSession(threadID)
-	if err != nil {
-		return err
-	}
-	return sess.RefreshTerminal()
-}
-
 // ProviderTerminalSetControl acquires (control=true) or releases the human
 // take-control input lease for THIS caller's attachment. While a human holds
 // it, AO's programmatic Send is refused so the two input drivers never

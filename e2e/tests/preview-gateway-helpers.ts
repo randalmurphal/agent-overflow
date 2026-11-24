@@ -422,29 +422,6 @@ const PHONE_LABEL = 'Preview phone';
 /** The refusal a request with no live grant gets, verbatim. */
 const PREVIEW_ENDED = 'This preview session ended. Open the link again from Agent Overflow.';
 
-// devServerScanInterval in internal/app/app_preview.go.
-const DEV_SERVER_SCAN_INTERVAL_MS = 3_000;
-
-/**
- * Waits until the discovery loop has completed a tick with no remote reader
- * attached. While one is attached every tick publishes `devserver:list`; a
- * tick without one publishes nothing and releases idle listeners instead. So
- * an interval that passes with no new list after the last one proves such a
- * tick ran. The margin covers the tick's own work and the event's delivery.
- */
-async function awaitDiscoveryTickWithoutReader(harness: HarnessApp, page: Page): Promise<void> {
-  const lastList = () => Math.max(0, ...harness.eventTimes('devserver:list'));
-  let last = lastList();
-  expect(last, 'the attached phone must have received discovery lists').toBeGreaterThan(0);
-  for (;;) {
-    const quietUntil = last + DEV_SERVER_SCAN_INTERVAL_MS + 500;
-    await page.waitForTimeout(Math.max(0, quietUntil - Date.now()));
-    const latest = lastList();
-    if (latest === last) return;
-    last = latest;
-  }
-}
-
 /**
  * The `CommandOutputMeta` triage wrote for one row. It rides the heavy
  * PAYLOAD rather than the item, which is also where `CommandOutput.svelte`
@@ -506,7 +483,7 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
       await harness.rpc('HarnessSetScenario', { scenario: previewTurnScenario(devServer.port) });
       threadId = await seedAgentThread(harness, PROJECT_NAME, THREAD_TITLE);
       await startMock(harness, threadId);
-      await harness.rpc('SendMessage', threadId, 'start the dev server', null);
+      await harness.send(threadId, 'start the dev server');
       await harness.waitForEvent('provider:turn_completed');
 
       // The fixture's own precondition. The chip is gated on the row's
@@ -694,12 +671,17 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
           "the ticket exchange is the gateway's own answer and never reaches the dev server",
         ).toEqual([]);
 
-        // An external preview has its own browser grant. Let the app's last
-        // remote connection disappear across a complete discovery tick; the
-        // request below must still reach the dev server. Fake-clock unit
-        // tests cover the ticket/grant expiry boundaries without this delay.
+        // An external preview has its own browser grant: once the app's
+        // last remote connection goes, a discovery tick with no reader
+        // releases the idle listeners (internal/app
+        // TestStoppingTheScanReleasesThePreviewListeners), and the app's
+        // idle tick keeps them all while a browser grant lives (internal/app
+        // TestAnIdleTickKeepsTheListenersOfALiveBrowserGrant; the grant's
+        // expiry boundaries are internal/transport
+        // TestIdlePreviewRetentionFollowsTicketsAndBrowserGrants, on a fake
+        // clock). The tick has no effect a request can see while the grant
+        // lives, so the request below follows the phone's leaving at once.
         await phone.goto('about:blank');
-        await awaitDiscoveryTickWithoutReader(harness, phone);
 
         // The path and query, byte for byte, and the Host the upstream
         // insists on. `%2F` stays encoded: a re-encoded path is an HMR

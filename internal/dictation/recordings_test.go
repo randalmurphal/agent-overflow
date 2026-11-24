@@ -17,6 +17,8 @@ func TestRecordingJoinsItsPiecesInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	released := 0
+	recordings.OnRelease(id, func() { released++ })
 	for seq, piece := range []string{"header+", "frames-1+", "frames-2"} {
 		if err := recordings.Append(id, seq, int64(len(piece)), strings.NewReader(piece)); err != nil {
 			t.Fatalf("piece %d: %v", seq, err)
@@ -29,8 +31,14 @@ func TestRecordingJoinsItsPiecesInOrder(t *testing.T) {
 	if _, err := recordings.Finish(context.Background(), id, 3); err == nil {
 		t.Fatal("a recording being transcribed was finished again")
 	}
+	if released != 0 || recordings.Open() != 1 {
+		t.Fatalf("a refused finish released the transcribing recording (released %d, open %d)", released, recordings.Open())
+	}
 	job.Done()
 	job.Done()
+	if released != 1 || recordings.Open() != 0 {
+		t.Fatalf("released %d times, %d open after Done; want once and none", released, recordings.Open())
+	}
 	if _, err := recordings.Finish(context.Background(), id, 3); !errors.Is(err, ErrUnknownRecording) {
 		t.Fatalf("Finish after Done = %v, want ErrUnknownRecording", err)
 	}
@@ -125,21 +133,15 @@ func TestNoPieceSizeOverflowsTheCaps(t *testing.T) {
 }
 
 // A recording's release hook runs once when it leaves the set, however it
-// leaves, and not while a refused finish leaves it with its owner.
+// leaves. TestRecordingJoinsItsPiecesInOrder covers leaving through Done and
+// TestPiecesInFlightCountAgainstTheCaps a refused finish that keeps it.
 func TestARecordingSaysWhenItIsReleased(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		run  func(t *testing.T, r *Recordings, id string)
+		run  func(r *Recordings, id string)
 	}{
-		{"done", func(t *testing.T, r *Recordings, id string) {
-			job, err := r.Finish(context.Background(), id, 1)
-			if err != nil {
-				t.Fatal(err)
-			}
-			job.Done()
-		}},
-		{"cancelled", func(_ *testing.T, r *Recordings, id string) { r.Cancel(id) }},
-		{"finished short of its pieces", func(_ *testing.T, r *Recordings, id string) { _, _ = r.Finish(context.Background(), id, 2) }},
+		{"cancelled", func(r *Recordings, id string) { r.Cancel(id) }},
+		{"finished short of its pieces", func(r *Recordings, id string) { _, _ = r.Finish(context.Background(), id, 2) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recordings := New(0, 0)
@@ -149,57 +151,12 @@ func TestARecordingSaysWhenItIsReleased(t *testing.T) {
 			}
 			released := 0
 			recordings.OnRelease(id, func() { released++ })
-			tc.run(t, recordings, id)
+			tc.run(recordings, id)
 			if released != 1 || recordings.Open() != 0 {
 				t.Fatalf("released %d times, %d open; want once and none", released, recordings.Open())
 			}
 		})
 	}
-
-	t.Run("finished again while transcribing", func(t *testing.T) {
-		recordings := New(0, 0)
-		id, _ := recordings.Begin("audio/webm", 0)
-		if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
-			t.Fatal(err)
-		}
-		released := 0
-		recordings.OnRelease(id, func() { released++ })
-		job, err := recordings.Finish(context.Background(), id, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := recordings.Finish(context.Background(), id, 1); err == nil {
-			t.Fatal("a transcribing recording was finished again")
-		}
-		if released != 0 || recordings.Open() != 1 {
-			t.Fatalf("a refused finish released the transcribing recording (released %d, open %d)", released, recordings.Open())
-		}
-		job.Done()
-		if released != 1 {
-			t.Fatalf("released %d times after Done, want once", released)
-		}
-	})
-
-	t.Run("finished while a piece is read", func(t *testing.T) {
-		recordings := New(0, 0)
-		id, _ := recordings.Begin("audio/webm", 0)
-		released := 0
-		recordings.OnRelease(id, func() { released++ })
-		body := &blockedBody{release: make(chan struct{}), data: strings.NewReader("abcd")}
-		done := make(chan error, 1)
-		go func() { done <- recordings.Append(id, 0, 4, body) }()
-		waitFor(t, func() bool { return recordings.Held() == 4 })
-		if _, err := recordings.Finish(context.Background(), id, 1); err == nil {
-			t.Fatal("a recording was finished while a piece was being read")
-		}
-		if released != 0 || recordings.Open() != 1 {
-			t.Fatalf("a refused finish released the uploading recording (released %d, open %d)", released, recordings.Open())
-		}
-		close(body.release)
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
-	})
 }
 
 // A piece's bytes are reserved before it is read, so uploads in flight at
@@ -211,6 +168,8 @@ func TestPiecesInFlightCountAgainstTheCaps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	released := 0
+	recordings.OnRelease(id, func() { released++ })
 	body := &blockedBody{release: make(chan struct{}), data: strings.NewReader("abcd")}
 	done := make(chan error, 1)
 	go func() { done <- recordings.Append(id, 0, 4, body) }()
@@ -224,6 +183,9 @@ func TestPiecesInFlightCountAgainstTheCaps(t *testing.T) {
 	}
 	if _, err := recordings.Finish(context.Background(), id, 1); err == nil {
 		t.Fatal("a recording was finished while a piece was being read")
+	}
+	if released != 0 || recordings.Open() != 1 {
+		t.Fatalf("a refused finish released the uploading recording (released %d, open %d)", released, recordings.Open())
 	}
 
 	// The budget across recordings counts the piece in flight.

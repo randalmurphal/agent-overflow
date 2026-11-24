@@ -17,7 +17,13 @@ const completed = frame('turn/completed', { turn: { id: '${TURN_ID}', status: 'c
 
 interface Question { itemId: string; index: number; state: string; answer: string; userItemId: string }
 
-export function asyncQuestionsFlow(): void {
+/**
+ * The desktop project's alone: a backend crash and restart keep a pending
+ * question and restore its unsent answer into the draft. Nothing in it
+ * branches on the layout; the phone's picker, composer and reload are
+ * asyncQuestionsFlow's, which both projects run.
+ */
+export function asyncQuestionsCrashFlow(): void {
   test('abrupt backend loss preserves pending questions and restores unsent answers once', async ({ page }) => {
     const root = await mkdtemp(join(tmpdir(), 'ao-question-crash-'));
     let host: HarnessApp | undefined;
@@ -31,7 +37,7 @@ export function asyncQuestionsFlow(): void {
       await host.open(page);
       await page.getByTestId('thread-row').click();
       const mock = await startMock(host, thread);
-      await host.rpc('SendMessage', thread, 'Ask while working', null);
+      await host.send(thread, 'Ask while working');
       await waitForGate(host, 'hold-crash');
       await page.getByLabel('Message Input').fill('A separate draft');
       await expect.poll(async () => (await host!.rpc<{ content: string }>('GetDraft', thread)).content).toBe('A separate draft');
@@ -66,7 +72,9 @@ export function asyncQuestionsFlow(): void {
       await rm(root, { recursive: true, force: true });
     }
   });
+}
 
+export function asyncQuestionsFlow(): void {
   test('blocking questions survive reload, accept multiple answers, and cancel on interrupt', async ({ harness, page }) => {
     const request = (id: number, questions: unknown[]) => JSON.stringify({ jsonrpc: '2.0', id, method: 'item/tool/requestUserInput', params: {
       threadId: '${THREAD_ID}', turnId: '${TURN_ID}', itemId: `blocking-${id}`, isBlocking: true, autoResolutionMs: 1, questions,
@@ -86,7 +94,7 @@ export function asyncQuestionsFlow(): void {
     await harness.open(page);
     await page.getByTestId('thread-row').click();
     const mock = await startMock(harness, thread);
-    await harness.rpc('SendMessage', thread, 'Ask before continuing', null);
+    await harness.send(thread, 'Ask before continuing');
     await waitForGate(harness, 'next-blocking');
     const panel = page.getByTestId('composer-pending-user-input');
     await expect(panel).toContainText('Choose the blocking scope');
@@ -137,7 +145,7 @@ export function asyncQuestionsFlow(): void {
     await harness.open(page);
     await page.getByTestId('thread-row').click();
     const mock = await startMock(harness, thread);
-    await harness.rpc('SendMessage', thread, 'Start working', null);
+    await harness.send(thread, 'Start working');
     await waitForGate(harness, 'append-questions');
     const picker = page.getByTestId('async-question-picker');
     await expect(picker).toContainText('Which scope?');
@@ -158,7 +166,7 @@ export function asyncQuestionsFlow(): void {
     await expect.poll(async () => (await harness.rpc<Question[]>('ListAsyncQuestions', thread, 'question:ask-one'))[0]?.state).toBe('delivered');
     await expect(page.getByLabel('Message Input')).toHaveValue('An unrelated composer draft');
     await expect(picker).toContainText('Which format?');
-    const items = await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', thread, true);
+    const items = await harness.items<{ kind: string; summary: string }>(thread, true);
     expect(items.filter(i => i.kind === 'user_text').map(i => i.summary)).toEqual(['set the stage', 'Start working', 'Question: Which scope?\nAnswer: Two, with extra detail\n\nQuestion: When should it run?\nAnswer: 明日\nafter lunch']);
     await picker.getByLabel('Your answer').fill('JSON with comments');
     await advance(harness, mock, 'finish');
@@ -214,7 +222,7 @@ export function asyncQuestionsFlow(): void {
     await harness.open(page);
     await page.getByTestId('thread-row').click();
     const mock = await startMock(harness, thread);
-    await harness.rpc('SendMessage', thread, 'Start working', null);
+    await harness.send(thread, 'Start working');
     await waitForGate(harness, 'finish-retry');
     const picker = page.getByTestId('async-question-picker');
     await picker.getByLabel('Your answer').fill('Two');

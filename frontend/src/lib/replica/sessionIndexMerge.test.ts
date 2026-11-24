@@ -7,7 +7,6 @@ import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __replicaIndexForTest,
-  __resetReplicaForTest,
   getReplicaWindow,
   initReplica,
   putReplicaWindow,
@@ -143,7 +142,6 @@ function threadIds(entries: readonly ReplicaIndexEntry[]): string[] {
 
 describe('replica accounting merge across pages', () => {
   beforeEach(() => {
-    __resetReplicaForTest();
     vi.restoreAllMocks();
   });
 

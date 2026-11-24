@@ -48,13 +48,15 @@ import {
   toolUseLine,
   waitForGate,
 } from './agent-visibility-helpers.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 /** Screenshots a region in light and dark appearance for the PR. */
 async function shoot(page: Page, testInfo: TestInfo, region: import('@playwright/test').Locator, name: string): Promise<void> {
+  if (!screenshotsOn) return;
   for (const theme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await expect(page.locator('html')).toHaveClass(theme === 'dark' ? /dark/ : /^(?!.*\bdark\b).*$/);
-    await region.screenshot({ path: testInfo.outputPath(`effort-${name}-v4-${theme}.png`) });
+    await screenshot(region, { path: testInfo.outputPath(`effort-${name}-v4-${theme}.png`) });
   }
   await page.emulateMedia({ colorScheme: 'light' });
 }
@@ -158,7 +160,7 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
   await page.getByText('Claude effort').click();
   const mockId = await startMock(harness, threadId);
   const gate = waitForGate(harness, 'agents-run');
-  await harness.rpc('SendMessage', threadId, 'delegate', null);
+  await harness.send(threadId, 'delegate');
   await gate;
 
   const timeline = page.getByTestId('chat-timeline-surface').getByTestId('message-timeline-scroll');
@@ -199,7 +201,7 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
 
   // --- A resumed run shows the effort it resumed at -----------------
   const resumed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'sweep again', null);
+  await harness.send(threadId, 'sweep again');
   await resumed;
   const resumeRow = timeline.locator('[data-item-id="tu-resume"]');
   await expect(resumeRow.getByTestId('agent-row-preview')).toContainText('Sweeper(Mock 1 · Low)');
@@ -250,7 +252,7 @@ test('a child runs at the session effort only on the main loop model', async ({ 
   await page.getByText('Clamped effort').click();
   await startMock(harness, threadId);
   const done = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'check', null);
+  await harness.send(threadId, 'check');
   await done;
 
   const items = await listItems(harness, threadId);
@@ -323,7 +325,7 @@ test('a Claude subagent on another model shows the effort its request reported',
   await page.getByText('Other model effort').click();
   const mockId = await startMock(harness, threadId);
   const gate = waitForGate(harness, 'other-reported');
-  await harness.rpc('SendMessage', threadId, 'check', null);
+  await harness.send(threadId, 'check');
   await gate;
 
   const timeline = page.getByTestId('chat-timeline-surface').getByTestId('message-timeline-scroll');
@@ -368,9 +370,9 @@ test('after a restart, agents nested in a resumed run inherit the effort its lau
   await harness.open(page);
   await page.getByText('Effort restart').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'sweep', null);
+  await harness.send(threadId, 'sweep');
   await harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('StopSession', threadId);
+  await harness.stopSession(threadId);
 
   // The new process knows the session's effort (max), not the agent's.
   await harness.rpc('HarnessSetScenario', {
@@ -393,7 +395,7 @@ test('after a restart, agents nested in a resumed run inherit the effort its lau
   });
   await startMock(harness, threadId);
   const resumed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'sweep again', null);
+  await harness.send(threadId, 'sweep again');
   await resumed;
 
   await expect
@@ -512,7 +514,7 @@ test('a Codex child shows the effort its spawn activity reports, without a profi
   await harness.open(page);
   await page.getByText('Codex effort').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'audit', null);
+  await harness.send(threadId, 'audit');
 
   const timeline = page.getByTestId('chat-timeline-surface').getByTestId('message-timeline-scroll');
   const spawnRow = timeline.locator(`[data-item-id="${SPAWN_CALL}"]`);

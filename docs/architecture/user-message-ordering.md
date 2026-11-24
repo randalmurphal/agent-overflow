@@ -9,9 +9,11 @@ observed activity state.
 
 `internal/app/app_user_message_placement.go` owns App-side placement. Public
 composer sends inspect backend activity under the thread action lock. Active
-or starting work sends through the existing durable queue when the caller
-negotiates send-ID reconciliation. Internal turn-opening
-sends retain their explicit behavior, including workflow and edit/resend flows.
+or starting work sends through the existing durable queue. The harness's
+awaited send (`HarnessSend` with `atRestOnly`) is refused there instead,
+recording nothing, so an accepted one's row is placed in a turn of its own. Internal
+turn-opening sends retain their explicit behavior, including workflow and
+edit/resend flows.
 An unconsumed correlation marker is not proof of activity: a completed turn can
 retain one for a late provider echo.
 
@@ -22,15 +24,14 @@ allocates a fresh response turn.
 
 The frontend creates one send ID per message and uses that same ID for every
 retry. It draws no row of its own for the message. Identified backend messages
-derive an opaque row ID from the send ID when the caller opts into
-`reconcileBySendId`. Older frontends already send idempotency IDs but draw a
-provisional row and predict `user:<turn>` for it: without this opt-in, direct
-sends retain numeric IDs. An idle-style send
-from such a caller is rejected before acceptance if the backend is active or
-starting, allowing its existing rollback to restore the draft. Explicit queue
-and steer paths already consume backend-resolved item IDs and remain available.
-Moving a modern message does not rename it; legacy numeric IDs remain valid.
-Only row coordinates determine ordering.
+derive an opaque row ID from the send ID, and a client send says it finds its
+row that way with `reconcileBySendId`. A window older than v0.0.15 does not:
+it draws a provisional row and predicts `user:<turn>` for it. Its send is
+refused before anything else with `dispatchrefusal.Unreadable`, a repeat of a
+send it made before an upgrade included, and its existing rollback restores
+the draft. Internal sends without a send ID keep numeric IDs. Moving a
+message does not rename it; numeric IDs in stored history remain valid. Only
+row coordinates determine ordering.
 
 A direct send is on screen only as the Send button's pending state until the
 backend shows evidence of it. The originating pane holds the send ID

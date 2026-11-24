@@ -4,7 +4,8 @@
 // of the developer's CLI. The poison records the attempt and holds its caller
 // while the test process writes down which goroutines are waiting on a child
 // process and which tests are running; then it exits 127 and the run fails
-// with that evidence.
+// with that evidence. Its Guard also fails a run that leaves a process
+// running after the tests (leftovers_linux.go).
 //
 // The package depends only on the standard library and low-level internal
 // packages that import no test fixture, so any package with provider spawn
@@ -56,15 +57,24 @@ const (
 func Run(m *testing.M) int { return Guard(m.Run) }
 
 // Guard runs a TestMain's test run, such as storetest.Run(m), with the
-// poison installed, and turns any attempt it recorded into a failed run.
+// poison installed, and turns any attempt it recorded into a failed run. On
+// Linux it also fails the run when a process a test started is still
+// running five seconds after the tests, naming and killing it
+// (markProcesses), so the verdict is the test binary's and go test never
+// caches a run that left one.
 func Guard(run func() int) int {
+	leftovers, err := markProcesses()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "providerpath: %v\n", err)
+		return 1
+	}
 	check, err := Install()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "providerpath: %v\n", err)
 		return 1
 	}
 	code := run()
-	if err := check(); err != nil {
+	if err := errors.Join(check(), leftovers()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		if code == 0 {
 			code = 1

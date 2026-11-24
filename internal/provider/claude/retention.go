@@ -10,6 +10,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+
+	"agent-overflow/internal/provider"
 )
 
 // Transcript retention.
@@ -34,7 +36,7 @@ import (
 // outside NewCommandLine: provider.DetectProvider runs it for both providers
 // and cannot import this package.
 //
-// Every command line clears ConfigHomeUnsetEnv, so the config home a launch
+// Every command line clears configHomeClears, so the config home a launch
 // sweeps is `.claude` under the HOME it runs with, and the caller passes
 // that home to ReadCleanupPeriod. A probe pinned to an isolated home sets
 // CLAUDE_CONFIG_DIR again through its environment; that home holds no
@@ -56,11 +58,11 @@ const DefaultCleanupPeriodDays = 30
 // maxSettingsFileBytes bounds the read of one settings file.
 const maxSettingsFileBytes = 8 << 20
 
-// ConfigHomeUnsetEnv lists the variables that move the CLI's config home or
+// configHomeClears lists the variables that move the CLI's config home or
 // its credential storage. Every launch against the user's home removes them
 // from the child's environment.
-func ConfigHomeUnsetEnv() []string {
-	return []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"}
+func configHomeClears() []provider.ReservedEnv {
+	return []provider.ReservedEnv{provider.ClaudeConfigDirEnv, provider.ClaudeSecureStorageConfigDirEnv}
 }
 
 // CleanupPeriod is the transcript retention a CLI process resolves from its

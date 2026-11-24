@@ -6,8 +6,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -15,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/transport"
 )
 
@@ -158,19 +157,13 @@ type appPackage struct {
 
 func parseAppPackage(t *testing.T) *appPackage {
 	t.Helper()
-	entries, err := os.ReadDir("internal/app")
-	if err != nil {
-		t.Fatalf("read internal/app: %v", err)
-	}
 	fset := token.NewFileSet()
 	pkg := &appPackage{}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+	for _, path := range reporoot.Files(t, "internal/app", "*.go") {
+		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		path := filepath.Join("internal/app", name)
-		parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		parsed, err := reporoot.ParseGoFile(t, fset, path, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}

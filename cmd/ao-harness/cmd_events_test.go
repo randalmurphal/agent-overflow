@@ -12,22 +12,6 @@ import (
 	"agent-overflow/internal/harnessclient"
 )
 
-// `await` used to pull the whole replay ring and settle on the OLDEST
-// match in it. Every invocation is a fresh connection, so nothing carried
-// the "a wait consumes its match" rule across one: waiting for
-// provider:turn_completed returned a turn that finished ten minutes ago,
-// instantly, forever. The default window is what fixes that, so it is
-// pinned here rather than left to the flag declaration.
-func TestAwaitDefaultsToEventsAfterItSubscribes(t *testing.T) {
-	wantHistory, minSeq, err := parseSince(sinceNow, false)
-	if err != nil {
-		t.Fatalf("parseSince: %v", err)
-	}
-	if wantHistory || minSeq != 0 {
-		t.Fatalf("--since now asked for history (history=%v minSeq=%d)", wantHistory, minSeq)
-	}
-}
-
 func TestParseSinceWindows(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -38,6 +22,9 @@ func TestParseSinceWindows(t *testing.T) {
 		wantErr     bool
 	}{
 		{name: "empty is now", since: "", wantHistory: false},
+		// `await`'s default window. Each invocation is a fresh connection, so
+		// pulling the replay ring here made a wait settle on a match that
+		// finished long ago, instantly.
 		{name: "explicit now", since: sinceNow, wantHistory: false},
 		{name: "history flag", since: sinceNow, history: true, wantHistory: true},
 		// A seq floor is a statement ABOUT the ring, so the ring is pulled:

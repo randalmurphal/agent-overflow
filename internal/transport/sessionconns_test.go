@@ -47,7 +47,8 @@ func TestSessionConnsClosesEveryConnectionOnOneSession(t *testing.T) {
 // TestSessionConnsHandlesTheFourLifecycleOrders — every ordering of
 // attach, detach and revoke has to be a normal answer, because a real
 // client disconnects, reconnects, and is revoked without coordinating any
-// of it with the server.
+// of it with the server. Two connections on one session is
+// TestSessionConnsClosesEveryConnectionOnOneSession.
 func TestSessionConnsHandlesTheFourLifecycleOrders(t *testing.T) {
 	t.Run("connection closed before revoke", func(t *testing.T) {
 		registry := newSessionConns()
@@ -74,16 +75,6 @@ func TestSessionConnsHandlesTheFourLifecycleOrders(t *testing.T) {
 		registry.attach("sess", func() { closed.Add(1) })
 		if got := registry.CountForSession("sess"); got != 1 {
 			t.Fatalf("a later attach was rejected by the registry: %d", got)
-		}
-	})
-
-	t.Run("two connections on one session", func(t *testing.T) {
-		registry := newSessionConns()
-		var closed atomic.Int64
-		registry.attach("sess", func() { closed.Add(1) })
-		registry.attach("sess", func() { closed.Add(1) })
-		if got := registry.CloseSession("sess"); got != 2 {
-			t.Fatalf("CloseSession closed %d, want both", got)
 		}
 	})
 
@@ -201,8 +192,6 @@ type sessionFixture struct {
 	dead map[string]bool
 	// credential is what PageSessionCredential hands the page.
 	credential string
-	// mutate adjusts the Config before New, for the knobs one test needs.
-	mutate func(*Config)
 }
 
 func newSessionFixture(t *testing.T) *sessionFixture {
@@ -463,4 +452,15 @@ func TestRevokedConnectionsAreNamedInTheCloseLog(t *testing.T) {
 	if got := h.closeReason(errors.New("use of closed network connection")); got != "session revoked" {
 		t.Fatalf("revoked connection reported as %q", got)
 	}
+}
+
+// sessions reports how many distinct sessions currently hold at least one
+// connection: the registry's own bound, which returns to zero.
+func (c *SessionConns) sessions() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.bySession)
 }

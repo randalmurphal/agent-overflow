@@ -72,19 +72,6 @@ func TestParsePorcelainStatus(t *testing.T) {
 	}
 }
 
-func TestStatusReturnsNotRepoForNonGitDirectory(t *testing.T) {
-	t.Parallel()
-	core := NewCore()
-
-	status, err := core.Status(t.Context(), t.TempDir())
-	if err != nil {
-		t.Fatalf("Status returned error: %v", err)
-	}
-	if status.IsRepo {
-		t.Fatal("expected IsRepo=false")
-	}
-}
-
 // repoWithOrigin creates a bare repo + a working clone with that bare
 // repo set as origin and an initial main push, returning (workingRepo,
 // barePath).
@@ -434,39 +421,25 @@ func TestSplitUpstreamRef(t *testing.T) {
 	}
 }
 
-func TestCurrentBranchReturnsMain(t *testing.T) {
+// A branch is named before its first commit; a detached HEAD and a directory
+// outside any repository name none. TestCurrentBranchDoesNotRunForgeLookup
+// covers a checked-out branch.
+func TestCurrentBranch(t *testing.T) {
 	t.Parallel()
-	repo := initGitRepo(t)
-
-	if got := NewCore().CurrentBranch(repo); got != "main" {
-		t.Fatalf("CurrentBranch() = %q, want main", got)
-	}
-}
-
-func TestCurrentBranchReturnsUnbornBranch(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	testutil.RunGit(t, repo, "init", "-q", "-b", "new-repo")
-
-	if got := NewCore().CurrentBranch(repo); got != "new-repo" {
-		t.Fatalf("CurrentBranch() = %q, want new-repo", got)
-	}
-}
-
-func TestCurrentBranchReturnsEmptyForDetachedHEAD(t *testing.T) {
-	t.Parallel()
-	repo := initGitRepo(t)
-	testutil.RunGit(t, repo, "checkout", "--detach", "HEAD")
-
-	if got := NewCore().CurrentBranch(repo); got != "" {
-		t.Fatalf("CurrentBranch() on detached HEAD = %q, want empty", got)
-	}
-}
-
-func TestCurrentBranchReturnsEmptyOutsideRepository(t *testing.T) {
-	t.Parallel()
-	if got := NewCore().CurrentBranch(t.TempDir()); got != "" {
-		t.Fatalf("CurrentBranch() outside repository = %q, want empty", got)
+	unborn := t.TempDir()
+	testutil.RunGit(t, unborn, "init", "-q", "-b", "new-repo")
+	detached := initGitRepo(t)
+	testutil.RunGit(t, detached, "checkout", "--detach", "HEAD")
+	for _, tc := range []struct{ name, cwd, want string }{
+		{"unborn branch", unborn, "new-repo"},
+		{"detached HEAD", detached, ""},
+		{"outside a repository", t.TempDir(), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NewCore().CurrentBranch(tc.cwd); got != tc.want {
+				t.Fatalf("CurrentBranch() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1191,7 +1164,7 @@ func untrackedOracle(t *testing.T, repo string) int {
 // (frontend/src/lib/utils/patchFiles.ts): a hunk body's '+'/'-' lines are
 // additions/deletions whatever follows the prefix, and a line outside every
 // body counts by its prefix unless it is a '+++'/'---' file header. This is
-// how the diff panel turns gitdiff.OpenWorktreeDiff's unified patch into the
+// how the diff panel turns gitdiff.WorktreeSides's unified patch into the
 // +/- totals it displays.
 func countPatchAddsDels(patch string) (insertions, deletions int) {
 	var body unidiff.Body
@@ -1215,7 +1188,7 @@ func countPatchAddsDels(patch string) (insertions, deletions int) {
 }
 
 // panelWorkspaceTotal computes the insertions/deletions the diff panel displays
-// for the workspace by replicating gitdiff.OpenWorktreeDiff's exact git commands
+// for the workspace by replicating gitdiff.WorktreeSides's exact git commands
 // (tracked patch vs HEAD + a per-untracked-file --no-index patch) and parsing
 // them the way the frontend does (countPatchAddsDels). It is a deliberately
 // different code path from the badge (which uses --numstat + countAddedLines),

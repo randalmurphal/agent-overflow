@@ -59,7 +59,6 @@ import { captureThreadMetadataRead, forgetBackendEntities, onThreadOwnershipChan
 import { forgetBackendClock, registerBackendClock } from './backendClock';
 import { grantedScopes, refreshGrantedScopes, forgetGrantedScopes, type ScopeSnapshot } from './scopes';
 import {
-  __resetManifestBackendsForTest,
   defaultBackendDescriptors,
   fetchBackendManifest,
   onManifestBackendsChanged,
@@ -996,7 +995,7 @@ export function __resetBackendsForTest(): void {
   for (const entry of entries.slice()) {
     if (!entry.home) detachBackend(entry.id);
   }
-  for (const id of [...stagedClients.keys()]) {
+  for (const id of stagedClients.keys()) {
     if (id !== HOME_BACKEND) stagedClients.delete(id);
   }
   installedProver = null;
@@ -1004,7 +1003,6 @@ export function __resetBackendsForTest(): void {
   watchedThreadIds = [];
   watchedScopes = [];
   screenPresence = null;
-  __resetManifestBackendsForTest();
   // Home survives the reset, so the UUID it was identified or paired as
   // must not: that alias would answer for a computer the next test attaches
   // under the same UUID.

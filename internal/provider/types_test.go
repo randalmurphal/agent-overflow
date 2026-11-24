@@ -119,34 +119,64 @@ func TestProviderEventJSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestProviderEventOmitsEmptyFields(t *testing.T) {
-	evt := ProviderEvent{
-		Kind:      EventTextDelta,
-		ThreadID:  "thread-1",
-		Timestamp: time.Now(),
-	}
-
-	data, err := json.Marshal(evt)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("unmarshal to map: %v", err)
-	}
-
-	for _, field := range []string{"turnId", "itemId", "itemType", "content", "role", "meta"} {
-		if _, ok := raw[field]; ok {
-			t.Errorf("expected field %q to be omitted when empty, but it was present", field)
-		}
-	}
-
-	// kind and threadId must always be present
-	for _, field := range []string{"kind", "threadId"} {
-		if _, ok := raw[field]; !ok {
-			t.Errorf("expected field %q to be present, but it was missing", field)
-		}
+// TestWireTypesOmitEmptyOptionalFields keeps optional fields off the wire
+// when they are empty. ModelInfo's fastModeTier matters most: Claude declares
+// no tier, and the frontend's fallback to its "Fast" literals is keyed on the
+// field being absent rather than an empty object.
+func TestWireTypesOmitEmptyOptionalFields(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		value   any
+		absent  []string
+		present []string
+	}{
+		{
+			name:    "ProviderEvent",
+			value:   ProviderEvent{Kind: EventTextDelta, ThreadID: "thread-1", Timestamp: time.Now()},
+			absent:  []string{"turnId", "itemId", "itemType", "content", "role", "meta", "replace"},
+			present: []string{"kind", "threadId"},
+		},
+		{
+			name:   "SessionInfo",
+			value:  SessionInfo{SessionID: "session-1", Model: "opus", CWD: "/tmp"},
+			absent: []string{"tools", "version"},
+		},
+		{
+			name:   "TokenUsage",
+			value:  TokenUsage{InputTokens: 100, OutputTokens: 50},
+			absent: []string{"cacheReadInputTokens", "cacheCreationInputTokens", "totalCostUsd"},
+		},
+		{
+			name:   "ApprovalResponse",
+			value:  ApprovalResponse{RequestID: "req-004", Decision: "deny"},
+			absent: []string{"answers", "permissions", "scope"},
+		},
+		{
+			name:   "ModelInfo",
+			value:  ModelInfo{Slug: "claude-opus-5", Name: "Claude Opus 5", Provider: string(Claude)},
+			absent: []string{"capabilities", "fastModeTier"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.value)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("unmarshal to map: %v", err)
+			}
+			for _, field := range tc.absent {
+				if _, ok := raw[field]; ok {
+					t.Errorf("expected field %q to be omitted when empty, but it was present: %s", field, data)
+				}
+			}
+			for _, field := range tc.present {
+				if _, ok := raw[field]; !ok {
+					t.Errorf("expected field %q to be present, but it was missing: %s", field, data)
+				}
+			}
+		})
 	}
 }
 
@@ -260,30 +290,6 @@ func TestSessionInfoJSON(t *testing.T) {
 	}
 }
 
-func TestSessionInfoOmitsEmptyOptionalFields(t *testing.T) {
-	info := SessionInfo{
-		SessionID: "session-1",
-		Model:     "opus",
-		CWD:       "/tmp",
-	}
-
-	data, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("unmarshal to map: %v", err)
-	}
-
-	for _, field := range []string{"tools", "version"} {
-		if _, ok := raw[field]; ok {
-			t.Errorf("expected field %q to be omitted when empty, but it was present", field)
-		}
-	}
-}
-
 func TestTokenUsageJSON(t *testing.T) {
 	usage := TokenUsage{
 		InputTokens:              1500,
@@ -317,29 +323,6 @@ func TestTokenUsageJSON(t *testing.T) {
 	}
 	if decoded.TotalCostUSD != usage.TotalCostUSD {
 		t.Errorf("TotalCostUSD: got %f, want %f", decoded.TotalCostUSD, usage.TotalCostUSD)
-	}
-}
-
-func TestTokenUsageOmitsZeroOptionals(t *testing.T) {
-	usage := TokenUsage{
-		InputTokens:  100,
-		OutputTokens: 50,
-	}
-
-	data, err := json.Marshal(usage)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("unmarshal to map: %v", err)
-	}
-
-	for _, field := range []string{"cacheReadInputTokens", "cacheCreationInputTokens", "totalCostUsd"} {
-		if _, ok := raw[field]; ok {
-			t.Errorf("expected field %q to be omitted when zero, but it was present", field)
-		}
 	}
 }
 
@@ -528,29 +511,6 @@ func TestUserInputAnswerRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestApprovalResponseOmitsStructuredFieldsWhenEmpty(t *testing.T) {
-	resp := ApprovalResponse{
-		RequestID: "req-004",
-		Decision:  "deny",
-	}
-
-	data, err := json.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("unmarshal to map: %v", err)
-	}
-
-	for _, field := range []string{"answers", "permissions", "scope"} {
-		if _, ok := raw[field]; ok {
-			t.Errorf("expected field %q to be omitted when empty, but it was present", field)
-		}
-	}
-}
-
 func TestContextWindowJSON(t *testing.T) {
 	cw := ContextWindow{
 		UsedTokens:     50000,
@@ -626,20 +586,5 @@ func TestProviderEventReplaceField(t *testing.T) {
 
 	if !decoded.Replace {
 		t.Error("Replace should be true")
-	}
-
-	// When Replace is false, it should be omitted.
-	evt.Replace = false
-	data, err = json.Marshal(evt)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("unmarshal to map: %v", err)
-	}
-	if _, ok := raw["replace"]; ok {
-		t.Error("replace should be omitted when false")
 	}
 }

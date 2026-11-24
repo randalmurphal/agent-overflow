@@ -773,3 +773,11 @@ func TestACancelOfAParkedDownloadWhoseEndIsKnownIsDeclined(t *testing.T) {
 		t.Fatalf("the engine was asked to cancel %q", got)
 	}
 }
+
+// adoptPopup announces popup and adopts it in the caller's goroutine, the
+// synchronous form of popupOpened.
+func (m *Manager) adoptPopup(popup enginePopup) {
+	if m.announcePopup(popup) {
+		m.runAdoption(popup)
+	}
+}

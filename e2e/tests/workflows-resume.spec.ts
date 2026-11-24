@@ -138,7 +138,7 @@ for (const provider of providers) {
     // Cursor loss only matters after the live process is gone. While it is
     // registered, that process is the authoritative continuation context even
     // if its durable cursor write has not landed yet.
-    await harness.rpc('StopSession', parkedThread);
+    await harness.stopSession(parkedThread);
     await harness.rpc('HarnessClearThreadProviderCursor', parkedThread);
     await setDoneScenario(
       harness,
@@ -183,7 +183,7 @@ test('Codex runtime cursor rejection supersedes the unsent continuation and rest
   const before = await harness.rpc<WorkflowDetail>('WorkflowGetItem', item.id);
   const parkedThread = before.phases[0]?.threadId ?? '';
   expect(parkedThread).toBeTruthy();
-  await harness.rpc('StopSession', parkedThread);
+  await harness.stopSession(parkedThread);
 
   await setCodexTurns(
     harness,

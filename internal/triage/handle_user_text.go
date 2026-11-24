@@ -105,7 +105,7 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 			anchor := r.flushAnchor(evt.ThreadID)
 			anchor.Lock()
 			defer anchor.Unlock()
-			pending, ok := r.consumeMatchingPendingSendForEcho(
+			pending, ok := r.consumeMatchingPendingSend(
 				evt.ThreadID, providerItemID, meta.text(userEchoClientIDMetaKey))
 			if !ok {
 				return false, nil
@@ -413,12 +413,6 @@ func (m userTextMeta) flag(key string) bool {
 	return value
 }
 
-// readProviderItemIDFromMeta is the one-shot form, for callers that hold only
-// the raw meta (a persisted row's, not a live event's).
-func readProviderItemIDFromMeta(meta json.RawMessage) string {
-	return decodeUserTextMeta(meta).text("provider_item_id")
-}
-
 // crossSessionPeer is the provenance of a message delivered to this
 // session by another Claude session, as the Claude parser reported it.
 type crossSessionPeer struct {
@@ -530,7 +524,7 @@ func (r *Router) persistExternalOriginMessage(evt provider.ProviderEvent, provid
 // the Codex session stamps on the user echo of a turn it did not start
 // (`codex queue --thread`). Duplicated for the same provider-agnostic
 // reason as crossSessionMessageOrigin and pinned by
-// `TestExternalQueueOriginMatchesTheProviderConstant`.
+// `TestTurnOriginsMatchTheProviderConstants`.
 const externalQueueOrigin = "external-queue"
 
 // userEchoClientIDMetaKey is where the Codex adapter puts a `userMessage`
@@ -546,7 +540,7 @@ const userEchoClientIDMetaKey = "client_id"
 // rather than imported because triage is provider-agnostic by contract —
 // it may not reach into a provider package for a vocabulary term — and
 // pinned against the original by
-// `TestPeerMessageOriginMatchesTheProviderConstant`.
+// `TestTurnOriginsMatchTheProviderConstants`.
 const crossSessionMessageOrigin = "peer-session"
 
 // openScheduledTurn opens the turn a scheduled prompt starts when nothing
@@ -570,7 +564,7 @@ func (r *Router) openScheduledTurn(evt provider.ProviderEvent) error {
 // scheduledTurnOrigin mirrors `claude.ScheduledTurnOrigin`: the user row
 // of a turn the provider started from its own schedule. Duplicated for the
 // same reason as crossSessionMessageOrigin and pinned by
-// `TestScheduledTurnOriginMatchesTheProviderConstant`.
+// `TestTurnOriginsMatchTheProviderConstants`.
 const scheduledTurnOrigin = "scheduled"
 
 // attachProviderItemIDToUserRow merges `provider_item_id` onto the

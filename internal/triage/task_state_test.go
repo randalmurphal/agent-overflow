@@ -163,8 +163,11 @@ func TestHandleTaskUpdateNoOpPreservesAllFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("no persisted todo list")
 	}
+	if len(snapshot.Steps) != 1 {
+		t.Fatalf("steps: got %+v, want the one task", snapshot.Steps)
+	}
 	s := snapshot.Steps[0]
-	if s.Step != "task" || s.Status != "completed" || s.Owner != "claimant" {
+	if s.ID != "1" || s.Step != "task" || s.Status != "completed" || s.Owner != "claimant" {
 		t.Errorf("step: got %+v, want {task completed claimant}", s)
 	}
 }
@@ -194,48 +197,15 @@ func TestHandleTaskUpdateDeletedRemovesMiddleEntry(t *testing.T) {
 	}
 }
 
-// TestHandleTaskDeleteOnlyEmitsLiveClear pins the fix for the 2026-06-14
-// todo-not-clearing incident: deleting the last task must EMIT an empty
-// provider:todo_update so a live pane drops the list — not merely clear the
-// backend refresh snapshot. A live pane holds the last non-empty snapshot in
-// memory and only re-reads the backend copy on refresh/reconnect, so without
-// the emit the cleared list lingers on screen. The backend snapshot is still
-// cleared for the refresh path.
-func TestHandleTaskDeleteOnlyEmitsLiveClear(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-
-	_ = router.Handle(taskCreateEvent("t1", "1", "only task"))
-	countBefore := todoEmissionCount(emissions)
-
-	_ = router.Handle(taskUpdateEvent("t1", provider.TaskUpdateMeta{
-		TaskID: "1", Deleted: true,
-	}))
-
-	if _, ok := storedTodo(t, st, "t1"); ok {
-		t.Errorf("persisted list should be cleared after deleting the only task")
-	}
-	if got := todoEmissionCount(emissions) - countBefore; got != 1 {
-		t.Fatalf("delete-to-empty: got %d new emissions, want 1 (the live clear)", got)
-	}
-	last := lastTodoEmission(emissions)
-	if last == nil {
-		t.Fatalf("no provider:todo_update emission for the clear")
-	}
-	if last.ThreadID != "t1" {
-		t.Errorf("clear emission threadID: got %q, want t1", last.ThreadID)
-	}
-	if len(last.Steps) != 0 {
-		t.Errorf("clear emission must carry empty steps; got %+v", last.Steps)
-	}
-}
-
 // TestHandleTaskDeleteAllEmitsFinalClear reproduces the 2026-06-14 screenshot:
 // three tasks created then deleted one at a time. Each intermediate delete
-// emits the shrinking list; the final delete (list → empty) must emit an
-// empty-steps clear so the activity-rail Todos widget empties instead of
-// freezing on the last surviving item ("Write tests" in the report).
+// emits the shrinking list; the final delete (list → empty) must emit exactly
+// one empty-steps clear so the activity-rail Todos widget empties instead of
+// freezing on the last surviving item ("Write tests" in the report). A live
+// pane holds the last non-empty snapshot in memory and only re-reads the
+// backend copy on refresh/reconnect, so clearing the backend snapshot alone
+// leaves the list on screen; the backend snapshot is still cleared for the
+// refresh path.
 func TestHandleTaskDeleteAllEmitsFinalClear(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -245,7 +215,9 @@ func TestHandleTaskDeleteAllEmitsFinalClear(t *testing.T) {
 	_ = router.Handle(taskCreateEvent("t1", "2", "Implement the handler"))
 	_ = router.Handle(taskCreateEvent("t1", "3", "Write tests"))
 
+	var countBefore int
 	for _, id := range []string{"1", "2", "3"} {
+		countBefore = todoEmissionCount(emissions)
 		if err := router.Handle(taskUpdateEvent("t1", provider.TaskUpdateMeta{
 			TaskID: id, Deleted: true,
 		})); err != nil {
@@ -255,6 +227,9 @@ func TestHandleTaskDeleteAllEmitsFinalClear(t *testing.T) {
 
 	if _, ok := storedTodo(t, st, "t1"); ok {
 		t.Errorf("persisted list should be cleared after deleting all tasks")
+	}
+	if got := todoEmissionCount(emissions) - countBefore; got != 1 {
+		t.Fatalf("delete-to-empty: got %d new emissions, want 1 (the live clear)", got)
 	}
 	last := lastTodoEmission(emissions)
 	if last == nil {
@@ -388,32 +363,6 @@ func TestTasksByThreadIsolatedPerThread(t *testing.T) {
 	}
 	if s1.Steps[0].Step != "t1 only" || s2.Steps[0].Step != "t2 only" {
 		t.Errorf("thread isolation violated: t1=%+v t2=%+v", s1.Steps, s2.Steps)
-	}
-}
-
-// TestTaskUpdateSurvivesParserRecreation is the load-bearing regression
-// test for the session-resume gap. Task state lives on the Router (not
-// on per-Session Parser instances), so a TaskUpdate against an id
-// created before session resume produces a correct snapshot. Before
-// the seam migration this failed because the fresh Parser had no
-// tasksByID entry for the pre-resume id.
-func TestTaskUpdateSurvivesParserRecreation(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-
-	_ = router.Handle(taskCreateEvent("t1", "1", "pre-resume task"))
-
-	_ = router.Handle(taskUpdateEvent("t1", provider.TaskUpdateMeta{
-		TaskID: "1", Status: "completed",
-	}))
-
-	snapshot, ok := storedTodo(t, st, "t1")
-	if !ok {
-		t.Fatal("expected a list to survive — task state lives on the Router, not the Parser")
-	}
-	if len(snapshot.Steps) != 1 || snapshot.Steps[0].ID != "1" || snapshot.Steps[0].Status != "completed" {
-		t.Fatalf("snapshot after simulated resume: %+v", snapshot.Steps)
 	}
 }
 

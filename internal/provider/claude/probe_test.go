@@ -70,6 +70,9 @@ func writeMockClaudeInitScript(t *testing.T, tmpDir, accountJSON, subtype, errMs
 	return path
 }
 
+// Every mock script emits the SessionStart hook events the live CLI
+// writes before the control_response: the probe reads the control_response
+// specifically, and the intervening system events must not confuse it.
 func TestProbeAccountExtractsSubscriptionType(t *testing.T) {
 	binary := writeMockClaudeInitScript(t, t.TempDir(),
 		`{"subscriptionType":"Claude Max","tokenSource":"oauth","apiProvider":"firstParty"}`,
@@ -140,27 +143,6 @@ func TestProbeAccountExtractsSparseAccountShapes(t *testing.T) {
 				t.Fatalf("AccountInfo = %+v, want %+v", info, tc.want)
 			}
 		})
-	}
-}
-
-func TestProbeAccountSkipsHookNoiseBeforeResponse(t *testing.T) {
-	// The probe reads the control_response specifically; intervening
-	// system events (SessionStart hooks observed in the live spike)
-	// must not confuse the matcher.
-	binary := writeMockClaudeInitScript(t, t.TempDir(),
-		`{"subscriptionType":"Claude Pro"}`,
-		"success", "")
-
-	info, err := ProbeAccount(context.Background(), ProbeConfig{
-		Reaper:    procutiltest.Reaper(),
-		Retention: UserHomeRetention(0),
-		WorkDir:   probeWorkDir,
-		Binary:    binary})
-	if err != nil {
-		t.Fatalf("ProbeAccount: %v", err)
-	}
-	if info.SubscriptionType != "Claude Pro" {
-		t.Errorf("SubscriptionType: got %q, want Claude Pro", info.SubscriptionType)
 	}
 }
 
@@ -321,53 +303,6 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 	// would slip past an 8s assertion.
 	if elapsed > time.Second {
 		t.Errorf("probe took too long: %v (Timeout=150ms)", elapsed)
-	}
-}
-
-// --- AccountInfo cache ---
-
-func TestAccountInfoCacheReturnsStored(t *testing.T) {
-	cache := NewProbeCache(5 * time.Minute)
-	info := provider.AccountInfo{SubscriptionType: "max_5x"}
-
-	cache.Set(provider.ProbeCacheKey{Binary: "/usr/bin/claude", WorkDir: probeWorkDir}, info)
-
-	got, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/claude", WorkDir: probeWorkDir})
-	if !ok {
-		t.Fatal("expected cache hit")
-	}
-	if got.SubscriptionType != "max_5x" {
-		t.Errorf("SubscriptionType: got %q, want max_5x", got.SubscriptionType)
-	}
-}
-
-func TestAccountInfoCacheExpires(t *testing.T) {
-	cache := NewProbeCache(10 * time.Millisecond)
-	cache.Set(provider.ProbeCacheKey{Binary: "/usr/bin/claude", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "team"})
-
-	if _, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/claude", WorkDir: probeWorkDir}); !ok {
-		t.Fatal("expected immediate cache hit")
-	}
-
-	time.Sleep(50 * time.Millisecond)
-
-	if _, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/claude", WorkDir: probeWorkDir}); ok {
-		t.Fatal("expected cache miss after TTL expired")
-	}
-}
-
-func TestAccountInfoCacheScopedPerBinary(t *testing.T) {
-	cache := NewProbeCache(5 * time.Minute)
-	cache.Set(provider.ProbeCacheKey{Binary: "/bin/a", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "alpha"})
-	cache.Set(provider.ProbeCacheKey{Binary: "/bin/b", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "beta"})
-
-	a, _ := cache.Get(provider.ProbeCacheKey{Binary: "/bin/a", WorkDir: probeWorkDir})
-	b, _ := cache.Get(provider.ProbeCacheKey{Binary: "/bin/b", WorkDir: probeWorkDir})
-	if a.SubscriptionType != "alpha" {
-		t.Errorf("/bin/a: got %q, want alpha", a.SubscriptionType)
-	}
-	if b.SubscriptionType != "beta" {
-		t.Errorf("/bin/b: got %q, want beta", b.SubscriptionType)
 	}
 }
 

@@ -244,10 +244,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // Claude's mock echoes whatever reaches a running session, so the wake
     // goes to a session still starting, which reads it and holds.
     if (provider === 'claude') {
-      await harness.rpc('StopSession', agent.thread);
+      await harness.stopSession(agent.thread);
       await setScenario(harness, agent.home, {
         ...threadToolsScenario({ name: `wake-lost-slow-${provider}`, provider, turns: [{ text: 'unreached' }] }),
-        startupDelayMs: 30_000,
+        startupGate: 'held-start',
       });
     }
     await harness.open(page);

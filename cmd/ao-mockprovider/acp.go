@@ -138,7 +138,7 @@ func (a *acpAdapter) modesBlockLocked() map[string]any {
 func (a *acpAdapter) handleRequest(id json.RawMessage, method string, params json.RawMessage) {
 	switch method {
 	case "initialize":
-		a.e.awaitStartupDelay()
+		a.e.awaitStartup()
 		a.writeResult(id, map[string]any{
 			"protocolVersion": 1,
 			"agentInfo": map[string]any{

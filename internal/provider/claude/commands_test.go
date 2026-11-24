@@ -11,7 +11,7 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-const localCommandFixture = "../../../docs/references/fixtures/claude/local_command_20260803.ndjson"
+const localCommandFixture = "../wirecaptures/claude/local_command_20260803.ndjson"
 
 func fixtureLines(t *testing.T, path string) [][]byte {
 	t.Helper()
@@ -329,58 +329,7 @@ func TestNormalizeWireCommandsBoundsTheList(t *testing.T) {
 	}
 }
 
-const effortLiveFixture = "../../../docs/references/fixtures/claude/effort_live_20260812.ndjson"
-
-// TestEffortLiveFixtureCorrelatesCommandResults replays the checked-in
-// live-config capture end to end and pins the correlation contract the
-// async confirmation path depends on: each command's synthetic output
-// becomes one EventCommandResult whose Meta carries exactly the
-// command_uuid of the lifecycle window it arrived in.
-func TestEffortLiveFixtureCorrelatesCommandResults(t *testing.T) {
-	parser := NewParser()
-	type gotResult struct {
-		uuid string
-		text string
-	}
-	var results []gotResult
-	for _, line := range fixtureLines(t, effortLiveFixture) {
-		events, err := parser.ParseLine("thread-1", line)
-		if err != nil {
-			t.Fatalf("ParseLine(%s): %v", line, err)
-		}
-		for _, evt := range events {
-			if evt.Kind != provider.EventCommandResult {
-				continue
-			}
-			var meta provider.CommandResultMeta
-			if len(evt.Meta) > 0 {
-				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-					t.Fatalf("unmarshal command result meta: %v", err)
-				}
-			}
-			results = append(results, gotResult{uuid: meta.CommandUUID, text: evt.Content})
-		}
-	}
-	want := []struct {
-		uuid       string
-		textPrefix string
-	}{
-		{"aaaaaaa1-0000-4000-8000-000000000001", "Set effort level to low (this session only)"},
-		{"aaaaaaa2-0000-4000-8000-000000000002", "Invalid argument: bogus."},
-		{"aaaaaaa3-0000-4000-8000-000000000003", "Fast mode unavailable: Fast mode is not available in the Agent SDK"},
-	}
-	if len(results) != len(want) {
-		t.Fatalf("command results = %d (%+v), want %d", len(results), results, len(want))
-	}
-	for i, w := range want {
-		if results[i].uuid != w.uuid {
-			t.Fatalf("result %d uuid = %q, want %q", i, results[i].uuid, w.uuid)
-		}
-		if !strings.HasPrefix(results[i].text, w.textPrefix) {
-			t.Fatalf("result %d text = %q, want prefix %q", i, results[i].text, w.textPrefix)
-		}
-	}
-}
+const effortLiveFixture = "../wirecaptures/claude/effort_live_20260812.ndjson"
 
 // TestAdvertisedCommandsFromWireInit ties the supportsSlashCommand lookup
 // key to the wire format: init's slash_commands carry no leading slash, so

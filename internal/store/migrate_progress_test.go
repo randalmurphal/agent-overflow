@@ -226,7 +226,9 @@ func TestMigrationInterruptedMidStatementRollsBack(t *testing.T) {
 			slow := Migration{Version: 1_000_000, Name: "slow_probe", SQL: slowMigrationSQL, Rebuild: rebuild}
 			apply := applyMigrationContext
 			if rebuild {
-				apply = applyRebuildMigrationContext
+				apply = func(ctx context.Context, db *sql.DB, m Migration) error {
+					return applyRebuildMigrationSteps(ctx, db, m, nil)
+				}
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			timer := time.AfterFunc(200*time.Millisecond, cancel)

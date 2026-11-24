@@ -122,6 +122,16 @@ func providerSmokeClaudeCase() providerSmokeCase {
 	}
 }
 
+// probeCodexAccount and probeAgyAccount are the account probes the smoke
+// preflights a login with: the same ones the account surfaces run.
+func probeCodexAccount(a *App) (provider.AccountInfo, error) {
+	return a.providerDiscoveryService().ProbeCodexAccount()
+}
+
+func probeAgyAccount(a *App) (provider.AccountInfo, error) {
+	return a.providerDiscoveryService().ProbeAgyAccount()
+}
+
 func TestProviderSmokeCodex(t *testing.T) {
 	runProviderSmoke(t, providerSmokeCase{
 		providerName: string(provider.Codex),
@@ -130,7 +140,7 @@ func TestProviderSmokeCodex(t *testing.T) {
 		model:        "gpt-6-luna",
 		installHint:  "install the Codex CLI (https://github.com/openai/codex#installation) and put `codex` on PATH",
 		loginHint:    "run `codex login`",
-		probeAccount: (*App).ProbeCodexAccount,
+		probeAccount: probeCodexAccount,
 	})
 }
 
@@ -140,7 +150,7 @@ func TestProviderSmokeAgy(t *testing.T) {
 		model:        "gemini-4-hydrogen",
 		installHint:  "install the Antigravity CLI (https://antigravity.google/docs/cli) and put `agy` on PATH",
 		loginHint:    "run `agy login`",
-		probeAccount: (*App).ProbeAgyAccount,
+		probeAccount: probeAgyAccount,
 	})
 }
 

@@ -1,16 +1,15 @@
 // Shared scaffolding for the source-reading tripwires.
 //
-// Two suites read the whole `src/` tree and compare what they find against a
+// Suites that read the `src/` tree compare what they find against a
 // shrink-only allowlist: `lib/architecture.test.ts` (state-ownership doctrine)
-// and `lib/themeTokens.test.ts` (theme-token conformance). The walk, the
+// and `lib/themeTokens.test.ts` (theme-token conformance) among them. The
 // exclusion set, the vacuity guard, the repo-relative path shape and the
 // both-directions allowlist comparison were duplicated near-verbatim between
 // them; they live here so a fix to one is a fix to both.
 //
-// This file sits under `src/test/`, which BOTH scanners exclude — so the
+// This file sits under `src/test/`, which every scanner excludes — so the
 // scaffolding can name the shapes it hunts for without becoming an offender.
 
-import { readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
@@ -18,45 +17,55 @@ import { expect } from 'vitest';
 /** Absolute path of `frontend/src`. */
 export const SRC_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/**
- * Every file under `dir` whose name matches `extensions`, depth-first,
- * skipping `node_modules`. Callers pass the extension pattern because the two
- * scanners differ: the architecture rules are about imports (`.ts`/`.svelte`)
- * while the token rules also cover stylesheets.
- */
-export function* walkSources(dir: string, extensions: RegExp): Generator<string> {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'node_modules') continue;
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      yield* walkSources(full, extensions);
-      continue;
-    }
-    if (extensions.test(entry.name)) yield full;
-  }
-}
+// The files a tripwire applies to: those its glob names under `src/`,
+// except tests, operator-run drivers, and this `src/test/` helper tree.
+//
+// Tests exist to drive, mock and PIN the very seams these rules protect — a
+// test importing a binding, or asserting the exact hex an xterm theme
+// produces, is doing its job. `vendor/` is outside `src/` entirely; its
+// divergence ledger governs it.
+//
+// Each tripwire reads its files through its own `import.meta.glob`, so it
+// loads only what it scans and `vitest --changed` selects it when one of
+// those files changes. Vite expands a glob where it is written, so the
+// pattern cannot live here; this checks what each glob loaded.
+const NOT_SCANNED = /^\/src\/test\/|\.(?:test|spec)\.[tj]s$|\.manual\.ts$/;
+
+export type ScannedSources = {
+  /**
+   * The scanned files whose name matches `extensions`, under `under`, as
+   * absolute paths. Throws when nothing matches: a rule that silently
+   * scanned zero files would pass vacuously forever.
+   */
+  files(extensions: RegExp, under?: string): string[];
+  /** The text of a scanned file. */
+  text(file: string): string;
+};
 
 /**
- * The files a tripwire applies to: everything under `src/` except tests,
- * operator-run drivers, and this `src/test/` helper tree.
- *
- * Tests exist to drive, mock and PIN the very seams these rules protect — a
- * test importing `GetGitStatus`, or asserting the exact hex an xterm theme
- * produces, is doing its job. `vendor/` is outside `src/` entirely; its
- * divergence ledger governs it.
- *
- * Throws when the walk finds nothing: a rule that silently scanned zero files
- * would pass vacuously forever.
+ * The sources `glob` loaded: a tripwire's own
+ * `import.meta.glob<string>([...], { query: '?raw', import: 'default', eager: true })`
+ * with patterns from `/src/` that exclude tests, `*.manual.ts` and `/src/test/`.
  */
-export function scannedSources(extensions: RegExp): string[] {
-  const files: string[] = [];
-  for (const file of walkSources(SRC_ROOT, extensions)) {
-    if (/\.(test|spec)\.[a-z]+$|\.manual\.ts$/.test(file)) continue;
-    if (file.startsWith(join(SRC_ROOT, 'test') + sep)) continue;
-    files.push(file);
+export function scannedSources(glob: Record<string, string>): ScannedSources {
+  const sources = new Map<string, string>();
+  for (const [key, text] of Object.entries(glob)) {
+    if (!key.startsWith('/src/')) throw new Error(`${key}: a tripwire's glob names files from /src/`);
+    if (NOT_SCANNED.test(key)) throw new Error(`${key}: a tripwire's glob must exclude tests, operator drivers and /src/test/`);
+    sources.set(join(SRC_ROOT, ...key.split('/').slice(2)), text);
   }
-  if (files.length === 0) throw new Error('no source files found; the rules would pass vacuously');
-  return files;
+  return {
+    files(extensions, under = SRC_ROOT) {
+      const files = [...sources.keys()].filter((file) => file.startsWith(under + sep) && extensions.test(file));
+      if (files.length === 0) throw new Error('no source files found; the rules would pass vacuously');
+      return files;
+    },
+    text(file) {
+      const text = sources.get(file);
+      if (text === undefined) throw new Error(`${repoPath(file)} is not a scanned source`);
+      return text;
+    },
+  };
 }
 
 /** `src/`-relative path with forward slashes — the allowlist key format. */

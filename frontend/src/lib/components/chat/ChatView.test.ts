@@ -9,8 +9,6 @@ import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { pendingAttention } from '../../utils/threadStatusPill';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import ChatView from './ChatView.svelte';
 import { applySettingsSnapshot } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -20,7 +18,7 @@ import { makeSettings } from '../../../test/helpers/settings';
 import '../terminal/TerminalView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
-import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from '../../stores/composerDraftSnapshots';
 import { getThreads } from '../../stores/threads.svelte';
 import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
 import {
@@ -36,6 +34,7 @@ import {
 } from '../../stores/eventsMessageRevert';
 import type { Item, Thread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { installPaneMocks, installThreadSwitchMocks, makeItem } from '../../../test/helpers/chat';
 import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
@@ -44,11 +43,10 @@ import {
 } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
-import { SRC_ROOT } from '../../../test/sourceScan';
+import appCss from '../../../app.css?raw';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
-const appCss = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8');
 
 beforeAll(() => {
   // Svelte transitions used by children call element.animate; happy-dom
@@ -83,12 +81,14 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.stubGlobal('innerWidth', 1400);
+  // The composer loads its provider's model list.
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   resetLayoutMetricsForTest();
   resetPaneLayoutForTest();
   resetCompanionPanesForTest();
   resetPanesForTest();
   resetThreadStatuses();
-  resetComposerDraftSnapshotsForTest();
+  resetComposerDraftSnapshotStateForTest();
   resetResendRevertMarkersForTest();
   // The per-thread execute lane is module-level and released on settle;
   // tests that park the destructive RPC forever never settle, so the
@@ -179,7 +179,7 @@ async function buildPane(
 }
 
 describe('<ChatView>', () => {
-  it('renders the chat header with title + always-visible controls', async () => {
+  it('renders the chat header with title + always-visible controls and the in-card workspace strip', async () => {
     const pane = await buildPane();
     const { getByTestId, queryByTestId } = render(ChatView, { props: { pane } });
     await tick();
@@ -188,13 +188,15 @@ describe('<ChatView>', () => {
     expect(getByTestId('chat-header-title')).toBeInTheDocument();
     expect(getByTestId('review-toggle')).toBeInTheDocument();
     expect(queryByTestId('plan-sidebar-toggle')).toBeNull();
-  });
-
-  it('renders the in-card workspace strip', async () => {
-    const pane = await buildPane();
-    const { getByTestId } = render(ChatView, { props: { pane } });
-    await tick();
     expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
+    // These IDs belonged to the old header chrome; they must be gone
+    // from ChatView entirely (the mode cycle button is the composer
+    // toolbar's concern now, and the branch picker lives below the
+    // composer).
+    expect(queryByTestId('interaction-mode-badge')).toBeNull();
+    expect(queryByTestId('runtime-mode-trigger')).toBeNull();
+    expect(queryByTestId('chat-header-compact')).toBeNull();
+    expect(queryByTestId('compact-header-menu-trigger')).toBeNull();
   });
 
   it('hides the fork message action for a claude-tui thread', async () => {
@@ -865,20 +867,6 @@ describe('<ChatView>', () => {
     expect(queryByTestId('pending-prompt-scrim')).toBeNull();
   });
 
-  it('does not render interaction-mode / runtime-mode / branch pickers in the header', async () => {
-    const pane = await buildPane();
-    const { queryByTestId } = render(ChatView, { props: { pane } });
-    await tick();
-    // These IDs belonged to the old header chrome; they must be gone
-    // from ChatView entirely (the mode cycle button is the composer
-    // toolbar's concern now, and the branch picker lives below the
-    // composer).
-    expect(queryByTestId('interaction-mode-badge')).toBeNull();
-    expect(queryByTestId('runtime-mode-trigger')).toBeNull();
-    expect(queryByTestId('chat-header-compact')).toBeNull();
-    expect(queryByTestId('compact-header-menu-trigger')).toBeNull();
-  });
-
   it('renders a minimal placeholder when no thread is selected', async () => {
     const pane = createThreadPane();
     const { queryByTestId, getByText } = render(ChatView, { props: { pane } });
@@ -951,10 +939,15 @@ describe('<ChatView>', () => {
     }
   });
 
-  it('clears interrupted read state locally when the interrupted thread is opened', async () => {
+  // A thread with no completed turn to read up to (an interruption, or an
+  // orphan error) must stamp the read at now.
+  it.each([
+    ['interrupted', 'hasIncompleteTurn'],
+    ['failed', 'hasFailedTurn'],
+  ] as const)('clears %s read state locally when the thread is opened', async (_state, flag) => {
     vi.useFakeTimers();
     try {
-      const thread = { ...seedThread(), hasIncompleteTurn: true };
+      const thread = { ...seedThread(), [flag]: true };
       setBindingMock('ListThreads', async () => [thread]);
       await loadSidebarCatalogs();
       const pane = await buildPane(thread);
@@ -967,33 +960,8 @@ describe('<ChatView>', () => {
       expect(markRead).toHaveBeenCalledTimes(1);
       expect(markRead).toHaveBeenLastCalledWith('thread-1');
       expect(getThreads()[0]?.lastReadAt).toBe(1_000);
-      expect(getThreads()[0]?.hasIncompleteTurn).toBe(false);
-      expect(pane.thread?.hasIncompleteTurn).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('clears failed read state locally when the failed thread is opened', async () => {
-    vi.useFakeTimers();
-    try {
-      // An orphan error has no completed turn to read up to, so the read
-      // must stamp at now, the way Interrupted does.
-      const thread = { ...seedThread(), hasFailedTurn: true };
-      setBindingMock('ListThreads', async () => [thread]);
-      await loadSidebarCatalogs();
-      const pane = await buildPane(thread);
-      const markRead = setBindingMock('MarkThreadRead', async () => {});
-
-      vi.setSystemTime(1_000);
-      render(ChatView, { props: { pane } });
-      await tick();
-
-      expect(markRead).toHaveBeenCalledTimes(1);
-      expect(markRead).toHaveBeenLastCalledWith('thread-1');
-      expect(getThreads()[0]?.lastReadAt).toBe(1_000);
-      expect(getThreads()[0]?.hasFailedTurn).toBe(false);
-      expect(pane.thread?.hasFailedTurn).toBe(false);
+      expect(getThreads()[0]?.[flag]).toBe(false);
+      expect(pane.thread?.[flag]).toBe(false);
     } finally {
       vi.useRealTimers();
     }

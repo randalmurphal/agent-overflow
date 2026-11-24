@@ -10,10 +10,12 @@ import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../utils/i
 import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
 import { parseForgeAttachmentHref, type ForgeAttachmentSource } from '../../utils/forgeAttachments';
 
-vi.mock('../../transport/deviceSession', () => ({
+vi.mock('../../transport/deviceSession', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../transport/deviceSession')>()),
   fetchPairedComputer: async () => new Response('bytes', { status: 200 }),
 }));
-vi.mock('../../transport/backends', () => ({
+vi.mock('../../transport/backends', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../transport/backends')>()),
   withBackendTarget: <T>(_backend: string, run: () => T): T => run(),
 }));
 

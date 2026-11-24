@@ -115,7 +115,7 @@ tests alone: transport reconnect and recovery, timeline scroll and windowing,
 compact layout, the harness wire, and any spec whose header names the changed
 behavior. Run the affected specs with `bin/ao-harness-e2e tests/<spec>`
 before pushing; when the affected set is unclear, run the specs nearest the
-change and let CI's run of every suite on the pull request
+change and let CI's run of the whole Playwright suite on the pull request
 ([Development](docs/architecture/development.md#continuous-integration))
 be the full-suite gate before merge. A failing check in a relevant suite belongs to the
 change whether the code or the test is wrong: fix it before finishing, never

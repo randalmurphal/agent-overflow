@@ -57,7 +57,7 @@ func TestSetThreadMcpServerEnabled_Claude_LiveSession_FiresToggleRPC(t *testing.
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "claude-live-toggle-token",
@@ -125,7 +125,7 @@ command = "gh-mcp"
 	if err != nil {
 		t.Fatalf("codex.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
 		Token:    "codex-live-toggle-token",
@@ -198,7 +198,7 @@ func TestListThreadMcpServers_Claude_LiveSession_UsesSessionTruth(t *testing.T) 
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "claude-live-list-token",

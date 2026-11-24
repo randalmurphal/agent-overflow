@@ -81,7 +81,7 @@ func newHeldRequestTarget(t *testing.T, f *requestFixture) *heldRequestTarget {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	f.app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude), Token: "held-tok", Claude: sess,
 		Liveness: newSessionLiveness(time.Now()),
@@ -832,10 +832,10 @@ func TestARequestTheSessionDiedHoldingIsDeliveredAtTheNextStart(t *testing.T) {
 	if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": writeClaudeStdinRecorderBinary(t, stdin)}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := f.app.StartSession(h.thread.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), h.thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = f.app.StopSession(h.thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, f.app, h.thread.ID) })
 	waitUntil(t, 10*time.Second, func() bool {
 		sent, _ := os.ReadFile(stdin)
 		return strings.Contains(string(sent), "check the changelog")
@@ -1014,7 +1014,7 @@ func TestCancellingARequestCaughtInItsFlushLeavesTheRunningTurnAlone(t *testing.
 			// Queued and flushed with no dispatch mark: the receipt stays
 			// `accepted` while the message is with the provider.
 			if _, err := f.app.sendMessageWithOptions(t.Context(), h.thread.ID, "check the changelog", sendMessageOptions{
-				SendID: threadRequestSendID(token), ReconcileBySendID: true, QueueIfActive: true, PreserveDraft: true,
+				SendID: threadRequestSendID(token), Admission: admitQueueing, PreserveDraft: true,
 			}); err != nil {
 				t.Fatalf("queue the request message: %v", err)
 			}

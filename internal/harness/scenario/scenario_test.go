@@ -104,7 +104,7 @@ func TestRepeatStepValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			step := tc.step
-			err := step.validate(false)
+			err := step.validate(stepRules{})
 			if err == nil {
 				t.Fatalf("validate accepted %+v", tc.step)
 			}
@@ -115,18 +115,18 @@ func TestRepeatStepValidation(t *testing.T) {
 	}
 
 	paced := Step{Repeat: &RepeatStep{Count: 0, Steps: []Step{{DelayMs: 100}, emit}}}
-	if err := paced.validate(false); err != nil {
+	if err := paced.validate(stepRules{}); err != nil {
 		t.Fatalf("paced infinite repeat rejected: %v", err)
 	}
 	bounded := Step{Repeat: &RepeatStep{Count: 3, Steps: []Step{emit}}}
-	if err := bounded.validate(false); err != nil {
+	if err := bounded.validate(stepRules{}); err != nil {
 		t.Fatalf("bounded repeat without pacing rejected: %v", err)
 	}
 	// An emit that paces itself between lines counts.
 	selfPaced := Step{Repeat: &RepeatStep{Count: 0, Steps: []Step{
 		{Emit: &EmitStep{Lines: []string{`{"a":1}`, `{"b":2}`}, DelayBetweenMs: 50}},
 	}}}
-	if err := selfPaced.validate(false); err != nil {
+	if err := selfPaced.validate(stepRules{}); err != nil {
 		t.Fatalf("self-paced infinite repeat rejected: %v", err)
 	}
 }
@@ -147,86 +147,95 @@ func TestRepeatFixturePathsAreCollected(t *testing.T) {
 	}
 }
 
-// TestStartupDelayValidation: the field is a deliberate stall, so its
-// bounds are what stop a typo (a stray zero, a negative) from becoming a
-// harness run that looks hung rather than slow.
-func TestStartupDelayValidation(t *testing.T) {
-	doc := func(ms string) string {
-		return `{"version":1,"name":"x","provider":"claude","startupDelayMs":` + ms +
-			`,"turns":[{"steps":[{"delayMs":1}]}]}`
+// TestStartupGateValidation: a gate named with stray space could never be
+// released by the advance a spec sends.
+func TestStartupGateValidation(t *testing.T) {
+	doc := func(gate string) string {
+		return `{"version":1,"name":"x","provider":"claude","startupGate":"` + gate +
+			`","turns":[{"steps":[{"delayMs":1}]}]}`
 	}
-	for _, ms := range []string{"0", "1", "30000"} {
-		if _, err := Parse([]byte(doc(ms))); err != nil {
-			t.Errorf("startupDelayMs %s was rejected: %v", ms, err)
+	for _, gate := range []string{"", "held-start"} {
+		if _, err := Parse([]byte(doc(gate))); err != nil {
+			t.Errorf("startupGate %q was rejected: %v", gate, err)
 		}
 	}
-	for _, ms := range []string{"-1", "30001", "600000"} {
-		if _, err := Parse([]byte(doc(ms))); err == nil {
-			t.Errorf("startupDelayMs %s was accepted; the cap is %d", ms, MaxStartupDelayMs)
-		}
+	if _, err := Parse([]byte(doc(" held"))); err == nil {
+		t.Errorf("startupGate with surrounding space was accepted")
 	}
-}
-
-// TestExitDelayValidation: the delay must stay below the app's stdin-close
-// grace, or the scenario tests the kill instead of the shutdown window.
-func TestExitDelayValidation(t *testing.T) {
-	doc := func(ms string) string {
-		return `{"version":1,"name":"x","provider":"claude","exitDelayMs":` + ms +
-			`,"turns":[{"steps":[{"delayMs":1}]}]}`
-	}
-	for _, ms := range []string{"0", "1", "2500"} {
-		if _, err := Parse([]byte(doc(ms))); err != nil {
-			t.Errorf("exitDelayMs %s was rejected: %v", ms, err)
-		}
-	}
-	for _, ms := range []string{"-1", "2501", "30000"} {
-		if _, err := Parse([]byte(doc(ms))); err == nil {
-			t.Errorf("exitDelayMs %s was accepted; the cap is %d", ms, MaxExitDelayMs)
-		}
-	}
-}
-
-// TestCoalesceIsExclusiveWithPacing: coalesce says "one write", the
-// pacing knobs say "several writes, spread out". A scenario asking for
-// both has no meaning, and silently honouring one of them is how a test
-// ends up asserting against delivery it never actually got.
-func TestCoalesceIsExclusiveWithPacing(t *testing.T) {
-	step := func(extra string) string {
-		return `{"version":1,"name":"x","provider":"claude","turns":[{"steps":[{"emit":{"lines":["a","b"],"coalesce":true` +
-			extra + `}}]}]}`
-	}
-	if _, err := Parse([]byte(step(""))); err != nil {
-		t.Fatalf("plain coalesce was rejected: %v", err)
-	}
-	for label, extra := range map[string]string{
-		"delayBetweenMs":  `,"delayBetweenMs":5`,
-		"chunkBytes":      `,"chunkBytes":8`,
-		"chunkIntervalMs": `,"chunkIntervalMs":5`,
+	// An advance naming the startup gate releases only the startup gate, so
+	// a waitSignal of that name, at any depth, could never be released.
+	for where, steps := range map[string]string{
+		"turn":   `"turns":[{"steps":[{"waitSignal":{"name":"held-start"}}]}]`,
+		"repeat": `"onStart":[{"repeat":{"count":1,"steps":[{"waitSignal":{"name":"held-start"}}]}}]`,
 	} {
-		if _, err := Parse([]byte(step(extra))); err == nil {
-			t.Errorf("coalesce + %s was accepted; they contradict each other", label)
+		_, err := Parse([]byte(`{"version":1,"name":"x","provider":"claude","startupGate":"held-start",` + steps + `}`))
+		if err == nil || !strings.Contains(err.Error(), `"held-start" is the startupGate's name`) {
+			t.Errorf("a %s waitSignal named like the startupGate: err = %v", where, err)
 		}
 	}
 }
 
-// TestProviderVersionValidation: the value is pasted into a userAgent
-// string and into Claude's system/init, both of which are PARSED on the
-// other side. Anything that is not a dotted number would read as an
-// unparseable version rather than as the downgrade the author meant.
-func TestProviderVersionValidation(t *testing.T) {
-	doc := func(v string) string {
-		return `{"version":1,"name":"x","provider":"codex","providerVersion":` + v +
-			`,"turns":[{"steps":[{"delayMs":1}]}]}`
+// TestTheRetiredStartupDelayNamesItsReplacement: no compatibility for the
+// old field, and the refusal says what holds a start now.
+func TestTheRetiredStartupDelayNamesItsReplacement(t *testing.T) {
+	_, err := Parse([]byte(`{"version":1,"name":"x","provider":"claude","startupDelayMs":500,"turns":[{"steps":[{"delayMs":1}]}]}`))
+	if err == nil || !strings.Contains(err.Error(), "startupGate") {
+		t.Fatalf("Parse(startupDelayMs) = %v, want a refusal naming startupGate", err)
 	}
-	for _, v := range []string{`""`, `"0.147.0"`, `"99"`, `"1.2.3.4"`} {
-		if _, err := Parse([]byte(doc(v))); err != nil {
-			t.Errorf("providerVersion %s was rejected: %v", v, err)
-		}
-	}
-	for _, v := range []string{`"v0.147.0"`, `" 0.147.0"`, `"0.147.0-beta"`, `"latest"`} {
-		if _, err := Parse([]byte(doc(v))); err == nil {
-			t.Errorf("providerVersion %s was accepted; it is not a dotted version", v)
-		}
+}
+
+// TestFieldValuesAcceptedAndRefused: each field below parses its valid values and
+// refuses the rest. The document is the row's value between before and
+// after.
+func TestFieldValuesAcceptedAndRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name, before, after string
+		accept, refuse      []string
+	}{
+		// The delay must stay below the app's stdin-close grace, or the
+		// scenario tests the kill instead of the shutdown window.
+		{
+			name:   "exitDelayMs",
+			before: `{"version":1,"name":"x","provider":"claude","exitDelayMs":`,
+			after:  `,"turns":[{"steps":[{"delayMs":1}]}]}`,
+			accept: []string{"0", "1", "2500"},
+			refuse: []string{"-1", "2501", "30000"},
+		},
+		// Coalesce says "one write", the pacing knobs say "several writes,
+		// spread out". A scenario asking for both has no meaning, and
+		// silently honouring one of them is how a test ends up asserting
+		// against delivery it never actually got.
+		{
+			name:   "coalesce with pacing",
+			before: `{"version":1,"name":"x","provider":"claude","turns":[{"steps":[{"emit":{"lines":["a","b"],"coalesce":true`,
+			after:  `}}]}]}`,
+			accept: []string{""},
+			refuse: []string{`,"delayBetweenMs":5`, `,"chunkBytes":8`, `,"chunkIntervalMs":5`},
+		},
+		// The value is pasted into a userAgent string and into Claude's
+		// system/init, both of which are PARSED on the other side. Anything
+		// that is not a dotted number would read as an unparseable version
+		// rather than as the downgrade the author meant.
+		{
+			name:   "providerVersion",
+			before: `{"version":1,"name":"x","provider":"codex","providerVersion":`,
+			after:  `,"turns":[{"steps":[{"delayMs":1}]}]}`,
+			accept: []string{`""`, `"0.147.0"`, `"99"`, `"1.2.3.4"`},
+			refuse: []string{`"v0.147.0"`, `" 0.147.0"`, `"0.147.0-beta"`, `"latest"`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, v := range tc.accept {
+				if _, err := Parse([]byte(tc.before + v + tc.after)); err != nil {
+					t.Errorf("%s %s was rejected: %v", tc.name, v, err)
+				}
+			}
+			for _, v := range tc.refuse {
+				if _, err := Parse([]byte(tc.before + v + tc.after)); err == nil {
+					t.Errorf("%s %s was accepted", tc.name, v)
+				}
+			}
+		})
 	}
 }
 
@@ -238,8 +247,8 @@ func TestNewFieldsDefaultToOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if s.StartupDelayMs != 0 || s.ProviderVersion != "" {
-		t.Fatalf("scenario defaults changed: startupDelayMs=%d providerVersion=%q", s.StartupDelayMs, s.ProviderVersion)
+	if s.StartupGate != "" || s.ProviderVersion != "" {
+		t.Fatalf("scenario defaults changed: startupGate=%q providerVersion=%q", s.StartupGate, s.ProviderVersion)
 	}
 	for _, turn := range s.Turns {
 		for _, st := range turn.Steps {
@@ -271,7 +280,7 @@ func TestMcpCallStepValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			step := tc.step
-			err := step.validate(false)
+			err := step.validate(stepRules{})
 			if err == nil {
 				t.Fatalf("validate accepted %+v", tc.step)
 			}
@@ -284,11 +293,11 @@ func TestMcpCallStepValidation(t *testing.T) {
 	// Args are optional, and a ${VAR} token inside a JSON string keeps
 	// the object valid before substitution.
 	ok := Step{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note", Args: []byte(`{"text":"${USER_INPUT}"}`)}}
-	if err := ok.validate(false); err != nil {
+	if err := ok.validate(stepRules{}); err != nil {
 		t.Fatalf("valid mcpCall rejected: %v", err)
 	}
 	bare := Step{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note"}}
-	if err := bare.validate(false); err != nil {
+	if err := bare.validate(stepRules{}); err != nil {
 		t.Fatalf("mcpCall without args rejected: %v", err)
 	}
 }
@@ -328,7 +337,7 @@ func TestMcpCallDoesNotPaceARepeat(t *testing.T) {
 	loop := Step{Repeat: &RepeatStep{Count: 0, Steps: []Step{
 		{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note"}},
 	}}}
-	err := loop.validate(false)
+	err := loop.validate(stepRules{})
 	if err == nil || !strings.Contains(err.Error(), "pacing step") {
 		t.Fatalf("unbounded repeat of mcpCall accepted: %v", err)
 	}

@@ -4,7 +4,6 @@
 
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
-import { resetPanesForTest } from './panes.svelte';
 import {
   __resetGitStatusStoreForTest,
   __seedGitStatusForTest,
@@ -19,7 +18,6 @@ import { __setTransportStatusForTest } from './transportStatus.svelte';
 import type { GitStatus, GitWorkspaceState, WorkspaceRef } from '../types/git';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { __resetEntityIndexForTest } from '../transport/entityIndex';
 import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
@@ -125,9 +123,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  resetPanesForTest();
   setBindingMock('UpdateThreadBranch', async () => null);
-  __resetEntityIndexForTest();
 });
 
 describe('gitStatusStore — sequenced frames', () => {
@@ -198,101 +194,54 @@ describe('gitStatusStore — equal seq', () => {
 });
 
 describe('gitStatusStore — sequenced answers', () => {
-  it('a refresh or checkout answer equal to the held seq wakes no reader', async () => {
+  // A frame at seq 12 lands while the call is out.
+  it.each([
+    ['older than a frame that landed during the call does not overwrite it', 11, 12],
+    ['newer than a frame that landed during the call applies', 13, 13],
+  ])('a refresh answer %s', async (_name, seq, expected) => {
     answerSubscribes(10, 10);
     attach(WORKSPACE, { workspace: REF });
     await flush();
-    const reader = watchReader();
-    try {
-      setBindingMock('GetGitStatus', async () => status(99, 10));
-      await refreshGitStatus(WORKSPACE, REF, () => WORKSPACE);
-      await withCheckoutAnswer(REF, async () => checkoutState(98, 10));
-      flushSync();
-      expect(shown()).toBe(10);
-      expect(reader.wakes()).toBe(0);
-    } finally {
-      reader.stop();
-    }
-  });
-
-  it('a refresh answer older than a frame that landed during the call does not overwrite it', async () => {
-    answerSubscribes(10, 10);
-    const a = attach(WORKSPACE, { workspace: REF });
-    await flush();
 
     const answer = gateRefresh();
     const pending = refreshGitStatus(WORKSPACE, REF, () => WORKSPACE);
     await flush();
     frame(12, 12);
-    answer(11, 11);
+    answer(seq, seq);
     await pending;
-    expect(shown()).toBe(12);
-    a.release();
+    expect(shown()).toBe(expected);
   });
 
-  it('a refresh answer newer than a frame that landed during the call applies', async () => {
+  it.each([
+    ['older than a frame that landed during the call does not overwrite it', 11, 12],
+    ['newer than a frame that landed during the call applies', 13, 13],
+  ])('a checkout answer %s', async (_name, seq, expected) => {
     answerSubscribes(10, 10);
-    const a = attach(WORKSPACE, { workspace: REF });
-    await flush();
-
-    const answer = gateRefresh();
-    const pending = refreshGitStatus(WORKSPACE, REF, () => WORKSPACE);
-    await flush();
-    frame(12, 12);
-    answer(13, 13);
-    await pending;
-    expect(shown()).toBe(13);
-    a.release();
-  });
-
-  it('a checkout answer older than a frame that landed during the call does not overwrite it', async () => {
-    answerSubscribes(10, 10);
-    const a = attach(WORKSPACE, { workspace: REF });
+    attach(WORKSPACE, { workspace: REF });
     await flush();
 
     await withCheckoutAnswer(REF, async () => {
       frame(12, 12);
-      return checkoutState(11, 11);
+      return checkoutState(seq, seq);
     });
-    expect(shown()).toBe(12);
-    a.release();
-  });
-
-  it('a checkout answer newer than a frame that landed during the call applies', async () => {
-    answerSubscribes(10, 10);
-    const a = attach(WORKSPACE, { workspace: REF });
-    await flush();
-
-    await withCheckoutAnswer(REF, async () => {
-      frame(12, 12);
-      return checkoutState(13, 13);
-    });
-    expect(shown()).toBe(13);
-    a.release();
+    expect(shown()).toBe(expected);
   });
 });
 
 describe('gitStatusStore — frames that overtake the subscribe reply', () => {
-  it('applies a newer frame after the reply registers its alias', async () => {
+  // The reply carries seq 10.
+  it.each([
+    ['applies a newer frame after the reply registers its alias', [12], 12],
+    ['keeps the reply when the frame that overtook it is older', [8], 10],
+    ['keeps the newest frame per cwd, not the last to arrive', [12, 11], 12],
+  ])('%s', async (_name, seqs, expected) => {
     const subscribes = gateSubscribes();
-    const a = attach(WORKSPACE, { workspace: REF });
+    attach(WORKSPACE, { workspace: REF });
     await flush();
-    frame(12, 12);
+    for (const seq of seqs) frame(seq, seq);
     subscribes[0].resolve(10, 10);
     await flush();
-    expect(shown()).toBe(12);
-    a.release();
-  });
-
-  it('keeps the reply when the frame that overtook it is older', async () => {
-    const subscribes = gateSubscribes();
-    const a = attach(WORKSPACE, { workspace: REF });
-    await flush();
-    frame(8, 8);
-    subscribes[0].resolve(10, 10);
-    await flush();
-    expect(shown()).toBe(10);
-    a.release();
+    expect(shown()).toBe(expected);
   });
 
   it('keeps a frame for a new spelling of a cwd another key already routes', async () => {
@@ -308,18 +257,6 @@ describe('gitStatusStore — frames that overtake the subscribe reply', () => {
     subscribes[0].resolve(11, 11);
     await flush();
     expect(shown(sibling)).toBe(12);
-    a.release();
-  });
-
-  it('keeps the newest frame per cwd, not the last to arrive', async () => {
-    const subscribes = gateSubscribes();
-    const a = attach(WORKSPACE, { workspace: REF });
-    await flush();
-    frame(12, 12);
-    frame(11, 11);
-    subscribes[0].resolve(10, 10);
-    await flush();
-    expect(shown()).toBe(12);
     a.release();
   });
 

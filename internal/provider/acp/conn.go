@@ -42,8 +42,7 @@ type ConnConfig struct {
 	Binary             string
 	Args               []string
 	WorkDir            string
-	Env                map[string]string
-	UnsetEnv           []string
+	Env                provider.EnvInput
 	EventLogger        *logging.Logger
 	Reaper             procutil.Reaper
 	ThreadID           string
@@ -255,7 +254,6 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		Args:             cfg.Args,
 		Dir:              cfg.WorkDir,
 		Env:              cfg.Env,
-		UnsetEnv:         cfg.UnsetEnv,
 		EventLogger:      cfg.EventLogger,
 		EventLogRedactor: redactOutboundACPFrame,
 		ThreadID:         cfg.ThreadID,

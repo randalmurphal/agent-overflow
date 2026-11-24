@@ -1,18 +1,15 @@
-import { validateMonitorSelection, type CompatibilityLeg } from './monitor-catalog.ts';
 import type { FlowMonitor, FlowMonitorResult, FlowMonitorSample, FlowTypedMonitorResult } from './flow-model.ts';
 import { MAX_FLOW_SAMPLES } from './flow-model.ts';
 import { SemanticUI } from './flow-ui.ts';
 
 export interface FlowMonitorHost {
   readonly ui: SemanticUI;
-  readonly compatibilityLeg?: CompatibilityLeg;
   readonly monitorQuery?: (spec: Record<string, unknown>) => Promise<unknown>;
 }
 
 export async function runFlowMonitor(host: FlowMonitorHost, monitor: FlowMonitor, output: FlowMonitorSample[], results: FlowMonitorResult[], runId: string, signal: AbortSignal): Promise<void> {
   const interval = monitor.intervalMs ?? 100;
   const started = Date.now();
-  if (monitor.monitorId) validateMonitorSelection(monitor.monitorId, host.compatibilityLeg);
   const monitorRunId = `${runId}/${monitor.monitorId ?? monitor.id}`;
   if (monitor.monitorId) {
     if (!host.monitorQuery) throw new Error(`typed monitor ${JSON.stringify(monitor.monitorId)} requires a monitor query client`);

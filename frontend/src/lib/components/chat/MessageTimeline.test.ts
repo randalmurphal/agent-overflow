@@ -18,9 +18,9 @@ import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
 import { reloadReadAloudPreferencesForTest, setReadAloudPreference } from '../../stores/readAloudPreferences.svelte';
 import { resetReadAloudSourcesForTest } from '../../stores/readAloudSource.svelte';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backends';
 
 beforeAll(() => {
   if (typeof (Element.prototype as unknown as { animate?: unknown }).animate !== 'function') {
@@ -481,6 +481,8 @@ describe('<MessageTimeline>', () => {
   });
 
   it('renders one DiffFileBlock per file for multi-file tool_result rows', async () => {
+    // The diff blocks read the payload's preview: an empty patch.
+    setBindingMock('GetPayloadPreview', async () => ({ data: '', nextOffset: 0, totalSize: 0, isComplete: true }));
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'tool-1',
@@ -768,6 +770,8 @@ describe('<MessageTimeline>', () => {
   });
 
   it('drops a row out of its run when a payloadKind takes it off the rail', async () => {
+    // The plan row reads its markdown.
+    setBindingMock('GetPayloadData', async () => ({ data: '# Ship it' }));
     const tool = makeItem({
       id: 'plan-1',
       itemIndex: 0,
@@ -934,58 +938,7 @@ describe('<MessageTimeline>', () => {
       return pane;
     }
 
-    it('renders the Load older button when pane.hasMoreHistory is true', async () => {
-      const pane = await buildWindowedPane({
-        items: [makeItem({ id: 'a', turnIndex: 10 })],
-        hasMore: true,
-        oldestTurnIndex: 10,
-      });
-
-      const { getByTestId } = render(MessageTimeline, { props: { pane } });
-
-      const button = getByTestId('load-older-messages') as HTMLButtonElement;
-      expect(button.textContent ?? '').toContain('Load older messages');
-      expect(button.disabled).toBe(false);
-    });
-
-    it('hides the Load older button when pane.hasMoreHistory is false', async () => {
-      const pane = await buildWindowedPane({
-        items: [makeItem({ id: 'a' })],
-        hasMore: false,
-      });
-
-      const { queryByTestId } = render(MessageTimeline, { props: { pane } });
-
-      expect(queryByTestId('load-older-messages')).toBeNull();
-    });
-
-    // Stage 1 redesign: the button was restyled off raw border-border
-    // onto the subtle border + control radius + ghost-text hover pattern
-    // the rest of the app uses. Pin the class list so a lazy edit can't
-    // drift it back toward the old heavy chrome.
-    it('Load older button uses the redesigned token classes', async () => {
-      const pane = await buildWindowedPane({
-        items: [makeItem({ id: 'a', turnIndex: 10 })],
-        hasMore: true,
-        oldestTurnIndex: 10,
-      });
-
-      const { getByTestId } = render(MessageTimeline, { props: { pane } });
-      const button = getByTestId('load-older-messages');
-      const cls = button.className;
-      // Post-Button-migration the chrome comes from the primitive's
-      // `secondary` variant — we still assert the redesigned design
-      // tokens flow through (border-subtle at rest, muted fg, control
-      // radius, hover-to-foreground color). hover:border-border is
-      // expected on the secondary variant so we don't assert against
-      // it here.
-      expect(cls).toContain('border-border-subtle');
-      expect(cls).toContain('rounded-[var(--radius-control)]');
-      expect(cls).toContain('text-fg-muted');
-      expect(cls).toContain('hover:text-fg');
-    });
-
-    it('clicking Load older invokes pane.loadOlder', async () => {
+    it('renders the Load older button when pane.hasMoreHistory is true, and clicking it invokes pane.loadOlder', async () => {
       const pane = await buildWindowedPane({
         items: [makeItem({ id: 'tail', turnIndex: 10 })],
         hasMore: true,
@@ -998,10 +951,37 @@ describe('<MessageTimeline>', () => {
       });
 
       const { getByTestId } = render(MessageTimeline, { props: { pane } });
-      await fireEvent.click(getByTestId('load-older-messages'));
+
+      const button = getByTestId('load-older-messages') as HTMLButtonElement;
+      expect(button.textContent ?? '').toContain('Load older messages');
+      expect(button.disabled).toBe(false);
+      // Stage 1 redesign: the button was restyled off raw border-border
+      // onto the subtle border + control radius + ghost-text hover pattern
+      // the rest of the app uses. Post-Button-migration the chrome comes
+      // from the primitive's `secondary` variant; the redesigned tokens
+      // still flow through (border-subtle at rest, muted fg, control
+      // radius, hover-to-foreground color). hover:border-border is
+      // expected on the secondary variant, so it is not asserted against.
+      expect(button.className).toContain('border-border-subtle');
+      expect(button.className).toContain('rounded-[var(--radius-control)]');
+      expect(button.className).toContain('text-fg-muted');
+      expect(button.className).toContain('hover:text-fg');
+
+      await fireEvent.click(button);
       await tick();
 
       expect(loadOlderSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('hides the Load older button when pane.hasMoreHistory is false', async () => {
+      const pane = await buildWindowedPane({
+        items: [makeItem({ id: 'a' })],
+        hasMore: false,
+      });
+
+      const { queryByTestId } = render(MessageTimeline, { props: { pane } });
+
+      expect(queryByTestId('load-older-messages')).toBeNull();
     });
 
     it('disables the button while loadOlder is in flight', async () => {
@@ -1392,61 +1372,10 @@ describe('<MessageTimeline>', () => {
       expect(settledDivider.textContent).toContain('Response');
     });
 
-    it('marks the final assistant_text of every settled turn in a multi-turn thread', async () => {
+    it('marks the final assistant_text of every settled turn and adds elapsed time only to the latest', async () => {
       // Two completed turns, each ending with an assistant_text after a
-      // tool. Both turns are settled (no active turn entry), so each
-      // should get a "Response" pill on its own final divider.
-      const pane = await buildPane(undefined, [
-        makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
-        makeItem({
-          id: 'tool:0:0',
-          itemIndex: 1,
-          kind: 'tool_call',
-          toolName: 'Bash',
-          summary: 'ls',
-        }),
-        makeItem({
-          id: 'text:0:0',
-          itemIndex: 2,
-          kind: 'assistant_text',
-          summary: 'turn 0 final',
-        }),
-        makeItem({
-          id: 'user:1',
-          turnIndex: 1,
-          itemIndex: 0,
-          kind: 'user_text',
-          role: 'user',
-          summary: 'follow up',
-        }),
-        makeItem({
-          id: 'tool:1:0',
-          turnIndex: 1,
-          itemIndex: 1,
-          kind: 'tool_call',
-          toolName: 'Bash',
-          summary: 'cat',
-        }),
-        makeItem({
-          id: 'text:1:0',
-          turnIndex: 1,
-          itemIndex: 2,
-          kind: 'assistant_text',
-          summary: 'turn 1 final',
-        }),
-      ]);
-
-      const { queryAllByTestId } = render(MessageTimeline, { props: { pane } });
-
-      const dividers = queryAllByTestId('response-divider');
-      expect(dividers).toHaveLength(2);
-      for (const divider of dividers) {
-        expect(divider.getAttribute('data-final-response')).toBe('true');
-        expect(divider.textContent).toContain('Response');
-      }
-    });
-
-    it('adds elapsed time only to the latest settled response divider', async () => {
+      // tool. Neither has an active turn entry, so each gets a "Response"
+      // pill on its own final divider; only turn 1 has a settle record.
       const pane = await buildPane(undefined, [
         makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),
         makeItem({
@@ -1502,6 +1431,9 @@ describe('<MessageTimeline>', () => {
 
       const dividers = queryAllByTestId('response-divider');
       expect(dividers).toHaveLength(2);
+      for (const divider of dividers) {
+        expect(divider.getAttribute('data-final-response')).toBe('true');
+      }
       expect(dividers[0].textContent?.trim()).toBe('Response');
       expect(dividers[1].textContent).toContain('Response 1m 4s');
     });
@@ -1736,9 +1668,6 @@ describe('<MessageTimeline> read-aloud source', () => {
     setReadAloudPreference('enabled', true);
   });
   afterEach(() => {
-    resetStagedBackends();
-    __resetEntityIndexForTest();
-    resetReadAloudSourcesForTest();
     localStorage.clear();
     reloadReadAloudPreferencesForTest();
   });

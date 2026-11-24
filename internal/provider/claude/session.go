@@ -262,7 +262,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		Args:        line.Args(),
 		Dir:         cfg.WorkDir,
 		Env:         line.Env(claudeSpawnEnv(cfg)),
-		UnsetEnv:    line.UnsetEnv(),
 		EventLogger: cfg.EventLogger,
 		ThreadID:    threadID,
 		Provider:    string(provider.Claude),

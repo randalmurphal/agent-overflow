@@ -12,10 +12,11 @@
 // an empty one, as OpenAI's buffer does. A commit with under 100 ms of
 // audio is an error, as OpenAI's is.
 //
-// Two keys script a misbehaving OpenAI: RefusedKey is refused at the
-// handshake and StallsKey stops reading once the session is configured. A
-// test can also Hold a key of its own, so sessions opened with it withhold
-// every transcript until the test releases them.
+// Two keys script a misbehaving OpenAI: a key starting with RefusedKey is
+// refused at the handshake and one starting with StallsKey stops reading
+// once the session is configured. A test can also Hold a key from Key, so
+// sessions opened with it withhold every transcript until the test releases
+// them.
 package openaifake
 
 import (
@@ -29,7 +30,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -42,24 +42,6 @@ const (
 	RefusedKey = "sk-fake-refused-key"
 	StallsKey  = "sk-fake-stalls"
 )
-
-// held maps a held key to the channel whose closing releases its
-// sessions' transcripts.
-var held sync.Map
-
-// Hold makes sessions opened with key withhold every transcript until
-// release runs. Use a key no other test uses.
-func Hold(key string) (release func()) {
-	released := make(chan struct{})
-	held.Store(key, released)
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			held.Delete(key)
-			close(released)
-		})
-	}
-}
 
 // stallFor is how long a StallsKey session stops reading.
 const stallFor = 30 * time.Second
@@ -136,7 +118,8 @@ func serve(conn net.Conn) {
 		return
 	}
 	writer := &hijackable{conn: conn, buffered: buffered, header: http.Header{}}
-	if req.Header.Get("Authorization") == "Bearer "+RefusedKey {
+	key := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	if strings.HasPrefix(key, RefusedKey) {
 		http.Error(writer, `{"error":{"message":"Incorrect API key provided: refused."}}`, http.StatusUnauthorized)
 		return
 	}
@@ -145,12 +128,7 @@ func serve(conn net.Conn) {
 		return
 	}
 	defer func() { _ = ws.CloseNow() }()
-	key := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
-	var release chan struct{}
-	if found, ok := held.Load(key); ok {
-		release = found.(chan struct{})
-	}
-	(&session{ws: ws, stalls: key == StallsKey, release: release}).run(context.Background())
+	(&session{ws: ws, stalls: strings.HasPrefix(key, StallsKey), release: heldBy(key)}).run(context.Background())
 }
 
 // hijackable is the ResponseWriter websocket.Accept needs: it writes the

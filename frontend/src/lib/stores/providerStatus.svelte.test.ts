@@ -1,11 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import {
   getProviderStatus,
-  resetForTest,
   type ProviderStatusEvent,
 } from './providerStatus.svelte';
 import { setupEventListeners } from './events';
-import { emitWailsEvent, wailsListenerCount, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
+import { emitWailsEvent, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 
 function statusEvent(overrides: Partial<ProviderStatusEvent> = {}): ProviderStatusEvent {
   return {
@@ -23,8 +22,6 @@ describe('providerStatus store', () => {
   let cleanup: () => void;
 
   beforeEach(() => {
-    resetWailsMocks();
-    resetForTest();
     // The store now feeds through the consolidated `provider:status`
     // listener in setupEventListeners; wiring that single listener gives
     // the store the same coverage as the retired dedicated subscriber.
@@ -33,7 +30,6 @@ describe('providerStatus store', () => {
 
   afterEach(() => {
     cleanup();
-    resetForTest();
   });
 
   describe('listener lifecycle', () => {
@@ -139,15 +135,6 @@ describe('providerStatus store', () => {
 
       // Completely missing payload.
       emitWailsEvent('provider:status', null);
-      expect(getProviderStatus('claude')).toBeNull();
-    });
-  });
-
-  describe('resetForTest', () => {
-    it('clears the map so test cases do not leak state', () => {
-      emitWailsEvent('provider:status', statusEvent({ provider: 'claude', status: 'not_found' }));
-      expect(getProviderStatus('claude')).not.toBeNull();
-      resetForTest();
       expect(getProviderStatus('claude')).toBeNull();
     });
   });

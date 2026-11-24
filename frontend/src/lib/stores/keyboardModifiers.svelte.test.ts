@@ -44,13 +44,11 @@ function makeRow(threadId: string, eligible = true): HTMLElement {
 describe('keyboardModifiers store', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    resetKeyboardModifiersForTest();
     document.body.innerHTML = '';
     trackSidebarJumpRows(document.body);
   });
 
   afterEach(() => {
-    resetKeyboardModifiersForTest();
     vi.useRealTimers();
     document.body.innerHTML = '';
   });
@@ -79,14 +77,16 @@ describe('keyboardModifiers store', () => {
       release();
     });
 
-    it('clears visibility on keyup after a successful show', () => {
+    it('clears visibility and the label map on keyup after a successful show', () => {
       const release = subscribeJumpHints();
       makeRow('t1');
       dispatchModKeyDown();
       vi.advanceTimersByTime(101);
       expect(getJumpHintsVisible()).toBe(true);
+      expect(jumpLabelForThread('t1')).toBe('1');
       dispatchModKeyUp();
       expect(getJumpHintsVisible()).toBe(false);
+      expect(jumpLabelForThread('t1')).toBeUndefined();
       release();
     });
 
@@ -101,20 +101,15 @@ describe('keyboardModifiers store', () => {
       release();
     });
 
-    it('ignores Meta on non-macOS hosts', () => {
+    // null leaves the platform to detection, which is not macOS here.
+    it.each([
+      ['Meta on non-macOS hosts', 'Meta', null],
+      ['Control on macOS hosts', 'Control', true],
+    ] as const)('ignores %s', (_name, key, isMac) => {
+      setKeyboardModifierPlatformForTest(isMac);
       const release = subscribeJumpHints();
       makeRow('t1');
-      dispatchModKeyDown(undefined, 'Meta');
-      vi.advanceTimersByTime(200);
-      expect(getJumpHintsVisible()).toBe(false);
-      release();
-    });
-
-    it('ignores Control on macOS hosts', () => {
-      setKeyboardModifierPlatformForTest(true);
-      const release = subscribeJumpHints();
-      makeRow('t1');
-      dispatchModKeyDown(undefined, 'Control');
+      dispatchModKeyDown(undefined, key);
       vi.advanceTimersByTime(200);
       expect(getJumpHintsVisible()).toBe(false);
       release();
@@ -122,23 +117,15 @@ describe('keyboardModifiers store', () => {
   });
 
   describe('editable-target behavior', () => {
-    it('shows hints when the modifier hold starts inside an input', () => {
+    it.each([
+      ['an input', 'input'],
+      ['a textarea', 'textarea'],
+    ] as const)('shows hints when the modifier hold starts inside %s', (_name, tag) => {
       const release = subscribeJumpHints();
-      const input = document.createElement('input');
-      document.body.appendChild(input);
+      const field = document.createElement(tag);
+      document.body.appendChild(field);
       makeRow('t1');
-      dispatchModKeyDown(input);
-      vi.advanceTimersByTime(200);
-      expect(getJumpHintsVisible()).toBe(true);
-      release();
-    });
-
-    it('shows hints when the modifier hold starts inside a textarea', () => {
-      const release = subscribeJumpHints();
-      const textarea = document.createElement('textarea');
-      document.body.appendChild(textarea);
-      makeRow('t1');
-      dispatchModKeyDown(textarea);
+      dispatchModKeyDown(field);
       vi.advanceTimersByTime(200);
       expect(getJumpHintsVisible()).toBe(true);
       release();
@@ -263,17 +250,6 @@ describe('keyboardModifiers store', () => {
       dispatchModKeyDown();
       vi.advanceTimersByTime(101);
       expect(jumpLabelForThread('any')).toBeUndefined();
-      release();
-    });
-
-    it('clears the label map on keyup', () => {
-      const release = subscribeJumpHints();
-      makeRow('t1');
-      dispatchModKeyDown();
-      vi.advanceTimersByTime(101);
-      expect(jumpLabelForThread('t1')).toBe('1');
-      dispatchModKeyUp();
-      expect(jumpLabelForThread('t1')).toBeUndefined();
       release();
     });
   });

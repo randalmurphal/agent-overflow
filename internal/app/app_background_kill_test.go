@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -56,7 +55,7 @@ func newAgentKillFixture(t *testing.T, providerName, model string) *agentKillFix
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "agent-kill", Claude: sess})
 	return f
 }
@@ -427,47 +426,6 @@ func TestInterruptTurn_AgentWhoseLaunchIsStillQueuedIsRefused(t *testing.T) {
 	}
 }
 
-// InterruptAndRevertIfClean is InterruptTurn under an older client's name:
-// the same refusal while an agent is unconfirmed, with nothing interrupted
-// or written, then a plain interrupt that keeps the message once confirmed.
-func TestInterruptAndRevertIfClean_RefusesLikeInterruptTurnAndKeepsTheMessage(t *testing.T) {
-	t.Parallel()
-	f := newClaudeAgentKillFixture(t)
-	f.launchAgent(t, "agent", "task-agent", "")
-	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "never mind")
-	itemsBefore := f.itemCount(t)
-
-	result, err := f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, nil)
-	refused := agentIDs(requireRefusal(t, err))
-	want := agentIDs(requireRefusal(t, f.app.InterruptTurn(f.thread.ID, nil)))
-	if !slices.Equal(refused, want) || len(refused) != 1 || refused[0] != "agent=running" {
-		t.Fatalf("refusal agents = %v, InterruptTurn's = %v, want the running agent", refused, want)
-	}
-	if result != (InterruptAndRevertResult{}) {
-		t.Fatalf("refused result = %+v, want empty", result)
-	}
-	if n := f.interrupts(t); n != 0 {
-		t.Fatalf("a refused Stop sent %d interrupts", n)
-	}
-	if got := f.itemCount(t); got != itemsBefore {
-		t.Fatalf("a refused Stop changed rows: %d items, want %d", got, itemsBefore)
-	}
-
-	result, err = f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, []string{"agent"})
-	if err != nil {
-		t.Fatalf("confirmed InterruptAndRevertIfClean: %v", err)
-	}
-	if result.Reverted || result.Reason == "" {
-		t.Fatalf("confirmed result = %+v, want reverted:false with a reason", result)
-	}
-	if n := f.interrupts(t); n != 1 {
-		t.Fatalf("confirmed Stop sent %d interrupts, want 1", n)
-	}
-	if _, found, err := f.app.store.GetThreadItem(f.thread.ID, "u:1"); err != nil || !found {
-		t.Fatalf("the message must stay: found=%v err=%v", found, err)
-	}
-}
-
 // Agent requests, their cancels and workflow takeovers are not a person's
 // Stop: they interrupt with agents live.
 func TestUngatedInterruptsStopWithAgentsLive(t *testing.T) {
@@ -572,16 +530,10 @@ func TestStopRefusalWireFrameNamesTheAgents(t *testing.T) {
 		name string
 		args []any
 	}
-	// The options an older client sends with InterruptAndRevertIfClean.
-	oldClientOptions := map[string]any{
-		"expectedSendId": "send-1",
-		"draft":          map[string]any{"content": "hello", "attachmentIds": []string{}, "terminalChips": []any{}},
-	}
 	var calls []call
 	for _, confirmed := range [][]string{nil, {}, {"another-agent"}} {
 		calls = append(calls,
-			call{"InterruptTurn", []any{f.thread.ID, confirmed}},
-			call{"InterruptAndRevertIfClean", []any{f.thread.ID, oldClientOptions, confirmed}})
+			call{"InterruptTurn", []any{f.thread.ID, confirmed}})
 	}
 	for _, c := range calls {
 		name, args := c.name, c.args

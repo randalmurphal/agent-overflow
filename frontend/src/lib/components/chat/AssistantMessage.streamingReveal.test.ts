@@ -8,7 +8,6 @@ import {
 import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import {
-  __resetHarnessModeForTest,
   setHarnessSessionFromBootstrap,
 } from '../../transport/harnessMode';
 import {
@@ -53,7 +52,6 @@ class FakeSmoothingClock implements SmoothingClock {
 afterEach(() => {
   __setSmoothingClockForTest(undefined);
   setPageGrantsFromBootstrap(false);
-  __resetHarnessModeForTest();
 });
 
 // Position-distinguishable filler. Identical repeats made a divergence

@@ -29,12 +29,16 @@
 // class/id/tag/attribute alongside it. `:is(...)` / `:where(...)` /
 // `:not(...)` count as featured only when their arguments contain a feature.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SRC_ROOT } from '../test/sourceScan';
 
 const SHEETS = ['app.css', 'styles/tokens.css', 'styles/syntax.css'];
+const SHEET_SOURCES = import.meta.glob<string>(['../app.css', '../styles/tokens.css', '../styles/syntax.css'], { query: '?raw', import: 'default', eager: true });
+
+function sheetSource(sheet: string): string {
+  const text = SHEET_SOURCES[`../${sheet}`];
+  if (text === undefined) throw new Error(`${sheet} is not imported by this test`);
+  return text;
+}
 
 const STRUCTURAL_PSEUDO =
   /:(first-child|last-child|only-child|first-of-type|last-of-type|only-of-type|nth-[a-z-]+(\([^)]*\))?|empty)/;
@@ -98,7 +102,7 @@ function hasFeature(compound: string): boolean {
 describe('global stylesheets avoid universal invalidation sets', () => {
   for (const sheet of SHEETS) {
     it(`${sheet} has no featureless structural-pseudo or universal-sibling compound`, () => {
-      const css = readFileSync(join(SRC_ROOT, sheet), 'utf8');
+      const css = sheetSource(sheet);
       const offenders: string[] = [];
       for (const prelude of selectorPreludes(css)) {
         for (const sel of prelude.split(',')) {
@@ -134,7 +138,7 @@ describe('global stylesheets avoid universal invalidation sets', () => {
   }
 
   it('uses explicit Markdown edge markers instead of structural pseudos', () => {
-    const css = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8');
+    const css = sheetSource('app.css');
     const selectors = selectorPreludes(css).join('\n');
     expect(selectors).not.toMatch(/\.md-blk:(?:first|last)-child/);
     expect(selectors).not.toContain('> p:first-child');

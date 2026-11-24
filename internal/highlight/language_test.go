@@ -1,6 +1,7 @@
 package highlight
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -68,4 +69,23 @@ func TestGrammarRegistryAlignment(t *testing.T) {
 			t.Errorf("Highlight(%s) returned %d lines, want 2", name, len(res.Lines))
 		}
 	}
+}
+
+// Preflight forces every wired-up grammar's engine build and returns the
+// first failure.
+func Preflight() error {
+	for _, name := range grammars.Names() {
+		lang := LangFromName(name)
+		if lang == LangPlaintext {
+			return fmt.Errorf("grammar %q has no Lang registry entry", name)
+		}
+		engineFor(lang)
+		engineTable.mu.Lock()
+		err := engineTable.errs[lang]
+		engineTable.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -213,13 +213,13 @@ test('a fork keeps showing its source’s images after the source is deleted, an
   const completed = harness.waitForEvent('provider:turn_completed');
   await page.getByTestId('composer-send').click();
   await completed;
-  const sourceItems = await harness.rpc<Array<{ summary: string; meta: string }>>('ListItems', threadId, true);
+  const sourceItems = await harness.items<{ summary: string; meta: string }>(threadId, true);
   expect(sourceItems.find((item) => item.summary.includes('Keep this image'))?.meta).toContain(FILENAME);
   const [sourceAttachment] = await harness.rpc<AttachmentRow[]>('ListAttachments', threadId);
   expect(sourceAttachment?.filename).toBe(FILENAME);
 
   const fork = await harness.rpc<{ id: string; title: string }>('ForkThread', threadId, null);
-  const forkItems = await harness.rpc<Array<{ summary: string; meta: string }>>('ListItems', fork.id, true);
+  const forkItems = await harness.items<{ summary: string; meta: string }>(fork.id, true);
   expect(forkItems.find((item) => item.summary.includes('Keep this image'))?.meta).toContain(FILENAME);
   await page.getByText(fork.title, { exact: true }).click();
   await expect(page.getByText(/Keep this image in the fork\./)).toBeVisible();
@@ -238,7 +238,7 @@ test('a fork keeps showing its source’s images after the source is deleted, an
   await expect(page.getByText('Image fork source', { exact: true })).toHaveCount(0);
   await page.getByText(fork.title, { exact: true }).click();
   await expect(page.getByText(/Keep this image in the fork\./)).toBeVisible();
-  const kept = await harness.rpc<Array<{ summary: string; meta: string }>>('ListItems', fork.id, true);
+  const kept = await harness.items<{ summary: string; meta: string }>(fork.id, true);
   expect(kept.map((item) => [item.summary, item.meta])).toEqual(forkItems.map((item) => [item.summary, item.meta]));
   expect(await harness.rpc<AttachmentRow[]>('ListAttachments', fork.id)).toHaveLength(0);
   await page.getByLabel(`Preview ${FILENAME}`).click();

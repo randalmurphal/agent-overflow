@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import EmbeddedHtmlHost from './EmbeddedHtmlHost.svelte';
 import { MEDIA_CLAIM_ATTR } from '../../../markdown';
-import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../../utils/imageTiers';
+import { __reportImageBoxForTest } from '../../../utils/imageTiers';
 import {
   buildForgeAttachmentHref,
   type ForgeAttachmentSource,
@@ -44,7 +44,6 @@ const marked = (name: string, alt = 'a shot') =>
 beforeEach(() => {
   acquired.length = 0;
   released.length = 0;
-  __resetImageTiersForTest();
 });
 
 // happy-dom lays nothing out: report the paragraph's width so each host

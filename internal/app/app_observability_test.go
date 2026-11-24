@@ -33,13 +33,13 @@ func TestAppendUIRenderTraceBatchRoundtrip(t *testing.T) {
 	}
 }
 
-func TestGetUIRenderTracePathRequiresConfigDir(t *testing.T) {
+func TestUIRenderTraceRequiresConfigDir(t *testing.T) {
 	t.Parallel()
 	app := &App{}
 
-	_, err := app.GetUIRenderTracePath()
+	_, err := app.AppendUIRenderTraceBatch([]string{`{"label":"chat.state"}`})
 	if err == nil {
-		t.Fatal("GetUIRenderTracePath returned nil error")
+		t.Fatal("AppendUIRenderTraceBatch without a config directory returned nil error")
 	}
 }
 

@@ -32,7 +32,7 @@ func TestPromptFilesOfAKilledSessionAreRemovedAtTheNextBoot(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set claude binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	live, ok := app.sessionManager().get(thread.ID)
@@ -86,7 +86,7 @@ func TestClaudeTUISessionWritesItsPromptFileInTheDataDirectory(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set claude binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	if files := promptFilesIn(t, filepath.Join(app.configDir, claudePromptDir)); len(files) == 0 {

@@ -3,7 +3,7 @@
 // flow owns both backends and all of its browser contexts.
 import { type Page, type WebSocketRoute } from '@playwright/test';
 import { expect, test } from './base-test.js';
-import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { reloadAtRoot } from './compact-history-helpers.js';
@@ -13,6 +13,10 @@ import { awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-t
 import { randomUUID } from 'node:crypto';
 import { unusedPort } from '../src/ports.js';
 import { doneResult, humanGateWorkflow, seedWorkflow, setClaudeScenario, startWorkflow, waitForWorkflowState, type WorkflowDetail } from './workflows-helpers.js';
+
+// How long the page waits before it calls a computer unreachable
+// (transportStatus UNREACHABLE_SETTLE_MS, half a minute in the product).
+const SETTLE_MS = 5_000;
 
 interface Seed { projects: Array<{ projectId: string; path: string; threadIds: string[] }> }
 interface ProjectRow { project: { id: string; name: string; path: string } }
@@ -50,7 +54,7 @@ export function connectedComputersFlow(): void {
     });
     page.on('pageerror', (error) => errors.push(error.message));
     try {
-      [home, remote] = await startTogether(launchHarness(), launchHarness());
+      [home, remote] = await startTogether(launchHarness({ env: harnessTiming({ 'unreachable-settle': `${SETTLE_MS}ms` }) }), launchHarness());
       await home.rpc('UpdateSettings', { keepAwakeScreen: true });
       await remote.rpc('UpdateSettings', { keepAwakeScreen: true });
       const homeSeed = await home.rpc<Seed>('HarnessSeed', { projects: [{ name: 'Mac checkout', repo: { commits: [{ files: { 'README.md': 'Mac project' } }] }, threads: [{ title: 'Mac conversation', turns: [{ userText: 'Hello', items: [{ kind: 'assistant_text', summary: 'Done' }] }] }] }] });
@@ -173,11 +177,11 @@ export function connectedComputersFlow(): void {
         ],
         afterTurns: 'silent',
       }));
-      await home.rpc('StartSession', sourceThread);
+      await home.startSession(sourceThread);
       const firstTurn = awaitTurnCompleted(home, sourceThread);
       const listedPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_computers', cwd: homeSeed.projects[0].path, timeoutMs: 30_000 });
       const startedPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd: homeSeed.projects[0].path, timeoutMs: 60_000 });
-      await home.rpc('SendMessage', sourceThread, 'run a remote command', null);
+      await home.send(sourceThread, 'run a remote command');
       const listed = await listedPromise;
       expect(listed.report.isError, listed.report.result).toBeFalsy();
       expect(JSON.parse(listed.report.result ?? '[]')).toEqual(expect.arrayContaining([expect.objectContaining({ id: remoteId })]));
@@ -191,7 +195,7 @@ export function connectedComputersFlow(): void {
       const secondTurn = awaitTurnCompleted(home, sourceThread);
       const disabledPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_computers', cwd: homeSeed.projects[0].path, timeoutMs: 30_000 });
       const receiptPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_status', cwd: homeSeed.projects[0].path, timeoutMs: 30_000 });
-      await home.rpc('SendMessage', sourceThread, 'check after opt-out', null);
+      await home.send(sourceThread, 'check after opt-out');
       const disabled = await disabledPromise;
       expect(disabled.report.isError, disabled.report.result).toBeFalsy();
       expect(JSON.parse(disabled.report.result ?? 'null')).toEqual([]);
@@ -260,14 +264,21 @@ export function connectedComputersFlow(): void {
 
       // Stop one independently; a remembered catalog must not disappear on
       // reload and the other computer must remain usable.
+      // The page clock runs as the real one does; the settle is run below
+      // by moving it on.
+      await page.clock.install();
       await remote.stop();
       await reloadAtRoot(page);
       await expect(page.getByText('already-cloned', { exact: true })).toBeVisible();
       await expect(page.getByText('Mac checkout', { exact: true })).toBeVisible();
-      // Through the first several of its dials, the stopped computer adds
-      // no status line and no animation to the closed Projects section; the
-      // Projects menu says it is offline.
-      expect(await watchProjectsQuiet(page, 8_000)).toMatchObject({ statusLines: [], animations: [] });
+      // Once its dial at the reload has failed, the page asks nothing of the
+      // stopped computer until its own computer reports it back, and the one
+      // timer left to move the Projects section is the computer's
+      // unreachable settle. Through that settle the stopped computer adds no
+      // status line and no animation to the section; the Projects menu says
+      // it is offline.
+      expect(await watchProjectsQuiet(page, () => page.clock.runFor(SETTLE_MS + 1_000)))
+        .toMatchObject({ statusLines: [], animations: [] });
       await expectProjectsMenuSays(page, /Offline/);
       await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(changedFont);
       expect(errors).toEqual([]);

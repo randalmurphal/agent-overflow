@@ -13,6 +13,8 @@ on:
       - main
     paths:
       - ci/**
+      - build/test-inputs.mk
+      - scripts/playwright-browsers.sh
       - .github/workflows/toolchain-image.yml
       - .github/actions/toolchain-image/**
       - go.mod

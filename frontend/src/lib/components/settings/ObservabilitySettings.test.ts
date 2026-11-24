@@ -65,18 +65,14 @@ describe('<ObservabilitySettings>', () => {
     }
   });
 
-  it('disables the OTLP endpoint input when tracing is off', async () => {
-    await seed({ observabilityTracingEnabled: false });
+  it.each([
+    ['disables', 'off', false],
+    ['enables', 'on', true],
+  ])('%s the OTLP endpoint input when tracing is %s', async (_verb, _state, tracing) => {
+    await seed({ observabilityTracingEnabled: tracing });
     const { getByLabelText } = render(ObservabilitySettings);
     const input = getByLabelText('OTLP endpoint') as HTMLInputElement;
-    expect(input.disabled).toBe(true);
-  });
-
-  it('enables the OTLP endpoint input when tracing is on', async () => {
-    await seed({ observabilityTracingEnabled: true });
-    const { getByLabelText } = render(ObservabilitySettings);
-    const input = getByLabelText('OTLP endpoint') as HTMLInputElement;
-    expect(input.disabled).toBe(false);
+    expect(input.disabled).toBe(!tracing);
   });
 
   it('sends the endpoint patch on change', async () => {
@@ -92,26 +88,15 @@ describe('<ObservabilitySettings>', () => {
     expect(mock!.mock.calls[0][0]).toEqual({ observabilityOtlpEndpoint: 'jaeger:4317' });
   });
 
-  it('sends the tracing toggle patch when flipped', async () => {
-    await seed({ observabilityTracingEnabled: false });
+  it.each([
+    ['tracing', 0, 'observabilityTracingEnabled'],
+    ['event log', 1, 'observabilityEventLogEnabled'],
+  ] as const)('sends the %s toggle patch when flipped', async (_name, index, key) => {
+    await seed({ [key]: false });
     const { getAllByRole } = render(ObservabilitySettings);
-    const tracingSwitch = getAllByRole('switch')[0];
-    await fireEvent.click(tracingSwitch);
+    await fireEvent.click(getAllByRole('switch')[index]);
 
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ observabilityTracingEnabled: true });
-  });
-
-  it('sends the event log toggle patch when flipped', async () => {
-    await seed({ observabilityEventLogEnabled: false });
-    const { getAllByRole } = render(ObservabilitySettings);
-    const eventLogSwitch = getAllByRole('switch')[1];
-    await fireEvent.click(eventLogSwitch);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ observabilityEventLogEnabled: true });
+    expect(getBindingMock('UpdateSettings')!.mock.calls[0][0]).toEqual({ [key]: true });
   });
 
   const NOTICE = 'Tracing changes take effect on next app restart.';

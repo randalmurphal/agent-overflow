@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import WSLSection, { resetWSLSectionCache } from './WSLSection.svelte';
-import { setBindingMock, getBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 
@@ -19,17 +19,15 @@ const FIXTURE_DISTROS: DistroRow[] = [
 
 describe('<WSLSection>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     resetWSLSectionCache();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   afterEach(() => {
-    resetBindingMocks();
     resetRunMode();
     resetWSLSectionCache();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   it('renders nothing when the backend is not running under WSL', async () => {
@@ -143,25 +141,6 @@ describe('<WSLSection>', () => {
     expect(queryByTestId('wsl-section-no-distros')).toBeFalsy();
   });
 
-  it('surfaces a toast when SetWSLDistroPreference fails', async () => {
-    setBindingMock('IsWSL', vi.fn(async () => true));
-    setBindingMock('ListWSLDistros', vi.fn(async () => FIXTURE_DISTROS));
-    setBindingMock('GetWSLDistroPreference', vi.fn(async () => 'Ubuntu-24.04'));
-    setBindingMock('SetWSLDistroPreference', vi.fn(async () => {
-      throw new Error('write failed');
-    }));
-
-    const { findByTestId } = render(WSLSection);
-    await findByTestId('wsl-section-radiogroup');
-    const debianRadio = (await findByTestId('wsl-option-Debian')).querySelector('input') as HTMLInputElement;
-    await fireEvent.change(debianRadio);
-
-    await waitFor(() => {
-      const toasts = getToasts();
-      expect(toasts.some((t) => t.type === 'error' && /wsl/i.test(t.message))).toBe(true);
-    });
-  });
-
   it('reverts the radio and surfaces an error when SetWSLDistroPreference fails', async () => {
     setBindingMock('IsWSL', vi.fn(async () => true));
     setBindingMock('ListWSLDistros', vi.fn(async () => FIXTURE_DISTROS));
@@ -181,6 +160,9 @@ describe('<WSLSection>', () => {
     await waitFor(() => {
       expect(ubuntuRadio.checked).toBe(true);
       expect(debianRadio.checked).toBe(false);
+    });
+    await waitFor(() => {
+      expect(getToasts().some((t) => t.type === 'error' && /wsl/i.test(t.message))).toBe(true);
     });
   });
 

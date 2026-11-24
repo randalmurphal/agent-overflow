@@ -11,7 +11,7 @@ import { createThreadActivityRuns } from './threadActivityRuns.svelte';
 import { windowDigest } from './threadWindowDigest';
 import { activityRunRow, activityRunProse, activityRunStub } from '../../test/helpers/activityRuns';
 import { formatFnv1a64 } from '../utils/fnv1a';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { Item } from '../types/models';
 import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
 import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
@@ -67,7 +67,6 @@ function fixture(initial: Item[] = [], bounds = { oldest: null, newest: null } a
 }
 
 beforeEach(() => {
-  resetBindingMocks();
   // The registries group by the member rule; members calls ask the
   // backend for the rule its hello advertises.
   installAgentMessageRunMembersCapability();
@@ -92,18 +91,6 @@ describe('syncRunSpans', () => {
     const f = fixture(items);
     f.runs.syncRunSpans(items, { rule: f.runs.activityRunRule(), stubs: [activityRunStub()] });
     expect(f.runs.heldRunFold()).toBeNull();
-  });
-
-  it('drops a record whose run left the window', () => {
-    const items = [activityRunProse('p0', 0), activityRunRow('b', 1), activityRunRow('c', 2), activityRunRow('d', 3)];
-    const f = fixture(items);
-    f.runs.syncRunSpans(items, { rule: f.runs.activityRunRule(), stubs: [activityRunStub()] });
-    expect(f.runs.snapshotStubs()).toHaveLength(1);
-
-    const next = [activityRunProse('p0', 0)];
-    f.setItems(next);
-    f.runs.syncRunSpans(next);
-    expect(f.runs.snapshotStubs()).toEqual([]);
   });
 
   it('re-points a record whose span grew, and goes dirty', () => {
@@ -165,10 +152,13 @@ describe('syncRunSpans', () => {
     const items = [activityRunProse('p0', 0), activityRunRow('b', 1), activityRunRow('c', 2), activityRunRow('d', 3)];
     const f = fixture(items);
     f.runs.syncRunSpans(items, { rule: f.runs.activityRunRule(), stubs: [activityRunStub()] });
+    expect(f.runs.snapshotStubs()).toHaveLength(1);
     const revision = f.runs.revision;
     const next = [activityRunProse('p0', 0)];
     f.setItems(next);
     f.runs.syncRunSpans(next);
+    expect(f.runs.snapshotStubs()).toEqual([]);
+    expect(f.runs.revision).toBe(revision + 1);
     f.runs.syncRunSpans(next);
     expect(f.runs.revision).toBe(revision + 1);
     expect(f.runs.isLoadedMember('b')).toBe(false);
@@ -188,14 +178,11 @@ describe('runCoveringUnshipped', () => {
   // b..d at 2..4 with prose either side. Membership is "between the
   // edges": the side counts say a side has something to fetch, the edge
   // coordinates say whether a given row is on it.
-  it('claims a row between the run\'s first edge and its loaded span', () => {
-    const f = held();
-    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 1), [])).toBe('a');
-  });
-
-  it('claims a row between its loaded span and the run\'s last edge', () => {
-    const f = held();
-    expect(f.runs.runCoveringUnshipped(activityRunRow('new', 5), [])).toBe('a');
+  it.each([
+    ["claims a row between the run's first edge and its loaded span", 1],
+    ["claims a row between its loaded span and the run's last edge", 5],
+  ])('%s', (_name, index) => {
+    expect(held().runs.runCoveringUnshipped(activityRunRow('new', index), [])).toBe('a');
   });
 
   it('claims nothing inside the loaded span, or outside the run', () => {

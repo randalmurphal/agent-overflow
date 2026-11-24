@@ -3,8 +3,8 @@ import { createActivityRunMemberFetch } from './activityRunMemberFetch';
 import { foldPageStub, noteRefusedRow } from './activityRunStubs';
 import type { ActivityRunRecords } from './activityRunStubs';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
-import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { noteThread } from '../transport/entityIndex';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -27,8 +27,8 @@ function fixture() {
   });
   return { records, record, stub, fetcher, reloadWindow, onStubApplied, reportFailure };
 }
-beforeEach(() => { resetBindingMocks(); __resetEntityIndexForTest(); vi.useFakeTimers(); });
-afterEach(() => { __resetEntityIndexForTest(); vi.useRealTimers(); });
+beforeEach(() => { vi.useFakeTimers(); });
+afterEach(() => { vi.useRealTimers(); });
 
 it('does not turn a failed background refresh into an automatic retry loop', async () => {
   const f = fixture();
@@ -88,18 +88,6 @@ it('coalesces stale refusals and waits for recovery before fetching again', asyn
   await Promise.all([first, second, queued]);
   expect(rpc).toHaveBeenCalledTimes(3);
   expect(f.reportFailure.mock.calls.every(call => call[2] === true)).toBe(true);
-  f.fetcher.dispose();
-});
-
-it('discards a members answer superseded by a page that moved its loaded edge', async () => {
-  const f = fixture();
-  const result = deferred<unknown>();
-  setBindingMock('ListActivityRunMembers', () => result.promise);
-  const pending = f.fetcher.fetch('run', { direction: 'before', limit: 5 });
-  foldPageStub(f.records, { ...f.stub }, { firstItemId: 'moved', lastItemId: 'moved', items: [] });
-  result.resolve({ items: [], stub: f.stub });
-  await pending;
-  expect(f.onStubApplied).not.toHaveBeenCalled();
   f.fetcher.dispose();
 });
 

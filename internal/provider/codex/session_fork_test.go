@@ -22,25 +22,19 @@ func TestParseThreadForkResponseRejectsMissingThreadID(t *testing.T) {
 
 func TestParseThreadForkResponseReadsThreadIDWithoutTurns(t *testing.T) {
 	t.Parallel()
-	result, err := parseThreadForkResponse(json.RawMessage(
-		`{"thread":{"id":"fork-1","turns":[{"id":"turn-a"},{"id":"turn-b"}]}}`,
-	))
-	if err != nil {
-		t.Fatalf("parse fork response: %v", err)
-	}
-	if result.ThreadID != "fork-1" {
-		t.Fatalf("result = %+v, want fork-1", result)
-	}
-}
-
-func TestParseThreadForkResponseAcceptsExcludedTurns(t *testing.T) {
-	t.Parallel()
-	result, err := parseThreadForkResponse(json.RawMessage(`{"thread":{"id":"fork-1","turns":[]}}`))
-	if err != nil {
-		t.Fatalf("parse fork response: %v", err)
-	}
-	if result.ThreadID != "fork-1" {
-		t.Fatalf("result = %+v, want fork-1", result)
+	for name, raw := range map[string]string{
+		"populated turns": `{"thread":{"id":"fork-1","turns":[{"id":"turn-a"},{"id":"turn-b"}]}}`,
+		"excluded turns":  `{"thread":{"id":"fork-1","turns":[]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := parseThreadForkResponse(json.RawMessage(raw))
+			if err != nil {
+				t.Fatalf("parse fork response: %v", err)
+			}
+			if result.ThreadID != "fork-1" {
+				t.Fatalf("result = %+v, want fork-1", result)
+			}
+		})
 	}
 }
 
@@ -84,7 +78,7 @@ done
 		Binary:  scriptPath,
 		Model:   "test-model",
 		WorkDir: "/tmp",
-		Env:     map[string]string{"FORK_REQUEST_FILE": capture.request, "FORK_TURNS_REQUEST_FILE": capture.turns},
+		Env:     provider.EnvInput{Custom: map[string]string{"FORK_REQUEST_FILE": capture.request, "FORK_TURNS_REQUEST_FILE": capture.turns}},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -154,16 +148,23 @@ func TestSessionForkAtSendsLastTurnIdAndValidatesTail(t *testing.T) {
 	}
 }
 
+// ForkAt validates the forked thread's surviving tail against the anchor and
+// fails on a tail that does not prove the cut.
 func TestSessionForkAtRejectsMismatchedSurvivingTail(t *testing.T) {
 	t.Parallel()
-	s, _ := newForkMockSession(
-		t,
-		`{"thread":{"id":"mock-fork-1","turns":[]}}`,
-		`{"data":[{"id":"turn-c"}],"nextCursor":null}`,
-	)
-	_, err := s.ForkAt(context.Background(), "turn-b")
-	if err == nil || !strings.Contains(err.Error(), "expected anchor") {
-		t.Fatalf("ForkAt error = %v, want surviving-tail mismatch", err)
+	for _, tc := range []struct{ name, turnsList, wantErr string }{
+		{"mismatched tail", `{"data":[{"id":"turn-c"}],"nextCursor":null}`, "expected anchor"},
+		{"empty tail page with continuation", `{"data":[],"nextCursor":"unexpected-more"}`, "empty first page with a continuation cursor"},
+		{"turn shell without id", `{"data":[{"id":"  "}],"nextCursor":null}`, "response data[0] is missing id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, _ := newForkMockSession(t, `{"thread":{"id":"mock-fork-1","turns":[]}}`, tc.turnsList)
+			_, err := s.ForkAt(context.Background(), "turn-b")
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ForkAt error = %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -185,77 +186,6 @@ func TestSessionFullForkOmitsLastTurnIdAndSkipsTailValidation(t *testing.T) {
 	}
 	if _, err := os.Stat(capture.turns); !os.IsNotExist(err) {
 		t.Fatalf("full fork must not list turns for tail validation; stat err = %v", err)
-	}
-}
-
-func TestSessionForkAtRejectsEmptyTailPageWithContinuation(t *testing.T) {
-	t.Parallel()
-	s, _ := newForkMockSession(
-		t,
-		`{"thread":{"id":"mock-fork-1","turns":[]}}`,
-		`{"data":[],"nextCursor":"unexpected-more"}`,
-	)
-	_, err := s.ForkAt(context.Background(), "turn-b")
-	if err == nil || !strings.Contains(err.Error(), "empty first page with a continuation cursor") {
-		t.Fatalf("ForkAt error = %v, want malformed metadata-page failure", err)
-	}
-}
-
-func TestSessionForkAtRejectsTurnShellWithoutID(t *testing.T) {
-	t.Parallel()
-	s, _ := newForkMockSession(
-		t,
-		`{"thread":{"id":"mock-fork-1","turns":[]}}`,
-		`{"data":[{"id":"  "}],"nextCursor":null}`,
-	)
-	_, err := s.ForkAt(context.Background(), "turn-b")
-	if err == nil || !strings.Contains(err.Error(), "response data[0] is missing id") {
-		t.Fatalf("ForkAt error = %v, want malformed turn-shell failure", err)
-	}
-}
-
-func TestSessionForkWithMock(t *testing.T) {
-	t.Parallel()
-	script := `#!/bin/bash
-while IFS= read -r line; do
-    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
-    if [ -z "$id" ]; then
-        continue
-    fi
-    if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
-        continue
-    fi
-    if echo "$line" | grep -q '"method":"thread/start"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-thread-123\"}}}"
-        continue
-    fi
-    if echo "$line" | grep -q '"method":"thread/fork"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"mock-thread-fork-456\"}}}"
-    fi
-done
-`
-	scriptDir := t.TempDir()
-	scriptPath := scriptDir + "/codex"
-	mockexec.Write(t, scriptPath, script)
-
-	s, err := NewSession(context.Background(), testThread, Config{
-		Reaper:  procutiltest.Reaper(),
-		Binary:  scriptPath,
-		Model:   "test-model",
-		WorkDir: "/tmp",
-	}, func(provider.ProviderEvent) {})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer s.Close()
-
-	forkedThreadID, err := s.Fork(context.Background())
-	if err != nil {
-		t.Fatalf("Fork() error = %v", err)
-	}
-	if forkedThreadID != "mock-thread-fork-456" {
-		t.Fatalf("Fork() = %q, want %q", forkedThreadID, "mock-thread-fork-456")
 	}
 }
 

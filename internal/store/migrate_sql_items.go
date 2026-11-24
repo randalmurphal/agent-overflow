@@ -14,7 +14,7 @@ package store
 // against drift; the body is the v1 items definition verbatim with only the
 // kind CHECK extended and every index recreated.
 //
-// Runs with foreign_keys OFF (see applyRebuildMigration) so DROP TABLE items
+// Runs with foreign_keys OFF (see applyRebuildMigrationSteps) so DROP TABLE items
 // does not cascade-delete thread_checkpoints, whose
 // (thread_id, user_item_id) FK REFERENCES items(thread_id, id) ON DELETE
 // CASCADE. The rename re-links that FK by name and assertForeignKeysIntact

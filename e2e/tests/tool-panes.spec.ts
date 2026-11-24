@@ -16,6 +16,7 @@ import {
   startWorkflow,
   waitForWorkflowState,
 } from './workflows-helpers.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 function sections(page: Page): Locator {
   return page.locator('[data-testid="pane-host"] > section[data-pane-id]');
@@ -56,6 +57,7 @@ async function dragSidebarTo(page: Page, width: number): Promise<void> {
 }
 
 async function useDarkTheme(page: Page): Promise<void> {
+  if (!screenshotsOn) return;
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveClass(/\bdark\b/);
   await page.evaluate(() => Promise.all(
@@ -64,7 +66,7 @@ async function useDarkTheme(page: Page): Promise<void> {
 }
 
 async function shoot(target: Page | Locator, testInfo: TestInfo, name: string): Promise<void> {
-  await target.screenshot({ path: testInfo.outputPath(`${name}.png`) });
+  await screenshot(target, { path: testInfo.outputPath(`${name}.png`) });
 }
 
 test('the tools row opens a tool in the focused pane\'s place, or beside it with ctrl or cmd', async ({ harness, page }) => {
@@ -177,6 +179,8 @@ test('captures the tools row and a workflows pane beside a thread', async ({ har
     }
     await shoot(row, testInfo, `tools-row-${width}-dark`);
   }
-  await dragSidebarTo(page, 300);
-  await shoot(page, testInfo, 'workflows-pane-beside-thread-dark');
+  if (screenshotsOn) {
+    await dragSidebarTo(page, 300);
+    await shoot(page, testInfo, 'workflows-pane-beside-thread-dark');
+  }
 });

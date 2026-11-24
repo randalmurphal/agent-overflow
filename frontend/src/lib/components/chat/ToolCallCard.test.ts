@@ -3,14 +3,12 @@ import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import ToolCallCard from "./ToolCallCard.svelte";
 import { buildPane, makeItem, makeThread } from "../../../test/helpers/chat";
 import {
-  resetBindingMocks,
   setBindingMock,
-} from "../../../test/mocks/bindings-app";
+} from '../../../test/mocks/bindings-app';
 import { codexSubagentReceiverLabels } from "../../utils/subagentLaunch";
 import { resetProposedPlanCacheForTests } from "../../stores/proposedPlans.svelte";
 
 beforeEach(() => {
-  resetBindingMocks();
   // buildPane seeds the module-level plan cache, and only the latest plan in
   // it offers "Open in plan sidebar". A previous case's plans on the same
   // thread would demote this case's plan.
@@ -45,8 +43,9 @@ describe("<ToolCallCard> header dispatcher", () => {
       summary: "ls -la",
     });
 
-    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
 
+    expect(queryByTestId("tool-call-card-status")).toBeNull();
     expect(getByTestId("command-output-row")).toBeInTheDocument();
     expect(getByTestId("command-output-icon")).toBeInTheDocument();
     expect(getByTestId("command-output-label").textContent?.trim()).toBe(
@@ -172,29 +171,26 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(queryByTestId("tool-call-card")).toBeNull();
   });
 
-  it("renders a file icon for Edit/Write/MultiEdit tools", async () => {
+  it.each([
+    ["Edit", "file", "edit", "foo.ts"],
+    ["Write", "file", "write", "foo.ts"],
+    ["MultiEdit", "file", "edit", "foo.ts"],
+    ["Read", "eye", "read", "hello"],
+    ["Grep", "search", "grep", "hello"],
+    ["Glob", "search", "glob", "hello"],
+    ["WebFetch", "globe", "fetch", "hello"],
+    ["WebSearch", "globe", "search", "hello"],
+    ["webSearch", "globe", "search", "hello"],
+    ["Plan", "checklist", "plan", "hello"],
+    ["ExitPlanMode", "checklist", "plan", "hello"],
+  ])("renders %s with the %s icon and the %s label", async (toolName, kind, label, summary) => {
     const pane = await buildPane();
-    for (const toolName of ["Edit", "Write", "MultiEdit"]) {
-      const item = makeItem({
-        id: `tool-${toolName}`,
-        kind: "tool_call",
-        status: "running",
-        toolName,
-        summary: "foo.ts",
-      });
+    const item = makeItem({ id: `tool-${toolName}`, kind: "tool_call", status: "running", toolName, summary });
 
-      const { getByTestId, unmount } = render(ToolCallCard, {
-        props: { pane, item },
-      });
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
-      expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
-        "file",
-      );
-      expect(getByTestId("tool-call-card-label").textContent).toBe(
-        toolName === "Write" ? "write" : "edit",
-      );
-      unmount();
-    }
+    expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(kind);
+    expect(getByTestId("tool-call-card-label").textContent).toBe(label);
   });
 
   it("renders pending structured Edit calls as stable diff placeholders with full paths", async () => {
@@ -263,64 +259,6 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(blocks).toHaveLength(2);
     expect(blocks[0]).toHaveAttribute("data-file-path", "/home/me/dotfiles/install.sh");
     expect(blocks[1]).toHaveAttribute("data-file-path", "/home/me/dotfiles/setup/packages.sh");
-  });
-
-  it("renders an eye icon for Read", async () => {
-    const pane = await buildPane();
-    const item = makeItem({
-      id: "r",
-      kind: "tool_call",
-      status: "running",
-      toolName: "Read",
-    });
-
-    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
-
-    expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
-      "eye",
-    );
-    expect(getByTestId("tool-call-card-label").textContent).toBe("read");
-  });
-
-  it("renders a search icon for Grep and Glob", async () => {
-    const pane = await buildPane();
-    for (const toolName of ["Grep", "Glob"]) {
-      const item = makeItem({
-        id: toolName,
-        kind: "tool_call",
-        status: "running",
-        toolName,
-      });
-      const { getByTestId, unmount } = render(ToolCallCard, {
-        props: { pane, item },
-      });
-      expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
-        "search",
-      );
-      expect(getByTestId("tool-call-card-label").textContent).toBe(
-        toolName.toLowerCase(),
-      );
-      unmount();
-    }
-  });
-
-  it("renders a globe icon for WebFetch and WebSearch", async () => {
-    const pane = await buildPane();
-    for (const toolName of ["WebFetch", "WebSearch", "webSearch"]) {
-      const item = makeItem({
-        id: toolName,
-        kind: "tool_call",
-        status: "running",
-        toolName,
-      });
-      const { getByTestId, unmount } = render(ToolCallCard, {
-        props: { pane, item },
-      });
-      expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
-        "globe",
-      );
-      unmount();
-    }
   });
 
   it("surfaces Codex webSearch metadata and the row timestamp", async () => {
@@ -1187,25 +1125,6 @@ describe("<ToolCallCard> header dispatcher", () => {
     );
   });
 
-  it("renders a checklist icon for Plan / ExitPlanMode", async () => {
-    const pane = await buildPane();
-    for (const toolName of ["Plan", "ExitPlanMode"]) {
-      const item = makeItem({
-        id: toolName,
-        kind: "tool_call",
-        status: "running",
-        toolName,
-      });
-      const { getByTestId, unmount } = render(ToolCallCard, {
-        props: { pane, item },
-      });
-      expect(getByTestId("tool-call-card").getAttribute("data-tool-kind")).toBe(
-        "checklist",
-      );
-      unmount();
-    }
-  });
-
   it("renders a puzzle icon for MCP/<tool> and preserves the suffix as preview", async () => {
     const pane = await buildPane();
     const item = makeItem({
@@ -1429,49 +1348,37 @@ describe("<ToolCallCard> header dispatcher", () => {
     expect(getByTestId("command-output-command").textContent).toBe("pnpm test");
   });
 
-  it("shows the error indicator and sub-line for command payloads with snake-case exit status", async () => {
-    const pane = await buildPane();
-    const item = makeItem({
+  it.each([
+    {
+      marker: "snake-case exit status",
       id: "cmd-exit-code",
-      kind: "tool_call",
-      status: "completed",
       toolName: "command_execution",
-      payloadId: "payload-cmd-exit-code",
-      payloadKind: "command_output",
-      payloadMeta: JSON.stringify({
-        command: "sleep 10",
-        exit_code: 137,
-        lineCount: 0,
-      }),
-    });
-
-    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
-
-    expect(getByTestId("command-output-status").getAttribute("data-state")).toBe("error");
-    expect(getByTestId("command-output-error").textContent).toContain("exit 137");
-  });
-
-  it("shows the error indicator and sub-line for command payloads with is_error", async () => {
+      meta: { command: "sleep 10", exit_code: 137, lineCount: 0 },
+      error: "exit 137",
+    },
+    {
+      marker: "is_error",
+      id: "cmd-is-error",
+      toolName: "Bash",
+      meta: { command: "cat missing.txt", is_error: true, lineCount: 1, errorMessage: "No such file" },
+      error: "No such file",
+    },
+  ])("shows the error indicator and sub-line for command payloads with $marker", async ({ id, toolName, meta, error }) => {
     const pane = await buildPane();
     const item = makeItem({
-      id: "cmd-is-error",
+      id,
       kind: "tool_call",
       status: "completed",
-      toolName: "Bash",
-      payloadId: "payload-cmd-is-error",
+      toolName,
+      payloadId: `payload-${id}`,
       payloadKind: "command_output",
-      payloadMeta: JSON.stringify({
-        command: "cat missing.txt",
-        is_error: true,
-        lineCount: 1,
-        errorMessage: "No such file",
-      }),
+      payloadMeta: JSON.stringify(meta),
     });
 
     const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
 
     expect(getByTestId("command-output-status").getAttribute("data-state")).toBe("error");
-    expect(getByTestId("command-output-error").textContent).toContain("No such file");
+    expect(getByTestId("command-output-error").textContent).toContain(error);
   });
 
   it("delegates to DiffPreview when payloadKind=diff", async () => {
@@ -1774,26 +1681,6 @@ describe("<ToolCallCard> backgrounded status indicator", () => {
 });
 
 describe("<ToolCallCard> status dispatch", () => {
-  it("shows the Bash label for streaming/running command tool calls", async () => {
-    const pane = await buildPane();
-    const item = makeItem({
-      id: "t",
-      kind: "tool_call",
-      status: "running",
-      toolName: "Bash",
-      summary: "sleep 10",
-    });
-
-    const { getByTestId, queryByTestId } = render(ToolCallCard, {
-      props: { pane, item },
-    });
-
-    expect(queryByTestId("tool-call-card-status")).toBeNull();
-    expect(getByTestId("command-output-label").textContent?.trim()).toBe(
-      "bash",
-    );
-  });
-
   it("renders no success indicator for an inline tool_call that completed", async () => {
     const pane = await buildPane();
     const item = makeItem({

@@ -18,7 +18,7 @@ Three fields on `settings.Settings` control the stack, all wired in
 
 Tracing changes require an app restart. We do not hot-swap
 `TracerProvider`. The replay toggle is hot-swapped by
-`App.ReconfigureObservability` (in `app_observability.go`). Neither
+`reconfigureObservability` (in `internal/app/app_observability.go`). Neither
 field is treated as a secret. The "SECURITY NOTE" block at the top of
 `internal/settings/settings.go` spells out why and warns against
 adding real secrets to this file.

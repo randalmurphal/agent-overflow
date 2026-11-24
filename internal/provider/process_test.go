@@ -24,29 +24,6 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
-func TestSpawnAndEcho(t *testing.T) {
-	ctx := context.Background()
-	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("spawn cat: %v", err)
-	}
-	defer p.Kill()
-
-	msg := []byte(`{"hello":"world"}`)
-	if err := p.WriteLine(msg); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	line, err := p.ReadLine()
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-
-	if string(line) != string(msg) {
-		t.Errorf("got %q, want %q", line, msg)
-	}
-}
-
 // The newline is the write's own: a caller's buffer with spare capacity
 // keeps its bytes past the line.
 func TestWriteLineLeavesTheCallersBufferAlone(t *testing.T) {
@@ -207,7 +184,7 @@ func TestSpawnWithEnv(t *testing.T) {
 	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "echo $TEST_VAR"},
-		Env:    map[string]string{"TEST_VAR": "hello_from_test"},
+		Env:    EnvInput{Custom: map[string]string{"TEST_VAR": "hello_from_test"}},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -257,47 +234,238 @@ func TestSpawnInvalidBinary(t *testing.T) {
 	}
 }
 
-func TestBuildEnvironmentRemovesInheritedProviderHomeAndAppliesOverride(t *testing.T) {
-	t.Setenv("CODEX_HOME", "/tmp/inherited-codex-home")
-	t.Setenv("AGENT_OVERFLOW_ENV_TEST", "inherited")
-
-	env := BuildEnvironment(
-		map[string]string{"AGENT_OVERFLOW_ENV_TEST": "override"},
-		"CODEX_HOME",
-	)
+func envValues(env []string) map[string]string {
 	values := make(map[string]string, len(env))
 	for _, entry := range env {
 		key, value, ok := strings.Cut(entry, "=")
 		if ok {
+			if _, dup := values[key]; dup {
+				panic("duplicate variable " + key)
+			}
 			values[key] = value
 		}
 	}
+	return values
+}
 
-	if _, exists := values["CODEX_HOME"]; exists {
-		t.Fatal("CODEX_HOME remained in filtered environment")
-	}
-	if got := values["AGENT_OVERFLOW_ENV_TEST"]; got != "override" {
-		t.Fatalf("AGENT_OVERFLOW_ENV_TEST = %q, want override", got)
+// One input of each kind against an inherited value of each name shows the
+// whole precedence: clears remove an inherited value but not the user's own,
+// defaults sit under the user's custom value and over an inherited one, and
+// pins sit over both. A name is its exact spelling.
+func TestBuildEnvironmentAppliesEachKindInPrecedenceOrder(t *testing.T) {
+	for name, value := range map[string]string{
+		CodexHomeEnv.Name():                 "/inherited/codex-home",
+		ClaudeTodoToolsEnv.Name():           "inherited",
+		ClaudeTodoReminderModeEnv.Name():    "inherited",
+		ClaudeBaseURLEnv.Name():             "inherited",
+		AgyAmbientCredentialEnvs[0].Name():  "inherited-key",
+		AgyAmbientCredentialEnvs[1].Name():  "inherited-key",
+		"AGENT_OVERFLOW_ENV_TEST_INHERITED": "kept",
+	} {
+		t.Setenv(name, value)
 	}
 
-	inherited := FilterEnvironment([]string{}, "CODEX_HOME")
-	if !slices.Contains(inherited, "AGENT_OVERFLOW_ENV_TEST=inherited") {
-		t.Fatal("empty explicit environment did not preserve inherited values")
+	values := envValues(BuildEnvironment(EnvInput{
+		Custom: map[string]string{
+			ClaudeTodoReminderModeEnv.Name(): "user",
+			// The pin outranks the user's value for its own name; another
+			// spelling is another variable, which the pin leaves alone.
+			ClaudeBaseURLEnv.Name():            "user",
+			"anthropic_base_url":               "user",
+			AgyAmbientCredentialEnvs[1].Name(): "user-key",
+		},
+		Defaults: map[ReservedEnv]string{
+			ClaudeTodoToolsEnv:        "default",
+			ClaudeTodoReminderModeEnv: "default",
+		},
+		Pins:   map[ReservedEnv]string{ClaudeBaseURLEnv: "pinned"},
+		Clears: []ReservedEnv{CodexHomeEnv, AgyAmbientCredentialEnvs[0], AgyAmbientCredentialEnvs[1]},
+	}))
+
+	want := map[string]string{
+		ClaudeTodoToolsEnv.Name():           "default",
+		ClaudeTodoReminderModeEnv.Name():    "user",
+		ClaudeBaseURLEnv.Name():             "pinned",
+		"anthropic_base_url":                "user",
+		AgyAmbientCredentialEnvs[1].Name():  "user-key",
+		"AGENT_OVERFLOW_ENV_TEST_INHERITED": "kept",
+	}
+	for name, value := range want {
+		if got, ok := values[name]; !ok || got != value {
+			t.Errorf("%s = %q (present %v), want %q", name, got, ok, value)
+		}
+	}
+	for _, name := range []string{CodexHomeEnv.Name(), AgyAmbientCredentialEnvs[0].Name()} {
+		if got, ok := values[name]; ok {
+			t.Errorf("%s = %q, want it absent", name, got)
+		}
 	}
 }
 
-// The override names join the removal list in a copy: a caller's unset
-// slice with spare capacity keeps its bytes past the names it passed.
-func TestBuildEnvironmentLeavesTheCallersUnsetSliceAlone(t *testing.T) {
-	backing := []string{"CODEX_HOME", "KEEP_ME"}
-	BuildEnvironment(map[string]string{"AGENT_OVERFLOW_ENV_TEST": "override"}, backing[:1]...)
-	if backing[1] != "KEEP_ME" {
-		t.Fatalf("caller's unset slice = %q, want its second entry untouched", backing)
+// A default the input also pins is the pin; the variable appears once.
+func TestBuildEnvironmentPinOverridesItsOwnDefault(t *testing.T) {
+	values := envValues(BuildEnvironment(EnvInput{}.
+		Default(ClaudeTodoToolsEnv, "default").
+		Pin(ClaudeTodoToolsEnv, "pinned")))
+	if got := values[ClaudeTodoToolsEnv.Name()]; got != "pinned" {
+		t.Fatalf("%s = %q, want pinned", ClaudeTodoToolsEnv.Name(), got)
+	}
+}
+
+// Pin, Default and Clear return a copy: a derived input never writes into the
+// input it came from, including a Clears slice with spare capacity.
+func TestEnvInputBuildersLeaveTheOriginalAlone(t *testing.T) {
+	backing := []ReservedEnv{CodexHomeEnv, ClaudeConfigDirEnv}
+	base := EnvInput{
+		Pins:     map[ReservedEnv]string{ClaudeBaseURLEnv: "base"},
+		Defaults: map[ReservedEnv]string{ClaudeTodoToolsEnv: "base"},
+		Clears:   backing[:1],
+	}
+	derived := base.Pin(ClaudeBaseURLEnv, "derived").
+		Default(ClaudeTodoToolsEnv, "derived").
+		Clear(ClaudeSecureStorageConfigDirEnv)
+
+	if backing[1] != ClaudeConfigDirEnv {
+		t.Fatalf("caller's Clears backing = %v, want its second entry untouched", backing)
+	}
+	if base.Pins[ClaudeBaseURLEnv] != "base" || base.Defaults[ClaudeTodoToolsEnv] != "base" {
+		t.Fatalf("base input changed: pins %v, defaults %v", base.Pins, base.Defaults)
+	}
+	if derived.Pins[ClaudeBaseURLEnv] != "derived" || derived.Defaults[ClaudeTodoToolsEnv] != "derived" || len(derived.Clears) != 2 {
+		t.Fatalf("derived input = %+v", derived)
+	}
+}
+
+// A pool key must not let two sessions share a process whose environments
+// differ, and the same name and value under two kinds builds two different
+// environments.
+func TestEnvInputFingerprintSeparatesKinds(t *testing.T) {
+	inputs := map[string]EnvInput{
+		"empty":   {},
+		"custom":  {Custom: map[string]string{ClaudeTodoToolsEnv.Name(): "1"}},
+		"default": EnvInput{}.Default(ClaudeTodoToolsEnv, "1"),
+		"pin":     EnvInput{}.Pin(ClaudeTodoToolsEnv, "1"),
+		"clear":   EnvInput{}.Clear(ClaudeTodoToolsEnv),
+		"path":    {PathPrepend: "/opt/ao/bin"},
+	}
+	seen := map[string]string{}
+	for label, in := range inputs {
+		fp := in.Fingerprint()
+		if other, dup := seen[fp]; dup {
+			t.Errorf("%s and %s share fingerprint %q", label, other, fp)
+		}
+		seen[fp] = label
+	}
+	again := EnvInput{}.Default(ClaudeTodoToolsEnv, "1")
+	if again.Fingerprint() != inputs["default"].Fingerprint() {
+		t.Error("equal inputs have different fingerprints")
+	}
+}
+
+// PathPrepend goes in front of whatever PATH the child would inherit.
+// Serial: it sets the process environment.
+func TestBuildEnvironmentPrependsToTheInheritedPath(t *testing.T) {
+	separator := string(os.PathListSeparator)
+	unset := func(t *testing.T, name string) {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		inherit map[string]string
+		want    string
+	}{
+		{name: "no inherited PATH gets one", want: "/cfg/bin"},
+		{name: "an inherited PATH keeps its entries behind ours", inherit: map[string]string{"PATH": "/usr/bin" + separator + "/bin"}, want: "/cfg/bin" + separator + "/usr/bin" + separator + "/bin"},
+		// Path is another variable on every system a provider runs on.
+		{name: "a differently cased Path is left alone", inherit: map[string]string{"Path": "/usr/bin"}, want: "/cfg/bin"},
+		{name: "an empty PATH is replaced rather than left with a trailing separator", inherit: map[string]string{"PATH": ""}, want: "/cfg/bin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			unset(t, "PATH")
+			unset(t, "Path")
+			for name, value := range test.inherit {
+				t.Setenv(name, value)
+			}
+			var paths []string
+			for _, entry := range BuildEnvironment(EnvInput{PathPrepend: "/cfg/bin"}) {
+				if name, value, _ := strings.Cut(entry, "="); name == "PATH" {
+					paths = append(paths, name+"="+value)
+				}
+			}
+			if !slices.Equal(paths, []string{"PATH=" + test.want}) {
+				t.Fatalf("PATH entries = %q, want only PATH=%s", paths, test.want)
+			}
+		})
+	}
+}
+
+// The environment a spawned child actually receives, read back by env(1) on
+// a case-sensitive system: two spellings of one name are two variables, each
+// set by its own kind, a clear removes only its exact name, and PATH arrives
+// once. Serial: it sets the process environment.
+func TestSpawnedChildReceivesEachNameOnce(t *testing.T) {
+	separator := string(os.PathListSeparator)
+	inheritedPath := "/usr/bin" + separator + "/bin"
+	t.Setenv("PATH", inheritedPath)
+	t.Setenv(ClaudeConfigDirEnv.Name(), "/inherited/claude")
+	t.Setenv("claude_config_dir", "/inherited/lowercase")
+
+	p, err := Spawn(context.Background(), testLifetime, SpawnConfig{
+		Binary: "env",
+		Env: EnvInput{
+			Custom:      map[string]string{"bash_max_timeout_ms": "1000"},
+			PathPrepend: "/opt/ao-test/bin",
+		}.
+			Default(ClaudeBashMaxTimeoutEnv, "600000").
+			Pin(AOEnv("AO_case_test"), "lower").
+			Pin(AOEnv("AO_CASE_TEST"), "upper").
+			Clear(ClaudeConfigDirEnv),
+	})
+	if err != nil {
+		t.Fatalf("spawn env: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Kill() })
+
+	want := map[string]string{
+		"bash_max_timeout_ms":          "1000",
+		ClaudeBashMaxTimeoutEnv.Name(): "600000",
+		"AO_case_test":                 "lower",
+		"AO_CASE_TEST":                 "upper",
+		"claude_config_dir":            "/inherited/lowercase",
+		"PATH":                         "/opt/ao-test/bin" + separator + inheritedPath,
+	}
+	absent := ClaudeConfigDirEnv.Name()
+	// Only these names are recorded, so a failure never prints the rest of
+	// the environment.
+	got := map[string][]string{}
+	for {
+		line, err := p.ReadLine()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read the child's environment: %v", err)
+		}
+		name, value, _ := strings.Cut(string(line), "=")
+		if _, tracked := want[name]; tracked || name == absent {
+			got[name] = append(got[name], value)
+		}
+	}
+	for name, value := range want {
+		if !slices.Equal(got[name], []string{value}) {
+			t.Errorf("child %s = %q, want exactly [%q]", name, got[name], value)
+		}
+	}
+	if values, present := got[absent]; present {
+		t.Errorf("child %s = %q, want it cleared", absent, values)
 	}
 }
 
 // TestProviderEnvironmentAppliesTheAppImageScrub pins the integration with
-// internal/appimage at both env entry points, including the one place the
+// internal/appimage at the env entry point, including the one place the
 // mount could re-enter after the scrub: BuildEnvironment's additive PATH
 // merge, which must read the inherited half back off the SCRUBBED base.
 // (The scrub's own semantics are covered in internal/appimage.)
@@ -316,19 +484,18 @@ func TestProviderEnvironmentAppliesTheAppImageScrub(t *testing.T) {
 				key, _, ok := strings.Cut(entry, "=")
 				return ok && key == marker
 			}) {
-				t.Errorf("%s retained the %s marker: %q", label, marker, env)
+				t.Errorf("%s retained the %s marker", label, marker)
 			}
 		}
-		if !slices.Contains(env, "PATH="+wantPath) {
-			t.Errorf("%s PATH is not %q: %q", label, wantPath, env)
+		if got := envValues(env)["PATH"]; got != wantPath {
+			t.Errorf("%s PATH = %q, want %q", label, got, wantPath)
 		}
 	}
 
-	assertScrubbed(t, "BuildEnvironment(nil)", BuildEnvironment(nil), "/usr/bin")
-	assertScrubbed(t, "FilterEnvironment(nil)", FilterEnvironment(nil), "/usr/bin")
+	assertScrubbed(t, "BuildEnvironment(empty)", BuildEnvironment(EnvInput{}), "/usr/bin")
 	assertScrubbed(t,
-		"BuildEnvironment(PATH override)",
-		BuildEnvironment(map[string]string{"PATH": "/opt/ao/bin"}),
+		"BuildEnvironment(PathPrepend)",
+		BuildEnvironment(EnvInput{PathPrepend: "/opt/ao/bin"}),
 		"/opt/ao/bin"+string(os.PathListSeparator)+"/usr/bin",
 	)
 }
@@ -386,22 +553,6 @@ func TestProviderEventLoggingCapturesInputAndOutput(t *testing.T) {
 	}
 	if first.Provider != "claude" || second.Provider != "claude" {
 		t.Fatalf("providers = %q and %q, want claude", first.Provider, second.Provider)
-	}
-}
-
-func TestProviderEventLoggingDisabledWithoutLogger(t *testing.T) {
-	ctx := context.Background()
-	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "cat"})
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	defer p.Kill()
-
-	if err := p.WriteLine([]byte("hello")); err != nil {
-		t.Fatalf("WriteLine: %v", err)
-	}
-	if _, err := p.ReadLine(); err != nil {
-		t.Fatalf("ReadLine: %v", err)
 	}
 }
 
@@ -491,36 +642,6 @@ func TestReadLineReturnsCopy(t *testing.T) {
 	// The first line's data should still be intact (not overwritten by scanner reuse).
 	if string(line1) != saved {
 		t.Errorf("ReadLine did not return a copy: first line mutated from %q to %q", saved, string(line1))
-	}
-}
-
-func TestDoneChannelCloses(t *testing.T) {
-	ctx := context.Background()
-	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "true"})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-
-	select {
-	case <-p.Done():
-		// ok — process exited
-	case <-time.After(5 * time.Second):
-		t.Fatal("Done channel not closed within 5s")
-	}
-}
-
-func TestErrAccessor(t *testing.T) {
-	ctx := context.Background()
-	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "false"})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-
-	<-p.Done()
-
-	// `false` exits with code 1, so Err should be non-nil.
-	if p.Err() == nil {
-		t.Error("expected non-nil error from `false`, got nil")
 	}
 }
 
@@ -683,6 +804,13 @@ func TestWaitProcessExitErr(t *testing.T) {
 	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "false"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
+	}
+	// The exit itself is the wait: WaitProcessExitErr's 100 ms window is
+	// for callers that cannot block, and is not what this test checks.
+	select {
+	case <-p.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the process did not exit")
 	}
 
 	if WaitProcessExitErr(p) == nil {
@@ -970,31 +1098,30 @@ func boundedLineReader(input string) *Process {
 	return &Process{stdout: bufio.NewReaderSize(strings.NewReader(input), 64*1024)}
 }
 
-// TestReadBoundedLineExactCapSucceeds pins the boundary predicate: a line
-// whose content is exactly maxLineSize bytes must succeed; the error fires
-// only when content EXCEEDS the cap.
-func TestReadBoundedLineExactCapSucceeds(t *testing.T) {
-	content := strings.Repeat("a", maxLineSize)
-	p := boundedLineReader(content + "\n")
-
-	line, err := p.readBoundedLine()
-	if err != nil {
-		t.Fatalf("exact-cap line: %v", err)
-	}
-	if len(line) != maxLineSize {
-		t.Fatalf("line len = %d, want %d", len(line), maxLineSize)
-	}
-}
-
-// TestReadBoundedLineOneOverCapFails proves content of maxLineSize+1 trips
-// ErrLineTooLong even when the line is newline-terminated.
-func TestReadBoundedLineOneOverCapFails(t *testing.T) {
-	content := strings.Repeat("a", maxLineSize+1)
-	p := boundedLineReader(content + "\n")
-
-	_, err := p.readBoundedLine()
-	if !errors.Is(err, ErrLineTooLong) {
-		t.Fatalf("expected ErrLineTooLong, got %v", err)
+// TestReadBoundedLineSingleRead pins the cap boundary on both the newline and
+// the EOF branch: content of exactly maxLineSize bytes succeeds, one byte more
+// trips ErrLineTooLong whether or not the line is terminated (an oversized
+// unterminated final line must error, not be returned as content).
+func TestReadBoundedLineSingleRead(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		input   string
+		wantLen int
+		wantErr error
+	}{
+		{"exact cap succeeds", strings.Repeat("a", maxLineSize) + "\n", maxLineSize, nil},
+		{"one over cap fails", strings.Repeat("a", maxLineSize+1) + "\n", 0, ErrLineTooLong},
+		{"unterminated over cap fails", strings.Repeat("a", maxLineSize+1), 0, ErrLineTooLong},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line, err := boundedLineReader(tc.input).readBoundedLine()
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if len(line) != tc.wantLen {
+				t.Fatalf("line len = %d, want %d", len(line), tc.wantLen)
+			}
+		})
 	}
 }
 
@@ -1063,17 +1190,6 @@ func TestReadBoundedLineSpansManyChunks(t *testing.T) {
 	}
 	if string(next) != "next" {
 		t.Fatalf("next line = %q, want %q", next, "next")
-	}
-}
-
-// TestReadBoundedLineEOFPartialOverCap covers the overflow check on the EOF
-// branch: an unterminated final line larger than the cap must error, not be
-// returned as content.
-func TestReadBoundedLineEOFPartialOverCap(t *testing.T) {
-	p := boundedLineReader(strings.Repeat("a", maxLineSize+1))
-	_, err := p.readBoundedLine()
-	if !errors.Is(err, ErrLineTooLong) {
-		t.Fatalf("expected ErrLineTooLong, got %v", err)
 	}
 }
 

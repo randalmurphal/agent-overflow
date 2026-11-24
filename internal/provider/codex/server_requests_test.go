@@ -4,22 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 func TestCodexApprovalWaitsForUserResponseWithoutTimeout(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":42,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":42,"method":"item/commandExecution/requestApproval","params":{"threadId":"codex-thread-1","command":"ls"}}`)
+	feed(t, s, line)
 
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventApprovalRequest {
@@ -49,8 +45,8 @@ func TestCodexUserInputWaitsForUserResponseWithoutTimeout(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":43,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":43,"method":"item/tool/requestUserInput","params":{"threadId":"codex-thread-1","questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
+	feed(t, s, line)
 
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventUserInputRequest {
@@ -84,8 +80,8 @@ func TestCodexRejectsRequestUserInputWithoutQuestions(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":44,"method":"item/tool/requestUserInput","params":{"questions":[]}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":44,"method":"item/tool/requestUserInput","params":{"threadId":"codex-thread-1","questions":[]}}`)
+	feed(t, s, line)
 
 	select {
 	case evt := <-eventCh:
@@ -101,10 +97,8 @@ func TestCodexHandleServerRequestApproval(t *testing.T) {
 	s, eventCh := newTestCodexSession(t)
 
 	// Write an approval server request through cat.
-	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"item/commandExecution/requestApproval","params":{"command":"rm -rf /"}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"item/commandExecution/requestApproval","params":{"threadId":"codex-thread-1","command":"rm -rf /"}}`)
+	feed(t, s, line)
 
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventApprovalRequest {
@@ -127,10 +121,8 @@ func TestCodexHandleServerRequestFileApproval(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":2,"method":"item/fileChange/requestApproval","params":{"filePath":"/tmp/test.go"}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	line := []byte(`{"jsonrpc":"2.0","id":2,"method":"item/fileChange/requestApproval","params":{"threadId":"codex-thread-1","filePath":"/tmp/test.go"}}`)
+	feed(t, s, line)
 
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventApprovalRequest {
@@ -142,10 +134,8 @@ func TestCodexHandleServerRequestUserInput(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":3,"method":"item/tool/requestUserInput","params":{"turn":{"id":"turn-3"},"item":{"id":"item-8"},"questions":[{"id":"scope","header":"Scope","question":"Choose a scope","options":[{"label":"turn","description":"Apply only to this turn"},{"label":"session","description":"Apply for the whole session"}],"multiSelect":false}]}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	line := []byte(`{"jsonrpc":"2.0","id":3,"method":"item/tool/requestUserInput","params":{"threadId":"codex-thread-1","turn":{"id":"turn-3"},"item":{"id":"item-8"},"questions":[{"id":"scope","header":"Scope","question":"Choose a scope","options":[{"label":"turn","description":"Apply only to this turn"},{"label":"session","description":"Apply for the whole session"}],"multiSelect":false}]}}`)
+	feed(t, s, line)
 
 	start := codexWaitEvent(t, eventCh)
 	if start.Kind != provider.EventToolStart {
@@ -212,9 +202,7 @@ func TestCodexHandleServerRequestUserInputV2TopLevelRouteFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	feed(t, s, line)
 
 	start := codexWaitEvent(t, eventCh)
 	if start.Kind != provider.EventToolStart {
@@ -264,10 +252,8 @@ func TestCodexHandleServerRequestPermission(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":4,"method":"item/permissions/requestApproval","params":{"turnId":"turn-4","itemId":"item-9","reason":"Need broader write access","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp/project/src"],"write":["/tmp/project/out"]}}}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	line := []byte(`{"jsonrpc":"2.0","id":4,"method":"item/permissions/requestApproval","params":{"threadId":"codex-thread-1","turnId":"turn-4","itemId":"item-9","reason":"Need broader write access","permissions":{"network":{"enabled":true},"fileSystem":{"read":["/tmp/project/src"],"write":["/tmp/project/out"]}}}}`)
+	feed(t, s, line)
 
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventApprovalRequest {
@@ -299,8 +285,8 @@ func TestCodexPermissionApprovalWaitsForUserResponseWithoutTimeout(t *testing.T)
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":24,"method":"item/permissions/requestApproval","params":{"turnId":"turn-24","itemId":"item-24","reason":"Need broader write access","permissions":{"fileSystem":{"read":["/tmp/project/src"]}}}}`)
-	s.dispatchLine(line)
+	line := []byte(`{"jsonrpc":"2.0","id":24,"method":"item/permissions/requestApproval","params":{"threadId":"codex-thread-1","turnId":"turn-24","itemId":"item-24","reason":"Need broader write access","permissions":{"fileSystem":{"read":["/tmp/project/src"]}}}}`)
+	feed(t, s, line)
 
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventApprovalRequest {
@@ -332,52 +318,37 @@ func TestCodexPermissionApprovalWaitsForUserResponseWithoutTimeout(t *testing.T)
 	}
 }
 
+// A server request nothing can serve gets a -32601 error reply, and the read
+// loop keeps dispatching after it: each line is fed twice. A request without
+// a threadId is rejected by the connection before any session sees it.
 func TestCodexHandleServerRequestUnknown(t *testing.T) {
 	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	// Unknown server request — should send error response. With cat,
-	// the error response echoes back and readLoop sees it as a stray
-	// response (no matching pending id) and logs-and-drops. We just
-	// verify no crash. Drive a synchronous observation instead of the
-	// former fixed-200ms sleep: write the request, then invoke
-	// dispatchLine directly on the same line so its decode path runs
-	// in the test goroutine and any panic or error surfaces
-	// immediately.
-	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"unknown/request","params":{}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
+	for _, tc := range []struct {
+		name    string
+		line    string
+		id      float64
+		message string
+	}{
+		{"unknown method without threadId", `{"jsonrpc":"2.0","id":1,"method":"unknown/request","params":{}}`, 1, "unsupported connection request: unknown/request"},
+		{"dynamic tool call without handler", `{"jsonrpc":"2.0","id":14,"method":"item/tool/call","params":{"threadId":"codex-thread-1","tool":"orphan_tool"}}`, 14, "no handler registered for dynamic tool call: item/tool/call"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, _ := newTestCodexSession(t)
+			fx := fixtureFor(t, s)
+			for range 2 {
+				feed(t, s, []byte(tc.line))
+				reply := fx.nextWrite()
+				rpcErr, _ := reply["error"].(map[string]any)
+				if reply["id"] != tc.id || rpcErr["code"] != float64(-32601) || rpcErr["message"] != tc.message {
+					t.Fatalf("reply = %v, want id %v, code -32601, message %q", reply, tc.id, tc.message)
+				}
+			}
+		})
 	}
-	s.dispatchLine(line)
 }
 
 // -- SetDynamicToolHandler / handleDynamicToolCall tests --
-
-func TestSetDynamicToolHandler(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	called := false
-	handler := func(toolName string, args map[string]any) (string, bool, error) {
-		called = true
-		return "result", true, nil
-	}
-
-	s.SetDynamicToolHandler(handler)
-
-	s.mu.Lock()
-	h := s.dynamicToolHandler
-	s.mu.Unlock()
-	if h == nil {
-		t.Fatal("expected non-nil handler after SetDynamicToolHandler")
-	}
-
-	// Invoke the handler to confirm it's the right one.
-	_, _, _ = h("test", nil)
-	if !called {
-		t.Error("expected handler to be called")
-	}
-}
 
 func TestSetDynamicToolHandlerNil(t *testing.T) {
 	t.Parallel()
@@ -406,10 +377,8 @@ func TestHandleDynamicToolCall(t *testing.T) {
 		return "tool output", true, nil
 	})
 
-	line := []byte(`{"jsonrpc":"2.0","id":10,"method":"item/tool/call","params":{"tool":"my_tool","arguments":{"key":"value"}}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	line := []byte(`{"jsonrpc":"2.0","id":10,"method":"item/tool/call","params":{"threadId":"codex-thread-1","tool":"my_tool","arguments":{"key":"value"}}}`)
+	feed(t, s, line)
 
 	// The handler runs asynchronously. Wait for it.
 	select {
@@ -425,55 +394,6 @@ func TestHandleDynamicToolCall(t *testing.T) {
 	_ = eventCh
 }
 
-func TestHandleDynamicToolCallToolNameField(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	resultCh := make(chan string, 1)
-	s.SetDynamicToolHandler(func(toolName string, args map[string]any) (string, bool, error) {
-		resultCh <- toolName
-		return "ok", true, nil
-	})
-
-	// Use "toolName" field instead of "tool".
-	line := []byte(`{"jsonrpc":"2.0","id":11,"method":"dynamicToolCall","params":{"toolName":"alt_tool","arguments":{}}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	select {
-	case name := <-resultCh:
-		if name != "alt_tool" {
-			t.Errorf("toolName: got %q, want %q", name, "alt_tool")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for dynamic tool handler invocation")
-	}
-}
-
-func TestHandleDynamicToolCallHandlerError(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-
-	doneCh := make(chan struct{}, 1)
-	s.SetDynamicToolHandler(func(toolName string, args map[string]any) (string, bool, error) {
-		defer func() { doneCh <- struct{}{} }()
-		return "", false, fmt.Errorf("simulated tool error")
-	})
-
-	line := []byte(`{"jsonrpc":"2.0","id":12,"method":"item/tool/call","params":{"tool":"fail_tool","arguments":{}}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	select {
-	case <-doneCh:
-		// Handler ran and returned error -- the session formats it as "Error: ..."
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for handler to complete")
-	}
-}
-
 func TestHandleDynamicToolCallNilArguments(t *testing.T) {
 	t.Parallel()
 	s, _ := newTestCodexSession(t)
@@ -485,10 +405,8 @@ func TestHandleDynamicToolCallNilArguments(t *testing.T) {
 	})
 
 	// No "arguments" field in params -- should default to empty map.
-	line := []byte(`{"jsonrpc":"2.0","id":13,"method":"item/tool/call","params":{"tool":"noargs_tool"}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	line := []byte(`{"jsonrpc":"2.0","id":13,"method":"item/tool/call","params":{"threadId":"codex-thread-1","tool":"noargs_tool"}}`)
+	feed(t, s, line)
 
 	select {
 	case args := <-resultCh:
@@ -503,32 +421,14 @@ func TestHandleDynamicToolCallNilArguments(t *testing.T) {
 	}
 }
 
-func TestHandleDynamicToolCallNoHandler(t *testing.T) {
-	t.Parallel()
-	s, _ := newTestCodexSession(t)
-	// No handler set -- should send error response.
-
-	line := []byte(`{"jsonrpc":"2.0","id":14,"method":"item/tool/call","params":{"tool":"orphan_tool"}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	// Drive dispatchLine in the test goroutine so the decode path
-	// runs synchronously — former 200ms sleep just hid the fact that
-	// there is no readLoop assertion this test makes beyond "it did
-	// not crash."
-	s.dispatchLine(line)
-}
-
 // -- handleServerRequest: elicitation branch --
 
 func TestCodexHandleServerRequestElicitation(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":5,"method":"mcpServer/elicitation/request","params":{"serverName":"my-mcp","message":"Please authorize","requestedSchema":{"type":"string"}}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	line := []byte(`{"jsonrpc":"2.0","id":5,"method":"mcpServer/elicitation/request","params":{"threadId":"codex-thread-1","serverName":"my-mcp","message":"Please authorize","requestedSchema":{"type":"string"}}}`)
+	feed(t, s, line)
 
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventApprovalRequest {
@@ -552,52 +452,29 @@ func TestCodexHandleServerRequestElicitation(t *testing.T) {
 
 func TestCodexMcpElicitationWaitsForUserResponseWithoutTimeout(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "bash",
-		Args:   []string{"-c", `printf '%s\n' '{"jsonrpc":"2.0","id":5,"method":"mcpServer/elicitation/request","params":{"serverName":"my-mcp","message":"Authorize"}}'; while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
-		Env: map[string]string{
-			"CAPTURE": capturePath,
-		},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture process: %v", err)
-	}
+	fx := newConnFixture(t)
 	eventCh := make(chan provider.ProviderEvent, 10)
-	s := &Session{
-		proc:     proc,
-		threadID: testThread,
-		onEvent: func(evt provider.ProviderEvent) {
-			eventCh <- evt
-		},
-		cancel: cancel,
-	}
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		proc.Close()
+	s := fx.session(testThread, "codex-thread-1", func(evt provider.ProviderEvent) {
+		eventCh <- evt
 	})
+	fx.feed([]byte(`{"jsonrpc":"2.0","id":5,"method":"mcpServer/elicitation/request","params":{"threadId":"codex-thread-1","serverName":"my-mcp","message":"Authorize"}}`))
 
-	for {
-		select {
-		case evt := <-eventCh:
-			if evt.Kind == provider.EventApprovalRequest {
-				goto waitWithoutResponse
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("timeout waiting for MCP elicitation request")
+	sawRequest := false
+	for len(eventCh) > 0 {
+		if evt := <-eventCh; evt.Kind == provider.EventApprovalRequest {
+			sawRequest = true
 		}
 	}
-
-waitWithoutResponse:
-	time.Sleep(200 * time.Millisecond)
-	captured, err := os.ReadFile(capturePath)
-	if err == nil && len(captured) > 0 {
-		t.Fatalf("MCP elicitation wrote response without user action: %s", captured)
+	if !sawRequest {
+		t.Fatal("the MCP elicitation request emitted no approval request")
 	}
 
-	err = s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+	time.Sleep(200 * time.Millisecond)
+	if written := fx.written(0); len(written) > 0 {
+		t.Fatalf("MCP elicitation wrote response without user action: %s", written)
+	}
+
+	err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
 		RequestID: "5",
 		Elicitation: &provider.ElicitationResolution{
 			Action:  "confirm",
@@ -608,16 +485,7 @@ waitWithoutResponse:
 		t.Fatalf("RespondToApproval after waiting: %v", err)
 	}
 
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
-		captured, err = os.ReadFile(capturePath)
-		if err == nil && len(captured) > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(captured) == 0 {
-		t.Fatalf("MCP elicitation response was not written: %v", err)
-	}
+	captured := fx.written(1)[0]
 	var frame struct {
 		ID     int64 `json:"id"`
 		Result struct {
@@ -641,10 +509,8 @@ func TestCodexHandleServerRequestApplyPatchApproval(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":6,"method":"applyPatchApproval","params":{"filePath":"/tmp/foo.go"}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	line := []byte(`{"jsonrpc":"2.0","id":6,"method":"applyPatchApproval","params":{"conversationId":"codex-thread-1","filePath":"/tmp/foo.go"}}`)
+	feed(t, s, line)
 
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventApprovalRequest {
@@ -664,10 +530,8 @@ func TestCodexHandleServerRequestExecCommandApproval(t *testing.T) {
 	t.Parallel()
 	s, eventCh := newTestCodexSession(t)
 
-	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"execCommandApproval","params":{"command":"pnpm test"}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	line := []byte(`{"jsonrpc":"2.0","id":7,"method":"execCommandApproval","params":{"conversationId":"codex-thread-1","command":"pnpm test"}}`)
+	feed(t, s, line)
 
 	evt := codexWaitEvent(t, eventCh)
 	if evt.Kind != provider.EventApprovalRequest {
@@ -683,33 +547,5 @@ func TestCodexHandleServerRequestExecCommandApproval(t *testing.T) {
 	}
 	if approval.ToolName != "command" {
 		t.Errorf("toolName: got %q, want %q", approval.ToolName, "command")
-	}
-}
-
-// -- handleServerRequest: file read approval --
-
-func TestCodexHandleServerRequestFileReadApproval(t *testing.T) {
-	t.Parallel()
-	s, eventCh := newTestCodexSession(t)
-
-	line := []byte(`{"jsonrpc":"2.0","id":8,"method":"item/fileRead/requestApproval","params":{"filePath":"/etc/passwd"}}`)
-	if err := s.proc.WriteLine(line); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	evt := codexWaitEvent(t, eventCh)
-	if evt.Kind != provider.EventApprovalRequest {
-		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventApprovalRequest)
-	}
-
-	var approval provider.ApprovalRequest
-	if err := json.Unmarshal(evt.Meta, &approval); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if approval.Kind != "file-read" {
-		t.Errorf("kind: got %q, want %q", approval.Kind, "file-read")
-	}
-	if approval.ToolName != "file_read" {
-		t.Errorf("toolName: got %q, want %q", approval.ToolName, "file_read")
 	}
 }

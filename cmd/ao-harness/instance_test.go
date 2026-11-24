@@ -10,12 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/coder/websocket"
 
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessclient"
+	"agent-overflow/internal/transport"
 )
 
 // deadPID returns a pid that is not running. High pids are handed out
@@ -94,6 +96,33 @@ func testEnv(registryDir string) (*env, *bytes.Buffer, *bytes.Buffer) {
 
 func startAttachableBackend(t *testing.T, token string) int {
 	t.Helper()
+	port, _ := startScriptedBackend(t, token, nil)
+	return port
+}
+
+// scriptedBackend records the method of every RPC an attached CLI makes.
+type scriptedBackend struct {
+	mu      sync.Mutex
+	methods []string
+}
+
+func (b *scriptedBackend) called() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.methods...)
+}
+
+// startScriptedBackend serves the attach endpoint and answers every RPC
+// with answer(method), or, for a nil answer, with a capabilities document
+// that names no capability, so attach's handshake settles instead of
+// waiting out its dial timeout. An answer that is a *transport.FrameError
+// is sent as the call's error.
+func startScriptedBackend(t *testing.T, token string, answer func(method string) any) (int, *scriptedBackend) {
+	t.Helper()
+	if answer == nil {
+		answer = func(string) any { return map[string]int{"protocolRevision": cliHarnessProtocolRevision} }
+	}
+	backend := &scriptedBackend{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("token") != token {
@@ -110,20 +139,23 @@ func startAttachableBackend(t *testing.T, token string) int {
 			if err != nil {
 				return
 			}
-			// Answer every RPC, so attach's capabilities handshake settles
-			// instead of waiting out its dial timeout.
 			var frame struct {
-				Type string `json:"type"`
-				ID   string `json:"id"`
+				Type   string `json:"type"`
+				ID     string `json:"id"`
+				Method string `json:"method"`
 			}
 			if json.Unmarshal(data, &frame) != nil || frame.Type != "rpc" {
 				continue
 			}
-			reply, err := json.Marshal(map[string]any{
-				"type":   "rpc",
-				"id":     frame.ID,
-				"result": map[string]int{"protocolRevision": cliHarnessProtocolRevision},
-			})
+			backend.mu.Lock()
+			backend.methods = append(backend.methods, frame.Method)
+			backend.mu.Unlock()
+			result := answer(frame.Method)
+			envelope := map[string]any{"type": "rpc", "id": frame.ID, "result": result}
+			if refusal, ok := result.(*transport.FrameError); ok {
+				envelope = map[string]any{"type": "rpc", "id": frame.ID, "error": refusal}
+			}
+			reply, err := json.Marshal(envelope)
 			if err != nil {
 				return
 			}
@@ -134,7 +166,7 @@ func startAttachableBackend(t *testing.T, token string) int {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return server.Listener.Addr().(*net.TCPAddr).Port
+	return server.Listener.Addr().(*net.TCPAddr).Port, backend
 }
 
 func TestResolveTargetPrefersTheNamedInstanceID(t *testing.T) {
@@ -195,7 +227,8 @@ func TestResolveTargetPicksTheOnlyLiveRow(t *testing.T) {
 }
 
 // Guessing between two live instances would send a reset at the wrong
-// one, so ambiguity is an error that lists what it saw.
+// one, so ambiguity is an error that lists what it saw. It is a WRONG
+// INVOCATION, exit 2, so a script can tell it from "the harness refused".
 func TestResolveTargetRefusesTwoLiveInstances(t *testing.T) {
 	registry := t.TempDir()
 	first := seedInstance(t, registry, t.TempDir(), os.Getpid())
@@ -205,6 +238,9 @@ func TestResolveTargetRefusesTwoLiveInstances(t *testing.T) {
 	_, err := e.resolveTarget()
 	if err == nil {
 		t.Fatal("want an ambiguity error")
+	}
+	if code := exitCodeOf(t, err); code != exitUsage {
+		t.Fatalf("exit code = %d, want %d", code, exitUsage)
 	}
 	for _, id := range []string{first, second} {
 		if !strings.Contains(err.Error(), id) {
@@ -238,7 +274,7 @@ func TestAttachAcceptsAuthenticatedBackendAcrossPIDNamespace(t *testing.T) {
 
 	e, _, stderr := testEnv(t.TempDir())
 	e.instance = root
-	client, target, bs, err := e.attach(context.Background())
+	client, target, _, err := e.attach(context.Background())
 	if err != nil {
 		t.Fatalf("attach across PID namespace: %v", err)
 	}
@@ -248,9 +284,6 @@ func TestAttachAcceptsAuthenticatedBackendAcrossPIDNamespace(t *testing.T) {
 	}
 	if target.ID != instanceinfo.ID(root) {
 		t.Fatalf("target id = %s, want %s", target.ID, instanceinfo.ID(root))
-	}
-	if bs.PID == os.Getpid() || instanceinfo.ProcessAlive(bs.PID) {
-		t.Fatalf("test bootstrap pid %d unexpectedly resolves in this namespace", bs.PID)
 	}
 }
 
@@ -544,23 +577,6 @@ func TestResolveTargetRefusesAnAmbiguousIDPrefixWithExitTwo(t *testing.T) {
 		if !strings.Contains(err.Error(), id) {
 			t.Errorf("error omits candidate %s: %v", id, err)
 		}
-	}
-}
-
-// Two live instances is ambiguity, and ambiguity is a WRONG INVOCATION —
-// exit 2, so a script can tell it from "the harness refused".
-func TestResolveTargetAmbiguityExitsTwo(t *testing.T) {
-	registry := t.TempDir()
-	seedInstance(t, registry, t.TempDir(), os.Getpid())
-	seedInstance(t, registry, t.TempDir(), os.Getpid())
-
-	e, _, _ := testEnv(registry)
-	_, err := e.resolveTarget()
-	if err == nil {
-		t.Fatal("want an ambiguity error")
-	}
-	if code := exitCodeOf(t, err); code != exitUsage {
-		t.Fatalf("exit code = %d, want %d", code, exitUsage)
 	}
 }
 

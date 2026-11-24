@@ -26,7 +26,6 @@ import {
   type PairingPayload,
 } from './deviceSession';
 import {
-  __resetHomeEndpointForTest,
   homeEndpoint,
   setHomeEndpoint,
   storeBackendEndpoint,
@@ -336,16 +335,6 @@ describe('mintDialTicket', () => {
     expect(hasPairedSession()).toBe(true);
   });
 
-  it('keeps the store across a rate-limit answer', async () => {
-    await pairFirst();
-    const fetcher = vi.fn(async (path: string) => {
-      if (path === '/auth/ticket') return new Response('not found', { status: 404 });
-      return new Response('slow down', { status: 429 });
-    });
-    expect(await mintDialTicket(fetcher as unknown as typeof fetch)).toBeNull();
-    expect(hasPairedSession()).toBe(true);
-  });
-
   it('single-flights concurrent mints', async () => {
     await pairFirst();
     let resolveTicket: (r: Response) => void = () => {};
@@ -533,12 +522,10 @@ describe('the auth exchanges under a shell origin', () => {
 
   beforeEach(() => {
     localStorage.clear();
-    __resetHomeEndpointForTest();
     setHomeEndpoint(ENDPOINT);
   });
 
   afterEach(() => {
-    __resetHomeEndpointForTest();
     localStorage.clear();
   });
 

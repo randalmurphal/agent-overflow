@@ -106,7 +106,7 @@ async function previewRowsAcrossOpen(page: Page, workerRow: Locator): Promise<nu
 // The worker takes two queued messages into its held turn and finishes.
 async function deliverTwoQueuedMessages(harness: HarnessApp, workerId: string): Promise<void> {
   const mockId = await startMock(harness, workerId);
-  await harness.rpc('SendMessage', workerId, 'Start the work.', null);
+  await harness.send(workerId, 'Start the work.');
   await waitForGate(harness, 'hold');
   await harness.rpc('RegisterQueueItem', workerId, 'Queued for the worker 1', {});
   await harness.rpc('RegisterQueueItem', workerId, 'Queued for the worker 2', {});
@@ -201,7 +201,7 @@ test('a thread whose queued messages were delivered while it had no pane shows n
   // The worker runs, takes two queued messages and finishes, all with no
   // pane on it. This page sees its queue frames and none of its rows.
   const mockId = await startMock(harness, workerId);
-  await harness.rpc('SendMessage', workerId, 'Start the work.', null);
+  await harness.send(workerId, 'Start the work.');
   await waitForGate(harness, 'hold');
   await harness.rpc('RegisterQueueItem', workerId, 'Queued for the worker 1', {});
   await harness.rpc('RegisterQueueItem', workerId, 'Queued for the worker 2', {});

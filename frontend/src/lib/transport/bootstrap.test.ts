@@ -17,9 +17,12 @@ import {
   validateWsUrl,
 } from './bootstrap';
 import { clearPairedSession, redeemPairing } from './deviceSession';
-import { __resetPageHostForTest, isHostWindow } from './pageHost';
-import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
+import { isHostWindow } from './pageHost';
+import { setHomeEndpoint } from './homeEndpoint';
 import { fetchBackendManifest } from './manifestBackends';
+import { __resetHarnessModeForTest, harnessInterval, harnessPageMarker, isHarnessSession } from './harnessMode';
+import { getBackendIdentity } from './backendIdentity';
+import { manifestBackendDescriptors } from './manifestBackends';
 import { BackendStartingError, STARTUP_REPORT_LIMIT_BYTES } from './startupProgress';
 
 describe('isLoopbackHostname', () => {
@@ -120,6 +123,18 @@ describe('validateWsUrl against the page origin', () => {
   it('rejects an unparseable url', () => {
     expect(() => validateWsUrl('not a url', httpPage)).toThrow(/invalid/);
     expect(() => validateWsUrl('/ws', httpPage)).toThrow(/invalid/);
+    expect(() => validateWsUrl('nonsense', httpPage)).toThrow(/invalid/);
+  });
+
+  it('rejects a non-ws scheme', () => {
+    expect(() => validateWsUrl('http://127.0.0.1:34567/ws', httpPage)).toThrow(/scheme not ws\/wss/);
+    expect(() => validateWsUrl('javascript:alert(1)', httpPage)).toThrow();
+  });
+
+  it('refuses URL credentials and fragments before opening a socket', () => {
+    for (const value of ['ws://user:secret@127.0.0.1:34567/ws', 'ws://127.0.0.1:34567/ws#fragment']) {
+      expect(() => validateWsUrl(value, httpPage)).toThrow('cannot contain credentials or a fragment');
+    }
   });
 });
 
@@ -127,32 +142,6 @@ describe('validateWsUrl against the page origin', () => {
 // this document — derived rather than spelled out, since the environment
 // picks the port the suite runs on.
 const SAME_ORIGIN_WS = `ws://${window.location.host}/ws`;
-
-describe('validateWsUrl', () => {
-  it('rejects a non-ws scheme', () => {
-    expect(() => validateWsUrl(`http://${window.location.host}/ws`)).toThrow(/scheme not ws\/wss/);
-    expect(() => validateWsUrl('javascript:alert(1)')).toThrow();
-    expect(() => validateWsUrl('nonsense')).toThrow(/invalid/);
-  });
-
-  it('accepts a same-origin wsUrl', () => {
-    expect(() => validateWsUrl(SAME_ORIGIN_WS)).not.toThrow();
-  });
-
-  it('refuses URL credentials and fragments before opening a socket', () => {
-    for (const value of [`ws://user:secret@${window.location.host}/ws`, `${SAME_ORIGIN_WS}#fragment`]) {
-      expect(() => validateWsUrl(value)).toThrow('cannot contain credentials or a fragment');
-    }
-  });
-
-  // There is no exemption left to get wrong. Every manifest the SPA can
-  // receive is served by the page's own origin — including the
-  // `--connect` stub's, which carries the socket to the remote backend
-  // itself rather than pointing the page at it.
-  it('refuses a cross-origin wsUrl on every path', () => {
-    expect(() => validateWsUrl('ws://desktop.tailnet.ts.net:8790/ws')).toThrow(/not same-origin/);
-  });
-});
 
 describe('defaultBootstrap', () => {
   // The page ticket lives in the URL, so each case stamps the URL it is
@@ -163,7 +152,6 @@ describe('defaultBootstrap', () => {
 
   afterEach(() => {
     setPageSearch('');
-    __resetPageHostForTest();
     vi.unstubAllGlobals();
   });
 
@@ -216,12 +204,6 @@ describe('defaultBootstrap', () => {
     await expect(defaultBootstrap()).rejects.toThrow(/not same-origin/);
   });
 
-  it('accepts a same-origin wsUrl from the fetched manifest', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS })));
-
-    await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
-  });
-
   // Whether the page is the host's own window is the backend's answer, from
   // the window ticket, and every manifest restates it.
   it('publishes whether the page is the host window', async () => {
@@ -231,6 +213,93 @@ describe('defaultBootstrap', () => {
     vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS })));
     await defaultBootstrap();
     expect(isHostWindow()).toBe(false);
+  });
+
+  // Only a manifest that says harness can shorten a frontend timer; an
+  // ordinary or soak boot's manifest that carried timing anyway is ignored.
+  it('reads harness timing only from a harness manifest', async () => {
+    const timing = { 'unreachable-settle': 2000 };
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harnessTiming: timing })));
+    await defaultBootstrap();
+    expect(harnessInterval('unreachable-settle', 30_000)).toBe(30_000);
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming: timing })));
+    await defaultBootstrap();
+    expect(harnessInterval('unreachable-settle', 30_000)).toBe(2000);
+    expect(harnessInterval('agent-row-linger', 8_000)).toBe(8_000);
+  });
+
+  // Every accepted manifest replaces the page's timing: a later value wins,
+  // a manifest without overrides restores the product timers, and a later
+  // manifest naming a timer this build cannot read is refused.
+  it('replaces harness timing on every manifest', async () => {
+    const serve = (fields: Record<string, unknown>) =>
+      vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, ...fields })));
+    serve({ harness: true, harnessTiming: { 'agent-row-linger': 1000 } });
+    await defaultBootstrap();
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(1000);
+    serve({ harness: true, harnessTiming: { 'agent-row-linger': 3000 } });
+    await defaultBootstrap();
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(3000);
+    serve({ harness: true });
+    await defaultBootstrap();
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(60_000);
+    serve({ harness: true, harnessTiming: { 'unreachable-settle': 2000 } });
+    await defaultBootstrap();
+    serve({ wsUrl: SAME_ORIGIN_WS });
+    await defaultBootstrap();
+    expect(harnessInterval('unreachable-settle', 30_000)).toBe(30_000);
+    serve({ harness: true, harnessTiming: { 'unreachable-settle': 2000 } });
+    await defaultBootstrap();
+    serve({ harness: true, harnessTiming: { 'some-timer': 10 } });
+    await expect(defaultBootstrap()).rejects.toThrow(/unknown timer/);
+  });
+
+  it.each([
+    [{ 'some-timer': 10 }],
+    [{ 'agent-row-linger': 0 }],
+    [{ 'agent-row-linger': '3s' }],
+    [[1]],
+    // setTimeout holds a whole number of milliseconds up to 2^31-1.
+    [{ 'agent-row-linger': 1.5 }],
+    [{ 'agent-row-linger': 0.5 }],
+    [{ 'agent-row-linger': 2 ** 31 }],
+  ])(
+    'refuses harness timing this build cannot read: %j',
+    async (harnessTiming) => {
+      vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming })));
+      await expect(defaultBootstrap()).rejects.toThrow(/harnessTiming/);
+      expect(harnessInterval('agent-row-linger', 60_000)).toBe(60_000);
+    },
+  );
+
+  // A manifest refused for its timing publishes none of its other fields.
+  it('publishes nothing from a manifest it refuses', async () => {
+    __resetHarnessModeForTest();
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, backendId: 'kept', replicaGeneration: 'g1' })));
+    await defaultBootstrap();
+    const before = { identity: getBackendIdentity(), backends: manifestBackendDescriptors() };
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({
+      wsUrl: SAME_ORIGIN_WS,
+      backendId: 'refused',
+      replicaGeneration: 'g2',
+      hostWindow: true,
+      harness: true,
+      pageMarker: 'refused-page',
+      backends: [{ id: 'other', wsUrl: SAME_ORIGIN_WS, bootstrapUrl: '/bootstrap.json' }],
+      harnessTiming: { 'agent-row-linger': 0.5 },
+    })));
+    await expect(defaultBootstrap()).rejects.toThrow(/harnessTiming/);
+    expect(isHostWindow(), 'host window').toBe(false);
+    expect(isHarnessSession(), 'harness session').toBe(false);
+    expect(harnessPageMarker(), 'page marker').toBe('');
+    expect(getBackendIdentity(), 'backend identity').toEqual(before.identity);
+    expect(manifestBackendDescriptors(), 'manifest backends').toEqual(before.backends);
+  });
+
+  it.each([1, 2 ** 31 - 1])('takes a page timer of %d ms, the ends of what setTimeout holds', async (ms) => {
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS, harness: true, harnessTiming: { 'agent-row-linger': ms } })));
+    await defaultBootstrap();
+    expect(harnessInterval('agent-row-linger', 60_000)).toBe(ms);
   });
 
   // A page whose window this application owns is handed its ticket by
@@ -427,6 +496,13 @@ describe('defaultBootstrap', () => {
 
   it('fails an attached backend\'s manifest fetch that never answers', async () => {
     vi.useFakeTimers();
+    // AbortSignal.timeout runs on a timer fake timers do not reach; the
+    // same signal on setTimeout runs on the fake clock.
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms);
+      return controller.signal;
+    });
     try {
       vi.stubGlobal('fetch', vi.fn((_input: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
@@ -438,8 +514,11 @@ describe('defaultBootstrap', () => {
       await vi.advanceTimersByTimeAsync(BACKEND_MANIFEST_TIMEOUT_MS - 1);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
       expect(await result).toMatchObject({ name: 'TimeoutError' });
+      expect(timeout).toHaveBeenCalledWith(BACKEND_MANIFEST_TIMEOUT_MS);
     } finally {
+      timeout.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -487,10 +566,8 @@ describe('defaultBootstrap under a shell origin', () => {
   const ENDPOINT = 'https://desk.tail-scale.ts.net:7777';
 
   afterEach(() => {
-    __resetHomeEndpointForTest();
     // defaultBootstrap memoises whether a webview hosts the page; a later
     // case that sets ?host=webview must not read this case's answer.
-    __resetPageHostForTest();
     vi.unstubAllGlobals();
   });
 
@@ -524,17 +601,5 @@ describe('defaultBootstrap under a shell origin', () => {
     ));
 
     await expect(defaultBootstrap()).rejects.toThrow(/not same-origin/);
-  });
-
-  it('checks a wsUrl against whatever origin it is told to', () => {
-    // The parameter is the phone wave's whole change to this function:
-    // "the one authority this manifest may describe" is still the rule,
-    // and an attached backend's is neither home's nor the page's.
-    expect(() =>
-      validateWsUrl('wss://laptop.test:7777/ws', { protocol: 'https:', host: 'laptop.test:7777' }),
-    ).not.toThrow();
-    expect(() =>
-      validateWsUrl('wss://laptop.test:7777/ws', { protocol: 'https:', host: 'desk.test:7777' }),
-    ).toThrow(/not same-origin/);
   });
 });

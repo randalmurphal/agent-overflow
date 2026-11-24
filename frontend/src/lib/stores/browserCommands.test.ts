@@ -3,15 +3,14 @@ import { clearCommandRegistry, getCommand, offeredCommands, runCommand, type Com
 import { isBrowserPaneFocused, registerBrowserCommands, browserPaneReservesChord } from './browserCommands.svelte';
 import {
   applyBrowserCompanionState,
-  resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
 import { addressFocusIntent, registerBrowserAddressBar } from './browserAddressFocus.svelte';
-import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
-import { createPane, focusPane, getFocusedPaneId, resetPanesForTest } from './panes.svelte';
+import { installCompanionPanes, openCompanion } from './companionPanes.svelte';
+import { createPane, focusPane, getFocusedPaneId } from './panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { dispatchKey, resetKeybindingsStore, setKeybindingsForTest } from './keybindings.svelte';
 import { makeCommandContext } from './builtinCommands.svelte';
-import { evaluateWhen, parseWhen } from './keybindingParser';
+import { evaluateWhen, tryParseWhen } from './keybindingParser';
 import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
 import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -47,10 +46,7 @@ describe('browser commands', () => {
     seq = 0;
     clearCommandRegistry();
     resetKeybindingsStore();
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 600 }]);
     createPane('main').replaceThread(makeThread({ id: THREAD }));
@@ -62,10 +58,7 @@ describe('browser commands', () => {
   });
 
   afterEach(() => {
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     resetKeybindingsStore();
   });
 
@@ -79,12 +72,12 @@ describe('browser commands', () => {
     for (const id of COMMANDS) {
       const command = getCommand(id);
       expect(command?.editableReachable, id).toBe(true);
-      const when = parseWhen(command!.when!);
+      const when = tryParseWhen(command!.when!)!;
       expect(evaluateWhen(when, { browserPaneFocused: true, overlayOpen: false } as never), id).toBe(true);
       expect(evaluateWhen(when, { browserPaneFocused: false, overlayOpen: false } as never), id).toBe(false);
       expect(evaluateWhen(when, { browserPaneFocused: true, overlayOpen: true } as never), id).toBe(false);
       const offered = (flags: Record<string, boolean>) =>
-        evaluateWhen(when, flags as never) && (!command!.offeredWhen || evaluateWhen(parseWhen(command!.offeredWhen), flags as never));
+        evaluateWhen(when, flags as never) && (!command!.offeredWhen || evaluateWhen(tryParseWhen(command!.offeredWhen)!, flags as never));
       // A pane not attached yet sends nothing and its chrome is inert:
       // none runs or is offered there.
       const unattached = { browserPaneFocused: true, browserPaneUnattached: true, browserAddressUnavailable: true, overlayOpen: false };

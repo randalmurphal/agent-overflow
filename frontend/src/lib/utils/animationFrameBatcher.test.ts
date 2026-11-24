@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  __resetAnimationFrameCoordinatorForTest,
   createAnimationFrameBatcher,
 } from './animationFrameBatcher';
 
@@ -18,7 +17,6 @@ describe('animation frame coordination', () => {
     vi.stubGlobal('cancelAnimationFrame', (handle: number) => {
       cancelled.push(handle);
     });
-    __resetAnimationFrameCoordinatorForTest();
     frames = [];
     cancelled = [];
   });

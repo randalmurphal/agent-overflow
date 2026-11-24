@@ -1,11 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import EditorSection from './EditorSection.svelte';
-import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
-import { resetEditorsForTest } from '../../stores/editors.svelte';
 
 interface EditorRow {
   id: string;
@@ -23,21 +22,17 @@ const FIXTURE_EDITORS: EditorRow[] = [
 
 describe('<EditorSection>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     resetRunMode();
     setPageGrantsFromBootstrap(false);
-    resetEditorsForTest();
     // Drain the toast registry so a sibling case's error message can't
     // satisfy this case's "find this error" assertion.
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   afterEach(() => {
-    resetBindingMocks();
     resetRunMode();
     setPageGrantsFromBootstrap(false);
-    resetEditorsForTest();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   it('renders the editor list with installed/uninstalled markers', async () => {
@@ -51,6 +46,7 @@ describe('<EditorSection>', () => {
     expect(getByTestId('editor-option-code').getAttribute('data-available')).toBe('true');
     expect(getByTestId('editor-option-zed').getAttribute('data-available')).toBe('false');
     expect(getByTestId('editor-option-zed').textContent).toContain('not installed');
+    expect(getByTestId('editor-option-zed').querySelector('input')!.disabled).toBe(true);
   });
 
   it('reflects the current preference as the checked radio', async () => {
@@ -102,16 +98,6 @@ describe('<EditorSection>', () => {
       expect(autoRadio.checked).toBe(true);
       expect(cursorRadio.checked).toBe(false);
     });
-  });
-
-  it('keeps the unavailable editor radio disabled', async () => {
-    setBindingMock('ListAvailableEditors', vi.fn(async () => FIXTURE_EDITORS));
-    setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
-
-    const { findByTestId } = render(EditorSection);
-    await findByTestId('editor-section-radiogroup');
-    const zedRadio = (await findByTestId('editor-option-zed')).querySelector('input') as HTMLInputElement;
-    expect(zedRadio.disabled).toBe(true);
   });
 
   it('allows the selected computer’s editor preference in client mode', async () => {

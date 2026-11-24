@@ -64,10 +64,6 @@ func newTracer(configDir, fileName string) (*Tracer, error) {
 	}, nil
 }
 
-// Path returns the absolute trace file path. Useful for surfacing the
-// location to the frontend console without taking a trace lock.
-func (t *Tracer) Path() string { return t.path }
-
 // Append validates each line against the per-line and per-batch caps,
 // rotates the file if appending would exceed MaxFileBytes, and writes
 // every accepted line followed by a trailing newline. The function

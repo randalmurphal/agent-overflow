@@ -29,12 +29,6 @@ export const CLAUDE_CROSS_SESSION_INBOUND_OPTIONS: AxisOption<ClaudeCrossSession
   },
 ];
 
-/** Mirrors ClaudeCrossSession.EffectiveInbound: enabled is never empty. */
-export function effectiveInbound(cross: ClaudeCrossSession): ClaudeCrossSessionInbound | '' {
-  if (!cross.enabled) return '';
-  return cross.inbound || 'accept';
-}
-
 /**
  * Builds the whole setting for a patch. One key holds both halves, so
  * patching one alone would drop the other — the same rule the subagent

@@ -51,7 +51,7 @@ test('mod+f finds in the shown browser page and closes when the page navigates a
     }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await harness.open(page);
   await page.getByText('Browser find').click();
   const workspace = { projectId: seed.projects[0].projectId, workspacePath: '' };

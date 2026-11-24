@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"testing"
 )
 
 // driveGraph is a whole-program call graph over the module packages
@@ -53,8 +54,9 @@ type driveGraph struct {
 	// passes is where a function hands a parameter on: "param:F#i" to the
 	// "param:G#j" it is passed as.
 	passes map[string][]string
-	// sites are the function values passed to module functions, linked
-	// once invokes is complete.
+	// sites are the function values passed to module functions, and those
+	// a function stores into its own parameters, linked once invokes is
+	// complete.
 	sites []argSite
 	// bound is every bound App method: name, //ao:scope and node key.
 	bound []boundMethodNode
@@ -99,7 +101,7 @@ func resolveGoBuildCache() string {
 // buildDriveGraph type-checks internal/app and every module package it
 // links from source, against their imports' export data.
 func buildDriveGraph() (*driveGraph, error) {
-	cmd := exec.Command("go", "list", "-e", "-json", "-export", "-compiled", "-deps", "./internal/app")
+	cmd := exec.Command("go", "list", "-e", "-json", "-export", "-compiled", "-deps", appPackagePath)
 	if goBuildCache != "" {
 		cmd.Env = append(os.Environ(), "GOCACHE="+goBuildCache)
 	}
@@ -126,10 +128,7 @@ func buildDriveGraph() (*driveGraph, error) {
 	for _, pkg := range pkgs {
 		exports[pkg.ImportPath] = pkg.Export
 	}
-	g := &driveGraph{
-		fset: token.NewFileSet(), edges: map[string][]string{}, nodes: map[string]bool{},
-		invokes: map[string]bool{}, passes: map[string][]string{},
-	}
+	g := newDriveGraph()
 	imp := importer.ForCompiler(g.fset, "gc", func(path string) (io.ReadCloser, error) {
 		file, ok := exports[path]
 		if !ok || file == "" {
@@ -157,45 +156,62 @@ func buildDriveGraph() (*driveGraph, error) {
 			}
 			files = append(files, file)
 		}
-		info := &types.Info{
-			Types:      map[ast.Expr]types.TypeAndValue{},
-			Uses:       map[*ast.Ident]types.Object{},
-			Defs:       map[*ast.Ident]types.Object{},
-			Selections: map[*ast.SelectorExpr]*types.Selection{},
-		}
-		conf := types.Config{Importer: imp, Sizes: types.SizesFor("gc", runtime.GOARCH)}
-		checkedPkg, err := conf.Check(pkg.ImportPath, g.fset, files, info)
-		if err != nil {
-			return nil, fmt.Errorf("type-check %s: %w", pkg.ImportPath, err)
+		if err := g.addPackage(pkg.ImportPath, files, imp); err != nil {
+			return nil, err
 		}
 		checked++
-		w := &graphWalker{g: g, info: info, params: map[*types.Var]string{}, modeled: map[*ast.Ident]bool{}}
-		for _, file := range files {
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Body == nil {
-					continue
-				}
-				obj, ok := info.Defs[fn.Name].(*types.Func)
-				if !ok {
-					continue
-				}
-				key := funcNodeKey(obj)
-				w.walkFunc(key, fn.Type, fn.Body)
-				if pkg.ImportPath == appPackagePath && isAppMethod(fn) && fn.Name.IsExported() {
-					if scope := boundScope(fn); scope != "" {
-						g.bound = append(g.bound, boundMethodNode{name: fn.Name.Name, scope: scope, key: key})
-					}
-				}
-			}
-		}
-		g.addImplementations(checkedPkg)
 	}
 	if checked < 50 {
 		return nil, fmt.Errorf("type-checked %d packages; the listing is incomplete", checked)
 	}
 	g.resolveSites()
 	return g, nil
+}
+
+func newDriveGraph() *driveGraph {
+	return &driveGraph{
+		fset: token.NewFileSet(), edges: map[string][]string{}, nodes: map[string]bool{},
+		invokes: map[string]bool{}, passes: map[string][]string{},
+	}
+}
+
+// addPackage type-checks one module package's files against imp and adds
+// its edges; resolveSites links the function values once every package is
+// in.
+func (g *driveGraph) addPackage(path string, files []*ast.File, imp types.Importer) error {
+	info := &types.Info{
+		Types:      map[ast.Expr]types.TypeAndValue{},
+		Uses:       map[*ast.Ident]types.Object{},
+		Defs:       map[*ast.Ident]types.Object{},
+		Selections: map[*ast.SelectorExpr]*types.Selection{},
+	}
+	conf := types.Config{Importer: imp, Sizes: types.SizesFor("gc", runtime.GOARCH)}
+	checkedPkg, err := conf.Check(path, g.fset, files, info)
+	if err != nil {
+		return fmt.Errorf("type-check %s: %w", path, err)
+	}
+	w := &graphWalker{g: g, info: info, params: map[*types.Var]string{}, modeled: map[*ast.Ident]bool{}}
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			obj, ok := info.Defs[fn.Name].(*types.Func)
+			if !ok {
+				continue
+			}
+			key := funcNodeKey(obj)
+			w.walkFunc(key, fn.Type, fn.Body)
+			if path == appPackagePath && isAppMethod(fn) && fn.Name.IsExported() {
+				if scope := boundScope(fn); scope != "" {
+					g.bound = append(g.bound, boundMethodNode{name: fn.Name.Name, scope: scope, key: key})
+				}
+			}
+		}
+	}
+	g.addImplementations(checkedPkg)
+	return nil
 }
 
 // resolveSites closes invokes over passes, then links every passed function
@@ -219,7 +235,12 @@ func (g *driveGraph) resolveSites() {
 	}
 	for i, site := range g.sites {
 		g.edge(site.param, site.value)
-		if g.invokes[site.param] {
+		// A function that hands its own parameter on to one that calls it
+		// invokes that parameter too (the loop above), so each of its
+		// callers is linked to the value it passed. Linking the forwarder
+		// to its parameter's holder as well would merge every caller's
+		// value into each call.
+		if g.invokes[site.param] && !strings.HasPrefix(site.value, "param:") {
 			via := "via:" + site.param + "@" + strconv.Itoa(i)
 			g.edge(site.owner, via)
 			g.edge(via, site.value)
@@ -548,15 +569,26 @@ func (w *graphWalker) holder(lhs ast.Expr) string {
 
 // store records that value flows into holder. A value whose holder the graph
 // does not model (a map entry, a slice element) counts as called by owner.
+// A value stored into a parameter, a default a forwarder puts in place of
+// what it was passed, is a site of owner's as an argument is: owner is
+// linked to it when the parameter is called, and its callers stay linked to
+// their own values alone.
 func (w *graphWalker) store(owner, holder string, value ast.Expr, handled map[*ast.FuncLit]bool) {
 	if !isFuncValued(w.info, value) {
 		return
 	}
-	if holder == "" {
+	switch {
+	case holder == "":
 		w.called(owner, w.value(value, handled))
-		return
+	case strings.HasPrefix(holder, "param:"):
+		stored := w.value(value, handled)
+		if strings.HasPrefix(stored, "param:") {
+			w.g.passes[stored] = append(w.g.passes[stored], holder)
+		}
+		w.g.sites = append(w.g.sites, argSite{owner: owner, param: holder, value: stored})
+	default:
+		w.g.edge(holder, w.value(value, handled))
 	}
-	w.g.edge(holder, w.value(value, handled))
 }
 
 func (w *graphWalker) compositeLit(owner string, lit *ast.CompositeLit, handled map[*ast.FuncLit]bool) {
@@ -635,4 +667,72 @@ func isFuncValued(info *types.Info, expr ast.Expr) bool {
 	}
 	_, ok := typ.Underlying().(*types.Signature)
 	return ok
+}
+
+// A forwarder hands the function value it was passed on to a function that
+// calls it: as it is, or after putting a default in place of a nil one,
+// directly or through a second parameter. Each caller reaches the value it
+// passed and no other caller's, and a forwarder that put its own default in
+// place reaches that default.
+func TestDriveGraphFollowsACallbackThroughEachForwardingShape(t *testing.T) {
+	g := newDriveGraph()
+	file, err := parser.ParseFile(g.fset, "fixture.go", `package fixture
+
+func run(fn func()) { fn() }
+
+func forward(fn func()) { run(fn) }
+
+func forwardOrIdle(fn func()) {
+	if fn == nil {
+		fn = idle
+	}
+	run(fn)
+}
+
+func forwardEither(fn, fallback func()) {
+	if fn == nil {
+		fn = fallback
+	}
+	run(fn)
+}
+
+func idle()  {}
+func drive() {}
+func calm()  {}
+
+func Forward()       { forward(drive) }
+func ForwardCalm()   { forward(calm) }
+func Default()       { forwardOrIdle(drive) }
+func DefaultCalm()   { forwardOrIdle(calm) }
+func Either()        { forwardEither(nil, drive) }
+func EitherCalm()    { forwardEither(nil, calm) }
+`, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.addPackage("agent-overflow/fixture", []*ast.File{file}, nil); err != nil {
+		t.Fatal(err)
+	}
+	g.resolveSites()
+	key := func(name string) string { return "agent-overflow/fixture." + name }
+	reaches := func(from, to string) bool {
+		return g.reach(key(from), func(node string) bool { return node == key(to) }, func(string) bool { return false }) != nil
+	}
+	for _, want := range []struct {
+		from, to string
+		reach    bool
+	}{
+		{"Forward", "drive", true},
+		{"ForwardCalm", "drive", false},
+		{"Default", "drive", true},
+		{"DefaultCalm", "drive", false},
+		{"Default", "idle", true},
+		{"DefaultCalm", "idle", true},
+		{"Either", "drive", true},
+		{"EitherCalm", "drive", false},
+	} {
+		if got := reaches(want.from, want.to); got != want.reach {
+			t.Errorf("%s reaches %s: %v, want %v", want.from, want.to, got, want.reach)
+		}
+	}
 }

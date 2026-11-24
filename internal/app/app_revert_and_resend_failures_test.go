@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -246,46 +247,10 @@ func TestRevertAndResendConvergesOnRetryAfterCommittedProviderCut(t *testing.T) 
 	}
 }
 
-// TestRevertAndResendRestoresChipsAndPlanLinkByteIdentical pins the
-// merge→restore round-trip on the RICHEST work-in-progress the composer
-// can hold: text, attachment ids, terminal chips, and a
-// sourceProposedPlan link to a plan in another thread. Those last two
-// are carried by composerdraft.MergeParts rather than rebuilt, so a
-// regression there is silent — the send succeeds and the user simply
-// loses the plan linkage that marks the original plan Accepted.
-func TestRevertAndResendRestoresChipsAndPlanLinkByteIdentical(t *testing.T) {
-	t.Parallel()
-	app, _ := newResendTestApp(t)
-	thread, _ := seedResendThread(t, app, "t-resend-plan-link")
-
-	wip := store.ThreadDraft{
-		ThreadID:                  thread.ID,
-		Content:                   "half-typed follow-up",
-		Attachments:               `["att-wip"]`,
-		TerminalChips:             `[{"id":"chip-1","label":"npm test","preview":"ok","content":"PASS","createdAt":7}]`,
-		PendingPlanImplementation: `{"threadId":"plan-thread","itemId":"plan-item"}`,
-		UpdatedAt:                 time.Now().UnixMilli(),
-	}
-	if _, err := app.store.UpsertThreadDraft(wip); err != nil {
-		t.Fatalf("seed WIP draft: %v", err)
-	}
-
-	if err := revertAndResendForTest(app, context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"}); err != nil {
-		t.Fatalf("revert and resend: %v", err)
-	}
-
-	draft, ok, err := app.store.GetThreadDraft(thread.ID)
-	if err != nil || !ok {
-		t.Fatalf("get draft: %+v ok=%v err=%v", draft, ok, err)
-	}
-	if draft != wip {
-		t.Fatalf("draft after resend = %+v, want the pre-saga WIP restored byte-identical (%+v)", draft, wip)
-	}
-}
-
-// TestRevertAndResendStagedCrashCopyKeepsChipsAndPlanLink is the same
-// payload observed MID-saga, which is the state a process crash would
-// actually leave behind. The staged row must carry the edit ahead of the
+// TestRevertAndResendStagedCrashCopyKeepsChipsAndPlanLink is the rich
+// payload TestRevertAndResendReplacesMessageAndRestoresWIP restores,
+// observed MID-saga, which is the state a process crash would actually
+// leave behind. The staged row must carry the edit ahead of the
 // WIP text AND keep the chips and plan link, because that row is the
 // only copy of the composer's context until the saga settles it.
 func TestRevertAndResendStagedCrashCopyKeepsChipsAndPlanLink(t *testing.T) {
@@ -878,9 +843,9 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"turn":{"id":"turn-resent-%%s"}}}\n' "$id" "$turn"
         continue
     fi
-    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+%s    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, logForkRequest, tailExpr, mock.forkedThreadID)
+`, logForkRequest, tailExpr, mock.forkedThreadID, testutil.MockCodexUnsubscribeShell)
 
 	path := filepath.Join(t.TempDir(), "codex-resend.sh")
 	mockexec.Write(t, path, script)

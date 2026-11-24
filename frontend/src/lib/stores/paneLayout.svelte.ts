@@ -32,8 +32,6 @@ export type ToolPaneKind = 'pulls' | 'workflows';
 export type CompanionPaneKind = 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat' | 'agent-thread';
 export type PaneLayoutKind = 'thread' | CompanionPaneKind | ToolPaneKind;
 
-export const TOOL_PANE_KINDS: readonly ToolPaneKind[] = ['pulls', 'workflows'];
-
 export function isToolKind(kind: unknown): kind is ToolPaneKind {
   return kind === 'pulls' || kind === 'workflows';
 }

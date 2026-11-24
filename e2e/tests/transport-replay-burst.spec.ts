@@ -115,7 +115,7 @@ test('a reconnect after a 100-agent burst replays every channel without a gap', 
   await harness.open(page);
   await page.getByText('Replay burst').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'sweep every shard', null);
+  await harness.send(threadId, 'sweep every shard');
   await harness.waitForEvent('provider:turn_completed');
   await expect(page.getByTestId('activity-rail-background-count')).toHaveText(String(AGENTS));
 

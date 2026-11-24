@@ -53,28 +53,21 @@ describe('<TransportStatusBanner> first connection after a terminal state', () =
     expect(reload).toHaveBeenCalledOnce();
   });
 
-  // The guard, and the reason it is worth having: a page that HAS been
-  // connected holds loaded state and possibly text somebody typed, so a
-  // session that dies mid-use and is signed back in keeps its page.
-  it('keeps a page that had already connected once', async () => {
+  it.each([
+    // The guard, and the reason it is worth having: a page that HAS been
+    // connected holds loaded state and possibly text somebody typed, so a
+    // session that dies mid-use and is signed back in keeps its page.
+    ['had already connected once', 'connected', ['unauthorized', 'connected']],
+    // An ordinary drop is not a terminal state — the ladder is still
+    // running and the stores suspend rather than fail — so recovering from
+    // one must not throw the page away either.
+    ['only ever reconnected', 'reconnecting', ['connected']],
+  ] as const)('keeps a page that %s', async (_name, mountedAt, published) => {
+    snapshot = { status: mountedAt, nextAttemptAt: null };
     render(TransportStatusBanner);
     await tick();
 
-    await publish('unauthorized');
-    await publish('connected');
-
-    expect(reload).not.toHaveBeenCalled();
-  });
-
-  // An ordinary drop is not a terminal state — the ladder is still
-  // running and the stores suspend rather than fail — so recovering from
-  // one must not throw the page away either.
-  it('keeps a page that only ever reconnected', async () => {
-    snapshot = { status: 'reconnecting', nextAttemptAt: null };
-    render(TransportStatusBanner);
-    await tick();
-
-    await publish('connected');
+    for (const status of published) await publish(status);
     expect(reload).not.toHaveBeenCalled();
   });
 });

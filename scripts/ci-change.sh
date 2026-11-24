@@ -7,9 +7,11 @@
 #
 # Reads GITHUB_EVENT_NAME, GITHUB_REPOSITORY and the event payload
 # (GITHUB_EVENT_PATH); needs GH_TOKEN and an origin remote for the
-# repository. Produces OUT_DIR/base (the commit), OUT_DIR/change.diff and
+# repository. Produces OUT_DIR/base (the commit), OUT_DIR/change.diff,
 # OUT_DIR/files (one path per line, repository-relative, added, copied,
-# modified or renamed files only). A pull request checked out as GitHub's
+# modified or renamed files only: what a linter can read) and OUT_DIR/paths
+# (every path the change touches, a deleted file and both sides of a rename
+# included: what scripts/ci-suites.mjs classifies). A pull request checked out as GitHub's
 # merge of its head into the base branch diffs that merge against its first
 # parent, the base branch it merged into: a diff from the merge base would
 # count everything the base branch gained since the branch point. A pull
@@ -72,5 +74,6 @@ printf '%s\n' "$base" > "$out/base"
 git fetch --no-tags --depth=1 --quiet origin "$base"
 git diff --no-color --no-ext-diff "$base" "$to" > "$out/change.diff"
 git diff --name-only --no-renames --diff-filter=ACM "$base" "$to" > "$out/files"
+git diff --name-only --no-renames "$base" "$to" > "$out/paths"
 
 printf 'ci-change.sh: base %s, %s changed files, %s diff bytes\n' "$base" "$(wc -l < "$out/files")" "$(wc -c < "$out/change.diff")"

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/worktreesetup"
 )
 
@@ -21,11 +22,7 @@ func (resolve workspaceResolverFunc) FindWorktree(projectPath, candidate string)
 
 func newTestService(t *testing.T) (*Service, *store.Store) {
 	t.Helper()
-	database, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
+	database := storetest.Clone(t)
 	return New(Deps{
 		Store: database,
 		Now:   func() time.Time { return time.UnixMilli(1234) },

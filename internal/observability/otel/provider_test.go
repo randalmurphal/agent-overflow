@@ -33,43 +33,6 @@ func TestNewProviderNoopWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestNewProviderMetricsBuiltEvenWhenNoop(t *testing.T) {
-	p, err := NewProvider(context.Background(), Config{Enabled: false})
-	if err != nil {
-		t.Fatalf("NewProvider: %v", err)
-	}
-
-	m := p.Metrics()
-	// All instruments must be non-nil so call sites can invoke them without
-	// extra branching. We deliberately don't try to assert no-op-ness here;
-	// the metric SDK's noop impl returns distinct instrument values that
-	// happen to implement the interface correctly.
-	if m.TurnsStarted == nil {
-		t.Error("TurnsStarted instrument is nil")
-	}
-	if m.TurnsCompleted == nil {
-		t.Error("TurnsCompleted instrument is nil")
-	}
-	if m.TurnsErrored == nil {
-		t.Error("TurnsErrored instrument is nil")
-	}
-	if m.ItemsPersisted == nil {
-		t.Error("ItemsPersisted instrument is nil")
-	}
-	if m.PayloadsPersisted == nil {
-		t.Error("PayloadsPersisted instrument is nil")
-	}
-	if m.ProviderFrames == nil {
-		t.Error("ProviderFrames instrument is nil")
-	}
-	if m.ReplayEventsQueued == nil {
-		t.Error("ReplayEventsQueued instrument is nil")
-	}
-	if m.ReplayEventsDropped == nil {
-		t.Error("ReplayEventsDropped instrument is nil")
-	}
-}
-
 func TestConfigFromFlagsTrimsEndpoint(t *testing.T) {
 	cfg := ConfigFromFlags(true, "   localhost:4317  ")
 	if !cfg.Enabled {

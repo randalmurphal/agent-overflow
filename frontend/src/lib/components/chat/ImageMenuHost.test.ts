@@ -8,9 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentDownload, mockGitBlobImage, mockLocalImage } from '../../../test/mocks/attachmentTransfer';
-import { __resetForgeFactsForTest, noteForgeFactsWorkspace } from '../../stores/forgeFacts.svelte';
+import { noteForgeFactsWorkspace } from '../../stores/forgeFacts.svelte';
 import { buildRepositoryImageHref, type RepositoryImageClaim } from '../../utils/repositoryImageHref';
 import { installLongPressContextMenu, LONG_PRESS_HOLD_MS } from '../../utils/longPressContextMenu';
 import { prKey } from '../../utils/prReference';
@@ -34,8 +34,7 @@ import {
   saveMenuImage,
   saveMenuImageLabel,
 } from '../../utils/imageMenuActions';
-import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../utils/imageTiers';
-import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
+import { __reportImageBoxForTest } from '../../utils/imageTiers';
 import { buildLocalImageHref } from '../../utils/pathLinkExtension';
 import ImageMenuHost from './ImageMenuHost.svelte';
 import StreamdownImageHost from './markdown/StreamdownImageHost.svelte';
@@ -129,7 +128,6 @@ function toastMessages(): string[] {
 
 describe('<ImageMenuHost>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setBindingMock('GetAttachmentThumbnail', async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }));
     mockAttachmentDownload();
     vi.mocked(copyMenuImage).mockReset().mockResolvedValue(undefined);
@@ -290,8 +288,6 @@ describe('<ImageMenuHost>', () => {
 
     afterEach(() => {
       closeImageLightbox();
-      __resetMediaBlobCacheForTest();
-      __resetImageTiersForTest();
       vi.restoreAllMocks();
     });
 
@@ -404,9 +400,6 @@ describe('<ImageMenuHost>', () => {
 
     afterEach(() => {
       closeImageLightbox();
-      __resetMediaBlobCacheForTest();
-      __resetImageTiersForTest();
-      __resetForgeFactsForTest();
       vi.useRealTimers();
       vi.restoreAllMocks();
     });

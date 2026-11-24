@@ -320,30 +320,6 @@ func TestParseLine_AssistantToolUseNoBackgroundMetaByDefault(t *testing.T) {
 	}
 }
 
-// TestParseLine_AssistantToolUseRunInBackground verifies that a tool_use
-// with `run_in_background: true` surfaces `is_background: true` on the
-// emitted EventToolStart's Meta.
-func TestParseLine_AssistantToolUseRunInBackground(t *testing.T) {
-	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"pnpm run dev","run_in_background":true}}]}}`)
-	events, err := ParseLine(testThreadProto, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventToolStart {
-		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventToolStart)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta["is_background"] != true {
-		t.Errorf("expected is_background=true, got %v", meta["is_background"])
-	}
-}
-
 // TestParseLine_UserToolResultEmitsComplete verifies that a user message
 // with a `tool_result` block emits a matching EventToolComplete keyed by
 // the original tool_use_id.
@@ -463,6 +439,9 @@ func TestParser_BackgroundToolUsePlaceholderCarriesIsBackgroundMeta(t *testing.T
 	}
 	if len(startEvents) != 1 {
 		t.Fatalf("start: expected 1 event, got %d", len(startEvents))
+	}
+	if startEvents[0].Kind != provider.EventToolStart {
+		t.Fatalf("start kind: got %q, want %q", startEvents[0].Kind, provider.EventToolStart)
 	}
 	var startMeta map[string]any
 	if err := json.Unmarshal(startEvents[0].Meta, &startMeta); err != nil {
@@ -608,50 +587,6 @@ func TestParser_OutOfOrderToolResults(t *testing.T) {
 	}
 	if bgA["is_background"] != true {
 		t.Errorf("tool-a expected is_background=true, got %v", bgA["is_background"])
-	}
-}
-
-// TestParser_TaskUpdatedEmitsBackgroundTaskTerminal verifies that a
-// terminal `system/task_updated` emits `EventBackgroundTaskTerminal`
-// (NOT `EventToolComplete` — that event belongs to the tool
-// lifecycle and was already emitted by the placeholder echo). The
-// terminal carries `task_id`, the resolved `tool_use_id`, and the
-// normalized `status`.
-func TestParser_TaskUpdatedEmitsBackgroundTaskTerminal(t *testing.T) {
-	parser := NewParser()
-
-	if _, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tool-bg"}`)); err != nil {
-		t.Fatalf("task_started: %v", err)
-	}
-
-	events, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"completed","description":"finished"}}`))
-	if err != nil {
-		t.Fatalf("task_updated: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != provider.EventBackgroundTaskTerminal {
-		t.Fatalf("kind: got %q, want %q", events[0].Kind, provider.EventBackgroundTaskTerminal)
-	}
-	if events[0].ItemID != "tool-bg" {
-		t.Fatalf("itemID: got %q, want %q", events[0].ItemID, "tool-bg")
-	}
-	if events[0].Content != "finished" {
-		t.Fatalf("content: got %q, want %q", events[0].Content, "finished")
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta["task_id"] != "task-1" {
-		t.Fatalf("task_id: got %v, want task-1", meta["task_id"])
-	}
-	if meta["tool_use_id"] != "tool-bg" {
-		t.Fatalf("tool_use_id: got %v, want tool-bg", meta["tool_use_id"])
-	}
-	if meta["status"] != "completed" {
-		t.Fatalf("status: got %v, want completed", meta["status"])
 	}
 }
 
@@ -804,7 +739,11 @@ func TestParser_TaskStartedSkipsWhenIDsAreEmpty(t *testing.T) {
 // the canonical sequence — task_started (meta-only EventToolStart),
 // task_updated(completed) (one EventBackgroundTaskTerminal), then
 // task_notification (notification only). Any idempotent fold of later
-// terminals into the sibling row is triage's job.
+// terminals into the sibling row is triage's job. The terminal is
+// `EventBackgroundTaskTerminal`, NOT `EventToolComplete` (that event
+// belongs to the tool lifecycle and was already emitted by the
+// placeholder echo), and carries `task_id`, the resolved `tool_use_id`,
+// and the normalized `status`.
 func TestParser_FullTaskLifecycleEmitsSingleBackgroundTerminal(t *testing.T) {
 	parser := NewParser()
 
@@ -812,12 +751,26 @@ func TestParser_FullTaskLifecycleEmitsSingleBackgroundTerminal(t *testing.T) {
 		t.Fatalf("task_started: %v", err)
 	}
 
-	updatedEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"completed","description":"ok"}}`))
+	updatedEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"completed","description":"finished"}}`))
 	if err != nil {
 		t.Fatalf("task_updated: %v", err)
 	}
 	if len(updatedEvents) != 1 || updatedEvents[0].Kind != provider.EventBackgroundTaskTerminal {
 		t.Fatalf("task_updated: expected 1 EventBackgroundTaskTerminal, got %+v", updatedEvents)
+	}
+	terminal := updatedEvents[0]
+	if terminal.ItemID != "tool-bg" {
+		t.Fatalf("itemID: got %q, want %q", terminal.ItemID, "tool-bg")
+	}
+	if terminal.Content != "finished" {
+		t.Fatalf("content: got %q, want %q", terminal.Content, "finished")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(terminal.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["task_id"] != "task-1" || meta["tool_use_id"] != "tool-bg" || meta["status"] != "completed" {
+		t.Fatalf("terminal meta = %v, want task_id task-1, tool_use_id tool-bg, status completed", meta)
 	}
 
 	notifyEvents, err := parser.ParseLine(testThreadProto, []byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tool-bg","status":"completed","summary":"dup"}`))

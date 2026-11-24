@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { SRC_ROOT } from '../../../test/sourceScan';
+import schemas from '../../../../../internal/threadtools/schemas.go?raw';
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
 import {
   AO_TOOL_SERVERS,
@@ -11,7 +9,6 @@ import {
   aoToolFacts,
   aoToolPresentation,
   aoToolServer,
-  isAoToolMeta,
   remoteRunCommand,
   type AoToolNames,
 } from './aoTools';
@@ -48,8 +45,6 @@ describe('AO tool presentation', () => {
     expect(aoToolPresentation({ input: { file_path: 'a.ts' } })).toBeNull();
     expect(aoToolPresentation(meta('docs', 'lookup', { q: 'wails' }))).toBeNull();
     expect(aoToolPresentation({ mcp: 'ao-remote-tools' })).toBeNull();
-    expect(isAoToolMeta(meta('playwright', 'browser_click'))).toBe(false);
-    expect(isAoToolMeta(meta(REMOTE_TOOLS_SERVER, 'remote_run'))).toBe(true);
     expect(aoToolServer(meta('playwright', 'browser_click'))).toBeNull();
     expect(aoToolServer(meta(BROWSER_TOOLS_SERVER, 'browser_click'))).toBe(BROWSER_TOOLS_SERVER);
   });
@@ -63,11 +58,6 @@ describe('AO tool presentation', () => {
         icon: 'monitor', label: 'run', headerLabel: 'Remote run', computerId: 'mac', computerName: '', requestId: 'r',
         what: 'runner "two words" "" "C:\\\\x"',
       });
-    });
-
-    it('names the computer through the names a row can see', () => {
-      const p = aoToolPresentation(meta(REMOTE_TOOLS_SERVER, 'remote_run', { computer_id: 'mac', argv: ['make'] }), names)!;
-      expect(p.computerName).toBe('Macaroni-air');
     });
 
     it('describes a script by its interpreter', () => {
@@ -109,7 +99,6 @@ describe('AO tool presentation', () => {
     const tid = '7f2c9a41-aaaa-bbbb-cccc-dddddddddddd';
 
     it('presents every tool the thread tools server lists in its own words', () => {
-      const schemas = readFileSync(join(SRC_ROOT, '..', '..', 'internal', 'threadtools', 'schemas.go'), 'utf8');
       const list = /var ToolNames = \[\]string\{([^}]*)\}/.exec(schemas)?.[1] ?? '';
       const tools = [...list.matchAll(/"(thread_[a-z_]+)"/g)].map((match) => match[1]);
       expect(tools.length).toBeGreaterThan(10);

@@ -12,12 +12,21 @@ import (
 	"agent-overflow/internal/workflow/def"
 )
 
+// Digest budgets. A run's inspection names every phase attempt, so the per-
+// attempt digest has to stay small enough that a twenty-attempt run is still one
+// readable answer.
 const (
 	maxDigestOutputs         = 8
 	maxDigestValueRunes      = 200
 	workflowSessionContinued = "continued"
 )
 
+// workflowAttemptOutputs decodes one attempt's envelope outputs. An attempt with
+// no envelope, or one that rested on a question or a stuck reason, simply has
+// none — that is an answer rather than an error. The size assertion is the read
+// side of the contract every envelope was accepted under: a record past the cap
+// is corrupt, and shipping it into an agent's context window unremarked is the
+// one thing worse than refusing it.
 func workflowAttemptOutputs(itemID, phaseID string, attempt int, payload json.RawMessage) (map[string]json.RawMessage, error) {
 	if len(payload) == 0 {
 		return nil, nil
@@ -37,6 +46,10 @@ func workflowAttemptOutputs(itemID, phaseID string, attempt int, payload json.Ra
 	return envelope.Outputs, nil
 }
 
+// workflowOutputDigest projects an attempt's outputs into the bounded form, in a
+// stable order, and reports how many it left out. The overflow count is returned
+// rather than silently dropped: a digest that hides its own truncation is how a
+// reader concludes an output does not exist.
 func workflowOutputDigest(outputs map[string]json.RawMessage) ([]OutputDigest, int) {
 	names := make([]string, 0, len(outputs))
 	for name := range outputs {
@@ -55,6 +68,10 @@ func workflowOutputDigest(outputs map[string]json.RawMessage) ([]OutputDigest, i
 	return digest, 0
 }
 
+// workflowOutputText renders one output value for a line. A JSON string becomes
+// its text — the caller quotes it as untrusted data when it renders it, and a
+// value that arrived already quoted would reach the reader double-quoted —
+// while every other shape keeps its JSON, compacted so one value stays one line.
 func workflowOutputText(raw json.RawMessage) string {
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
@@ -67,6 +84,10 @@ func workflowOutputText(raw json.RawMessage) string {
 	return compact.String()
 }
 
+// workflowAttachLatestDigests stamps each phase's LATEST attempt with the digest
+// of its envelope outputs. Earlier attempts are left bare: they were superseded,
+// and a run that retried a phase five times would otherwise answer with five
+// digests of which only one is current.
 func workflowAttachLatestDigests(itemID string, attempts []PhaseAttempt, timeline []store.WorkItemPhaseTimeline) error {
 	latest := make(map[string]int, len(attempts))
 	for _, attempt := range attempts {

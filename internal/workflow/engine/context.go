@@ -66,19 +66,18 @@ func (e *Engine) variableContext(item *runtimeItem, current attemptRef) (map[str
 	if err != nil {
 		return nil, nil, err
 	}
-	latest := make(map[string]store.WorkItemPhaseContext)
-	for _, phase := range phases {
-		if phase.Status != "completed" || len(phase.OutputEnvelope) == 0 {
-			continue
-		}
-		if prior, ok := latest[phase.PhaseID]; !ok || phase.Attempt > prior.Attempt {
-			latest[phase.PhaseID] = phase
-		}
+	chosen, err := SelectOutputs(phases, contextAttempt, Completed)
+	if err != nil {
+		return nil, nil, fmt.Errorf("select completed outputs of %s: %w", item.item.ID, err)
 	}
-	for phaseID, phase := range latest {
-		if err := addOutputs(vars, phaseID, phase.OutputEnvelope); err != nil {
-			return nil, nil, fmt.Errorf("decode completed phase %s/%s/%d: %w", item.item.ID, phaseID, phase.Attempt, err)
-		}
+	// The attempt this context is built for supplies its phase's values
+	// alone: an output it withdrew must not reach its gate from an earlier
+	// attempt.
+	if len(current.envelope) > 0 {
+		delete(chosen, current.phaseID)
+	}
+	if err := BindOutputs(vars, chosen); err != nil {
+		return nil, nil, fmt.Errorf("decode completed outputs of %s: %w", item.item.ID, err)
 	}
 	if len(current.envelope) > 0 {
 		if err := addOutputs(vars, current.phaseID, current.envelope); err != nil {
@@ -176,6 +175,64 @@ func renderBudgetBinding(view BudgetView) map[string]any {
 		binding["estimated"] = false
 	}
 	return binding
+}
+
+// PhaseAttempt is one persisted attempt of a phase, as the rule for which
+// attempt supplies a phase's outputs reads it.
+type PhaseAttempt struct {
+	PhaseID  string
+	Attempt  int
+	Status   string
+	Envelope json.RawMessage
+}
+
+// SelectOutputs is the rule for which attempt of each phase supplies that
+// phase's outputs: the highest-numbered attempt that supplies reports
+// true for. Exactly one attempt per phase supplies values, never a mix, so
+// an output a later attempt withdrew (null or absent) is gone, and an
+// attempt that cannot supply values (one still running, parked, or failed
+// without one) never displaces one that can. It reads rows in one pass,
+// keeping one attempt per phase; attemptOf reads a row without copying its
+// envelope.
+//
+// The engine passes Completed; a run view adds what it shows beside that.
+func SelectOutputs[R any](rows []R, attemptOf func(R) PhaseAttempt, supplies func(PhaseAttempt) (bool, error)) (map[string]PhaseAttempt, error) {
+	chosen := make(map[string]PhaseAttempt)
+	for _, row := range rows {
+		attempt := attemptOf(row)
+		if prior, ok := chosen[attempt.PhaseID]; ok && prior.Attempt >= attempt.Attempt {
+			continue
+		}
+		ok, err := supplies(attempt)
+		if err != nil {
+			return nil, fmt.Errorf("phase %s attempt %d: %w", attempt.PhaseID, attempt.Attempt, err)
+		}
+		if ok {
+			chosen[attempt.PhaseID] = attempt
+		}
+	}
+	return chosen, nil
+}
+
+// Completed is the engine's test of whether an attempt supplies its
+// phase's outputs to later phases: it completed with an envelope.
+func Completed(attempt PhaseAttempt) (bool, error) {
+	return attempt.Status == "completed" && len(attempt.Envelope) > 0, nil
+}
+
+func contextAttempt(phase store.WorkItemPhaseContext) PhaseAttempt {
+	return PhaseAttempt{PhaseID: phase.PhaseID, Attempt: phase.Attempt, Status: phase.Status, Envelope: phase.OutputEnvelope}
+}
+
+// BindOutputs binds into vars, under "<phase>.<name>", the non-null outputs
+// of each phase's chosen attempt. Each envelope must be a done one.
+func BindOutputs(vars map[string]any, chosen map[string]PhaseAttempt) error {
+	for phaseID, attempt := range chosen {
+		if err := addOutputs(vars, phaseID, attempt.Envelope); err != nil {
+			return fmt.Errorf("phase %s attempt %d: %w", phaseID, attempt.Attempt, err)
+		}
+	}
+	return nil
 }
 
 func addOutputs(vars map[string]any, phaseID string, payload json.RawMessage) error {

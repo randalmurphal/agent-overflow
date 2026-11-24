@@ -206,3 +206,14 @@ func TestIsolatedNotificationSendSucceedsWithNoSubscriber(t *testing.T) {
 		t.Fatalf("send with no subscriber: %v, want success", err)
 	}
 }
+
+// unavailableNotificationSender refuses every send with a typed
+// NotificationUnavailable, the code the platform senders in
+// app_notifications_desktop.go return when the OS itself refuses.
+type unavailableNotificationSender struct {
+	reason error
+}
+
+func (s unavailableNotificationSender) send(notify.Send) error {
+	return &NotificationError{Code: NotificationUnavailable, Cause: s.reason}
+}

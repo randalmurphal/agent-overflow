@@ -9,19 +9,17 @@
 // (height:auto → scrollHeight, then the frame's own), and an inline `height`
 // left behind by it would override the CSS sizing for good.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/svelte';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import '../../../app.css';
 import ComposerInputSurface from './ComposerInputSurface.svelte';
 import ComposerControlledInputHarness from './ComposerControlledInputHarness.svelte';
-import { createComposerDraftStore, resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
 import { buildPane } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload } from '../../../test/mocks/attachmentTransfer';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import type { Attachment } from '../../types/attachment';
 
 const MAX_HEIGHT_PX = 200;
@@ -48,7 +46,6 @@ function installMocks(): void {
     updatedAt: 0,
   }));
   setBindingMock('SaveDraft', async () => {});
-  setBindingMock('ClearDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('DeleteAttachment', async () => {});
   setBindingMock('GetAttachmentThumbnail', async () => ({
@@ -102,16 +99,8 @@ async function mountSurface() {
 
 describe('composer textarea autosize (native)', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
-    resetComposerDraftSnapshotsForTest();
     installMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
   });
 
   it('grows with its content, clamps at the composer maximum, and never carries an inline height', async () => {

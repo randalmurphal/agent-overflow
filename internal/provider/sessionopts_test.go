@@ -93,32 +93,27 @@ func TestSessionOptionsFromThreadCopiesEveryField(t *testing.T) {
 	}
 }
 
+// A fork consumes PendingForkRef when one is set and otherwise resumes the
+// live SessionRef.
 func TestSessionOptionsFromThreadForkPrefersPendingRef(t *testing.T) {
-	view := fakeThreadView{
-		provider:       "claude",
-		sessionRef:     "live-session",
-		pendingForkRef: "pending-fork",
-	}
-
-	opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, true)
-	if opts.Resume != "pending-fork" {
-		t.Errorf("Resume = %q, want pending-fork (fork should consume PendingForkRef)", opts.Resume)
-	}
-	if !opts.ForkSession {
-		t.Error("ForkSession = false, want true")
-	}
-}
-
-func TestSessionOptionsFromThreadForkFallsBackToSessionRef(t *testing.T) {
-	view := fakeThreadView{
-		provider:   "claude",
-		sessionRef: "live-session",
-		// PendingForkRef intentionally empty.
-	}
-
-	opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, true)
-	if opts.Resume != "live-session" {
-		t.Errorf("Resume = %q, want live-session (no pending fork ref)", opts.Resume)
+	for _, tc := range []struct {
+		name           string
+		pendingForkRef string
+		wantResume     string
+	}{
+		{"pending ref wins", "pending-fork", "pending-fork"},
+		{"no pending ref falls back to session ref", "", "live-session"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view := fakeThreadView{provider: "claude", sessionRef: "live-session", pendingForkRef: tc.pendingForkRef}
+			opts := SessionOptionsFromThread(view, AutoCompactDefaults{}, true)
+			if opts.Resume != tc.wantResume {
+				t.Errorf("Resume = %q, want %q", opts.Resume, tc.wantResume)
+			}
+			if !opts.ForkSession {
+				t.Error("ForkSession = false, want true")
+			}
+		})
 	}
 }
 

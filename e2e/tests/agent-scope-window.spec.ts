@@ -50,7 +50,7 @@ test('a large subagent transcript pages activity members independently of its ma
   await page.getByText('Large scope', { exact: true }).click();
   await startMock(harness, threadId);
   const settled = harness.waitForEvent('provider:turn_completed', undefined, 75_000);
-  await harness.rpc('SendMessage', threadId, 'Inspect all history', null);
+  await harness.send(threadId, 'Inspect all history');
   await settled;
 
   const main = page.getByTestId('message-timeline-scroll').first();
@@ -125,7 +125,7 @@ test('an older host keeps main history available and reports unsupported agent h
   await page.getByText('Older host', { exact: true }).click();
   await startMock(harness, thread);
   const settled = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', thread, 'Read history', null);
+  await harness.send(thread, 'Read history');
   await settled;
   const main = page.getByTestId('message-timeline-scroll').first();
   await expect(main.getByText('Main history remains available', { exact: true })).toBeVisible();

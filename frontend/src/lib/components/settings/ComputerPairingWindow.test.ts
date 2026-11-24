@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
-import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
+import { getToasts } from '../../stores/toast.svelte';
 import ComputerPairingWindow from './ComputerPairingWindow.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { TransportError } from '../../transport/wsClient';
 
 const WINDOW = { id: 'window-1', address: 'https://workstation.tail123.ts.net', expiresAtMs: Date.now() + 300_000 };
@@ -18,34 +18,27 @@ function show() {
 describe('computer pairing window', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    resetBindingMocks();
     setBindingMock('OpenComputerPairing', async () => WINDOW);
     setBindingMock('CloseComputerPairing', async () => {});
   });
-  afterEach(() => { __setTransportHelloForTest(null); cleanup(); vi.useRealTimers(); resetBindingMocks(); resetToastsForTest(); });
+  afterEach(() => { __setTransportHelloForTest(null); cleanup(); vi.useRealTimers(); });
 
-  it('opens personal pairing where the modal established this caller may enroll', async () => {
+  // The capability alone is not the verdict: a passkey-signed browser sees it
+  // advertised and is still refused by `ownPairingAdmin`, so both rows have it.
+  it.each([
+    ['personal pairing where the modal established this caller may enroll', true, 'own', 'ordinary', ['lan']],
+    ['ordinary full-access pairing where the backend refuses this caller a personal join', false, 'ordinary', 'own', ['lan', 'full']],
+  ] as const)('opens %s', async (_name, ownEnroll, opened, untouched, args) => {
     __setTransportHelloForTest({ backendId: '', backendName: 'My computers', capabilities: ['own-devices.v1'], protocolVersion: 1,
       serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
-    const own = setBindingMock('OpenOwnComputerPairing', async () => WINDOW);
-    const ordinary = setBindingMock('OpenComputerPairing', async () => WINDOW);
+    const opens = {
+      own: setBindingMock('OpenOwnComputerPairing', async () => WINDOW),
+      ordinary: setBindingMock('OpenComputerPairing', async () => WINDOW),
+    };
     setBindingMock('ComputerPairingStatus', async () => WAITING);
-    render(ComputerPairingWindow, { networkChoice: 'lan', access: 'full', ownEnroll: true, onClose: vi.fn(), onChanged: vi.fn() });
-    await vi.waitFor(() => expect(own).toHaveBeenCalledExactlyOnceWith('lan'));
-    expect(ordinary).not.toHaveBeenCalled();
-  });
-
-  it('opens ordinary full-access pairing where the backend refuses this caller a personal join', async () => {
-    // The capability alone is not the verdict: a passkey-signed browser
-    // sees it advertised and is still refused by `ownPairingAdmin`.
-    __setTransportHelloForTest({ backendId: '', backendName: 'My computers', capabilities: ['own-devices.v1'], protocolVersion: 1,
-      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
-    const own = setBindingMock('OpenOwnComputerPairing', async () => WINDOW);
-    const ordinary = setBindingMock('OpenComputerPairing', async () => WINDOW);
-    setBindingMock('ComputerPairingStatus', async () => WAITING);
-    render(ComputerPairingWindow, { networkChoice: 'lan', access: 'full', ownEnroll: false, onClose: vi.fn(), onChanged: vi.fn() });
-    await vi.waitFor(() => expect(ordinary).toHaveBeenCalledExactlyOnceWith('lan', 'full'));
-    expect(own).not.toHaveBeenCalled();
+    render(ComputerPairingWindow, { networkChoice: 'lan', access: 'full', ownEnroll, onClose: vi.fn(), onChanged: vi.fn() });
+    await vi.waitFor(() => expect(opens[opened]).toHaveBeenCalledExactlyOnceWith(...args));
+    expect(opens[untouched]).not.toHaveBeenCalled();
   });
 
   it('shows the independently derived number but permits approval only once the credential is ready', async () => {
@@ -240,10 +233,9 @@ describe('computer pairing window', () => {
 describe('computer pairing window decisions', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    resetBindingMocks();
     setBindingMock('CloseComputerPairing', async () => {});
   });
-  afterEach(() => { cleanup(); vi.useRealTimers(); resetBindingMocks(); resetToastsForTest(); });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
 
   // Opening a window retires the previous one on the host, so a dialog
   // opened while a dismissed dialog's approval is in flight waits for it.
@@ -598,12 +590,11 @@ describe('computer pairing window decisions', () => {
 
 describe('computer pairing window naming', () => {
   beforeEach(() => {
-    resetBindingMocks();
     setBindingMock('OpenComputerPairing', async () => WINDOW);
     setBindingMock('CloseComputerPairing', async () => {});
     setBindingMock('ComputerPairingStatus', async () => WAITING);
   });
-  afterEach(() => { __setTransportHelloForTest(null); cleanup(); resetBindingMocks(); });
+  afterEach(() => { __setTransportHelloForTest(null); });
 
   it('names the computer from a hello that lands after the window opened', async () => {
     const view = show();

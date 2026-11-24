@@ -5,11 +5,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
-import { resetAppStorageForTest } from './appStorage';
-import { __resetReviewPaneStateForTest, reviewStateForPane, type CommentAnchor, type ReviewPaneState } from './reviewPane.svelte';
+import { reviewStateForPane, type CommentAnchor, type ReviewPaneState } from './reviewPane.svelte';
 import {
   __pinnedReviewStatesForTest,
-  __resetPinnedReviewStatesForTest,
   currentPinnedReviewState,
   disposePRReviewStates,
   reviewStateForPR,
@@ -17,8 +15,8 @@ import {
 } from './reviewPanePinned.svelte';
 import { applyPRUpdatedEvent, prReviewKeys } from './prReviewStore.svelte';
 import { getPRDiffReviewComments } from './prDiffReviewComments.svelte';
-import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { registerComposerDraft } from './composerDraftRegistry.svelte';
+import { registerPaneForTest } from './panes.svelte';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
 import { createThreadPane } from './thread.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -32,7 +30,7 @@ import { installPRDraftsFake, type PRDraftsFake } from '../../test/helpers/prDra
 import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app';
 import { commitList } from '../../test/helpers/commitList';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 
 const OWNER = 'tools-1';
 const PROJECT = 'project-1';
@@ -144,18 +142,10 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetPinnedReviewStatesForTest();
-  __resetReviewPaneStateForTest();
-  resetComposerDraftRegistryForTest();
-  resetPanesForTest();
   resetToLocalPage();
 });
 
 afterEach(() => {
-  __resetPinnedReviewStatesForTest();
-  __resetReviewPaneStateForTest();
-  resetStagedBackends();
   resetToLocalPage();
 });
 

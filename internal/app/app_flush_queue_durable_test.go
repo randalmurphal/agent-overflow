@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 	"time"
 
@@ -99,10 +98,10 @@ func TestDispatchedQueueItemDropsItsDurableRow(t *testing.T) {
 	}
 
 	app.triage.SetFlushDispatcher(app.enqueueFlushDispatch)
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
 	// The start funnel hands the batch to the dispatch worker, which
 	// serializes behind the thread action lock StartSession holds.
@@ -494,69 +493,60 @@ func TestRegisterQueueItemAnswersARepeatedSendFromItsRow(t *testing.T) {
 // first frame persisted, and starts nothing.
 func TestSendMessageAnswersARepeatedSendFromItsItem(t *testing.T) {
 	t.Parallel()
-	for _, modern := range []bool{false, true} {
-		t.Run(fmt.Sprintf("reconcile-by-send-id=%v", modern), func(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
 
-			app, _ := newAppForFlushQueueRPC(t)
+	thread := testThread("durable-idempotent-send")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = initGitRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	sess, err := claude.NewSession(
+		context.Background(), thread.ID,
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("claude.NewSession: %v", err)
+	}
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Claude),
+		Token:    "idempotent-tok",
+		Claude:   sess,
+		Liveness: newSessionLiveness(time.Now()),
+	})
 
-			thread := testThread("durable-idempotent-send")
-			thread.Provider = string(provider.Claude)
-			thread.WorkspacePath = initGitRepo(t)
-			if err := app.store.CreateThread(thread); err != nil {
-				t.Fatalf("CreateThread: %v", err)
-			}
-			sess, err := claude.NewSession(
-				context.Background(), thread.ID,
-				claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
-				func(provider.ProviderEvent) {},
-			)
-			if err != nil {
-				t.Fatalf("claude.NewSession: %v", err)
-			}
-			t.Cleanup(func() { _ = sess.Close() })
-			app.sessionManager().put(thread.ID, session{
-				Provider: string(provider.Claude),
-				Token:    "idempotent-tok",
-				Claude:   sess,
-				Liveness: newSessionLiveness(time.Now()),
-			})
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
+		SendID: "send-once", ReconcileBySendID: true,
+	}); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
+		SendID: "send-once", ReconcileBySendID: true,
+	}); err != nil {
+		t.Fatalf("repeated send: %v", err)
+	}
 
-			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
-				SendID: "send-once", ReconcileBySendID: modern,
-			}); err != nil {
-				t.Fatalf("first send: %v", err)
-			}
-			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
-				SendID: "send-once", ReconcileBySendID: modern,
-			}); err != nil {
-				t.Fatalf("repeated send: %v", err)
-			}
+	if got := userTextRowCount(t, app, thread.ID); got != 1 {
+		t.Fatalf("user_text rows: got %d, want 1 — the repeat started a second turn", got)
+	}
 
-			if got := userTextRowCount(t, app, thread.ID); got != 1 {
-				t.Fatalf("user_text rows: got %d, want 1 — the repeat started a second turn", got)
-			}
+	if _, found, err := app.store.FindUserTextItemBySendID(thread.ID, "send-once"); err != nil || !found {
+		t.Fatalf("accepted message: %v, %v", found, err)
+	}
 
-			item, found, err := app.store.FindUserTextItemBySendID(thread.ID, "send-once")
-			if err != nil || !found {
-				t.Fatalf("accepted message: %v, %v", found, err)
-			}
-			if (item.ID == "user:0") == modern {
-				t.Fatalf("wrong negotiated identity: %q (modern %v)", item.ID, modern)
-			}
+	acknowledgeMockClaudeSend(t, app, thread.ID)
 
-			acknowledgeMockClaudeSend(t, app, thread.ID)
-
-			// A DIFFERENT id on the same text is a different message: somebody typed
-			// the same thing twice, which is theirs to do.
-			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
-				SendID: "send-twice", ReconcileBySendID: modern,
-			}); err != nil {
-				t.Fatalf("second distinct send: %v", err)
-			}
-			if got := userTextRowCount(t, app, thread.ID); got != 2 {
-				t.Fatalf("user_text rows: got %d, want 2", got)
-			}
-		})
+	// A DIFFERENT id on the same text is a different message: somebody typed
+	// the same thing twice, which is theirs to do.
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "one message", SendMessageOptions{
+		SendID: "send-twice", ReconcileBySendID: true,
+	}); err != nil {
+		t.Fatalf("second distinct send: %v", err)
+	}
+	if got := userTextRowCount(t, app, thread.ID); got != 2 {
+		t.Fatalf("user_text rows: got %d, want 2", got)
 	}
 }
 

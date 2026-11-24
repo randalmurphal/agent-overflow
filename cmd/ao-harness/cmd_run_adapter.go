@@ -17,10 +17,6 @@ import (
 	"agent-overflow/internal/procutil"
 )
 
-func runPlanAdapter(e *env, ctx context.Context, plan harnessrun.RunPlan) error {
-	return runPlanAdapterManaged(e, ctx, plan, nil)
-}
-
 type commandGroup struct{ cmd *exec.Cmd }
 
 func (g commandGroup) Record() harnessrun.ProcessGroupRecord {

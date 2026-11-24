@@ -25,6 +25,8 @@
 // thinking block cut the same way.
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { test, expect } from './fixtures.js';
+import { trackPageCalls } from './offhost-helpers.js';
+import { attachScreenshot, screenshot } from '../src/screenshot.js';
 import {
   RESULT_LINE,
   advance,
@@ -357,10 +359,9 @@ async function openThread(page: Page, title: string): Promise<Locator> {
   return timeline;
 }
 
-async function screenshot(timeline: Locator, testInfo: TestInfo, name: string): Promise<void> {
-  const body = await timeline.screenshot();
-  await testInfo.attach(name, { body, contentType: 'image/png' });
-  await timeline.screenshot({ path: testInfo.outputPath(`${name}.png`) });
+async function shoot(timeline: Locator, testInfo: TestInfo, name: string): Promise<void> {
+  await attachScreenshot(testInfo, name, timeline);
+  await screenshot(timeline, { path: testInfo.outputPath(`${name}.png`) });
 }
 
 for (const theme of ['light', 'dark'] as const) {
@@ -378,7 +379,7 @@ for (const theme of ['light', 'dark'] as const) {
 
       const atRecord = waitForGate(harness, GATE_RECORD);
       const completed = harness.waitForEvent('provider:turn_completed');
-      await harness.rpc('SendMessage', threadId, 'say something long', null);
+      await harness.send(threadId, 'say something long');
       await atRecord;
 
       // The row as the user read it: settled, all of it revealed, unmarked.
@@ -415,7 +416,7 @@ for (const theme of ['light', 'dark'] as const) {
       await completed;
 
       await expectMarked(timeline, kind, theme);
-      await screenshot(timeline, testInfo, `abandoned-${kind}-${theme}`);
+      await shoot(timeline, testInfo, `abandoned-${kind}-${theme}`);
 
       // The store: the discarded row is completed history with the text it
       // streamed, and the record names it; nothing was rewritten.
@@ -476,6 +477,10 @@ test('a cold load holds discarded reasoning, its record and the retry as one run
       if (typeof frame.payload === 'string' && frame.payload.includes('"activity_run_stale"')) staleRefusals += 1;
     });
   });
+  const calls = await trackPageCalls(page);
+  // The page clock runs as the real one does; the stub refresh's cycles
+  // are run below by moving it on.
+  await page.clock.install();
   await harness.open(page);
   const timeline = page.getByTestId('message-timeline-scroll');
   await page.getByTestId('thread-row').getByText('Reasoning retried', { exact: true }).click();
@@ -483,9 +488,10 @@ test('a cold load holds discarded reasoning, its record and the retry as one run
 
   await expect(timeline.getByTestId('activity-run')).toHaveCount(1);
   await expect(timeline.getByTestId('activity-run-header-counts')).toHaveText(/^1 Bash, 1 notification, 2 thinking$/);
-  // Several of the stub refresh's 200ms cycles: the disagreement was
-  // refused on every one.
-  await page.waitForTimeout(1500);
+  // Several of the stub refresh's 200ms cycles, and every read they made
+  // answered: none was refused.
+  await page.clock.runFor(1500);
+  await calls.drain('a member read was never answered', 'ListActivityRunMembers');
   expect(staleRefusals, 'activity-run member reads the store refused').toBe(0);
 });
 

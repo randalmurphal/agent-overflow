@@ -148,9 +148,9 @@ func TestAThreadDoesNotChangeWorkspaceWhileItsShellCommandRuns(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	other, err := app.GitCreateWorktree(thread.ID, "feature/shell-target")
+	other, err := worktreePathOf(app.PrepareThreadWorktree(thread.ID, "", "feature/shell-target", false))
 	if err != nil {
-		t.Fatalf("GitCreateWorktree: %v", err)
+		t.Fatalf("PrepareThreadWorktree: %v", err)
 	}
 	startTestShellCommand(t, app, thread.ID, repo)
 

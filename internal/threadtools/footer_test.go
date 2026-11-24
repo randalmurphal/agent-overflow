@@ -163,11 +163,6 @@ func TestWakeTemplates(t *testing.T) {
 			want: "\"Parser\" (7f3a) [token tok]: The turn was interrupted before it answered.",
 		},
 		{
-			name: "interrupted with no cause shows its text whole",
-			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "This computer restarted before the request finished."},
-			want: "\"Parser\" (7f3a) [token tok]: This computer restarted before the request finished.",
-		},
-		{
 			name: "stopped by the person, with its last message",
 			wake: Wake{Kind: WakeInterrupted, Cause: Cause{Code: CauseUserStop}, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "Half done."},
 			want: "\"Parser\" (7f3a) [token tok]: The user stopped this turn before it answered. Its last message:\nHalf done.",

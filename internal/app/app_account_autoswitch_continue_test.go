@@ -16,6 +16,8 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/usermessage"
+
+	"github.com/google/uuid"
 )
 
 // autoSwitchWait bounds a wait for the coordinator's worker. As with
@@ -123,9 +125,9 @@ func TestAutoSwitchRefusedClaudeTurnSwitchesAndContinues(t *testing.T) {
 				t.Fatal(err)
 			}
 			rig.start(t)
-			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+			t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 
-			if err := app.SendMessage(context.Background(), thread.ID, "go", nil); err != nil {
+			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "go", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 10*time.Second)

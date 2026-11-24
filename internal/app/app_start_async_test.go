@@ -353,9 +353,11 @@ func TestStopAsyncStartWithoutStartIsANoop(t *testing.T) {
 func TestShutdownJoinsTheBootsProviderVersionProbes(t *testing.T) {
 	a := newBootTestApp(t)
 	probes := filepath.Join(t.TempDir(), "probes")
+	// Every probe runs for 300 ms, so Shutdown finds one running whichever
+	// of the boot's probes started first.
 	a.providerBinaryOverride = mockexec.Write(t, filepath.Join(t.TempDir(), "provider"),
 		"#!/bin/sh\nif [ \"$1\" = --version ]; then\n"+
-			"  echo start >> '"+probes+"'\n  /bin/sleep 1\n  echo end >> '"+probes+"'\n"+
+			"  echo start >> '"+probes+"'\n  /bin/sleep 0.3\n  echo end >> '"+probes+"'\n"+
 			"  echo '0.0.0 (boot test mock)'\nfi\nexit 0\n")
 	read := func() string {
 		data, err := os.ReadFile(probes)
@@ -376,7 +378,7 @@ func TestShutdownJoinsTheBootsProviderVersionProbes(t *testing.T) {
 		t.Fatalf("Shutdown returned with a version probe running: %q", after)
 	}
 	// Longer than one probe, so one that starts after Shutdown is seen.
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	if later := read(); later != after {
 		t.Fatalf("a version probe ran after Shutdown returned: %q, then %q", after, later)
 	}

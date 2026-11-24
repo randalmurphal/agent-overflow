@@ -12,6 +12,8 @@ import (
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+
+	"github.com/google/uuid"
 )
 
 // A `file` attachment is delivered as one line appended to the PROVIDER
@@ -155,7 +157,7 @@ func TestSendMessage_MixedAttachmentTurnReachesTheWire(t *testing.T) {
 	thread, capturePath := newMixedTurnThread(t, app, "thread-mixed-send")
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)
 
-	if err := app.SendMessage(context.Background(), thread.ID, mixedTurnMessage, ids); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, mixedTurnMessage, SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, AttachmentIDs: ids}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	envelopes := waitForCapturedUserEnvelopes(t, capturePath, 1)
@@ -308,7 +310,7 @@ func TestStartSession_ClaudeGetsAddDirForTheAttachmentsRoot(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 

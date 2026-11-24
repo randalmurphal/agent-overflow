@@ -105,7 +105,7 @@ test('an expanded thinking row streams at the reveal when its payload leads it',
 
   const held = waitForGate(harness, 'hold');
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'think hard', null);
+  await harness.send(threadId, 'think hard');
   await held;
   // The whole burst is on the wire; the reveal is still near its start.
   const body = timeline.getByTestId('thinking-body');

@@ -10,43 +10,22 @@ import { isMonotonicAppend, measuredLineStartOffset, newlineCutOffset } from './
 describe('newlineCutOffset', () => {
   const para = (n: number, fill = 'a'): string => fill.repeat(n);
 
-  it('returns null when the text has no newline', () => {
-    expect(newlineCutOffset(para(10_000), 0, 2048)).toBeNull();
-  });
-
-  it('returns null when every newline sits inside the protected tail', () => {
+  it.each<[string, string, number, number | null]>([
+    ['returns null when the text has no newline', para(10_000), 0, null],
     // One newline, 100 chars from the end — cutting there would keep
     // fewer than minKeep characters.
-    const text = para(5000) + '\n' + para(100);
-    expect(newlineCutOffset(text, 0, 2048)).toBeNull();
-  });
-
-  it('cuts just after the LAST newline that keeps at least minKeep', () => {
-    const text = para(3000) + '\n' + para(3000) + '\n' + para(1000);
+    ['returns null when every newline sits inside the protected tail', para(5000) + '\n' + para(100), 0, null],
     // len = 7002, minKeep 2048 → limit 4954. The newline at 6001 keeps
     // only 1000; the one at 3000 qualifies.
-    expect(newlineCutOffset(text, 0, 2048)).toBe(3001);
-  });
-
-  it('keeps exactly minKeep when a newline lands on the boundary', () => {
-    const text = para(1000) + '\n' + para(2048);
-    expect(newlineCutOffset(text, 0, 2048)).toBe(1001);
-  });
-
-  it('never returns a cut at or before the current cutOffset', () => {
-    const text = para(3000) + '\n' + para(3000) + '\n' + para(1000);
+    ['cuts just after the LAST newline that keeps at least minKeep', para(3000) + '\n' + para(3000) + '\n' + para(1000), 0, 3001],
+    ['keeps exactly minKeep when a newline lands on the boundary', para(1000) + '\n' + para(2048), 0, 1001],
     // Already cut at 3001; the only later newline (6001) is inside the
     // protected tail, so there is nowhere to advance to.
-    expect(newlineCutOffset(text, 3001, 2048)).toBeNull();
-  });
-
-  it('advances an existing cut when a later newline qualifies', () => {
-    const text = para(3000) + '\n' + para(3000) + '\n' + para(3000);
-    expect(newlineCutOffset(text, 3001, 2048)).toBe(6002);
-  });
-
-  it('returns null when the text is shorter than minKeep', () => {
-    expect(newlineCutOffset('a\nb', 0, 2048)).toBeNull();
+    ['never returns a cut at or before the current cutOffset', para(3000) + '\n' + para(3000) + '\n' + para(1000), 3001, null],
+    ['advances an existing cut when a later newline qualifies', para(3000) + '\n' + para(3000) + '\n' + para(3000), 3001, 6002],
+    ['returns null when the text is shorter than minKeep', 'a\nb', 0, null],
+  ])('%s', (_name, text, cutOffset, expected) => {
+    expect(newlineCutOffset(text, cutOffset, 2048)).toBe(expected);
   });
 
   it('keeps at least minLines newlines after the cut', () => {
@@ -82,24 +61,18 @@ describe('isMonotonicAppend', () => {
     cutOffset > 0 ? prev.charCodeAt(cutOffset - prevStart) : 0,
   );
 
-  it('accepts a pure append', () => {
-    expect(check('hello world', 'hello')).toBe(true);
-  });
-
-  it('accepts an unchanged string', () => {
-    expect(check('hello', 'hello')).toBe(true);
-  });
-
-  it('accepts the empty→first-content transition', () => {
-    expect(check('hello', '')).toBe(true);
-  });
-
-  it('rejects a shrink (a dropped retained tail swapping to the trimmed summary)', () => {
-    expect(check('short summary', 'a much longer accumulated live tail string')).toBe(false);
-  });
-
-  it('rejects a same-length replacement that changes the final char', () => {
-    expect(check('hellX', 'hello')).toBe(false);
+  it.each([
+    ['accepts a pure append', 'hello world', 'hello', true],
+    ['accepts an unchanged string', 'hello', 'hello', true],
+    ['accepts the empty→first-content transition', 'hello', '', true],
+    ['rejects a shrink (a dropped retained tail swapping to the trimmed summary)', 'short summary', 'a much longer accumulated live tail string', false],
+    ['rejects a same-length replacement that changes the final char', 'hellX', 'hello', false],
+    // Documented accepted miss — the caller contract (monotonic tail)
+    // is the real invariant; the sentinels only catch the transitions
+    // that actually occur (see the helper's doc comment).
+    ['is a heuristic: a replacement preserving both probed chars passes', 'hXllo', 'hello', true],
+  ])('%s', (_name, next, prev, expected) => {
+    expect(check(next, prev)).toBe(expected);
   });
 
   it('rejects a replacement that changes the char at the cut boundary', () => {
@@ -137,13 +110,6 @@ describe('isMonotonicAppend', () => {
     const changedCut = `two\nXhree\nfour more`;
     expect(check(changedCut, stream, 8, { nextStart: 4 })).toBe(false);
   });
-
-  it('is a heuristic: a replacement preserving both probed chars passes', () => {
-    // Documented accepted miss — the caller contract (monotonic tail)
-    // is the real invariant; the sentinels only catch the transitions
-    // that actually occur (see the helper's doc comment).
-    expect(check('hXllo', 'hello')).toBe(true);
-  });
 });
 
 describe('measuredLineStartOffset bail-outs', () => {
@@ -153,21 +119,17 @@ describe('measuredLineStartOffset bail-outs', () => {
     return node;
   };
 
-  it('returns null for nodes shorter than two characters', () => {
-    expect(measuredLineStartOffset(textNode('a'), 12, 19.5)).toBeNull();
-    expect(measuredLineStartOffset(textNode(''), 12, 19.5)).toBeNull();
-  });
-
-  it('returns null for a non-finite or non-positive line height', () => {
-    const node = textNode('some reasonably long reasoning text');
-    expect(measuredLineStartOffset(node, 12, Number.NaN)).toBeNull();
-    expect(measuredLineStartOffset(node, 12, 0)).toBeNull();
-    expect(measuredLineStartOffset(node, 12, -5)).toBeNull();
-  });
-
-  it('returns null without layout geometry (zero-height rects)', () => {
+  const REASONING = 'some reasonably long reasoning text';
+  it.each([
+    ['a node shorter than two characters', 'a', 19.5],
+    ['an empty node', '', 19.5],
+    ['a NaN line height', REASONING, Number.NaN],
+    ['a zero line height', REASONING, 0],
+    ['a negative line height', REASONING, -5],
     // happy-dom reports zero rects for everything — the helper must
     // treat that as "cannot measure", never fabricate a cut from it.
-    expect(measuredLineStartOffset(textNode('x'.repeat(10_000)), 12, 19.5)).toBeNull();
+    ['no layout geometry (zero-height rects)', 'x'.repeat(10_000), 19.5],
+  ])('returns null for %s', (_name, text, lineHeight) => {
+    expect(measuredLineStartOffset(textNode(text), 12, lineHeight)).toBeNull();
   });
 });

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -92,19 +93,14 @@ func TestRolloutSubagentNotificationLineEmitsWithoutProviderMapping(t *testing.T
 func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{
-				"child-done": "call-collab-1",
-			},
+	s := fixtureSession(t, "parent-thread", "parent-provider-thread", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{
+			"child-done": "call-collab-1",
 		},
 	}
-	s.setRootThreadID("parent-provider-thread")
 
 	rawLine := rawUserSubagentNotificationLineForThread(t, "parent-provider-thread", map[string]any{
 		"agent_path": "child-done",
@@ -112,7 +108,7 @@ func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
 			"completed": "detached child finished",
 		},
 	})
-	s.dispatchLine(rawLine)
+	feed(t, s, rawLine)
 	s.emitSubagentNotificationsFromRolloutLine(rolloutUserSubagentNotificationLine(t, "child-done", map[string]any{
 		"completed": "detached child finished",
 	}))
@@ -125,78 +121,6 @@ func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
 	}
 	if notificationCount != 1 {
 		t.Fatalf("EventSubagentNotification count = %d, want 1; events=%+v", notificationCount, events)
-	}
-}
-
-func TestWatchRolloutSubagentNotificationsEmitsSplitLine(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "rollout-2026-06-16T00-01-18-parent-provider-thread.jsonl")
-	if err := os.WriteFile(path, nil, 0644); err != nil {
-		t.Fatalf("write empty rollout: %v", err)
-	}
-
-	events := make(chan provider.ProviderEvent, 1)
-	s := &Session{
-		threadID: "parent-thread",
-		readDone: make(chan struct{}),
-		onEvent: func(evt provider.ProviderEvent) {
-			events <- evt
-		},
-	}
-	s.setRootThreadID("parent-provider-thread")
-	path, offset, err := prepareRolloutSubagentNotificationObserver(path, "parent-provider-thread")
-	if err != nil {
-		t.Fatalf("prepare rollout observer: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.watchRolloutSubagentNotifications(ctx, path, offset)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatal("rollout watcher did not exit after cancel")
-		}
-	})
-
-	line := append(rolloutUserSubagentNotificationLine(t, "child-resumed", "completed"), '\n')
-	split := len(line) / 2
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		t.Fatalf("open append: %v", err)
-	}
-	if _, err := file.Write(line[:split]); err != nil {
-		file.Close()
-		t.Fatalf("append first half: %v", err)
-	}
-	select {
-	case evt := <-events:
-		t.Fatalf("watcher emitted before newline: %+v", evt)
-	case <-time.After(rolloutSubagentNotificationPollInterval * 2):
-	}
-	if _, err := file.Write(line[split:]); err != nil {
-		file.Close()
-		t.Fatalf("append second half: %v", err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatalf("close rollout: %v", err)
-	}
-
-	select {
-	case evt := <-events:
-		if evt.Kind != provider.EventSubagentNotification {
-			t.Fatalf("event kind = %q, want %q", evt.Kind, provider.EventSubagentNotification)
-		}
-		if evt.ItemID != "" {
-			t.Fatalf("ItemID = %q, want empty for persisted triage resolution", evt.ItemID)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for rollout notification event")
 	}
 }
 
@@ -359,7 +283,7 @@ func TestSpawnObservedMidSessionArmsRolloutTail(t *testing.T) {
 	if rolloutTailStarted(s) {
 		t.Fatal("rollout tail armed before any spawn was observed")
 	}
-	s.dispatchLine(subAgentActivityStartedLine(t, providerThreadID, "call-collab-1", "child-thread-9"))
+	feed(t, s, subAgentActivityStartedLine(t, providerThreadID, "call-collab-1", "child-thread-9"))
 	if !rolloutTailStarted(s) {
 		t.Fatal("a spawn observed on the wire did not arm the rollout tail")
 	}
@@ -382,9 +306,7 @@ func TestRolloutTailIsNeverArmedOnAFreshThread(t *testing.T) {
 	s := &Session{
 		threadID: testThread,
 		ctx:      ctx,
-		cancel:   cancel,
 		readDone: make(chan struct{}),
-		pending:  make(map[int64]chan json.RawMessage),
 		onEvent:  func(evt provider.ProviderEvent) { events <- evt },
 	}
 	s.setRootThreadID("fresh-provider-thread")
@@ -547,6 +469,9 @@ func TestWatchRolloutSubagentNotificationsAssemblesAcrossManyTicks(t *testing.T)
 			if evt.Kind != provider.EventSubagentNotification {
 				t.Fatalf("event kind = %q, want %q", evt.Kind, provider.EventSubagentNotification)
 			}
+			if evt.ItemID != "" {
+				t.Fatalf("ItemID = %q, want empty for persisted triage resolution", evt.ItemID)
+			}
 			var meta map[string]any
 			if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 				t.Fatalf("meta unmarshal: %v", err)
@@ -575,15 +500,10 @@ func rolloutTailStarted(s *Session) bool {
 func newUnarmedRolloutTailSession(t *testing.T, providerThreadID, rollout string, events chan provider.ProviderEvent) *Session {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Session{
-		threadID: testThread,
-		ctx:      ctx,
-		cancel:   cancel,
-		readDone: make(chan struct{}),
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(evt provider.ProviderEvent) { events <- evt },
-	}
-	s.setRootThreadID(providerThreadID)
+	fx := newConnFixture(t)
+	answerChildProfileReads(fx)
+	s := fx.session(testThread, providerThreadID, func(evt provider.ProviderEvent) { events <- evt })
+	s.ctx = ctx
 	s.prepareRolloutSubagentNotificationTail(rollout)
 	t.Cleanup(func() {
 		cancel()
@@ -653,6 +573,54 @@ func awaitSubagentNotification(t *testing.T, events <-chan provider.ProviderEven
 			}
 		case <-deadline:
 			return false
+		}
+	}
+}
+
+// A child that a reopened parent rebuilt from its spawn row, then closed and
+// resumed, arms the rollout tail at the resume, the first live registration.
+// The tail starts at the rollout's end: the child's completion recorded
+// before the resume is not delivered again, and the next one is.
+func TestResumingAClosedChildArmsTheRolloutTailAtItsEnd(t *testing.T) {
+	t.Parallel()
+	rollout := filepath.Join(t.TempDir(), "rollout-2026-08-25T00-00-00-root-provider-thread.jsonl")
+	before := append(rolloutUserSubagentNotificationLine(t, "child-a", map[string]any{"completed": "before the close"}), '\n')
+	if err := os.WriteFile(rollout, before, 0o644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	events := make(chan provider.ProviderEvent, 16)
+	s := newUnarmedRolloutTailSession(t, "root-provider-thread", rollout, events)
+	// Keep the reopen at the ownership boundary: no metadata reads.
+	s.collabAsyncMu.Lock()
+	s.collabAsyncClosing = true
+	s.collabAsyncMu.Unlock()
+	s.rehydrateCollabOwnership([]ResumeCollabLaunch{{
+		ItemID: "spawn-a",
+		Meta:   []byte(`{"input":{"tool":"spawn_agent","receiverThreadIds":["child-a"]}}`),
+	}})
+	feed(t, s, v1CollabLine("close-a", "closeAgent", "completed", "child-a"))
+	if rolloutTailStarted(s) {
+		t.Fatal("the tail armed before the resume")
+	}
+	feed(t, s, v1CollabLine("resume-a", "resumeAgent", "completed", "child-a"))
+	if !rolloutTailStarted(s) {
+		t.Fatal("resuming the closed child did not arm the rollout tail")
+	}
+
+	appendRolloutLine(t, rollout, rolloutUserSubagentNotificationLine(t, "child-a", map[string]any{"completed": "after the resume"}))
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case evt := <-events:
+			if evt.Kind != provider.EventSubagentNotification {
+				continue
+			}
+			if !strings.Contains(string(evt.Meta), "after the resume") {
+				t.Fatalf("the tail delivered a completion recorded before the resume: %s", evt.Meta)
+			}
+			return
+		case <-deadline:
+			t.Fatal("the armed tail did not deliver the completion recorded after the resume")
 		}
 	}
 }

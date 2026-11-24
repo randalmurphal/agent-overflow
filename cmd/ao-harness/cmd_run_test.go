@@ -57,21 +57,49 @@ func TestRunPlanRejectsUnknownAdapterBeforeRootMutation(t *testing.T) {
 	}
 }
 
-func TestRunGovernorReportsHostPressureReason(t *testing.T) {
-	events := make(chan governor.Event, 1)
-	events <- governor.Event{Reason: governor.ReasonAvailableFloor, AvailableBytes: 99, AvailableFloorBytes: 100}
-	err := (&runGovernor{events: events}).safetyError()
-	if err == nil || !strings.Contains(err.Error(), "available=99 floor=100 (available-floor)") {
-		t.Fatalf("safety error = %v", err)
+// A bench plan's monitor leg is checked by the rule the bench command
+// applies, before the run takes a lease or launches anything, and the
+// refusal names the plan field to edit.
+func TestRunPlanRefusesItsMonitorLegBeforeRootMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields, want string
+	}{
+		{"unknown leg", `"monitors":["frame-pacing"],"monitorLeg":"platfrom"`, `plan field monitorLeg "platfrom" is not a monitor compatibility leg (want clean-renderer, instrumented-renderer, functional`},
+		{"leg with no monitor", `"monitorLeg":"functional"`, "plan field monitorLeg functional selects no monitor: add a monitor id of that leg to plan field monitors"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			root := filepath.Join(dir, "root")
+			plan := `{"version":1,"runId":"r","workload":"burst-stream","dataRoot":"` + filepath.ToSlash(root) + `","ownership":"fresh","adapter":"bench",` +
+				`"output":"` + filepath.ToSlash(filepath.Join(root+".artifacts", "r", "out.json")) + `","binary":"` + filepath.ToSlash(filepath.Join(dir, "no-backend")) + `",` + tc.fields + `}`
+			path := filepath.Join(dir, "plan.json")
+			if err := os.WriteFile(path, []byte(plan), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			e := newEnv(os.Stdout, os.Stderr)
+			if err := runManaged(e, []string{"--plan", path}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("run error = %v, want %q", err, tc.want)
+			}
+			if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the refused plan took its root: %v", err)
+			}
+		})
 	}
 }
 
-func TestRunGovernorReportsMonitorFailure(t *testing.T) {
-	events := make(chan governor.Event, 1)
-	events <- governor.Event{Reason: governor.ReasonMonitorError, Error: "owner disappeared"}
-	err := (&runGovernor{events: events}).safetyError()
-	if err == nil || !strings.Contains(err.Error(), "owner disappeared") {
-		t.Fatalf("monitor error = %v", err)
+func TestRunGovernorSafetyErrorNamesTheReason(t *testing.T) {
+	for want, event := range map[string]governor.Event{
+		"available=99 floor=100 (available-floor)": {Reason: governor.ReasonAvailableFloor, AvailableBytes: 99, AvailableFloorBytes: 100},
+		"owner disappeared":                        {Reason: governor.ReasonMonitorError, Error: "owner disappeared"},
+	} {
+		t.Run(event.Reason, func(t *testing.T) {
+			events := make(chan governor.Event, 1)
+			events <- event
+			err := (&runGovernor{events: events}).safetyError()
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("safety error = %v, want it to contain %q", err, want)
+			}
+		})
 	}
 }
 

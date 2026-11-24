@@ -14,7 +14,7 @@ import (
 // TUI render payload are dropped; the account identity is anonymised). Kept as
 // a captured envelope rather than a hand-written literal so a wire change
 // shows up as a test failure instead of as agreement with our own guess.
-const initializeModelsFixture = "../../../docs/references/fixtures/claude/initialize_models_20260802.json"
+const initializeModelsFixture = "../wirecaptures/claude/initialize_models_20260802.json"
 
 func loadInitializeFixtureLine(t *testing.T) []byte {
 	t.Helper()
@@ -31,7 +31,9 @@ func loadInitializeFixtureLine(t *testing.T) []byte {
 }
 
 // TestParseInitResponseReadsCapturedModels is the fixture-backed shape test:
-// every field the merge policy depends on, read off the real capture.
+// every field the merge policy depends on, read off the real capture. The
+// account and the models ride one initialize response, so the enrichment
+// costs no second subprocess.
 func TestParseInitResponseReadsCapturedModels(t *testing.T) {
 	parsed, matched, err := tryParseControlInitResponse(loadInitializeFixtureLine(t))
 	if err != nil || !matched {
@@ -42,6 +44,9 @@ func TestParseInitResponseReadsCapturedModels(t *testing.T) {
 	}
 	if parsed.Account.SubscriptionType != "Claude Max" {
 		t.Errorf("account rides on the same response: SubscriptionType = %q", parsed.Account.SubscriptionType)
+	}
+	if parsed.Account.APIProvider != "firstParty" {
+		t.Errorf("APIProvider = %q, want firstParty", parsed.Account.APIProvider)
 	}
 	if len(parsed.Models) != 5 {
 		t.Fatalf("len(Models) = %d, want the 5 picker rows", len(parsed.Models))
@@ -197,22 +202,6 @@ func TestDecodeWireModelsDistinguishesAbsentFromUnreadable(t *testing.T) {
 	}
 	if _, err := decodeWireModels([]byte(`{"models":"soon"}`)); err == nil {
 		t.Error("unreadable array: got nil error, want a decode failure")
-	}
-}
-
-// TestProbeAccountReportsModelsAndAccountFromOneResponse proves the enrichment
-// costs no second subprocess: one probe, one initialize response, both answers.
-func TestProbeAccountReportsModelsAndAccountFromOneResponse(t *testing.T) {
-	line := loadInitializeFixtureLine(t)
-	parsed, matched, err := tryParseControlInitResponse(line)
-	if err != nil || !matched {
-		t.Fatalf("tryParseControlInitResponse: matched=%v err=%v", matched, err)
-	}
-	if parsed.Account.APIProvider != "firstParty" {
-		t.Errorf("APIProvider = %q, want firstParty", parsed.Account.APIProvider)
-	}
-	if len(parsed.Models) == 0 {
-		t.Error("models must ride on the same response the account came from")
 	}
 }
 

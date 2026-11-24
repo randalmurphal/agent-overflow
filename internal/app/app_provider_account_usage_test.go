@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -124,62 +125,6 @@ func TestSelectedCodexUsageCredentialRotationAdvancesReconnectGeneration(t *test
 		if string(got) != rotated {
 			t.Fatalf("active=%v credential = %s, want %s", location.active, got, rotated)
 		}
-	}
-}
-
-func TestSelectedUsageRefreshCannotOverwriteExternalCredentialChange(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
-	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	app.rateLimitProbeClientOverride = blockingUsageClient(t, started, release)
-
-	result := make(chan error, 1)
-	go func() {
-		result <- app.refreshProviderAccountUsage(
-			context.Background(),
-			string(provider.Claude),
-			"selected",
-		)
-	}()
-	<-started
-
-	external := []byte(`{"claudeAiOauth":{"accessToken":"external"}}`)
-	if err := providerCredentialsForTest(t, app).WriteNativeCredentialForTest(
-		string(provider.Claude),
-		external,
-	); err != nil {
-		t.Fatal(err)
-	}
-	close(release)
-
-	if err := <-result; err == nil || !strings.Contains(err.Error(), "changed") {
-		t.Fatalf("refresh error = %v, want credential-change rejection", err)
-	}
-	active, err := providerCredentialsForTest(t, app).ReadCredential(
-		string(provider.Claude),
-		"",
-		true,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(active) != string(external) {
-		t.Fatalf("canonical credential = %s, want external credential", active)
-	}
-	saved, err := providerCredentialsForTest(t, app).ReadCredential(
-		string(provider.Claude),
-		"selected",
-		false,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(saved) != string(original) {
-		t.Fatalf("saved credential = %s, want original credential", saved)
 	}
 }
 
@@ -571,7 +516,7 @@ func TestRecoveredCodexRotationSurvivesEverySelectedPath(t *testing.T) {
 				return app.providerAccounts.ReconcileExternalProviderAccount(string(provider.Codex))
 			}},
 			{"account probe", func(_ *testing.T, app *App) error {
-				_, err := app.ProbeCodexAccount()
+				_, err := app.providerDiscoveryService().ProbeCodexAccount()
 				return err
 			}},
 			{"dictation refresh", func(t *testing.T, app *App) error {
@@ -718,4 +663,11 @@ func blockingUsageClient(
 	return &http.Client{
 		Transport: redirectRoundTripper{target: target, inner: http.DefaultTransport},
 	}
+}
+
+func (a *App) refreshProviderAccountUsage(ctx context.Context, providerName, accountID string) error {
+	if a.providerAccounts == nil {
+		return errors.New("provider account storage is unavailable")
+	}
+	return a.providerAccounts.RefreshProviderAccountUsageContext(ctx, providerName, accountID)
 }

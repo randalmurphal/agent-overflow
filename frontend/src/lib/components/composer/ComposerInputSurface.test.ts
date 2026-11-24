@@ -4,29 +4,29 @@
 // message editor) will use, so none of them is first exercised in
 // production.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { createRawSnippet, tick, type Snippet } from 'svelte';
 import ComposerInputSurface from './ComposerInputSurface.svelte';
 import type { ComposerInputSurfaceHandle } from './composerInputSurface';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
   type ComposerDraftStore,
 } from '../../stores/composerDraft.svelte';
 import { buildPane } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setAttachmentThumbnailMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { Attachment } from '../../types/attachment';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ControlAccess } from '../../transport/scopes';
 
 const platform = vi.hoisted(() => ({ native: false }));
-vi.mock('../../native/platform', () => ({ isNativeShell: () => platform.native }));
+vi.mock('../../native/platform', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../native/platform')>()),
+  isNativeShell: () => platform.native,
+}));
 
 function makeAttachment(id: string): Attachment {
   return {
@@ -50,7 +50,6 @@ function installMocks() {
     updatedAt: 0,
   }));
   setBindingMock('SaveDraft', async () => {});
-  setBindingMock('ClearDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
   mockAttachmentDownload();
   setBindingMock('DeleteAttachment', async () => {});
@@ -184,13 +183,15 @@ async function mountSurface(options: MountOptions = {}) {
 }
 
 describe('<ComposerInputSurface>', () => {
-  beforeEach(() => {
+  // Back to the desktop page before the between-test steps reset the
+  // computers, which attach the page's own by what the platform says.
+  afterEach(() => {
     platform.native = false;
-    resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
-    resetPanesForTest();
+  });
+  beforeEach(() => {
+    // The composer loads the thumbnail of each image a test uploads.
+    setAttachmentThumbnailMock();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
     installMocks();
   });
 
@@ -414,9 +415,12 @@ describe('<ComposerInputSurface>', () => {
 
   // ---- attachments ----
 
-  it('deletes the backing record when an attachment is removed, by default', async () => {
+  it.each([
+    { name: 'deletes the backing record when an attachment is removed, by default', options: {}, deletes: [['thread-1', 'att-1']] },
+    { name: 'shouldDeleteAttachmentRecord=false drops it from the draft but keeps the record', options: { shouldDeleteAttachmentRecord: () => false }, deletes: [] },
+  ])('$name', async ({ options, deletes }) => {
     const deleteAttachment = setBindingMock('DeleteAttachment', async () => {});
-    const { draft, getByLabelText, syncValue } = await mountSurface();
+    const { draft, getByLabelText, syncValue } = await mountSurface(options);
     draft.setContentAndAttachments('', [makeAttachment('att-1')]);
     await syncValue();
 
@@ -424,22 +428,7 @@ describe('<ComposerInputSurface>', () => {
     await tick();
 
     expect(draft.attachments).toHaveLength(0);
-    await waitFor(() => expect(deleteAttachment).toHaveBeenCalledWith('thread-1', 'att-1'));
-  });
-
-  it('shouldDeleteAttachmentRecord=false drops it from the draft but keeps the record', async () => {
-    const deleteAttachment = setBindingMock('DeleteAttachment', async () => {});
-    const { draft, getByLabelText, syncValue } = await mountSurface({
-      shouldDeleteAttachmentRecord: () => false,
-    });
-    draft.setContentAndAttachments('', [makeAttachment('att-1')]);
-    await syncValue();
-
-    await fireEvent.click(getByLabelText('Remove att-1.png'));
-    await tick();
-
-    expect(draft.attachments).toHaveLength(0);
-    expect(deleteAttachment).not.toHaveBeenCalled();
+    await waitFor(() => expect(deleteAttachment.mock.calls).toEqual(deletes));
   });
 
   it('uploads a pasted image when the host has no objection', async () => {
@@ -775,7 +764,6 @@ describe('<ComposerInputSurface>', () => {
     // rather than something weaker.
     await new Promise((resolve) => setTimeout(resolve, 10));
     const save = setBindingMock('SaveDraft', async () => {});
-    const clear = setBindingMock('ClearDraft', async () => {});
     const get = setBindingMock('GetDraft', async () => ({
       threadId: 'thread-1',
       content: '',
@@ -801,7 +789,6 @@ describe('<ComposerInputSurface>', () => {
     expect(local.content).toBe('the message, edited again');
     expect(local.hasPendingSave).toBe(false);
     expect(save).not.toHaveBeenCalled();
-    expect(clear).not.toHaveBeenCalled();
     expect(get).not.toHaveBeenCalled();
   });
 });

@@ -66,10 +66,6 @@ func comparePrepare(e *env, args []string) error {
 	return nil
 }
 
-func compareRun(e *env, args []string) error {
-	return compareRunContext(context.Background(), e, args)
-}
-
 func compareRunContext(ctx context.Context, e *env, args []string) error {
 	flags := e.newFlagSet("compare run")
 	capsule := flags.String("capsule", "", "capsule manifest or capsule directory")

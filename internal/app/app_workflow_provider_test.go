@@ -8,11 +8,14 @@ import (
 	"agent-overflow/internal/workflowhost"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // A tool phase's command is a real subprocess: these tests bind the project
@@ -479,7 +482,7 @@ func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
 	if items, itemsErr := app.store.ListItems(units["beta"].ThreadID); itemsErr != nil || len(items) == 0 {
 		t.Fatalf("failed unit thread is not inspectable: %d items, %v", len(items), itemsErr)
 	}
-	if err := app.SendMessage(context.Background(), units["beta"].ThreadID, "let me fix this myself", nil); err == nil ||
+	if _, err := app.SendMessageWithOptions(context.Background(), units["beta"].ThreadID, "let me fix this myself", pageSendOptions(uuid.NewString())); err == nil ||
 		!strings.Contains(err.Error(), "only a running unit can be taken over") {
 		t.Fatalf("send into a failed unit thread = %v, want a takeover refusal", err)
 	}
@@ -697,6 +700,16 @@ reliability:
 	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true) })
 	threadID := waitForRunningWorkflowUnitThread(t, app, item.ID, "beta")
 
+	// An awaited harness send is refused and leaves the live unit running;
+	// the explicit takeover below detaches it.
+	if _, err := (&harnessHost{app: app}).Send(context.Background(), threadID, "probe", true); !errors.Is(err, errWorkflowRunning) {
+		t.Fatalf("at-rest send to a live unit = %v, want the running-workflow refusal", err)
+	}
+	requireWorkflowItemState(t, app.store, item.ID, engine.StateRunning, "")
+	if beta := unitsByID(t, app, item.ID)["beta"]; beta.Status != store.WorkItemUnitRunning {
+		t.Fatalf("unit beta = %q, want still running", beta.Status)
+	}
+
 	if err := app.WorkflowTakeOverUnit(item.ID, "beta"); err != nil {
 		t.Fatal(err)
 	}
@@ -723,7 +736,7 @@ reliability:
 			}
 		}
 	})
-	if err := app.SendMessage(context.Background(), threadID, "I unblocked the beta slice by hand.", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadID, "I unblocked the beta slice by hand.", pageSendOptions(uuid.NewString())); err != nil {
 		unsubscribe()
 		t.Fatal(err)
 	}

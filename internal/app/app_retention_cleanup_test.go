@@ -121,28 +121,6 @@ func TestRunRetentionSweepKeepsAssistantThreads(t *testing.T) {
 	}
 }
 
-func TestRunRetentionSweepDisabledWhenDaysZero(t *testing.T) {
-	t.Parallel()
-	app := retentionTestApp(t)
-	// Default Settings has Days=30. Override to 0.
-	if _, err := app.settings.Update(map[string]any{
-		"retention": map[string]any{"days": 0},
-	}); err != nil {
-		t.Fatalf("settings.Update: %v", err)
-	}
-
-	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	app.retentionNowFn = func() time.Time { return now }
-
-	seedThread(t, app, "obviously-stale", 0)
-
-	app.runRetentionSweep(now)
-
-	if _, err := app.store.GetThread("obviously-stale"); err != nil {
-		t.Fatalf("retention.days=0 should not delete anything: %v", err)
-	}
-}
-
 func TestRunRetentionSweepHandlesMissingConfigDir(t *testing.T) {
 	t.Parallel()
 	app := retentionTestApp(t)

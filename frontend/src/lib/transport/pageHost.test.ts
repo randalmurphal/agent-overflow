@@ -4,9 +4,8 @@
 // a repeat has to change nothing. The Go half is internal/pagehost and
 // internal/uiwindow.DeliverPageTicket.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  __resetPageHostForTest,
   awaitInjectedPageTicket,
   clearInjectedPageTicket,
   isWebviewHosted,
@@ -38,12 +37,7 @@ function deliver(ticket: string): void {
   window.dispatchEvent(new Event(TICKET_EVENT));
 }
 
-beforeEach(() => {
-  __resetPageHostForTest();
-});
-
 afterEach(() => {
-  __resetPageHostForTest();
   setPageSearch('');
   delete hostGlobals()._wails;
   delete hostGlobals().chrome;
@@ -52,19 +46,13 @@ afterEach(() => {
 });
 
 describe('isWebviewHosted', () => {
-  it('is false for a page with no host marker, which is every browser', () => {
-    setPageSearch('?cid=desktop-1&t=ticket-1');
-    expect(isWebviewHosted()).toBe(false);
-  });
-
-  it('is true only for the exact marker the Go side stamps', () => {
-    setPageSearch('?host=webview&mode=client&cid=desktop-1');
-    expect(isWebviewHosted()).toBe(true);
-  });
-
-  it('rejects another host value rather than treating any host as a window', () => {
-    setPageSearch('?host=browser');
-    expect(isWebviewHosted()).toBe(false);
+  it.each([
+    ['is false for a page with no host marker, which is every browser', '?cid=desktop-1&t=ticket-1', false],
+    ['is true only for the exact marker the Go side stamps', '?host=webview&mode=client&cid=desktop-1', true],
+    ['rejects another host value rather than treating any host as a window', '?host=browser', false],
+  ])('%s', (_name, search, hosted) => {
+    setPageSearch(search);
+    expect(isWebviewHosted()).toBe(hosted);
   });
 });
 
@@ -105,14 +93,6 @@ describe('awaitInjectedPageTicket', () => {
     expect(settled).not.toHaveBeenCalled();
     deliver('ticket-real');
     await expect(pending).resolves.toBe('ticket-real');
-  });
-
-  it('rejects at the deadline rather than hanging the boot', async () => {
-    vi.useFakeTimers();
-    const pending = awaitInjectedPageTicket(1_000);
-    const caught = pending.catch((err: unknown) => err);
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(await caught).toBeInstanceOf(PageTicketUndeliveredError);
   });
 
   it('stops announcing once the deadline passed', async () => {

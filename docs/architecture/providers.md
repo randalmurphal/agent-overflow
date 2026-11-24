@@ -110,7 +110,9 @@ Approval `kind` values that currently arrive from providers:
 
 - `user-input`: multi-question form.
 - `permission`: grant scope, `turn` or `session`.
-- `file-change`, `file-read`, `command`: Codex sandbox approvals.
+- `file-change`, `command`: Codex sandbox approvals and ACP permission
+  requests.
+- `file-read`: ACP permission requests for read tools.
 - `mcp-elicitation`: MCP server dynamic config request.
 
 The frontend must render a branch for each kind it can receive. Missing

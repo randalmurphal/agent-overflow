@@ -3,8 +3,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import '../../../app.css';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import ChatMarkdown from './ChatMarkdown.svelte';
-import { resetCodeSpanCacheForTest } from './markdown/codeSpanCache';
-import { __resetStreamdownCodeHostForTest } from './markdown/StreamdownCodeHost.svelte';
 
 const SOURCE = 'def route():\n    pass';
 
@@ -27,8 +25,6 @@ function sourceText(root: Element): Text {
 }
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
-  __resetStreamdownCodeHostForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
 });

@@ -111,21 +111,6 @@ func assertChromiumArgv(t *testing.T, argv []string, wantUserDataDir string) {
 	}
 }
 
-// The same line without a process: exactly these arguments in this order,
-// the DevTools port the launch reads its endpoint from, and no --no-sandbox
-// for any user.
-func TestChromiumArgsAreTheWholeLaunchLine(t *testing.T) {
-	got := chromiumArgs("/data/chromium")
-	for _, arg := range got {
-		if arg == "--no-sandbox" || strings.HasPrefix(arg, "--no-sandbox=") {
-			t.Fatalf("the launch disabled the renderer sandbox: %q", got)
-		}
-	}
-	if want := wantChromiumArgv("/data/chromium"); !slices.Equal(got, want) {
-		t.Fatalf("chromiumArgs = %q, want exactly %q", got, want)
-	}
-}
-
 // A jar's next profile, after the one before was disposed, keeps the jar's
 // site data directory and has a handle of its own: a report the disposed
 // profile's browser left names no open profile.

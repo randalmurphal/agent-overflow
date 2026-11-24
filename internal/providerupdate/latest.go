@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/provider"
 )
 
 // Release hosts. Only these URLs are requested; tests and isolated boots
@@ -93,9 +94,6 @@ func brewInstall(providerName, resolvedPath string) (cask, brew string) {
 // Codex installer unpacks each release into.
 const codexStandaloneReleases = "/packages/standalone/releases/"
 
-// codexReleaseEnv pins the version the Codex installer installs.
-const codexReleaseEnv = "CODEX_RELEASE"
-
 // errNoCodexUpdater fails the check of a Codex install no updater owns.
 var errNoCodexUpdater = errors.New("this Codex install has no updater this app can run: it was not installed with npm, Homebrew or the Codex installer")
 
@@ -145,16 +143,13 @@ func (s *Service) plan(ctx context.Context, providerName string, binary Binary, 
 	if err != nil {
 		return "", Command{}, err
 	}
-	if pinRelease {
-		env = maps.Clone(env)
-		if env == nil {
-			env = map[string]string{}
-		}
-		env[codexReleaseEnv] = latest
-	}
 	update, err = s.command(providerName, executable, env, args...)
 	if err != nil {
 		return "", Command{}, err
+	}
+	if pinRelease {
+		// CODEX_RELEASE pins the version the Codex installer installs.
+		update.Env = update.Env.Pin(provider.CodexReleaseEnv, latest)
 	}
 	return latest, update, nil
 }

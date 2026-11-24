@@ -162,7 +162,7 @@ test('a narration block streams in the run, then stands as summarized prose', as
   await installSampler(page);
 
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'run the checks', null);
+  await harness.send(threadId, 'run the checks');
   await completed;
   await expect(timeline.getByText('All done.')).toBeVisible({ timeout: 20_000 });
 
@@ -194,9 +194,7 @@ test('a narration block streams in the run, then stands as summarized prose', as
   expect(order.lastRun).toBe(order.prose + 1);
 
   // The store holds the reclassified row, and the untagged block as thinking.
-  const stored = await harness.rpc<Array<{ kind: string; summary: string; meta?: string }>>(
-    'ListItems', threadId, true,
-  );
+  const stored = await harness.items<{ kind: string; summary: string; meta?: string }>(threadId, true);
   const narration = stored.find((item) => item.summary.includes(NARRATION.slice(0, 40)));
   expect(narration?.kind).toBe('assistant_text');
   expect(narration?.summary).toBe(NARRATION);

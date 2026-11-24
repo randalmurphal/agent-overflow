@@ -7,9 +7,7 @@ import {
   withTerminalsNote,
 } from './worktreeRemoval.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../test/helpers/chat';
-import { resetPanesForTest } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
 import { applyThreadUpdated } from './eventsThreadRows';
 import { resetToLocalPage } from '../../test/helpers/scopes';
@@ -22,8 +20,6 @@ vi.mock('../utils/frontendErrorCapture', async (importOriginal) => ({
 const reported = vi.mocked(reportFrontendDiagnostic);
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetPanesForTest();
   resetToLocalPage();
   reported.mockClear();
 });

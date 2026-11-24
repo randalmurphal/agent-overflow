@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -29,17 +28,6 @@ func requireSoftRoundClose(t *testing.T, evt provider.ProviderEvent) provider.So
 //   - input_json_delta → silently skipped (no downstream event)
 //   - content_block_start/stop → explicit lifecycle events
 //   - parent_tool_use_id on stream_event → propagated to emitted events
-
-func TestBuildArgsIncludesPartialMessagesFlag(t *testing.T) {
-	args := buildArgs(Config{Reaper: procutiltest.Reaper()}, "", "")
-
-	for _, arg := range args {
-		if arg == "--include-partial-messages" {
-			return
-		}
-	}
-	t.Fatalf("missing --include-partial-messages flag; args=%v", args)
-}
 
 // TestAssistantEnvelopeDoesNotDuplicateStreamedText pins the contract
 // that — with `--include-partial-messages` on — the parser emits
@@ -202,145 +190,83 @@ func TestAssistantSnapshotWithoutPriorStreamEmitsCompletedContent(t *testing.T) 
 // The Claude CLI emits a synthetic *error* envelope as a bare `assistant`
 // snapshot: a UUID message id that never streams, `model:"<synthetic>"`, a
 // single `text` block holding the human-readable error copy ("API Error:
-// …"), and an `error` enum at the ENVELOPE top level — a sibling of
-// `message`, NOT `message.error`. Shape verified verbatim against
-// provider-events logs (Claude Code 2.1.170; all captured error envelopes
-// carried the enum top-level with a lone text block).
-//
-// That text block IS the error copy: it is already surfaced once as the
-// EventError summary (the api_error row). Recovery fires on any
-// never-streamed text, so before the fix it ALSO emitted the same text as
-// a normal completed content block — one error envelope rendered twice:
-// a plain assistant_text line PLUS the red api_error box. That is the
-// user-reported "error messages come in as normal text" regression.
+// …"), and an `error` enum. That text block IS the error copy: it is
+// already surfaced once as the EventError summary (the api_error row).
+// Recovery fires on any never-streamed text, so before the fix it ALSO
+// emitted the same text as a normal completed content block — one error
+// envelope rendered twice: a plain assistant_text line PLUS the red
+// api_error box ("error messages come in as normal text").
 //
 // The fix gates text/thinking recovery on "no error enum" so an error
-// envelope's content belongs solely to the EventError path. This test
-// FAILS before the fix (a content-bearing EventContentBlockStop is
-// emitted) and passes after — while still asserting EventError fires with
-// the error copy, so a duplicate isn't traded for a silent drop.
+// envelope's content belongs solely to the EventError path. Each case
+// asserts no content-bearing EventContentBlockStop AND that EventError
+// fires with the error copy, so a duplicate isn't traded for a silent drop.
 func TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent(t *testing.T) {
-	parser := NewParser()
-
-	const errCopy = "API Error: Stream idle timeout - partial response received"
-	// Verbatim wire shape (ids sanitized) from
-	// provider-events-2026-06-24.ndjson: UUID id (never streamed),
-	// synthetic model, single text block, top-level `error` enum.
-	envelope := []byte(`{"type":"assistant","message":{"id":"dfa3c492-9b19-419c-b441-92d548c3133d","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"` + errCopy + `"}]},"parent_tool_use_id":null,"error":"unknown"}`)
-	events, err := parser.ParseLine(testThread, envelope)
-	if err != nil {
-		t.Fatalf("parse error envelope: %v", err)
-	}
-
-	var recovered, errorEvt *provider.ProviderEvent
-	for i := range events {
-		e := &events[i]
-		switch {
-		case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
-			recovered = e
-		case e.Kind == provider.EventError:
-			errorEvt = e
-		}
-	}
-
-	if recovered != nil {
-		t.Fatalf("error envelope recovered its text as a normal content block (the duplicate assistant_text row behind the regression): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
-	}
-	if errorEvt == nil {
-		t.Fatalf("error envelope did not emit EventError — the error copy would be silently dropped; events=%+v", events)
-	}
-	if errorEvt.Content != errCopy {
-		t.Errorf("EventError summary = %q, want the wire error copy %q", errorEvt.Content, errCopy)
-	}
-}
-
-// TestSubagentAssistantErrorEnvelopeDoesNotRecoverErrorText is the
-// subagent counterpart: an error envelope carrying a top-level
-// parent_tool_use_id must also keep its text out of the recovery path.
-// Subagents never stream (no message_start ever carries a
-// parent_tool_use_id — confirmed across production logs), so without the
-// error gate EVERY subagent error envelope's text would recover into a
-// nested assistant_text row beside the api_error row. The gate lives in
-// the shared block loop, so this asserts the same no-recover + EventError
-// guarantee holds when parent_tool_use_id is set, and that the EventError
-// stays nested under the parent Task.
-func TestSubagentAssistantErrorEnvelopeDoesNotRecoverErrorText(t *testing.T) {
-	parser := NewParser()
-
-	const (
-		parentID = "toolu_task_parent"
-		errCopy  = "API Error: Stream idle timeout - partial response received"
-	)
-	envelope := []byte(`{"type":"assistant","parent_tool_use_id":"` + parentID + `","message":{"id":"a1b2c3d4-0000-0000-0000-000000000000","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"` + errCopy + `"}]},"error":"unknown"}`)
-	events, err := parser.ParseLine(testThread, envelope)
-	if err != nil {
-		t.Fatalf("parse subagent error envelope: %v", err)
-	}
-
-	var recovered, errorEvt *provider.ProviderEvent
-	for i := range events {
-		e := &events[i]
-		switch {
-		case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
-			recovered = e
-		case e.Kind == provider.EventError:
-			errorEvt = e
-		}
-	}
-
-	if recovered != nil {
-		t.Fatalf("subagent error envelope recovered its text as a content block (nested duplicate): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
-	}
-	if errorEvt == nil {
-		t.Fatalf("subagent error envelope did not emit EventError; events=%+v", events)
-	}
-	if errorEvt.ParentToolUseID != parentID {
-		t.Errorf("EventError ParentToolUseID = %q, want %q (the failure closes the parent Task's turn)", errorEvt.ParentToolUseID, parentID)
-	}
-}
-
-// TestAssistantErrorEnvelopeWithMessageLevelEnumDoesNotRecover pins the
-// recovery gate for the SECOND error-enum wire placement the parser
-// supports: `message.error` (inside the message object), which
-// assistantErrorEnum reads BEFORE the top-level `error` field. The two
-// verbatim-shape tests above both put the enum at the envelope top level;
-// without this test a future simplification of assistantErrorEnum that
-// dropped the message.error read would silently un-gate recovery for this
-// shape with no failing test. The assistantMessage.Error field doc records
-// message.error as a real cross-version shape. Fails before the fix (the
-// text recovers into a duplicate row), passes after.
-func TestAssistantErrorEnvelopeWithMessageLevelEnumDoesNotRecover(t *testing.T) {
-	parser := NewParser()
-
-	const errCopy = "Rate limit reached - please wait before retrying"
-	// Enum inside `message` (no top-level `error`), never-streamed UUID id,
-	// populated text block — exercises the msg.Error-first branch of
-	// assistantErrorEnum so the gate is pinned for both enum placements.
-	envelope := []byte(`{"type":"assistant","message":{"id":"f00dbabe-0000-0000-0000-000000000000","model":"<synthetic>","role":"assistant","error":"rate_limit","content":[{"type":"text","text":"` + errCopy + `"}]}}`)
-	events, err := parser.ParseLine(testThread, envelope)
-	if err != nil {
-		t.Fatalf("parse message-level error envelope: %v", err)
-	}
-
-	var recovered, errorEvt *provider.ProviderEvent
-	for i := range events {
-		e := &events[i]
-		switch {
-		case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
-			recovered = e
-		case e.Kind == provider.EventError:
-			errorEvt = e
-		}
-	}
-
-	if recovered != nil {
-		t.Fatalf("message.error envelope recovered its text as a content block (duplicate): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
-	}
-	if errorEvt == nil {
-		t.Fatalf("message.error envelope did not emit EventError; events=%+v", events)
-	}
-	if errorEvt.Content != errCopy {
-		t.Errorf("EventError summary = %q, want the wire error copy %q", errorEvt.Content, errCopy)
+	const idleCopy = "API Error: Stream idle timeout - partial response received"
+	const rateCopy = "Rate limit reached - please wait before retrying"
+	for _, tc := range []struct {
+		name     string
+		envelope string
+		errCopy  string
+		parentID string
+	}{
+		{
+			// Verbatim wire shape (ids sanitized) from
+			// provider-events-2026-06-24.ndjson (Claude Code 2.1.170): the
+			// enum sits at the ENVELOPE top level, a sibling of `message`.
+			name:     "top-level enum",
+			envelope: `{"type":"assistant","message":{"id":"dfa3c492-9b19-419c-b441-92d548c3133d","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"` + idleCopy + `"}]},"parent_tool_use_id":null,"error":"unknown"}`,
+			errCopy:  idleCopy,
+		},
+		{
+			// Subagents never stream (no message_start ever carries a
+			// parent_tool_use_id), so without the gate EVERY subagent error
+			// envelope's text would recover into a nested assistant_text row.
+			// The EventError stays nested under the parent Task, whose turn
+			// the failure closes.
+			name:     "subagent",
+			envelope: `{"type":"assistant","parent_tool_use_id":"toolu_task_parent","message":{"id":"a1b2c3d4-0000-0000-0000-000000000000","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"` + idleCopy + `"}]},"error":"unknown"}`,
+			errCopy:  idleCopy,
+			parentID: "toolu_task_parent",
+		},
+		{
+			// The second enum placement: `message.error`, which
+			// assistantErrorEnum reads BEFORE the top-level field. Without
+			// this case a simplification that dropped the message.error read
+			// would silently un-gate recovery for this shape.
+			name:     "message-level enum",
+			envelope: `{"type":"assistant","message":{"id":"f00dbabe-0000-0000-0000-000000000000","model":"<synthetic>","role":"assistant","error":"rate_limit","content":[{"type":"text","text":"` + rateCopy + `"}]}}`,
+			errCopy:  rateCopy,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events, err := NewParser().ParseLine(testThread, []byte(tc.envelope))
+			if err != nil {
+				t.Fatalf("parse error envelope: %v", err)
+			}
+			var recovered, errorEvt *provider.ProviderEvent
+			for i := range events {
+				e := &events[i]
+				switch {
+				case e.Kind == provider.EventContentBlockStop && e.ContentPresent:
+					recovered = e
+				case e.Kind == provider.EventError:
+					errorEvt = e
+				}
+			}
+			if recovered != nil {
+				t.Fatalf("error envelope recovered its text as a normal content block (duplicate assistant_text row): ItemID=%q Content=%q", recovered.ItemID, recovered.Content)
+			}
+			if errorEvt == nil {
+				t.Fatalf("error envelope did not emit EventError — the error copy would be silently dropped; events=%+v", events)
+			}
+			if errorEvt.Content != tc.errCopy {
+				t.Errorf("EventError summary = %q, want the wire error copy %q", errorEvt.Content, tc.errCopy)
+			}
+			if errorEvt.ParentToolUseID != tc.parentID {
+				t.Errorf("EventError ParentToolUseID = %q, want %q", errorEvt.ParentToolUseID, tc.parentID)
+			}
+		})
 	}
 }
 
@@ -821,113 +747,52 @@ func TestParseStreamEventEmptyDeltaText(t *testing.T) {
 // parent_tool_use_id == ""). See docs/architecture/turn-lifecycle.md
 // §Rounds and turns.
 
-func TestParseStreamEventMessageDeltaEndTurnEmitsSoftTurnComplete(t *testing.T) {
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":6,"output_tokens":34}}}`)
-
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	var sawTurnComplete bool
-	for _, e := range events {
-		if e.Kind != provider.EventTurnComplete {
-			continue
-		}
-		sawTurnComplete = true
-		meta := requireSoftRoundClose(t, e)
-		if meta.StopReason != "end_turn" {
-			t.Errorf("StopReason: got %q, want %q", meta.StopReason, "end_turn")
-		}
-		if e.ParentToolUseID != "" {
-			t.Errorf("ParentToolUseID: got %q, want empty (parent only)", e.ParentToolUseID)
-		}
-	}
-	if !sawTurnComplete {
-		t.Fatalf("expected EventTurnComplete from message_delta stop_reason=end_turn, got %+v", events)
-	}
-}
-
-func TestParseStreamEventMessageDeltaStopSequenceEmitsSoftTurnComplete(t *testing.T) {
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"stop_sequence"},"usage":{"input_tokens":6,"output_tokens":1}}}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	var found bool
-	for _, e := range events {
-		if e.Kind == provider.EventTurnComplete {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("stop_sequence should fire soft turn-complete: %+v", events)
-	}
-}
-
-func TestParseStreamEventMessageDeltaRefusalEmitsSoftTurnComplete(t *testing.T) {
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"input_tokens":6,"output_tokens":1}}}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	var found bool
-	for _, e := range events {
-		if e.Kind == provider.EventTurnComplete {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("refusal should fire soft turn-complete: %+v", events)
-	}
-}
-
-func TestParseStreamEventMessageDeltaToolUseDoesNotEmitSoftTurnComplete(t *testing.T) {
-	// stop_reason="tool_use" means the model paused to call a tool;
-	// more text follows. Firing turn-complete here would close the
-	// indicator mid-round, then re-open it on the next message_start
-	// for cosmetically jarring "Done → Working → Done" flicker —
-	// AND it would cascade into per-round emission semantics that
-	// don't match the model's actual state.
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":6,"output_tokens":493}}}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventTurnComplete {
-			t.Fatalf("tool_use must NOT fire soft turn-complete: %+v", events)
-		}
-	}
-}
-
-func TestParseStreamEventMessageDeltaPauseTurnDoesNotEmitSoftTurnComplete(t *testing.T) {
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"pause_turn"},"usage":{"input_tokens":6,"output_tokens":1}}}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventTurnComplete {
-			t.Fatalf("pause_turn must NOT fire soft turn-complete: %+v", events)
-		}
-	}
-}
-
-func TestParseStreamEventMessageDeltaMaxTokensDoesNotEmitSoftTurnComplete(t *testing.T) {
-	// max_tokens means the model truncated; the harness may auto-continue
-	// (Claude does this for some configurations). Firing turn-complete
-	// here would clear the indicator, then a fresh message_start would
-	// re-open it — same flicker problem as tool_use.
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"input_tokens":6,"output_tokens":64000}}}`)
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventTurnComplete {
-			t.Fatalf("max_tokens must NOT fire soft turn-complete: %+v", events)
-		}
+// The closed set (isSoftRoundCloseStopReason) is end_turn, stop_sequence
+// and refusal. tool_use means more text follows the tool_result and
+// max_tokens may auto-continue: firing there would close the indicator
+// mid-round and re-open it on the next message_start ("Done → Working →
+// Done" flicker). An unknown value, a future SDK addition or a wire typo,
+// must not fire either: the trailing wire `result` still settles the turn,
+// so under-firing is the safer failure mode.
+func TestParseStreamEventMessageDeltaStopReasonSoftTurnComplete(t *testing.T) {
+	for _, tc := range []struct {
+		reason   string
+		wantSoft int
+	}{
+		{"end_turn", 1},
+		{"stop_sequence", 1},
+		{"refusal", 1},
+		{"tool_use", 0},
+		{"pause_turn", 0},
+		{"max_tokens", 0},
+		{"future_unknown", 0},
+		{"model_overloaded", 0},
+		{"", 0},
+		{"END_TURN", 0},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"` + tc.reason + `","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":6,"output_tokens":1}}}`)
+			events, err := ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var softs int
+			for _, e := range events {
+				if e.Kind != provider.EventTurnComplete {
+					continue
+				}
+				softs++
+				if meta := requireSoftRoundClose(t, e); meta.StopReason != tc.reason {
+					t.Errorf("StopReason: got %q, want %q", meta.StopReason, tc.reason)
+				}
+				if e.ParentToolUseID != "" {
+					t.Errorf("ParentToolUseID: got %q, want empty (parent only)", e.ParentToolUseID)
+				}
+			}
+			if softs != tc.wantSoft {
+				t.Fatalf("stop_reason %q: %d soft EventTurnComplete, want %d: %+v", tc.reason, softs, tc.wantSoft, events)
+			}
+		})
 	}
 }
 
@@ -962,7 +827,7 @@ func TestParseStreamEventSubagentMessageDeltaEndTurnDoesNotEmitParentSoftTurnCom
 // b951a768): preTokens matched top-level within 1-2% on every
 // turn — including advisor turns where the last-iteration snapshot
 // was ~2× lower. See
-// docs/references/fixtures/claude/advisor_pretokens_correlation_20260523.summary.json
+// internal/provider/wirecaptures/claude/advisor_pretokens_correlation_20260523.summary.json
 // for the per-compaction table.
 //
 // Earlier the parser extracted `usage.iterations[-1].(type=message)`
@@ -978,175 +843,98 @@ func TestParseStreamEventSubagentMessageDeltaEndTurnDoesNotEmitParentSoftTurnCom
 // standalone assistant frames.
 
 func TestParseStreamEventMessageDeltaUsesTopLevelOnAdvisorTurn(t *testing.T) {
-	// Numbers lifted verbatim from /tmp/advisor-spike/out.ndjson
-	// (single-advisor capture against Claude 2.1.139):
-	//   iter 0 (parent):  input=6, cache_read=18059, cache_create=9816
-	//   iter 1 (advisor): input=29179, cache_read=0,   cache_create=0
-	//   iter 2 (parent):  input=1, cache_read=27875, cache_create=238
-	//   top-level (sum):  input=7, cache_read=45934, cache_create=10054
-	// The meter must read TOP-LEVEL (55995 tokens — the cumulative
-	// sum across both parent iterations). This matches what the CLI's
-	// auto-compact trigger uses (compactMetadata.preTokens), verified
-	// against production session data.
-	parser := NewParser()
-
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_advisor_call","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_e2e","name":"advisor","input":{}}}}`,
-	)); err != nil {
-		t.Fatalf("content_block_start parse: %v", err)
-	}
-
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":7,"output_tokens":137,"cache_read_input_tokens":45934,"cache_creation_input_tokens":10054,"iterations":[{"type":"message","input_tokens":6,"output_tokens":89,"cache_read_input_tokens":18059,"cache_creation_input_tokens":9816},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":29179,"output_tokens":677,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"message","input_tokens":1,"output_tokens":48,"cache_read_input_tokens":27875,"cache_creation_input_tokens":238}]}}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-
-	var usageEvent *provider.ProviderEvent
-	var sawSoft bool
-	for i, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			usageEvent = &events[i]
-		}
-		if evt.Kind == provider.EventTurnComplete {
-			sawSoft = true
-		}
-	}
-	if usageEvent == nil {
-		t.Fatalf("expected EventTokenUsage from advisor-containing message_delta: %+v", events)
-	}
-	var window provider.ContextWindow
-	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
-		t.Fatalf("unmarshal window: %v", err)
-	}
-	if want := 7 + 45934 + 10054; window.UsedTokens != want {
-		t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative, what compactMetadata.preTokens tracks)", window.UsedTokens, want)
-	}
-	if !sawSoft {
-		t.Fatalf("expected soft EventTurnComplete from message_delta(stop_reason=end_turn): %+v", events)
-	}
-}
-
-func TestParseStreamEventMessageDeltaUsesTopLevelOnDoubleAdvisor(t *testing.T) {
-	// Numbers from /tmp/advisor-spike/double.ndjson (two advisor calls in
-	// one turn → 5 iterations: msg, adv, msg, adv, msg). The meter must
-	// read top-level (100542 tokens, cumulative across all three parent
-	// iterations) — this is what the CLI counts toward compaction.
-	parser := NewParser()
-
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_double","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":8,"output_tokens":185,"cache_read_input_tokens":84960,"cache_creation_input_tokens":15574,"iterations":[{"type":"message","input_tokens":6,"output_tokens":94,"cache_read_input_tokens":18059,"cache_creation_input_tokens":15296},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":34664,"output_tokens":547},{"type":"message","input_tokens":1,"output_tokens":42,"cache_read_input_tokens":33355,"cache_creation_input_tokens":191},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":34779,"output_tokens":172},{"type":"message","input_tokens":1,"output_tokens":49,"cache_read_input_tokens":33546,"cache_creation_input_tokens":87}]}}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-
-	var usageEvent *provider.ProviderEvent
-	for i, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			usageEvent = &events[i]
-		}
-	}
-	if usageEvent == nil {
-		t.Fatalf("expected EventTokenUsage from double-advisor message_delta: %+v", events)
-	}
-	var window provider.ContextWindow
-	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
-		t.Fatalf("unmarshal window: %v", err)
-	}
-	if want := 8 + 84960 + 15574; window.UsedTokens != want {
-		t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative, what compactMetadata.preTokens tracks)", window.UsedTokens, want)
-	}
-}
-
-func TestParseStreamEventMessageDeltaUsesTopLevelOnProductionAdvisorTurn(t *testing.T) {
-	// Production capture from ~/.claude/projects/.../b951a768-*.jsonl
-	// line 125, the last assistant message_delta before
-	// compactMetadata.preTokens=294675 triggered auto-compact at
-	// line 131 (timestamp 2026-05-23T04:58:24Z).
-	//
-	// Real numbers from the wire — there are 3 iterations:
-	//   iter 0 (parent):  input=1,    cache_read=143462, cache_create=287   = 143,750
-	//   iter 1 (advisor): input=146484, (separate context window)
-	//   iter 2 (parent):  input=1,    cache_read=143749, cache_create=2417  = 146,167
-	//   top-level (sum):  input=2,    cache_read=287211, cache_create=2704  = 289,917
-	//
-	// The CLI compacted at preTokens=294,675. Top-level=289,917 is
-	// within 1.6% of that — the remaining gap is the queued user
-	// message ("do not run the dev server") + system overhead.
-	// iter[-1]=146,167 is ~50% off (would have shown ~15% on the
-	// meter while Claude saw ~30% and triggered the user's auto-compact
-	// threshold).
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_prod","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":2997,"cache_read_input_tokens":287211,"cache_creation_input_tokens":2704,"iterations":[{"type":"message","input_tokens":1,"output_tokens":1531,"cache_read_input_tokens":143462,"cache_creation_input_tokens":287},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":146484,"output_tokens":11125,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"message","input_tokens":1,"output_tokens":1466,"cache_read_input_tokens":143749,"cache_creation_input_tokens":2417}]}}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-	var usageEvent *provider.ProviderEvent
-	for i, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			usageEvent = &events[i]
-		}
-	}
-	if usageEvent == nil {
-		t.Fatalf("expected EventTokenUsage: %+v", events)
-	}
-	var window provider.ContextWindow
-	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
-		t.Fatalf("unmarshal window: %v", err)
-	}
-	if want := 2 + 287211 + 2704; window.UsedTokens != want {
-		t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative; compactMetadata.preTokens=294675 is within 1.6%%)", window.UsedTokens, want)
-	}
-}
-
-func TestParseStreamEventMessageDeltaTopLevelWithoutIterations(t *testing.T) {
-	// A plain non-advisor turn often omits the `iterations` array on
-	// `message_delta.usage`. Top-level fields stand alone in that case
-	// (and equal iterations[0] when present), so the parser's direct
-	// top-level read still produces the right meter value.
-	parser := NewParser()
-	if _, err := parser.ParseLine(testThread, []byte(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_plain","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
-	)); err != nil {
-		t.Fatalf("message_start parse: %v", err)
-	}
-	line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1,"output_tokens":50,"cache_read_input_tokens":143000}}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("message_delta parse: %v", err)
-	}
-	var usageEvent *provider.ProviderEvent
-	for i, evt := range events {
-		if evt.Kind == provider.EventTokenUsage {
-			usageEvent = &events[i]
-		}
-	}
-	if usageEvent == nil {
-		t.Fatalf("expected EventTokenUsage from plain message_delta: %+v", events)
-	}
-	var window provider.ContextWindow
-	if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
-		t.Fatalf("unmarshal window: %v", err)
-	}
-	if want := 1 + 143000; window.UsedTokens != want {
-		t.Fatalf("UsedTokens: got %d, want %d", window.UsedTokens, want)
+	for _, tc := range []struct {
+		name  string
+		setup []string
+		delta string
+		want  int
+	}{
+		{
+			// Numbers lifted verbatim from /tmp/advisor-spike/out.ndjson
+			// (single-advisor capture against Claude 2.1.139):
+			//   iter 0 (parent):  input=6, cache_read=18059, cache_create=9816
+			//   iter 1 (advisor): input=29179, cache_read=0,   cache_create=0
+			//   iter 2 (parent):  input=1, cache_read=27875, cache_create=238
+			//   top-level (sum):  input=7, cache_read=45934, cache_create=10054
+			// The meter must read TOP-LEVEL (55995 tokens — the cumulative
+			// sum across both parent iterations).
+			name: "single advisor",
+			setup: []string{
+				`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_advisor_call","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
+				`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_e2e","name":"advisor","input":{}}}}`,
+			},
+			delta: `{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":7,"output_tokens":137,"cache_read_input_tokens":45934,"cache_creation_input_tokens":10054,"iterations":[{"type":"message","input_tokens":6,"output_tokens":89,"cache_read_input_tokens":18059,"cache_creation_input_tokens":9816},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":29179,"output_tokens":677,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"message","input_tokens":1,"output_tokens":48,"cache_read_input_tokens":27875,"cache_creation_input_tokens":238}]}}}`,
+			want:  7 + 45934 + 10054,
+		},
+		{
+			// Numbers from /tmp/advisor-spike/double.ndjson (two advisor
+			// calls in one turn → 5 iterations: msg, adv, msg, adv, msg).
+			// Top-level is cumulative across all three parent iterations.
+			name: "double advisor",
+			setup: []string{
+				`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_double","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
+			},
+			delta: `{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":8,"output_tokens":185,"cache_read_input_tokens":84960,"cache_creation_input_tokens":15574,"iterations":[{"type":"message","input_tokens":6,"output_tokens":94,"cache_read_input_tokens":18059,"cache_creation_input_tokens":15296},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":34664,"output_tokens":547},{"type":"message","input_tokens":1,"output_tokens":42,"cache_read_input_tokens":33355,"cache_creation_input_tokens":191},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":34779,"output_tokens":172},{"type":"message","input_tokens":1,"output_tokens":49,"cache_read_input_tokens":33546,"cache_creation_input_tokens":87}]}}}`,
+			want:  8 + 84960 + 15574,
+		},
+		{
+			// Production capture from ~/.claude/projects/.../b951a768-*.jsonl
+			// line 125, the last assistant message_delta before
+			// compactMetadata.preTokens=294675 triggered auto-compact at
+			// line 131 (timestamp 2026-05-23T04:58:24Z).
+			//
+			// Real numbers from the wire — there are 3 iterations:
+			//   iter 0 (parent):  input=1,    cache_read=143462, cache_create=287   = 143,750
+			//   iter 1 (advisor): input=146484, (separate context window)
+			//   iter 2 (parent):  input=1,    cache_read=143749, cache_create=2417  = 146,167
+			//   top-level (sum):  input=2,    cache_read=287211, cache_create=2704  = 289,917
+			//
+			// The CLI compacted at preTokens=294,675. Top-level=289,917 is
+			// within 1.6% of that — the remaining gap is the queued user
+			// message plus system overhead. iter[-1]=146,167 is ~50% off.
+			name: "production advisor turn",
+			setup: []string{
+				`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg_prod","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}}`,
+			},
+			delta: `{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":2997,"cache_read_input_tokens":287211,"cache_creation_input_tokens":2704,"iterations":[{"type":"message","input_tokens":1,"output_tokens":1531,"cache_read_input_tokens":143462,"cache_creation_input_tokens":287},{"type":"advisor_message","model":"claude-opus-4-7","input_tokens":146484,"output_tokens":11125,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},{"type":"message","input_tokens":1,"output_tokens":1466,"cache_read_input_tokens":143749,"cache_creation_input_tokens":2417}]}}}`,
+			want:  2 + 287211 + 2704,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+			for _, line := range tc.setup {
+				if _, err := parser.ParseLine(testThread, []byte(line)); err != nil {
+					t.Fatalf("setup parse %s: %v", line, err)
+				}
+			}
+			events, err := parser.ParseLine(testThread, []byte(tc.delta))
+			if err != nil {
+				t.Fatalf("message_delta parse: %v", err)
+			}
+			var usageEvent *provider.ProviderEvent
+			var sawSoft bool
+			for i, evt := range events {
+				if evt.Kind == provider.EventTokenUsage {
+					usageEvent = &events[i]
+				}
+				if evt.Kind == provider.EventTurnComplete {
+					sawSoft = true
+				}
+			}
+			if usageEvent == nil {
+				t.Fatalf("expected EventTokenUsage from advisor-containing message_delta: %+v", events)
+			}
+			var window provider.ContextWindow
+			if err := json.Unmarshal(usageEvent.Meta, &window); err != nil {
+				t.Fatalf("unmarshal window: %v", err)
+			}
+			if window.UsedTokens != tc.want {
+				t.Fatalf("UsedTokens: got %d, want %d (top-level cumulative, what compactMetadata.preTokens tracks)", window.UsedTokens, tc.want)
+			}
+			if !sawSoft {
+				t.Fatalf("expected soft EventTurnComplete from message_delta(stop_reason=end_turn): %+v", events)
+			}
+		})
 	}
 }
 
@@ -1154,7 +942,9 @@ func TestParseStreamEventMessageDeltaEmitsUsageAcrossMessages(t *testing.T) {
 	// Two SSE messages in a row, the first containing an advisor turn,
 	// the second text-only. Both message_delta usage snapshots must
 	// reach the context meter — the parent's window grew across each
-	// round. Meter reads top-level on both.
+	// round. Meter reads top-level on both. The second, a plain turn,
+	// omits the `iterations` array, as a non-advisor turn often does:
+	// its top-level fields stand alone.
 	parser := NewParser()
 
 	if _, err := parser.ParseLine(testThread, []byte(
@@ -1288,28 +1078,6 @@ func TestParseStreamSoftTurnCompleteWithoutPriorAssistantHasNoAssistantID(t *tes
 	}
 	if !softFound {
 		t.Fatalf("expected soft EventTurnComplete: %+v", events)
-	}
-}
-
-// TestParseStreamUnknownStopReasonDoesNotEmitTurnComplete pins the
-// closed-set behavior of `isSoftRoundCloseStopReason`. A future SDK
-// addition (or a typo in the wire) must NOT fire the soft — the
-// trailing wire `result` envelope still settles the turn correctly.
-// Under-firing on an unknown is the safer failure mode.
-func TestParseStreamUnknownStopReasonDoesNotEmitTurnComplete(t *testing.T) {
-	for _, reason := range []string{"future_unknown", "model_overloaded", "", "END_TURN"} {
-		t.Run(reason, func(t *testing.T) {
-			line := []byte(`{"type":"stream_event","event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"` + reason + `"}}}`)
-			events, err := ParseLine(testThread, line)
-			if err != nil {
-				t.Fatalf("parse: %v", err)
-			}
-			for _, e := range events {
-				if e.Kind == provider.EventTurnComplete {
-					t.Fatalf("unknown stop_reason %q must NOT fire soft turn-complete: %+v", reason, events)
-				}
-			}
-		})
 	}
 }
 

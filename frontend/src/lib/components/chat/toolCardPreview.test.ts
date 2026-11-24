@@ -24,19 +24,15 @@ function makeItem(overrides: Partial<Item>): Item {
 }
 
 describe('toolCardInputPreview', () => {
-  it('falls back to the raw custom tool name without storing it in the classification', () => {
-    const item = makeItem({ toolName: 'SomeCustomTool' });
-    expect(toolCardInputPreview(item, null, null)).toBe('SomeCustomTool');
-  });
-
-  it('falls back to the MCP suffix for prefixed MCP tools', () => {
-    const item = makeItem({ toolName: 'MCP/filesystem.read' });
-    expect(toolCardInputPreview(item, null, null)).toBe('filesystem.read');
-  });
-
-  it('falls back to MCP tool for bare and empty-suffix MCP names', () => {
-    expect(toolCardInputPreview(makeItem({ toolName: 'MCP' }), null, null)).toBe('MCP tool');
-    expect(toolCardInputPreview(makeItem({ toolName: 'MCP/' }), null, null)).toBe('MCP tool');
+  it.each([
+    ['the raw custom tool name', 'SomeCustomTool', 'SomeCustomTool'],
+    ['the MCP suffix for prefixed MCP tools', 'MCP/filesystem.read', 'filesystem.read'],
+    ['MCP tool for a bare MCP name', 'MCP', 'MCP tool'],
+    ['MCP tool for an empty-suffix MCP name', 'MCP/', 'MCP tool'],
+    // Command fallback text stays human-readable after category-label trimming.
+    ['the command name for Bash', 'Bash', 'Bash'],
+  ])('falls back to %s', (_name, toolName, expected) => {
+    expect(toolCardInputPreview(makeItem({ toolName }), null, null)).toBe(expected);
   });
 
   it('preserves leading whitespace in MCP fallback suffixes so they do not become path links', () => {
@@ -44,11 +40,6 @@ describe('toolCardInputPreview', () => {
     const preview = toolCardInputPreview(item, null, null);
     expect(preview).toBe(' /tmp/foo.ts');
     expect(decodeToolCardPreview(preview).path).toBeUndefined();
-  });
-
-  it('keeps command fallback text human-readable after category-label trimming', () => {
-    const item = makeItem({ toolName: 'Bash' });
-    expect(toolCardInputPreview(item, null, null)).toBe('Bash');
   });
 
   describe('MCP body synthesis', () => {
@@ -59,33 +50,15 @@ describe('toolCardInputPreview', () => {
     // summary; otherwise the row would display the raw fallback
     // instead of the spec-specified shape.
 
-    it('composes server.tool(args) from meta.mcp + meta.input', () => {
-      const item = makeItem({
-        toolName: 'MCP/lookup',
-        summary: 'MCP/lookup: query',
-      });
-      const itemMeta = {
-        mcp: { server: 'docs', tool: 'lookup' },
-        input: { q: 'wails' },
-      };
-      expect(toolCardInputPreview(item, null, itemMeta)).toBe('docs.lookup(q="wails")');
-    });
-
-    it('renders multi-arg dicts as a compact key=value, key=value list', () => {
-      const item = makeItem({ toolName: 'MCP/browser_click' });
-      const itemMeta = {
-        mcp: { server: 'playwright', tool: 'browser_click' },
-        input: { selector: '#submit', force: true, retries: 2 },
-      };
-      expect(toolCardInputPreview(item, null, itemMeta)).toBe(
-        'playwright.browser_click(selector="#submit", force=true, retries=2)',
-      );
-    });
-
-    it('renders empty parens when the call took no arguments', () => {
-      const item = makeItem({ toolName: 'MCP/ping' });
-      const itemMeta = { mcp: { server: 'docs', tool: 'ping' }, input: {} };
-      expect(toolCardInputPreview(item, null, itemMeta)).toBe('docs.ping()');
+    it.each([
+      ['composes server.tool(args) from meta.mcp + meta.input', 'docs', 'lookup', 'MCP/lookup: query',
+        { q: 'wails' }, 'docs.lookup(q="wails")'],
+      ['renders multi-arg dicts as a compact key=value, key=value list', 'playwright', 'browser_click', '',
+        { selector: '#submit', force: true, retries: 2 }, 'playwright.browser_click(selector="#submit", force=true, retries=2)'],
+      ['renders empty parens when the call took no arguments', 'docs', 'ping', '', {}, 'docs.ping()'],
+    ])('%s', (_name, server, tool, summary, input, expected) => {
+      const item = makeItem({ toolName: `MCP/${tool}`, summary });
+      expect(toolCardInputPreview(item, null, { mcp: { server, tool }, input })).toBe(expected);
     });
 
     it('drops to the summary fallback when meta.mcp is absent', () => {
@@ -278,64 +251,18 @@ describe('presentToolCardInputPreview', () => {
     });
   });
 
-  it('shows absolute paths fully when lexical normalization escapes the workspace', () => {
-    const item = makeItem({
-      toolName: 'Read',
-      summary: 'Read: /home/me/repo/../outside/secret.txt',
-      meta: JSON.stringify({
-        input: {
-          file_path: '/home/me/repo/../outside/secret.txt',
-        },
-      }),
-    });
-    const result = presentToolCardInputPreview(item, null, JSON.parse(item.meta!), '/home/me/repo');
-    expect(result.text).toBe('/home/me/repo/../outside/secret.txt');
-    expect(result.path?.path).toBe('/home/me/repo/../outside/secret.txt');
-  });
-
-  it('cleans repo-local dot segments before displaying and opening', () => {
-    const item = makeItem({
-      toolName: 'Read',
-      summary: 'Read: /home/me/repo/src/../events.ts',
-      meta: JSON.stringify({
-        input: {
-          file_path: '/home/me/repo/src/../events.ts',
-        },
-      }),
-    });
-    const result = presentToolCardInputPreview(item, null, JSON.parse(item.meta!), '/home/me/repo');
-    expect(result.text).toBe('events.ts');
-    expect(result.path?.path).toBe('events.ts');
-  });
-
-  it('shows relative paths fully when dot segments escape the workspace', () => {
-    const item = makeItem({
-      toolName: 'Read',
-      summary: 'Read: ../outside/secret.txt',
-      meta: JSON.stringify({
-        input: {
-          file_path: '../outside/secret.txt',
-        },
-      }),
-    });
-    const result = presentToolCardInputPreview(item, null, JSON.parse(item.meta!), '/home/me/repo');
-    expect(result.text).toBe('../outside/secret.txt');
-    expect(result.path?.path).toBe('../outside/secret.txt');
-  });
-
-  it('cleans repo-local relative dot segments before displaying and opening', () => {
-    const item = makeItem({
-      toolName: 'Read',
-      summary: 'Read: src/../events.ts',
-      meta: JSON.stringify({
-        input: {
-          file_path: 'src/../events.ts',
-        },
-      }),
-    });
-    const result = presentToolCardInputPreview(item, null, JSON.parse(item.meta!), '/home/me/repo');
-    expect(result.text).toBe('events.ts');
-    expect(result.path?.path).toBe('events.ts');
+  it.each([
+    ['shows absolute paths fully when lexical normalization escapes the workspace',
+      '/home/me/repo/../outside/secret.txt', '/home/me/repo/../outside/secret.txt'],
+    ['cleans repo-local dot segments before displaying and opening', '/home/me/repo/src/../events.ts', 'events.ts'],
+    ['shows relative paths fully when dot segments escape the workspace', '../outside/secret.txt', '../outside/secret.txt'],
+    ['cleans repo-local relative dot segments before displaying and opening', 'src/../events.ts', 'events.ts'],
+  ])('%s', (_name, filePath, expected) => {
+    const meta = { input: { file_path: filePath } };
+    const item = makeItem({ toolName: 'Read', summary: `Read: ${filePath}`, meta: JSON.stringify(meta) });
+    const result = presentToolCardInputPreview(item, null, meta, '/home/me/repo');
+    expect(result.text).toBe(expected);
+    expect(result.path?.path).toBe(expected);
   });
 
   it('strips Windows-style workspacePath + backslash separator', () => {
@@ -364,29 +291,16 @@ describe('presentToolCardInputPreview', () => {
     // dedicated preview branch, the body ends up displaying the raw
     // `select:Foo` query string as if it were a tool name, which
     // looks like a meaningless call to the user.
-    it('renames a select: query into a "Loaded schema: <names>" body', () => {
-      const item = makeItem({ toolName: 'ToolSearch', summary: 'select:TaskCreate' });
-      const itemMeta = { input: { query: 'select:TaskCreate', max_results: 1 } };
-      expect(toolCardInputPreview(item, null, itemMeta)).toBe('Loaded schema: TaskCreate');
-    });
-
-    it('lists multiple comma-separated names in the select: body', () => {
-      const item = makeItem({
-        toolName: 'ToolSearch',
-        summary: 'select:TaskCreate,TaskUpdate,TaskList',
-      });
-      const itemMeta = {
-        input: { query: 'select:TaskCreate,TaskUpdate,TaskList', max_results: 6 },
-      };
-      expect(toolCardInputPreview(item, null, itemMeta)).toBe(
-        'Loaded schema: TaskCreate, TaskUpdate, TaskList',
-      );
-    });
-
-    it('renders a keyword query verbatim', () => {
-      const item = makeItem({ toolName: 'ToolSearch', summary: 'notebook jupyter' });
-      const itemMeta = { input: { query: 'notebook jupyter', max_results: 5 } };
-      expect(toolCardInputPreview(item, null, itemMeta)).toBe('notebook jupyter');
+    it.each([
+      ['renames a select: query into a "Loaded schema: <names>" body',
+        { query: 'select:TaskCreate', max_results: 1 }, 'Loaded schema: TaskCreate'],
+      ['lists multiple comma-separated names in the select: body',
+        { query: 'select:TaskCreate,TaskUpdate,TaskList', max_results: 6 }, 'Loaded schema: TaskCreate, TaskUpdate, TaskList'],
+      ['renders a keyword query verbatim', { query: 'notebook jupyter', max_results: 5 }, 'notebook jupyter'],
+      ['handles select: with no names by returning "Loaded schema"', { query: 'select:' }, 'Loaded schema'],
+    ])('%s', (_name, input, expected) => {
+      const item = makeItem({ toolName: 'ToolSearch', summary: input.query });
+      expect(toolCardInputPreview(item, null, { input })).toBe(expected);
     });
 
     it('falls back to the standard preview path when input.query is missing', () => {
@@ -395,12 +309,6 @@ describe('presentToolCardInputPreview', () => {
       // preview.
       const item = makeItem({ toolName: 'ToolSearch' });
       expect(toolCardInputPreview(item, null, null)).toBe('ToolSearch');
-    });
-
-    it('handles select: with no names by returning "Loaded schema"', () => {
-      const item = makeItem({ toolName: 'ToolSearch', summary: 'select:' });
-      const itemMeta = { input: { query: 'select:' } };
-      expect(toolCardInputPreview(item, null, itemMeta)).toBe('Loaded schema');
     });
   });
 
@@ -428,40 +336,23 @@ describe('presentToolCardInputPreview', () => {
 });
 
 describe('decodeToolCardPreview', () => {
-  it('returns plain text when the input has no path', () => {
-    expect(decodeToolCardPreview('Waiting on agents')).toEqual({
-      text: 'Waiting on agents',
-    });
+  it.each([
+    ['input with no path', 'Waiting on agents'],
+    ['empty input', ''],
+    ['a path that appears mid-string', 'Wrote 3 files (a.ts, b.ts, src/c.ts)'],
+    ['a URL', 'https://example.com/foo.bar'],
+  ])('returns plain text for %s', (_name, text) => {
+    expect(decodeToolCardPreview(text)).toEqual({ text });
   });
 
-  it('returns plain text for empty input', () => {
-    expect(decodeToolCardPreview('')).toEqual({ text: '' });
-  });
-
-  it('extracts a leading path with line + col', () => {
-    const decoded = decodeToolCardPreview('src/lib/foo.ts:12:7 read OK');
-    expect(decoded.text).toBe('src/lib/foo.ts:12:7 read OK');
-    expect(decoded.path).toEqual({ path: 'src/lib/foo.ts', line: 12, col: 7 });
-  });
-
-  it('extracts a leading path with only a line', () => {
-    const decoded = decodeToolCardPreview('src/lib/foo.ts:12');
-    expect(decoded.path).toEqual({ path: 'src/lib/foo.ts', line: 12, col: undefined });
-  });
-
-  it('extracts a bare leading path', () => {
-    const decoded = decodeToolCardPreview('src/lib/foo.ts');
-    expect(decoded.path).toEqual({ path: 'src/lib/foo.ts', line: undefined, col: undefined });
-  });
-
-  it('does not extract paths that appear mid-string', () => {
-    const decoded = decodeToolCardPreview('Wrote 3 files (a.ts, b.ts, src/c.ts)');
-    expect(decoded.path).toBeUndefined();
-  });
-
-  it('does not match URLs as paths', () => {
-    const decoded = decodeToolCardPreview('https://example.com/foo.bar');
-    expect(decoded.path).toBeUndefined();
+  it.each([
+    ['with line + col', 'src/lib/foo.ts:12:7 read OK', 12, 7],
+    ['with only a line', 'src/lib/foo.ts:12', 12, undefined],
+    ['bare', 'src/lib/foo.ts', undefined, undefined],
+  ])('extracts a leading path %s', (_name, text, line, col) => {
+    const decoded = decodeToolCardPreview(text);
+    expect(decoded.text).toBe(text);
+    expect(decoded.path).toEqual({ path: 'src/lib/foo.ts', line, col });
   });
 });
 

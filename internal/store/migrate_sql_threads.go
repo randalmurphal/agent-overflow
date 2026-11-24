@@ -16,7 +16,7 @@ package store
 // place, so the whole table is rebuilt. Every column is preserved verbatim
 // except those two changes; the explicit INSERT/SELECT column lists guard
 // against schema drift. Runs with foreign_keys OFF (see
-// applyRebuildMigration) so DROP TABLE threads does not cascade-delete the
+// applyRebuildMigrationSteps) so DROP TABLE threads does not cascade-delete the
 // many child tables that REFERENCE threads(id) ON DELETE CASCADE. The five
 // threads indexes are dropped with the old table and recreated here; the
 // only triggers in the schema are on items, so none need recreating.
@@ -106,7 +106,7 @@ CREATE INDEX idx_threads_updated     ON threads(updated_at DESC);
 // block is rebuildThreadsV5SQL verbatim with only the two CHECK clauses
 // widened — keep its column list in lockstep with v5.
 //
-// Runs with foreign_keys OFF (see applyRebuildMigration) so DROP TABLE threads
+// Runs with foreign_keys OFF (see applyRebuildMigrationSteps) so DROP TABLE threads
 // does not cascade-delete the child tables that REFERENCE threads(id) ON
 // DELETE CASCADE; the three leaf tables carry no foreign keys but ride the
 // same FK-off window. Every table's indexes are dropped with the old table and
@@ -261,7 +261,7 @@ ALTER TABLE new_thread_mcp_defaults_new RENAME TO new_thread_mcp_defaults;
 // CHECKs on threads and chat_model_profiles to admit the GPT-5.6 catalog's
 // max and ultra tiers. SQLite cannot alter a CHECK in place, so both tables
 // are rebuilt with explicit column lists. Runs with foreign_keys OFF (see
-// applyRebuildMigration) so DROP TABLE threads does not cascade-delete child
+// applyRebuildMigrationSteps) so DROP TABLE threads does not cascade-delete child
 // rows; ids are copied verbatim and foreign_key_check verifies integrity.
 const rebuildCodexReasoningEffortsV19SQL = `
 CREATE TABLE threads_new (

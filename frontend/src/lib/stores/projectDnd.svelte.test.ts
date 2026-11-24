@@ -78,18 +78,14 @@ describe('projectDnd store', () => {
       expect(getDropPosition()).toBeNull();
     });
 
-    it("classifies a cursor in the top half as 'before'", () => {
+    it.each([
+      ['top', 'before', 5],
+      ['bottom', 'after', 15],
+    ] as const)("classifies a cursor in the %s half as '%s'", (_half, position, clientY) => {
       beginProjectDrag('p-a', makeDragEvent());
-      updateDropTarget('p-b', makeDragEvent({ clientY: 5 }), fakeRowEl(0, 20));
+      updateDropTarget('p-b', makeDragEvent({ clientY }), fakeRowEl(0, 20));
       expect(getDropTargetProjectId()).toBe('p-b');
-      expect(getDropPosition()).toBe('before');
-    });
-
-    it("classifies a cursor in the bottom half as 'after'", () => {
-      beginProjectDrag('p-a', makeDragEvent());
-      updateDropTarget('p-b', makeDragEvent({ clientY: 15 }), fakeRowEl(0, 20));
-      expect(getDropTargetProjectId()).toBe('p-b');
-      expect(getDropPosition()).toBe('after');
+      expect(getDropPosition()).toBe(position);
     });
 
     it('is a no-op when no drag is in progress', () => {
@@ -113,30 +109,16 @@ describe('projectDnd store', () => {
       expect(computeReorderedIds(['a', 'b', 'c'])).toBeNull();
     });
 
-    it("returns null when dropping 'before' the immediately-following sibling (no-op)", () => {
+    it.each<[string, string, string, 'before' | 'after', string[] | null]>([
       // Dragging A, dropping before B = stays at index 0.
-      setupDrag('a', 'b', 'before');
-      expect(computeReorderedIds(['a', 'b', 'c'])).toBeNull();
-    });
-
-    it("returns null when dropping 'after' the immediately-preceding sibling (no-op)", () => {
-      setupDrag('b', 'a', 'after');
-      expect(computeReorderedIds(['a', 'b', 'c'])).toBeNull();
-    });
-
-    it("places the dragged id 'before' a non-adjacent target", () => {
-      setupDrag('c', 'a', 'before');
-      expect(computeReorderedIds(['a', 'b', 'c'])).toEqual(['c', 'a', 'b']);
-    });
-
-    it("places the dragged id 'after' a non-adjacent target", () => {
-      setupDrag('a', 'c', 'after');
-      expect(computeReorderedIds(['a', 'b', 'c'])).toEqual(['b', 'c', 'a']);
-    });
-
-    it('returns null when the target id is not in currentOrder', () => {
-      setupDrag('a', 'ghost', 'before');
-      expect(computeReorderedIds(['a', 'b', 'c'])).toBeNull();
+      ["returns null when dropping 'before' the immediately-following sibling", 'a', 'b', 'before', null],
+      ["returns null when dropping 'after' the immediately-preceding sibling", 'b', 'a', 'after', null],
+      ["places the dragged id 'before' a non-adjacent target", 'c', 'a', 'before', ['c', 'a', 'b']],
+      ["places the dragged id 'after' a non-adjacent target", 'a', 'c', 'after', ['b', 'c', 'a']],
+      ['returns null when the target id is not in currentOrder', 'a', 'ghost', 'before', null],
+    ])('%s', (_name, draggingId, targetId, position, order) => {
+      setupDrag(draggingId, targetId, position);
+      expect(computeReorderedIds(['a', 'b', 'c'])).toEqual(order);
     });
   });
 

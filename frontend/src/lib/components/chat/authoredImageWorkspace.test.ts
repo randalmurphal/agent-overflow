@@ -19,8 +19,7 @@ import { makePanelContext } from '../../stores/panelContext.svelte';
 import { resetProposedPlanCacheForTests } from '../../stores/proposedPlans.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Item } from '../../types/models';
-import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../utils/imageTiers';
-import { __resetMediaBlobCacheForTest } from '../../utils/mediaBlobCache';
+import { __reportImageBoxForTest } from '../../utils/imageTiers';
 
 const THREAD_WORKSPACE = '/thread-now';
 const AUTHORED_WORKSPACE = '/written-in';
@@ -36,8 +35,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetProposedPlanCacheForTests();
-  __resetImageTiersForTest();
-  __resetMediaBlobCacheForTest();
 });
 
 function payload(data: string): void {

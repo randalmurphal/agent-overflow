@@ -14,9 +14,8 @@ import {
   installCompanionPanes,
   isCompanionOpen,
   openCompanion,
-  resetCompanionPanesForTest,
 } from './companionPanes.svelte';
-import { installCompanionStash, resetCompanionStashForTest } from './companionStash';
+import { installCompanionStash } from './companionStash';
 import { REVEAL_PANE_EVENT } from './eventNames';
 import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import {
@@ -26,13 +25,12 @@ import {
   moveAssistantPanes,
   openThreadInNewPane,
   openThreadInPane,
-  resetPanesForTest,
 } from './panes.svelte';
 import { getThreadById, removeThread, replaceAllThreads } from './threads.svelte';
 import { applyThreadUpdated, reconcileThreadRows } from './eventsThreadRows';
 import type { Thread } from '../types/models';
 import { installPaneMocks, makeThread } from '../../test/helpers/chat';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
 const SOURCE = makeThread({ id: 'source', title: 'Source' });
 const OTHER = makeThread({ id: 'other', title: 'Other' });
@@ -52,9 +50,6 @@ async function source(): Promise<void> {
 }
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetPanesForTest();
-  resetCompanionPanesForTest();
   resetPaneLayoutForTest();
   installCompanionPanes();
   installCompanionStash();
@@ -69,11 +64,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetCompanionStashForTest();
-  resetCompanionPanesForTest();
-  resetPanesForTest();
   resetPaneLayoutForTest();
-  resetBindingMocks();
   replaceAllThreads([]);
 });
 

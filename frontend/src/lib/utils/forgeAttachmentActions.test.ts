@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openForgeAttachment } from './forgeAttachmentActions';
 import { DOWNLOAD_URL_LIFETIME_MS } from './blobDownload';
 import { buildForgeAttachmentHref, parseForgeAttachmentHref } from './forgeAttachments';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import type { PRRef } from './prReference';
 
 const nativeShell = vi.hoisted(() => ({ value: false }));
@@ -27,7 +27,8 @@ vi.mock('../transport/scopes', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../transport/scopes')>()),
   hasScope: () => hostScope.value,
 }));
-vi.mock('../transport/backends', () => ({
+vi.mock('../transport/backends', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/backends')>()),
   withBackendTarget: <T>(_backend: string, run: () => T): T => run(),
 }));
 vi.mock('../stores/attachedBackends.svelte', async (importOriginal) => ({
@@ -92,7 +93,6 @@ describe('activating a forge attachment', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
-    resetBindingMocks();
     document.body.innerHTML = '';
   });
 

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   applyCompactingState,
   compactingRevision,
@@ -9,9 +9,6 @@ import {
 } from './compactingState.svelte';
 
 describe('compactingState', () => {
-  beforeEach(() => {
-    resetForTest();
-  });
 
   it('starts not-compacting for every thread', () => {
     expect(isThreadCompacting('t1')).toBe(false);

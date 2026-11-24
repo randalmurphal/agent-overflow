@@ -711,12 +711,12 @@ func (m *Manager) probeProviderAccountAtHome(ctx context.Context, providerName, 
 	case string(provider.Claude):
 		return claude.ProbeAccount(ctx, m.claudeProbeConfig(
 			binary,
-			map[string]string{"CLAUDE_CONFIG_DIR": home},
+			map[provider.ReservedEnv]string{provider.ClaudeConfigDirEnv: home},
 		))
 	case string(provider.Codex):
 		return codex.ProbeAccount(ctx, m.codexProbeConfig(
 			binary,
-			map[string]string{"CODEX_HOME": home},
+			map[provider.ReservedEnv]string{provider.CodexHomeEnv: home},
 		))
 	case string(provider.Agy):
 		isolated, err := agy.IsolatedHome(home)

@@ -9,7 +9,7 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PanePromoteButton from './PanePromoteButton.svelte';
 import PaneTitleHandle from './PaneTitleHandle.svelte';
-import { focusPane, getFocusedPaneId, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { focusPane, getFocusedPaneId, registerPaneForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { getPromotedPaneId, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
@@ -18,7 +18,6 @@ import { makeThread } from '../../../test/helpers/chat';
 
 describe('pane promote controls', () => {
   beforeEach(() => {
-    resetPanesForTest();
     resetPaneLayoutForTest();
     registerPaneForTest('a', createThreadPane({ paneId: 'a' }));
     registerPaneForTest('b', createThreadPane({ paneId: 'b' }));
@@ -34,7 +33,6 @@ describe('pane promote controls', () => {
     setCompactLayoutForTest(false);
     resetKeybindingsStore();
     resetPaneLayoutForTest();
-    resetPanesForTest();
   });
 
   it('the button focuses and promotes its pane, then restores it, naming the shortcut', async () => {

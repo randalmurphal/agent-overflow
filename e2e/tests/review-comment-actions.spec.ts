@@ -12,6 +12,7 @@ import { expect, test } from './fixtures.js';
 import { expandReviewSection, expectEveryForgeCallHandled, forgeRouteCalls, openPullRequestReview, refuseForgeRoute } from './forge-helpers.js';
 import { launchPullsHarness } from './pulls-page-flow.js';
 import { centre, closeAll, line, ONLY_ID, openEditor, openPinned, openReply, REPLY_ID, ROOT_ID, ROUTES, seedPull, thread } from './review-comment-actions-flow.js';
+import { screenshot } from '../src/screenshot.js';
 
 for (const forge of ['github', 'gitlab'] as const) {
   const routes = ROUTES[forge];
@@ -56,7 +57,7 @@ for (const forge of ['github', 'gitlab'] as const) {
       // A comment on the PR itself, from the end of the Conversation feed.
       const conversation = await expandReviewSection(page, 'review-pr-conversation');
       await conversation.getByTestId('review-pr-comment-open').scrollIntoViewIfNeeded();
-      await conversation.screenshot({ path: testInfo.outputPath(`${forge}-conversation-comment-field.png`) });
+      await screenshot(conversation, { path: testInfo.outputPath(`${forge}-conversation-comment-field.png`) });
       await conversation.getByTestId('review-pr-comment-open').click();
       const field = conversation.getByTestId('review-pr-comment-composer');
       await field.locator('textarea').fill('Ready once CI is green.');
@@ -89,7 +90,7 @@ for (const forge of ['github', 'gitlab'] as const) {
       const held = thread(review, 'Why start at one?').getByTestId('review-held-replies');
       await expect(held).toContainText('Held until the review.');
       await centre(thread(review, 'Why start at one?'));
-      await thread(review, 'Why start at one?').screenshot({ path: testInfo.outputPath(`${forge}-held-reply.png`) });
+      await screenshot(thread(review, 'Why start at one?'), { path: testInfo.outputPath(`${forge}-held-reply.png`) });
       await expect(strip).toContainText('2 drafts');
       expect(await forgeRouteCalls(harness, routes.reply)).toHaveLength(0);
 
@@ -130,7 +131,7 @@ for (const forge of ['github', 'gitlab'] as const) {
       await expect(mine.locator('[data-testid="review-comment-actions"] > span')).toHaveCSS('opacity', '1');
       // A reply's hover reveals only its own actions, not the first comment's.
       if (forge === 'github') await expect(card.locator('[data-first-comment] [data-testid="review-comment-actions"] > span')).toHaveCSS('opacity', '0');
-      await card.screenshot({ path: testInfo.outputPath(`${forge}-comment-hover-actions.png`) });
+      await screenshot(card, { path: testInfo.outputPath(`${forge}-comment-hover-actions.png`) });
       await mine.getByTestId('review-comment-edit').click();
       // The open edit holds the text in its field, so find it by the card.
       const edit = card.getByTestId('review-comment-edit-editor');
@@ -151,7 +152,7 @@ for (const forge of ['github', 'gitlab'] as const) {
       await edited.hover();
       await edited.getByTestId('review-comment-delete').click();
       await expect(edited.getByTestId('review-comment-confirm')).toContainText('Delete?');
-      await card.screenshot({ path: testInfo.outputPath(`${forge}-delete-confirm.png`) });
+      await screenshot(card, { path: testInfo.outputPath(`${forge}-delete-confirm.png`) });
       await edited.getByTestId('review-comment-confirm-yes').click();
       await expect(card.getByTestId('review-thread-comment').filter({ hasText: 'Counting starts at one.' })).toHaveCount(0, { timeout: 30_000 });
       await expect(card).toContainText('Why start at one?');
@@ -163,7 +164,7 @@ for (const forge of ['github', 'gitlab'] as const) {
       await expect(only.locator('[data-first-comment] [data-testid="review-comment-actions"] > span')).toHaveCSS('opacity', '1');
       await only.getByTestId('review-comment-delete').first().click();
       await expect(only.getByTestId('review-comment-confirm')).toBeVisible();
-      await only.screenshot({ path: testInfo.outputPath(`${forge}-first-comment-delete-confirm.png`) });
+      await screenshot(only, { path: testInfo.outputPath(`${forge}-first-comment-delete-confirm.png`) });
       await only.getByTestId('review-comment-confirm-yes').click();
       await expect(thread(review, 'Only my note.')).toHaveCount(0, { timeout: 30_000 });
       const deletes = await forgeRouteCalls(harness, routes.delete);
@@ -194,7 +195,7 @@ for (const forge of ['github', 'gitlab'] as const) {
       expect(editorTop).toBeGreaterThan((await end.boundingBox())!.y);
 
       await editor.locator('textarea').fill('These three belong together.');
-      await review.screenshot({ path: testInfo.outputPath(`${forge}-range-editor.png`) });
+      await screenshot(review, { path: testInfo.outputPath(`${forge}-range-editor.png`) });
       await editor.getByTestId('review-draft-editor-now').click();
       const posted = thread(review, 'These three belong together.');
       // The span comes back from the forge as the thread's start line.

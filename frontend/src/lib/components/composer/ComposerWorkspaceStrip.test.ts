@@ -5,10 +5,9 @@ import { tick } from 'svelte';
 
 import ComposerWorkspaceStrip from './ComposerWorkspaceStrip.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   enterCreateBranchMode,
-  resetForTest as resetWorktreeIntent,
   setThreadEnvMode,
   worktreeIntentForThread,
 } from '../../stores/worktreeIntent.svelte';
@@ -20,8 +19,6 @@ afterEach(() => setCompactLayoutForTest(false));
 
 describe('<ComposerWorkspaceStrip>', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     setBindingMock('GitListBranches', async () => []);
@@ -32,9 +29,17 @@ describe('<ComposerWorkspaceStrip>', () => {
     // (chat/ChatHeaderProject.svelte), not a strip control.
     const pane = await buildPane(makeThread());
     const { getByTestId, queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
-    expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
-    expect(getByTestId('branch-picker-trigger')).toBeInTheDocument();
-    expect(getByTestId('env-picker-trigger')).toBeInTheDocument();
+    const strip = getByTestId('composer-workspace-strip');
+    // Branch, then the worktree: the same order as the compact header's
+    // facts line, so the two surfaces read alike. A single-backend page
+    // mounts no machine picker.
+    const triggers = Array.from(
+      strip.querySelectorAll<HTMLElement>('[data-testid$="-picker-trigger"]'),
+    );
+    expect(triggers.map((el) => el.getAttribute('data-testid'))).toEqual([
+      'branch-picker-trigger',
+      'env-picker-trigger',
+    ]);
     expect(queryByTestId('chat-header-project')).toBeNull();
   });
 
@@ -60,22 +65,6 @@ describe('<ComposerWorkspaceStrip>', () => {
     expect(queryByTestId('usage-chip-trigger')).toBeNull();
   });
 
-  it('renders branch then env pickers in DOM order', async () => {
-    // Branch, then the worktree — the same order as the compact header's
-    // facts line, so the two surfaces read alike. A revert or accidental
-    // re-order would otherwise sail past the existence-only assertion above.
-    const pane = await buildPane(makeThread());
-    const { getByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
-    const strip = getByTestId('composer-workspace-strip');
-    const triggers = Array.from(
-      strip.querySelectorAll<HTMLElement>('[data-testid$="-picker-trigger"]'),
-    );
-    expect(triggers.map((el) => el.getAttribute('data-testid'))).toEqual([
-      'branch-picker-trigger',
-      'env-picker-trigger',
-    ]);
-  });
-
   it('offers no machine, branch or worktree picker on an ask copy', async () => {
     // An ask's copy (Thread.askCopy) is watched and stopped, never steered:
     // a checkout or a move would act on the workspace it shares.
@@ -92,12 +81,6 @@ describe('<ComposerWorkspaceStrip>', () => {
     } finally {
       resetStagedBackends();
     }
-  });
-
-  it('mounts no machine picker on a single-backend page', async () => {
-    const pane = await buildPane(makeThread());
-    const { queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
-    expect(queryByTestId('machine-picker-trigger')).toBeNull();
   });
 
   it('leads the strip with the machine picker once a second backend is attached', async () => {

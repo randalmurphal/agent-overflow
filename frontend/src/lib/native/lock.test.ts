@@ -29,7 +29,7 @@ vi.mock('./plugins', () => ({
   }),
 }));
 
-import { DEFAULT_LOCK_WINDOW_MS, installAppLock, isAppLocked, shouldLock } from './lock';
+import { installAppLock, isAppLocked } from './lock';
 
 function fire(event: 'pause' | 'resume'): void {
   const handler = plugins.listeners.get(event);
@@ -43,19 +43,6 @@ beforeEach(() => {
   plugins.authenticate.mockResolvedValue(undefined);
   plugins.nativeShell = true;
   vi.useRealTimers();
-});
-
-describe('shouldLock', () => {
-  it('locks a cold start, a zero window, and a clock that moved backwards', () => {
-    expect(shouldLock(null, 1000, DEFAULT_LOCK_WINDOW_MS)).toBe(true);
-    expect(shouldLock(900, 1000, 0)).toBe(true);
-    expect(shouldLock(2000, 1000, DEFAULT_LOCK_WINDOW_MS)).toBe(true);
-  });
-
-  it('lets a short trip back into the app pass', () => {
-    expect(shouldLock(1000, 6000, DEFAULT_LOCK_WINDOW_MS)).toBe(false);
-    expect(shouldLock(1000, 1000 + DEFAULT_LOCK_WINDOW_MS, DEFAULT_LOCK_WINDOW_MS)).toBe(true);
-  });
 });
 
 describe('installAppLock', () => {

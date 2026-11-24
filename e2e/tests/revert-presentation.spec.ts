@@ -7,9 +7,10 @@
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 
-function waitingScenario(provider: 'claude' | 'codex', startupDelayMs = 0) {
+/** With `startupGate`, the session the replacement starts holds before its first frame until the gate is advanced. */
+function waitingScenario(provider: 'claude' | 'codex', startupGate?: string) {
   return {
-    version: 1, name: `revert-presentation-${provider}`, provider, startupDelayMs,
+    version: 1, name: `revert-presentation-${provider}`, provider, ...(startupGate ? { startupGate } : {}),
     turns: [{ steps: [
       ...(provider === 'codex' ? [{ emit: { lines: [JSON.stringify({
         jsonrpc: '2.0', method: 'turn/started',
@@ -46,7 +47,7 @@ for (const provider of ['claude', 'codex'] as const) {
       });
       server.onMessage(message => socket.send(message));
     });
-    await harness.rpc('HarnessSetScenario' , { scenario: waitingScenario(provider, 2000) });
+    await harness.rpc('HarnessSetScenario' , { scenario: waitingScenario(provider, 'held-start') });
     const threadId = await seed(harness, provider);
     await harness.open(page);
     await page.getByTestId('thread-row-title').filter({ hasText: `Revert ${provider}` }).click();
@@ -77,11 +78,16 @@ for (const provider of ['claude', 'codex'] as const) {
       requestAnimationFrame(sample);
     });
     release!();
+    // The session the replacement starts holds before its first frame, so
+    // the sampled frames span a start still under way; then it starts.
+    const held = await harness.waitForEvent<{ mockId: string; report: { kind: string; detail?: string } }>(
+      'harness:mock', (ev) => ev.report.kind === 'waiting_signal' && ev.report.detail === 'held-start');
+    await harness.rpc('HarnessMockCommand', held.mockId, { type: 'advance', name: 'held-start' });
     await expect(page.getByText('Replacement question', { exact: true })).toBeVisible();
     await expect(editor).toHaveCount(0);
     await expect(page.getByText('Later answer', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('Message Input')).toHaveValue('Unsent work stays here');
-    const items = await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', threadId, true);
+    const items = await harness.items<{ kind: string; summary: string }>(threadId, true);
     expect(items.filter(item => item.kind === 'user_text').map(item => item.summary)).toEqual(['Replacement question']);
     const frames = await page.evaluate(async () => {
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
@@ -140,7 +146,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
     await expect(page.getByLabel('Message Input')).toHaveValue('Unsent follow-up');
     expect(replacementCalls).toBe(1);
-    const rows = await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', threadId, true);
+    const rows = await harness.items<{ kind: string; summary: string }>(threadId, true);
     expect(rows.filter(row => row.kind === 'user_text').map(row => row.summary)).toEqual(['Replacement after reconnect']);
   });
 
@@ -176,7 +182,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(page.getByTestId('user-message-editor').getByLabel('Message Input')).toHaveValue('Keep this edit');
     await expect(page.getByText('Later answer', { exact: true })).toBeVisible();
     expect(resendCalls).toBe(0);
-    const rows = await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', threadId, true);
+    const rows = await harness.items<{ kind: string; summary: string }>(threadId, true);
     expect(rows.filter(row => row.kind === 'user_text').map(row => row.summary)).toEqual(['Old question', 'Later question']);
   });
 }
@@ -200,7 +206,7 @@ test('Codex startup failure after the cut recovers the edit with composer WIP', 
   await expect(page.getByTestId('user-message-editor')).toHaveCount(0);
   await expect(page.getByLabel('Message Input')).toHaveValue('Recover this replacement\n\nExisting draft');
   await expect.poll(async () => (await harness.rpc<{ content: string }>('GetDraft', threadId)).content).toBe('Recover this replacement\n\nExisting draft');
-  const rows = await harness.rpc<Array<{ kind: string }>>('ListItems', threadId, true);
+  const rows = await harness.items<{ kind: string }>(threadId, true);
   expect(rows.filter(row => row.kind === 'user_text')).toEqual([]);
   await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
 });

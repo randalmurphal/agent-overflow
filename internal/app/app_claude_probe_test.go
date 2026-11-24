@@ -79,7 +79,7 @@ func TestProbeClaudeAccountReturnsInfo(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	info, err := app.ProbeClaudeAccount()
+	info, err := app.providerDiscoveryService().ProbeClaudeAccount()
 	if err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestProbeClaudeAccountCachesByBinary(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	first, err := app.ProbeClaudeAccount()
+	first, err := app.providerDiscoveryService().ProbeClaudeAccount()
 	if err != nil {
 		t.Fatalf("first probe: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestProbeClaudeAccountCachesByBinary(t *testing.T) {
 	)
 
 	// Second call hits the cache, not the binary.
-	second, err := app.ProbeClaudeAccount()
+	second, err := app.providerDiscoveryService().ProbeClaudeAccount()
 	if err != nil {
 		t.Fatalf("second probe: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestProbeClaudeAccountSurfacesSpawnErrors(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	_, err := app.ProbeClaudeAccount()
+	_, err := app.providerDiscoveryService().ProbeClaudeAccount()
 	if err == nil {
 		t.Fatal("expected error on missing binary")
 	}
@@ -168,7 +168,7 @@ func TestRecheckClaudeAccountBypassesCachedZeroValue(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	first, err := app.ProbeClaudeAccount()
+	first, err := app.providerDiscoveryService().ProbeClaudeAccount()
 	if err != nil {
 		t.Fatalf("first probe: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestProbeClaudeAccountEmitsAccountOnMissOnly(t *testing.T) {
 	}
 
 	// First call — cache miss, must emit.
-	if _, err := app.ProbeClaudeAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("probe: %v", err)
 	}
 	if len(events) != 1 {
@@ -239,7 +239,7 @@ func TestProbeClaudeAccountEmitsAccountOnMissOnly(t *testing.T) {
 	}
 
 	// Second call — cache hit, must NOT emit (frontend already has it).
-	if _, err := app.ProbeClaudeAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("second probe: %v", err)
 	}
 	if len(events) != 1 {
@@ -295,7 +295,7 @@ func TestClaudeProbeDoesNotClaimLoggedOutWhileACredentialExists(t *testing.T) {
 	)
 	banners := claudeUnauthBannerCount(t, app)
 
-	if _, err := app.ProbeClaudeAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 	if *banners != 0 {
@@ -305,7 +305,7 @@ func TestClaudeProbeDoesNotClaimLoggedOutWhileACredentialExists(t *testing.T) {
 	// The cache-hit path emits independently of the miss path, so a second
 	// call has to stay just as quiet — otherwise the banner returns for the
 	// whole cache lifetime after a single switch.
-	if _, err := app.ProbeClaudeAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount (cached): %v", err)
 	}
 	if *banners != 0 {
@@ -335,7 +335,7 @@ func TestClaudeProbeStillClaimsLoggedOutOnTheSignOutHusk(t *testing.T) {
 	// selected account with sign-out bytes (incident 2026-08-03). The banner
 	// is raised before that refusal, which is the point — the user gets the
 	// one instruction that repairs this state rather than only an error.
-	_, err := app.ProbeClaudeAccount()
+	_, err := app.providerDiscoveryService().ProbeClaudeAccount()
 	if err == nil {
 		t.Fatal("ProbeClaudeAccount() adopted the provider's sign-out husk")
 	}
@@ -351,7 +351,7 @@ func TestClaudeProbeStillClaimsLoggedOutWithNoCredentialAtAll(t *testing.T) {
 	app := newClaudeProbeIdentityApp(t, claudeProbeShapeAfterASwitch)
 	banners := claudeUnauthBannerCount(t, app)
 
-	if _, err := app.ProbeClaudeAccount(); err != nil {
+	if _, err := app.providerDiscoveryService().ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 	if *banners == 0 {

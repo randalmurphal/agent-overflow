@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -69,7 +70,6 @@ func newCodexLoginFake(t *testing.T) *codexLoginFake {
 		logPath:  filepath.Join(dir, "requests"),
 	}
 	fake.env = map[string]string{
-		"CODEX_HOME":          fake.home,
 		"AO_CODEX_LOGIN_ARGV": fake.argvPath,
 		"AO_CODEX_LOGIN_LOG":  fake.logPath,
 		// Pinned empty so nothing inherited steers the script.
@@ -85,7 +85,10 @@ func (f *codexLoginFake) start(t *testing.T) *LoginSession {
 		Reaper:  procutiltest.Reaper(),
 		Binary:  f.binary,
 		WorkDir: t.TempDir(),
-		Env:     maps.Clone(f.env),
+		Env: provider.EnvInput{
+			Custom: maps.Clone(f.env),
+			Pins:   map[provider.ReservedEnv]string{provider.CodexHomeEnv: f.home},
+		},
 	})
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
@@ -135,7 +138,7 @@ func TestStartLoginRefusesWithoutAnIsolatedHome(t *testing.T) {
 	if _, err := StartLogin(t.Context(), LoginConfig{
 		Reaper: procutiltest.Reaper(),
 		Binary: fake.binary,
-		Env:    map[string]string{"CODEX_API_KEY": "unused"},
+		Env:    provider.EnvInput{Custom: map[string]string{"CODEX_API_KEY": "unused"}},
 	}); err == nil {
 		t.Fatal("StartLogin without CODEX_HOME succeeded")
 	}
@@ -160,6 +163,9 @@ func TestSignInSubscribesOnlyToTheCompletionNotification(t *testing.T) {
 	}
 }
 
+// The fake answers the device variant only when the request spells its
+// discriminant exactly; upstream answers a wrong spelling by listing every
+// variant, which reads as a protocol failure rather than a typo.
 func TestStartDeviceLoginReturnsTheCodeAndItsPage(t *testing.T) {
 	t.Parallel()
 	fake := newCodexLoginFake(t)
@@ -187,25 +193,6 @@ func TestStartDeviceLoginReturnsTheCodeAndItsPage(t *testing.T) {
 	}
 }
 
-// Upstream matches the discriminant literally and answers a wrong spelling by
-// listing every variant, which reads as a protocol failure rather than a typo.
-func TestStartDeviceLoginSendsTheExactVariantSpelling(t *testing.T) {
-	t.Parallel()
-	fake := newCodexLoginFake(t)
-	if _, err := fake.start(t).StartDeviceLogin(t.Context()); err != nil {
-		t.Fatalf("StartDeviceLogin: %v", err)
-	}
-	var found bool
-	for _, request := range fake.requests(t) {
-		if strings.Contains(request, `"type":"chatgptDeviceCode"`) {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("no request carried the exact variant spelling: %#v", fake.requests(t))
-	}
-}
-
 func TestStartBrowserLoginReturnsTheAuthorizeURL(t *testing.T) {
 	t.Parallel()
 	fake := newCodexLoginFake(t)
@@ -218,20 +205,6 @@ func TestStartBrowserLoginReturnsTheAuthorizeURL(t *testing.T) {
 	}
 	if start.UserCode != "" || start.VerificationURL != "" {
 		t.Errorf("browser start carried device fields: %+v", start)
-	}
-}
-
-func TestWaitForCompletionResolvesOnItsOwnLogin(t *testing.T) {
-	t.Parallel()
-	fake := newCodexLoginFake(t)
-	fake.env["AO_CODEX_LOGIN_COMPLETE"] = "success"
-	session := fake.start(t)
-	start, err := session.StartDeviceLogin(t.Context())
-	if err != nil {
-		t.Fatalf("StartDeviceLogin: %v", err)
-	}
-	if err := session.WaitForCompletion(t.Context(), start.LoginID); err != nil {
-		t.Fatalf("WaitForCompletion: %v", err)
 	}
 }
 

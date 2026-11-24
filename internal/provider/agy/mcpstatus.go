@@ -43,7 +43,7 @@ type MCPStatusFetcher struct {
 	// Home decides the canonical home, whose MCP configuration Agent
 	// Overflow writes. It runs inside the fetch's time limit.
 	Home    HomeSource
-	Env     map[string]string
+	Env     provider.EnvInput
 	Cwd     string
 	Timeout time.Duration
 }
@@ -79,7 +79,7 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	if strings.TrimSpace(f.Cwd) != "" {
 		cmd.Dir = f.Cwd
 	}
-	cmd.Env = provider.BuildEnvironment(launch.Env, launch.Unset...)
+	cmd.Env = provider.BuildEnvironment(launch.Env)
 	cmd.Cancel = func() error {
 		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 			return cmd.Process.Kill()

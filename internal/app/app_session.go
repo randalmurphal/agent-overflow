@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"slices"
 	"time"
 
@@ -36,10 +35,17 @@ import (
 
 const codexAccountReadTimeout = 8 * time.Second
 
-// startSessionTakingLock is StartSession's body with a caller-supplied context.
-// The bound method cannot take one — Wails generates the TS wrapper from its
-// signature — so internal callers that DO have a cancellable context (the
-// workflow runner's start path) come through here instead.
+// startSessionTakingLock brings the thread's provider subprocess up for a
+// caller that does not hold the per-thread action lock: the workflow
+// runner's start and the harness's HarnessStartSession. Sends start a
+// session lazily through runRegisteredSessionStart instead.
+//
+// It takes the action lock because an unserialized start racing a revert
+// can read the pre-revert SessionRef, clear the stopped-thread gate
+// mid-revert (MarkThreadActive), and register a session bound to the old
+// provider thread after the revert repointed the row. Callers that already
+// hold the lock (sends, deferred config restarts) go through a.startSession
+// / runRegisteredSessionStart directly.
 //
 // ctx bounds the two waits that have performed no side effects yet: the
 // per-thread action lock and the join on somebody else's in-flight start.
@@ -528,31 +534,22 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 // refuses to boot a second app instance from inside a session), and the
 // PATH entry that makes `agent-overflow` resolve to this executable (D30).
 //
-// Precedence is provider config < user custom env < boot-mode overrides < AO
-// session marker. The user's environment outranks the provider config because
-// it is a deliberate override of AO's defaults; it sits below the last two
-// because those are contracts, not preferences. Every AO_* name is reserved at
-// the settings boundary (settings.providerenv.go), so a user value that would
-// have been shadowed here is refused on save instead of vanishing at spawn.
-//
-// PATH is the one entry that merges rather than wins: whatever a provider
-// config or boot-mode override put there is kept, with the CLI's directory in
-// front. A session that can reach the command but lost its own PATH would be a
-// worse trade than the other way round.
-func (a *App) sessionProcessEnv(
-	providerName string,
-	env map[string]string,
-) map[string]string {
-	custom := a.providerCustomEnv(providerName)
-	merged := make(map[string]string)
-	maps.Copy(merged, env)
-	maps.Copy(merged, custom)
-	maps.Copy(merged, a.providerExtraEnv)
-	merged[aocli.EnvInSession] = "1"
-	if a.cliBinDir != "" {
-		prependCLIBinDir(merged, a.cliBinDir)
+// The boot-mode overrides and the marker are pins, over the user's custom
+// environment: they are contracts, not preferences. Every AO_* name is
+// reserved at the settings boundary, so a user value that would have been
+// shadowed is refused on save instead of vanishing at spawn. The CLI's
+// directory goes in front of the inherited PATH.
+func (a *App) sessionProcessEnv(providerName string) provider.EnvInput {
+	pins := provider.AOPins(a.providerExtraEnv)
+	if pins == nil {
+		pins = make(map[provider.ReservedEnv]string, 1)
 	}
-	return merged
+	pins[provider.AOEnv(aocli.EnvInSession)] = "1"
+	return provider.EnvInput{
+		Custom:      a.providerCustomEnv(providerName),
+		Pins:        pins,
+		PathPrepend: a.cliBinDir,
+	}
 }
 
 // spawnProviderSession builds the provider-specific Config via
@@ -602,7 +599,7 @@ func (a *App) spawnProviderSession(
 		cfg.SessionStartForget = mem.Forget
 		cfg.NativeMemoryOff = mem.OwnMemoryOff
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
-		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env)
+		cfg.Env = a.sessionProcessEnv(t.Provider)
 		if mcpServers[remoteMCPName] != nil {
 			cfg.Env = withRemoteMCPClaudeEnv(cfg.Env)
 		}
@@ -652,7 +649,7 @@ func (a *App) spawnProviderSession(
 	case string(provider.Codex):
 		cfg := codex.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env)
+		cfg.Env = a.sessionProcessEnv(t.Provider)
 		cfg.EventLogger = a.logger
 		cfg.Reaper = a.groupReaper("codex session")
 		cfg.MCPServers = mcpServers
@@ -822,7 +819,7 @@ func (a *App) spawnProviderSession(
 
 	case string(provider.Agy):
 		binary := a.providerBinaryPath(t.Provider)
-		env := a.sessionProcessEnv(t.Provider, nil)
+		env := a.sessionProcessEnv(t.Provider)
 		conn, releaseConn, poolKey, err := a.acquireAgyConn(
 			a.lifeCtx(),
 			threadID,
@@ -891,10 +888,10 @@ func (a *App) claudeTUISessionConfig(
 	cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
 	cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
 	cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)
-	// claudetui's Config carries a whole environment rather than an
-	// override map, so the shared rule is applied here instead of inside
-	// the provider package. Skipping this branch would leave one provider
-	// silently without the boot-mode overrides and the ao credential.
+	// claudetui builds its child environment itself (buildEnv) rather than
+	// through Spawn, from the same sessionProcessEnv input every provider
+	// gets. Skipping this branch would leave one provider silently without
+	// the boot-mode values and the ao credential.
 	//
 	// The TUI shares Claude's custom environment (one binary, one backend),
 	// with one variable it cannot take through the process env:
@@ -905,14 +902,12 @@ func (a *App) claudeTUISessionConfig(
 	// would silently run take-control sessions against api.anthropic.com
 	// while every other Claude surface used the user's endpoint.
 	//
-	// The command timeout ceiling is applied to the override map here,
-	// before the host environment is merged under it, so its precedence
-	// matches the headless spawn: custom env over the setting over an
-	// inherited value.
-	cfg.Env = provider.BuildEnvironment(claude.WithCommandTimeoutEnv(
-		a.sessionProcessEnv(string(provider.ClaudeTUI), nil),
+	// The command timeout ceiling is a default, as on the headless spawn:
+	// custom env over the setting over an inherited value.
+	cfg.Env = claude.WithCommandTimeoutEnv(
+		a.sessionProcessEnv(string(provider.ClaudeTUI)),
 		opts.ClaudeMaxCommandTimeoutHours,
-	))
+	)
 	cfg.AdditionalDirs = a.claudeAdditionalDirs()
 	cfg.AccessDirs = mem.Dirs
 	cfg.MCPServers, cfg.AllowedTools = claudeTUIMCPServers(mcpServers)
@@ -990,9 +985,24 @@ type SendMessageOptions struct {
 	// older than the field.
 	SendID string `json:"sendId,omitempty"`
 	// ReconcileBySendID declares that the caller finds its message's row by
-	// SendID, rather than predicting user:<turn>. Older callers still send
-	// SendID for idempotency, so its presence alone cannot negotiate this.
+	// SendID, rather than predicting user:<turn>. Windows older than v0.0.15
+	// send SendID without it, so its presence alone cannot say this; a
+	// client send without it is refused (sendClientMessage).
 	ReconcileBySendID bool `json:"reconcileBySendId,omitempty"`
+}
+
+// pageSendOptions are the options of the page's default send under sendID
+// (frontend/src/lib/utils/sendOptions.ts buildSendOptions): rows found by
+// that id, and an empty draft snapshot, which consumes no composer draft.
+// frontend/src/test/fixtures/pageDefaultSend.json is the reference they are
+// checked against.
+func pageSendOptions(sendID string) SendMessageOptions {
+	return SendMessageOptions{
+		AttachmentIDs:     []string{},
+		ConsumeDraft:      &DraftSnapshot{AttachmentIDs: []string{}, TerminalChips: []TerminalChip{}},
+		SendID:            sendID,
+		ReconcileBySendID: true,
+	}
 }
 
 // interruptTurnCtx is InterruptTurn with a bounded entry: ctx limits ONLY the
@@ -1451,8 +1461,8 @@ func (a *App) teardownDeadPreInitSessionLocked(threadID, sessionToken string) er
 	}
 	a.emitProviderSessionDisconnected(threadID, sess.Provider)
 	if a.triage != nil {
-		// Restore before cleanup: the sweep's clearFlushQueueLocked
-		// discards queued items, and they only exist in router memory —
+		// Restore before cleanup: the sweep drops the thread's triage
+		// state, queued items included, and they only exist in router memory —
 		// without the restore the user's queued text would vanish.
 		var requeued []triage.UnconfirmedFlushItem
 		if a.triage.ThreadEpoch(threadID) == epoch {

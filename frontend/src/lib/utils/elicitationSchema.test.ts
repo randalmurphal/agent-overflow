@@ -311,20 +311,12 @@ describe('parseElicitationSchema', () => {
 
   // ---- Title fallback ----
 
-  it('falls back to the property name when title is missing', () => {
-    const fields = parseElicitationSchema({
-      type: 'object',
-      properties: { someKey: { type: 'string' } },
-    });
+  it.each([
+    ['missing', { type: 'string' }],
+    ['empty string', { type: 'string', title: '' }],
+  ])('falls back to the property name when title is %s', (_case, property) => {
+    const fields = parseElicitationSchema({ type: 'object', properties: { someKey: property } });
     expect(fields[0].title).toBe('someKey');
-  });
-
-  it('falls back to the property name when title is empty string', () => {
-    const fields = parseElicitationSchema({
-      type: 'object',
-      properties: { a: { type: 'string', title: '' } },
-    });
-    expect(fields[0].title).toBe('a');
   });
 
   // ---- Input coercion (string payload) ----

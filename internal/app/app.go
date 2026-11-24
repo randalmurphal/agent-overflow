@@ -91,11 +91,6 @@ type App struct {
 	// Keeping it on the service makes the integration package importable while
 	// the root main package remains the ldflags target.
 	version string
-	// saveDialog opens the native save-file dialog. Wired by
-	// ServiceStartup in desktop mode (app_desktop.go); left nil in the
-	// headless WSL backend, where there is no native window to attach a
-	// dialog to and the frontend uses a download fallback instead.
-	saveDialog savePayloadPicker
 	// setWindowBackground paints the native window chrome (the color
 	// visible while a resize outruns the webview). Wired by
 	// ServiceStartup in desktop mode (app_desktop.go); left nil in the
@@ -288,8 +283,10 @@ type App struct {
 	// tailnet loop. Each ends with the app context.
 	unattendedLoops workGroup
 	// permissionModeFollowWG joins the goroutines that move a thread onto
-	// the permission mode Claude moved to (followClaudePermissionMode).
-	permissionModeFollowWG sync.WaitGroup
+	// the permission mode Claude moved to (followClaudePermissionMode). They
+	// start from the provider event worker while shutdown waits on them. It
+	// is never closed, so Go always starts its member.
+	permissionModeFollowWG workGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.
@@ -537,7 +534,7 @@ type App struct {
 	// instead of just being protected from it.
 	keepAwakeApply func(power.Mode) error
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
-	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
+	// points that spin up new work (SendMessageWithOptions, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race
 	// with subsystem teardown. Pairs with appCtx: binding entry points
 	// read this for fast-fail; in-flight goroutines derive from appCtx
@@ -969,11 +966,6 @@ type App struct {
 	// a routed prompt and before it is written to the worker
 	// (answerRoutedPrompt); an error it returns is that write's failure.
 	workerPromptAnsweringForTest func(token string) error
-	// savePayloadPickerFn is a test-only override for the save-file
-	// dialog used by SavePayloadToFile. Production leaves it nil and
-	// the real Wails dialog runs; tests install a stub that returns a
-	// canned path (or empty for "cancelled").
-	savePayloadPickerFn savePayloadPicker
 	// rateLimitProbeClientOverride replaces the Claude rate-limit probe's
 	// HTTP client. ConfigureIsolation sets one that answers in process only
 	// what claudeUsageFake holds; tests assign a client pointing at a local
@@ -1004,6 +996,10 @@ type App struct {
 	// it owes paired computers (ownerOpReach) for a test. Zero keeps the
 	// product bound.
 	ownerOpReachOverride time.Duration
+	// threadAgentPeerListOverride replaces threadAgentPeerListTimeout, the
+	// bound on a forwarded Agents listing (threadAgentPeerListBound), for a
+	// test. Zero keeps the product bound.
+	threadAgentPeerListOverride time.Duration
 	// ownerOpsOmitted answers agent_owner_op as a build before owner
 	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
 	ownerOpsOmitted bool
@@ -1016,6 +1012,14 @@ type App struct {
 	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
 	// product cadence.
 	remoteWatchPoll time.Duration
+	// wakeRetryBaseOverride replaces the first wake retry wait
+	// (IsolationConfig.ThreadWakeRetryBase); read through
+	// threadWakeRetryDelay. Zero keeps the product wait.
+	wakeRetryBaseOverride time.Duration
+	// agentSettledWindowOverride replaces how long a settled request stays in an
+	// Agents listing (IsolationConfig.AgentSettledWindow); read through
+	// agentSettledWindowSpan. Zero keeps the product window.
+	agentSettledWindowOverride time.Duration
 	// idleReap holds an isolated test boot's idle-session reaper timing
 	// (IsolationConfig). Zero fields keep the product values.
 	idleReap idleReapTiming
@@ -1223,11 +1227,10 @@ type sessionLiveness = sessionruntime.Liveness
 
 func newSessionLiveness(now time.Time) *sessionLiveness { return sessionruntime.NewLiveness(now) }
 
-func NewApp() *App { return NewAppWithVersion("dev") }
-
 // NewAppWithVersion constructs the application service with the executable's
 // build-stamped version. Root is the sole production caller; tests use NewApp
-// and therefore retain the unstamped "dev" behavior.
+// (app_test_helpers_test.go) and therefore retain the unstamped "dev"
+// behavior.
 func NewAppWithVersion(buildVersion string) *App {
 	if buildVersion == "" {
 		buildVersion = "dev"
@@ -1292,12 +1295,11 @@ func (a *App) backendIdentity() (backendID, replicaGeneration string) {
 
 // --- Item operations ---
 
-// ListItems returns every item persisted for a thread in chronological
-// order. Unwindowed, so it carries the byte backstop the same way the
-// paged loads do; active panes use the bounded slice surface instead.
-//
-//ao:scope threads:read
-func (a *App) ListItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
+// listThreadItems returns a thread's items in chronological order for the
+// harness's HarnessListItems: the newest rows that fit the response budget
+// (projectItemSlice), projected as the paged loads project them; panes use
+// the bounded slice surface instead.
+func (a *App) listThreadItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
 	if err := a.readyThreadHistory(threadID); err != nil {
 		return nil, err
 	}

@@ -4,7 +4,6 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -622,12 +621,12 @@ func TestUpdateThreadModelUpdatesStoredModelWithoutRestartWhenSessionInactive(t 
 		return nil
 	}
 
-	updated, err := app.UpdateThreadModel(thread.ID, "gpt-5.4-mini")
+	updated, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "gpt-5.4-mini")
 	if err != nil {
-		t.Fatalf("UpdateThreadModel() error = %v", err)
+		t.Fatalf("UpdateThreadModelSelection() error = %v", err)
 	}
 	if started {
-		t.Fatal("UpdateThreadModel() unexpectedly restarted an inactive thread")
+		t.Fatal("UpdateThreadModelSelection() unexpectedly restarted an inactive thread")
 	}
 	if updated.Model != "gpt-5.4-mini" {
 		t.Fatalf("returned model = %q, want %q", updated.Model, "gpt-5.4-mini")
@@ -661,17 +660,17 @@ func TestUpdateThreadModelRemembersClaudeModelAndContextDefaults(t *testing.T) {
 	// Switching models adopts the *new* model's registry default: 1M where
 	// the model offers it, and Haiku 4.5's only tier, 200k — so this
 	// round-trip also proves the two defaults stay independent.
-	opus, err := app.UpdateThreadModel(thread.ID, "claude-opus-4-7")
+	opus, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "claude-opus-4-7")
 	if err != nil {
-		t.Fatalf("UpdateThreadModel(opus): %v", err)
+		t.Fatalf("UpdateThreadModelSelection(opus): %v", err)
 	}
 	if opus.ContextWindow != provider.ClaudeExtendedContextWindow {
 		t.Fatalf("opus context = %d, want %d", opus.ContextWindow, provider.ClaudeExtendedContextWindow)
 	}
 
-	haiku, err := app.UpdateThreadModel(thread.ID, "claude-haiku-4-5")
+	haiku, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "claude-haiku-4-5")
 	if err != nil {
-		t.Fatalf("UpdateThreadModel(haiku): %v", err)
+		t.Fatalf("UpdateThreadModelSelection(haiku): %v", err)
 	}
 	if haiku.ContextWindow != provider.ClaudeStandardContextWindow {
 		t.Fatalf("remembered haiku context = %d, want %d", haiku.ContextWindow, provider.ClaudeStandardContextWindow)
@@ -711,9 +710,9 @@ func TestUpdateThreadModelSanitizesStaleProfileContext(t *testing.T) {
 		t.Fatalf("createTestThread: %v", err)
 	}
 
-	updated, err := app.UpdateThreadModel(thread.ID, "gpt-5.3-codex-spark")
+	updated, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "gpt-5.3-codex-spark")
 	if err != nil {
-		t.Fatalf("UpdateThreadModel(spark): %v", err)
+		t.Fatalf("UpdateThreadModelSelection(spark): %v", err)
 	}
 	if updated.ContextWindow != provider.CodexSparkContextWindow {
 		t.Fatalf("ContextWindow = %d, want spark %d", updated.ContextWindow, provider.CodexSparkContextWindow)
@@ -903,24 +902,6 @@ func TestSwitchThreadSanitizesStaleSparkContext(t *testing.T) {
 	}
 }
 
-func TestUpdateThreadProviderDoesNotRememberTransientProviderModelPair(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	thread, err := createTestThread(t, app, "claude", "/tmp/provider-transient", "claude-sonnet-4-6", "")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-	if _, err := app.UpdateThreadProvider(thread.ID, "codex"); err != nil {
-		t.Fatalf("UpdateThreadProvider: %v", err)
-	}
-
-	_, profileErr := app.store.GetChatModelProfile("codex", "claude-sonnet-4-6")
-	if !errors.Is(profileErr, sql.ErrNoRows) {
-		t.Fatalf("transient profile error = %v, want sql.ErrNoRows", profileErr)
-	}
-}
-
 func TestCreateThreadUsesRememberedClaudeModelAndContext(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -930,8 +911,8 @@ func TestCreateThreadUsesRememberedClaudeModelAndContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create source thread: %v", err)
 	}
-	if _, err := app.UpdateThreadModel(source.ID, "claude-opus-4-7"); err != nil {
-		t.Fatalf("UpdateThreadModel(opus): %v", err)
+	if _, err := app.UpdateThreadModelSelection(source.ID, source.Provider, "claude-opus-4-7"); err != nil {
+		t.Fatalf("UpdateThreadModelSelection(opus): %v", err)
 	}
 
 	next, err := createTestThread(t, app, "claude", "/tmp/remember-next", "", "")
@@ -1011,9 +992,9 @@ func TestUpdateThreadModelReconnectsSessionWithoutLiveUpdateSurface(t *testing.T
 		return nil
 	}
 
-	updated, err := app.UpdateThreadModel(thread.ID, "gpt-5.4-mini")
+	updated, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "gpt-5.4-mini")
 	if err != nil {
-		t.Fatalf("UpdateThreadModel() error = %v", err)
+		t.Fatalf("UpdateThreadModelSelection() error = %v", err)
 	}
 	if updated.Model != "gpt-5.4-mini" {
 		t.Fatalf("returned model = %q, want %q", updated.Model, "gpt-5.4-mini")
@@ -1050,9 +1031,9 @@ func TestUpdateThreadModelKeepsSelectionOnRestartFailure(t *testing.T) {
 		return fmt.Errorf("restart boom")
 	}
 
-	updated, err := app.UpdateThreadModel(thread.ID, "gpt-5.4-mini")
+	updated, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "gpt-5.4-mini")
 	if err != nil {
-		t.Fatalf("UpdateThreadModel() error = %v", err)
+		t.Fatalf("UpdateThreadModelSelection() error = %v", err)
 	}
 	if updated.Model != "gpt-5.4-mini" {
 		t.Fatalf("returned model = %q, want %q", updated.Model, "gpt-5.4-mini")
@@ -1121,12 +1102,12 @@ func TestUpdateThreadModelRejectsBlankModel(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	_, err := app.UpdateThreadModel(thread.ID, "   ")
+	_, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, "   ")
 	if err == nil {
-		t.Fatal("UpdateThreadModel() error = nil, want blank model validation error")
+		t.Fatal("UpdateThreadModelSelection() error = nil, want blank model validation error")
 	}
 	if !strings.Contains(err.Error(), "cannot be empty") {
-		t.Fatalf("UpdateThreadModel() error = %v, want empty-model message", err)
+		t.Fatalf("UpdateThreadModelSelection() error = %v, want empty-model message", err)
 	}
 }
 
@@ -1184,19 +1165,7 @@ func newTestAppAtStorePath(t *testing.T, dbPath string) *App {
 	// stub and the textgen poison; tests that assert those behaviors
 	// install their own fakes over the top.
 	isolateE2EProviderSpawns(t, app)
-	// Cleanups run last first: the cancel releases a notice's session
-	// start waiting on a thread lock, and the join lands it before the
-	// store closes.
-	t.Cleanup(func() {
-		if app.sessionRuntime != nil {
-			if err := app.sessionRuntime.Connections().CloseAll(); err != nil {
-				t.Errorf("close provider connections: %v", err)
-			}
-		}
-	})
-	t.Cleanup(app.waitAgentNoticeWork)
-	t.Cleanup(app.appCancel)
-	joinBackgroundWorkAtCleanup(t, app)
+	tearDownTestAppAtCleanup(t, app)
 	ensureDefaultTestProject(t, app)
 	return app
 }

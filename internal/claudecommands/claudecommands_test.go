@@ -20,6 +20,13 @@ func commands(names ...string) []provider.SlashCommand {
 	return out
 }
 
+// CommandsFor is AnswerFor's list alone: nil for an identity no probe has
+// reported for and for one whose probe reported none.
+func (c *Cache) CommandsFor(key provider.ProbeCacheKey) []provider.SlashCommand {
+	commands, _ := c.AnswerFor(key)
+	return commands
+}
+
 func names(in []provider.SlashCommand) string {
 	out := ""
 	for _, cmd := range in {

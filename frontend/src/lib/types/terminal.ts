@@ -33,13 +33,6 @@ export interface TerminalReplay {
   throughSequence: number;
 }
 
-export interface TerminalOpenOptions {
-  cwd: string;
-  shell?: string;
-  rows?: number;
-  cols?: number;
-}
-
 export interface TerminalOutputEventPayload {
   terminalID: string;
   threadID: string;

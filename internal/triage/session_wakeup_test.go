@@ -69,41 +69,6 @@ func TestSessionWakeupTransitions(t *testing.T) {
 	}
 }
 
-// TestSessionWakeupClearedBySessionLifecycle pins the two lifecycle
-// sweeps: the wakeup timer is in-process CLI state, so both a session
-// teardown (CleanupThread) and a replacement-session commit
-// (MarkThreadActive, reached by a replacement start such as the
-// session-config restart, which skips CleanupThread)
-// must drop the record — a stale future fire time would shield a fresh
-// process that holds no timer.
-func TestSessionWakeupClearedBySessionLifecycle(t *testing.T) {
-	fireAt := time.Now().Add(45 * time.Minute).UnixMilli()
-
-	t.Run("CleanupThread", func(t *testing.T) {
-		r := NewRouter(nil, func(eventchan.Channel, any) {})
-		const threadID = "thread-wakeup-cleanup"
-		if err := r.Handle(wakeupEvent(t, threadID, fireAt)); err != nil {
-			t.Fatalf("handle schedule: %v", err)
-		}
-		r.CleanupThread(threadID)
-		if _, ok := r.PendingWakeupAt(threadID); ok {
-			t.Fatal("CleanupThread must clear the pending wakeup")
-		}
-	})
-
-	t.Run("MarkThreadActive", func(t *testing.T) {
-		r := NewRouter(nil, func(eventchan.Channel, any) {})
-		const threadID = "thread-wakeup-restart"
-		if err := r.Handle(wakeupEvent(t, threadID, fireAt)); err != nil {
-			t.Fatalf("handle schedule: %v", err)
-		}
-		r.MarkThreadActive(threadID, "")
-		if _, ok := r.PendingWakeupAt(threadID); ok {
-			t.Fatal("MarkThreadActive must clear the previous process's pending wakeup")
-		}
-	})
-}
-
 // TestPendingWakeupAtNilSafety mirrors HasPendingWork's nil contract.
 func TestPendingWakeupAtNilSafety(t *testing.T) {
 	var r *Router

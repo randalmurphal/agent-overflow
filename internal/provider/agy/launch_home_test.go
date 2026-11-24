@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -132,35 +131,53 @@ func TestACanonicalFileLaunchSetsFileStorageAndClearsAnInheritedHome(t *testing.
 	}
 }
 
-// An isolated home names its own directory and is on file storage, whatever
-// the process inherited.
-func TestAnIsolatedLaunchNamesItsHomeOnFileStorage(t *testing.T) {
+// A home that names its directory, an isolated one or a canonical one that
+// is not agy's default under the process HOME, launches on that directory
+// and on file storage, whatever the process inherited. Only the file store
+// may name a canonical home's directory.
+func TestAHomeThatNamesItsDirectoryLaunchesOnFileStorage(t *testing.T) {
 	inheritOtherAgyStore(t)
 	t.Setenv("AGY_ACP_FORCE_FILE_STORAGE", "")
-	binary, record := recordingAgy(t)
 	appData := filepath.Join(t.TempDir(), "gemini", "antigravity-cli")
-	home, err := IsolatedHome(appData)
+	isolated, err := IsolatedHome(appData)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	probeWith(t, binary, home)
-
-	got := readLaunchRecord(t, record)
-	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" {
-		t.Errorf("AGY_ACP_FORCE_FILE_STORAGE = %q, want 1", got["AGY_ACP_FORCE_FILE_STORAGE"])
+	if _, err := CanonicalHome(appData, false); err == nil {
+		t.Fatal("a canonical home named its directory on the Keychain")
 	}
-	wantCleared(t, got, "GEMINI_HOME", "AGY_APP_DATA_DIR")
-	want := "acp --gemini-dir " + filepath.Dir(appData) + " --app-data-dir antigravity-cli"
-	if got["args"] != want {
-		t.Errorf("isolated agy args = %q, want %q", got["args"], want)
+	for _, tc := range []struct {
+		name     string
+		home     Home
+		isolated bool
+	}{
+		{"isolated", isolated, true},
+		{"canonical", canonical(t, appData, true), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.home.Isolated() != tc.isolated {
+				t.Fatalf("Isolated() = %v, want %v", tc.home.Isolated(), tc.isolated)
+			}
+			binary, record := recordingAgy(t)
+			probeWith(t, binary, tc.home)
+
+			got := readLaunchRecord(t, record)
+			if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" {
+				t.Errorf("AGY_ACP_FORCE_FILE_STORAGE = %q, want 1", got["AGY_ACP_FORCE_FILE_STORAGE"])
+			}
+			wantCleared(t, got, "GEMINI_HOME", "AGY_APP_DATA_DIR")
+			want := "acp --gemini-dir " + filepath.Dir(appData) + " --app-data-dir antigravity-cli"
+			if got["args"] != want {
+				t.Errorf("agy args = %q, want %q", got["args"], want)
+			}
+		})
 	}
 }
 
 // No launch runs without a home, and a sign-in never runs on the canonical
 // one.
 func TestALaunchNeedsAHomeAndASignInAnIsolatedOne(t *testing.T) {
-	if _, err := (Home{}).Launch(nil); err == nil {
+	if _, err := (Home{}).Launch(provider.EnvInput{}); err == nil {
 		t.Fatal("a launch without a home was built")
 	}
 	if _, err := IsolatedHome(" "); err == nil {
@@ -175,47 +192,29 @@ func TestALaunchNeedsAHomeAndASignInAnIsolatedOne(t *testing.T) {
 	}
 }
 
-// HOME is reserved: a value in the custom environment never reaches agy, and
-// the process HOME, which agy's default home lies under, is never cleared.
+// builtEnv is the environment a process started from launch receives, by
+// name.
+func builtEnv(launch Launch) map[string]string {
+	out := map[string]string{}
+	for _, entry := range provider.BuildEnvironment(launch.Env) {
+		name, value, _ := strings.Cut(entry, "=")
+		out[name] = value
+	}
+	return out
+}
+
+// HOME is reserved (settings refuses it in a custom environment), and the
+// process HOME, which agy's default home lies under, reaches agy unchanged.
 func TestALaunchKeepsTheProcessHome(t *testing.T) {
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "process-home"))
 	for _, home := range []Home{canonical(t, "", true), canonical(t, "", false)} {
-		launch, err := home.Launch(map[string]string{"HOME": "/tmp/elsewhere"})
+		launch, err := home.Launch(provider.EnvInput{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if value, set := launch.Env["HOME"]; set {
-			t.Errorf("launch sets HOME=%q, want the process HOME", value)
+		if got := builtEnv(launch)["HOME"]; got != os.Getenv("HOME") {
+			t.Errorf("agy gets HOME=%q, want the process HOME %q", got, os.Getenv("HOME"))
 		}
-		if slices.Contains(launch.Unset, "HOME") {
-			t.Errorf("launch clears HOME: %v", launch.Unset)
-		}
-	}
-}
-
-// A canonical home that is not agy's default under the process HOME names
-// its directory and is still the canonical one; only the file store may name
-// one.
-func TestACanonicalHomeOutsideTheProcessHomeNamesItsDirectory(t *testing.T) {
-	inheritOtherAgyStore(t)
-	binary, record := recordingAgy(t)
-	appData := filepath.Join(t.TempDir(), "gemini", "antigravity-cli")
-	home := canonical(t, appData, true)
-	if home.Isolated() {
-		t.Fatal("a canonical home with a directory reads as isolated")
-	}
-
-	probeWith(t, binary, home)
-
-	got := readLaunchRecord(t, record)
-	want := "acp --gemini-dir " + filepath.Dir(appData) + " --app-data-dir antigravity-cli"
-	if got["args"] != want {
-		t.Errorf("canonical agy args = %q, want %q", got["args"], want)
-	}
-	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" {
-		t.Errorf("AGY_ACP_FORCE_FILE_STORAGE = %q, want 1", got["AGY_ACP_FORCE_FILE_STORAGE"])
-	}
-	if _, err := CanonicalHome(appData, false); err == nil {
-		t.Fatal("a canonical home named its directory on the Keychain")
 	}
 }
 
@@ -247,10 +246,15 @@ func TestALauncherDecidesItsHomeInsideItsTimeLimit(t *testing.T) {
 // A name a launch sets or clears on purpose is reserved, so a custom
 // environment cannot ask for a value the launch would discard.
 func TestTheNamesALaunchSetsAreReserved(t *testing.T) {
-	reserved := provider.ReservedEnvNames(string(provider.Agy))
-	for _, name := range []string{forceFileStorageEnv, geminiHomeEnv, appDataDirEnv, sshConnectionEnv, "HOME"} {
-		if !slices.Contains(reserved, name) {
-			t.Errorf("%s is not reserved for Antigravity: %v", name, reserved)
+	for _, name := range []string{
+		provider.AgyForceFileStorageEnv.Name(),
+		provider.AgyGeminiHomeEnv.Name(),
+		provider.AgyAppDataDirEnv.Name(),
+		provider.AgySSHConnectionEnv.Name(),
+		"HOME",
+	} {
+		if _, refused := provider.ReservedEnvRefusal("agy", name); !refused {
+			t.Errorf("%s is not reserved for Antigravity", name)
 		}
 	}
 }
@@ -312,26 +316,24 @@ func TestAHomeDirectoryIsAbsolute(t *testing.T) {
 	}
 }
 
-// SSH_CONNECTION in a custom environment never reaches agy: a file-store
-// launch sets its own, and a Keychain launch drops it and leaves an inherited
+// SSH_CONNECTION is reserved (settings refuses it in a custom environment):
+// a file-store launch sets its own, and a Keychain launch leaves an inherited
 // one alone.
 func TestALaunchOwnsSSHConnection(t *testing.T) {
-	custom := map[string]string{sshConnectionEnv: "10.0.0.1 22 10.0.0.2 22"}
-	keychain, err := canonical(t, "", false).Launch(custom)
+	const inherited = "10.0.0.1 22 10.0.0.2 22"
+	t.Setenv(provider.AgySSHConnectionEnv.Name(), inherited)
+	keychain, err := canonical(t, "", false).Launch(provider.EnvInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value, set := keychain.Env[sshConnectionEnv]; set {
-		t.Errorf("a Keychain launch sets SSH_CONNECTION=%q from the custom environment", value)
+	if got := builtEnv(keychain)[provider.AgySSHConnectionEnv.Name()]; got != inherited {
+		t.Errorf("a Keychain launch gives agy SSH_CONNECTION=%q, want the inherited %q", got, inherited)
 	}
-	if slices.Contains(keychain.Unset, sshConnectionEnv) {
-		t.Errorf("a Keychain launch clears the inherited SSH_CONNECTION: %v", keychain.Unset)
-	}
-	file, err := canonical(t, "", true).Launch(custom)
+	file, err := canonical(t, "", true).Launch(provider.EnvInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := file.Env[sshConnectionEnv]; got != "127.0.0.1 0 127.0.0.1 0" {
-		t.Errorf("a file-store launch sets SSH_CONNECTION=%q, want its own", got)
+	if got := builtEnv(file)[provider.AgySSHConnectionEnv.Name()]; got != sshConnectionValue {
+		t.Errorf("a file-store launch gives agy SSH_CONNECTION=%q, want its own", got)
 	}
 }

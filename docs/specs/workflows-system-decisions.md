@@ -965,7 +965,7 @@ verdict it now is, with what the first attempt got wrong.
   nothing shipped, nothing installed, and no `PATH` ever contained, so
   every `ao run start …` an agent typed answered "command not found".
   The whole D15 surface existed and was unreachable. It is deleted.
-  `main.go` now matches `os.Args[1]` against `aocli.Commands()` and hands
+  `main.go` now matches `os.Args[1]` with `aocli.IsCommand` and hands
   the argv to `aocli.Run`: `agent-overflow run start <id>`,
   `agent-overflow workflow list`. The verb set is exported from the
   package's own dispatch table rather than restated in `main`, because a
@@ -976,9 +976,9 @@ verdict it now is, with what the first attempt got wrong.
   **Sessions find it on PATH, under a canonical-name symlink.** Boot
   writes `<configDir>/bin/agent-overflow` pointing at `os.Executable()`
   and `sessionProcessEnv` prepends that directory to every provider
-  session's environment (`provider.BuildEnvironment` already treats a
-  `PATH` override as additive, so the session keeps its own PATH behind
-  ours). The symlink exists because the running executable's *name* is
+  session's environment (`EnvInput.PathPrepend`, which
+  `provider.BuildEnvironment` puts in front of the inherited PATH, so the
+  session keeps its own PATH behind ours). The symlink exists because the running executable's *name* is
   not stable (`bin/agent-overflow` in a dev build, a temp binary under
   `wails3 dev`, `Agent Overflow.app/Contents/MacOS/Agent Overflow` in a
   bundle) while the name an agent types has to be exactly one thing.
@@ -1107,8 +1107,8 @@ verdict it now is, with what the first attempt got wrong.
 
   **App-authored messages are exempt, structurally.** Expansion is an
   explicit opt-in (`sendMessageOptions.ExpandComposerCommands`) set only
-  where composer-typed text enters the app: the bound SendMessage /
-  SendMessageWithOptions / SteerMessageWithOptions wire methods and the
+  where composer-typed text enters the app: the bound
+  SendMessageWithOptions wire method and the
   flush-queue dispatch. A workflow wake, a seeded triage turn, and a
   schema-driven phase send never set it,
   and a future internal caller that forgets the flag gets the safe
@@ -1180,7 +1180,8 @@ verdict it now is, with what the first attempt got wrong.
     start` (or by `WorkflowBindThread` against an existing thread) still
     injects its digest into that thread on every resting transition.
     Binding never created a thread; only the deleted button did.
-  - **`workflowOpenTriageThread` survives unexported** because
+  - **The triage-thread opener survives unexported** (`workflowapp`'s
+    `OpenTriageThread`, not a bound method) because
     `WorkflowSendPRReviewCommentsToThread` and `WorkflowDiscussPR` (§4.7)
     ride the run's ONE linked thread and this is what makes it one. The
     helper served a removed button and a kept path; the button's entry
@@ -1935,7 +1936,7 @@ on a spent reject budget silently destroyed the gate's still-declared approve.
 
 - **D44. Post-validation owes literal presence to `status` alone.** The
   generated envelope schema lists every control key in `required` because
-  provider strict mode demands it, but `ValidateEnvelope` also judges
+  provider strict mode demands it, but `EnvelopeContract.Validate` also judges
   envelopes the tool driver reads from disk, hand-written by scripts that
   never saw that schema. Requiring the keys literally made `"question": null,
   "reason": null` boilerplate whose omission converted a successful merge

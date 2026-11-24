@@ -54,15 +54,6 @@ type benchMetric struct {
 	read          func(perfReport) (float64, bool)
 }
 
-func frontendMetric(read func(perfFrontendSummary) float64) func(perfReport) (float64, bool) {
-	return func(r perfReport) (float64, bool) {
-		if r.Frontend == nil {
-			return 0, false
-		}
-		return read(*r.Frontend), true
-	}
-}
-
 // frontendMeterMetric admits a scalar only when the run actually armed the
 // meter that owns it. A frontend summary keeps the complete wire shape for
 // stable decoding, so an unselected value is otherwise indistinguishable
@@ -101,22 +92,6 @@ func frontendMeterMeasured(f perfFrontendSummary, meter string) bool {
 	return true
 }
 
-// frontendSeriesMetric is frontendMetric for a series-shaped value: a
-// series the page never sampled (WebKitGTK has no performance.memory)
-// is absent from the aggregate rather than a column of zeros.
-func frontendSeriesMetric(read func(perfFrontendSummary) perfSeries) func(perfReport) (float64, bool) {
-	return func(r perfReport) (float64, bool) {
-		if r.Frontend == nil {
-			return 0, false
-		}
-		series := read(*r.Frontend)
-		if series.Count == 0 {
-			return 0, false
-		}
-		return series.Max, true
-	}
-}
-
 func frontendMeterSeriesMetric(meter string, read func(perfFrontendSummary) perfSeries) func(perfReport) (float64, bool) {
 	return func(r perfReport) (float64, bool) {
 		if r.Frontend == nil || !frontendMeterMeasured(*r.Frontend, meter) {
@@ -130,8 +105,8 @@ func frontendMeterSeriesMetric(meter string, read func(perfFrontendSummary) perf
 	}
 }
 
-// frontendBusyMetric is frontendMetric for a busy figure. A run whose page
-// never MEASURED a tick — the meter was not armed, or this engine has no
+// frontendBusyMetric reads a busy figure. A run whose page never
+// MEASURED a tick — the meter was not armed, or this engine has no
 // MessageChannel to probe with — is ABSENT rather than zero, because zero
 // busy time reads as a flawless renderer.
 func frontendBusyMetric(read func(perfBusySummary) float64) func(perfReport) (float64, bool) {

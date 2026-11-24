@@ -58,7 +58,8 @@ func assertSummaries(t *testing.T, got []Item, want ...string) {
 }
 
 // TestThreadTitleContextItemsOrdersOldestFirstAndFiltersKinds pins the
-// projection: conversation rows only, top-level only, ascending.
+// projection: conversation rows only, top-level only, ascending, and the
+// first user row, already in the window, is not added a second time.
 func TestThreadTitleContextItemsOrdersOldestFirstAndFiltersKinds(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-title-ctx")
@@ -249,22 +250,6 @@ func TestThreadTitleContextItemsReadsMetaForUserRowsOnly(t *testing.T) {
 	if got[1].Meta != "" {
 		t.Fatalf("assistant meta = %q, want it dropped", got[1].Meta)
 	}
-}
-
-// TestThreadTitleContextItemsDoesNotDuplicateFirstUser covers the
-// already-in-window case: the extra read must not append a second copy.
-func TestThreadTitleContextItemsDoesNotDuplicateFirstUser(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "t-title-nodup")
-
-	seedTitleContextItem(t, s, "t-title-nodup", 0, 0, "user_text", "user", "only ask", "")
-	seedTitleContextItem(t, s, "t-title-nodup", 0, 1, "assistant_text", "assistant", "only answer", "")
-
-	got, _, err := s.ThreadTitleContextItems("t-title-nodup", 200)
-	if err != nil {
-		t.Fatalf("ThreadTitleContextItems: %v", err)
-	}
-	assertSummaries(t, got, "only ask", "only answer")
 }
 
 // TestThreadTitleContextItemsWindowStartingBeforeFirstUser guards the

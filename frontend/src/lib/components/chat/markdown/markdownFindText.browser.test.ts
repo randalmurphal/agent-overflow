@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import '../../../../app.css';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
@@ -20,10 +20,9 @@ import type { PRDetail } from '../../../types/models';
 import { chatMarkdownExtensions, chatMarkdownForgeOptions } from './chatMarkdownOptions';
 import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from './forgeAttachmentContext';
 import type { ForgeAttachmentSource } from '../../../utils/forgeAttachments';
-import { resetCodeSpanCacheForTest } from './codeSpanCache';
-import { __resetStreamdownCodeHostForTest } from './StreamdownCodeHost.svelte';
 import { CORPUS, generatedMarkdown } from '../../../../test/fixtures/markdownFindCorpus';
 import { assistantMarkdownSource } from '../threadFindText';
+import { CHAT_MARKDOWN_SETTLED_CONTEXT } from '../markdownSettledContext';
 
 // markdownFindText against the DOM a settled review comment renders
 // (ChatMarkdown with embedded HTML, as ReviewThreadComments mounts it): for
@@ -79,11 +78,15 @@ for (const [outer, wrapOuter] of Object.entries(CONTAINERS)) {
 }
 
 beforeEach(() => {
-  resetCodeSpanCacheForTest();
-  __resetStreamdownCodeHostForTest();
   setBindingMock('HighlightSchemaVersion', async () => 'hv-test');
   setBindingMock('HighlightClassNames', async () => ['none']);
   setBindingMock('HighlightPatch', async () => ({ lines: [] }));
+  // The attachments these sources name are uploads the forge does not hold,
+  // so each fetch fails and its chip shows the failed state. A test about a
+  // loading chip answers with a fetch that never settles.
+  setBindingMock('FetchForgeAttachment', async () => {
+    throw new Error('fetch forge attachment: 404 Not Found');
+  });
   document.body.innerHTML = '';
 });
 
@@ -92,19 +95,37 @@ function count(runs: readonly string[], query: string): number {
   return runs.reduce((total, run) => total + countFindMatches(run, needle), 0);
 }
 
-async function mounted(source: string, forge: ForgeAttachmentSource = FORGE): Promise<Element> {
+const SETTLE_TIMEOUT_MS = 10_000;
+
+// Mounts ChatMarkdown and waits until Streamdown reports its diagrams,
+// formulas and highlighted code done: the signal the timeline's warm gate
+// waits on. An image or attachment is not waited for: its loading chip and
+// what replaces it hold no text the find bar counts, and a chip inside a
+// closed <details>, or one whose fetch never answers, stays loading.
+async function settledMarkdown(props: Record<string, unknown>, context: Map<string, unknown> = new Map()): Promise<Element> {
   const host = document.createElement('div');
   host.style.width = '600px';
   document.body.appendChild(host);
+  let markSettled!: () => void;
+  const settled = new Promise<void>((resolve) => { markSettled = resolve; });
   const { container } = render(ChatMarkdown, {
     target: host,
-    props: { source, pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: 'review-prose' },
-    context: new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => forge]]),
+    props: { pathRefs: EMPTY_PATH_REFS, ...props } as never,
+    context: new Map([...context, [CHAT_MARKDOWN_SETTLED_CONTEXT, () => markSettled()]]),
   });
-  await waitFor(() => expect(container.querySelector('.markdown-body')?.textContent?.trim()).toBeTruthy());
-  // Let deferred islands (diagrams, formulas, attachments) settle.
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    settled,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Streamdown never settled: ${String(props.source)}`)), SETTLE_TIMEOUT_MS); }),
+  ]).finally(() => clearTimeout(timer));
   return container.querySelector('.markdown-body')!;
+}
+
+async function mounted(source: string, forge: ForgeAttachmentSource = FORGE): Promise<Element> {
+  return settledMarkdown(
+    { source, embeddedHtml: true, class: 'review-prose' },
+    new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => forge]]),
+  );
 }
 
 function mismatches(source: string, dom: readonly string[], projected: readonly string[]) {
@@ -178,6 +199,15 @@ describe('markdownFindText', () => {
     // is in neither.
     for (const hidden of ['hidden body words', 'inner cell words', 'shot.png', 'embedded', 'start-->finish', 'yy', 'bb']) {
       expect(dom.join('\n'), hidden).not.toContain(hidden);
+    }
+    // What was compared is the settled render: every formula typeset, or
+    // shown as its source when it cannot be, and every diagram's renderer
+    // loaded.
+    for (const math of root.querySelectorAll('[data-streamdown-inline-math], [data-streamdown-block-math]')) {
+      expect(math.querySelector('.katex') !== null || math.hasAttribute('data-render-failed'), math.outerHTML).toBe(true);
+    }
+    for (const diagram of root.querySelectorAll('[data-streamdown-mermaid]')) {
+      expect(diagram.querySelector('[data-mermaid-svg]'), diagram.outerHTML).not.toBeNull();
     }
   });
 
@@ -330,16 +360,8 @@ describe('markdownFindText over generated comments', () => {
 // (threadFindText.ts). The runs the projection gives are the rendered
 // runs, so the thread find bar counts what it paints.
 describe('markdownFindText under the chat options', () => {
-  async function chatMounted(source: string): Promise<Element> {
-    const host = document.createElement('div');
-    host.style.width = '600px';
-    document.body.appendChild(host);
-    const { container } = render(ChatMarkdown, { target: host, props: { source, pathRefs: EMPTY_PATH_REFS } });
-    // Chat drops embedded HTML, so a body can render no text at all.
-    await waitFor(() => expect(container.querySelector('.markdown-body')).not.toBeNull());
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    return container.querySelector('.markdown-body')!;
-  }
+  // Chat drops embedded HTML, so a body can render no text at all.
+  const chatMounted = (source: string) => settledMarkdown({ source });
   const text = (run: string) => foldFindText(run).replace(/\s+/g, ' ').trim();
   const sources = [
     ...CORPUS,
@@ -411,17 +433,11 @@ describe('markdownFindText under the PR\'s facts', () => {
   async function mountUnderFacts(source: string): Promise<{ root: Element; key: string }> {
     const key = prKey(FORGE.pr);
     observePRFacts(key, FORGE.pr, { detail: { number: 3, body: source, latestReviews: [] } as unknown as PRDetail, threads: [] });
-    const host = document.createElement('div');
-    host.style.width = '600px';
-    document.body.appendChild(host);
-    const { container } = render(ChatMarkdown, {
-      target: host,
-      props: { source, pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: 'review-prose' },
-      context: new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => ({ ...FORGE, facts: forgeFactReader(key) })]]),
-    });
-    await waitFor(() => expect(container.querySelector('.markdown-body')?.textContent?.trim()).toBeTruthy());
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    return { root: container.querySelector('.markdown-body')!, key };
+    const root = await settledMarkdown(
+      { source, embeddedHtml: true, class: 'review-prose' },
+      new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => ({ ...FORGE, facts: forgeFactReader(key) })]]),
+    );
+    return { root, key };
   }
 
   it.each(SOURCES.flatMap((source) => ANSWERS.map((_, at) => [source, at] as const)))('counts what %s shows while asked and once answered (%i)', async (source, at) => {

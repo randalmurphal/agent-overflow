@@ -120,10 +120,6 @@ func UnitEnvelope(unit Unit) EnvelopeContract {
 // PhaseOutputs' is — callers read a contract, they never edit one.
 func (c EnvelopeContract) Outputs() map[string]Variable { return c.outputs }
 
-// EnvelopeSchema generates the provider-compatible flat control schema for a
-// phase. It is the phase-level shorthand for PhaseEnvelope(phase).Schema().
-func EnvelopeSchema(phase Phase) ([]byte, error) { return PhaseEnvelope(phase).Schema() }
-
 // Schema generates the provider-compatible flat control schema.
 func (c EnvelopeContract) Schema() ([]byte, error) {
 	outputProperties := make(map[string]any, len(c.outputs))
@@ -271,13 +267,6 @@ func (e *EnvelopeValidationError) Error() string {
 		parts = append(parts, finding.Path+": "+finding.Message)
 	}
 	return strings.Join(parts, "; ")
-}
-
-// ValidateEnvelope applies structural, value, branch, and size validation to a
-// phase attempt's envelope. It is the phase-level shorthand for
-// PhaseEnvelope(phase).Validate(payload, sizeCap...).
-func ValidateEnvelope(phase Phase, payload []byte, sizeCap ...int) error {
-	return PhaseEnvelope(phase).Validate(payload, sizeCap...)
 }
 
 // Validate applies structural, value, branch, and size validation.

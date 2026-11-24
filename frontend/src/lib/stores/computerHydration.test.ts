@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { installComputerHydration } from './computerHydration';
 import { refreshSidebarProjections } from './eventsThreadRows';
 import { mirrorFrontendPreferences } from './settings.svelte';
@@ -7,7 +7,6 @@ import { refreshWorkflowRunsSoon } from './workflowRuns.svelte';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetPanesForTest } from './panes.svelte';
 import { noteThread } from '../transport/entityIndex';
 import { getActiveTurn, getThreadStatus, projectTurnStarted } from './threadStatuses.svelte';
 import { setCarriedSessionScopes } from '../transport/scopes';
@@ -22,8 +21,8 @@ vi.mock('./workflowRuns.svelte', () => ({ refreshWorkflowRunsSoon: vi.fn(), isWo
 vi.mock('./browserCompanion.svelte', async (original) => ({ ...await original<object>(), refreshBrowserCompanionStates: vi.fn() }));
 
 let stop: (() => void) | undefined;
-beforeEach(() => { resetStagedBackends(); vi.clearAllMocks(); });
-afterEach(() => { stop?.(); stop = undefined; resetStagedBackends(); resetPanesForTest(); });
+beforeEach(() => { vi.clearAllMocks(); });
+afterEach(() => { stop?.(); stop = undefined; });
 
 it('refreshes a computer when it reconnects with unchanged hello metadata', async () => {
   const gpu = stageBackend({ id: 'gpu' });
@@ -176,6 +175,10 @@ it('reads the browser state again on every home connection edge, and on no other
   const gpu = stageBackend({ id: 'gpu', status: 'reconnecting', hello: { backendId: 'gpu' } as TransportHello });
   __setTransportHelloForTest({ backendId: '' } as TransportHello, HOME_BACKEND);
   __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null });
+  // Each home connection edge reads the keybindings and the provider
+  // update status again too.
+  setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
+  setBindingMock('GetProviderUpdates', async () => []);
   stop = installComputerHydration();
   await Promise.resolve();
   vi.mocked(refreshBrowserCompanionStates).mockClear();

@@ -1,6 +1,7 @@
 package sessionruntime
 
 import (
+	"maps"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -234,6 +235,19 @@ func (m *Manager) StartState(threadID string) (*Start, bool) {
 	return start, ok
 }
 
+// StartsInFlight returns, by thread, the starts that have begun and not
+// finished. Once each Done has closed, every start that began before the
+// call has registered its session or failed. Only the test fixtures'
+// teardown calls it, to take the sessions such starts register. Shutdown
+// takes the sessions without waiting for a start in flight: one whose
+// session registers after that take leaves its provider process to the
+// orphan reaper, which ends it when the backend exits.
+func (m *Manager) StartsInFlight() map[string]*Start {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return maps.Clone(m.starting)
+}
+
 func (m *Manager) ThreadIDsForProviderOrStarting(providerName string) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -321,7 +335,18 @@ func (m *Manager) UpdateProviderCredentials(providerName string, generation uint
 
 // RecordActivity stamps a provider event on the session it came from. It
 // holds the lock idle removal holds (TakeIdle), so an event either lands
-// before the removal's check and keeps its session, or finds it gone.
+// before the removal's check and keeps its session, or finds it gone. A
+// token that no longer names the thread's session is ignored, so a handler
+// of a replaced session never moves the new session's counters.
+//
+// ActiveTurns is +1 on EventTurnStart and -1 on EventTurnComplete. Only
+// Codex emits EventTurnStart (triage synthesizes Claude's turn start
+// downstream of this), so for Claude sessions the counter stays at zero:
+// a consumer must not read it alone as "a turn is open", and pairs it
+// with triage's in-flight turn or round and the activity stamp. A
+// "disconnected" session status drains it to zero, because a turn that
+// errored before its completion would otherwise hold the counter at 1 and
+// keep the idle reaper off the thread for good.
 func (m *Manager) RecordActivity(threadID, sessionToken string, kind provider.EventKind, content string, now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

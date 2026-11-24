@@ -37,7 +37,7 @@ async function startCollabThread(harness: HarnessApp, scenario: string): Promise
     ],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await harness.waitForEvent('harness:mock', (ev: any) => ev.report.kind === 'registered');
   return threadId;
 }
@@ -64,14 +64,14 @@ test('two FINAL_ANSWERs in one parent turn become two rows, not one overwritten 
   harness,
 }) => {
   const threadId = await startCollabThread(harness, 'codex-collab-two-deliveries');
-  await harness.rpc('SendMessage', threadId, 'review this', null);
+  await harness.send(threadId, 'review this');
   await harness.waitForEvent('provider:turn_completed');
 
   // Both answers must survive. Keyed on the passthrough turn id they collapse
   // onto one row and only "Second review pass." remains — the G1 bug.
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       const cards = spawnCards(items);
       if (cards.length !== 1) return [];
       return completionsFor(items, cards[0].id)
@@ -87,7 +87,7 @@ test('two FINAL_ANSWERs in one parent turn become two rows, not one overwritten 
     .toEqual(['First review pass.', 'Second review pass.']);
 
   // One card, and nothing dangling.
-  const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+  const items = await harness.items<Item>(threadId, true);
   expect(spawnCards(items)).toHaveLength(1);
   expect(items.filter((i) => i.status === 'running' || i.status === 'streaming')).toEqual([]);
 });
@@ -96,19 +96,19 @@ test('a queue-only send_message becomes its own chronological activity row', asy
   harness,
 }) => {
   const threadId = await startCollabThread(harness, 'codex-collab-send-message-queueonly');
-  await harness.rpc('SendMessage', threadId, 'ping the reviewer', null);
+  await harness.send(threadId, 'ping the reviewer');
   await harness.waitForEvent('provider:turn_completed');
 
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       return items
         .filter((item) => item.toolName === 'send_input')
         .map((item) => String((parseMeta(item).input as any)?.activityTool ?? ''));
     })
     .toEqual(['send_message']);
 
-  const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+  const items = await harness.items<Item>(threadId, true);
   const activity = items.find((item) => item.toolName === 'send_input');
   expect(activity?.completionOf ?? '').toBe('');
   expect(parseMeta(spawnCards(items)[0]).codex_collab_interactions).toBeUndefined();
@@ -116,12 +116,12 @@ test('a queue-only send_message becomes its own chronological activity row', asy
 
 test('an encrypted MESSAGE delivery is a progress beat, not a completion', async ({ harness }) => {
   const threadId = await startCollabThread(harness, 'codex-collab-progress-message');
-  await harness.rpc('SendMessage', threadId, 'review with progress', null);
+  await harness.send(threadId, 'review with progress');
   await harness.waitForEvent('provider:turn_completed');
 
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       const card = spawnCards(items)[0];
       const progress = items.filter(
         (item) => item.toolName === 'send_input' && (parseMeta(item).input as any)?.activityKind === 'progress',
@@ -135,7 +135,7 @@ test('an encrypted MESSAGE delivery is a progress beat, not a completion', async
     .toEqual({ progress: 1, completions: 1 });
 
   // The ciphertext body never becomes timeline text.
-  const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+  const items = await harness.items<Item>(threadId, true);
   const card = spawnCards(items)[0];
   const progress = items.find(
     (item) => item.toolName === 'send_input' && (parseMeta(item).input as any)?.activityKind === 'progress',
@@ -147,12 +147,12 @@ test('an encrypted MESSAGE delivery is a progress beat, not a completion', async
 
 test('parallel children each keep their own answer', async ({ harness }) => {
   const threadId = await startCollabThread(harness, 'codex-collab-parallel-children');
-  await harness.rpc('SendMessage', threadId, 'run both lenses', null);
+  await harness.send(threadId, 'run both lenses');
   await harness.waitForEvent('provider:turn_completed');
 
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       const cards = spawnCards(items);
       if (cards.length !== 2) return null;
       return cards
@@ -168,12 +168,12 @@ test('parallel children each keep their own answer', async ({ harness }) => {
 
 test('a reloaded child resumes on the same card and both answers survive', async ({ harness }) => {
   const threadId = await startCollabThread(harness, 'codex-collab-reload-after-unload');
-  await harness.rpc('SendMessage', threadId, 'review then follow up', null);
+  await harness.send(threadId, 'review then follow up');
   await harness.waitForEvent('provider:turn_completed');
 
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       const cards = spawnCards(items);
       if (cards.length !== 1) return null;
       return {

@@ -99,12 +99,12 @@ func newPermissionModeSessionReporting(t *testing.T, base, echoOrder, unsolicite
 		Reaper:             procutiltest.Reaper(),
 		Binary:             scriptPath,
 		BasePermissionMode: base,
-		Env: map[string]string{
+		Env: provider.EnvInput{Custom: map[string]string{
 			"CAPTURE_FILE": capturePath,
 			"START_MODE":   base,
 			"ECHO_ORDER":   echoOrder,
 			"UNSOLICITED":  unsolicited,
-		},
+		}},
 	}
 	s, err := NewSession(context.Background(), testThread, withTestRetention(cfg), func(evt provider.ProviderEvent) {
 		if evt.Kind == provider.EventPermissionModeChanged {

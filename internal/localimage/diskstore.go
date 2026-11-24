@@ -287,13 +287,6 @@ func (s *diskStore) pathOf(file *diskFile) string {
 	return filepath.Join(s.dir, hex.EncodeToString(file.key[:])+file.ext)
 }
 
-// bytes reports the charged total of the indexed files. Tests only.
-func (s *diskStore) bytes() int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.total
-}
-
 // parseDiskName reads a stored derivative's name: the lowercase hex key and
 // one of diskExtensions. Anything else is not the store's.
 func parseDiskName(name string) (diskKey, string, bool) {

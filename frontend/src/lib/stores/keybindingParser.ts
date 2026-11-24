@@ -15,10 +15,9 @@
 //   (expr)        → grouping (parens)
 // Operator precedence: NOT > AND > OR.
 //
-// All functions are pure and have no side effects. Errors are returned as
-// `null` from low-level helpers and as thrown ParseError from parseWhen /
-// parseChord when used directly from settings — the keybindings store
-// catches and routes them into the issue list surfaced to the user.
+// All functions are pure and have no side effects. An unparseable chord or
+// expression answers `null`; the keybindings store routes that into the
+// issue list surfaced to the user.
 
 export interface Chord {
   key: string;
@@ -44,13 +43,6 @@ export type WhenNode =
   | { type: 'and'; left: WhenNode; right: WhenNode }
   | { type: 'or'; left: WhenNode; right: WhenNode };
 
-export class ParseError extends Error {
-  constructor(public readonly source: string, message: string) {
-    super(`${message} — in "${source}"`);
-    this.name = 'ParseError';
-  }
-}
-
 const MAX_WHEN_DEPTH = 64;
 
 function normalizeKeyToken(token: string): string {
@@ -61,8 +53,7 @@ function normalizeKeyToken(token: string): string {
 
 /**
  * Parse a shortcut spec (e.g. "mod+shift+p"). Returns null when the spec is
- * unparseable so the caller can surface a structured error. Callers that want
- * to throw should use parseChord().
+ * unparseable so the caller can surface a structured error.
  */
 export function tryParseChord(value: string): Chord | null {
   if (value.trim().length === 0) return null;
@@ -120,14 +111,6 @@ export function tryParseChord(value: string): Chord | null {
   }
   if (key === null) return null;
   return { key, metaKey, ctrlKey, shiftKey, altKey, modKey };
-}
-
-export function parseChord(value: string): Chord {
-  const parsed = tryParseChord(value);
-  if (!parsed) {
-    throw new ParseError(value, 'invalid keybinding shortcut');
-  }
-  return parsed;
 }
 
 export function encodeChord(chord: Chord): string {
@@ -347,14 +330,6 @@ export function tryParseWhen(expression: string): WhenNode | null {
   return ast;
 }
 
-export function parseWhen(expression: string): WhenNode {
-  const parsed = tryParseWhen(expression);
-  if (!parsed) {
-    throw new ParseError(expression, 'invalid when expression');
-  }
-  return parsed;
-}
-
 /**
  * Evaluate a `when` AST against a context where missing identifiers are false.
  */
@@ -368,18 +343,5 @@ export function evaluateWhen(node: WhenNode, context: Record<string, boolean>): 
       return evaluateWhen(node.left, context) && evaluateWhen(node.right, context);
     case 'or':
       return evaluateWhen(node.left, context) || evaluateWhen(node.right, context);
-  }
-}
-
-export function encodeWhen(node: WhenNode): string {
-  switch (node.type) {
-    case 'identifier':
-      return node.name;
-    case 'not':
-      return `!(${encodeWhen(node.node)})`;
-    case 'and':
-      return `(${encodeWhen(node.left)} && ${encodeWhen(node.right)})`;
-    case 'or':
-      return `(${encodeWhen(node.left)} || ${encodeWhen(node.right)})`;
   }
 }

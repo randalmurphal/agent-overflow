@@ -125,3 +125,29 @@ func TestAFakeDownloadCanceledAtItsFirstReportEnds(t *testing.T) {
 		})
 	}
 }
+
+// finishHeld finishes a held download the way the native engines do: the
+// file is complete, the engine's record of it is released, and only then is
+// the finish reported.
+func (p *fakeProfile) finishHeld(id downloadID) error {
+	p.mu.Lock()
+	held, ok := p.held[id]
+	ok = ok && held.phase == fakeHeld
+	if ok {
+		held.phase = fakeEnding
+		p.held[id] = held
+	}
+	p.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("browser: %s is not a held fake download", id)
+	}
+	defer p.dropDownload(id)
+	if err := os.WriteFile(held.file, make([]byte, held.total), 0o600); err != nil {
+		return err
+	}
+	if released := p.engine.downloadReleased; released != nil {
+		released(id)
+	}
+	p.reportFinish(id, held.total, held.file)
+	return nil
+}

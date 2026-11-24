@@ -106,13 +106,6 @@ func (r *restRevisions) moved(noted map[string]uint64) map[string]bool {
 	return out
 }
 
-// watchedThreads counts the threads watched now.
-func (r *restRevisions) watchedThreads() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.watched)
-}
-
 // noteThreadRestChange bumps threadID's revision: something memory holds of
 // its rest changed. Its owner calls it after the change.
 func (a *App) noteThreadRestChange(threadID string) {

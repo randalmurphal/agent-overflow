@@ -39,11 +39,6 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 	return s.writeResponse(rpcID, result)
 }
 
-func buildApprovalResponseResult(resp provider.ApprovalResponse) (int64, any, error) {
-	rpcID, result, _, err := buildApprovalResponseResultAndDecision(resp)
-	return rpcID, result, err
-}
-
 func buildApprovalResponseResultAndDecision(resp provider.ApprovalResponse) (int64, any, json.RawMessage, error) {
 	rpcID, err := parseApprovalRequestID(resp.RequestID)
 	if err != nil {

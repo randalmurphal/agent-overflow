@@ -23,45 +23,39 @@ import (
 // Scope: no provider runtime is launched. We stub startSessionFn where a mode
 // change races with a session lifecycle.
 
-func TestMode_CreateThreadWithExplicitDefault(t *testing.T) {
+// An empty mode normalizes to chat; the returned and stored thread agree.
+// (createTestThread trims the mode, so a whitespace-only input reaches
+// CreateThread as the empty case.)
+func TestMode_CreateThreadNormalizesAndStoresTheMode(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
+	cases := []struct {
+		name, provider, model, mode, want string
+	}{
+		{name: "chat", provider: string(provider.Claude), model: "claude-sonnet-4-6", mode: "chat", want: "chat"},
+		{name: "plan", provider: string(provider.Claude), model: "claude-sonnet-4-6", mode: "plan", want: "plan"},
+		{name: "empty", provider: string(provider.Codex), model: "gpt-5.4", mode: "", want: "chat"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
 
-	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-default", "claude-sonnet-4-6", "chat")
-	if err != nil {
-		t.Fatalf("CreateThread(default) error = %v", err)
-	}
-	if thread.Mode != "chat" {
-		t.Fatalf("returned mode = %q, want chat", thread.Mode)
-	}
+			thread, err := createTestThread(t, app, tc.provider, "/tmp/ws-"+tc.name, tc.model, tc.mode)
+			if err != nil {
+				t.Fatalf("CreateThread(%q) error = %v", tc.mode, err)
+			}
+			if thread.Mode != tc.want {
+				t.Fatalf("returned mode = %q, want %s", thread.Mode, tc.want)
+			}
 
-	stored, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if stored.Mode != "chat" {
-		t.Fatalf("stored mode = %q, want chat", stored.Mode)
-	}
-}
-
-func TestMode_CreateThreadWithPlan(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-plan", "claude-sonnet-4-6", "plan")
-	if err != nil {
-		t.Fatalf("CreateThread(plan) error = %v", err)
-	}
-	if thread.Mode != "plan" {
-		t.Fatalf("mode = %q, want plan", thread.Mode)
-	}
-
-	stored, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if stored.Mode != "plan" {
-		t.Fatalf("stored mode = %q, want plan", stored.Mode)
+			stored, err := app.store.GetThread(thread.ID)
+			if err != nil {
+				t.Fatalf("GetThread() error = %v", err)
+			}
+			if stored.Mode != tc.want {
+				t.Fatalf("stored mode = %q, want %s", stored.Mode, tc.want)
+			}
+		})
 	}
 }
 
@@ -238,37 +232,6 @@ func TestMode_ForkInheritsInteractionMode(t *testing.T) {
 	}
 	if stored.Mode != "plan" {
 		t.Fatalf("stored fork mode = %q, want plan", stored.Mode)
-	}
-}
-
-func TestMode_CreateThreadDefaultWhenEmpty(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	thread, err := createTestThread(t, app, string(provider.Codex), "/tmp/ws-empty", "gpt-5.4", "")
-	if err != nil {
-		t.Fatalf("CreateThread(empty) error = %v", err)
-	}
-	if thread.Mode != "chat" {
-		t.Fatalf("returned mode = %q, want chat (normalized from empty)", thread.Mode)
-	}
-
-	stored, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if stored.Mode != "chat" {
-		t.Fatalf("stored mode = %q, want chat (normalized)", stored.Mode)
-	}
-
-	// Whitespace-only inputs must also normalize to default, not be preserved
-	// verbatim.
-	whitespaceThread, err := createTestThread(t, app, string(provider.Codex), "/tmp/ws-whitespace", "gpt-5.4", "   \t  ")
-	if err != nil {
-		t.Fatalf("CreateThread(whitespace) error = %v", err)
-	}
-	if whitespaceThread.Mode != "chat" {
-		t.Fatalf("whitespace mode = %q, want chat", whitespaceThread.Mode)
 	}
 }
 

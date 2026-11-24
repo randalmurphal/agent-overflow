@@ -6,7 +6,7 @@ import (
 )
 
 // offBranchAPIErrorTailTranscript replicates the checked-in fixture
-// (docs/references/fixtures/claude/session_api_error_offbranch.jsonl;
+// (internal/provider/wirecaptures/claude/session_api_error_offbranch.jsonl;
 // same row names, fields slimmed to what the scanner reads) minus its
 // final user row — the shape the 2026-06-10 incident's pre-fix revert
 // fork produced: the file ends with two deferred system/api_error rows

@@ -20,65 +20,21 @@ function makeErrorItem(enumValue: string, summary: string): Item {
 }
 
 describe('<APIErrorRow>', () => {
-  it('renders the summary and stamps the enum on data-error-enum', () => {
-    const { getByTestId } = render(APIErrorRow, {
-      props: { item: makeErrorItem('rate_limit', 'Rate limit reached') },
-    });
+  const BILLING = 'https://console.anthropic.com/settings/billing';
+  it.each([
+    { error: 'rate_limit', summary: 'Rate limit reached', copy: 'Add credits', href: BILLING },
+    { error: 'billing_error', summary: 'Billing error', copy: 'Add credits', href: BILLING },
+    { error: 'authentication_failed', summary: 'Authentication failed', copy: 'Run /login', href: undefined },
+    { error: 'server_error', summary: 'Anthropic API server error', copy: 'try again in a moment', href: undefined },
+    { error: 'max_output_tokens', summary: 'Reached max output tokens', copy: 'max-output-tokens cap', href: undefined },
+    { error: 'unknown', summary: 'API error', copy: 'API error', href: undefined },
+  ])('renders $error with its summary, copy and link', ({ error, summary, copy, href }) => {
+    const { getByTestId } = render(APIErrorRow, { props: { item: makeErrorItem(error, summary) } });
     const row = getByTestId('api-error-row');
-    expect(row.textContent).toContain('Rate limit reached');
-    expect(row.dataset.errorEnum).toBe('rate_limit');
+    expect(row.dataset.errorEnum).toBe(error);
     expect(row.getAttribute('role')).toBe('alert');
-  });
-
-  it('rate_limit errors link to the Anthropic billing console', () => {
-    const { getByTestId, getByText } = render(APIErrorRow, {
-      props: { item: makeErrorItem('rate_limit', 'Rate limit reached') },
-    });
-    const row = getByTestId('api-error-row');
-    const link = row.querySelector('a');
-    expect(link).not.toBeNull();
-    expect(link?.getAttribute('href')).toContain('console.anthropic.com');
-    expect(getByText(/Add credits/)).toBeInTheDocument();
-  });
-
-  it('billing_error errors link to the Anthropic billing console', () => {
-    const { getByTestId } = render(APIErrorRow, {
-      props: { item: makeErrorItem('billing_error', 'Billing error') },
-    });
-    const link = getByTestId('api-error-row').querySelector('a');
-    expect(link?.getAttribute('href')).toContain('console.anthropic.com');
-  });
-
-  it('authentication_failed surfaces the /login hint without a link', () => {
-    const { getByTestId, getByText } = render(APIErrorRow, {
-      props: { item: makeErrorItem('authentication_failed', 'Authentication failed') },
-    });
-    const row = getByTestId('api-error-row');
-    expect(row.querySelector('a')).toBeNull();
-    expect(getByText(/Run \/login/)).toBeInTheDocument();
-  });
-
-  it('server_error surfaces a transient-retry hint without a link', () => {
-    const { getByTestId, getByText } = render(APIErrorRow, {
-      props: { item: makeErrorItem('server_error', 'Anthropic API server error') },
-    });
-    expect(getByTestId('api-error-row').querySelector('a')).toBeNull();
-    expect(getByText(/try again in a moment/)).toBeInTheDocument();
-  });
-
-  it('max_output_tokens surfaces a re-prompt hint', () => {
-    const { getByText } = render(APIErrorRow, {
-      props: { item: makeErrorItem('max_output_tokens', 'Reached max output tokens') },
-    });
-    expect(getByText(/max-output-tokens cap/)).toBeInTheDocument();
-  });
-
-  it('unknown enum renders summary verbatim without hint or link', () => {
-    const { getByTestId } = render(APIErrorRow, {
-      props: { item: makeErrorItem('unknown', 'API error') },
-    });
-    const row = getByTestId('api-error-row');
-    expect(row.textContent).toContain('API error');
-    expect(row.querySelector('a')).toBeNull();
+    expect(row.textContent).toContain(summary);
+    expect(row.textContent).toContain(copy);
+    expect(row.querySelector('a')?.getAttribute('href')).toBe(href);
   });
 });

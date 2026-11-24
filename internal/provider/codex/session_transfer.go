@@ -47,7 +47,7 @@ type TransferSnapshotConfig struct {
 	Reaper  procutil.Reaper
 	Home    string
 	WorkDir string
-	Env     map[string]string
+	Env     provider.EnvInput
 }
 
 type TransferSnapshot struct {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // The images whose size only the header reader knows: an svg with only a
@@ -18,7 +19,7 @@ const displaySizeFluidSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 
 func displaySizeAVIF(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile("internal/attachment/testdata/solid-5x7.avif")
+	data, err := os.ReadFile(reporoot.Path(t, "internal/attachment/testdata/solid-5x7.avif"))
 	if err != nil {
 		t.Fatal(err)
 	}

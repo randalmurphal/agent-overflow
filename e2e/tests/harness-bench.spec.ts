@@ -1,18 +1,21 @@
-// `ao-harness bench` end to end, driven the way a human drives it: the
+// The ao-harness CLI end to end, driven the way a human drives it: the
 // real CLI binary as a subprocess, pointed at this worker's harness, with
-// a Playwright page attached so the frontend bridge can answer.
+// a Playwright page attached where the frontend bridge has to answer.
 //
 // The arithmetic already has unit coverage (cmd/ao-harness/bench_report_test.go)
 // and the bridge has its own spec. What only this level can prove is the
 // join: that a CLI outside the app can reset an instance, reload the page
 // it is holding, seed a fixture, arm the meters, drive a scenario to turn
-// completion, and land a report with numbers a real browser produced.
+// completion, and land a report with numbers a real browser produced; and
+// that `send --wait` names its message's turn from the completions the
+// backend really publishes, and refuses a working thread.
 import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import type { HarnessApp } from '../src/harness.js';
 import { execProduct, productBinary } from '../src/product-process.js';
-import { test, expect } from './fixtures.js';
+import { test, expect, type SeedResult } from './fixtures.js';
+import { advanceGate, awaitGate, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 
 interface BenchAggregate {
   runs: number;
@@ -151,3 +154,39 @@ test('health rolls up the same instance and exits ok', async ({ harness, page })
   // the one the whole rollup exists to surface.
   expect(stdout).not.toMatch(/red\s+frontend-errors/);
 });
+
+for (const provider of ['claude', 'codex'] as const) {
+  test(`send --wait reports the turn its message is placed in and refuses a working thread (${provider})`, async ({ harness }) => {
+    test.setTimeout(90_000);
+    const gate = `cli-send-wait-held-${provider}`;
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [{ name: 'CLI send', repo: {}, threads: [{ title: 'CLI send thread', provider }] }],
+    });
+    const cwd = seed.projects[0].path;
+    const threadId = seed.projects[0].threadIds[0];
+    await setScenario(harness, cwd, threadToolsScenario({
+      name: `cli-send-wait-${provider}`,
+      provider,
+      turns: [{ text: 'The first answer.' }, { steps: [{ gate }], text: 'The held answer.' }],
+    }));
+    const cli = (...args: string[]) =>
+      execProduct(productBinary('ao-harness'), ['--instance', harness.bootstrap.dataRoot, '-o', 'json', ...args], { timeout: 60_000 });
+
+    // At rest: the CLI exits 0 with the completion of its message's turn.
+    const { stdout } = await cli('send', '--thread', threadId, '--wait', 'first message');
+    expect((JSON.parse(stdout) as { completed: unknown }).completed).toMatchObject({ threadId, turnIndex: 0 });
+
+    // Working: the backend refuses the send. Were it taken, it would queue
+    // behind the held turn, and the turn it runs in could not be named.
+    const parked = awaitGate(harness, gate, cwd);
+    await harness.send(threadId, 'held message');
+    const { mockId } = await parked;
+    const refused = await cli('send', '--thread', threadId, '--wait', 'refused message').then(
+      () => ({ code: 0, stderr: '' }),
+      (error: { code?: number; stderr?: string }) => ({ code: error.code ?? -1, stderr: error.stderr ?? '' }),
+    );
+    expect(refused.code, 'send --wait to a working thread must fail').toBe(1);
+    expect(refused.stderr).toContain('thread is working: a message sent now would queue behind that work');
+    await advanceGate(harness, mockId, gate);
+  });
+}

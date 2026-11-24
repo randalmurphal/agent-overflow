@@ -87,15 +87,6 @@ type agentNotice struct {
 	recipient func(threadID string)
 }
 
-// personMessage is the prepare of a notice that carries the person's own
-// words (fromPerson), from one that returns their text.
-func personMessage(prepare func() (string, bool, error)) func() (usermessage.AgentMessage, bool, error) {
-	return func() (usermessage.AgentMessage, bool, error) {
-		text, proceed, err := prepare()
-		return usermessage.PersonMessage(text), proceed, err
-	}
-}
-
 // queueAgentNotice queues one notice and makes sure something will run to
 // read it. It returns once the notice is in the durable queue; a session
 // start it needs runs afterwards (startAgentNoticeSession). An archived
@@ -155,13 +146,9 @@ func (a *App) queueAgentNotice(notice agentNotice) error {
 func (a *App) goAgentNoticeWork(threadID string, fn func()) bool {
 	a.agentNoticeWork.mu.Lock()
 	defer a.agentNoticeWork.mu.Unlock()
-	if a.agentNoticeWork.stopped {
-		return false
-	}
-	a.agentNoticeWork.wg.Add(1)
-	a.agentNoticeWork.running++
-	go func() {
-		defer a.agentNoticeWork.wg.Done()
+	// The member's own decrement takes mu, which is held until the count
+	// below is made.
+	started := a.agentNoticeWork.wg.Go(func() {
 		defer func() {
 			a.agentNoticeWork.mu.Lock()
 			a.agentNoticeWork.running--
@@ -175,13 +162,16 @@ func (a *App) goAgentNoticeWork(threadID string, fn func()) bool {
 			}
 		}()
 		fn()
-	}()
-	return true
+	})
+	if started {
+		a.agentNoticeWork.running++
+	}
+	return started
 }
 
 // startAgentNoticeSession starts the session a queued notice needs, and
 // reports whether the thread has one afterwards. It takes the thread's
-// action lock the way StartSession does, and re-checks under it: a session
+// action lock the way startSessionTakingLock does, and re-checks under it: a session
 // someone else started meanwhile already has the message, because startup's
 // flush trigger dispatches the queue, and starting again would restart that
 // session.
@@ -396,18 +386,9 @@ func (a *App) withdrawAgentNotice(notice agentNotice) {
 	}
 }
 
-// waitAgentNoticeWork blocks until the notice work already begun has
-// finished, without refusing more. It is the observation point for tests.
-func (a *App) waitAgentNoticeWork() {
-	a.agentNoticeWork.wg.Wait()
-}
-
 // stopAgentNoticeWork refuses new notice work and waits out what is in
 // flight. Shutdown calls it before it closes sessions, so a start that
 // finishes cannot register a session the close has already passed.
 func (a *App) stopAgentNoticeWork() {
-	a.agentNoticeWork.mu.Lock()
-	a.agentNoticeWork.stopped = true
-	a.agentNoticeWork.mu.Unlock()
-	a.agentNoticeWork.wg.Wait()
+	a.agentNoticeWork.wg.Close()
 }

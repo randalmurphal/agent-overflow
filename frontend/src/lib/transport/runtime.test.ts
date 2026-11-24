@@ -17,15 +17,18 @@ const { mockClient } = vi.hoisted(() => ({
     callByName: vi.fn<(name: string, args: unknown[]) => Promise<unknown>>(),
     subscribe: vi.fn<(channel: string, handler: (data: unknown) => void) => () => void>(),
     installStepUpProver: vi.fn(),
+    setDiagnosticsSink: vi.fn(),
     setWatchedThreads: vi.fn(),
     getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
     onReplay: vi.fn(() => () => undefined),
     onStatusChange: vi.fn(() => () => undefined),
+    onHelloChange: vi.fn(() => () => undefined),
     close: vi.fn(),
   },
 }));
 
-vi.mock('./wsClient', () => ({
+vi.mock('./wsClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./wsClient')>()),
   wsClient: mockClient,
   // The runtime shim doesn't import these, but other tests in the same
   // file might — re-export sensible stubs so the resolver doesn't
@@ -40,7 +43,6 @@ vi.mock('./wsClient', () => ({
 import { Call, CancellablePromise, Create, Events } from './runtime';
 import {
   __attachBackendForTest,
-  __resetBackendsForTest,
   withBackendTarget,
 } from './backends';
 import { HOME_DESCRIPTOR } from './manifestBackends';
@@ -226,12 +228,6 @@ describe('Events.On', () => {
   });
 });
 
-describe('Events.Emit', () => {
-  it('is a no-op (transport does not push events from client)', () => {
-    expect(() => Events.Emit({ name: 'foo', data: 1 })).not.toThrow();
-  });
-});
-
 describe('Create.Array', () => {
   it('maps each element through the factory', () => {
     const factory = (s: unknown) => Number(s) * 2;
@@ -342,7 +338,6 @@ describe('CancellablePromise', () => {
   });
 });
 
-
 // A pinned call is still a call that can MINT an id. The pin names the
 // machine, which is exactly the fact the index wants, so the pinned path
 // has to index its answer the way the routed path does. Skipping it left
@@ -368,6 +363,7 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
         callByName: vi.fn(),
         subscribe: vi.fn(() => () => undefined),
         installStepUpProver: vi.fn(),
+        setDiagnosticsSink: vi.fn(),
     setWatchedThreads: vi.fn(),
         setLease: vi.fn(),
         getStatus: vi.fn(() => ({ status: 'connected', nextAttemptAt: null })),
@@ -383,13 +379,6 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
 
   beforeEach(() => {
     __attachBackendForTest(HOME_DESCRIPTOR, mockClient as unknown as Parameters<typeof __attachBackendForTest>[1]);
-    __resetBackendsForTest();
-    __resetEntityIndexForTest();
-  });
-
-  afterEach(() => {
-    __resetBackendsForTest();
-    __resetEntityIndexForTest();
   });
 
   it('notes a single minted id against the pinned backend', async () => {
@@ -402,7 +391,7 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
   });
 
   // The last three name a subscription id, which every caller pins.
-  it.each([1098302047, 1496882310, 1186337974, 70120675, 1078249699, 2888550814, 3263989430])('refuses unknown entity ownership with two computers for method %s', async (method) => {
+  it.each([1098302047, 3632185196, 1186337974, 70120675, 1078249699, 2888550814, 3263989430])('refuses unknown entity ownership with two computers for method %s', async (method) => {
     const callByID = remoteClient(null);
     await expect(Call.ByID(method, 'unseen')).rejects.toThrow('computer that owns');
     expect(callByID).not.toHaveBeenCalled();

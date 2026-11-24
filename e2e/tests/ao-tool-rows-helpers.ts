@@ -25,6 +25,7 @@ import {
   doneFlowYaml,
   otherProvider,
 } from './workflows-agent-tools-helpers.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 export const LEAD_TITLE = 'Lead thread';
 export const TARGET_TITLE = 'Target thread';
@@ -125,8 +126,7 @@ export async function driveAoToolRows(harness: HarnessApp, provider: ProviderNam
     }),
   );
 
-  await harness.rpc('StartSession', leadThreadId);
-  await harness.rpc('SendMessage', leadThreadId, 'get the release moving', null);
+  await harness.send(leadThreadId, 'get the release moving');
   const spawn = await awaitToolAnswer<{ thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', cwd: lead.path });
   const send = await awaitToolAnswer<{ outcome: string }>(harness, { tool: 'thread_send', cwd: lead.path });
   for (const answer of [spawn, send]) await releaseAfterBackgrounded(answer, { harness, gate: 'ao-rows-answer', cwd: target.path });
@@ -300,7 +300,15 @@ export async function atOverlayEdge(row: Locator, overlay: Locator, press: () =>
 /** Screenshots a row placed as `placeRow` places it. */
 export async function shootRow(row: Locator, path: string): Promise<void> {
   await placeRow(row);
-  await row.screenshot({ path, animations: 'disabled' });
+  await screenshot(row, { path, animations: 'disabled' });
+}
+
+/**
+ * shootRow for a row that expandRow or atOverlayEdge opens next. Both
+ * place the row themselves, so with screenshots off this places nothing.
+ */
+export async function shootRowBeforeOpening(row: Locator, path: string): Promise<void> {
+  if (screenshotsOn) await shootRow(row, path);
 }
 
 /**

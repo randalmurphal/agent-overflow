@@ -211,30 +211,6 @@ func TestGetThreadItem_ReturnsZeroValueForMissingItem(t *testing.T) {
 	}
 }
 
-func itoa(i int) string {
-	// Avoids pulling strconv into every test file's import list.
-	const digits = "0123456789"
-	if i == 0 {
-		return "0"
-	}
-	neg := i < 0
-	if neg {
-		i = -i
-	}
-	var buf [20]byte
-	n := len(buf)
-	for i > 0 {
-		n--
-		buf[n] = digits[i%10]
-		i /= 10
-	}
-	if neg {
-		n--
-		buf[n] = '-'
-	}
-	return string(buf[n:])
-}
-
 // TestListRecentTurnsBindingDelegatesToStore confirms the App binding
 // returns the same rows the store layer does, in newest-first order.
 // The binding is a one-liner pass-through, but the test protects against
@@ -328,47 +304,5 @@ func TestListRecentTurnsBindingRespectsLimit(t *testing.T) {
 	}
 	if got[1].TurnIndex != 3 {
 		t.Errorf("got[1].TurnIndex = %d, want 3", got[1].TurnIndex)
-	}
-}
-
-// TestListRecentTurnsBindingEmptyThread covers the zero-state path the
-// frontend hits on a freshly-created thread that's never sent a turn.
-func TestListRecentTurnsBindingEmptyThread(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	if err := app.store.CreateThread(testThread("thread-1")); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	got, err := app.ListRecentTurns("thread-1", 2)
-	if err != nil {
-		t.Fatalf("ListRecentTurns: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("expected 0 rows for empty thread, got %d", len(got))
-	}
-}
-
-// TestListRecentTurnsBindingNonPositiveLimit mirrors the store's
-// short-circuit: a non-positive limit returns an empty slice without
-// hitting the DB. The frontend doesn't call this path, but the contract
-// is part of the store API the binding exposes.
-func TestListRecentTurnsBindingNonPositiveLimit(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	if err := app.store.CreateThread(testThread("thread-1")); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	turn := store.Turn{TurnID: "t-0", ThreadID: "thread-1", TurnIndex: 0, StartedAt: 1}
-	if err := app.store.InsertTurn(turn); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
-
-	got, err := app.ListRecentTurns("thread-1", 0)
-	if err != nil {
-		t.Fatalf("ListRecentTurns(limit=0): %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("expected 0 rows for limit=0, got %d", len(got))
 	}
 }

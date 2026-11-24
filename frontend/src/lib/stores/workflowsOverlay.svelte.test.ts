@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  closeWorkflowsPane,
   consumeWorkflowsOverlayEscape,
   getWorkflowArmedAction,
   getWorkflowProjectFilter,
@@ -20,7 +19,6 @@ import {
   pruneWorkflowsOverlayStack,
   pushWorkflowAllClear,
   pushWorkflowRunDetail,
-  resetWorkflowsOverlayForTest,
   setWorkflowArmedAction,
   setWorkflowProjectFilter,
   setWorkflowSweepCursor,
@@ -30,10 +28,10 @@ import {
   toggleWorkflowRunMapWave,
   toggleWorkflowsPane,
 } from './workflowsOverlay.svelte';
-import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
+import { appStorageGet, appStorageSet } from './appStorage';
 import { createPane, focusPane, focusedOpenTargetPane, resetPanesForTest } from './panes.svelte';
-import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import { installToolPanes, isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
+import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest, toolPaneIdFor } from './paneLayout.svelte';
+import { closeToolPane, installToolPanes, isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
 
 const STACK_KEY = 'workflows:overlay';
 
@@ -47,8 +45,6 @@ function resetPaneState(): void {
 
 describe('workflows navigation', () => {
   beforeEach(() => {
-    resetAppStorageForTest();
-    resetWorkflowsOverlayForTest();
     resetPaneState();
   });
 
@@ -172,7 +168,7 @@ describe('workflows navigation', () => {
       openWorkflowsPane();
       setWorkflowsOverlayDialog('intake');
       setWorkflowArmedAction('discard:run-1');
-      closeWorkflowsPane();
+      closeToolPane(toolPaneIdFor('workflows'));
       expect(getWorkflowsOverlayDialog()).toBeNull();
       expect(getWorkflowArmedAction()).toBeNull();
     });
@@ -292,7 +288,6 @@ describe('workflows navigation', () => {
 
 describe('run-map expansion (RUN-MAP §8)', () => {
   beforeEach(() => {
-    resetWorkflowsOverlayForTest();
     resetPaneState();
   });
 

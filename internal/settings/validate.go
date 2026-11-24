@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"agent-overflow/internal/provider"
 )
 
 var (
@@ -36,19 +38,6 @@ var (
 		"codex":  "gpt-luna",
 		"agy":    "gemini-4-hydrogen",
 	}
-	// Text-generation efforts are provider-specific. Claude has no "none",
-	// "minimal", or "ultra". Duplicated here to keep internal/settings
-	// dependency-free of the provider package.
-	allowedCodexTextGenerationEfforts = map[string]struct{}{
-		"none":    {},
-		"minimal": {},
-		"low":     {},
-		"medium":  {},
-		"high":    {},
-		"xhigh":   {},
-		"max":     {},
-		"ultra":   {},
-	}
 	// allowedCommitMessageStyles enumerates the writing-style guidance
 	// for generated commit messages. Values mirror
 	// commitmsg.Style{Conventional,Custom,Repo}.
@@ -56,19 +45,6 @@ var (
 		"conventional": {},
 		"custom":       {},
 		"repo":         {},
-	}
-	allowedClaudeTextGenerationEfforts = map[string]struct{}{
-		"low":    {},
-		"medium": {},
-		"high":   {},
-		"xhigh":  {},
-		"max":    {},
-	}
-	allowedAgyTextGenerationEfforts = map[string]struct{}{
-		"low":    {},
-		"medium": {},
-		"high":   {},
-		"xhigh":  {},
 	}
 	allowedThreadEnvModes = map[string]struct{}{
 		"local":    {},
@@ -731,21 +707,15 @@ func validateOption(field, value string, allowed map[string]struct{}) error {
 	return nil
 }
 
-// ValidateTextGenerationReasoningEffort is the exported form of the check
-// validateSettings runs, for callers that need to test one field without a
-// whole Settings round trip. Mirrors ValidateProviderEnvVarName.
-func ValidateTextGenerationReasoningEffort(provider, effort string) error {
-	return validateTextGenerationReasoningEffort(provider, effort)
-}
-
-func validateTextGenerationReasoningEffort(provider, effort string) error {
-	if _, ok := allowedTextGenerationEfforts(provider)[effort]; ok {
+func validateTextGenerationReasoningEffort(providerName, effort string) error {
+	allowed := allowedTextGenerationEfforts(providerName)
+	if _, ok := allowed[effort]; ok {
 		return nil
 	}
 	return fmt.Errorf(
 		"textGenerationReasoningEffort must be one of %s for provider %q",
-		joinAllowedValues(allowedTextGenerationEfforts(provider)),
-		provider,
+		joinAllowedValues(allowed),
+		providerName,
 	)
 }
 
@@ -781,37 +751,16 @@ func sanitizeCommitMessageStyleCustom(value string) string {
 	return truncateRuneSafe(trimmed, maxCommitMessageStyleCustomLen)
 }
 
-func allowedTextGenerationEfforts(provider string) map[string]struct{} {
-	switch provider {
-	case "claude":
-		return allowedClaudeTextGenerationEfforts
-	case "codex":
-		return allowedCodexTextGenerationEfforts
-	case "agy":
-		return allowedAgyTextGenerationEfforts
-	default:
-		return nil
+// allowedTextGenerationEfforts is the provider's own reasoning-effort set
+// (provider.ReasoningEffortsForProvider) as a lookup. Callers have already
+// checked providerName against allowedTextGenerationProviders.
+func allowedTextGenerationEfforts(providerName string) map[string]struct{} {
+	efforts := provider.ReasoningEffortsForProvider(providerName)
+	allowed := make(map[string]struct{}, len(efforts))
+	for _, effort := range efforts {
+		allowed[string(effort)] = struct{}{}
 	}
-}
-
-// AllowedTextGenerationEfforts returns the reasoning-effort slugs this package
-// accepts for a text-generation provider, sorted. Order carries no meaning —
-// error messages order the set through joinAllowedValues — the MEMBERSHIP is
-// the contract.
-//
-// Exported for TestTextGenerationEffortsMatchTheProviderSets in the root
-// package, the only place that can see both this copy and
-// provider.ReasoningEffortsForProvider: internal/settings must not import
-// internal/provider (cycle), so the tables above are duplicates, and this is
-// the same arrangement ReservedProviderEnvNames uses for the env deny-list.
-func AllowedTextGenerationEfforts(provider string) []string {
-	allowed := allowedTextGenerationEfforts(provider)
-	efforts := make([]string, 0, len(allowed))
-	for effort := range allowed {
-		efforts = append(efforts, effort)
-	}
-	sort.Strings(efforts)
-	return efforts
+	return allowed
 }
 
 func validateWorktreeBranchPrefix(value string) (string, error) {

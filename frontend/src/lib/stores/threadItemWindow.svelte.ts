@@ -645,5 +645,3 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     commitUpsertResult,
   };
 }
-
-export type ThreadItemWindow = ReturnType<typeof createThreadItemWindow>;

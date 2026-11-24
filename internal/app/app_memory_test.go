@@ -540,3 +540,9 @@ func TestDeletingAnEmptyDraftForgetsItsMemoryRecords(t *testing.T) {
 		t.Fatalf("the draft's delete kept the memory plan: %v", err)
 	}
 }
+
+// waitMemoryReports blocks until the reports already begun have finished,
+// without refusing more. It is the observation point for tests.
+func (a *App) waitMemoryReports() {
+	a.memoryReports.wg.Wait()
+}

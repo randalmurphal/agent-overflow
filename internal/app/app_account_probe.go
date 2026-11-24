@@ -26,7 +26,7 @@ type ProviderAccountEvent struct {
 }
 
 // probeStartupAccountInfo runs ProbeClaudeAccount and ProbeCodexAccount
-// concurrently. The bound methods themselves emit the
+// concurrently. The probes themselves emit the
 // `provider:account` event on cache miss, so this function is the
 // orchestrator: spawn one goroutine per provider, swallow errors
 // (provider:status carries the binary-level diagnostic), don't block
@@ -50,13 +50,13 @@ func (a *App) probeStartupAccountInfo() {
 	}()
 	go func() {
 		defer a.startupProbeWG.Done()
-		_, _ = a.ProbeCodexAccount()
+		_, _ = a.providerDiscoveryService().ProbeCodexAccount()
 	}()
 	go func() {
 		defer a.startupProbeWG.Done()
 		lookPath := a.resolveLookPath()
 		if binary := a.providerBinaryPath(string(provider.Agy)); binary != "" && lookPath(binary) == nil {
-			if _, err := a.ProbeAgyAccount(); err == nil {
+			if _, err := a.providerDiscoveryService().ProbeAgyAccount(); err == nil {
 				a.providerLifecycleService().RequestAgyUsage()
 			}
 		}
@@ -83,7 +83,7 @@ func (a *App) retryClaudeStartupProbe(ctx context.Context) bool {
 	for attempt := 0; ; attempt++ {
 		delay := claudeStartupProbeBackoff[min(attempt, len(claudeStartupProbeBackoff)-1)]
 		if binary := a.providerBinaryPath(string(provider.Claude)); binary != "" && lookPath(binary) == nil {
-			_, err := a.ProbeClaudeAccount()
+			_, err := a.providerDiscoveryService().ProbeClaudeAccount()
 			if err == nil {
 				return true
 			}

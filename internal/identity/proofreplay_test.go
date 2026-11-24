@@ -112,3 +112,11 @@ func TestProofReplayIsSafeUnderConcurrentAdmits(t *testing.T) {
 			admitted, racers)
 	}
 }
+
+// tracked reports how many identifiers are held, for the bound this file
+// argues.
+func (g *proofReplay) tracked() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.current) + len(g.previous)
+}

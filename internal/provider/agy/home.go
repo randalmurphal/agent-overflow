@@ -4,36 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"path/filepath"
 	"strings"
+
+	"agent-overflow/internal/provider"
 )
 
-// Environment variables through which agy chooses its login store and home.
-// Launch is the only code that sets or clears them.
-const (
-	forceFileStorageEnv = "AGY_ACP_FORCE_FILE_STORAGE"
-	geminiHomeEnv       = "GEMINI_HOME"
-	appDataDirEnv       = "AGY_APP_DATA_DIR"
-	// sshConnectionEnv is set with forceFileStorageEnv on every file-store
-	// launch, as the sign-in flow has set it since it was added; the repo
-	// records no reason of its own for it.
-	sshConnectionEnv = "SSH_CONNECTION"
-)
-
-// ambientCredentialEnvVars are scrubbed from agy subprocess environments unless
-// explicitly configured by the user so ambient shell GCP/Gemini API exports do
-// not hijack Google OAuth sessions.
-var ambientCredentialEnvVars = []string{
-	"GEMINI_API_KEY",
-	"GOOGLE_API_KEY",
-	"GOOGLE_APPLICATION_CREDENTIALS",
-	"GOOGLE_CLOUD_PROJECT",
-	"GOOGLE_CLOUD_LOCATION",
-	"GOOGLE_GENAI_USE_VERTEXAI",
-	"GCLOUD_PROJECT",
-	"CLOUDSDK_CORE_PROJECT",
-}
+// sshConnectionValue is what a file-store launch sets SSH_CONNECTION to, as
+// the sign-in flow has since it was added; the repo records no reason of its
+// own for it.
+const sshConnectionValue = "127.0.0.1 0 127.0.0.1 0"
 
 // Home is the login store and home directory one agy process runs against.
 // The canonical home is the login the account manager reads, on the store it
@@ -111,57 +91,43 @@ func (h Home) Identity() string {
 }
 
 // Launch is what an agy command needs to run against one Home: the home
-// arguments to place after its subcommand, the environment overrides, and the
-// inherited variables to clear.
+// arguments to place after its subcommand, and the environment to start it
+// with.
 type Launch struct {
-	Args  []string
-	Env   map[string]string
-	Unset []string
+	Args []string
+	Env  provider.EnvInput
 }
 
-// Launch builds the command parts for this home over the user's configured
-// environment. The store flag is set for file storage and cleared otherwise,
-// and an inherited home variable is always cleared, so an agy process never
-// follows a store or home that the environment Agent Overflow inherited
-// points elsewhere. Auto-update is disabled so AO's providerupdate service
-// owns upgrades.
-func (h Home) Launch(customEnv map[string]string) (Launch, error) {
+// Launch builds the command parts for this home over in, the user's
+// configured environment. The store flag is pinned for file storage and
+// cleared otherwise, and an inherited home variable is always cleared, so an
+// agy process never follows a store or home that the environment Agent
+// Overflow inherited points elsewhere. HOME is reserved and never set here:
+// the process HOME is the home the account manager reads, and agy's default
+// home lies under it. SSH_CONNECTION is pinned only with the file store; an
+// inherited one is otherwise left alone. Auto-update is pinned off so AO's
+// providerupdate service owns upgrades, and the ambient GCP/Gemini
+// credentials a shell exports are cleared so they cannot hijack a Google
+// OAuth session; a value the user's custom environment sets for one of them
+// still applies.
+func (h Home) Launch(in provider.EnvInput) (Launch, error) {
 	if !h.set {
 		return Launch{}, errors.New("agy: launch without a home")
 	}
-	env := maps.Clone(customEnv)
-	if env == nil {
-		env = map[string]string{}
-	}
-	// HOME is reserved, never set here: the process HOME is the home the
-	// account manager reads, and agy's default home lies under it.
-	unset := []string{geminiHomeEnv, appDataDirEnv}
-	delete(env, "HOME")
-	delete(env, geminiHomeEnv)
-	delete(env, appDataDirEnv)
-	// SSH_CONNECTION is set only with the file store; a value in the custom
-	// environment never reaches agy, and an inherited one is left alone.
-	delete(env, sshConnectionEnv)
+	env := in.Clear(provider.AgyGeminiHomeEnv, provider.AgyAppDataDirEnv)
 	if h.fileStorage {
-		env[forceFileStorageEnv] = "1"
-		env[sshConnectionEnv] = "127.0.0.1 0 127.0.0.1 0"
+		env = env.Pin(provider.AgyForceFileStorageEnv, "1").
+			Pin(provider.AgySSHConnectionEnv, sshConnectionValue)
 	} else {
-		delete(env, forceFileStorageEnv)
-		unset = append(unset, forceFileStorageEnv)
+		env = env.Clear(provider.AgyForceFileStorageEnv)
 	}
-	if _, exists := env["AGY_CLI_DISABLE_AUTO_UPDATE"]; !exists {
-		env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "1"
-	}
-	for _, key := range ambientCredentialEnvVars {
-		if _, userSet := customEnv[key]; !userSet {
-			unset = append(unset, key)
-		}
-	}
+	env = env.Pin(provider.AgyDisableAutoUpdateEnv, "1").
+		Clear(provider.AgyAmbientCredentialEnvs...)
 	var args []string
 	if h.appDataDir != "" {
 		args = []string{"--gemini-dir", filepath.Dir(h.appDataDir), "--app-data-dir", filepath.Base(h.appDataDir)}
 	}
-	return Launch{Args: args, Env: env, Unset: unset}, nil
+	return Launch{Args: args, Env: env}, nil
 }
 
 // OnDefaultHome refuses a launch that names its home directory, for a

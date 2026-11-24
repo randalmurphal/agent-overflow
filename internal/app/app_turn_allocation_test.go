@@ -10,6 +10,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 // A turn the CLI starts on its own between a send's placement and its
@@ -19,7 +21,7 @@ import (
 func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if err := app.SendMessage(context.Background(), thread.ID, "first", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -36,7 +38,7 @@ func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 			t.Errorf("insert wake turn: %v", err)
 		}
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -52,7 +54,7 @@ func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 			}
 		}
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // A wake that lands after a direct send's row is persisted, before its
@@ -61,7 +63,7 @@ func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if err := app.SendMessage(context.Background(), thread.ID, "first", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -78,14 +80,14 @@ func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 			t.Errorf("wake opened turn %d, want the send's turn 1", got)
 		}
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
 	if _, found, err := app.store.GetTurnByThreadIndex(thread.ID, 2); err != nil || found {
 		t.Fatalf("turn 2 row: found=%v err=%v, want none", found, err)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // A session torn down and replaced after a send registered with its row
@@ -95,7 +97,7 @@ func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if err := app.SendMessage(context.Background(), thread.ID, "first", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -113,7 +115,7 @@ func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 		app.triage.CleanupThread(threadID)
 		app.triage.MarkThreadActive(threadID, sess.Token)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -124,7 +126,7 @@ func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 	if turn.CompletedAt == nil {
 		t.Fatal("the send's turn 1 never completed")
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // startTwoTurnClaudeThread starts a Claude session whose mock answers two
@@ -152,7 +154,7 @@ func startTwoTurnClaudeThread(t *testing.T) (*App, *capturedEventBus, store.Thre
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	return app, bus, thread

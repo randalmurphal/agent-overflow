@@ -12,23 +12,22 @@ import {
   readBrowserCompanionState,
   reconcileBrowserCompanionForPane,
   refreshBrowserCompanionStates,
-  resetBrowserCompanionForTest,
 } from './browserCompanion.svelte';
 import { BROWSER_FIND_DEBOUNCE_MS, createBrowserFind } from './browserFind.svelte';
-import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from './companionPanes.svelte';
+import { closeCompanion, companionForSource, installCompanionPanes } from './companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import { createPane, getFocusedPaneId, getPane, resetPanesForTest } from './panes.svelte';
+import { createPane, getFocusedPaneId, getPane } from './panes.svelte';
 import { makeThread } from '../../test/helpers/chat';
 import { attachBrowserPaneForTest, openBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { flushSync } from 'svelte';
 import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
 import { noteThread, forgetBackendEntities } from '../transport/entityIndex';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import * as runMode from '../transport/runMode';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 import { browserCompanionState, browserStateThreadsForTest } from './browserCompanion.svelte';
 import { refreshWatchedThreads, registerWatchedThreadSource } from './watchedThreads';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
@@ -37,12 +36,9 @@ import { DisconnectedError } from '../transport/wsClient';
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
 describe('browser companion state routing', () => {
-  afterEach(() => { forgetBackendEntities('remote'); resetStagedBackends(); vi.restoreAllMocks(); });
+  afterEach(() => { forgetBackendEntities('remote'); vi.restoreAllMocks(); });
   beforeEach(() => {
-    resetBrowserCompanionForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
     createPane('main').replaceThread(makeThread({ id: 'thread-browser' }));
@@ -514,18 +510,10 @@ describe('tab lifecycle in the browser companion store', () => {
   });
 
   beforeEach(() => {
-    resetBrowserCompanionForTest();
-    resetToastsForTest();
-    resetCompanionPanesForTest();
     resetPaneLayoutForTest();
-    resetPanesForTest();
     installCompanionPanes();
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
     createPane('main').replaceThread(makeThread({ id: THREAD }));
-  });
-  afterEach(() => {
-    resetBrowserCompanionForTest();
-    resetToastsForTest();
   });
 
   it('raises a teardown failure after the last tab closed as a toast that stays', () => {
@@ -549,13 +537,11 @@ describe('browser state kept per surface', () => {
   let shown: Set<string>;
   let unregister: () => void;
   beforeEach(() => {
-    resetBrowserCompanionForTest();
     shown = new Set();
     unregister = registerWatchedThreadSource(() => shown);
   });
   afterEach(() => {
     unregister();
-    resetBrowserCompanionForTest();
   });
 
   function show(...threadIds: string[]): void {

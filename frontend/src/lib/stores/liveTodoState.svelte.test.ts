@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  __resetActivityRailUiPrefsForTest,
-  __resetLiveTodoUiPrefsForTest,
   createLiveTodoState,
   LIVE_TODO_AUTOHIDE_MS,
 } from './liveTodoState.svelte';
@@ -9,14 +7,10 @@ import {
 describe('liveTodoState', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    __resetActivityRailUiPrefsForTest();
-    __resetLiveTodoUiPrefsForTest();
   });
 
   afterEach(() => {
     vi.useRealTimers();
-    __resetActivityRailUiPrefsForTest();
-    __resetLiveTodoUiPrefsForTest();
   });
 
   it('sets and clears live todo snapshots', () => {

@@ -1,20 +1,18 @@
 import { buildSendOptions } from '../../utils/sendOptions';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchSend } from './composerSend';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { SourceProposedPlan, Thread } from '../../types/models';
-import { resetForTest as resetWorktreeIntent } from '../../stores/worktreeIntent.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import { projectTurnStarted } from '../../stores/threadStatuses.svelte';
-import { resetDirectSendsForTest, runInterrupt } from '../../stores/threadInterrupt.svelte';
-import { isThreadInterruptPending, resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
+import { runInterrupt } from '../../stores/threadInterrupt.svelte';
+import { isThreadInterruptPending } from '../../stores/threadInterruptState.svelte';
 import {
   hasPendingUnsentMessageConfirmation,
-  resetUnsentMessageConfirmationForTest,
   resolveUnsentMessageConfirmation,
 } from '../../stores/unsentMessageConfirmation.svelte';
 
@@ -47,14 +45,11 @@ function sendOptions(threadId = 'thread-1') {
 
 describe('dispatchSend', () => {
   beforeEach(async () => {
-    resetBindingMocks();
-    resetWorktreeIntent();
     replaceAllThreads([]);
     setBindingMock('GetSettings', async () => makeSettings());
     await loadSettings();
   });
   afterEach(() => {
-    resetUnsentMessageConfirmationForTest();
     vi.restoreAllMocks();
   });
 
@@ -123,27 +118,22 @@ describe('dispatchSend', () => {
     expect(consoleErr).toHaveBeenCalled();
   });
 
-  it('leaves the text to the assistant\'s new thread when the send found its session gone', async () => {
+  it.each([
+    {
+      case: 'new thread when the send found its session gone',
+      code: 'assistant_session_gone',
+      message: "The provider cleaned up this assistant's session. It continues in a new thread, and your message is waiting in that thread's composer.",
+    },
+    {
+      case: 'current thread when a handoff moved the draft it sends',
+      code: 'assistant_draft_moved',
+      message: 'Your unsent text moved to Ops; send it from there.',
+    },
+  ])('leaves the text to the assistant\'s $case', async ({ code, message }) => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     resetToastsForTest();
-    const message = "The provider cleaned up this assistant's session. It continues in a new thread, and your message is waiting in that thread's composer.";
     setBindingMock('SendMessageWithOptions', async () => {
-      throw new TransportError('assistant_session_gone', message);
-    });
-    const opts = sendOptions();
-
-    expect(await dispatchSend(opts)).toBe(false);
-    expect(opts.restoreDraft).not.toHaveBeenCalled();
-    expect(opts.reportError).not.toHaveBeenCalled();
-    expect(getToasts()).toEqual([expect.objectContaining({ type: 'info', message })]);
-  });
-
-  it('leaves the text to the assistant\'s current thread when a handoff moved the draft it sends', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    resetToastsForTest();
-    const message = 'Your unsent text moved to Ops; send it from there.';
-    setBindingMock('SendMessageWithOptions', async () => {
-      throw new TransportError('assistant_draft_moved', message);
+      throw new TransportError(code, message);
     });
     const opts = sendOptions();
 
@@ -262,35 +252,30 @@ describe('dispatchSend', () => {
     expect(pin).toHaveBeenCalledWith('thread-1');
   });
 
-  it('does not auto-pin when the setting is disabled', async () => {
-    setBindingMock('GetSettings', async () => makeSettings({ autoPinNewThreads: false }));
+  it.each([
+    {
+      case: 'when the setting is disabled',
+      settings: { autoPinNewThreads: false },
+      before: makeThread({ isDraft: true }),
+      after: makeThread({ isDraft: false }),
+    },
+    {
+      case: 'imported drafts',
+      settings: {},
+      before: makeThread({ isDraft: true, importSource: '/tmp/provider-session' }),
+      after: makeThread({ isDraft: false, importSource: '/tmp/provider-session' }),
+    },
+    {
+      case: 'a later send on an already-started thread',
+      settings: {},
+      before: makeThread({ isDraft: false, sessionRef: 'session-1' }),
+      after: makeThread({ isDraft: false, sessionRef: 'session-1', updatedAt: 2 }),
+    },
+  ])('does not auto-pin $case', async ({ settings, before, after }) => {
+    setBindingMock('GetSettings', async () => makeSettings(settings));
     await loadSettings();
-    const draft = makeThread({ isDraft: true });
-    replaceAllThreads([draft]);
-    setBindingMock('SendMessageWithOptions', async () => makeThread({ isDraft: false }));
-    const pin = setBindingMock('PinThread', vi.fn());
-
-    expect(await dispatchSend(sendOptions())).toBe(true);
-    expect(pin).not.toHaveBeenCalled();
-  });
-
-  it('does not auto-pin imported drafts', async () => {
-    const draft = makeThread({ isDraft: true, importSource: '/tmp/provider-session' });
-    replaceAllThreads([draft]);
-    setBindingMock('SendMessageWithOptions', async () => makeThread({
-      isDraft: false,
-      importSource: draft.importSource,
-    }));
-    const pin = setBindingMock('PinThread', vi.fn());
-
-    expect(await dispatchSend(sendOptions())).toBe(true);
-    expect(pin).not.toHaveBeenCalled();
-  });
-
-  it('does not auto-pin a later send on an already-started thread', async () => {
-    const started = makeThread({ isDraft: false, sessionRef: 'session-1' });
-    replaceAllThreads([started]);
-    setBindingMock('SendMessageWithOptions', async () => ({ ...started, updatedAt: 2 }));
+    replaceAllThreads([before]);
+    setBindingMock('SendMessageWithOptions', async () => after);
     const pin = setBindingMock('PinThread', vi.fn());
 
     expect(await dispatchSend(sendOptions())).toBe(true);
@@ -300,10 +285,6 @@ describe('dispatchSend', () => {
   // A Stop pressed before the send answers waits for the answer, then stops
   // the turn: the message is sent, then interrupted, never cancelled.
   describe('a Stop pressed while the send is unanswered', () => {
-    beforeEach(() => {
-      resetThreadInterruptStateForTest();
-      resetDirectSendsForTest();
-    });
 
     function stopPane() {
       return { threadId: 'thread-1', setGeneralError: vi.fn(), setSendInFlight: vi.fn() };

@@ -449,12 +449,20 @@ func TestRemoteMCPProviderCeilingsExceedTheLongestWait(t *testing.T) {
 	if _, set := base["timeout"]; set {
 		t.Fatal("decoration mutated the shared config")
 	}
-	env := withRemoteMCPClaudeEnv(map[string]string{"HOME": "/h"})
-	if env[claudeMCPAutoBackgroundEnvVar] != "1200000" || env["HOME"] != "/h" {
-		t.Fatalf("claude env: %v", env)
+	autoBackground := provider.ClaudeMCPAutoBackgroundEnv.Name()
+	built := func(custom map[string]string) map[string]string {
+		values := map[string]string{}
+		for _, entry := range provider.BuildEnvironment(withRemoteMCPClaudeEnv(provider.EnvInput{Custom: custom})) {
+			name, value, _ := strings.Cut(entry, "=")
+			values[name] = value
+		}
+		return values
 	}
-	if kept := withRemoteMCPClaudeEnv(map[string]string{claudeMCPAutoBackgroundEnvVar: "1"}); kept[claudeMCPAutoBackgroundEnvVar] != "1" {
-		t.Fatalf("operator override lost: %v", kept)
+	if env := built(map[string]string{"HOME": "/h"}); env[autoBackground] != "1200000" || env["HOME"] != "/h" {
+		t.Fatalf("claude env: %s=%q HOME=%q", autoBackground, env[autoBackground], env["HOME"])
+	}
+	if kept := built(map[string]string{autoBackground: "1"}); kept[autoBackground] != "1" {
+		t.Fatalf("operator override lost: %s=%q", autoBackground, kept[autoBackground])
 	}
 	for _, tool := range remoteToolDefinitions {
 		if tool["name"] != "remote_run" {

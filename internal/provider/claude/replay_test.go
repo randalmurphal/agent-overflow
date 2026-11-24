@@ -10,16 +10,16 @@ import (
 )
 
 const (
-	fixtureNDJSONBash             = "../../../docs/references/fixtures/claude/ndjson_bash.log"
-	fixtureNDJSONTask             = "../../../docs/references/fixtures/claude/ndjson_task.log"
-	fixtureNDJSONOutlives         = "../../../docs/references/fixtures/claude/ndjson_outlives.log"
-	fixtureNDJSONOutlivesTurn2    = "../../../docs/references/fixtures/claude/ndjson_outlives_turn2.log"
-	fixtureTaskOutputMulti        = "../../../docs/references/fixtures/claude/taskoutput_multi.ndjson"
-	fixtureLocalAgentOutlives     = "../../../docs/references/fixtures/claude/local_agent_outlives.ndjson"
-	fixtureLocalAgentUserInputMid = "../../../docs/references/fixtures/claude/local_agent_user_input_during_wait.ndjson"
-	fixtureLocalAgentPlusBgBash   = "../../../docs/references/fixtures/claude/local_agent_plus_bg_bash.ndjson"
-	fixtureLocalAgentAsyncLaunch  = "../../../docs/references/fixtures/claude/local_agent_async_launch.ndjson"
-	fixtureLocalAgentAsyncResume  = "../../../docs/references/fixtures/claude/local_agent_async_resume.ndjson"
+	fixtureNDJSONBash             = "../wirecaptures/claude/ndjson_bash.log"
+	fixtureNDJSONTask             = "../wirecaptures/claude/ndjson_task.log"
+	fixtureNDJSONOutlives         = "../wirecaptures/claude/ndjson_outlives.log"
+	fixtureNDJSONOutlivesTurn2    = "../wirecaptures/claude/ndjson_outlives_turn2.log"
+	fixtureTaskOutputMulti        = "../wirecaptures/claude/taskoutput_multi.ndjson"
+	fixtureLocalAgentOutlives     = "../wirecaptures/claude/local_agent_outlives.ndjson"
+	fixtureLocalAgentUserInputMid = "../wirecaptures/claude/local_agent_user_input_during_wait.ndjson"
+	fixtureLocalAgentPlusBgBash   = "../wirecaptures/claude/local_agent_plus_bg_bash.ndjson"
+	fixtureLocalAgentAsyncLaunch  = "../wirecaptures/claude/local_agent_async_launch.ndjson"
+	fixtureLocalAgentAsyncResume  = "../wirecaptures/claude/local_agent_async_resume.ndjson"
 )
 
 // These replay tests load captured Claude CLI NDJSON from the repo's
@@ -92,7 +92,7 @@ func filterKinds(events []provider.ProviderEvent, kinds ...provider.EventKind) [
 
 // TestReplay_NDJsonBash validates the backgrounded-Bash + foreground
 // Bash + Read + result scenario in
-// docs/references/fixtures/claude/ndjson_bash.log.
+// internal/provider/wirecaptures/claude/ndjson_bash.log.
 //
 // Expected lifecycle sequence (ignoring text/thinking/usage deltas):
 //
@@ -246,7 +246,7 @@ func TestReplay_NDJsonBash(t *testing.T) {
 }
 
 // TestReplay_NDJsonTask validates the Task subagent + TaskOutput scenario
-// in docs/references/fixtures/claude/ndjson_task.log.
+// in internal/provider/wirecaptures/claude/ndjson_task.log.
 //
 // Expected lifecycle:
 //
@@ -333,7 +333,7 @@ func TestReplay_NDJsonTask(t *testing.T) {
 }
 
 // TestReplay_NDJsonOutlives validates the outlives-turn scenario in
-// docs/references/fixtures/claude/ndjson_outlives.log: a backgrounded bash whose
+// internal/provider/wirecaptures/claude/ndjson_outlives.log: a backgrounded bash whose
 // `task_updated` / `task_notification` arrive AFTER the turn's
 // `result`. This is the canonical "turn closes while background work
 // is still in flight" shape (invariant 24).
@@ -420,7 +420,7 @@ func TestReplay_NDJsonOutlives(t *testing.T) {
 }
 
 // TestReplay_NDJsonTaskOutputMulti validates the scenario in
-// docs/references/fixtures/claude/taskoutput_multi.ndjson: two parallel
+// internal/provider/wirecaptures/claude/taskoutput_multi.ndjson: two parallel
 // `run_in_background:true` Bashes, then a blocking `TaskOutput` on the
 // longer one.
 //
@@ -521,7 +521,7 @@ func TestReplay_NDJsonTaskOutputMulti(t *testing.T) {
 
 // TestReplay_NDJsonOutlivesTurn2 extends the outlives scenario by
 // continuing the same parser session into a fresh turn 2 captured
-// separately in docs/references/fixtures/claude/ndjson_outlives_turn2.log.
+// separately in internal/provider/wirecaptures/claude/ndjson_outlives_turn2.log.
 //
 // The captured session_id matches ndjson_outlives.log, which means the
 // same parser instance would observe both streams in production: turn
@@ -535,10 +535,10 @@ func TestReplay_NDJsonTaskOutputMulti(t *testing.T) {
 // turn-1 bg launch.
 //
 // Fixtures:
-//   - docs/references/fixtures/claude/ndjson_outlives.log (turn 1 + task_updated
+//   - internal/provider/wirecaptures/claude/ndjson_outlives.log (turn 1 + task_updated
 //     after result; also contains the first re-init for turn 2 and
 //     its "Background task finished" result).
-//   - docs/references/fixtures/claude/ndjson_outlives_turn2.log (a second fresh
+//   - internal/provider/wirecaptures/claude/ndjson_outlives_turn2.log (a second fresh
 //     turn 2 capture for the same session — simulates the user typing
 //     "hi" and the agent responding while the parser has already
 //     forgotten the bg task in its task map).
@@ -833,78 +833,59 @@ func TestReplay_LocalAgentOutlives(t *testing.T) {
 	}
 }
 
-// TestReplay_LocalAgentUserInputDuringWait validates that the parser
-// handles the same scenario when the host injects a new user message
-// via stdin during the parent's end_turn → result wait window. The
-// captured fixture has THREE parent message_delta stop_reason=end_turn
-// signals across three rounds, but only ONE wire `result` envelope at
-// the very end. The parser must emit a soft EventTurnComplete for each
-// parent end_turn so the frontend's working indicator cycles correctly
-// per round, and must NOT fire soft on the intermediate tool_use
-// stop_reason that ends the parent's first message of round 1.
-func TestReplay_LocalAgentUserInputDuringWait(t *testing.T) {
-	events := replayFixture(t, fixtureLocalAgentUserInputMid)
+// TestReplay_LocalAgentCascadeTurnCompletes covers two local_agent
+// cascades whose wire `result` is withheld until the subagent finishes:
+//   - user input during wait: the host injects a new user message via
+//     stdin during the parent's end_turn → result wait window. THREE
+//     parent end_turn rounds, and the intermediate tool_use stop_reason
+//     that ends the parent's first message of round 1 must NOT fire soft.
+//   - plus bg bash: a parent that launches both a bg Bash AND a bg
+//     local_agent. The result-delay is keyed on `local_agent` (the
+//     subagent dominates); soft fires for the initial end_turn and for
+//     the ones after the bash's and the subagent's completions wake the
+//     parent.
+//
+// Both emit a soft EventTurnComplete per parent end_turn, so the working
+// indicator cycles per round, and exactly ONE result-driven complete at
+// the end of the cascade.
+func TestReplay_LocalAgentCascadeTurnCompletes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture string
+	}{
+		{"user input during wait", fixtureLocalAgentUserInputMid},
+		{"plus bg bash", fixtureLocalAgentPlusBgBash},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := replayFixture(t, tc.fixture)
 
-	var softCount, resultCount int
-	for _, evt := range filterKinds(events, provider.EventTurnComplete) {
-		if evt.ParentToolUseID != "" {
-			t.Errorf("EventTurnComplete from subagent — should never fire from subagent end_turn")
-		}
-		switch meta := evt.TurnComplete.(type) {
-		case *provider.SoftRoundCloseMeta:
-			if meta == nil {
-				t.Fatal("nil soft turn-complete meta")
+			var softCount, resultCount int
+			for _, evt := range filterKinds(events, provider.EventTurnComplete) {
+				if evt.ParentToolUseID != "" {
+					t.Errorf("EventTurnComplete from subagent — should never fire from subagent end_turn")
+				}
+				switch meta := evt.TurnComplete.(type) {
+				case *provider.SoftRoundCloseMeta:
+					if meta == nil {
+						t.Fatal("nil soft turn-complete meta")
+					}
+					if meta.StopReason != "end_turn" && meta.StopReason != "stop_sequence" && meta.StopReason != "refusal" {
+						t.Errorf("soft fired with disallowed stop_reason %q", meta.StopReason)
+					}
+					softCount++
+				case *provider.WireTurnCompleteMeta:
+					resultCount++
+				default:
+					t.Fatalf("turn-complete meta type = %T", evt.TurnComplete)
+				}
 			}
-			if meta.StopReason != "end_turn" && meta.StopReason != "stop_sequence" && meta.StopReason != "refusal" {
-				t.Errorf("soft fired with disallowed stop_reason %q", meta.StopReason)
+			if softCount != 3 {
+				t.Errorf("expected exactly 3 soft EventTurnComplete (one per parent end_turn round), got %d", softCount)
 			}
-			softCount++
-		case *provider.WireTurnCompleteMeta:
-			resultCount++
-		default:
-			t.Fatalf("turn-complete meta type = %T", evt.TurnComplete)
-		}
-	}
-	if softCount != 3 {
-		t.Errorf("expected exactly 3 soft EventTurnComplete (one per parent end_turn round), got %d", softCount)
-	}
-	if resultCount != 1 {
-		t.Errorf("expected exactly 1 result-driven EventTurnComplete (the wire `result` at cascade end), got %d", resultCount)
-	}
-}
-
-// TestReplay_LocalAgentPlusBgBash confirms the result-delay is keyed
-// on `local_agent` specifically: a parent that launches both a bg
-// Bash AND a bg local_agent has only ONE wire `result` envelope at
-// the end of the entire cascade (subagent dominates), while emitting
-// a soft EventTurnComplete for each parent end_turn, including the
-// ones after the bash's and the subagent's completions wake the parent.
-func TestReplay_LocalAgentPlusBgBash(t *testing.T) {
-	events := replayFixture(t, fixtureLocalAgentPlusBgBash)
-
-	var softCount, resultCount int
-	for _, evt := range filterKinds(events, provider.EventTurnComplete) {
-		if evt.ParentToolUseID != "" {
-			t.Errorf("EventTurnComplete from subagent — should never fire from subagent end_turn")
-		}
-		switch evt.TurnComplete.(type) {
-		case *provider.SoftRoundCloseMeta:
-			softCount++
-		case *provider.WireTurnCompleteMeta:
-			resultCount++
-		default:
-			t.Fatalf("turn-complete meta type = %T", evt.TurnComplete)
-		}
-	}
-	// Three soft completes (one per parent end_turn: the initial one,
-	// the one after the bash completion's wake, the one after the
-	// subagent completion's wake) and exactly one result-driven complete
-	// at the end.
-	if softCount != 3 {
-		t.Errorf("expected exactly 3 soft EventTurnComplete, got %d", softCount)
-	}
-	if resultCount != 1 {
-		t.Errorf("expected exactly 1 result-driven EventTurnComplete, got %d", resultCount)
+			if resultCount != 1 {
+				t.Errorf("expected exactly 1 result-driven EventTurnComplete (the wire `result` at cascade end), got %d", resultCount)
+			}
+		})
 	}
 }
 
@@ -1123,7 +1104,7 @@ func TestParseTaskStarted_FreshLocalAgentLaunchIsNotAResume(t *testing.T) {
 }
 
 // TestReplay_LocalAgentAsyncResume validates the resume-rebind carrier
-// scenario in docs/references/fixtures/claude/local_agent_async_resume.ndjson
+// scenario in internal/provider/wirecaptures/claude/local_agent_async_resume.ndjson
 // (claude-wire.md §E6): an idle async agent resumed via the harness's
 // SendMessage tool gets a FRESH `system/task_started` with the SAME
 // task_id but SendMessage's tool_use_id, carrying the original agent's

@@ -153,7 +153,7 @@ func TestUserProfileControlRemembersOnlySelectedFields(t *testing.T) {
 					_, err = f.app.UpdateThreadRuntimeMode(t.Context(), thread.ID, "approval-required")
 					profile.RuntimeMode = "approval-required"
 				case "context":
-					_, err = f.app.UpdateThreadContextSettings(thread.ID, ContextSettingsUpdate{ContextWindow: 1000000, AutoCompactStandardPercent: 63, AutoCompactExtendedPercent: 73})
+					_, err = f.app.updateThreadContextSettings(thread.ID, ContextSettingsUpdate{ContextWindow: 1000000, AutoCompactStandardPercent: 63, AutoCompactExtendedPercent: 73})
 					profile.ContextWindow, profile.AutoCompactStandardPercent, profile.AutoCompactExtendedPercent = 1000000, 63, 73
 				case "model":
 					_, err = f.app.UpdateThreadModelSelection(thread.ID, thread.Provider, thread.Model)
@@ -245,7 +245,7 @@ func TestConcurrentUserControlsPreserveIndependentPreferences(t *testing.T) {
 				case 2:
 					_, err = f.app.UpdateThreadRuntimeMode(t.Context(), threads[i].ID, "read-only")
 				case 3:
-					_, err = f.app.UpdateThreadContextSettings(threads[i].ID, ContextSettingsUpdate{ContextWindow: 1000000, AutoCompactStandardPercent: 63, AutoCompactExtendedPercent: 73})
+					_, err = f.app.updateThreadContextSettings(threads[i].ID, ContextSettingsUpdate{ContextWindow: 1000000, AutoCompactStandardPercent: 63, AutoCompactExtendedPercent: 73})
 				}
 				results <- err
 			}()

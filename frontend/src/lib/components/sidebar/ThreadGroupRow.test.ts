@@ -9,16 +9,15 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadGroupRow from './ThreadGroupRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
-import { openEmptyPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { addProjectLocal } from '../../stores/projects.svelte';
+import { openEmptyPane } from '../../stores/panes.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { isGroupExpanded, resetSidebarForTest, toggleGroup } from '../../stores/sidebar.svelte';
+import { isGroupExpanded, toggleGroup } from '../../stores/sidebar.svelte';
 import {
   requestGroupRename,
   upsertThreadGroup,
-  resetThreadGroupsForTest,
 } from '../../stores/threadGroups.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   beginThreadRowDrag,
   encodeThreadDragPayload,
@@ -95,11 +94,6 @@ async function flush(): Promise<void> {
 
 describe('<ThreadGroupRow>', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetProjectsForTest();
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
-    resetBindingMocks();
     endThreadRowDrag();
     replaceAllThreads([mkThread('t1'), mkThread('t2')]);
     setBindingMock('GetSettings', async () => null);
@@ -146,14 +140,11 @@ describe('<ThreadGroupRow>', () => {
     expect(queryByTestId('thread-group-row-time')).toBeNull();
   });
 
-  it('shows no activity time when expanded', () => {
-    const { queryByTestId } = renderRow({ expanded: true });
-    expect(queryByTestId('thread-group-row-count')).toBeNull();
-    expect(queryByTestId('thread-group-row-time')).toBeNull();
-  });
-
-  it('shows nothing on the right for an empty expanded group', () => {
-    const { queryByTestId } = renderRow({ expanded: true, memberThreadIds: [] });
+  it.each([
+    ['shows no activity time when expanded', ['t1', 't2']],
+    ['shows nothing on the right for an empty expanded group', []],
+  ])('%s', (_name, memberThreadIds) => {
+    const { queryByTestId } = renderRow({ expanded: true, memberThreadIds });
     expect(queryByTestId('thread-group-row-count')).toBeNull();
     expect(queryByTestId('thread-group-row-time')).toBeNull();
   });
@@ -176,28 +167,17 @@ describe('<ThreadGroupRow>', () => {
     expect(rename).toHaveBeenCalledWith('group-1', 'Spikes');
   });
 
-  it('cancels on Escape without writing', async () => {
+  it.each([
+    ['cancels on Escape without writing', 'Spikes', 'Escape'],
+    ['treats a blank name as a cancel rather than a round-trip', '   ', 'Enter'],
+  ])('%s', async (_name, value, key) => {
     const rename = setBindingMock('RenameThreadGroup', vi.fn(async () => mkGroup()));
     const { getByTestId, getByLabelText, queryByLabelText } = renderRow();
 
     await fireEvent.dblClick(getByTestId('thread-group-row'));
     const input = getByLabelText('Rename Group') as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: 'Spikes' } });
-    await fireEvent.keyDown(input, { key: 'Escape' });
-    await flush();
-
-    expect(rename).not.toHaveBeenCalled();
-    expect(queryByLabelText('Rename Group')).toBeNull();
-  });
-
-  it('treats a blank name as a cancel rather than a round-trip', async () => {
-    const rename = setBindingMock('RenameThreadGroup', vi.fn(async () => mkGroup()));
-    const { getByTestId, getByLabelText, queryByLabelText } = renderRow();
-
-    await fireEvent.dblClick(getByTestId('thread-group-row'));
-    const input = getByLabelText('Rename Group') as HTMLInputElement;
-    await fireEvent.input(input, { target: { value: '   ' } });
-    await fireEvent.keyDown(input, { key: 'Enter' });
+    await fireEvent.input(input, { target: { value } });
+    await fireEvent.keyDown(input, { key });
     await flush();
 
     expect(rename).not.toHaveBeenCalled();
@@ -264,31 +244,14 @@ describe('<ThreadGroupRow>', () => {
     expect(setGroup).toHaveBeenCalledWith(['dragged'], 'group-1');
   });
 
-  it('refuses a thread dragged from another project', async () => {
+  it.each([
+    ['refuses a thread dragged from another project', { threadId: 'dragged', projectId: 'other-project' }],
+    ['refuses a thread that is already in this group', { threadId: 'member', projectId: 'project-1', groupId: 'group-1' }],
+  ])('%s', async (_name, payload) => {
     const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
     const { getByTestId } = renderRow();
 
-    await fireEvent.drop(
-      getByTestId('thread-group-row-shell'),
-      dragEventInit({ threadId: 'dragged', projectId: 'other-project' }),
-    );
-    await flush();
-
-    expect(setGroup).not.toHaveBeenCalled();
-  });
-
-  it('refuses a thread that is already in this group', async () => {
-    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
-    const { getByTestId } = renderRow();
-
-    await fireEvent.drop(
-      getByTestId('thread-group-row-shell'),
-      dragEventInit({
-        threadId: 'member',
-        projectId: 'project-1',
-        groupId: 'group-1',
-      }),
-    );
+    await fireEvent.drop(getByTestId('thread-group-row-shell'), dragEventInit(payload));
     await flush();
 
     expect(setGroup).not.toHaveBeenCalled();
@@ -375,11 +338,6 @@ describe('<ThreadGroupRow> without threads:operate', () => {
   const INERT = 'Not granted to this device';
 
   beforeEach(async () => {
-    resetPanesForTest();
-    resetProjectsForTest();
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
-    resetBindingMocks();
     replaceAllThreads([mkThread('t1'), mkThread('t2')]);
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
@@ -407,10 +365,6 @@ describe('<ThreadGroupRow> without threads:operate', () => {
 
 describe('<ThreadGroupRow> compact layout', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetSidebarForTest();
-    resetThreadGroupsForTest();
-    resetBindingMocks();
     replaceAllThreads([mkThread('t1'), mkThread('t2')]);
     setBindingMock('GetSettings', async () => null);
     await loadSettings();

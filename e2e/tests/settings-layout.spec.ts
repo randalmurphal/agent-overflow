@@ -6,21 +6,22 @@
 // rebound chord). compact-settings-layout.spec.ts holds the same contract on
 // a phone.
 //
-// Owns its backends: each width adopts a provider account, which is
-// process-wide state no other spec should inherit.
+// Owns its backend: it adopts a provider account, which is process-wide
+// state no other spec should inherit.
 import { test, expect } from './fixtures.js';
 import { launchHarness } from '../src/harness.js';
 import { settingsLayoutFaults } from './settings-layout-helpers.js';
 
-for (const width of [1280, 1024, 800]) {
-  test(`settings pages fit a ${width}px window`, async ({ page }) => {
-    test.setTimeout(180_000);
-    await page.setViewportSize({ width, height: 760 });
-    const harness = await launchHarness();
-    try {
-      expect(await settingsLayoutFaults(harness, page, false)).toEqual([]);
-    } finally {
-      await harness.close();
-    }
-  });
-}
+// The widths, widest first: each section is populated once and measured at
+// each in turn, as a window resized narrower lays it out.
+const VIEWPORTS = [1280, 1024, 800].map((width) => ({ width, height: 760 }));
+
+test('settings pages fit a 1280px, 1024px and 800px window', async ({ page }) => {
+  test.setTimeout(180_000);
+  const harness = await launchHarness();
+  try {
+    expect(await settingsLayoutFaults(harness, page, false, VIEWPORTS)).toEqual([]);
+  } finally {
+    await harness.close();
+  }
+});

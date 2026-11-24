@@ -28,11 +28,6 @@ import "agent-overflow/internal/eventchan"
 // fail on either half missing. Adding a channel is therefore two edits:
 // a constant in internal/eventchan and a row here.
 //
-// A `Why` containing the substring "unreviewed" marks a row that inherited
-// a default rather than a decision anyone made. Every row was reviewed in
-// the 2026-08-25 classification pass, so the set should stay empty;
-// TestChannelPolicyUnreviewedWorklist prints any that reappear.
-//
 // # Dynamic channel families
 //
 // Three emit paths do not spell their channel as a constant at the call
@@ -227,18 +222,9 @@ type ChannelPolicy struct {
 	// row instead. A frame this column cannot attribute is a root-scope
 	// frame, which is the delivering direction.
 	TranscriptScopeFiltered bool
-	// Why records the decision. A Why containing "unreviewed" means the
-	// row was captured from an emit site, not decided.
+	// Why records the decision.
 	Why string
 }
-
-// unreviewedMarker is the substring that identifies an unreviewed row —
-// one whose Why records that a default was inherited rather than a
-// decision made. The 2026-08-25 classification pass emptied the set; the
-// marker (and its test) stay so a future captured-not-decided row is
-// still visible as such. Membership is a substring test, not equality,
-// so the marker can sit inside a longer sentence.
-const unreviewedMarker = "unreviewed"
 
 // channelPolicies is the authored table. Alphabetical by channel.
 //
@@ -271,8 +257,8 @@ var channelPolicies = []ChannelPolicy{
 		Scope:     ScopeThreadsOperate,
 		Why: "Names a thread whose composer draft moved and the screen that " +
 			"moved it; the draft TEXT never rides it, because receivers " +
-			"re-read through GetDraft. Scope is the gate: GetDraft / " +
-			"SaveDraft / ClearDraft are all threads:operate for the " +
+			"re-read through GetDraft. Scope is the gate: GetDraft and " +
+			"SaveDraft are both threads:operate for the " +
 			"disclosure reason (in-progress user-typed work), so the only " +
 			"session told WHICH thread someone is typing in is one that may " +
 			"read the text a call later — the push is not a way around the " +
@@ -444,7 +430,7 @@ var channelPolicies = []ChannelPolicy{
 		Scope:     ScopeSettingsWrite,
 		Why: "Same disclosure class and same gate as mcp:oauth-completed — " +
 			"verbatim provider MCP error strings, reaching the settings:write " +
-			"sessions that ListMcpServerStatuses already answers, which is " +
+			"sessions that ListThreadMcpServers already answers, which is " +
 			"what makes the MCP panel render at all on a paired device. Keyed " +
 			"by server, so it must never become latest-only: capacity 1 would " +
 			"evict other servers' latest frames.",
@@ -1818,8 +1804,7 @@ var channelPolicyIndex = func() map[string]ChannelPolicy {
 // connections only, so a channel nobody classified can never reach a LAN
 // peer by omission — the forgotten registration degrades to "invisible to
 // remote clients", never to "leaked to remote clients". Local UX keeps
-// working, and TestChannelPolicyUnreviewedWorklist keeps the registered
-// table honest.
+// working.
 //
 // The two harness-only dynamic emit paths (HarnessEmit, harness.Replayer)
 // need no carve-out either, but not because their channels are
@@ -1857,20 +1842,11 @@ func policyForChannel(channel string) (ChannelPolicy, bool) {
 	return fallback, false
 }
 
-// channelAudience and channelRetention are the two questions the registry
-// answers.
-//
-// channelRetention is cold — EventBus.Emit consults it once per channel
-// (on ring creation) and Replay once per channel per replay request — so
-// it reads the index directly. channelAudience is likewise cold; the HOT
-// visibility check (per event, per subscriber, and again per event per
-// connection) goes through eventVisibleToOrigin's derived bool sets
-// instead, which is one hash probe rather than a struct copy.
-func channelAudience(channel string) Audience {
-	policy, _ := policyForChannel(channel)
-	return policy.Audience
-}
-
+// channelRetention is cold — EventBus.Emit consults it once per channel (on
+// ring creation) and Replay once per channel per replay request — so it reads
+// the index directly. The HOT visibility check (per event, per subscriber, and
+// again per event per connection) goes through eventVisibleToOrigin's derived
+// bool sets instead, which is one hash probe rather than a struct copy.
 func channelRetention(channel string) Retention {
 	policy, _ := policyForChannel(channel)
 	return policy.Retention

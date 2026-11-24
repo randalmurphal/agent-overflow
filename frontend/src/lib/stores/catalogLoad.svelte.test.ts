@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
-import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
+import { stageBackend } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
 import { HOME_BACKEND, detachBackend, takePinnedBackend } from '../transport/backends';
 import { observeBackendGeneration, setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
-import { __resetEntityIndexForTest } from '../transport/entityIndex';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import type { ProjectWithCounts, Thread } from '../types/models';
@@ -18,10 +17,10 @@ import {
   settleCatalogRead,
 } from './catalogLoad.svelte';
 import { catalogTreeListed, loadSidebarCatalogs, resetSidebarCatalogsForTest } from './sidebarCatalogs';
-import { getThreadGroups, resetThreadGroupsForTest, upsertThreadGroup } from './threadGroups.svelte';
+import { getThreadGroups, upsertThreadGroup } from './threadGroups.svelte';
 import type { ThreadGroup } from '../types/models';
 import { refreshSidebarProjections } from './eventsThreadRows';
-import { addProjectLocal, getProjects, resetProjectsForTest } from './projects.svelte';
+import { addProjectLocal, getProjects } from './projects.svelte';
 import { getThreads, prependThread, resetThreadsForTest } from './threads.svelte';
 
 function project(id: string): ProjectWithCounts {
@@ -40,9 +39,6 @@ const LOADING = { phase: 'loading', error: '' };
 const LOADED = { phase: 'loaded', error: '' };
 
 beforeEach(() => {
-  resetStagedBackends();
-  resetProjectsForTest();
-  __resetEntityIndexForTest();
   vi.useFakeTimers();
   vi.spyOn(console, 'error').mockImplementation(() => {});
   // One reader covers the three catalogs of the sidebar's tree, so every
@@ -52,7 +48,6 @@ beforeEach(() => {
   setBindingMock('ListThreadGroups', async () => []);
 });
 afterEach(() => {
-  resetStagedBackends();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -426,7 +421,6 @@ describe('catalog load state', () => {
 
 describe('a history generation observed mid-session', () => {
   beforeEach(() => {
-    resetCatalogLoadForTest();
     setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
   });
 
@@ -492,11 +486,6 @@ describe('a history generation observed mid-session', () => {
 describe('the sidebar listing', () => {
   const group = (id: string): ThreadGroup => ({ id, projectId: 'p1', name: id, createdAt: 0, updatedAt: 0 });
   const offline = () => { throw new DisconnectedError('Computer is offline.'); };
-
-  beforeEach(() => {
-    resetCatalogLoadForTest();
-    resetThreadGroupsForTest();
-  });
 
   it('lists a computer once its threads answered and no read of its threads or groups is out', async () => {
     const groups = deferred<ThreadGroup[]>();
@@ -726,6 +715,7 @@ describe('the sidebar listing', () => {
     await loadSidebarCatalogs();
     expect(catalogTreeListed('gpu')).toBe(true);
     detachBackend('gpu');
+    expect(catalogTreeListed('gpu')).toBe(false);
     stageBackend({ id: 'gpu' });
     setBindingMock('ListProjects', async () => { if (takePinnedBackend() === 'gpu') offline(); return []; });
     setBindingMock('ListThreads', async () => { if (takePinnedBackend() === 'gpu') offline(); return []; });
@@ -733,21 +723,9 @@ describe('the sidebar listing', () => {
     await loadSidebarCatalogs();
     expect(catalogTreeListed('gpu')).toBe(false);
   });
-
-  it("forgets a detached computer's listing", async () => {
-    stageBackend({ id: 'gpu' });
-    await loadSidebarCatalogs();
-    expect(catalogTreeListed('gpu')).toBe(true);
-    detachBackend('gpu');
-    expect(catalogTreeListed('gpu')).toBe(false);
-  });
 });
 
 describe('the group catalog', () => {
-  beforeEach(() => {
-    resetCatalogLoadForTest();
-    resetThreadGroupsForTest();
-  });
 
   it('shows a failed group read and retries it with the threads on the schedule until it loads', async () => {
     let fail = true;

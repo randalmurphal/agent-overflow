@@ -1,21 +1,17 @@
 // The `draft:updated` fan-out: which frames make a composer re-read its row,
 // and — more importantly — which ones must not.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { noteThread } from '../transport/entityIndex';
 import { applyDraftUpdated, resyncDraftsForBackend } from './eventsDraftRows';
 import {
   registerComposerDraft,
-  resetComposerDraftRegistryForTest,
 } from './composerDraftRegistry.svelte';
 import {
   rememberDraftSnapshot,
-  resetComposerDraftSnapshotStateForTest,
 } from './composerDraftSnapshots';
 import type { ComposerDraftStore } from './composerDraft.svelte';
-import { resetPanesForTest } from './panes.svelte';
 import { buildPane, makeThread } from '../../test/helpers/chat';
-import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import { getConnectionId } from '../transport/clientIdentity';
 
 function stubDraft(): { draft: ComposerDraftStore; reloadFromBackend: ReturnType<typeof vi.fn> } {
@@ -38,12 +34,6 @@ function frameFrom(threadId: string, connectionId?: string) {
 }
 
 describe('applyDraftUpdated', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
-    resetComposerDraftRegistryForTest();
-    resetComposerDraftSnapshotStateForTest();
-  });
 
   it('recovers only the reconnecting computer drafts, retaining local edits', async () => {
     const first = await paneWithDraft('thread-a', 'first');

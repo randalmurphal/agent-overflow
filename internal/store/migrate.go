@@ -91,7 +91,7 @@ type Migration struct {
 	// bump. Use it when the row transformation needs logic SQL can't
 	// express (JSON reshaping, per-row Go helpers). A migration must set
 	// SQL, Fix, or both. Not supported on Rebuild migrations — those are
-	// table-shape changes by definition — and applyRebuildMigration
+	// table-shape changes by definition — and applyRebuildMigrationSteps
 	// REFUSES the combination by name rather than dropping the Fix on the
 	// floor.
 	Fix func(tx *sql.Tx) error
@@ -100,7 +100,7 @@ type Migration struct {
 	// NOT NULL that SQLite can't alter in place. Such a migration MUST run
 	// with foreign_keys disabled so DROP TABLE doesn't fire ON DELETE
 	// CASCADE against child tables — and foreign_keys can only be toggled
-	// outside a transaction, so these run through applyRebuildMigration.
+	// outside a transaction, so these run through applyRebuildMigrationSteps.
 	Rebuild bool
 	// Deferred is the part of a one-time data fix too long to run while the
 	// store opens. See DeferredMigration.
@@ -1796,16 +1796,11 @@ type MigrationStep struct {
 	Activity string
 }
 
-// runMigrations refuses a database a newer build migrated, then sets
+// runMigrationsContext refuses a database a newer build migrated, then sets
 // PRAGMAs, creates the version tracking table, and applies any unapplied
-// migrations in order.
-func runMigrations(db *sql.DB) error {
-	return runMigrationsContext(context.Background(), db, writerConnPragmas, nil)
-}
-
-// runMigrationsContext is runMigrations bounded by ctx, reporting each
-// pending migration, and each long-running part of a rebuild, to
-// onMigration (which may be nil) before it runs. pragmas are the ones the
+// migrations in order, bounded by ctx. It reports each pending migration,
+// and each long-running part of a rebuild, to onMigration (which may be
+// nil) before it runs. pragmas are the ones the
 // writer pool's DSN carries.
 // Cancelling ctx interrupts the running migration; its transaction rolls
 // back and it runs again on the next open.
@@ -2099,10 +2094,6 @@ func applyPendingMigrations(ctx context.Context, db *sql.DB, applied int, onMigr
 	return nil
 }
 
-func applyMigration(db *sql.DB, m Migration) error {
-	return applyMigrationContext(context.Background(), db, m)
-}
-
 // applyMigrationContext runs m in one transaction bound to ctx. A Fix
 // runs its statements without ctx, so cancellation takes effect at the
 // next statement that carries it.
@@ -2174,23 +2165,15 @@ func addThreadPRRefColumn(tx *sql.Tx) error {
 	return nil
 }
 
-// applyRebuildMigration runs a table-rebuild migration with foreign keys
-// disabled. PRAGMA foreign_keys is a no-op inside a transaction, so the
+// applyRebuildMigrationSteps runs a table-rebuild migration with foreign
+// keys disabled. PRAGMA foreign_keys is a no-op inside a transaction, so the
 // toggle must happen on a connection with no transaction open — we pin a
 // single *sql.Conn for the whole operation rather than leaning on
 // SetMaxOpenConns(1), keeping the FK-off window scoped to exactly this
 // connection. Sequence: disable FK, run the rebuild + version bump in one
 // transaction, verify integrity with foreign_key_check, commit, re-enable FK.
-func applyRebuildMigration(db *sql.DB, m Migration) error {
-	return applyRebuildMigrationContext(context.Background(), db, m)
-}
-
-// applyRebuildMigrationContext is applyRebuildMigration bounded by ctx.
-func applyRebuildMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
-	return applyRebuildMigrationSteps(ctx, db, m, nil)
-}
-
-// applyRebuildMigrationSteps runs the rebuild's statements one at a time,
+//
+// It runs the rebuild's statements one at a time,
 // telling activity (which may be nil) before each index build and before
 // the foreign key check, so a boot waiting on a long rebuild names what
 // is running. Restoring foreign_keys ignores ctx so a cancelled rebuild

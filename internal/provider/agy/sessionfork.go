@@ -24,13 +24,6 @@ const cortexStepTypeUserInput = 14
 // an explicit upper-bound step index (`DELETE FROM <table> WHERE idx > cutIdx`).
 const CutKeepAll = math.MinInt
 
-// ReadMaxStepIndex returns the highest step `idx` currently committed in
-// `<appDataDir>/conversations/<sessionID>.db`, used to pin a live tail fork
-// before AO cuts the visible timeline.
-func ReadMaxStepIndex(appDataDir, sessionID string) (int, bool) {
-	return readMaxStepIndex(appDataDir, sessionID)
-}
-
 // ReadForkCheckpoint captures the pre-cut native step ceiling for a tail fork.
 // If the conversation DB does not exist yet on disk, it returns (-1, nil) so
 // any steps written before VACUUM INTO are truncated rather than leaked.

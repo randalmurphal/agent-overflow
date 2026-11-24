@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -53,7 +54,7 @@ func heldAtTheActionLock(t *testing.T, a *App, threadID string) {
 func TestAReleaseLeavesAHeldMessageForTheNextBoundary(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	held := "held-" + entityid.New()
@@ -79,7 +80,7 @@ func TestAReleaseLeavesAHeldMessageForTheNextBoundary(t *testing.T) {
 func TestAWithdrawalReachesABatchInTriagesHandoff(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	withdrawn := "withdrawn-" + entityid.New()
@@ -128,7 +129,7 @@ func TestAWithdrawalReachesABatchInTriagesHandoff(t *testing.T) {
 func TestAWithdrawalReachesABatchTheDispatchHoldsUnsent(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	unlock := f.app.threadLocks().Lock(f.caller.ID)
@@ -164,7 +165,7 @@ func TestAnApprovalAnsweredWhileTheDispatchHoldsItNeverReachesTheProvider(t *tes
 	if _, err := f.app.store.SetThreadPlacement([]string{worker.ID}, store.PlacementStandalone); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	refusedDelete(t, f.app, f.caller.ID, func() {

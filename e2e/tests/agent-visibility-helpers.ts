@@ -2,7 +2,7 @@
 // (docs/specs/agent-visibility.md § "Success criteria").
 //
 // Every Claude wire shape below is modelled on a checked-in 2026-08-22
-// capture — `docs/references/fixtures/claude/{task_progress,
+// capture — `internal/provider/wirecaptures/claude/{task_progress,
 // can_use_tool_agent_id,forked_skill,background_tasks_control}_20260822
 // .ndjson` — and the same shapes the parser's replay tests pin
 // (`internal/provider/claude/subagent_visibility_replay_test.go`). The
@@ -10,19 +10,13 @@
 // because they exist to drive ONE spec each; the library is for shapes
 // more than one consumer replays.
 //
-// Two deliberate deviations from the captures:
+// One deliberate deviation from the captures:
 //
 //   - `session_id` is omitted, except on `compactBoundaryLine`, which
 //     carries the mock's own `${SESSION_ID}` because the app keeps a
 //     compaction's SessionStart receipts under it. The mock owns the
 //     session id, and a hard-coded one from a capture would make the app's
 //     own session bookkeeping disagree with the process it is talking to.
-//   - `canUseToolLine` builds the control_request by hand for a scenario
-//     that wants to choose the ordering itself. The scenario `approval`
-//     step is the normal route and now carries `toolUseId`/`agentId` too
-//     (added with these specs, since a request without them is the
-//     main-agent shape and cannot scope to a card); prefer it, because the
-//     mock then waits for the real decision and branches on it.
 
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
@@ -358,28 +352,6 @@ export function wakeDroppedMirrorLine(taskId: string, toolUseId: string, summary
   });
 }
 
-/** A subagent's `can_use_tool`, scoped by `agent_id` and nothing else. */
-export function canUseToolLine(
-  requestId: string,
-  toolName: string,
-  input: Json,
-  toolUseId: string,
-  agentId: string,
-): string {
-  return j({
-    type: 'control_request',
-    request_id: requestId,
-    request: {
-      subtype: 'can_use_tool',
-      tool_name: toolName,
-      display_name: toolName,
-      input,
-      tool_use_id: toolUseId,
-      agent_id: agentId,
-    },
-  });
-}
-
 /** `system/permission_denied` — a pre-ask refusal, scoped by agent_id. */
 export function permissionDeniedLine(
   toolName: string,
@@ -529,7 +501,7 @@ export async function seedAgentThread(
 
 /** Start the provider session and wait for the mock to register. */
 export async function startMock(harness: HarnessApp, threadId: string): Promise<string> {
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const registered = await harness.waitForEvent<{ mockId: string }>(
     'harness:mock',
     (ev: any) => ev.report.kind === 'registered',
@@ -568,7 +540,7 @@ export interface Item {
 }
 
 export function listItems(harness: HarnessApp, threadId: string): Promise<Item[]> {
-  return harness.rpc<Item[]>('ListItems', threadId, true);
+  return harness.items<Item>(threadId, true);
 }
 
 export function itemMeta(item: Item | undefined): Record<string, unknown> {

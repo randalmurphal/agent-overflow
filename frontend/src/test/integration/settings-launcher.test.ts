@@ -15,7 +15,7 @@ import {
 } from './_helpers';
 import { setBindingMock } from '../mocks/bindings-app';
 import { openSettingsOverlay } from '../../lib/stores/settingsOverlay.svelte';
-import { openAccountSwitcher } from '../../lib/stores/accountSwitcher.svelte';
+import { toggleAccountSwitcher } from '../../lib/stores/accountSwitcher.svelte';
 import {
   registerCommand,
   type CommandContext,
@@ -90,6 +90,8 @@ describe('App integration — settings launcher', () => {
   // empty state) call the store directly — App has no listener of its own to
   // route them through any more.
   it('opens the requested settings section from a deep link while mounted', async () => {
+    // The Observability page reads whether tracing is on, and was at launch.
+    setBindingMock('GetObservabilityTracing', async () => ({ value: false, launched: false }));
     const rendered = render(App);
     await flush(10);
 
@@ -135,6 +137,8 @@ describe('App integration — settings launcher', () => {
   // and the store's closer blurs BEFORE unmounting — settings fields commit on
   // blur, so unmounting a focused input would silently drop its edit.
   it('esc closes settings from inside a text field, blurring it first', async () => {
+    // The Claude Code page checks for a newer CLI as it opens.
+    setBindingMock('CheckProviderUpdates', async () => []);
     setBindingMock('GetKeybindings', async () => ({
       bindings: [{ key: 'esc', command: 'settings.close', when: 'settingsOpen' }],
     }));
@@ -176,6 +180,8 @@ describe('App integration — settings launcher', () => {
   // strip. Opening a tool closes settings so the tool is not hidden under it,
   // and opening settings over the pane leaves the pane mounted underneath.
   it('closes settings when the workflows pane opens, and keeps the pane under settings', async () => {
+    // The workflows pane lists the workflow runs: none.
+    setBindingMock('WorkflowListItems', async () => []);
     const rendered = render(App);
     await flush(10);
 
@@ -254,6 +260,8 @@ describe('App integration — overlay modal flags', () => {
 
   // Type-to-focus and the workflows chords read these off App's own context.
   it('reads a focused workflows pane as a focused tool pane', async () => {
+    // The workflows pane lists the workflow runs: none.
+    setBindingMock('WorkflowListItems', async () => []);
     const rendered = render(App);
     await flush(10);
     const keybindings = await import('../../lib/stores/keybindings.svelte');
@@ -277,7 +285,7 @@ describe('App integration — overlay modal flags', () => {
     const keybindings = await import('../../lib/stores/keybindings.svelte');
     await keybindings.loadKeybindings();
 
-    openAccountSwitcher();
+    toggleAccountSwitcher();
     await flush();
 
     expect(await captureAppFlags()).toMatchObject({

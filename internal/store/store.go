@@ -85,6 +85,8 @@ type Store struct {
 	checkpoints checkpointer
 	// convertHooks are test-only seams inside the conversion swap.
 	convertHooks convertHooks
+	// quiesceHooks are test-only seams in quiesceReadsAfter's drain.
+	quiesceHooks quiesceHooks
 	// reclaimUnavailableOnce keeps ReclaimFreeSpace's "this database
 	// predates incremental auto-vacuum" report to one line per process
 	// instead of one per sweep.
@@ -150,8 +152,11 @@ type Options struct {
 	scratch bool
 }
 
-// New opens (or creates) the SQLite database at the given path and runs migrations.
-// Pass ":memory:" for tests.
+// New opens (or creates) the SQLite database at the given path and runs
+// migrations. ":memory:" opens a private in-memory database on one
+// connection, with no read pool, and runs the whole migration chain on it.
+// A test that wants a migrated store clones a template instead
+// (storetest.Clone, or newTestStore in this package's tests).
 func New(dbPath string) (*Store, error) {
 	return NewWithOptions(dbPath, Options{})
 }
@@ -362,6 +367,15 @@ func (s *Store) CommitCount() uint64 { return s.committed.Load() }
 const readQuiesceSettleTick = 5 * time.Millisecond
 
 func (s *Store) quiesceReads(fn func() error) error {
+	return s.quiesceReadsAfter(readQuiesceSettleTick, fn)
+}
+
+// quiesceReadsAfter is quiesceReads with the pause before its first poll
+// given: Close passes zero, since it quiesces a read pool it has closed.
+// database/sql begins no statement on a closed pool, so a goroutine that
+// took the pool from reader() fails instead of opening a read transaction,
+// and the statements already running are the ones Stats().InUse counts.
+func (s *Store) quiesceReadsAfter(settle time.Duration, fn func() error) error {
 	if s.read == nil {
 		return fn()
 	}
@@ -391,7 +405,7 @@ func (s *Store) quiesceReads(fn func() error) error {
 	// microsecond-scale stall on a path that already runs a checkpoint.
 	// The file swap does not rely on this mitigation: it verifies that
 	// both pools hold zero connections before it renames anything.
-	time.Sleep(readQuiesceSettleTick)
+	time.Sleep(settle)
 
 	// In-flight read-pool work is short — single statements, plus the
 	// few bounded read-only transactions reader()'s doc lists; poll
@@ -400,9 +414,25 @@ func (s *Store) quiesceReads(fn func() error) error {
 	// the pre-read-pool worst case.
 	deadline := time.Now().Add(5 * time.Second)
 	for s.read.Stats().InUse > 0 && time.Now().Before(deadline) {
+		if s.quiesceHooks.waiting != nil {
+			s.quiesceHooks.waiting()
+		}
 		time.Sleep(readQuiesceSettleTick)
 	}
+	if s.quiesceHooks.drained != nil {
+		s.quiesceHooks.drained()
+	}
 	return fn()
+}
+
+// quiesceHooks are test seams in quiesceReadsAfter. Production leaves them
+// nil; the test of Close's drain sets them, because whether the drain
+// waits for a read is decided only by what runs while that read is held.
+type quiesceHooks struct {
+	// waiting runs at each poll that finds a read pool statement running.
+	waiting func()
+	// drained runs once the drain ends, before fn.
+	drained func()
 }
 
 // Close closes the database connections, truncating the WAL on the way
@@ -411,7 +441,9 @@ func (s *Store) quiesceReads(fn func() error) error {
 // Order is load-bearing. The checkpointer stops before the read pool it
 // runs on closes. The read pool closes before the truncation because
 // TRUNCATE cannot reset a WAL any connection still holds a read mark on,
-// and the checkpoint has to run on the writer, which therefore closes last. A
+// and the checkpoint has to run on the writer, which therefore closes last.
+// A closed pool begins no statement, so the truncation waits only for the
+// reads already running, without quiesceReads' settle pause. A
 // failed or blocked checkpoint is logged and shutdown continues: quitting
 // must not depend on reclaiming disk space, and the next boot's
 // checkpoint picks up whatever this one left behind.
@@ -429,7 +461,7 @@ func (s *Store) Close() error {
 		}
 	}
 	checkpointed := time.Now()
-	closeCheckpoint, checkpointErr := s.TruncateCheckpoint()
+	closeCheckpoint, checkpointErr := s.truncateCheckpoint(0)
 	s.logCheckpoint("close", checkpointed, closeCheckpoint, checkpointErr)
 	if err := s.db.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("store: close writer: %w", err))
@@ -469,8 +501,14 @@ type CheckpointResult struct {
 // free: after migration at boot and during Close after the read pool is
 // gone. It does not belong on a user-facing path or in a periodic sweep.
 func (s *Store) TruncateCheckpoint() (CheckpointResult, error) {
+	return s.truncateCheckpoint(readQuiesceSettleTick)
+}
+
+// truncateCheckpoint is TruncateCheckpoint quiescing reads with the given
+// settle (quiesceReadsAfter).
+func (s *Store) truncateCheckpoint(settle time.Duration) (CheckpointResult, error) {
 	var res CheckpointResult
-	err := s.quiesceReads(func() error {
+	err := s.quiesceReadsAfter(settle, func() error {
 		var busy int64
 		if err := s.db.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").
 			Scan(&busy, &res.WALFrames, &res.Checkpointed); err != nil {
@@ -501,8 +539,6 @@ func (s *Store) logCheckpoint(moment string, started time.Time, res CheckpointRe
 		log.Printf("store: %s WAL checkpoint duration=%s frames=%d", moment, took, res.Checkpointed)
 	}
 }
-
-// runMigrations is defined in migrate.go.
 
 // ThreadOrigin records the branch and commit observed when a thread was created.
 // It is write-once provenance; Thread.Branch tracks the live working tree.

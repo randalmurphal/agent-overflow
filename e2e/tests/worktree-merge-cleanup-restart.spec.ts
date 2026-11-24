@@ -21,7 +21,7 @@ import { openThread, samePath, threadRow } from './worktree-removal-helpers.js';
 test('a tracked PR survives a restart and its merge still removes the worktree', async ({ page }) => {
   test.setTimeout(120_000);
   const root = await mkdtemp(join(tmpdir(), 'ao-merge-restart-'));
-  const env = { AO_HARNESS_TIMING: mergePollTiming('500ms') };
+  const env = mergePollTiming('500ms');
   let harness: HarnessApp | undefined;
   try {
     harness = await launchHarness({ dataDir: root, env });
@@ -66,7 +66,7 @@ test('a tracked PR survives a restart and its merge still removes the worktree',
 test('with background fetch off, a merge a previous run left waiting is acted on at the next turn end, with no state read', async ({ page }) => {
   test.setTimeout(120_000);
   const root = await mkdtemp(join(tmpdir(), 'ao-merge-restart-off-'));
-  const env = { AO_HARNESS_TIMING: mergePollTiming('500ms') };
+  const env = mergePollTiming('500ms');
   let harness: HarnessApp | undefined;
   try {
     harness = await launchHarness({ dataDir: root, env });
@@ -84,7 +84,7 @@ test('with background fetch off, a merge a previous run left waiting is acted on
     // A turn holds the worktree busy while the merge is read.
     await startMock(harness, threadId);
     const holding = waitForGate(harness, 'hold');
-    await harness.rpc('SendMessage', threadId, 'Start the long job.', []);
+    await harness.send(threadId, 'Start the long job.');
     await holding;
     await seedForge(harness, [{ ...fixture.repo, pulls: [{ ...fixture.repo.pulls![0], state: 'merged', mergedAt: new Date().toISOString() }] }]);
     await lookUpPR(harness, fixture);
@@ -96,8 +96,9 @@ test('with background fetch off, a merge a previous run left waiting is acted on
     harness = await launchHarness({ dataDir: root, env });
     await seedForge(harness, [{ ...fixture.repo, pulls: [{ ...fixture.repo.pulls![0], state: 'merged', mergedAt: new Date().toISOString() }] }]);
     await harness.open(page);
-    // Several polls' time: the setting is still off, so nothing is read.
-    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    // The setting is still off, so no poll runs to read or act on it
+    // (internal/app TestMergedPRPollFollowsTheBackgroundFetchSetting); the
+    // turn end below is what acts.
     expect(existsSync(fixture.worktreePath)).toBe(true);
     expect(trackedRow(harness, threadId)?.handled_at).toBe(0);
 
@@ -107,7 +108,7 @@ test('with background fetch off, a merge a previous run left waiting is acted on
     });
     await startMock(harness, otherId);
     const completed = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === otherId);
-    await harness.rpc('SendMessage', otherId, 'Something else.', []);
+    await harness.send(otherId, 'Something else.');
     await completed;
     await expectHandled(harness, threadId, 'removed');
     expect(existsSync(fixture.worktreePath)).toBe(false);

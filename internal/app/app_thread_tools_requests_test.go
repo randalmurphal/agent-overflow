@@ -301,7 +301,7 @@ func TestThreadRequestSettlesOnlyOnTheTurnThatConsumedIt(t *testing.T) {
 		t.Fatalf("request did not settle: %+v", f.request(t, ack.Token))
 	}
 	// A second, human turn in the same thread.
-	if err := f.app.SendMessage(context.Background(), ack.ThreadID, "and now the other platform", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(context.Background(), ack.ThreadID, "and now the other platform", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	f.bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 10*time.Second)
@@ -330,7 +330,11 @@ func (f *requestFixture) busyThread(t *testing.T, id string) store.Thread {
 
 // TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack pins both halves of
 // the queued path: a message waiting on a turn is not running, so nothing can
-// settle it, and cancelling the request takes the message back out.
+// settle it, and cancelling the request takes the message back out. The
+// settled request then has nothing left to stop, so cancelling it again
+// reports what it settled as rather than failing or settling it a second
+// time: an agent retrying a cancel it lost the answer to must not be able to
+// rewrite the outcome.
 func TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -377,43 +381,20 @@ func TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack(t *testing.T) {
 	if queued := f.app.triage.QueuedFlushItems(target.ID); len(queued) != 0 {
 		t.Fatalf("cancelled message is still in the live queue: %+v", queued)
 	}
-	if row := f.request(t, ack.Token); row.State != store.ThreadRequestCancelled {
-		t.Fatalf("request state = %q, want cancelled", row.State)
+	settled := f.request(t, ack.Token)
+	if settled.State != store.ThreadRequestCancelled {
+		t.Fatalf("request state = %q, want cancelled", settled.State)
 	}
 	// The caller stopped this itself and read the effect in the reply, so
 	// nothing is owed to it later.
 	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
 		t.Fatalf("cancelling own request woke the caller: %+v", rows)
 	}
-	if row := f.request(t, ack.Token); row.Notify {
+	if settled.Notify {
 		t.Error("notify survived the caller's own cancel")
 	}
-}
 
-// A request that is already settled has nothing left to stop, so cancelling
-// it again reports what it settled as rather than failing or settling it a
-// second time. An agent retrying a cancel it lost the answer to must not be
-// able to rewrite the outcome.
-func TestThreadCancelOfASettledRequestChangesNothing(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	target := f.busyThread(t, "busy-settled")
-
-	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
-		ThreadID: target.ID, Message: "take this back", Notify: true,
-	})
-	if err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	if _, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: ack.Token}); err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	settled := f.request(t, ack.Token)
-	if settled.State != store.ThreadRequestCancelled {
-		t.Fatalf("request state = %q, want cancelled", settled.State)
-	}
-
-	report, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: ack.Token})
+	report, err = f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: ack.Token})
 	if err != nil {
 		t.Fatalf("second Cancel: %v", err)
 	}
@@ -652,11 +633,8 @@ func TestAnAsksCopyRefusesAPersonsMessageAndKeep(t *testing.T) {
 			t.Fatalf("%s on the ask's copy = %v; want it refused as %s", what, err, askCopyReadOnlyCode)
 		}
 	}
-	refused("SendMessage", f.app.SendMessage(context.Background(), copyRow.ID, "and also look at the tests", nil))
-	_, err = f.app.SendMessageWithOptions(t.Context(), copyRow.ID, "and also the docs", SendMessageOptions{SendID: "person-send"})
+	_, err = f.app.SendMessageWithOptions(t.Context(), copyRow.ID, "and also the docs", SendMessageOptions{ReconcileBySendID: true, SendID: "person-send"})
 	refused("SendMessageWithOptions", err)
-	_, err = f.app.SteerMessageWithOptions(t.Context(), copyRow.ID, "stop reading", SendMessageOptions{SendID: "person-steer"})
-	refused("SteerMessageWithOptions", err)
 	_, err = f.app.PromoteScratchThread(t.Context(), copyRow.ID)
 	refused("Keep", err)
 	if items, err := f.app.store.ListItems(copyRow.ID); err != nil {
@@ -1036,7 +1014,10 @@ func (f *requestFixture) awaitRequestState(t *testing.T, token string, want ...s
 
 // TestThreadRequestWithNoWaitArrivesAsAMessage covers the other half of the
 // promise the ack makes: nobody is parked, so the answer is queued into the
-// caller's thread as a message it will read on its next turn.
+// caller's thread as a message it will read on its next turn. A wake the
+// previous process never delivered goes back to its request at boot, owed and
+// disarmed, rather than into the composer: it is not the person's to send,
+// and thread_status still returns the answer.
 func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -1102,6 +1083,18 @@ func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 	delivered := f.request(t, ack.Token)
 	if delivered.DeliveredHow != store.ThreadWakeQueued || delivered.DeliveredAt == 0 {
 		t.Errorf("delivery = %q at %d, want a queued delivery", delivered.DeliveredHow, delivered.DeliveredAt)
+	}
+
+	after := f.restart(t)
+	after.app.restoreDurableFlushQueueAtBoot()
+	if row := after.request(t, ack.Token); row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
+		t.Fatalf("delivered %q at %d, notify %v; want the answer owed and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
+	}
+	if draft, _, err := after.app.store.GetThreadDraft(f.caller.ID); err != nil || strings.Contains(draft.Content, "reversible") {
+		t.Fatalf("draft = %+v err=%v, want no answer in it", draft, err)
+	}
+	if rows := durableQueueRows(t, after.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("the returned row was left in the queue: %+v", rows)
 	}
 }
 
@@ -2159,10 +2152,11 @@ func (f *requestFixture) restart(t *testing.T) *requestFixture {
 	app.keepAwakeApply = f.app.keepAwakeApply
 	app.configDir = f.app.configDir
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
-	t.Cleanup(func() {
-		app.appCancel()
-		app.threadRequestsWG.Wait()
-	})
+	waitOutOtherParties(t, app)
+	// The restarted App starts sessions of its own, such as the caller's
+	// for a wake its boot sweep delivers; they end with the test, before
+	// its directories are removed.
+	tearDownTestAppAtCleanup(t, app)
 	app.installThreadRequestObserver()
 	after := &requestFixture{app: app, bus: bus, caller: f.caller, dbPath: f.dbPath}
 	// A restarted App has no dispatcher, so its start alone is held.
@@ -2873,39 +2867,50 @@ func TestDeletingTheTargetErrorsTheRequest(t *testing.T) {
 // instead of leaving requests that can never settle.
 func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
 	t.Parallel()
-	f := newRequestFixture(t)
-	f.mockClaudeHoldingTheTurn(t, "mid-thought")
-	ack := f.runningRequest(t, "keep going")
-	scratch := f.forkableThread(t, "boot-scratch")
-	if err := f.app.store.InsertScratchThread(store.ScratchThread{
-		ThreadID: scratch.ID, SourceThreadID: f.caller.ID, RequestToken: "stale-token",
-		ReturnMode: scratchReturnMode(threadmode.ModeChat), CreatedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("InsertScratchThread: %v", err)
-	}
+	var after *requestFixture
+	t.Run("sweep", func(t *testing.T) {
+		f := newRequestFixture(t)
+		f.mockClaudeHoldingTheTurn(t, "mid-thought")
+		ack := f.runningRequest(t, "keep going")
+		scratch := f.forkableThread(t, "boot-scratch")
+		if err := f.app.store.InsertScratchThread(store.ScratchThread{
+			ThreadID: scratch.ID, SourceThreadID: f.caller.ID, RequestToken: "stale-token",
+			ReturnMode: scratchReturnMode(threadmode.ModeChat), CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("InsertScratchThread: %v", err)
+		}
 
-	after := f.restart(t)
-	after.app.sweepThreadRequestsAtBoot()
-	after.app.finishThreadRequestSweepAtBoot()
+		after = f.restart(t)
+		after.app.sweepThreadRequestsAtBoot()
+		after.app.finishThreadRequestSweepAtBoot()
 
-	row := after.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
-	if row.State != store.ThreadRequestInterrupted {
-		t.Fatalf("request = %+v", row)
-	}
-	receipt, found, err := after.app.store.GetThreadRequestReceipt(ack.Token)
-	if err != nil || !found || receipt.State != store.ThreadReceiptInterrupted {
-		t.Fatalf("receipt = %+v found=%v err=%v", receipt, found, err)
-	}
-	if body := soloWakeBody(t, after.app, row, false); !strings.Contains(body, "was interrupted by a restart of this computer.") {
-		t.Errorf("wake = %q, want the restart as its cause", body)
-	}
-	// A scratch thread is a thread nobody can see; one left by a restart is
-	// swept with its row rather than kept forever.
-	if _, err := after.app.store.GetThread(scratch.ID); err == nil {
-		t.Errorf("scratch thread %s survived the boot sweep", scratch.ID)
-	}
-	if _, found, err := after.app.store.GetScratchThread(scratch.ID); err != nil || found {
-		t.Errorf("scratch row survived the boot sweep: found=%v err=%v", found, err)
+		row := after.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
+		if row.State != store.ThreadRequestInterrupted {
+			t.Fatalf("request = %+v", row)
+		}
+		receipt, found, err := after.app.store.GetThreadRequestReceipt(ack.Token)
+		if err != nil || !found || receipt.State != store.ThreadReceiptInterrupted {
+			t.Fatalf("receipt = %+v found=%v err=%v", receipt, found, err)
+		}
+		if body := soloWakeBody(t, after.app, row, false); !strings.Contains(body, "was interrupted by a restart of this computer.") {
+			t.Errorf("wake = %q, want the restart as its cause", body)
+		}
+		// A scratch thread is a thread nobody can see; one left by a restart is
+		// swept with its row rather than kept forever.
+		if _, err := after.app.store.GetThread(scratch.ID); err == nil {
+			t.Errorf("scratch thread %s survived the boot sweep", scratch.ID)
+		}
+		if _, found, err := after.app.store.GetScratchThread(scratch.ID); err != nil || found {
+			t.Errorf("scratch row survived the boot sweep: found=%v err=%v", found, err)
+		}
+		// The wake starts the caller's session on the restarted App.
+		waitUntil(t, 10*time.Second, func() bool { return len(after.app.sessionManager().runtime.Snapshot()) > 0 })
+	})
+	// The restarted App ends that session with the test, as the first App
+	// does, so no provider process outlives the test and writes into a
+	// directory its cleanup is removing.
+	if open := len(after.app.sessionManager().runtime.Snapshot()); open != 0 {
+		t.Fatalf("the restarted App holds %d sessions after its test ended", open)
 	}
 }
 
@@ -3173,40 +3178,6 @@ func TestThreadRequestsListAndExport(t *testing.T) {
 	}
 }
 
-// A wake the previous process never delivered goes back to its request at
-// boot, owed and disarmed, rather than into the composer: it is not the
-// person's to send, and thread_status still returns the answer.
-func TestAWakeQueuedAtQuitGoesBackToItsRequest(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	release := f.mockClaudeAfterTheAck(t, "the backup finished")
-	f.holdCallerTurn(t)
-
-	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
-		Prompt: "did the backup finish?", WaitSeconds: 0, Notify: true,
-	})
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	release(t, ack)
-	waitUntil(t, 10*time.Second, func() bool {
-		return f.request(t, ack.Token).DeliveredHow == store.ThreadWakeQueued
-	})
-
-	after := f.restart(t)
-	after.app.restoreDurableFlushQueueAtBoot()
-
-	if row := after.request(t, ack.Token); row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
-		t.Fatalf("delivered %q at %d, notify %v; want the answer owed and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
-	}
-	if draft, _, err := after.app.store.GetThreadDraft(f.caller.ID); err != nil || strings.Contains(draft.Content, "the backup finished") {
-		t.Fatalf("draft = %+v err=%v, want no answer in it", draft, err)
-	}
-	if rows := durableQueueRows(t, after.app, f.caller.ID); len(rows) != 0 {
-		t.Fatalf("the returned row was left in the queue: %+v", rows)
-	}
-}
-
 // waitersOn counts the calls parked on one key, which is how a test knows
 // both of them arrived before the settlement it is about to write.
 func (f *requestFixture) waitersOn(key string) int {
@@ -3457,7 +3428,7 @@ func TestThreadStatusSaysTheQueuedMessageIsStillComing(t *testing.T) {
 		// calls thread_status is. Its queue hands the wake straight to the
 		// session, where it waits for the turn boundary: no durable queue
 		// row is left, and the message has still not arrived.
-		if err := f.app.SendMessage(context.Background(), f.caller.ID, "look into the backfill", nil); err != nil {
+		if _, err := f.app.SendMessageWithOptions(context.Background(), f.caller.ID, "look into the backfill", pageSendOptions(uuid.NewString())); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 		// Mid-turn means the turn is open in the store, not only that the
@@ -3799,7 +3770,13 @@ func TestASpawnPastTheFloorIsUnknownButKeepsItsLineage(t *testing.T) {
 		t.Fatal("the spawn names no thread")
 	}
 
-	f.app.expireThreadRequests(time.Now().AddDate(0, 0, store.ThreadRequestRetentionDays+1))
+	later := time.Now().AddDate(0, 0, store.ThreadRequestRetentionDays+1)
+	passesUntil(t, func() { f.app.expireThreadRequests(later) }, func() error {
+		if _, found, err := f.app.store.GetThreadRequest(token); err != nil || found {
+			return fmt.Errorf("the spawn's token past the floor: found %v, %v; want it cleared to its lineage", found, err)
+		}
+		return nil
+	})
 
 	adapter, caller := f.adapter(), f.callerIdentity()
 	unknown := func(tool string, err error) {

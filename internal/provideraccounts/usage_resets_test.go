@@ -241,32 +241,9 @@ func TestBeginAndCheckRefuseWhatTheListCannotSpend(t *testing.T) {
 	}
 }
 
-func TestSettleResetSpendEndsOnlyItsOwnSpend(t *testing.T) {
-	t.Parallel()
-	store, _ := newResetTestStore(t)
-	if _, _, err := store.SetUsageResets("codex", "one", listed(resetOption("a"), resetOption("b"))); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.BeginResetSpend("codex", "one", 1, "a", start("k1")); err != nil {
-		t.Fatal(err)
-	}
-	if settled, err := store.SettleResetSpend("codex", "one", "other-key", true); err != nil || settled {
-		t.Fatalf("another key settled: %v %v", settled, err)
-	}
-	if _, ok := store.PendingReset("codex", "one"); !ok {
-		t.Fatal("another key's settle ended the spend")
-	}
-	if settled, err := store.SettleResetSpend("codex", "one", "k1", true); err != nil || !settled {
-		t.Fatalf("settle: %v %v", settled, err)
-	}
-	if _, ok := store.PendingReset("codex", "one"); ok {
-		t.Fatal("a settled spend kept its record")
-	}
-}
-
-// An answer that says the credit is gone removes it in the settle's save;
-// one that says it is not (nothingToReset) and an unsent spend leave the
-// list.
+// A settle ends only its own spend. An answer that says the credit is gone
+// removes it in the settle's save; one that says it is not (nothingToReset)
+// and an unsent spend leave the list.
 func TestSettleDropsOnlyACreditTheAnswerSaysIsGone(t *testing.T) {
 	t.Parallel()
 	for name, test := range map[string]struct {
@@ -286,8 +263,17 @@ func TestSettleDropsOnlyACreditTheAnswerSaysIsGone(t *testing.T) {
 			if _, err := store.BeginResetSpend("codex", "one", 1, "a", start("k1")); err != nil {
 				t.Fatal(err)
 			}
+			if settled, err := store.SettleResetSpend("codex", "one", "other-key", test.creditGone); err != nil || settled {
+				t.Fatalf("another key settled: %v %v", settled, err)
+			}
+			if _, ok := store.PendingReset("codex", "one"); !ok {
+				t.Fatal("another key's settle ended the spend")
+			}
 			if settled, err := store.SettleResetSpend("codex", "one", "k1", test.creditGone); err != nil || !settled {
 				t.Fatalf("settle: %v %v", settled, err)
+			}
+			if _, ok := store.PendingReset("codex", "one"); ok {
+				t.Fatal("a settled spend kept its record")
 			}
 			reloaded, err := NewStore(dir)
 			if err != nil {

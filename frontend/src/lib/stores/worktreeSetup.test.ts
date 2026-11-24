@@ -168,7 +168,9 @@ describe('terminal states', () => {
       output: '', outputSeq: 0, worktreePath: '/wt',
     });
     await hydrateWorktreeSetup(THREAD);
+    // A durable failure restores with no transcript.
     expect(getWorktreeSetup(THREAD)?.state).toBe('failed');
+    expect(getWorktreeSetup(THREAD)?.steps).toEqual([]);
     applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: '', state: 'cancelled' });
     expect(getWorktreeSetup(THREAD)).toBeNull();
   });
@@ -337,17 +339,6 @@ describe('retry', () => {
 });
 
 describe('hydration', () => {
-  it('restores a durable failure with no transcript', async () => {
-    GetThreadWorktreeSetup.mockResolvedValue({
-      threadId: THREAD, runId: '', state: 'failed', steps: [], stepStatuses: [],
-      output: '', outputSeq: 0, worktreePath: '/wt',
-    });
-    await hydrateWorktreeSetup(THREAD);
-    const view = getWorktreeSetup(THREAD);
-    expect(view?.state).toBe('failed');
-    expect(view?.steps).toEqual([]);
-  });
-
   it('resolves an idle snapshot to nothing', async () => {
     GetThreadWorktreeSetup.mockResolvedValue({
       threadId: THREAD, runId: '', state: 'idle', steps: [], stepStatuses: [],
@@ -433,34 +424,27 @@ describe('hydration', () => {
     warn.mockRestore();
   });
 
-  it('keeps a dismissal across a hydration of the same run', async () => {
-    DismissThreadWorktreeSetup.mockResolvedValue(undefined);
-    applyWorktreeSetupEvent(started());
-    applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'failed', error: 'x' });
-    await dismissWorktreeSetup(THREAD);
-    GetThreadWorktreeSetup.mockResolvedValue({
+  // The dismissal applied to the failure the user saw. A different run the
+  // snapshot reports is a new outcome.
+  it.each([
+    ['keeps a dismissal across a hydration of the same run', {
       threadId: THREAD, runId: 'run-1', state: 'failed',
       steps: started().steps, stepStatuses: ['succeeded', 'failed'],
       output: '', outputSeq: 0, error: 'x',
-    });
-    await hydrateWorktreeSetup(THREAD);
-    expect(getWorktreeSetup(THREAD)?.dismissed).toBe(true);
-  });
-
-  // The dismissal applied to the failure the user saw. A different run the
-  // snapshot reports is a new outcome.
-  it('shows a different run a hydration reports after a dismissal', async () => {
+    }, true],
+    ['shows a different run a hydration reports after a dismissal', {
+      threadId: THREAD, runId: 'run-2', state: 'failed',
+      steps: [], stepStatuses: [], output: '', outputSeq: 0, error: 'y',
+    }, false],
+  ])('%s', async (_name, snapshot, dismissed) => {
     DismissThreadWorktreeSetup.mockResolvedValue(undefined);
     applyWorktreeSetupEvent(started());
     applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'failed', error: 'x' });
     await dismissWorktreeSetup(THREAD);
-    GetThreadWorktreeSetup.mockResolvedValue({
-      threadId: THREAD, runId: 'run-2', state: 'failed',
-      steps: [], stepStatuses: [], output: '', outputSeq: 0, error: 'y',
-    });
+    GetThreadWorktreeSetup.mockResolvedValue(snapshot);
     await hydrateWorktreeSetup(THREAD);
-    expect(getWorktreeSetup(THREAD)?.runId).toBe('run-2');
-    expect(getWorktreeSetup(THREAD)?.dismissed).toBe(false);
+    expect(getWorktreeSetup(THREAD)?.runId).toBe(snapshot.runId);
+    expect(getWorktreeSetup(THREAD)?.dismissed).toBe(dismissed);
   });
 
   // Two panes mounting the same thread must not fight over which snapshot wins.

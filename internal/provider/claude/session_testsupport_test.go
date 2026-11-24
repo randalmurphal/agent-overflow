@@ -146,7 +146,6 @@ func (s *Session) maybeHandleFullAccessToolRequest(line []byte) (bool, error) {
 // interruptResponderScript is a bash fake-CLI that reads stdin line by
 // line and writes a canned control_response for every interrupt
 // request it sees. Mirrors stopTaskResponderScript:
-//   - "success": subtype=success, echoes back the request_id
 //   - "error":   subtype=error with a provider-side message
 //   - "silent":  drops the line; never responds (timeout/kill path)
 func interruptResponderScript(mode string) string {
@@ -168,8 +167,6 @@ done
 `
 	var body string
 	switch mode {
-	case "success":
-		body = `            printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"`
 	case "error":
 		body = `            printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"no active turn"}}\n' "$reqid"`
 	case "silent":

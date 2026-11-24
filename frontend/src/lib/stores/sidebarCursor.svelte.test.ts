@@ -29,22 +29,14 @@ describe('sidebarCursor store', () => {
   });
 
   describe('stepSidebarCursor', () => {
-    it('lands on the fallback id on cold start (no cursor) without stepping', () => {
+    it.each([
+      ['lands on the fallback id on cold start (no cursor) without stepping', 1, 'b', 'b'],
+      ['lands on row 0 going down when fallback is null', 1, null, 'a'],
+      ['lands on the last row going up when fallback is null', -1, null, 'c'],
+    ] as const)('%s', (_name, delta, fallback, expected) => {
       seedRows(['a', 'b', 'c']);
-      stepSidebarCursor(1, 'b');
-      expect(getSidebarCursorThreadId()).toBe('b');
-    });
-
-    it('lands on row 0 going down when fallback is null', () => {
-      seedRows(['a', 'b', 'c']);
-      stepSidebarCursor(1, null);
-      expect(getSidebarCursorThreadId()).toBe('a');
-    });
-
-    it('lands on the last row going up when fallback is null', () => {
-      seedRows(['a', 'b', 'c']);
-      stepSidebarCursor(-1, null);
-      expect(getSidebarCursorThreadId()).toBe('c');
+      stepSidebarCursor(delta, fallback);
+      expect(getSidebarCursorThreadId()).toBe(expected);
     });
 
     it('steps forward through the visible order on subsequent calls', () => {
@@ -56,25 +48,15 @@ describe('sidebarCursor store', () => {
       expect(getSidebarCursorThreadId()).toBe('c');
     });
 
-    it('wraps to the first row when stepping past the end', () => {
+    it.each([
+      ['wraps to the first row when stepping past the end', 'c', 1, 'c', 'a'],
+      ['wraps to the last row when stepping before the start', 'a', -1, 'a', 'c'],
+      ['falls back to the supplied id when the current cursor falls out of the visible set', 'missing-thread', 1, 'b', 'b'],
+    ] as const)('%s', (_name, cursor, delta, fallback, expected) => {
       seedRows(['a', 'b', 'c']);
-      setSidebarCursorForTest('c');
-      stepSidebarCursor(1, 'c');
-      expect(getSidebarCursorThreadId()).toBe('a');
-    });
-
-    it('wraps to the last row when stepping before the start', () => {
-      seedRows(['a', 'b', 'c']);
-      setSidebarCursorForTest('a');
-      stepSidebarCursor(-1, 'a');
-      expect(getSidebarCursorThreadId()).toBe('c');
-    });
-
-    it('falls back to the supplied id when the current cursor falls out of the visible set', () => {
-      seedRows(['a', 'b', 'c']);
-      setSidebarCursorForTest('missing-thread');
-      stepSidebarCursor(1, 'b');
-      expect(getSidebarCursorThreadId()).toBe('b');
+      setSidebarCursorForTest(cursor);
+      stepSidebarCursor(delta, fallback);
+      expect(getSidebarCursorThreadId()).toBe(expected);
     });
 
     it('uses row 0 / last row when both cursor and fallback are absent from the visible set', () => {

@@ -21,7 +21,6 @@ import {
   DraftThreadDeletedError,
   markDraftThreadDeleted,
   rememberDraftSnapshot,
-  resetComposerDraftSnapshotStateForTest,
   queueDraftSave,
   queueDraftThreadCleanup,
   unsavedDraftSnapshot,
@@ -33,8 +32,8 @@ import { addErrorToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { ensureImagePlaceholders } from '../utils/imagePlaceholders';
+import { DRAFT_SAVE_DEBOUNCE_MS } from '../pageTiming';
 
-const DEFAULT_DEBOUNCE_MS = 500;
 
 export interface DraftStoreOptions {
   debounceMs?: number;
@@ -81,17 +80,13 @@ export type EmptyThreadCleanup =
    */
   | { outcome: 'unknown'; unsaved: ComposerDraftSnapshot | null };
 
-export function resetComposerDraftSnapshotsForTest(): void {
-  resetComposerDraftSnapshotStateForTest();
-}
-
 /**
  * Per-thread composer draft state. One instance manages its own timers and
  * requests; the caller is expected to call `setThread` whenever the active
  * thread changes so we can hydrate / flush correctly.
  */
 export function createComposerDraftStore(options: DraftStoreOptions = {}) {
-  const debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const debounceMs = options.debounceMs ?? DRAFT_SAVE_DEBOUNCE_MS;
   const persists = options.persistence !== 'none';
 
   let threadId: string | null = $state(null);

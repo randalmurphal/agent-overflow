@@ -4,7 +4,6 @@ import (
 	"context"
 	"go/ast"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,8 +12,11 @@ import (
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+
+	"github.com/google/uuid"
 )
 
 // The argument-dependent rechecks (docs/specs/remote-access.md §16 phase 3).
@@ -141,20 +143,6 @@ func TestRequireAutonomyFollowsTheSelectedMode(t *testing.T) {
 	}
 }
 
-// TestRequireAutonomyAdmitsACallWithNoSession is the compatibility case: an
-// in-process saga, a workflow phase, a test, and every launch-credential
-// connection name no session and must keep working exactly as before.
-func TestRequireAutonomyAdmitsACallWithNoSession(t *testing.T) {
-	t.Parallel()
-	app, _, _ := autonomyApp(t)
-
-	for _, ctx := range []context.Context{context.Background(), callFrom("", false)} {
-		if err := app.requireAutonomy(ctx, string(provider.RuntimeFullAccess)); err != nil {
-			t.Errorf("a call with no session behind it was refused: %v", err)
-		}
-	}
-}
-
 // TestRequireAutonomyIgnoresWhatIsNotASelection: an empty mode is "whatever
 // this thread already resolves to", and an unparseable one is a bad argument
 // the method's own validator explains. Neither is a capability request, and
@@ -250,15 +238,8 @@ func TestCreateThreadJudgesTheResolvedMode(t *testing.T) {
 // keeps it the set the code has.
 func threadDrivingCalls(app *App) map[string]func(t *testing.T, ctx context.Context, threadID string) error {
 	return map[string]func(t *testing.T, ctx context.Context, threadID string) error{
-		"SendMessage": func(_ *testing.T, ctx context.Context, id string) error {
-			return app.SendMessage(ctx, id, "hi", nil)
-		},
 		"SendMessageWithOptions": func(_ *testing.T, ctx context.Context, id string) error {
-			_, err := app.SendMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
-			return err
-		},
-		"SteerMessageWithOptions": func(_ *testing.T, ctx context.Context, id string) error {
-			_, err := app.SteerMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
+			_, err := app.SendMessageWithOptions(ctx, id, "hi", pageSendOptions(uuid.NewString()))
 			return err
 		},
 		"RegisterQueueItem": func(_ *testing.T, ctx context.Context, id string) error {
@@ -271,10 +252,6 @@ func threadDrivingCalls(app *App) map[string]func(t *testing.T, ctx context.Cont
 		},
 		"SubmitAsyncAnswers": func(_ *testing.T, ctx context.Context, id string) error {
 			return app.SubmitAsyncAnswers(ctx, id, "send", nil)
-		},
-		"StartCodexReview": func(_ *testing.T, ctx context.Context, id string) error {
-			_, err := app.StartCodexReview(ctx, id, CodexReviewTarget{Kind: "uncommittedChanges"})
-			return err
 		},
 		"SendPlanRevisionComments": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.SendPlanRevisionComments(ctx, id, "plan", []string{"comment"})
@@ -488,12 +465,8 @@ func TestEveryThreadDrivingMethodIsListed(t *testing.T) {
 // testFunctionExists reports whether internal/app declares a test named name.
 func testFunctionExists(t *testing.T, name string) bool {
 	t.Helper()
-	files, err := filepath.Glob("internal/app/*_test.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range files {
-		source, err := os.ReadFile(file)
+	for _, file := range reporoot.Files(t, "internal/app", "*_test.go") {
+		source, err := os.ReadFile(reporoot.Path(t, file))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -534,11 +507,7 @@ func TestSelectingAnAutonomousModeStillNeedsAutonomy(t *testing.T) {
 		call func() error
 	}{
 		{"SendMessageWithOptions", func() error {
-			_, err := app.SendMessageWithOptions(ctx, gated.ID, "hi", SendMessageOptions{RuntimeMode: auto})
-			return err
-		}},
-		{"SteerMessageWithOptions", func() error {
-			_, err := app.SteerMessageWithOptions(ctx, gated.ID, "hi", SendMessageOptions{RuntimeMode: auto})
+			_, err := app.SendMessageWithOptions(ctx, gated.ID, "hi", SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, RuntimeMode: auto})
 			return err
 		}},
 		{"RegisterQueueItem", func() error {

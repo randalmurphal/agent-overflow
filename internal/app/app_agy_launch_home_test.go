@@ -89,7 +89,7 @@ func (r agyLaunchRig) startAgyThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.app.StartSession(thread.ID); err != nil {
+	if err := r.app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 }
@@ -177,7 +177,7 @@ func TestAgyProbesMCPAndTextGenerationRunOnTheManagersHome(t *testing.T) {
 
 	// HOME elsewhere: the probe names the manager's directory; the others
 	// refuse.
-	_, _ = rig.app.ProbeAgyAccount()
+	_, _ = rig.app.providerDiscoveryService().ProbeAgyAccount()
 	wantLaunch(t, "an account probe", rig.newLaunches(t, 0), rig.named)
 	if _, err := rig.app.RefreshMcpServerStatus(string(provider.Agy), ""); err == nil || !strings.Contains(err.Error(), "default home") {
 		t.Fatalf("agy mcp list under another HOME = %v, want a refusal", err)
@@ -211,8 +211,8 @@ func TestAgyProbesMCPAndTextGenerationRunOnTheManagersHome(t *testing.T) {
 			t.Fatalf("%s text generation ran %d times", name, len(specs))
 		}
 		spec := specs[0]
-		if spec.Env["AGY_ACP_FORCE_FILE_STORAGE"] != "1" || !slices.Contains(spec.UnsetEnv, "GEMINI_HOME") || !slices.Contains(spec.UnsetEnv, "AGY_APP_DATA_DIR") || slices.Contains(spec.Args, "--gemini-dir") {
-			t.Fatalf("%s text generation ran with env %v, unset %v, args %v; want the file store on agy's default home", name, spec.Env, spec.UnsetEnv, spec.Args)
+		if spec.Env.Pins[provider.AgyForceFileStorageEnv] != "1" || !slices.Contains(spec.Env.Clears, provider.AgyGeminiHomeEnv) || !slices.Contains(spec.Env.Clears, provider.AgyAppDataDirEnv) || slices.Contains(spec.Args, "--gemini-dir") {
+			t.Fatalf("%s text generation ran with pins %v, clears %v, args %v; want the file store on agy's default home", name, spec.Env.Pins, spec.Env.Clears, spec.Args)
 		}
 	}
 }
@@ -235,7 +235,7 @@ func TestAnAgyPoolKeyNamesTheServersHome(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		key := agyPoolKey("agy", providerBinaryIdentity{}, "account", 1, home, nil, "")
+		key := agyPoolKey("agy", providerBinaryIdentity{}, "account", 1, home, provider.EnvInput{}, "")
 		if other, taken := keys[key]; taken {
 			t.Fatalf("servers on the %s and %s homes share a key", name, other)
 		}
@@ -268,7 +268,7 @@ func TestAnAgyBorrowReleasesAConnectionThatIsNotACP(t *testing.T) {
 	}
 	identity, _ := app.resolveProviderBinaryIdentity(string(provider.Agy))
 	selection := app.captureProviderAccountSelection(string(provider.Agy))
-	key := agyPoolKey(agy.ResolveBinary(binary), identity, selection.AccountID, selection.Generation, home, app.sessionProcessEnv(string(provider.Agy), nil), "")
+	key := agyPoolKey(agy.ResolveBinary(binary), identity, selection.AccountID, selection.Generation, home, app.sessionProcessEnv(string(provider.Agy)), "")
 	fake := &notACPConn{closed: make(chan struct{})}
 	_, release, err := app.sessionManager().runtime.Connections().Acquire(ctx, key, 50*time.Millisecond, func(context.Context) (provider.Connection, error) {
 		return fake, nil

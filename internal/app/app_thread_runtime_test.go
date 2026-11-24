@@ -246,36 +246,6 @@ func TestDeleteThreadAttachmentCleanupFailureSurfacesError(t *testing.T) {
 	}
 }
 
-// TestDeleteThreadStopSessionAndTerminalFailuresCombined covers the
-// multi-failure join: both stopSession and terminals.CloseThread fail,
-// and the returned error must mention both. The row must survive.
-func TestDeleteThreadStopSessionAndTerminalFailuresCombined(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	thread := testThread("multi-fail")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	app.stopSessionFn = func(string) error {
-		return errors.New("session boom")
-	}
-	// terminals is a real *terminal.Manager — closing a thread with no
-	// open terminals is a no-op success. We verify just the session
-	// branch here; the combined-error code path is exercised above.
-	err := app.deleteThread(thread.ID)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "session boom") {
-		t.Errorf("expected 'session boom' in error, got %q", err.Error())
-	}
-	// Row preserved.
-	if _, err := app.store.GetThread(thread.ID); err != nil {
-		t.Errorf("row should be preserved: %v", err)
-	}
-}
-
 // TestDeleteThreadRemovesReplayLog covers the common path: the thread has
 // an on-disk replay log and deleting the thread must remove it.
 func TestDeleteThreadRemovesReplayLog(t *testing.T) {

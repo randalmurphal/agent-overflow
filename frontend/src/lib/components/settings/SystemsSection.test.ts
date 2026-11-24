@@ -3,21 +3,17 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { within } from '@testing-library/svelte';
 import SystemsSection from './SystemsSection.svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
-import { backendNickname, __resetBackendNicknamesForTest } from '../../stores/attachedBackends.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { backendNickname } from '../../stores/attachedBackends.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../../test/runMode';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { SCOPES } from '../../transport/scopes';
-import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { __resetManifestBackendsForTest } from '../../transport/manifestBackends';
-import { __resetPendingAttachmentsForTest } from '../../transport/backendAttach';
+import { stageBackend } from '../../../test/helpers/backends';
 import { hasPairedSession } from '../../transport/deviceSession';
 import {
-  __resetHomeEndpointForTest,
   storeBackendEndpoint,
   storedBackendEndpoint,
 } from '../../transport/homeEndpoint';
-import { __resetSystemsForTest } from '../../stores/systems.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 
 const LAPTOP = {
@@ -31,21 +27,14 @@ const LAPTOP = {
 
 describe('<SystemsSection>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     __setTransportHelloForTest(null);
-    __resetBackendNicknamesForTest();
     resetRunMode();
-    __resetSystemsForTest();
-    resetStagedBackends();
-    __resetManifestBackendsForTest();
   });
 
   afterEach(() => {
     cleanup();
     __setTransportHelloForTest(null);
     resetRunMode();
-    resetStagedBackends();
-    __resetManifestBackendsForTest();
   });
 
   it('lists attached systems with live reachability', async () => {
@@ -126,15 +115,19 @@ describe('<SystemsSection>', () => {
     await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
   });
 
-  it('carries the abandon the host asked for when agent thread requests are open', async () => {
+  it.each([
+    ['agent thread requests are open', 'thread_requests_open', 'spawn tok-1 is still open there. Confirm to forget it anyway', /still open there/],
+    [
+      'forgetting discards completions held for archived conversations',
+      'remote_completions_held',
+      '1 finished job held for an archived conversation will be discarded. Confirm to forget the computer anyway.',
+      /1 finished job held for an archived conversation will be discarded/,
+    ],
+  ])('carries the abandon the host asked for when %s', async (_case, code, message, toast) => {
     stageBackend();
     setBindingMock('ListBackends', async () => [LAPTOP]);
     const remove = setBindingMock('RemoveBackend', async (_id: string, abandon: boolean) => {
-      if (!abandon) {
-        throw Object.assign(new Error('spawn tok-1 is still open there. Confirm to forget it anyway'), {
-          code: 'thread_requests_open',
-        });
-      }
+      if (!abandon) throw Object.assign(new Error(message), { code });
     });
     const { getByText, findByTestId, queryByTestId } = render(SystemsSection);
     await fireEvent.click(within(await findByTestId('attached-system')).getByText('Remove'));
@@ -142,28 +135,7 @@ describe('<SystemsSection>', () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', false));
     // The refusal is shown and the button asks for the confirmation the
     // host named instead of repeating the call that cannot succeed.
-    await waitFor(() => expect(getToasts()[0]?.message).toMatch(/still open there/));
-    await fireEvent.click(await findByTestId('attached-system').then(() => getByText('Forget anyway')));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', true));
-    await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
-  });
-
-  it('carries the abandon when forgetting discards completions held for archived conversations', async () => {
-    stageBackend();
-    setBindingMock('ListBackends', async () => [LAPTOP]);
-    const remove = setBindingMock('RemoveBackend', async (_id: string, abandon: boolean) => {
-      if (!abandon) {
-        throw Object.assign(
-          new Error('1 finished job held for an archived conversation will be discarded. Confirm to forget the computer anyway.'),
-          { code: 'remote_completions_held' },
-        );
-      }
-    });
-    const { getByText, findByTestId, queryByTestId } = render(SystemsSection);
-    await fireEvent.click(within(await findByTestId('attached-system')).getByText('Remove'));
-    await fireEvent.click(getByText('Confirm remove'));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', false));
-    await waitFor(() => expect(getToasts()[0]?.message).toMatch(/1 finished job held for an archived conversation will be discarded/));
+    await waitFor(() => expect(getToasts()[0]?.message).toMatch(toast));
     await fireEvent.click(getByText('Forget anyway'));
     await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', true));
     await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
@@ -213,8 +185,6 @@ describe('<SystemsSection>', () => {
   describe('on the phone shell', () => {
     beforeEach(async () => {
       localStorage.clear();
-      __resetHomeEndpointForTest();
-      __resetPendingAttachmentsForTest();
       vi.stubGlobal('Capacitor', { isNativePlatform: () => true, getPlatform: () => 'android' });
       // A phone is a paired device: full access, and never `host`.
       await pairWithScopes(SCOPES);
@@ -223,8 +193,6 @@ describe('<SystemsSection>', () => {
     afterEach(() => {
       vi.unstubAllGlobals();
       resetToLocalPage();
-      __resetPendingAttachmentsForTest();
-      __resetHomeEndpointForTest();
       localStorage.clear();
     });
 

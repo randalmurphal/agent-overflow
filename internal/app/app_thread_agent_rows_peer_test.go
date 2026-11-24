@@ -39,8 +39,21 @@ type agentPeerPair struct {
 
 func newAgentPeerPair(t *testing.T, serve func(*testing.T, *App) *pairedBackend) *agentPeerPair {
 	t.Helper()
-	remotetest.Require(t)
+	return newAgentPeerPairOn(t, newReachPairServedBy(t, serve))
+}
+
+// newAgentPeerPairListingWithin is newAgentPeerPair whose forwarded
+// listings give up at listBound, for a test of that bound. It is set before
+// the spawn, so no listing reads it while it changes.
+func newAgentPeerPairListingWithin(t *testing.T, serve func(*testing.T, *App) *pairedBackend, listBound time.Duration) *agentPeerPair {
+	t.Helper()
 	pair := newReachPairServedBy(t, serve)
+	pair.source.threadAgentPeerListOverride = listBound
+	return newAgentPeerPairOn(t, pair)
+}
+
+func newAgentPeerPairOn(t *testing.T, pair *reachPair) *agentPeerPair {
+	t.Helper()
 	// Every turn there holds open and answers an interrupt, so the spawns
 	// stay open until a Stop ends them.
 	// The caller here takes the user-cancelled wake a Stop sends it.
@@ -274,14 +287,15 @@ func TestThreadAgentPeerCallsRefuseOtherThreads(t *testing.T) {
 	}
 }
 
-// stalledAgentsPeer is a destination whose agent_rows answer comes after
-// delay, or not at all when delay is zero. calls counts the agent_rows
-// calls it was sent.
+// stalledAgentsPeer is a destination whose agent_rows answer comes once
+// gate closes when it has one, else after delay, or not at all when delay
+// is zero. calls counts the agent_rows calls it was sent.
 type stalledAgentsPeer struct {
 	*App
 	calls    atomic.Int32
 	answered atomic.Int32
 	delay    time.Duration
+	gate     <-chan struct{}
 }
 
 // serveStalledAgentsPeer serves app as a stalledAgentsPeer that never
@@ -293,20 +307,22 @@ func serveStalledAgentsPeer(peer **stalledAgentsPeer) func(*testing.T, *App) *pa
 // serveSlowAgentsPeer serves app as a stalledAgentsPeer answering after
 // delay.
 func serveSlowAgentsPeer(peer **stalledAgentsPeer, delay time.Duration) func(*testing.T, *App) *pairedBackend {
+	return serveHeldAgentsPeer(peer, &stalledAgentsPeer{delay: delay})
+}
+
+// serveGatedAgentsPeer serves app as a stalledAgentsPeer answering once
+// gate closes.
+func serveGatedAgentsPeer(peer **stalledAgentsPeer, gate <-chan struct{}) func(*testing.T, *App) *pairedBackend {
+	return serveHeldAgentsPeer(peer, &stalledAgentsPeer{gate: gate})
+}
+
+func serveHeldAgentsPeer(peer **stalledAgentsPeer, stalled *stalledAgentsPeer) func(*testing.T, *App) *pairedBackend {
 	return func(t *testing.T, app *App) *pairedBackend {
-		stalled := &stalledAgentsPeer{App: app, delay: delay}
+		stalled.App = app
 		if peer != nil {
 			*peer = stalled
 		}
-		return servePairedApp(t, app, func(cfg *transport.Config) {
-			dispatcher := transport.NewDispatcher()
-			if _, err := dispatcher.Register(stalled, transport.RegisterOptions{
-				Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList(),
-			}); err != nil {
-				t.Fatal(err)
-			}
-			cfg.Dispatcher = dispatcher
-		})
+		return serveAppAs(t, app, stalled)
 	}
 }
 
@@ -317,8 +333,14 @@ func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeer
 		if wait == 0 {
 			wait = 20 * time.Second
 		}
+		var elapsed <-chan time.Time
+		if p.gate == nil {
+			elapsed = time.After(wait)
+		}
 		select {
-		case <-time.After(wait):
+		case <-p.gate:
+			defer p.answered.Add(1)
+		case <-elapsed:
 			defer p.answered.Add(1)
 		case <-ctx.Done():
 		}
@@ -327,28 +349,38 @@ func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeer
 }
 
 // A computer that does not answer holds up neither the pane's read nor a
-// Stop: this computer's rows come back at once, the row says that computer
-// did not answer once its call gives up, and a Stop works from the ledger.
+// Stop: this computer's rows come back while that computer's call is still
+// held, the row says that computer did not answer once its call gives up,
+// and a Stop works from the ledger.
 func TestThreadAgentRowsDoNotWaitOnAComputerThatDoesNotAnswer(t *testing.T) {
-	// Serial: it times a read to 100 ms, which parallel tests would load.
-	pair := newAgentPeerPair(t, serveStalledAgentsPeer(nil))
-	start := time.Now()
+	t.Parallel()
+	// The listing's bound is under test, set small so the row says so soon.
+	pair := newAgentPeerPairListingWithin(t, serveStalledAgentsPeer(nil), time.Second)
 	listing := pair.listRows(t)
-	if took := time.Since(start); took > 100*time.Millisecond {
-		t.Fatalf("ListThreadAgentRows took %v with one computer not answering", took)
+	// That computer holds the call the read asked for until the call gives
+	// up at the bound, a second away: a read that waited on the call
+	// returns with its give-up recorded.
+	if answer, ok := pair.source.cachedPeerAgentRows(pair.spawn); ok {
+		t.Fatalf("ListThreadAgentRows returned after the call to the computer not answering ended: %+v", answer)
 	}
-	if _, ok := agentRowByToken(listing.Rows, pair.spawn.Token); !ok {
+	parent, ok := agentRowByToken(listing.Rows, pair.spawn.Token)
+	if !ok {
 		t.Fatalf("the spawn is not listed: %+v", listing.Rows)
+	}
+	if parent.NestedUnavailable != "" {
+		t.Fatalf("the first read says %q: it waited for the call to give up", parent.NestedUnavailable)
 	}
 	listing = pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
 		parent, _ := agentRowByToken(rows.Rows, pair.spawn.Token)
 		return parent.NestedUnavailable != ""
 	})
-	parent, _ := agentRowByToken(listing.Rows, pair.spawn.Token)
+	parent, _ = agentRowByToken(listing.Rows, pair.spawn.Token)
 	if want := parent.Computer + " did not answer; its agents are not shown"; parent.NestedUnavailable != want {
 		t.Fatalf("the spawn row says %q, want %q", parent.NestedUnavailable, want)
 	}
-	start = time.Now()
+	// A Stop that waited on a listing would now wait its product bound.
+	pair.source.threadAgentPeerListOverride = threadAgentPeerListTimeout
+	start := time.Now()
 	stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, pair.spawn.Token)
 	if err != nil || stop.Outcome != threadAgentStopped {
 		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
@@ -505,7 +537,7 @@ func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 // does, with its cached answer aged out, until done holds of the spawn.
 func (p *agentPeerPair) askAgainUntil(t *testing.T, done func(store.ThreadRequest) bool) {
 	t.Helper()
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, testutil.WaitBudget(t), func() bool {
 		cache := &p.source.threadAgentPeers
 		cache.mu.Lock()
 		if entry, ok := cache.entries[p.spawn.Token]; ok {
@@ -522,8 +554,8 @@ func (p *agentPeerPair) askAgainUntil(t *testing.T, done func(store.ThreadReques
 // spawned thread there still has open work: the sweep on each keeps its
 // half, the spawn here for its nested_open and the receipt there for the
 // open work under its thread, so the forwarded listing and Stop still
-// reach that work. Once it closes, the first sweep there keeps the receipt
-// only as its thread's lineage, unknown to the ledger, the listing that
+// reach that work. Once it closes, a sweep there keeps the receipt only as
+// its thread's lineage, unknown to the ledger, the listing that
 // follows finds no open work and clears nested_open here, and the next
 // sweep here deletes the spawn.
 func TestThreadAgentRetentionKeepsBothSidesOfARemoteSpawnWithOpenWork(t *testing.T) {
@@ -565,10 +597,12 @@ func TestThreadAgentRetentionKeepsBothSidesOfARemoteSpawnWithOpenWork(t *testing
 		return threadRequestSettled(grand)
 	})
 
-	sweep(pair.dest)
-	if _, found, err := pair.dest.store.GetThreadRequestReceipt(pair.spawn.Token); err != nil || found {
-		t.Fatalf("the receipt there once its work closed = found %v, %v; want deleted", found, err)
-	}
+	passesUntil(t, func() { sweep(pair.dest) }, func() error {
+		if _, found, err := pair.dest.store.GetThreadRequestReceipt(pair.spawn.Token); err != nil || found {
+			return fmt.Errorf("the receipt there once its work closed = found %v, %v; want deleted", found, err)
+		}
+		return nil
+	})
 	pair.askAgainUntil(t, func(spawn store.ThreadRequest) bool { return !spawn.NestedOpen })
 	startReconciledOwner(t, pair.reachPair)
 	sweep(pair.source)
@@ -638,9 +672,10 @@ func waitForPeerAnswer(t *testing.T, app *App, spawn store.ThreadRequest, within
 // the stalled computer's calls time out, it is not asked again until its
 // backoff passes.
 func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) {
-	// Serial: it counts the calls sent within a fixed 200 ms window.
+	// Serial: it counts the calls sent within a fixed 200 ms window, which
+	// the listing's bound, under test, outlasts.
 	var peer *stalledAgentsPeer
-	pair := newAgentPeerPair(t, serveStalledAgentsPeer(&peer))
+	pair := newAgentPeerPairListingWithin(t, serveStalledAgentsPeer(&peer), 2*time.Second)
 	a := pair.source
 	stalled := make([]store.ThreadRequest, 9)
 	for i := range stalled {
@@ -669,7 +704,7 @@ func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) 
 
 	// The two calls time out; the computer backs off, so the seven still
 	// waiting are dropped and no refresh asks it again.
-	waitForPeerAnswer(t, a, stalled[0], 2*threadAgentPeerListTimeout)
+	waitForPeerAnswer(t, a, stalled[0], testutil.WaitBudget(t))
 	a.threadRequestsWG.Wait()
 	asked := peer.calls.Load()
 	for _, spawn := range stalled {
@@ -730,7 +765,9 @@ func TestThreadAgentPeerBackoffDoublesAndAnAnswerClearsIt(t *testing.T) {
 // the read that follows gets its answer.
 func TestThreadAgentPeerRefreshesStayBounded(t *testing.T) {
 	t.Parallel()
-	pair := newAgentPeerPair(t, serveSlowAgentsPeer(new(*stalledAgentsPeer), 30*time.Millisecond))
+	// The destination holds every answer until all the spawns are queued.
+	queued := make(chan struct{})
+	pair := newAgentPeerPair(t, serveGatedAgentsPeer(nil, queued))
 	a := pair.source
 	frames := recordAgentRowFrames(a)
 	check := func(when string) {
@@ -756,6 +793,7 @@ func TestThreadAgentPeerRefreshesStayBounded(t *testing.T) {
 		a.refreshPairedPeerAgentRows(spawns[i], 0)
 		check(fmt.Sprintf("after %d spawns", i+1))
 	}
+	close(queued)
 	// The first spawns run at once; the oldest still waiting is dropped.
 	dropped := spawns[threadAgentPeerListsPerComputer+1]
 	waitForPeerAnswer(t, a, spawns[0], 10*time.Second)

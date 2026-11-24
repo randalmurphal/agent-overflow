@@ -275,7 +275,8 @@ func TestTheStableIDReachesThePlatformVerbatim(t *testing.T) {
 	}
 }
 
-// TestARetractionWithdrawsByIDAndPresentsNothing.
+// TestARetractionWithdrawsByIDAndPresentsNothing: it never reaches the
+// options shape, so there is nothing for a platform sound to be attached to.
 func TestARetractionWithdrawsByIDAndPresentsNothing(t *testing.T) {
 	t.Parallel()
 	app, platform := newAuthorizedDesktopNotifications(t)
@@ -372,27 +373,6 @@ func TestTheHostsSilentAnswerReachesThePlatform(t *testing.T) {
 				t.Fatalf("Sound = %#v, want %#v", got, test.want)
 			}
 		})
-	}
-}
-
-// A retraction is a withdrawal by id. It never reaches the options shape at
-// all, so there is nothing for a sound to be attached to.
-func TestARetractionCarriesNoPlatformSound(t *testing.T) {
-	t.Parallel()
-	app, platform := newAuthorizedDesktopNotifications(t)
-	err := app.notifyOS(notify.Send{
-		ID: "thread:thread-1", Kind: notify.KindTurnComplete, Retract: true,
-	})
-	if err != nil {
-		t.Fatalf("notifyOS: %v", err)
-	}
-	platform.mu.Lock()
-	defer platform.mu.Unlock()
-	if len(platform.sent) != 0 {
-		t.Fatalf("a retraction presented %#v", platform.sent)
-	}
-	if len(platform.removed) != 1 {
-		t.Fatalf("removed = %#v, want the withdrawn id", platform.removed)
 	}
 }
 

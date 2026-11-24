@@ -51,7 +51,7 @@ test('a sent message shows on the Send button until the backend row arrives', as
   const input = page.getByLabel('Message Input');
   const bubble = page.getByTestId('user-message-bubble').filter({ hasText: message });
   const sent = async () =>
-    (await harness.rpc<Item[]>('ListItems', threadId, true)).filter(
+    (await harness.items<Item>(threadId, true)).filter(
       (item) => item.kind === 'user_text' && item.summary === message,
     ).length;
   await input.fill(message);

@@ -63,7 +63,7 @@ func TestThreadCancelOfASpawnedThreadBringsItToRest(t *testing.T) {
 	if _, live := f.app.sessionManager().get(other.ID); !live {
 		t.Fatal("a thread the caller only sent to lost its session")
 	}
-	_ = f.app.StopSession(other.ID)
+	stopSessionChecked(t, f.app, other.ID)
 }
 
 // Stop All applies the row rule to every row: each spawned thread is

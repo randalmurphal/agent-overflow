@@ -2,10 +2,11 @@ import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { copyAppearanceFiles, readAppearanceFiles, readSpinnerFiles } from './appearanceFiles';
-import { getAppearance, loadAppearance, resetAppearanceForTest, setAppearance } from './appearance.svelte';
+import { getAppearance, loadAppearance, setAppearance } from './appearance.svelte';
 
 const context = vi.hoisted(() => ({ local: false, home: true, targets: [] as string[], grants: Promise.resolve() }));
-vi.mock('../transport/scopes', () => ({
+vi.mock('../transport/scopes', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/scopes')>()),
   hasScope: (scope: string) => scope === 'host' ? context.local : true,
   pageGrantsResolved: () => context.grants,
 }));
@@ -22,11 +23,10 @@ beforeEach(() => {
   context.targets = [];
   context.grants = Promise.resolve();
   localStorage.clear();
-  resetAppearanceForTest();
   setBindingMock('GetThemeFiles', () => ({ dir: '/mac/themes', themes: [{ id: 'nord', raw: '{}' }], warnings: [], appearance: { mode: 'dark', uiTheme: 'nord', codeTheme: 'nord' } }));
   setBindingMock('GetSpinnerFiles', () => ({ dir: '/mac/spinners', sprites: [], warnings: [] }));
 });
-afterEach(() => { vi.unstubAllGlobals(); resetAppearanceForTest(); });
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('appearance file residency', () => {
   it('does not adopt a cached browser library as the desktop selection during bootstrap', async () => {

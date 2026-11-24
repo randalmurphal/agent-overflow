@@ -108,18 +108,9 @@ func TestPermissionDeniedPersistsNoticeAndAnnotatesTheToolCall(t *testing.T) {
 	if toolMeta["toolName"] != "Bash" {
 		t.Fatalf("annotation clobbered the launch meta: %+v", toolMeta)
 	}
-}
 
-// The denied tool's real tool_result must still land after the notice —
-// the annotation is why this is asserted rather than assumed.
-func TestPermissionDeniedLeavesTheToolResultRoutable(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	seedRunningToolCall(t, router, "t1", "toolu_01")
-	if err := router.Handle(permissionDeniedEvent("t1", "toolu_01", nil)); err != nil {
-		t.Fatalf("handle permission_denied: %v", err)
-	}
-
+	// The denied tool's real tool_result must still land after the notice:
+	// the annotation is why this is asserted rather than assumed.
 	completeMeta, _ := json.Marshal(map[string]any{"toolName": "Bash", "isError": true})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventToolComplete,
@@ -133,9 +124,9 @@ func TestPermissionDeniedLeavesTheToolResultRoutable(t *testing.T) {
 		t.Fatalf("handle tool complete: %v", err)
 	}
 
-	tool, found, err := st.GetThreadItem("t1", "toolu_01")
+	tool, found, err = st.GetThreadItem("t1", "toolu_01")
 	if err != nil || !found {
-		t.Fatalf("tool row: found=%v err=%v", found, err)
+		t.Fatalf("tool row after its result: found=%v err=%v", found, err)
 	}
 	if tool.Status == statusRunning {
 		t.Fatal("the tool_result completion was dropped — the annotation must not settle the row")

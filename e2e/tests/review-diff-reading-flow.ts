@@ -31,6 +31,7 @@ import {
 } from './forge-helpers.js';
 import { line, ROUTES } from './review-comment-actions-flow.js';
 import { longPress } from './touch-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 type Forge = 'github' | 'gitlab';
 
@@ -165,7 +166,11 @@ function bytesText(bytes: number): string {
 }
 
 export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
-  for (const forge of ['github', 'gitlab'] as const) {
+  // The phone's taps, long presses and layout branch on no forge, and
+  // GitHub's run reaches every control GitLab's does; each forge's own wire
+  // is the desktop run's.
+  const forges: readonly Forge[] = compact ? ['github'] : ['github', 'gitlab'];
+  for (const forge of forges) {
     test(`on ${forge}, runs of commits, image rows and a line's link`, async ({ harness, page }, testInfo) => {
       test.setTimeout(240_000);
       await page.emulateMedia({ colorScheme: 'dark' });
@@ -195,7 +200,7 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
         await expect(trigger).toHaveText(/^\s*2–4\/8\s*$/);
         await expect.poll(() => shownPaths(review)).toEqual(['diagram.svg', 'logo.png', 'old.png']);
         await openPicker();
-        await page.screenshot({ path: shot(`${forge}-picker-range`) });
+        await screenshot(page, { path: shot(`${forge}-picker-range`) });
         await page.keyboard.press('Escape');
       } else {
         await openPicker();
@@ -203,7 +208,7 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
         await row.getByRole('button', { name: /through the newest/ }).tap();
         await expect(trigger).toHaveText(/^\s*2–8\/8\s*$/);
         await openPicker();
-        await page.screenshot({ path: shot(`${forge}-picker-range`) });
+        await screenshot(page, { path: shot(`${forge}-picker-range`) });
         await pickerRow('restyle logo').getByRole('button', { name: /through the newest/ }).tap();
       }
       const card = review.getByTestId('review-range-card');
@@ -214,7 +219,7 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
       // The card leads the diff where the commit card would, no taller
       // than a line more.
       const cardHeight = (await card.boundingBox())!.height;
-      await review.screenshot({ path: shot(`${forge}-range-card`) });
+      await screenshot(review, { path: shot(`${forge}-range-card`) });
       await press(card.getByTestId('review-range-card-leave'));
       await expect(trigger).toHaveText(/All commits/);
       await expect(card).toHaveCount(0);
@@ -274,7 +279,7 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
       await expect(runCard.getByTestId('review-range-card-ends')).toContainText('rename moved');
       await expect(runCard.getByTestId('review-range-card-ends')).toContainText('drop note');
       await expect.poll(() => shownPaths(review)).toEqual(['data.bin', 'huge.png', 'img/moved.png', 'src/app.ts']);
-      await review.screenshot({ path: shot(`${forge}-changes-from-run`) });
+      await screenshot(review, { path: shot(`${forge}-changes-from-run`) });
       await press(runCard.getByTestId('review-range-card-leave'));
       await expect(trigger).toHaveText(/All commits/);
       await expandReviewSection(page, 'review-pr-conversation');
@@ -300,12 +305,12 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
       await expect(logo.getByTestId('review-image-side')).toHaveCount(2);
       const [oldSide, newSide] = await logo.getByTestId('review-image-side').all();
       expect((await newSide.boundingBox())!.y).toBeGreaterThan((await oldSide.boundingBox())!.y);
-      await logo.screenshot({ path: shot(`${forge}-image-unified`) });
+      await screenshot(logo, { path: shot(`${forge}-image-unified`) });
 
       const icon = await reach(review, 'icon.png', review.locator('[data-testid="review-image-diff"][data-path="icon.png"]'), compact);
       await expect(icon.getByTestId('review-image-side')).toHaveCount(1);
       await expect(icon.getByTestId('review-image-caption')).toHaveText(`24 × 12 px · ${bytesText(solidPNG(24, 12, [240, 200, 0]).length)}`, { timeout: 30_000 });
-      await icon.screenshot({ path: shot(`${forge}-image-added`) });
+      await screenshot(icon, { path: shot(`${forge}-image-added`) });
       const old = await reach(review, 'old.png', review.locator('[data-testid="review-image-diff"][data-path="old.png"]'), compact);
       await expect(old.getByTestId('review-image-side')).toHaveAttribute('data-side', 'old');
 
@@ -313,7 +318,7 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
       await expect(huge.getByTestId('review-image-over-cap')).toHaveText('Too large to show here (over 25 MB)', { timeout: 30_000 });
       await expect(huge.getByTestId('review-image-caption')).toHaveText(bytesText(OVER_CAP_BYTES));
       await expect(huge.getByTestId('review-image')).toHaveCount(0);
-      await huge.screenshot({ path: shot(`${forge}-image-over-cap`) });
+      await screenshot(huge, { path: shot(`${forge}-image-over-cap`) });
 
       const blob = await reach(review, 'data.bin', review.locator('[data-testid="review-binary-file"][data-path="data.bin"]'), compact);
       await expect(blob).toContainText('Binary files differ');
@@ -329,7 +334,7 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
       const svg = review.locator('[data-testid="review-image-diff"][data-path="diagram.svg"]');
       await expect(svg.getByTestId('review-image-caption')).toHaveText(/^40 × 20 px · /, { timeout: 30_000 });
       await expect(line(review, '<rect width="40"')).toHaveCount(0);
-      await review.screenshot({ path: shot(`${forge}-svg-rendered`) });
+      await screenshot(review, { path: shot(`${forge}-svg-rendered`) });
       await press(toggle);
       await expect(svg).toHaveCount(0);
 
@@ -344,7 +349,7 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
       const right = (await rightSide.boundingBox())!;
       expect(right.y).toBe(left.y);
       expect(right.x).toBeGreaterThanOrEqual(left.x + left.width);
-      await split.screenshot({ path: shot(`${forge}-image-split`) });
+      await screenshot(split, { path: shot(`${forge}-image-split`) });
       await press(review.getByTestId('review-view-options'));
       await press(page.locator('[data-popover]').last().getByTestId('review-split-toggle'));
       await page.keyboard.press('Escape');
@@ -367,7 +372,7 @@ export function reviewDiffReadingFlow({ compact }: { compact: boolean }): void {
         if (compact) await longPress(page, gutter, item);
         else await gutter.click({ button: 'right' });
         await expect(item).toHaveText('Copy link to line');
-        if (text === 'beta') await page.screenshot({ path: shot(`${forge}-line-menu`) });
+        if (text === 'beta') await screenshot(page, { path: shot(`${forge}-line-menu`) });
         await press(item);
         await expect(item).toHaveCount(0);
         await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expected);

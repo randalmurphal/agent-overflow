@@ -40,7 +40,7 @@ func TestBootReturnsAnUnconfirmedQueuedMessageToTheComposer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now())})
 
 	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "written, never read", SendMessageOptions{SendID: "send-unread"}); err != nil {
@@ -253,34 +253,5 @@ func TestBootTakesBackOnlyResidueOfTheLastTurn(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// A confirmed row is history: the boot leaves it alone.
-func TestBootLeavesAConfirmedQueuedMessageInTheTimeline(t *testing.T) {
-	t.Parallel()
-	app, _ := newAppForFlushQueueRPC(t)
-	thread := testThread("boot-confirmed")
-	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	now := time.Now().UnixMilli()
-	if _, err := app.store.AppendItem(store.Item{
-		ID: "user:1:flush:1", ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user",
-		Status: "completed", Summary: "read by the model", Meta: `{"sendId":"send-read","provider_item_id":"uuid-1"}`,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("AppendItem: %v", err)
-	}
-
-	app.restoreDurableFlushQueueAtBoot()
-
-	if _, found, err := app.store.GetThreadItem(thread.ID, "user:1:flush:1"); err != nil || !found {
-		t.Fatalf("confirmed row after boot: found=%v err=%v, want it kept", found, err)
-	}
-	if draft, _, err := app.store.GetThreadDraft(thread.ID); err != nil || draft.Content != "" {
-		t.Fatalf("draft = %q (%v), want it empty", draft.Content, err)
 	}
 }

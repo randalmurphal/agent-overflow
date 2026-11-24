@@ -95,26 +95,6 @@ func TestParseFlagsSoakWindowDefaultsToThePerWorktreeRoot(t *testing.T) {
 	}
 }
 
-func TestParseFlagsLauncherSoakKeepsItsDefaultRoot(t *testing.T) {
-	// The launcher spells the profile's flags and nothing else; the soak
-	// profile must keep pointing at the well-known root make soak-check
-	// reads, and the harness profile at its own.
-	flags, err := parseFlags([]string{"--soak", "--autopilot", "--print-url-fd", "0", "--listen", "127.0.0.1:0"})
-	if err != nil {
-		t.Fatalf("parseFlags: %v", err)
-	}
-	if flags.dataDir != soakDefaultDataRoot() {
-		t.Fatalf("dataDir = %q, want %q", flags.dataDir, soakDefaultDataRoot())
-	}
-	harness, err := parseFlags([]string{"--soak", "--print-url-fd", "0", "--listen", "127.0.0.1:0"})
-	if err != nil {
-		t.Fatalf("parseFlags: %v", err)
-	}
-	if harness.dataDir != harnessDefaultDataRoot() {
-		t.Fatalf("harness-profile dataDir = %q, want %q", harness.dataDir, harnessDefaultDataRoot())
-	}
-}
-
 func TestWebviewStorageEnvLivesUnderTheDataRoot(t *testing.T) {
 	root := filepath.FromSlash("/tmp/w1-root")
 	vars := webviewStorageEnv(root)

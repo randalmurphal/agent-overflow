@@ -717,14 +717,6 @@ func (p *Parser) markBackground(toolUseID string, origin backgroundOrigin) {
 	p.backgroundToolUses[toolUseID] = origin
 }
 
-// isBackground reports whether the given tool_use ID was marked (either
-// origin). The Claude tool_use ↔ tool_result correlation is one-shot;
-// callers that consume a correlated event should also call
-// clearBackground to release the entry.
-func (p *Parser) isBackground(toolUseID string) bool {
-	return p.backgroundOrigin(toolUseID) != 0
-}
-
 // backgroundOrigin returns why the id was marked, or 0 when it was not.
 func (p *Parser) backgroundOrigin(toolUseID string) backgroundOrigin {
 	if toolUseID == "" || p.backgroundToolUses == nil {
@@ -1048,10 +1040,6 @@ func (r *recentMap[V]) get(key string) (V, bool) {
 func (r *recentMap[V]) delete(key string) {
 	delete(r.current, key)
 	delete(r.previous, key)
-}
-
-func (r *recentMap[V]) len() int {
-	return len(r.current) + len(r.previous)
 }
 
 // rememberToolUseName records the tool name of an observed tool_use. See

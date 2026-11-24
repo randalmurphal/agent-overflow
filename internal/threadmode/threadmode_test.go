@@ -27,8 +27,12 @@ func TestValidateCreate_TrimsWhitespace(t *testing.T) {
 }
 
 func TestValidateCreate_RejectsUnknown(t *testing.T) {
-	if _, err := ValidateCreate("bogus"); err == nil {
-		t.Fatal("expected ValidateCreate to reject unknown mode")
+	for _, mode := range []string{"bogus", "design"} {
+		t.Run(mode, func(t *testing.T) {
+			if _, err := ValidateCreate(mode); err == nil {
+				t.Fatalf("ValidateCreate(%q) accepted it", mode)
+			}
+		})
 	}
 }
 
@@ -37,12 +41,6 @@ func TestValidateCreate_AcceptsLegal(t *testing.T) {
 		if got, err := ValidateCreate(mode); err != nil || got != mode {
 			t.Fatalf("ValidateCreate(%q) = (%q, %v); want (%q, nil)", mode, got, err, mode)
 		}
-	}
-}
-
-func TestValidateCreate_RejectsRetiredDesign(t *testing.T) {
-	if _, err := ValidateCreate("design"); err == nil {
-		t.Fatal("expected ValidateCreate to reject retired design mode")
 	}
 }
 
@@ -117,16 +115,23 @@ func TestParseOptionalRuntime_EmptyIsAbsent(t *testing.T) {
 	}
 }
 
+// The restricted tier goes through the optional path too, which is what the
+// settings / new-thread-defaults callers use. Rejecting it there would make
+// the mode unselectable everywhere except the workflow runner.
 func TestParseOptionalRuntime_PresentValid(t *testing.T) {
-	got, present, err := ParseOptionalRuntime(string(provider.RuntimeAutoAcceptEdits))
-	if err != nil {
-		t.Fatalf("ParseOptionalRuntime: %v", err)
-	}
-	if !present {
-		t.Fatal("present = false on a non-empty value")
-	}
-	if got != provider.RuntimeAutoAcceptEdits {
-		t.Fatalf("got = %q, want %q", got, provider.RuntimeAutoAcceptEdits)
+	for _, mode := range []provider.RuntimeMode{provider.RuntimeAutoAcceptEdits, provider.RuntimeReadOnly} {
+		t.Run(string(mode), func(t *testing.T) {
+			got, present, err := ParseOptionalRuntime(string(mode))
+			if err != nil {
+				t.Fatalf("ParseOptionalRuntime(%q): %v", mode, err)
+			}
+			if !present {
+				t.Fatal("present = false on a non-empty value")
+			}
+			if got != mode {
+				t.Fatalf("got = %q, want %q", got, mode)
+			}
+		})
 	}
 }
 
@@ -162,61 +167,33 @@ func TestWorkflowModesAreLegalSagaOwnedAndHidden(t *testing.T) {
 	}
 }
 
-// TestParseOptionalRuntime_AcceptsReadOnly covers the restricted tier through
-// the optional path, which is what the settings / new-thread-defaults callers
-// use. Rejecting it there would make the mode unselectable everywhere except
-// the workflow runner.
-func TestParseOptionalRuntime_AcceptsReadOnly(t *testing.T) {
-	got, present, err := ParseOptionalRuntime(string(provider.RuntimeReadOnly))
-	if err != nil {
-		t.Fatalf("ParseOptionalRuntime(read-only): %v", err)
-	}
-	if !present {
-		t.Fatal("present = false for read-only")
-	}
-	if got != provider.RuntimeReadOnly {
-		t.Fatalf("got = %q, want read-only", got)
-	}
-}
-
 // Scratch is not a mode the UI can set, and not one it can leave: the fork's
 // return mode lives in the scratch record, so a hand-set mode would strand
 // the record and the boot sweep would delete the thread. Promotion runs
-// through store.PromoteScratchThread instead.
-func TestScratchModeIsHiddenAndUnsettable(t *testing.T) {
-	if !IsLegal(ModeScratch) {
-		t.Fatal("scratch must be a legal thread mode")
-	}
-	if !IsHidden(ModeScratch) {
-		t.Error("scratch must be hidden from thread lists")
-	}
-	if _, err := ValidateSet(ModeScratch); err == nil {
-		t.Error("ValidateSet must refuse switching into scratch")
-	}
-	if IsPostCreationMode(ModeScratch) {
-		t.Error("a scratch thread must not be mutable into another mode")
-	}
-	if _, ok := ManualSelectionModes[ModeScratch]; ok {
-		t.Error("scratch must not be offered in the mode picker")
-	}
-}
-
-// A holder keeps history pointer forks read after its thread was deleted
-// or reverted. The store owns its lifetime; nothing may create or enter it.
-func TestHolderModeIsHiddenAndUnsettable(t *testing.T) {
-	if !IsLegal(ModeHolder) {
-		t.Fatal("holder must be a legal thread mode")
-	}
-	if !IsHidden(ModeHolder) {
-		t.Error("holder must be hidden from thread lists")
-	}
-	if _, err := ValidateCreate(ModeHolder); err == nil {
-		t.Error("ValidateCreate must refuse creating a holder")
-	}
-	if _, err := ValidateSet(ModeHolder); err == nil {
-		t.Error("ValidateSet must refuse switching into holder")
-	}
-	if IsPostCreationMode(ModeHolder) {
-		t.Error("a holder must not be mutable into another mode")
+// through store.PromoteScratchThread instead. A holder keeps history pointer
+// forks read after its thread was deleted or reverted. The store owns both
+// lifetimes; nothing may create or enter either mode.
+func TestStoreOwnedModesAreHiddenAndUnsettable(t *testing.T) {
+	for _, mode := range []string{ModeScratch, ModeHolder} {
+		t.Run(mode, func(t *testing.T) {
+			if !IsLegal(mode) {
+				t.Fatal("must be a legal thread mode")
+			}
+			if !IsHidden(mode) {
+				t.Error("must be hidden from thread lists")
+			}
+			if _, err := ValidateCreate(mode); err == nil {
+				t.Error("ValidateCreate must refuse creating it")
+			}
+			if _, err := ValidateSet(mode); err == nil {
+				t.Error("ValidateSet must refuse switching into it")
+			}
+			if IsPostCreationMode(mode) {
+				t.Error("must not be mutable into another mode")
+			}
+			if _, ok := ManualSelectionModes[mode]; ok {
+				t.Error("must not be offered in the mode picker")
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -252,7 +253,9 @@ func TestInternalCommandSuppressionIgnoresTheReplyText(t *testing.T) {
 // `/effort bogus`, never a candidate; the third is a user-typed `/fast on` the
 // CLI DECLINED — the case the old send-time-only rule swallowed. The event
 // itself still reaches the app layer in all three, because the live-config
-// reconciler settles an apply from exactly this output.
+// reconciler settles an apply from exactly this output: each command's
+// synthetic output becomes one EventCommandResult whose Meta carries the
+// command_uuid of the lifecycle window it arrived in.
 func TestCommandResultEventCarriesTheSuppressionAndStillEmits(t *testing.T) {
 	const effortUUID = "aaaaaaa1-0000-4000-8000-000000000001"
 	const fastUUID = "aaaaaaa3-0000-4000-8000-000000000003"
@@ -272,6 +275,7 @@ func TestCommandResultEventCarriesTheSuppressionAndStillEmits(t *testing.T) {
 	type got struct {
 		uuid       string
 		suppressed bool
+		text       string
 	}
 	var results []got
 	for _, line := range fixtureLines(t, effortLiveFixture) {
@@ -293,24 +297,28 @@ func TestCommandResultEventCarriesTheSuppressionAndStillEmits(t *testing.T) {
 				t.Fatalf("suppression dropped the output of %s; it is a ROW decision, "+
 					"and the live-config reconciler reads this text", meta.CommandUUID)
 			}
-			results = append(results, got{uuid: meta.CommandUUID, suppressed: meta.Suppressed})
+			results = append(results, got{uuid: meta.CommandUUID, suppressed: meta.Suppressed, text: evt.Content})
 		}
 	}
 
-	want := []got{
-		{effortUUID, true},
-		{"aaaaaaa2-0000-4000-8000-000000000002", false},
-		// "Fast mode unavailable: Fast mode is not available in the Agent SDK".
+	want := []struct {
+		uuid       string
+		suppressed bool
+		textPrefix string
+	}{
+		{effortUUID, true, "Set effort level to low (this session only)"},
+		{"aaaaaaa2-0000-4000-8000-000000000002", false, "Invalid argument: bogus."},
 		// The user typed /fast on, it did not happen, and this row is the only
 		// place the app says so.
-		{fastUUID, false},
+		{fastUUID, false, "Fast mode unavailable: Fast mode is not available in the Agent SDK"},
 	}
 	if len(results) != len(want) {
 		t.Fatalf("command results = %+v, want %d", results, len(want))
 	}
 	for i, w := range want {
-		if results[i] != w {
-			t.Fatalf("result %d = %+v, want %+v", i, results[i], w)
+		r := results[i]
+		if r.uuid != w.uuid || r.suppressed != w.suppressed || !strings.HasPrefix(r.text, w.textPrefix) {
+			t.Fatalf("result %d = %+v, want %+v", i, r, w)
 		}
 	}
 

@@ -12,23 +12,18 @@
 //
 // This test reproduces the warm-cache condition the suites never had.
 import { render, waitFor } from '@testing-library/svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import ChatMarkdown from './ChatMarkdown.svelte';
 import ForgeAttachmentChatHarness from './ForgeAttachmentChatHarness.svelte';
 import { markdownFindText } from './markdown/markdownFindText';
 import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
 import {
   createCodeSourceIdentity,
-  resetCodeSpanCacheForTest,
   seedFinalBlockSpans,
 } from './markdown/codeSpanCache';
 
 const MERMAID_SOURCE = 'graph TD\n  A[Start] --> B[Finish]';
 const DOC = `Before.\n\n\`\`\`mermaid\n${MERMAID_SOURCE}\n\`\`\`\n\nAfter.`;
-
-afterEach(() => {
-  resetCodeSpanCacheForTest();
-});
 
 describe('compact static path with a warm span cache', () => {
   it('mounts the mermaid island instead of serializing the fence as code', async () => {

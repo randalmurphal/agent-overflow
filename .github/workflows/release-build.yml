@@ -296,7 +296,7 @@ jobs:
           node: "true"
           frontend-deps: "true"
           e2e-deps: "true"
-          browsers: chromium
+          browsers: E2E_BROWSERS_MANUAL
           netns: "true"
           cache-name: harness
 

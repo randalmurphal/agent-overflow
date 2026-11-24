@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/provider"
 )
 
 // Retention is a Claude launch's answer to the transcript sweep: the config
@@ -66,9 +67,9 @@ var errNoRetention = errors.New("claude: the launch gives no transcript retentio
 // to build one, and every process the app starts from the Claude binary
 // takes its arguments and environment from one.
 type CommandLine struct {
-	args  []string
-	env   map[string]string
-	unset []string
+	args   []string
+	pins   map[provider.ReservedEnv]string
+	clears []provider.ReservedEnv
 }
 
 // NewCommandLine builds a launch's command line from its Retention, its own
@@ -87,13 +88,13 @@ func NewCommandLine(retention Retention, settings string, args ...string) (Comma
 	if err != nil {
 		return CommandLine{}, err
 	}
-	line := CommandLine{unset: launchUnsetEnv()}
+	line := CommandLine{clears: launchClears()}
 	if block != "" {
 		line.args = append(line.args, "--settings", block)
 	}
 	line.args = append(line.args, args...)
 	if retention.home == retentionIsolatedHome {
-		line.env = map[string]string{configDirEnv: retention.configDir}
+		line.pins = map[provider.ReservedEnv]string{provider.ClaudeConfigDirEnv: retention.configDir}
 	}
 	return line, nil
 }
@@ -101,30 +102,23 @@ func NewCommandLine(retention Retention, settings string, args ...string) (Comma
 // Args returns the arguments after the binary.
 func (c CommandLine) Args() []string { return append([]string(nil), c.args...) }
 
-// UnsetEnv lists the inherited variables the child must not see.
-func (c CommandLine) UnsetEnv() []string { return append([]string(nil), c.unset...) }
-
-// Env returns overrides with the variables the launch pins laid over them.
-func (c CommandLine) Env(overrides map[string]string) map[string]string {
-	if len(c.env) == 0 {
-		return overrides
+// Env returns in with the variables the launch clears and pins added.
+func (c CommandLine) Env(in provider.EnvInput) provider.EnvInput {
+	in = in.Clear(c.clears...)
+	for env, value := range c.pins {
+		in = in.Pin(env, value)
 	}
-	merged := make(map[string]string, len(overrides)+len(c.env))
-	maps.Copy(merged, overrides)
-	maps.Copy(merged, c.env)
-	return merged
+	return in
 }
 
-const configDirEnv = "CLAUDE_CONFIG_DIR"
-
-// launchUnsetEnv is what every Claude child is cleared of: the config-home
+// launchClears is what every Claude child is cleared of: the config-home
 // variables (pinned instead for an isolated home), the cross-session
-// variables and the task-list key. A launch that owns one of them sets it
-// through its overrides, which apply after the removal.
-func launchUnsetEnv() []string {
-	unset := ConfigHomeUnsetEnv()
-	unset = append(unset, CrossSessionUnsetEnv()...)
-	return append(unset, TaskListIDEnv)
+// variables and the task-list key. A launch that owns one of them pins it,
+// which applies after the removal.
+func launchClears() []provider.ReservedEnv {
+	clears := configHomeClears()
+	clears = append(clears, crossSessionClears()...)
+	return append(clears, provider.ClaudeTaskListIDEnv)
 }
 
 // settingsWithCleanupPeriod appends `"cleanupPeriodDays":days` to the JSON

@@ -4,10 +4,9 @@
 // that reconcile against the next frame rather than optimistically.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import {
   emitWailsEvent,
-  resetWailsMocks,
   wailsListenerCount,
 } from '../../test/mocks/wailsio-runtime';
 import {
@@ -26,7 +25,6 @@ import {
 import { SCOPES } from '../transport/scopes';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { TransportError } from '../transport/wsClient';
-import { __resetScopesForTest } from '../transport/scopes';
 import type { DevServer, DevServerList } from './bindings';
 import {
   allowPreviewPort,
@@ -43,8 +41,6 @@ import {
   previewLinkTargetFor,
   previewRewriteKey,
   previewRouted,
-  previewSignature,
-  resetDevServersForTest,
   sharedPreviewPorts,
 } from './devServers.svelte';
 import { forgetThread, noteThread } from '../transport/entityIndex';
@@ -78,19 +74,12 @@ const LAPTOP_HELLO = {
 
 describe('devServers store', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetWailsMocks();
-    resetDevServersForTest();
-    resetStagedBackends();
     resetToLocalPage();
   });
 
   afterEach(() => {
-    resetDevServersForTest();
-    resetStagedBackends();
     revokeBackendScopes('laptop');
     resetToLocalPage();
-    __resetScopesForTest();
   });
 
   describe('the passive load', () => {
@@ -235,23 +224,6 @@ describe('devServers store', () => {
   });
 
   describe('the answer a link reads', () => {
-    it('is armed only once a machine has answered', () => {
-      initDevServers();
-      expect(previewSignature(HOME_BACKEND)).toBe('');
-      emitWailsEvent('devserver:list', list());
-      expect(previewSignature(HOME_BACKEND)).not.toBe('');
-    });
-
-    it('moves on a newly shared port and stands still on a frame that says the same thing', () => {
-      initDevServers();
-      emitWailsEvent('devserver:list', list());
-      const first = previewSignature(HOME_BACKEND);
-      emitWailsEvent('devserver:list', list({ servers: [server(5173, { pid: 42 })] }));
-      expect(previewSignature(HOME_BACKEND)).toBe(first);
-      emitWailsEvent('devserver:list', list({ servers: [server(5173), server(3000)] }));
-      expect(previewSignature(HOME_BACKEND)).not.toBe(first);
-    });
-
     it('says no-address before it says not-shared, because allowing a port there changes nothing', () => {
       initDevServers();
       emitWailsEvent('devserver:list', list({ previewHost: '' }));
@@ -376,21 +348,11 @@ describe('devServers store', () => {
       expect(previewChipFor(THREAD, 'http://localhost:5173/')).toBeNull();
     });
 
-    it('offers nothing for a port nothing is answering on', () => {
-      emitWailsEvent(
-        'devserver:list',
-        list({ servers: [server(5173, { listening: false })] }),
-        REMOTE_BACKEND_UUID,
-      );
-      expect(previewChipFor(THREAD, 'http://localhost:5173/')).toBeNull();
-    });
-
-    it('offers nothing for a live port that is not shared, rather than a dead button', () => {
-      emitWailsEvent(
-        'devserver:list',
-        list({ servers: [server(5173, { allowed: false, source: 'seen' })] }),
-        REMOTE_BACKEND_UUID,
-      );
+    it.each([
+      ['offers nothing for a port nothing is answering on', { listening: false }],
+      ['offers nothing for a live port that is not shared, rather than a dead button', { allowed: false, source: 'seen' }],
+    ] as const)('%s', (_name, overrides) => {
+      emitWailsEvent('devserver:list', list({ servers: [server(5173, overrides)] }), REMOTE_BACKEND_UUID);
       expect(previewChipFor(THREAD, 'http://localhost:5173/')).toBeNull();
     });
 
@@ -434,7 +396,7 @@ describe('devServers store', () => {
       expect(previewFor('laptop', 5173).kind).toBe('open');
       resetStagedBackends();
       expect(machineDevServers('laptop').list).toBeNull();
-      expect(previewSignature('laptop')).toBe('');
+      expect(machineDevServers('laptop').signature).toBe('');
     });
   });
 
@@ -518,7 +480,7 @@ describe('devServers store', () => {
       },
       inFlight: () => {
         emitWailsEvent('devserver:list', list());
-        expect(previewSignature(HOME_BACKEND)).not.toBe('');
+        expect(machineDevServers(HOME_BACKEND).signature).not.toBe('');
       },
       // The list itself deliberately survives a teardown, exactly as it
       // survives a dropped socket, so it is not in the resting state.

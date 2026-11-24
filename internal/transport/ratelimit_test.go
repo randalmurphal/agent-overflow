@@ -381,3 +381,11 @@ func TestNilLimiterPassesThrough(t *testing.T) {
 		t.Fatalf("a nil limiter served %d of 10 requests", got)
 	}
 }
+
+// tracked reports how many peers hold state, for the bound this type
+// promises.
+func (l *rateLimiter) tracked() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.peers)
+}

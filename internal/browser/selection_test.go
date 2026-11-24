@@ -2,10 +2,11 @@ package browser
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
-// Three delayed deliveries, each ending on the user's last selection.
+// Delayed deliveries, each ending on the user's last selection.
 func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 	t.Run("a detached mount's delayed selection", func(t *testing.T) {
 		m, access, ids, oldMount := newSelectionManager(t)
@@ -24,26 +25,6 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 		}
 		if got := activeTab(m, access); got != ids[2] {
 			t.Fatalf("active %s, want c (%s)", got, ids[2])
-		}
-	})
-	t.Run("65 steps behind a delayed activation", func(t *testing.T) {
-		m, access, ids, mount := newSelectionManager(t)
-		var steps []<-chan error
-		for seq := uint64(2); seq <= 66; seq++ {
-			steps = append(steps, deliver(func() error {
-				return m.StepCompanionPage(numbered(context.Background(), mount, seq), access, 1)
-			}))
-		}
-		awaitWaiting(t, m, mount, 65)
-		if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])); err != nil {
-			t.Fatal(err)
-		}
-		for _, step := range steps {
-			mustDeliver(t, step, "a step")
-		}
-		// Four tabs: a plus 65 steps is b.
-		if got, want := activeTab(m, access), ids[65%4]; got != want {
-			t.Fatalf("active %s, want %s", got, want)
 		}
 	})
 	t.Run("a reordered activation restores the tab it selects", func(t *testing.T) {
@@ -117,24 +98,29 @@ func TestEveryPairOfSelectionsDeliveredReversed(t *testing.T) {
 	}
 }
 
-// 200 next-tab presses held behind one delayed activation all move.
+// Next-tab presses held behind one delayed activation all move: a plus n
+// steps over four tabs is ids[n%4].
 func TestManyStepsBehindOneDelayedActivation(t *testing.T) {
-	m, access, ids, mount := newSelectionManager(t)
-	var steps []<-chan error
-	for seq := uint64(2); seq <= 201; seq++ {
-		steps = append(steps, deliver(func() error {
-			return m.StepCompanionPage(numbered(context.Background(), mount, seq), access, 1)
-		}))
-	}
-	awaitWaiting(t, m, mount, 200)
-	if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])); err != nil {
-		t.Fatal(err)
-	}
-	for _, step := range steps {
-		mustDeliver(t, step, "a step")
-	}
-	if got, want := activeTab(m, access), ids[200%4]; got != want {
-		t.Fatalf("active %s, want %s", got, want)
+	for _, n := range []int{65, 200} {
+		t.Run(fmt.Sprintf("%d steps", n), func(t *testing.T) {
+			m, access, ids, mount := newSelectionManager(t)
+			var steps []<-chan error
+			for seq := uint64(2); seq <= uint64(n)+1; seq++ {
+				steps = append(steps, deliver(func() error {
+					return m.StepCompanionPage(numbered(context.Background(), mount, seq), access, 1)
+				}))
+			}
+			awaitWaiting(t, m, mount, n)
+			if err := m.ActivateCompanionPage(numbered(t.Context(), mount, 1), access, PageID(ids[0])); err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range steps {
+				mustDeliver(t, step, "a step")
+			}
+			if got, want := activeTab(m, access), ids[n%4]; got != want {
+				t.Fatalf("active %s, want %s", got, want)
+			}
+		})
 	}
 }
 

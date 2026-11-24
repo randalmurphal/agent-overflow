@@ -13,7 +13,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"syscall"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // A pane download on a desktop engine ends up where any browser on this
@@ -167,23 +168,19 @@ func userDirsValue(value, home string) (string, error) {
 // a run directory.
 const maxNameVariants = 1000
 
-// linkDownload is linkFile, renameDownload renameNoReplace and
+// linkDownload is linkFile, renameDownload atomicfile.ExclusiveRename and
 // placeHeldFile placeHeld: test seams for a file appearing at a name as it
 // is taken, for a filesystem without hard links, and for a system where the
 // held file cannot be linked, whose placement is by name.
 var (
 	linkDownload   = linkFile
-	renameDownload = renameNoReplace
+	renameDownload = atomicfile.ExclusiveRename
 	placeHeldFile  = placeHeld
 )
 
 // errNoHeldLink is placeHeld's answer where it cannot link the held source:
 // placeNoReplace then places by name.
 var errNoHeldLink = errors.New("browser: the held file cannot be linked here")
-
-// errNoReplaceRename is renameNoReplace's answer where the platform has no
-// rename that refuses to replace.
-var errNoReplaceRename = errors.New("this platform has no rename that refuses to replace a file")
 
 // publishDownload moves a finished download from its staged file into the
 // Downloads folder its staging directory is in, under the first free name
@@ -275,18 +272,20 @@ func placeNoReplaceIn(source placeSource, dir placeDir, where string, name func(
 	if path, file, err := placeHeldFile(source, dir, where, name); !errors.Is(err, errNoHeldLink) {
 		return path, file, err
 	}
-	place := placement{source: source, move: linkDownload, linking: true, where: where}
+	place := placement{source: source, linking: true, where: where}
 	private, err := place.private()
 	if err != nil {
 		return "", nil, err
 	}
 	for i := 0; i < maxNameVariants; i++ {
 		candidate := filepath.Join(dir.path, name(i))
-		err := place.move(private, candidate)
+		privateKept, err := place.move(private, candidate)
 		switch {
 		case err == nil:
 			placed, err := dir.root.Lstat(name(i))
-			place.dropPrivate(private)
+			if privateKept {
+				place.dropPrivate(private)
+			}
 			if err == nil && os.SameFile(placed, source.info) {
 				return candidate, source.info, nil
 			}
@@ -320,12 +319,28 @@ func placingName() string {
 }
 
 // placement is one placeNoReplace of source: how it moves the file (a hard
-// link, or a no-replace rename where links are refused).
+// link, or a no-replace rename where links are refused), and whether the
+// source's name still holds the file once it has its private name.
 type placement struct {
 	source  placeSource
-	move    func(from, to string) error
 	linking bool
 	where   string
+	// sourceKept is set when the private name was made by a link, or by a
+	// rename that left the source's name (atomicfile.ExclusiveRename): the
+	// caller's release of the staged file removes that name.
+	sourceKept bool
+}
+
+// move gives the file at from the name to without replacing anything
+// there, and reports whether from still names the file: always after a
+// link, and after a rename that published by a link and could not remove
+// from (atomicfile.ExclusiveRename's leftover).
+func (p *placement) move(from, to string) (fromKept bool, err error) {
+	if p.linking {
+		return true, linkDownload(from, to)
+	}
+	leftover, err := renameDownload(from, to)
+	return leftover != "", err
 }
 
 // private gives the source a private name beside it and answers its path,
@@ -335,9 +350,10 @@ func (p *placement) private() (string, error) {
 	for range maxNameVariants {
 		name := placingName()
 		private := filepath.Join(filepath.Dir(p.source.path), name)
-		err := p.move(p.source.path, private)
+		kept, err := p.move(p.source.path, private)
 		switch {
 		case err == nil:
+			p.sourceKept = kept
 			held, err := p.source.dir.Lstat(name)
 			if err == nil && os.SameFile(held, p.source.info) {
 				return private, nil
@@ -348,9 +364,9 @@ func (p *placement) private() (string, error) {
 			}
 			return "", fmt.Errorf("browser: %s changed before the download was saved, so it is not saved", p.source.path)
 		case errors.Is(err, fs.ErrExist):
-		case p.linking && linksRefused(err):
-			p.move, p.linking = renameDownload, false
-		case !p.linking && noReplaceRenameRefused(err):
+		case p.linking && atomicfile.LinkRefused(err):
+			p.linking = false
+		case !p.linking && errors.Is(err, atomicfile.ErrNoExclusiveMove):
 			return "", fmt.Errorf("browser: %s %s supports neither hard links nor renames that refuse to replace a file, so the download is not saved there: %w", p.where, filepath.Dir(p.source.path), err)
 		default:
 			return "", fmt.Errorf("browser: save in %s: %w", p.where, err)
@@ -359,37 +375,29 @@ func (p *placement) private() (string, error) {
 	return "", fmt.Errorf("browser: no private name is free beside %s", p.source.path)
 }
 
-// dropPrivate removes, through the held directory, the private name a link
-// left once the file has its public one; a rename left none.
+// dropPrivate removes, through the held directory, the private name when
+// another name holds the file: its public one, or the source's.
 func (p *placement) dropPrivate(private string) {
-	if !p.linking {
-		return
-	}
 	if err := p.source.dir.Remove(filepath.Base(private)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		log.Printf("browser: remove the private name %s: %v", private, err)
 	}
 }
 
-// undo ends a placement that gives the file no public name: a link's
-// private name goes, and a rename's file goes back to source.
+// undo ends a placement that gives the file no public name: while the
+// source's name still holds the file the private name goes, and otherwise
+// the file goes back to source, its private name going too if that move
+// left it.
 func (p *placement) undo(private string) {
-	if p.linking {
+	if p.sourceKept {
 		p.dropPrivate(private)
 		return
 	}
-	if err := renameDownload(private, p.source.path); err != nil {
+	leftover, err := renameDownload(private, p.source.path)
+	if err != nil {
 		log.Printf("browser: return %s to %s: %v", private, p.source.path, err)
+		return
 	}
-}
-
-// linksRefused reports whether a link failed because the filesystem does
-// not make hard links.
-func linksRefused(err error) bool {
-	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOSYS)
-}
-
-// noReplaceRenameRefused reports whether a no-replace rename failed because
-// the filesystem or platform does not offer it.
-func noReplaceRenameRefused(err error) bool {
-	return errors.Is(err, errNoReplaceRename) || errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOSYS)
+	if leftover != "" {
+		p.dropPrivate(private)
+	}
 }

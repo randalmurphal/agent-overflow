@@ -196,18 +196,6 @@ export function rateLimitDisplayName(
   return humanized || 'Usage limit';
 }
 
-export function getProviderRateLimit(
-  provider: ProviderID | undefined,
-  windowMins: number,
-  accountId?: string,
-  backend: BackendKey = HOME_BACKEND,
-): RateLimitEntry | null {
-  if (!provider || windowMins <= 0) return null;
-  const candidates = entriesForAccount(provider, accountId, backend)
-    .filter((entry) => entry.windowMins === windowMins);
-  return defaultLimit(provider, candidates);
-}
-
 export interface RateLimitWindowGroup {
   primary: RateLimitEntry | null;
   // The most-used scoped/model limit of this duration, or null when the

@@ -177,7 +177,7 @@ func TestAssistantHandOffKeepsARenameThatLandedAfterItsRead(t *testing.T) {
 	}
 }
 
-// A draft save and clear read the thread's listing before they write, inside
+// A draft save and erase read the thread's listing before they write, inside
 // one transaction; a write another connection holds is waited out, not
 // failed.
 func TestDraftWritesWaitForAWriteThatLandedAfterTheirRead(t *testing.T) {
@@ -192,10 +192,10 @@ func TestDraftWritesWaitForAWriteThatLandedAfterTheirRead(t *testing.T) {
 	if listed, err := app.store.ThreadListed(thread.ID); err != nil || !listed {
 		t.Fatalf("ThreadListed after the save = %v, %v", listed, err)
 	}
-	landWhileStoreWriteWaits(t, dbPath, "ClearDraft", func() error {
-		return app.ClearDraft(t.Context(), thread.ID)
+	landWhileStoreWriteWaits(t, dbPath, "SaveDraft", func() error {
+		return app.SaveDraft(t.Context(), thread.ID, "", nil, nil, nil)
 	}, `UPDATE threads SET title = ? WHERE id = ?`, "Renamed again", thread.ID)
 	if listed, err := app.store.ThreadListed(thread.ID); err != nil || listed {
-		t.Fatalf("ThreadListed after the clear = %v, %v", listed, err)
+		t.Fatalf("ThreadListed after the erase = %v, %v", listed, err)
 	}
 }

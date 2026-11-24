@@ -29,19 +29,12 @@ describe('createActiveOptionReveal', () => {
     expect(scrolls[1]).not.toHaveBeenCalled();
   });
 
-  it('never scrolls for the change the mouse announced', () => {
-    const { container, scrolls } = buildList(3, 1);
-    const reveal = createActiveOptionReveal();
-    reveal.hovered(1);
-    reveal.sync(1, container);
-    expect(scrolls[1]).not.toHaveBeenCalled();
-  });
-
-  it('consumes the hover skip in one sync, so the next keyboard move scrolls', () => {
+  it('never scrolls for the change the mouse announced, and consumes that skip in one sync', () => {
     const reveal = createActiveOptionReveal();
     const first = buildList(3, 1);
     reveal.hovered(1);
     reveal.sync(1, first.container);
+    expect(first.scrolls[1]).not.toHaveBeenCalled();
     const second = buildList(3, 1);
     reveal.sync(1, second.container);
     expect(second.scrolls[1]).toHaveBeenCalledWith({ block: 'nearest' });

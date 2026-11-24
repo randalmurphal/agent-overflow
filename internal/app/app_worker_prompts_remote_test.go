@@ -65,7 +65,7 @@ func newRemotePromptPairOn(t *testing.T, pair *reachPair, lines ...string) *remo
 	ack := pair.spawnThere(t, "work over there", map[string]any{"runtime_mode": string(provider.RuntimeApprovalRequired)})
 	p.spawn = pair.request(t, ack.Token)
 	p.worker = pair.receipt(t, ack.Token).TargetThreadID
-	t.Cleanup(func() { _ = pair.dest.StopSession(p.worker) })
+	t.Cleanup(func() { stopSessionChecked(t, pair.dest, p.worker) })
 	return p
 }
 
@@ -771,5 +771,5 @@ func TestASendThatBlocksARestedRemoteWorkerWakesItsSpawner(t *testing.T) {
 	if row := pair.request(t, send.Token); threadRequestSettled(row) {
 		t.Fatalf("the send settled while its worker waits: %+v", row)
 	}
-	_ = pair.dest.StopSession(worker)
+	stopSessionChecked(t, pair.dest, worker)
 }

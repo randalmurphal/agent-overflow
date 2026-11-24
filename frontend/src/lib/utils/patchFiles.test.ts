@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   HUNK_ADDED,
   HUNK_CONTEXT,
@@ -9,16 +9,14 @@ import {
   HunkBody,
   PATCH_PARSE_CACHE_MAX_ENTRY_CHARS,
   __parsePatchCacheStatsForTest,
-  __resetParsePatchCacheForTest,
-  buildPatchDisplayRows,
   buildSplitDisplayRows,
-  filePatchDisplayRows,
   mergePatchFilesByPath,
   parsePatchFiles,
   parsePatchFilesCached,
-  patchFileRowId,
   stripPatchLinePrefix,
+  type PatchLine,
 } from './patchFiles';
+import { buildPatchDisplayRows } from '../../test/helpers/patchDisplayRows';
 
 function hunkKinds(lines: string[]): number[] {
   const body = new HunkBody();
@@ -171,7 +169,7 @@ index 1111111..2222222 100644
     ]);
   });
 
-  it('builds distinct row ids for duplicate file paths', () => {
+  it('keeps duplicate file paths as separate files', () => {
     const files = parsePatchFiles(`diff --git a/notes.txt b/notes.txt
 --- a/notes.txt
 +++ b/notes.txt
@@ -186,10 +184,7 @@ diff --git a/notes.txt b/notes.txt
 +four
 `);
 
-    expect(files.map((file, index) => patchFileRowId(file, index))).toEqual([
-      '0:notes.txt',
-      '1:notes.txt',
-    ]);
+    expect(files.map((file) => file.path)).toEqual(['notes.txt', 'notes.txt']);
   });
 
   // git emits a file→symlink (or symlink→file) type change as two
@@ -233,7 +228,7 @@ diff --git a/other.ts b/other.ts
     ]);
     // Old content numbers on the old side, the symlink target on the
     // new side, and no synthetic gap row between the two hunks.
-    const rows = filePatchDisplayRows(merged);
+    const rows = buildPatchDisplayRows(merged.lines, merged.newSideTotal, merged.suppressGaps === true);
     expect(rows.some((row) => row.gap)).toBe(false);
     expect(rows.map((row) => [row.side, row.oldLine, row.newLine])).toEqual([
       ['old', 1, 0],
@@ -279,7 +274,7 @@ new file mode 100644
     ]);
     // Before: the marker took old 2 / new 1 as a context row and `+new`
     // landed on new line 2.
-    const rows = filePatchDisplayRows(file).filter((row) => !row.gap);
+    const rows = buildPatchDisplayRows(file.lines, file.newSideTotal, file.suppressGaps === true).filter((row) => !row.gap);
     expect(rows.map((row) => [row.line.type, row.oldLine, row.newLine])).toEqual([
       ['del', 1, 0],
       ['add', 0, 1],
@@ -316,34 +311,21 @@ new file mode 100644
 });
 
 describe('stripPatchLinePrefix', () => {
-  it('strips the leading + from add lines', () => {
-    expect(stripPatchLinePrefix({ type: 'add', content: '+const x = 1;' })).toBe('const x = 1;');
-  });
-
-  it('strips the leading - from del lines', () => {
-    expect(stripPatchLinePrefix({ type: 'del', content: '-const x = 1;' })).toBe('const x = 1;');
-  });
-
-  it('returns meta lines unchanged', () => {
-    expect(stripPatchLinePrefix({ type: 'meta', content: '@@ -1,3 +1,4 @@' })).toBe('@@ -1,3 +1,4 @@');
-  });
-
-  it('returns context lines unchanged including the leading space', () => {
-    expect(stripPatchLinePrefix({ type: 'context', content: ' unchanged' })).toBe(' unchanged');
-  });
-
-  it('handles a bare "+" or "-" (empty source line)', () => {
-    expect(stripPatchLinePrefix({ type: 'add', content: '+' })).toBe('');
-    expect(stripPatchLinePrefix({ type: 'del', content: '-' })).toBe('');
+  it.each<[string, PatchLine, string]>([
+    ['strips the leading + from add lines', { type: 'add', content: '+const x = 1;' }, 'const x = 1;'],
+    ['strips the leading - from del lines', { type: 'del', content: '-const x = 1;' }, 'const x = 1;'],
+    ['returns meta lines unchanged', { type: 'meta', content: '@@ -1,3 +1,4 @@' }, '@@ -1,3 +1,4 @@'],
+    ['returns context lines unchanged including the leading space', { type: 'context', content: ' unchanged' }, ' unchanged'],
+    ['handles a bare "+" (empty source line)', { type: 'add', content: '+' }, ''],
+    ['handles a bare "-" (empty source line)', { type: 'del', content: '-' }, ''],
+  ])('%s', (_name, line, expected) => {
+    expect(stripPatchLinePrefix(line)).toBe(expected);
   });
 });
 
 describe('parsePatchFilesCached', () => {
   // Module-global cache: reset before each test so eviction-budget math
   // never observes entries left by a prior test.
-  beforeEach(() => {
-    __resetParsePatchCacheForTest();
-  });
 
   // Builds a syntactically valid patch padded to ~chars length, with
   // the path baked in so every generated patch is distinct content.
@@ -825,7 +807,7 @@ describe('mergePatchFilesByPath', () => {
       '+delta',
     ]);
     // An added file is fully present — no gap rows to expand.
-    expect(filePatchDisplayRows(merged[0]).some((row) => row.gap)).toBe(false);
+    expect(buildPatchDisplayRows(merged[0].lines, merged[0].newSideTotal, merged[0].suppressGaps === true).some((row) => row.gap)).toBe(false);
     // Shared parse results are never mutated.
     expect(created.lines.map((line) => line.content)).toContain('@@ -0,0 +1,4 @@');
   });

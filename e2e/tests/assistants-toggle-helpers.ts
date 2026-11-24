@@ -13,7 +13,8 @@ import { capture, dbWake, registerThrough, seedWakeAgent, wakeInput } from './wa
 
 const TITLE = 'Toggle agent';
 const LOOP_FIRED = 'Loop "beat" fired.';
-const EVERY_SECONDS = 3;
+// The loop's interval: the harness's wake floor (wake-floor=1s, src/harness.ts).
+const EVERY_SECONDS = 1;
 const NOTE = 'Assistants are turned off in Settings. Turn them on to continue this thread.';
 const ASKED = 'Check the deploy.';
 const EDITED = 'Check the deploy and the logs.';

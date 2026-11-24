@@ -17,7 +17,6 @@ import {
 } from '../../test/helpers/chat';
 import { installThreadPaneTestEnv, nextFrame } from '../../test/helpers/threadPane';
 import {
-  clearAllThreadSizePriorsForTest,
   peekThreadSizePriorsForTest,
   setThreadSizePriors,
 } from '../utils/virtual/priors';
@@ -251,75 +250,32 @@ describe('threadItemWindow', () => {
     expect(pane.timelineRevision).toBe(1);
   });
 
-  it('does not bump timeline revision for same-row Bash completion chrome', () => {
+  // `row` is on both upserts; `completion` only on the completed one.
+  it.each([
+    ['same-row Bash completion chrome', {
+      toolName: 'Bash',
+      summary: 'Bash: sleep 1',
+      meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+    }, {
+      payloadId: 'payload-bash',
+      payloadKind: 'command_output',
+      payloadMeta: JSON.stringify({ command: 'sleep 1', exitCode: 0 }),
+    }],
+    ['collab-agent status-only chrome', {
+      toolName: 'collab_agent',
+      meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
+      payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
+    }, {}],
+  ])('does not bump timeline revision for %s', (_name, row, completion) => {
     const pane = createThreadPane();
-    pane.upsertItem(
-      makeItem({
-        id: 'bash',
-        kind: 'tool_call',
-        status: 'running',
-        toolName: 'Bash',
-        summary: 'Bash: sleep 1',
-        meta: JSON.stringify({ input: { command: 'sleep 1' } }),
-      }),
-    );
+    pane.upsertItem(makeItem({ id: 'tool', kind: 'tool_call', status: 'running', ...row }));
     const revision = pane.timelineRevision;
 
-    pane.upsertItem(
-      makeItem({
-        id: 'bash',
-        kind: 'tool_call',
-        status: 'completed',
-        toolName: 'Bash',
-        summary: 'Bash: sleep 1',
-        payloadId: 'payload-bash',
-        payloadKind: 'command_output',
-        payloadMeta: JSON.stringify({ command: 'sleep 1', exitCode: 0 }),
-        meta: JSON.stringify({ input: { command: 'sleep 1' } }),
-        updatedAt: 1,
-      }),
-    );
+    const completed = makeItem({ id: 'tool', kind: 'tool_call', status: 'completed', ...row, ...completion, updatedAt: 1 });
+    pane.upsertItem(completed);
 
     expect(pane.items[0].status).toBe('completed');
-    expect(pane.items[0].payloadKind).toBe('command_output');
-    expect(pane.timelineRevision).toBe(revision);
-  });
-
-  it('does not bump timeline revision for collab-agent status-only chrome', () => {
-    const pane = createThreadPane();
-    pane.upsertItem(
-      makeItem({
-        id: 'agent',
-        kind: 'tool_call',
-        status: 'running',
-        toolName: 'collab_agent',
-        meta: JSON.stringify({
-          input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] },
-        }),
-        payloadMeta: JSON.stringify({
-          input: { newAgentNickname: 'Reviewer' },
-        }),
-      }),
-    );
-    const revision = pane.timelineRevision;
-
-    pane.upsertItem(
-      makeItem({
-        id: 'agent',
-        kind: 'tool_call',
-        status: 'completed',
-        toolName: 'collab_agent',
-        meta: JSON.stringify({
-          input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] },
-        }),
-        payloadMeta: JSON.stringify({
-          input: { newAgentNickname: 'Reviewer' },
-        }),
-        updatedAt: 1,
-      }),
-    );
-
-    expect(pane.items[0].status).toBe('completed');
+    expect(pane.items[0].payloadKind).toBe(completed.payloadKind);
     expect(pane.timelineRevision).toBe(revision);
   });
 
@@ -381,10 +337,6 @@ describe('threadItemWindow', () => {
       expansionSig: '',
       rows: new Map([['seed', 42]]),
     };
-
-    beforeEach(() => {
-      clearAllThreadSizePriorsForTest();
-    });
 
     it('evicts the priors when an item is removed by id', async () => {
       const pane = await buildPane(makeThread({ id: 't' }), [makeItem({ id: 'x', threadId: 't' })]);

@@ -148,17 +148,6 @@ func (c *converter) convertEventMsg(env envelope) {
 	}
 }
 
-func reviewSummary(title, hint string) string {
-	hint = strings.TrimSpace(hint)
-	if hint == "" {
-		return title
-	}
-	if len(hint) > 160 {
-		hint = strings.TrimSpace(hint[:160]) + "…"
-	}
-	return title + ": " + hint
-}
-
 // ------------------------------------------------------------ response_item
 
 func (c *converter) convertResponseItem(env envelope) {

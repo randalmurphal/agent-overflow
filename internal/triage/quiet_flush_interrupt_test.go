@@ -302,9 +302,25 @@ func decodeTriageMetaMap(t *testing.T, meta string) map[string]any {
 // DrainUnconfirmedFlushItems has to hand the app layer a QuietItem
 // (message text for the draft restore, row id for the timeline delete),
 // not an empty husk.
+//
+// It also pins CT4-1 (round 4) for the deferred path: the confirmed hook
+// (checkpoint capture) fires INSIDE EagerPersistDeferredFlushSends —
+// before the flush anchor lock releases — with the persisted row at its
+// store-assigned position. Captured any later, an echo in the gap
+// would stamp the row while UpdateCheckpointProviderIDs no-ops against
+// a checkpoint that doesn't exist yet. (The promote path's twin is
+// pinned in TestHandleUserText_FlushConfirmedHook_EagerQuietRows.)
 func TestEagerPersistDeferredFlushSends_DeathRecoveryKeepsQuietItem(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
+
+	var hookItems []store.Item
+	router.SetFlushUserTextConfirmedHook(func(threadID string, item store.Item) {
+		if threadID != "t1" {
+			t.Fatalf("hook threadID = %q, want t1", threadID)
+		}
+		hookItems = append(hookItems, item)
+	})
 
 	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
@@ -316,14 +332,23 @@ func TestEagerPersistDeferredFlushSends_DeathRecoveryKeepsQuietItem(t *testing.T
 	if len(persisted) != 1 {
 		t.Fatalf("eager persist = %+v, want one row", persisted)
 	}
+	if len(hookItems) != 1 {
+		t.Fatalf("hook calls = %d, want 1 (capture must happen inside the eager persist)", len(hookItems))
+	}
+	if hookItems[0].ID != "user:1:flush:1" {
+		t.Errorf("hook item = %s, want user:1:flush:1", hookItems[0].ID)
+	}
 	row, found, err := st.GetThreadItem("t1", "user:1:flush:1")
 	if err != nil || !found {
 		t.Fatalf("persisted row: found=%v err=%v", found, err)
 	}
-	// The snapshot must carry the STORE-assigned position — checkpoint
-	// capture orders same-turn checkpoints by it (cold-2).
+	// The snapshot and the hook must carry the STORE-assigned position —
+	// checkpoint capture orders same-turn checkpoints by it (cold-2).
 	if persisted[0].ItemIndex != row.ItemIndex {
 		t.Errorf("snapshot item_index = %d, want store-assigned %d", persisted[0].ItemIndex, row.ItemIndex)
+	}
+	if hookItems[0].ItemIndex != row.ItemIndex {
+		t.Errorf("hook item_index = %d, want store-assigned %d (previous-checkpoint ordering)", hookItems[0].ItemIndex, row.ItemIndex)
 	}
 
 	drained := router.DrainUnconfirmedFlushItems("t1")
@@ -438,51 +463,6 @@ func TestConsumedEchoReplay_DoesNotPersistInjectedRow(t *testing.T) {
 			t.Fatal("replayed deferred echo persisted an injected-context duplicate")
 		}
 	})
-}
-
-// TestEagerPersistDeferredFlushSends_CapturesCheckpointUnderAnchorMu
-// pins CT4-1 (round 4) for the deferred path: the confirmed hook
-// (checkpoint capture) fires INSIDE EagerPersistDeferredFlushSends —
-// before the flush anchor lock releases — with the persisted row at its
-// store-assigned position. Captured any later, an echo in the gap
-// would stamp the row while UpdateCheckpointProviderIDs no-ops against
-// a checkpoint that doesn't exist yet. (The promote path's twin is
-// pinned in TestHandleUserText_FlushConfirmedHook_EagerQuietRows.)
-func TestEagerPersistDeferredFlushSends_CapturesCheckpointUnderAnchorMu(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	var hookItems []store.Item
-	router.SetFlushUserTextConfirmedHook(func(threadID string, item store.Item) {
-		if threadID != "t1" {
-			t.Fatalf("hook threadID = %q, want t1", threadID)
-		}
-		hookItems = append(hookItems, item)
-	})
-
-	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
-		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
-		Kind: "user_text", Role: "user", Status: "completed",
-		Summary: "queued text",
-	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
-
-	persisted := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1"))
-	if len(persisted) != 1 {
-		t.Fatalf("eager persist = %+v, want one row", persisted)
-	}
-	if len(hookItems) != 1 {
-		t.Fatalf("hook calls = %d, want 1 (capture must happen inside the eager persist)", len(hookItems))
-	}
-	if hookItems[0].ID != "user:1:flush:1" {
-		t.Errorf("hook item = %s, want user:1:flush:1", hookItems[0].ID)
-	}
-	row, found, err := st.GetThreadItem("t1", "user:1:flush:1")
-	if err != nil || !found {
-		t.Fatalf("persisted row: found=%v err=%v", found, err)
-	}
-	if hookItems[0].ItemIndex != row.ItemIndex {
-		t.Errorf("hook item_index = %d, want store-assigned %d (previous-checkpoint ordering)", hookItems[0].ItemIndex, row.ItemIndex)
-	}
 }
 
 // TestDrainRacesEagerPersist_ConvergesToALegalState pins CT4-2
@@ -1110,7 +1090,7 @@ func TestInFlightEchoPoppedBeforeMark_SettlesInterrupted(t *testing.T) {
 
 	// Pop before the mark: the interrupt's pre-ack publish finds an
 	// empty FIFO.
-	popped, ok := router.consumeMatchingPendingSend("t1", "ao-uuid-1")
+	popped, ok := router.consumeMatchingPendingSend("t1", "ao-uuid-1", "")
 	if !ok {
 		t.Fatal("consume did not match the registered entry")
 	}

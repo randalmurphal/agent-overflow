@@ -1,6 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { importUnavailableLabel } from './importUnavailable';
-import { __resetParseJsonObjectCacheForTest } from './parseJsonObject';
 
 // Terminal period: this lands in the same slot as the sibling empty
 // messages ("No stored payload for this tool result."), which all have one.
@@ -10,10 +9,6 @@ function withMeta(meta: unknown): { meta?: string } {
   return { meta: typeof meta === 'string' ? meta : JSON.stringify(meta) };
 }
 
-beforeEach(() => {
-  __resetParseJsonObjectCacheForTest();
-});
-
 describe('importUnavailableLabel', () => {
   it('returns null when the item is not an import casualty', () => {
     expect(importUnavailableLabel(undefined)).toBeNull();
@@ -22,18 +17,14 @@ describe('importUnavailableLabel', () => {
     expect(importUnavailableLabel(withMeta({ pathRefs: [] }))).toBeNull();
   });
 
-  it('labels every reason the importer stamps today', () => {
-    expect(importUnavailableLabel(withMeta({ import_unavailable: 'tool-output-gc' }))).toBe(LABEL);
-    expect(importUnavailableLabel(withMeta({ import_unavailable: 'exec-detail' }))).toBe(LABEL);
-  });
-
-  it('labels an unknown reason rather than falling back to the caller default', () => {
-    expect(importUnavailableLabel(withMeta({ import_unavailable: 'some-future-reason' }))).toBe(LABEL);
-  });
-
-  it('accepts any truthy value, not just the string reasons', () => {
-    expect(importUnavailableLabel(withMeta({ import_unavailable: true }))).toBe(LABEL);
-    expect(importUnavailableLabel(withMeta({ import_unavailable: 1 }))).toBe(LABEL);
+  it.each([
+    ['labels every reason the importer stamps today', ['tool-output-gc', 'exec-detail']],
+    ['labels an unknown reason rather than falling back to the caller default', ['some-future-reason']],
+    ['accepts any truthy value, not just the string reasons', [true, 1]],
+  ])('%s', (_name, reasons) => {
+    for (const reason of reasons) {
+      expect(importUnavailableLabel(withMeta({ import_unavailable: reason })), String(reason)).toBe(LABEL);
+    }
   });
 
   it('treats a falsy or empty reason as no reason', () => {

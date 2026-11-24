@@ -125,7 +125,7 @@ test('an override is a file: added blank in Settings, written by hand, spawned f
     expect(written.problem ?? '').toBe('');
 
     await harness.rpc('GetProviderStatuses');
-    await harness.rpc('StartSession', threadId);
+    await harness.startSession(threadId);
     const claudeConfig = await nextClaudeSpawn(harness, []);
     expect(claudeConfig.systemPrompt).toBe('Written in the prompt file.');
     expect(claudeConfig.systemPromptSnapshot).toBe('off');
@@ -179,7 +179,7 @@ test('a live thread whose next prompt differs shows a dismissible banner that Re
     await expect.poll(async () => (await claudeOverrides(harness))[0].blank ?? false).toBe(false);
 
     await harness.rpc('GetProviderStatuses');
-    await harness.rpc('StartSession', threadId);
+    await harness.startSession(threadId);
     const first = await nextClaudeSpawn(harness, []);
     expect(first.systemPrompt).toBe('First prompt.');
 
@@ -216,14 +216,14 @@ test('a live thread whose next prompt differs shows a dismissible banner that Re
     // A stopped session withdraws a shown banner.
     await writeFile(promptPath, 'Fourth prompt.\n');
     await expect(banner).toBeVisible();
-    await harness.rpc('StopSession', threadId);
+    await harness.stopSession(threadId);
     await expect(banner).toHaveCount(0);
 
     // An edit while stopped raises none. The other thread, live on the
     // fourth prompt, is the barrier: its flag comes from the same reconcile
     // pass, and GetThreadLiveState waits for that pass to finish.
     const beforeOther = await mockSessions(harness, 'claude', 0);
-    await harness.rpc('StartSession', otherThreadId);
+    await harness.startSession(otherThreadId);
     const other = await nextClaudeSpawn(harness, beforeOther);
     expect(other.systemPrompt).toBe('Fourth prompt.');
     const isPromptStale = (id: string) => (event: ProviderStatusEvent) =>

@@ -5,6 +5,7 @@ import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { onPurgeClientState } from '../transport/clientPurge';
 import { readBeforeDeadline } from '../utils/readBeforeDeadline';
+import { COMPUTER_READ_DEADLINE_MS } from '../pageTiming';
 import { GetUIState } from './bindings';
 import { addErrorToast } from './toast.svelte';
 
@@ -84,7 +85,7 @@ export function hydrateAppStorage(backend: BackendKey = HOME_BACKEND): Promise<b
   const generation = store.generation;
   store.loading = (async () => {
     try {
-      const server = await readBeforeDeadline(withBackendTarget(backend, () => GetUIState()), 2500);
+      const server = await readBeforeDeadline(withBackendTarget(backend, () => GetUIState()), COMPUTER_READ_DEADLINE_MS);
       if (stores.get(backend) !== store || store.generation !== generation) return false;
       for (const [key, value] of Object.entries(server ?? {})) {
         // Existing local state and a deletion made during migration win.

@@ -1,13 +1,11 @@
 package codex
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 // v2StartedWithProfile is a codex 0.162+ started activity: the child's
@@ -95,22 +93,9 @@ func TestStartedActivityProfileReplacesTheChildResumeRead(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
-			ctx, cancel := context.WithCancel(context.Background())
-			proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "sh", Args: []string{"-c", "cat > /dev/null"}})
-			if err != nil {
-				t.Fatalf("spawn: %v", err)
-			}
-			s.proc = proc
-			s.ctx = ctx
-			s.cancel = cancel
-			s.pending = make(map[int64]chan json.RawMessage)
 			s.collabMetadataReads = make(chan struct{}, 1)
-			t.Cleanup(func() {
-				cancel()
-				_ = proc.Close()
-			})
 
-			s.dispatchLine(tc.line)
+			feed(t, s, tc.line)
 
 			s.mu.Lock()
 			_, reading := s.collab.profileReadsByThread["child-a"]

@@ -37,7 +37,7 @@ type ClaudeTranscriptRetention struct {
 // processes run under; a file that cannot be read is reported in the result.
 func (a *App) claudeTranscriptRetention(retention settings.RetentionSettings, workDir string) (ClaudeTranscriptRetention, error) {
 	// Every Claude process this backend starts runs under the provider home:
-	// a custom environment cannot set HOME (settings.deniedProviderEnvNames).
+	// a custom environment cannot set HOME (provider's reserved table, internal/provider/envtable.go).
 	home, err := a.providerHome()
 	if err != nil {
 		return ClaudeTranscriptRetention{}, err

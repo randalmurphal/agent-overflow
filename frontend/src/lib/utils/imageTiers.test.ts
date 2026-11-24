@@ -1,19 +1,16 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import deriveSource from '../../../../internal/attachment/derive.go?raw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   IMAGE_TIER_MEMO_MAX_ENTRIES,
   IMAGE_TIER_WIDTHS,
   fullSizeMaxWidth,
   imageBoxContainer,
-  __resetImageTiersForTest,
   imageTierFor,
   isHigherImageTier,
   lastImageTier,
   observeImageBox,
   rememberImageTier,
 } from './imageTiers';
-import { SRC_ROOT } from '../../test/sourceScan';
 import { setCompactLayoutForTest } from '../stores/layoutMode.svelte';
 
 class FakeResizeObserver {
@@ -65,7 +62,7 @@ function liveQuery(): FakeQuery {
 function changeDevicePixelRatio(ratio: number): void {
   const query = liveQuery();
   vi.stubGlobal('devicePixelRatio', ratio);
-  for (const listener of [...query.listeners]) listener(new Event('change'));
+  for (const listener of Array.from(query.listeners)) listener(new Event('change'));
 }
 
 function observer(): FakeResizeObserver {
@@ -90,7 +87,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetImageTiersForTest();
   vi.unstubAllGlobals();
 });
 
@@ -98,7 +94,7 @@ describe('the tier ladder', () => {
   it('is the backend ladder, literally', () => {
     expect(IMAGE_TIER_WIDTHS).toEqual([320, 480, 720, 1080, 1440, 2160, 2880, 3840, 5120]);
     // The other copy: a change to either side fails here until both agree.
-    const derive = readFileSync(resolve(SRC_ROOT, '..', '..', 'internal', 'attachment', 'derive.go'), 'utf8');
+    const derive = deriveSource;
     const literal = /var DeriveWidths = \[\]int\{([^}]*)\}/.exec(derive)?.[1];
     expect(literal?.split(',').map((width) => Number(width.trim()))).toEqual([...IMAGE_TIER_WIDTHS]);
   });

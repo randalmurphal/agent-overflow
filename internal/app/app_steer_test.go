@@ -4,19 +4,14 @@ import (
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/triage"
+	"agent-overflow/internal/testutil"
 )
 
 // writeCodexSteerBinary mints a fake codex app-server that knows how to
@@ -73,9 +68,9 @@ while IFS= read -r line; do
         %s
         continue
     fi
-    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+%s    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, threadID, steerBranch, startBranch)
+`, threadID, steerBranch, startBranch, testutil.MockCodexUnsubscribeShell)
 
 	path := filepath.Join(t.TempDir(), "codex-steer.sh")
 	mockexec.Write(t, path, script)
@@ -99,15 +94,9 @@ func installSteerTestSessionWithEvents(t *testing.T, app *App, thread store.Thre
 	return installCodexTestSessionWithEvents(t, app, thread, writeCodexSteerBinary(t, thread.ID+"-codex", steerOutcome), onEvent)
 }
 
-// installCodexTestSessionWithBinary is installSteerTestSession over a fake
-// app-server of the caller's own.
-func installCodexTestSessionWithBinary(t *testing.T, app *App, thread store.Thread, binary string) *codex.Session {
-	t.Helper()
-	return installCodexTestSessionWithEvents(t, app, thread, binary, func(provider.ProviderEvent) {})
-}
-
-// installCodexTestSessionWithEvents is installCodexTestSessionWithBinary
-// with the session's own events handed to onEvent.
+// installCodexTestSessionWithEvents is installSteerTestSession over a fake
+// app-server of the caller's own, with the session's own events handed to
+// onEvent.
 func installCodexTestSessionWithEvents(t *testing.T, app *App, thread store.Thread, binary string, onEvent func(provider.ProviderEvent)) *codex.Session {
 	t.Helper()
 	sess, err := codex.NewSession(
@@ -123,7 +112,7 @@ func installCodexTestSessionWithEvents(t *testing.T, app *App, thread store.Thre
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 
 	// Pre-seed an active turn id so Steer doesn't trip the
 	// no-active-turn-yet guard. The triage / store layers are
@@ -131,291 +120,4 @@ func installCodexTestSessionWithEvents(t *testing.T, app *App, thread store.Thre
 	// wire dispatch + persistence wiring, not turn discovery.
 	codex.SetActiveTurnIDForTest(sess, "active-turn")
 	return sess
-}
-
-// TestSteerMessageWithOptions_PersistsUserRowAndDispatchesToCodex pins
-// the happy path: the App.SteerMessageWithOptions wrapper persists a
-// `user_text` row at the active turn's index, registers a pending-send
-// marker for triage to consume, and forwards the wire payload through
-// turn/steer.
-func TestSteerMessageWithOptions_PersistsUserRowAndDispatchesToCodex(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-
-	thread := testThread("thread-steer-ok")
-	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	// Seed an in-flight turn at index 3 so Steer attaches the new row
-	// to that turn rather than starting a new one.
-	now := time.Now().UnixMilli()
-	if err := app.store.InsertTurn(store.Turn{
-		TurnID:    "turn-3",
-		ThreadID:  thread.ID,
-		TurnIndex: 3,
-		StartedAt: now,
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
-
-	sess := installSteerTestSession(t, app, thread, "ok")
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "steer-token",
-		Codex:    sess,
-	})
-
-	updated, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "steer me", SendMessageOptions{})
-	if err != nil {
-		t.Fatalf("SteerMessageWithOptions: %v", err)
-	}
-	if updated.ID != thread.ID {
-		t.Fatalf("returned thread id = %q, want %q", updated.ID, thread.ID)
-	}
-
-	// User row must land at the active turn's index, NOT at +1.
-	items, err := app.store.ListTurnItems(thread.ID, 3)
-	if err != nil {
-		t.Fatalf("ListTurnItems: %v", err)
-	}
-	var steerRow *store.Item
-	for i := range items {
-		if items[i].Kind == "user_text" && strings.HasPrefix(items[i].ID, "user:3:steer:") {
-			steerRow = &items[i]
-			break
-		}
-	}
-	if steerRow == nil {
-		t.Fatalf("expected a user:3:steer:* row, got items %+v", items)
-	}
-	if steerRow.Summary != "steer me" {
-		t.Fatalf("steer row summary = %q, want %q", steerRow.Summary, "steer me")
-	}
-
-	// Pending-send marker should clear once we dispatch successfully —
-	// triage.handleUserText consumes it on the wire echo, but the
-	// FIFO entry should at minimum be live until Steer returned. For
-	// this happy-path test we confirm the FIFO is populated then
-	// flushed; the wire echo is a triage-side concern covered in
-	// internal/triage/handle_user_text_test.go.
-	if !app.triage.HasPendingSendForThread(thread.ID) {
-		t.Fatal("expected pending-send marker registered for thread; FIFO empty")
-	}
-}
-
-// TestSteerMessageWithOptions_FailsForNonCodexProvider pins the
-// type-assertion guard: a Claude session must not reach Codex's wire
-// path. The frontend never routes here for Claude threads, but the
-// backend defends against a stray RPC the same way.
-func TestSteerMessageWithOptions_FailsForNonCodexProvider(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-
-	thread := testThread("thread-steer-claude")
-	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Claude),
-		Token:    "steer-token",
-		// claude pointer omitted — we never reach the wire because the
-		// type-assertion fails first.
-		Claude: (*claude.Session)(nil),
-	})
-
-	_, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "anything", SendMessageOptions{})
-	if err == nil {
-		t.Fatal("SteerMessageWithOptions for Claude err = nil, want refusal")
-	}
-	if !strings.Contains(err.Error(), "not supported for provider") {
-		t.Fatalf("err = %v, want \"not supported for provider\" message", err)
-	}
-}
-
-// TestSteerMessageWithOptions_NoActiveTurnSurfacesSentinel pins the
-// race-window fallback: when the store has no in-flight turn (the
-// frontend's read of getActiveTurn was stale), the App returns
-// codex.ErrNoActiveTurn so callers can errors.Is-check it. The
-// frontend's wire-side path string-matches against the error message
-// for the same fallback.
-func TestSteerMessageWithOptions_NoActiveTurnSurfacesSentinel(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-
-	thread := testThread("thread-steer-no-turn")
-	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	sess := installSteerTestSession(t, app, thread, "ok")
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "steer-token",
-		Codex:    sess,
-	})
-
-	// No turn inserted — the store has nothing in flight.
-	_, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "anything", SendMessageOptions{})
-	if !errors.Is(err, codex.ErrNoActiveTurn) {
-		t.Fatalf("err = %v, want ErrNoActiveTurn", err)
-	}
-}
-
-// TestSteerMessageWithOptions_FailureClearsPendingSendAndPersistsErrorRow
-// pins the failure-side bookkeeping: when the wire turn/steer returns
-// an error, we drop the pending-send marker (so a stale wire echo
-// can't hijack a future send's correlation) and persist a sibling
-// `error` row so the timeline shows the failure next to the optimistic
-// user_text row.
-func TestSteerMessageWithOptions_FailureClearsPendingSendAndPersistsErrorRow(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-
-	thread := testThread("thread-steer-fail")
-	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	now := time.Now().UnixMilli()
-	if err := app.store.InsertTurn(store.Turn{
-		TurnID:    "turn-2",
-		ThreadID:  thread.ID,
-		TurnIndex: 2,
-		StartedAt: now,
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
-
-	sess := installSteerTestSession(t, app, thread, "no-active-turn")
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "steer-token",
-		Codex:    sess,
-	})
-
-	_, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "doomed", SendMessageOptions{})
-	if err == nil {
-		t.Fatal("expected SteerMessageWithOptions error for NoActiveTurn wire reply")
-	}
-	if !strings.Contains(err.Error(), "NoActiveTurn") {
-		t.Fatalf("err = %v, want NoActiveTurn surfaced verbatim", err)
-	}
-
-	// Pending-send marker dropped on failure.
-	if app.triage.HasPendingSendForThread(thread.ID) {
-		t.Fatal("expected pending-send marker cleared on failure; still live")
-	}
-
-	// Sibling error row persisted at the same turn index.
-	items, err := app.store.ListTurnItems(thread.ID, 2)
-	if err != nil {
-		t.Fatalf("ListTurnItems: %v", err)
-	}
-	var errorRow *store.Item
-	for i := range items {
-		if items[i].Kind == "error" {
-			errorRow = &items[i]
-			break
-		}
-	}
-	if errorRow == nil {
-		t.Fatalf("expected a sibling error row, got items %+v", items)
-	}
-	if !strings.Contains(errorRow.Summary, "Failed to steer") {
-		t.Fatalf("error summary = %q, want \"Failed to steer\" prefix", errorRow.Summary)
-	}
-}
-
-// TestSteerMessageWithOptions_MarksProposedPlanImplemented pins the
-// steer-time parity of the send path's click-time mark: the plan is
-// implemented as soon as the steered user_text persists, before the
-// turn/steer RPC fires. Mirrors app_send_test's source-plan coverage
-// for the mid-turn injection path.
-func TestSteerMessageWithOptions_MarksProposedPlanImplemented(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-
-	thread := testThread("thread-steer-implement-plan")
-	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	now := time.Now().UnixMilli()
-	if err := app.store.InsertItemWithPayload(store.Item{
-		ID:        "plan-item",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "tool_call",
-		Role:      "assistant",
-		Status:    "completed",
-		Summary:   "Plan",
-		PayloadID: "plan-payload",
-		ToolName:  "plan",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, store.Payload{
-		ID:        "plan-payload",
-		Kind:      "proposed_plan",
-		Meta:      `{"title":"Steer plan","preview":"do it","lineCount":1,"charCount":5}`,
-		Data:      []byte("# Steer plan\n\nDo it."),
-		CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("seed plan: %v", err)
-	}
-	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
-		t.Fatalf("ensure plan state: %v", err)
-	}
-
-	// Active turn at index 1 (steer requires one) — distinct from the
-	// plan's turn 0 so the marked-by-item attribution points at the
-	// steered user row, not the seed plan.
-	if err := app.store.InsertTurn(store.Turn{
-		TurnID:    "turn-1",
-		ThreadID:  thread.ID,
-		TurnIndex: 1,
-		StartedAt: now,
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
-
-	sess := installSteerTestSession(t, app, thread, "ok")
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "steer-token",
-		Codex:    sess,
-	})
-
-	if _, err := app.SteerMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
-		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
-	}); err != nil {
-		t.Fatalf("SteerMessageWithOptions: %v", err)
-	}
-
-	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
-	if err != nil {
-		t.Fatalf("GetProposedPlanState: %v", err)
-	}
-	if !found || state.ImplementedAt == 0 {
-		t.Fatalf("plan state = %+v, want implemented_at > 0 after steer click", state)
-	}
-	if !strings.HasPrefix(state.ImplementedByItemID, "user:1:steer:") {
-		t.Errorf("ImplementedByItemID = %q, want steer-suffixed user row id at turn 1", state.ImplementedByItemID)
-	}
 }

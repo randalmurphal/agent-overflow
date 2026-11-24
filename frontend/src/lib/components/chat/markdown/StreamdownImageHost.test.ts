@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import StreamdownImageHost from './StreamdownImageHost.svelte';
 import { closeImageLightbox, imageLightbox } from '../../../stores/imageLightbox.svelte';
-import { __reportImageBoxForTest, __resetImageTiersForTest } from '../../../utils/imageTiers';
+import { __reportImageBoxForTest } from '../../../utils/imageTiers';
 import { localImageCacheKey } from '../../../utils/localImageCache';
 import { mockLocalImage, type LocalImageReply } from '../../../../test/mocks/attachmentTransfer';
 import { getPinnedBackend } from '../../../transport/backends';
@@ -30,8 +30,6 @@ describe('<StreamdownImageHost>', () => {
 
   afterEach(() => {
     closeImageLightbox();
-    __resetMediaBlobCacheForTest();
-    __resetImageTiersForTest();
     vi.restoreAllMocks();
   });
 

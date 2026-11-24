@@ -13,7 +13,7 @@ import (
 )
 
 // fixtureCategories is the verbatim `categories[]` array from
-// docs/references/fixtures/claude/context_usage_control_20260803.summary.json
+// internal/provider/wirecaptures/claude/context_usage_control_20260803.summary.json
 // (Claude Code 2.1.219). Keeping it inline as the wire JSON — rather than a
 // hand-built Go literal — means the test exercises the real decode path,
 // including the keys we deliberately drop (`color`) and the optional one we
@@ -92,17 +92,11 @@ func TestParseContextUsage_Fixture(t *testing.T) {
 			t.Errorf("category %q must not be marked deferred", cat.Name)
 		}
 	}
-}
 
-// The wire's own arithmetic is a contract the UI leans on: summing every row
-// overcounts by the deferred total, and the non-deferred rows tile the whole
-// window. Assert it against the fixture so a parser change that (say) folded
-// deferred rows into their parent category would be caught here.
-func TestParseContextUsage_DeferredIsExcludedFromTotal(t *testing.T) {
-	usage, err := ParseContextUsage(json.RawMessage(fixturePayload))
-	if err != nil {
-		t.Fatalf("ParseContextUsage: %v", err)
-	}
+	// The wire's own arithmetic is a contract the UI leans on: summing every
+	// row overcounts by the deferred total, and the non-deferred rows tile the
+	// whole window. A parser change that (say) folded deferred rows into their
+	// parent category would be caught here.
 	var counted, deferred, nonDeferred int
 	for _, cat := range usage.Categories {
 		if cat.Deferred {
@@ -174,31 +168,25 @@ func TestParseContextUsage_FallsBackToRawMaxTokens(t *testing.T) {
 	}
 }
 
-// Without a window there is no occupancy to render, and a zero denominator
-// downstream would read as "0% used" on a full context. Fail loudly.
-func TestParseContextUsage_NoWindowIsAnError(t *testing.T) {
-	_, err := ParseContextUsage(json.RawMessage(`{"totalTokens":1234,"percentage":40,"categories":[]}`))
-	if err == nil {
-		t.Fatal("expected an error when neither maxTokens nor rawMaxTokens is present")
+func TestParseContextUsage_RejectsUnusablePayloads(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload json.RawMessage
+		wantErr string
+	}{
+		{name: "empty payload", payload: nil, wantErr: "empty response payload"},
+		// Without a window there is no occupancy to render, and a zero
+		// denominator downstream would read as "0% used" on a full context.
+		{name: "neither maxTokens nor rawMaxTokens", payload: json.RawMessage(`{"totalTokens":1234,"percentage":40,"categories":[]}`), wantErr: "no context window"},
+		{name: "categories is not an array", payload: json.RawMessage(`{"categories":"oops","maxTokens":1000}`), wantErr: "decode response"},
 	}
-	if !strings.Contains(err.Error(), "no context window") {
-		t.Errorf("error should name the missing window, got: %v", err)
-	}
-}
-
-func TestParseContextUsage_EmptyPayload(t *testing.T) {
-	if _, err := ParseContextUsage(nil); err == nil {
-		t.Fatal("expected an error on an empty payload")
-	}
-}
-
-func TestParseContextUsage_MalformedPayload(t *testing.T) {
-	_, err := ParseContextUsage(json.RawMessage(`{"categories":"oops","maxTokens":1000}`))
-	if err == nil {
-		t.Fatal("expected a decode error when categories is not an array")
-	}
-	if !strings.Contains(err.Error(), "decode response") {
-		t.Errorf("error should wrap %q, got %v", "decode response", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseContextUsage(tc.payload)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ParseContextUsage error = %v, want one containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -284,25 +272,20 @@ func TestSession_GetContextUsage_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestSession_GetContextUsage_ErrorSubtype(t *testing.T) {
-	s := newContextUsageResponderSession(t, "error-subtype", answeringContextUsageTimeout)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*answeringContextUsageTimeout)
-	defer cancel()
+func TestSession_GetContextUsage_RejectsFailedAnswers(t *testing.T) {
+	for _, tc := range []struct{ mode, wantErr string }{
+		{mode: "error-subtype", wantErr: "context analysis failed"},
+		{mode: "success-no-payload", wantErr: "empty response payload"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			s := newContextUsageResponderSession(t, tc.mode, answeringContextUsageTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*answeringContextUsageTimeout)
+			defer cancel()
 
-	if _, err := s.GetContextUsage(ctx); err == nil {
-		t.Fatal("expected an error, got nil")
-	} else if !strings.Contains(err.Error(), "context analysis failed") {
-		t.Errorf("error should carry the CLI message, got: %v", err)
-	}
-}
-
-func TestSession_GetContextUsage_SuccessWithNoPayload(t *testing.T) {
-	s := newContextUsageResponderSession(t, "success-no-payload", answeringContextUsageTimeout)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*answeringContextUsageTimeout)
-	defer cancel()
-
-	if _, err := s.GetContextUsage(ctx); err == nil {
-		t.Fatal("expected an error on a bodyless success, got nil")
+			if _, err := s.GetContextUsage(ctx); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("GetContextUsage error = %v, want one containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

@@ -23,22 +23,14 @@ function setup() {
 }
 
 describe('<ReviewDraftEditor> keyboard submit', () => {
-  it('submits on Ctrl+Enter', async () => {
+  it.each([
+    ['submits on Ctrl+Enter', { ctrlKey: true }, [['e1', 'draft text', 'draft']]],
+    ['submits on Cmd+Enter (macOS)', { metaKey: true }, [['e1', 'draft text', 'draft']]],
+    ['does not submit on plain Enter', {}, []],
+  ])('%s', async (_name, modifier, submits) => {
     const { onSubmit, textarea } = setup();
-    await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
-    expect(onSubmit).toHaveBeenCalledWith('e1', 'draft text', 'draft');
-  });
-
-  it('submits on Cmd+Enter (macOS)', async () => {
-    const { onSubmit, textarea } = setup();
-    await fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
-    expect(onSubmit).toHaveBeenCalledWith('e1', 'draft text', 'draft');
-  });
-
-  it('does not submit on plain Enter', async () => {
-    const { onSubmit, textarea } = setup();
-    await fireEvent.keyDown(textarea, { key: 'Enter' });
-    expect(onSubmit).not.toHaveBeenCalled();
+    await fireEvent.keyDown(textarea, { key: 'Enter', ...modifier });
+    expect(onSubmit.mock.calls).toEqual(submits);
   });
 
   it('cancels on Escape', async () => {

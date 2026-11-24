@@ -154,16 +154,3 @@ END;
 	}
 	return sql
 }
-
-func dropPayloadSnapshotTriggersSQL() string {
-	sql := `DROP TRIGGER trg_payload_snapshot_refs_gc; DROP TRIGGER trg_payload_snapshots_import_gc;`
-	for _, table := range []string{"payloads", "payload_chunks", "edit_file_snapshots"} {
-		for _, event := range []string{"INSERT", "UPDATE", "DELETE"} {
-			if table == "payloads" && event == "INSERT" {
-				continue
-			}
-			sql += fmt.Sprintf("DROP TRIGGER trg_snapshot_%s_%s;", table, event)
-		}
-	}
-	return sql
-}

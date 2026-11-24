@@ -14,7 +14,6 @@ import {
   initReplica,
   putReplicaWindow,
   removeReplicaWindow,
-  __resetReplicaForTest,
 } from '../replica';
 
 import { installPaneMocks, makeItem, makeThread } from '../../test/helpers/chat';
@@ -149,7 +148,6 @@ function replicaBody(items: Item[], epoch: number, rev: number) {
 
 describe('cold-open window sync', () => {
   beforeEach(async () => {
-    __resetReplicaForTest();
     installPaneMocks();
     await initReplica({
       backendId: `backend-${Math.random().toString(36).slice(2)}`,
@@ -205,20 +203,6 @@ describe('cold-open window sync', () => {
     expect(pane.items.map((it) => it.id)).toEqual(['i0', 'i1']);
   });
 
-  it('sends the replica stamp, so an unchanged window can answer fresh', async () => {
-    await putReplicaWindow(THREAD_ID, replicaBody([row('i0')], 3, 11));
-    const pane = createThreadPane();
-    const requests = installSync(() => ({ status: 'fresh', epoch: 3, rev: 11 }));
-
-    await pane.switchThread(makeThread({ id: THREAD_ID }));
-
-    expect(requests).toHaveLength(1);
-    expect(requests[0].haveEpoch).toBe(3);
-    expect(requests[0].haveRev).toBe(11);
-    // A fresh answer applies nothing; the painted rows ARE the window.
-    expect(pane.items.map((it) => it.id)).toEqual(['i0']);
-  });
-
   it('does not paint a replica window read under the other activity-run rule', async () => {
     // No hello: the thread's backend groups by the absorbed rule.
     await putReplicaWindow(THREAD_ID, { ...replicaBody([row('i0')], 3, 11), activityRunRule: AGENT_MESSAGE_MEMBERS_RULE });
@@ -272,8 +256,10 @@ describe('cold-open window sync', () => {
 
     await pane.switchThread(makeThread({ id: THREAD_ID }));
 
+    expect(requests).toHaveLength(1);
     expect(requests[0].haveEpoch).toBe(-1);
     expect(requests[0].haveRev).toBe(-1);
+    expect(requests[0].haveWindow).toBeUndefined();
     expect(pane.items.map((it) => it.id)).toEqual(['i0']);
   });
 
@@ -794,8 +780,11 @@ describe('cold-open window sync', () => {
       // The two are independent evidence and both ride the one ask: the
       // stamp answers "did the thread change", the window answers "are
       // these rows still the read".
+      expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({ haveEpoch: 3, haveRev: 11 });
       expect(requests[0].haveWindow).toMatchObject({ count: 1, oldestItemId: 'i0' });
+      // A fresh answer applies nothing; the painted rows ARE the window.
+      expect(pane.items.map((it) => it.id)).toEqual(['i0']);
     });
 
     it('attests a fresh answer over the sent window and writes it back', async () => {
@@ -973,21 +962,6 @@ describe('cold-open window sync', () => {
       expect(requests.at(-1)?.haveWindow).toBeUndefined();
       expect(pane.items.map((it) => it.id)).toEqual(['i0', 'i1']);
       expect(pane.items[1].rev).toBe(6);
-    });
-
-    it('sends no window when nothing is painted', async () => {
-      const pane = createThreadPane();
-      const requests = installSync(() => ({
-        status: 'stale',
-        epoch: 1,
-        rev: 2,
-        page: page([row('i0', { rev: 2 })]),
-      }));
-
-      await pane.switchThread(makeThread({ id: THREAD_ID }));
-
-      expect(requests).toHaveLength(1);
-      expect(requests[0].haveWindow).toBeUndefined();
     });
   });
 

@@ -14,6 +14,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
@@ -192,10 +193,22 @@ test('with this computer\'s assistants off, an assistant\'s worker on the other 
     const held = await awaitGate(there, 'paused-owner-hold', work.path);
 
     // Assistants off here: the worker's approval stays the assistant's. It
-    // waits in the assistant's queue, the person there is not asked, and
-    // the assistant is not woken while the setting is off.
+    // waits in the assistant's queue and the person there is not asked. An
+    // app-written message for a paused assistant's thread waits in its queue
+    // and starts no session for it until assistants are on. That the
+    // notice's start and the dispatcher each meet the pause, and the switch
+    // starts the session, is internal/app's
+    // TestAMessageForAPausedAssistantWaitsForAssistants and
+    // TestAQueueFlushedForAPausedAssistantWaitsForAssistants.
     await here.rpc('UpdateSettings', { assistantsEnabled: false });
-    const wokenWhileOff = wakeInput(here, assistant.home, 'Paused owner worker', 20_000).then(() => true, () => false);
+    const waiting = () => {
+      const db = new DatabaseSync(join(here.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+      try {
+        return (db.prepare(`SELECT count(*) AS n FROM flush_queue_items WHERE thread_id = ?`).get(assistant.thread) as { n: number }).n;
+      } finally {
+        db.close();
+      }
+    };
     await advanceGate(there, held.mockId, 'paused-owner-hold');
     type Pending = { requestId: string; routedTo?: { threadId: string } | null };
     const approvals = async () => (await there.rpc<{ approvals: Pending[] }>('ListPendingInteractiveRequests', worker)).approvals;
@@ -204,7 +217,7 @@ test('with this computer\'s assistants off, an assistant\'s worker on the other 
       return approval ? (approval.routedTo?.threadId ?? 'the person') : 'none';
     };
     await expect.poll(holder, { timeout: 30_000 }).toBe(assistant.thread);
-    expect(await wokenWhileOff, 'the paused assistant was woken for its worker\'s approval').toBe(false);
+    await expect.poll(waiting, { timeout: 30_000, message: 'the approval\'s wake waits in the paused assistant\'s queue' }).toBe(1);
     expect(await holder(), 'the approval left the paused assistant').toBe(assistant.thread);
 
     // Assistants on: the assistant is woken for the approval that waited.

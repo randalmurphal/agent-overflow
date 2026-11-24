@@ -56,6 +56,7 @@ import { startTogether } from './launch-helpers.js';
 import { primeTransferRecipient } from './conversation-transfer-helpers.js';
 import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
 import { capture, captureAgentMessage } from './wake-rows-helpers.js';
+import { laterMessage } from './standing-agent-wake-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
 import { backgroundShellSteps, heldSendIds, openPast, pastRow, pastTotal } from './agents-tray-helpers.js';
 import { toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
@@ -81,6 +82,7 @@ import {
   threadRows,
   threadToolsScenario,
 } from './thread-tools-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -225,8 +227,7 @@ test('thread_options and thread_search answer in the paired shape and reach the 
       ],
     }),
   );
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'what can you reach?', null);
+  await home.send(caller.threadIds[0], 'what can you reach?');
 
   interface OptionsAnswer {
     computers: Array<{
@@ -340,8 +341,7 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
   // The sender line names the caller's computer as the remote's own pairing
   // does, not as the caller's computer calls itself.
   await remote.rpc('RenameBackend', homeID, 'Laptop computer');
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build the kernel', null);
+  await home.send(caller.threadIds[0], 'have the GPU computer build the kernel');
 
   interface SpawnAnswer {
     token: string;
@@ -446,8 +446,7 @@ test('a standing agent on the other computer is named on its wake as a local one
       afterTurns: 'repeatLast',
     }),
   );
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'ask both reviewers about the parser', null);
+  await home.send(caller.threadIds[0], 'ask both reviewers about the parser');
   for (const [app, cwd] of [[home, homes[0]], [remote, homes[1]]] as const) {
     const sent = await awaitToolAnswer<{ outcome: string }>(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 120_000 });
     await releaseAfterBackgrounded(sent, { harness: app, gate: 'review-answer', cwd });
@@ -519,8 +518,7 @@ test('an ask forks the thread on the other computer and only the answer crosses'
       texts: ['decodeChunk held 68% of the profile.'],
     }),
   );
-  await remote.rpc('StartSession', target);
-  await remote.rpc('SendMessage', target, 'profile the import path', null);
+  await remote.send(target, 'profile the import path');
   await remote.waitForEvent('provider:turn_completed');
 
   // The fork runs in the same workspace, so replacing that rule scripts
@@ -575,8 +573,7 @@ test('an ask forks the thread on the other computer and only the answer crosses'
     }),
   );
 
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'ask the GPU computer what it profiled', null);
+  await home.send(caller.threadIds[0], 'ask the GPU computer what it profiled');
 
   interface AskAnswer {
     token: string;
@@ -640,8 +637,7 @@ test('a write inside the ask fork on the other computer is refused there and onl
       ],
     }),
   );
-  await remote.rpc('StartSession', target);
-  await remote.rpc('SendMessage', target, 'describe the migration', null);
+  await remote.send(target, 'describe the migration');
   // This file keeps one backend for every test, so the wait names the
   // thread: an earlier test's completion is still in the event log.
   await remote.waitForEvent<{ threadId: string }>(
@@ -649,7 +645,7 @@ test('a write inside the ask fork on the other computer is refused there and onl
     (ev) => ev.threadId === target,
     60_000,
   );
-  await remote.rpc('SendMessage', target, 'now run the long job', null);
+  await remote.send(target, 'now run the long job');
   const targetMock = await awaitGate(remote, 'remote-target-busy', there.path);
 
   await setScenario(
@@ -753,8 +749,7 @@ test('a write inside the ask fork on the other computer is refused there and onl
     }),
   );
 
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'ask the GPU computer about rollback', null);
+  await home.send(caller.threadIds[0], 'ask the GPU computer about rollback');
 
   const forkMock = await awaitGate(remote, 'remote-fork-refused', there.path);
 
@@ -774,7 +769,7 @@ test('a write inside the ask fork on the other computer is refused there and onl
   }
   await expect
     .poll(async () => {
-      const items = await remote.rpc<TimelineItem[]>('ListItems', fork!.id, true);
+      const items = await remote.items<TimelineItem>(fork!.id, true);
       const notice = items.find((item) => item.id === 'permission-denied:tu-remotewrite');
       if (!notice) return null;
       return {
@@ -829,7 +824,7 @@ test('a write inside the ask fork on the other computer is refused there and onl
   // Only the answer crossed: no copy of the fork here, nothing written
   // there, and the thread that was asked never saw the question.
   expect((await threadRows(home)).some((row) => row.id === ask.value!.thread_id)).toBe(false);
-  const targetItems = await remote.rpc<TimelineItem[]>('ListItems', target, true);
+  const targetItems = await remote.items<TimelineItem>(target, true);
   expect(
     targetItems.some((item) => (item.summary ?? '').includes('what does the migration do')),
   ).toBe(false);
@@ -934,8 +929,7 @@ test('thread_status watches a request running on the other computer, and a prefi
     }),
   );
 
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'give the GPU computer the long job', null);
+  await home.send(caller.threadIds[0], 'give the GPU computer the long job');
   const probeSend = await awaitToolAnswer<{ token: string }>(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 60_000 });
   expect(probeSend.isError, probeSend.text).toBe(false);
   const probeToken = probeSend.value!.token;
@@ -972,7 +966,7 @@ test('thread_status watches a request running on the other computer, and a prefi
   const gate = await awaitGate(remote, 'hold-remote-status', there.path);
   await awaitTurnCompleted(home, caller.threadIds[0]);
   await expect.poll(() => parkedOn(home, probeToken), { message: 'nothing waits on the probe yet' }).toBe(false);
-  await home.rpc('SendMessage', caller.threadIds[0], 'watch it until it finishes', null);
+  await home.send(caller.threadIds[0], 'watch it until it finishes');
   await expect.poll(() => parkedOn(home, probeToken), { timeout: 60_000, message: 'the status wait parks' }).toBe(true);
   await advanceGate(remote, gate.mockId, 'hold-remote-status');
 
@@ -994,7 +988,7 @@ test('thread_status watches a request running on the other computer, and a prefi
     title?: string;
   }
   await awaitTurnCompleted(home, caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'now read that thread by prefix', null);
+  await home.send(caller.threadIds[0], 'now read that thread by prefix');
   const show = await awaitToolAnswer<ShowAnswer>(home, { tool: 'thread_show', timeoutMs: 90_000 });
   expect(show.isError, show.text).toBe(false);
   expect(show.value!.thread_id).toBe(target);
@@ -1049,8 +1043,7 @@ test('the destination serves a forwarded request with its own thread tools switc
       }),
     );
 
-    await home.rpc('StartSession', caller.threadIds[0]);
-    await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer check its disks', null);
+    await home.send(caller.threadIds[0], 'have the GPU computer check its disks');
 
     interface SpawnAnswer {
       token: string;
@@ -1141,12 +1134,12 @@ test('a cancel stops a turn the caller started on the other computer', async () 
     }),
   );
 
-  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.startSession(caller.threadIds[0]);
   // The next message is a direct send, which a thread still in its turn
   // refuses: wait for the caller's first turn to end, not just for the
   // remote turn it started.
   const callerTurnDone = awaitTurnCompleted(home, caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'give the GPU computer the long job', null);
+  await home.send(caller.threadIds[0], 'give the GPU computer the long job');
   await awaitGate(remote, 'hold-remote-cancel', there.path);
   await callerTurnDone;
 
@@ -1155,7 +1148,7 @@ test('a cancel stops a turn the caller started on the other computer', async () 
     (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === there.path,
     90_000,
   );
-  await home.rpc('SendMessage', caller.threadIds[0], 'now stop it', null);
+  await home.send(caller.threadIds[0], 'now stop it');
 
   interface CancelAnswer {
     token?: string;
@@ -1174,7 +1167,7 @@ test('a cancel stops a turn the caller started on the other computer', async () 
   await interrupted;
 
   // The interrupted turn never reached its own completion text there.
-  const items = await remote.rpc<Array<{ summary?: string }>>('ListItems', target, true);
+  const items = await remote.items<{ summary?: string }>(target, true);
   expect(items.some((item) => (item.summary ?? '').includes('Long remote job done.'))).toBe(false);
 });
 
@@ -1228,8 +1221,7 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
     turns: [{ steps: [{ gate: 'remote-peer-hold' }], text: 'Fine.' }],
   }));
 
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build it', null);
+  await home.send(caller.threadIds[0], 'have the GPU computer build it');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const sent = await awaitToolAnswer<{ token: string }>(home, { tool: 'thread_send', timeoutMs: 120_000 });
@@ -1260,7 +1252,7 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
   await expect(grandRow).toHaveAttribute('data-depth', '1');
   await expect(grandRow.getByTestId('agent-tray-row-title')).toHaveText('Remote grandchild');
   await expect(grandRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
-  await body.screenshot({ path: test.info().outputPath('agents-remote-nested.png'), animations: 'disabled' });
+  await screenshot(body, { path: test.info().outputPath('agents-remote-nested.png'), animations: 'disabled' });
 
   const childInterrupted = remote.waitForEvent<HarnessMockEventData>(
     'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === child.path, 90_000);
@@ -1268,10 +1260,10 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
     'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === grand.path, 90_000);
   // The cascade disarms the child's own spawn there: the person stopped
   // the child's work, so the child takes no new turn for it.
-  const childWoken = remote.waitForEvent<HarnessMockEventData>(
+  const childWoken = remote.watchEvents<HarnessMockEventData>(
     'harness:mock',
     (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes(nested.value!.token),
-    30_000).then(() => true, () => false);
+  );
   await childRow.getByTestId('agent-tray-row-stop').click();
   await expect(page.getByTestId('toast-message').filter({ hasText: 'Stopped Remote child' }))
     .toHaveText('Stopped Remote child: its turn, 1 background task and 1 agent of its own.', { timeout: 60_000 });
@@ -1280,7 +1272,12 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
   await expect.poll(async () => (await remote.rpc<{ status: string }[]>('ListLiveBackgroundTasks', spawn.value!.thread_id))
     .filter((item) => item.status === 'running').length).toBe(0);
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
-  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
+  // A later message to the child, read by its session, is the barrier: a
+  // wake for the stopped grandchild would reach the child's session before it.
+  await childWoken.expectNoneThrough(
+    () => laterMessage(remote, spawn.value!.thread_id, child.path),
+    'the child took a turn for the agent the person stopped',
+  );
 });
 
 // A worker there replied and keeps working, then its computer stops
@@ -1321,8 +1318,7 @@ test('a worker on the other computer keeps its running row while that computer d
     afterTurns: 'repeatLast',
   }));
 
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'run the soak test on the GPU computer', null);
+  await home.send(caller.threadIds[0], 'run the soak test on the GPU computer');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const held = await awaitGate(remote, 'outage-child-hold', child.path);
@@ -1450,8 +1446,7 @@ async function spawnOwnedThere(tag: string, callerTitle: string, workerTitle: st
     ],
     afterTurns: 'repeatLast',
   }));
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], `have the GPU computer do ${workerTitle}`, null);
+  await home.send(caller.threadIds[0], `have the GPU computer do ${workerTitle}`);
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string; outcome: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const held = gate ? await awaitGate(remote, gate, there.path) : null;
@@ -1616,8 +1611,7 @@ test('a nudge to a rested owned worker over there is one row of its spawner here
     ],
     afterTurns: 'repeatLast',
   }));
-  await home.rpc('StartSession', callerId);
-  await home.rpc('SendMessage', callerId, 'have the GPU computer build it', null);
+  await home.send(callerId, 'have the GPU computer build it');
   const spawned = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
   expect(spawned.isError, spawned.text).toBe(false);
   const { token: spawn, thread_id: worker } = spawned.value!;
@@ -1632,10 +1626,10 @@ test('a nudge to a rested owned worker over there is one row of its spawner here
   const body = await openAgentsTray(page, callerId, 'desktop');
   const open = body.locator('[data-testid="agent-tray-row"]:not([data-past])');
   await expect(open).toHaveCount(0, { timeout: 60_000 });
-  const callerItems = (await home.rpc<unknown[]>('ListItems', callerId, false)).length;
+  const callerItems = (await home.items<unknown>(callerId, false)).length;
 
   // The person there continues it from its own pane.
-  await remote.rpc('SendMessage', worker, 'lint it too', null);
+  await remote.send(worker, 'lint it too');
   const hold = await awaitGate(remote, 'nudge-there-hold', there.path);
   const nudgeRow = body.locator('[data-testid="agent-tray-row"][data-kind="nudge"]:not([data-past])');
   await expect(nudgeRow).toHaveCount(1, { timeout: 60_000 });
@@ -1662,7 +1656,7 @@ test('a nudge to a rested owned worker over there is one row of its spawner here
   await expect(pastRow(page, spawn).getByTestId('agent-tray-row-tools')).toHaveText('2 tools');
   await capture(page, 'nudge-remote-past.png', body);
   expect(heldSendIds(home, callerId)).toEqual([]);
-  expect((await home.rpc<unknown[]>('ListItems', callerId, false)).length).toBe(callerItems);
+  expect((await home.items<unknown>(callerId, false)).length).toBe(callerItems);
 });
 
 const PROMPT_TOKEN = 'thread_reply, token (\\S+), once';
@@ -1697,8 +1691,7 @@ test("a question over there wakes the spawner here, whose reply answers it there
     ],
     afterTurns: 'repeatLast',
   }));
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build the kernel', null);
+  await home.send(caller.threadIds[0], 'have the GPU computer build the kernel');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const worker = spawn.value!.thread_id;
@@ -1790,8 +1783,7 @@ test("with the spawner's computer stopped, a question over there stays the spawn
     ],
     afterTurns: 'repeatLast',
   }));
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer run the soak', null);
+  await home.send(caller.threadIds[0], 'have the GPU computer run the soak');
   const spawn = await awaitToolAnswer<{ thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const worker = spawn.value!.thread_id;
@@ -1801,14 +1793,15 @@ test("with the spawner's computer stopped, a question over there stays the spawn
   await expect.poll(async () => (await approvals())[0]?.routedTo?.threadId ?? '').toBe(caller.threadIds[0]);
 
   // Stopped, the spawner's computer answers nothing; the worker's computer
-  // keeps the question routed to the spawner, not to the person there. No
-  // timer moves it, so the wait only has to cover several of that
-  // computer's reads of the spawner's prompts.
+  // keeps the question routed to the spawner, not to the person there. It
+  // keeps no lease on the route and no timer moves it (the contract in
+  // internal/app/app_worker_prompts_peer.go), and its reads of a stopped
+  // computer stall rather than fail, so holding the stop longer shows
+  // nothing more.
   const pid = home.bootstrap.pid;
   expect(pid).toBeGreaterThan(0);
   process.kill(pid, 'SIGSTOP');
   try {
-    await new Promise((resolve) => setTimeout(resolve, 15_000));
     expect((await approvals())[0]?.routedTo?.threadId).toBe(caller.threadIds[0]);
   } finally {
     process.kill(pid, 'SIGCONT');
@@ -1837,8 +1830,7 @@ test('an accepted send shows the approval blocking a busy ordinary thread on the
       { text: 'Queued task finished.' },
     ],
   }));
-  await remote.rpc('StartSession', worker);
-  await remote.rpc('SendMessage', worker, 'start the first task', null);
+  await remote.send(worker, 'start the first task');
   const first = await awaitGate(remote, 'before-busy-approval', target.path);
   await setScenario(home, caller.path, threadToolsScenario({
     name: 'ordinary-sender', provider: 'claude', turns: [
@@ -1848,8 +1840,7 @@ test('an accepted send shows the approval blocking a busy ordinary thread on the
       { text: 'Noted.' },
     ],
   }));
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'queue another task', null);
+  await home.send(caller.threadIds[0], 'queue another task');
   const sent = await awaitToolAnswer<{ token: string }>(home, { tool: 'thread_send', cwd: caller.path });
   expect(sent.isError, sent.text).toBe(false);
   await home.open(page);
@@ -2089,8 +2080,7 @@ test('a computer on v0.0.19: its threads archive and delete from this window, an
         ],
         afterTurns: 'repeatLast',
       }));
-      await home.rpc('StartSession', caller.threadIds[0]);
-      await home.rpc('SendMessage', caller.threadIds[0], 'work on the old computer', null);
+      await home.send(caller.threadIds[0], 'work on the old computer');
       const spawn = await awaitToolAnswer<{ thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
       expect(spawn.isError, spawn.text).toBe(false);
       await awaitTurnCompleted(older, spawn.value!.thread_id);
@@ -2164,8 +2154,7 @@ test('a nested row on the other computer names the wake row its answer reached t
     (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes('Packaged.'),
     180_000,
   );
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build it', null);
+  await home.send(caller.threadIds[0], 'have the GPU computer build it');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const nested = await awaitToolAnswer<{ token: string; outcome: string }>(remote, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
@@ -2181,7 +2170,7 @@ test('a nested row on the other computer names the wake row its answer reached t
     wakeItemId = there.rows.find((row) => row.token === nested.value!.token)?.wakeItemId ?? '';
     return wakeItemId;
   }, { timeout: 60_000 }).not.toBe('');
-  const items = await remote.rpc<{ id: string; kind: string }[]>('ListItems', spawn.value!.thread_id, true);
+  const items = await remote.items<{ id: string; kind: string }>(spawn.value!.thread_id, true);
   expect(items.find((item) => item.id === wakeItemId)?.kind, 'the wake link names a row of the child').toBe('user_text');
   await expect.poll(async () => {
     const here = await home.rpc<Listing>('ListThreadAgentRows', caller.threadIds[0]);
@@ -2302,8 +2291,7 @@ test('a thread moved to the other computer resolves there by its bare id', async
       ],
     }),
   );
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'read the thread I moved', null);
+  await home.send(caller.threadIds[0], 'read the thread I moved');
 
   // The id this computer handed away is a move, not a miss: resolution
   // reads the transfer record and asks the new owner.
@@ -2374,8 +2362,7 @@ test('the origin chip names the other computer on both ends of a spawn', async (
       ],
     }),
   );
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer run the chip job', null);
+  await home.send(caller.threadIds[0], 'have the GPU computer run the chip job');
 
   interface SpawnAnswer {
     token: string;
@@ -2435,8 +2422,7 @@ test('deleting the caller cancels the scratch ask it left running on the other c
       texts: ['The import path is hot.'],
     }),
   );
-  await remote.rpc('StartSession', target);
-  await remote.rpc('SendMessage', target, 'profile the import path', null);
+  await remote.send(target, 'profile the import path');
   await remote.waitForEvent<{ threadId: string }>(
     'provider:turn_completed',
     (ev) => ev.threadId === target,
@@ -2483,8 +2469,7 @@ test('deleting the caller cancels the scratch ask it left running on the other c
     }),
   );
 
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'ask the GPU computer what it profiled', null);
+  await home.send(caller.threadIds[0], 'ask the GPU computer what it profiled');
 
   interface AskAnswer {
     token: string;
@@ -2576,8 +2561,7 @@ test('a responder on a switched-off destination answers with thread_reply', asyn
       }),
     );
 
-    await home.rpc('StartSession', caller.threadIds[0]);
-    await home.rpc('SendMessage', caller.threadIds[0], 'ask the GPU computer to reply', null);
+    await home.send(caller.threadIds[0], 'ask the GPU computer to reply');
 
     // The responder's own tool call succeeded on the switched-off computer.
     const reply = await awaitToolAnswer<{ state: string }>(remote, {
@@ -2661,8 +2645,7 @@ test('a computer whose hello lacks the thread-tools capability fails as thread_u
         ],
       }),
     );
-    await home.rpc('StartSession', caller.threadIds[0]);
-    await home.rpc('SendMessage', caller.threadIds[0], 'spawn on the old computer', null);
+    await home.send(caller.threadIds[0], 'spawn on the old computer');
 
     const spawn = await awaitToolAnswer(home, {
       tool: 'thread_spawn',
@@ -2742,8 +2725,7 @@ test('a reply written while the calling computer was off arrives when it comes b
     }),
   );
 
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'ask the GPU computer about the nightly', null);
+  await home.send(caller.threadIds[0], 'ask the GPU computer about the nightly');
 
   interface SendAck {
     token: string;
@@ -2876,8 +2858,7 @@ test('a thread of 38k items on the other computer is windowed, paged and exporte
       ],
     }),
   );
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'read the middle of the sweep over there', null);
+  await home.send(caller.threadIds[0], 'read the middle of the sweep over there');
 
   interface SearchAnswer {
     computers: Array<{ computer_id?: string; rows: Array<{ thread_id: string; item_id?: string }> }>;
@@ -2938,7 +2919,7 @@ test('a thread of 38k items on the other computer is windowed, paged and exporte
   const pages: ShowAnswer[] = [];
   let done = false;
   while (!done) {
-    await home.rpc('SendMessage', caller.threadIds[0], `page ${pages.length + 1} over there`, null);
+    await home.send(caller.threadIds[0], `page ${pages.length + 1} over there`);
     const answer = await awaitToolAnswer<ShowAnswer>(home, {
       tool: 'thread_show',
       timeoutMs: 300_000,
@@ -3021,13 +3002,7 @@ test('a multi-megabyte tool output on the other computer is searched and read in
       ],
     }),
   );
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc(
-    'SendMessage',
-    caller.threadIds[0],
-    'what did the fuzzer crash on over there?',
-    null,
-  );
+  await home.send(caller.threadIds[0], 'what did the fuzzer crash on over there?');
 
   interface ShowAnswer {
     computer_id?: string;
@@ -3123,8 +3098,7 @@ test('two assistants with one name on the two computers show and resolve as <nam
       afterTurns: 'repeatLast',
     }),
   );
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'ask night ops about the GPUs', null);
+  await home.send(caller.threadIds[0], 'ask night ops about the GPUs');
 
   // thread_search agents lists both, each suffixed with its computer.
   interface AgentsAnswer {
@@ -3220,8 +3194,7 @@ test('forgetting a computer with open requests refuses once, then abandons them'
     }),
   );
 
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'start something long over there', null);
+  await home.send(caller.threadIds[0], 'start something long over there');
 
   interface SpawnAnswer {
     token: string;
@@ -3259,7 +3232,7 @@ test('forgetting a computer with open requests refuses once, then abandons them'
     requests?: Array<{ token: string; state: string; answer?: string; notify: boolean }>;
   }
   await awaitTurnCompleted(home, caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'what happened to that request?', null);
+  await home.send(caller.threadIds[0], 'what happened to that request?');
   const status = await awaitToolAnswer<StatusAnswer>(home, {
     tool: 'thread_status',
     timeoutMs: 90_000,

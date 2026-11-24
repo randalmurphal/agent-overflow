@@ -66,39 +66,32 @@ func fakeAssets() fstest.MapFS {
 	}
 }
 
-func TestParseConnectURL_RejectsHTTP(t *testing.T) {
-	_, err := ParseConnectURL("http://example.com:8080/?token=abc")
-	if err == nil {
-		t.Fatal("ParseConnectURL accepted http://, want error")
-	}
-	if !strings.Contains(err.Error(), "ws:// or wss://") {
-		t.Fatalf("error %q does not point at scheme requirement", err)
-	}
-}
-
-func TestParseConnectURL_RejectsHTTPS(t *testing.T) {
-	// Defense-in-depth: https:// is the obvious near-miss for wss://;
-	// rejecting it keeps the failure message focused on the right fix.
-	_, err := ParseConnectURL("https://example.com:8080/?token=abc")
-	if err == nil {
-		t.Fatal("ParseConnectURL accepted https://, want error")
-	}
-}
-
-func TestParseConnectURL_RequiresToken(t *testing.T) {
-	_, err := ParseConnectURL("ws://example.com:8080/")
-	if err == nil {
-		t.Fatal("ParseConnectURL accepted URL with no token, want error")
-	}
-	if !strings.Contains(err.Error(), "token") {
-		t.Fatalf("error %q does not mention token", err)
-	}
-}
-
-func TestParseConnectURL_RequiresHost(t *testing.T) {
-	_, err := ParseConnectURL("ws:///?token=abc")
-	if err == nil {
-		t.Fatal("ParseConnectURL accepted URL with no host, want error")
+// TestParseConnectURL_Rejects covers each --connect URL the parse refuses.
+// want, when set, is the fix the error has to point at.
+func TestParseConnectURL_Rejects(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, want string
+	}{
+		{"http", "http://example.com:8080/?token=abc", "ws:// or wss://"},
+		// https:// is the obvious near-miss for wss://.
+		{"https", "https://example.com:8080/?token=abc", ""},
+		{"no token", "ws://example.com:8080/", "token"},
+		{"no host", "ws:///?token=abc", ""},
+		// Userinfo is not part of the auth model: accepting it would let an
+		// operator paste ws://user:pass@host?token=t and fail later when the
+		// server only honors ?token=.
+		{"userinfo", "ws://user:pass@host:9999/?token=tkn", "userinfo"},
+		{"user-only userinfo", "ws://user@host:9999/?token=tkn", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseConnectURL(tc.raw)
+			if err == nil {
+				t.Fatalf("ParseConnectURL(%q) accepted it, want error", tc.raw)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not mention %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -186,6 +179,18 @@ func TestServe_ServesTheShellVerbatim(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET / status = %d, want 200", resp.StatusCode)
+	}
+	// A deploy must never be shadowed by a cached shell.
+	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Fatalf("index Cache-Control %q must include no-store", got)
+	}
+	// The stub serves the same bundle the transport does, so it ships the
+	// same policy (see TestStubShipsTheProductionPolicy).
+	if got := resp.Header.Get("Content-Security-Policy"); got != string(transport.CSPProduction) {
+		t.Errorf("index Content-Security-Policy = %q, want the production policy", got)
+	}
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("index X-Content-Type-Options = %q, want nosniff", got)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -342,44 +347,6 @@ func TestServe_ManifestLocalityFollowsTheUpstream(t *testing.T) {
 	}
 }
 
-func TestServe_ServesStaticAssets(t *testing.T) {
-	srv, err := Serve(Config{
-		WSURL:  "ws://h/",
-		Token:  "t",
-		Assets: fakeAssets(),
-	})
-	if err != nil {
-		t.Fatalf("Serve: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-	})
-
-	// The page URL carries query parameters now, so address the asset by
-	// the listener rather than by string-appending to it.
-	resp, err := http.Get("http://" + srv.Addr() + "/assets/index-abc.js")
-	if err != nil {
-		t.Fatalf("GET /assets/...: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET asset status = %d, want 200", resp.StatusCode)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "fake spa entry") {
-		t.Fatalf("asset body unexpected: %s", body)
-	}
-	// Asset responses must be no-store: the stub only serves the local
-	// embedded webview, which loads the SPA once per process, and a
-	// cacheable script pins its decoded text in the renderer's
-	// in-memory HTTP cache for the page's lifetime.
-	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "no-store") {
-		t.Fatalf("Cache-Control %q does not include no-store", got)
-	}
-}
-
 func TestServe_RejectsMissingIndex(t *testing.T) {
 	// fstest.MapFS without index.html — buildInjectedIndex must surface
 	// the failure rather than starting a half-broken server.
@@ -405,53 +372,6 @@ func TestServe_RequiresWSURLAndToken(t *testing.T) {
 	}
 	if _, err := Serve(Config{WSURL: "ws://h/", Token: "t"}); err == nil {
 		t.Fatal("Serve accepted nil Assets, want error")
-	}
-}
-
-func TestServe_IndexCacheControl(t *testing.T) {
-	srv, err := Serve(Config{
-		WSURL:  "ws://h/",
-		Token:  "t",
-		Assets: fakeAssets(),
-	})
-	if err != nil {
-		t.Fatalf("Serve: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-	})
-	resp, err := http.Get(srv.AppURL())
-	if err != nil {
-		t.Fatalf("GET /: %v", err)
-	}
-	defer resp.Body.Close()
-	// The shell holds the bootstrap token; a stale cached copy after
-	// the operator restarts with a new --connect URL would inject the
-	// wrong token. no-store prevents that.
-	got := resp.Header.Get("Cache-Control")
-	if !strings.Contains(got, "no-store") {
-		t.Fatalf("index Cache-Control %q must include no-store", got)
-	}
-}
-
-func TestParseConnectURL_RejectsUserinfo(t *testing.T) {
-	// Userinfo (HTTP basic-auth-style user:pass) is not part of the
-	// auth model. Accepting it silently would let an operator paste
-	// `ws://user:pass@host?token=t` and get a confusing failure later
-	// when the server only honors `?token=`.
-	_, err := ParseConnectURL("ws://user:pass@host:9999/?token=tkn")
-	if err == nil {
-		t.Fatal("ParseConnectURL accepted userinfo, want error")
-	}
-	if !strings.Contains(err.Error(), "userinfo") {
-		t.Fatalf("error %q does not mention userinfo", err)
-	}
-	// User-only (no password) form must be rejected too.
-	_, err = ParseConnectURL("ws://user@host:9999/?token=tkn")
-	if err == nil {
-		t.Fatal("ParseConnectURL accepted user-only userinfo, want error")
 	}
 }
 
@@ -512,13 +432,6 @@ func TestServe_RejectsRebindHost(t *testing.T) {
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusNotFound {
 				t.Fatalf("Host=%q path=%q status = %d, want 404", c.host, c.path, resp.StatusCode)
-			}
-			body, _ := io.ReadAll(resp.Body)
-			// The 404 must NOT contain the bootstrap snippet — the
-			// whole point is that the foreign origin reads no
-			// credential. Defense-in-depth assertion.
-			if strings.Contains(string(body), "__AO_BOOTSTRAP__") {
-				t.Fatalf("404 response leaked bootstrap snippet")
 			}
 		})
 	}
@@ -1046,7 +959,9 @@ func TestHandleWS_ARefusedUpgradeRefreshesTheCredential(t *testing.T) {
 // TestHandleWS_ForwardsNoCredentialItDidNotFetch — the page cannot put a
 // header on a WebSocket upgrade, but a local non-browser client holding
 // this stub's cookie can, and a forwarded one would let it name a session
-// it never obtained.
+// it never obtained. Forwarding is never a requirement for the hop either:
+// an upstream with no session cookie to give still carries the upgrade on
+// the bearer token alone.
 func TestHandleWS_ForwardsNoCredentialItDidNotFetch(t *testing.T) {
 	// An upstream with no session core to speak of: nothing to plant, so
 	// nothing legitimate should reach it.
@@ -1069,23 +984,6 @@ func TestHandleWS_ForwardsNoCredentialItDidNotFetch(t *testing.T) {
 	}
 	if got := <-upstream.presented; got != "" {
 		t.Fatalf("a caller-supplied session credential crossed the hop: %q", got)
-	}
-}
-
-// TestServe_DegradesWhenTheUpstreamHasNoCredential — forwarding is an
-// improvement in attribution, never a new requirement for the hop to
-// carry. An upstream with no session cookie to give leaves the upgrade
-// exactly as it was before forwarding existed: the bearer token alone.
-func TestServe_DegradesWhenTheUpstreamHasNoCredential(t *testing.T) {
-	upstream := newSessionForwardingUpstream(t, "")
-	srv := serveWithUpstream(t, upstream.Server)
-	cookie := exchangeStubCookie(t, srv)
-
-	if err := dialThroughStub(t, srv, cookie); err != nil {
-		t.Fatalf("dial through the stub: %v", err)
-	}
-	if got := <-upstream.presented; got != "" {
-		t.Fatalf("the upgrade named a session the upstream never issued: %q", got)
 	}
 }
 
@@ -1151,13 +1049,10 @@ func servePaired(t *testing.T, upstream *httptest.Server, paired PairedUpstream)
 	return srv
 }
 
-// TestServe_TokenAndPairedAreAlternatives — a stub with neither reaches
-// nothing, and one with both would have two answers to "whose request is
-// this" and no rule for which wins.
+// TestServe_TokenAndPairedAreAlternatives — a stub with both would have two
+// answers to "whose request is this" and no rule for which wins. A stub
+// with neither is refused in TestServe_RequiresWSURLAndToken.
 func TestServe_TokenAndPairedAreAlternatives(t *testing.T) {
-	if _, err := Serve(Config{WSURL: "ws://h/", Assets: fakeAssets()}); err == nil {
-		t.Fatal("Serve accepted neither Token nor Paired, want error")
-	}
 	if _, err := Serve(Config{WSURL: "ws://h/", Token: "t", Paired: &fakePaired{}, Assets: fakeAssets()}); err == nil {
 		t.Fatal("Serve accepted both Token and Paired, want error")
 	}

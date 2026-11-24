@@ -6,12 +6,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { fakeClipEngines, fakeSpeechEngine } from '../../test/helpers/speech';
 import { hasScope } from '../transport/scopes';
-import { __attachBackendForTest, __resetBackendsForTest, detachBackend, getPinnedBackend } from '../transport/backends';
+import { __attachBackendForTest, detachBackend, getPinnedBackend } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
-import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import { noteThread } from '../transport/entityIndex';
 import { clipSpeechEngine, type ClipAudio } from '../native/clipSpeech';
 import {
   pauseReadAloud,
@@ -33,7 +33,6 @@ import {
   readAloudClipFetcher,
   readAloudSourceVoices,
   refreshReadAloudSource,
-  resetReadAloudSourcesForTest,
 } from './readAloudSource.svelte';
 import * as toast from './toast.svelte';
 
@@ -91,8 +90,6 @@ describe('read-aloud in OpenAI voices', () => {
   }
 
   beforeEach(async () => {
-    resetBindingMocks();
-    resetReadAloudSourcesForTest();
     available.clear();
     attach('laptop', '99999999-8888-4777-8666-555555555555');
     attach('desk', '11111111-2222-4333-8444-555555555555');
@@ -108,10 +105,6 @@ describe('read-aloud in OpenAI voices', () => {
   });
 
   afterEach(() => {
-    resetReadAloudForTest();
-    resetReadAloudSourcesForTest();
-    __resetBackendsForTest();
-    __resetEntityIndexForTest();
     vi.unstubAllGlobals();
     vi.mocked(hasScope).mockReset().mockReturnValue(true);
     localStorage.clear();

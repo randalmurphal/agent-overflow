@@ -91,24 +91,30 @@ func TestNewCommandLineRefusesASettingsBlockItDoesNotOwn(t *testing.T) {
 // Every launch clears the config-home, cross-session and task-list
 // variables; an isolated home pins its directory over the cleared one.
 func TestNewCommandLineEnvironment(t *testing.T) {
-	want := append(append(ConfigHomeUnsetEnv(), CrossSessionUnsetEnv()...), TaskListIDEnv)
+	want := []provider.ReservedEnv{
+		provider.ClaudeConfigDirEnv,
+		provider.ClaudeSecureStorageConfigDirEnv,
+		provider.ClaudeCrossSessionGateEnv,
+		provider.ClaudePeerSessionNameEnv,
+		provider.ClaudeTaskListIDEnv,
+	}
+	custom := map[string]string{"A": "1"}
 	for _, retention := range []Retention{UserHomeRetention(90), NoSweepRetention(), IsolatedHomeRetention("/tmp/x")} {
 		line, err := NewCommandLine(retention, "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := line.UnsetEnv(); !slices.Equal(got, want) {
-			t.Errorf("%+v UnsetEnv = %q, want %q", retention, got, want)
+		if got := line.Env(provider.EnvInput{Custom: custom}); !slices.Equal(got.Clears, want) || got.Custom["A"] != "1" {
+			t.Errorf("%+v Env = %+v, want the custom environment with clears %v", retention, got, want)
 		}
 	}
 	user, _ := NewCommandLine(UserHomeRetention(0), "")
-	if got := user.Env(map[string]string{"A": "1"}); len(got) != 1 || got["A"] != "1" {
-		t.Errorf("user-home Env = %v, want the overrides unchanged", got)
+	if got := user.Env(provider.EnvInput{}); got.Pins != nil {
+		t.Errorf("user-home Env pins %v, want none", got.Pins)
 	}
 	isolated, _ := NewCommandLine(IsolatedHomeRetention("/tmp/x"), "")
-	got := isolated.Env(map[string]string{"A": "1", configDirEnv: "/elsewhere"})
-	if got["A"] != "1" || got[configDirEnv] != "/tmp/x" {
-		t.Errorf("isolated Env = %v, want the overrides with CLAUDE_CONFIG_DIR=/tmp/x", got)
+	if got := isolated.Env(provider.EnvInput{}); len(got.Pins) != 1 || got.Pins[provider.ClaudeConfigDirEnv] != "/tmp/x" {
+		t.Errorf("isolated Env pins %v, want CLAUDE_CONFIG_DIR=/tmp/x", got.Pins)
 	}
 	if strings.Contains(strings.Join(isolated.Args(), " "), "--settings") {
 		t.Error("an isolated home sent a settings block")

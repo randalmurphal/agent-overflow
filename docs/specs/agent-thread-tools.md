@@ -2410,10 +2410,16 @@ codex 0.153.4); outcomes recorded in the
 - [x] `thread_remind` after 60 seconds wakes an idle caller with the
       note; `thread_cancel` on its token stops it.
 - [x] A loop, an interval watch and a long-running watch wake their
-      thread with badged, quoted wakes on both providers; a watch on a
-      thread that is not a standing agent is refused; `thread_status`
-      lists them and `thread_cancel` by label stops one
-      (`e2e/tests/standing-agent-wake-registration.spec.ts`).
+      thread with badged, quoted wakes; a watch on a thread that is not a
+      standing agent is refused; `thread_status` lists them and
+      `thread_cancel` by label stops one
+      (`e2e/tests/standing-agent-wake-registration.spec.ts`, Claude mock).
+      On the Codex mock, `e2e/tests/wake-rows.spec.ts` registers all
+      three and acts on them with Wake now, interval watch wakes are
+      delivered in `standing-agent-wake-recovery.spec.ts` and
+      `standing-agent-wake-start-failures.spec.ts`, and a loop tick's
+      turn start in `standing-agent-wake-registration.spec.ts` takes back
+      no notification.
 - [x] The footer on a spawned thread's first message quotes the user's
       latest message from the caller's thread.
 - [x] Deleting the caller cancels its scratch asks on another computer;

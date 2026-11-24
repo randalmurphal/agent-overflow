@@ -38,7 +38,6 @@ describe('<Toast> error reports', () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    resetToastsForTest();
     delete (navigator as { clipboard?: unknown }).clipboard;
   });
 

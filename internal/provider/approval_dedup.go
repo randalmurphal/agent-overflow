@@ -18,18 +18,6 @@ type ApprovalDeduper struct {
 	softCap  int
 }
 
-// NewApprovalDeduper returns a deduper that resets its set once it
-// reaches softCap entries. A non-positive softCap falls back to
-// DefaultApprovalDedupCap so a zero-value ApprovalDeduper (e.g. a
-// session struct field without explicit initialization) still behaves
-// correctly.
-func NewApprovalDeduper(softCap int) ApprovalDeduper {
-	if softCap <= 0 {
-		softCap = DefaultApprovalDedupCap
-	}
-	return ApprovalDeduper{softCap: softCap}
-}
-
 // IsResolved reports whether the request id has already been answered.
 func (d *ApprovalDeduper) IsResolved(id string) bool {
 	_, ok := d.resolved[id]

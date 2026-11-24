@@ -17,6 +17,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/workspacefiles"
+
+	"github.com/google/uuid"
 )
 
 // newComposerTestApp builds an *App with a fresh on-disk SQLite store, a
@@ -179,65 +181,6 @@ func TestComposer_DraftOverwritePreservesMostRecent(t *testing.T) {
 	}
 }
 
-// TestComposer_DraftClearRemovesRow confirms ClearDraft deletes the row and
-// GetDraft returns a zero-value Draft (empty content, non-nil empty slices).
-func TestComposer_DraftClearRemovesRow(t *testing.T) {
-	t.Parallel()
-	app, _ := newComposerTestApp(t)
-	composerSeedThread(t, app, "thr-clear", "")
-
-	if err := app.SaveDraft(t.Context(), "thr-clear", "to clear", []string{"a"}, nil, nil); err != nil {
-		t.Fatalf("SaveDraft: %v", err)
-	}
-	if err := app.ClearDraft(t.Context(), "thr-clear"); err != nil {
-		t.Fatalf("ClearDraft: %v", err)
-	}
-	got, err := app.GetDraft("thr-clear")
-	if err != nil {
-		t.Fatalf("GetDraft: %v", err)
-	}
-	if got.Content != "" {
-		t.Fatalf("Content after clear = %q, want empty", got.Content)
-	}
-	if got.AttachmentIDs == nil {
-		t.Fatal("AttachmentIDs should be non-nil empty slice")
-	}
-	if len(got.AttachmentIDs) != 0 {
-		t.Fatalf("AttachmentIDs = %+v, want []", got.AttachmentIDs)
-	}
-}
-
-// TestComposer_DraftStaleGenerationCounterRejected documents the actual
-// contract: the backend has NO generation counter. Writes land in the order
-// the client sends them. The frontend's composerDraft.svelte.ts guards
-// against out-of-order saves via its own in-memory counter; Go simply
-// performs last-writer-wins upserts.
-//
-// This test exercises back-to-back SaveDrafts and asserts the final state
-// reflects the last call, proving the contract: it is the caller's job to
-// serialize writes.
-func TestComposer_DraftStaleGenerationCounterRejected(t *testing.T) {
-	t.Parallel()
-	app, _ := newComposerTestApp(t)
-	composerSeedThread(t, app, "thr-gen", "")
-
-	// "Newer" save with higher logical generation (gen=1, content "new").
-	if err := app.SaveDraft(t.Context(), "thr-gen", "new", nil, nil, nil); err != nil {
-		t.Fatalf("SaveDraft gen=1: %v", err)
-	}
-	// "Older" save arriving late (gen=0, content "old"). No counter → it wins.
-	if err := app.SaveDraft(t.Context(), "thr-gen", "old", nil, nil, nil); err != nil {
-		t.Fatalf("SaveDraft gen=0: %v", err)
-	}
-	got, err := app.GetDraft("thr-gen")
-	if err != nil {
-		t.Fatalf("GetDraft: %v", err)
-	}
-	if got.Content != "old" {
-		t.Fatalf("CONTRACT: backend has no generation counter; last write wins. Content = %q, want \"old\"", got.Content)
-	}
-}
-
 // TestComposer_DraftPerThreadIsolation confirms two threads' drafts do not
 // leak into each other.
 func TestComposer_DraftPerThreadIsolation(t *testing.T) {
@@ -352,7 +295,7 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
@@ -360,7 +303,7 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 	})
 
 	msg := "please review this image"
-	if err := app.SendMessage(context.Background(), thread.ID, msg, []string{record.ID}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, msg, SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, AttachmentIDs: []string{record.ID}}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -409,7 +352,7 @@ func TestComposer_SendMessageRejectsAttachmentFromDifferentThread(t *testing.T) 
 
 	record := uploadTestAttachment(t, app, sourceThread.ID, "cover.png", "image/png", tinyPNG())
 
-	err := app.SendMessage(context.Background(), targetThread.ID, "please review this image", []string{record.ID})
+	_, err := app.SendMessageWithOptions(context.Background(), targetThread.ID, "please review this image", SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, AttachmentIDs: []string{record.ID}})
 	if err == nil {
 		t.Fatal("SendMessage error = nil, want cross-thread attachment rejection")
 	}
@@ -459,7 +402,7 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
@@ -467,7 +410,7 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 	})
 
 	outgoing := "initial question\n\n```terminal shell\n$ ls\nREADME.md\n```"
-	if err := app.SendMessage(context.Background(), thread.ID, outgoing, []string{record.ID}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, outgoing, SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, AttachmentIDs: []string{record.ID}}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -637,14 +580,16 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
 		Token:    "tok",
 		Claude:   sess,
 	})
 
-	if err := app.SendMessage(context.Background(), thread.ID, "Actual message", nil); err != nil {
+	opts := pageSendOptions(uuid.NewString())
+	opts.ConsumeDraft = &DraftSnapshot{Content: "draft text", AttachmentIDs: []string{}, TerminalChips: []TerminalChip{}}
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Actual message", opts); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 

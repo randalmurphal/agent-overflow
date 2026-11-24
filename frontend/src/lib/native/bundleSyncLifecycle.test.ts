@@ -29,7 +29,8 @@ vi.mock('../stores/bundleNotice.svelte', () => ({
 }));
 vi.mock('../transport/lease', () => ({ clientLease: () => 'active', onClientLeaseChange: () => () => {} }));
 vi.mock('../transport/networkFetch', () => ({ networkFetch: mocks.fetch }));
-vi.mock('../transport/deviceSession', () => ({
+vi.mock('../transport/deviceSession', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../transport/deviceSession')>()),
   pairedSessionHeaders: async () => ({}),
   fetchPairedComputer: (_backend: unknown, fetch: typeof mocks.fetch, url: string, options: unknown) => fetch(url, options),
 }));

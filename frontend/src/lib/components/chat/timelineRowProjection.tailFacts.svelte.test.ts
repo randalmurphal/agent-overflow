@@ -11,7 +11,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { makeSettings } from '../../../test/helpers/settings';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
@@ -108,7 +108,6 @@ async function reenter(cachedItems: Item[]): Promise<{
 
 describe('tail facts through the pane', () => {
   beforeEach(async () => {
-    resetBindingMocks();
     setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'collapsed' }));
     await loadSettings();
   });

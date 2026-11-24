@@ -51,17 +51,6 @@ describe('timelineRowStructuralSizeFor', () => {
     expect(timelineRowStructuralSizeFor({ kind: 'leaf', item: makeItem({ id: 'u', kind: 'user_text' }) })).toBeUndefined();
   });
 
-  it('prices the same run differently in its two shapes', () => {
-    const children = Array.from({ length: 10 }, (_, i) => leaf(`i${i}`));
-    const closed = timelineRowStructuralSizeFor(run({ children, collapsed: true }));
-    const open = timelineRowStructuralSizeFor(run({ children, collapsed: false }));
-
-    // One header line vs that header over ten mounted rows: the whole reason
-    // this is not a kind-table entry.
-    expect(closed).toBe(HEADER_PX);
-    expect(open).toBe(HEADER_PX + 200);
-  });
-
   it('prices the two shapes apart, and prices liveness as neither', () => {
     // The whole 2x2, because the estimate must read ONE of the two facts. A
     // closed run is its header; an open one is that header over a capped clip,

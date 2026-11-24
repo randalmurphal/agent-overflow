@@ -20,80 +20,10 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
-func TestSendWireFormat(t *testing.T) {
-	// Verify the JSON format matches the Claude CLI input protocol.
-	msg := map[string]any{
-		"type": "user",
-		"message": map[string]any{
-			"role": "user",
-			"content": []map[string]string{
-				{
-					"type": "text",
-					"text": "hello",
-				},
-			},
-		},
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var parsed map[string]json.RawMessage
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	var msgType string
-	json.Unmarshal(parsed["type"], &msgType)
-	if msgType != "user" {
-		t.Errorf("type: got %q, want %q", msgType, "user")
-	}
-
-	var message struct {
-		Role    string `json:"role"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	json.Unmarshal(parsed["message"], &message)
-	if message.Role != "user" {
-		t.Errorf("role: got %q, want %q", message.Role, "user")
-	}
-	if len(message.Content) != 1 {
-		t.Fatalf("content blocks: got %d, want 1 (%+v)", len(message.Content), message.Content)
-	}
-	if block := message.Content[0]; block.Type != "text" || block.Text != "hello" {
-		t.Errorf("content block: got %+v, want text block %q", block, "hello")
-	}
-}
-
-// TestSession_Interrupt_SuccessRoundTrip drives the happy path end to
-// end: Interrupt writes an interrupt control_request, the fake CLI
-// matches the request_id and replies with subtype=success, and
-// Interrupt returns nil. Implicitly validates the wire envelope shape
-// because the fake CLI's stdin matcher only fires for
-// `"type":"control_request"` + `"subtype":"interrupt"` together (see
-// interruptResponderScript). Pre-fix the malformed envelope wouldn't
-// match and this test would time out into the kill fallback instead
-// of returning nil.
-func TestSession_Interrupt_SuccessRoundTrip(t *testing.T) {
-	s := newInterruptResponderSession(t, "success", 2*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := s.Interrupt(ctx); err != nil {
-		t.Fatalf("Interrupt: %v", err)
-	}
-}
-
 // TestSession_Interrupt_WireEnvelopeShape captures the line written to
 // stdin and asserts the exact envelope shape the SDK protocol
-// requires: `{"type":"control_request","request_id":"so-N","request":{"subtype":"interrupt"}}`.
-// This is a stronger gate than the SuccessRoundTrip test — a future
-// regression that changed the envelope structure but happened to
-// still contain the magic substrings would slip past the responder
-// script but fail this assertion.
+// requires: `{"type":"control_request","request_id":"so-N","request":{"subtype":"interrupt"}}`,
+// and that Interrupt returns nil once the CLI answers it with success.
 func TestSession_Interrupt_WireEnvelopeShape(t *testing.T) {
 	capturePath := t.TempDir() + "/interrupt-line.json"
 	ctx, cancel := context.WithCancel(context.Background())
@@ -105,7 +35,7 @@ func TestSession_Interrupt_WireEnvelopeShape(t *testing.T) {
 			reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
 			printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$reqid"
 		`},
-		Env: map[string]string{"CAPTURE_PATH": capturePath},
+		Env: provider.EnvInput{Custom: map[string]string{"CAPTURE_PATH": capturePath}},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -254,7 +184,7 @@ func TestInterruptAckFlowsIntoResultClassification(t *testing.T) {
 			printf '%s\n' "$RESULT_LINE"
 			cat >/dev/null
 		`},
-		Env: map[string]string{"RESULT_LINE": ede2_1_170InterruptResultLine},
+		Env: provider.EnvInput{Custom: map[string]string{"RESULT_LINE": ede2_1_170InterruptResultLine}},
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -327,7 +257,7 @@ func TestStopTaskAckFollowsTheFramesBeforeIt(t *testing.T) {
 					printf '{"type":"system","subtype":"background_tasks_changed","tasks":[]}\n'
 					cat >/dev/null
 				`},
-				Env: map[string]string{"SUBTYPE": subtype},
+				Env: provider.EnvInput{Custom: map[string]string{"SUBTYPE": subtype}},
 			})
 			if err != nil {
 				t.Fatalf("spawn: %v", err)
@@ -383,188 +313,100 @@ func TestStopTaskAckFollowsTheFramesBeforeIt(t *testing.T) {
 	}
 }
 
+// TestSessionSend pins the user envelope written to stdin. A client-supplied
+// UserMessageUUID rides it as the top-level `uuid` — the contract
+// app_send.go depends on so a revert can slice the transcript by a uuid it
+// knew at send time (see the Send doc comment). With none supplied the
+// envelope carries no `uuid` key and the CLI assigns its own id.
 func TestSessionSend(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "bash",
-		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env: map[string]string{
-			"CAPTURE": capturePath,
-		},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture process: %v", err)
-	}
-	t.Cleanup(func() { _ = proc.Close() })
-
-	s := &Session{proc: proc}
 	const content = "/tmp/agent-overflow/bug-report.jsonl -- please inspect"
-	if err := s.Send(context.Background(), content, provider.SendOptions{}); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-
-	lines := waitCapturedLines(t, capturePath, 1)
-	var captured struct {
-		Type    string `json:"type"`
-		Message struct {
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal([]byte(lines[0]), &captured); err != nil {
-		t.Fatalf("unmarshal captured line: %v", err)
-	}
-	if captured.Type != "user" || captured.Message.Role != "user" {
-		t.Fatalf("captured line = %+v, want user message", captured)
-	}
-	if len(captured.Message.Content) != 1 {
-		t.Fatalf("content blocks: got %d, want 1 (%+v)", len(captured.Message.Content), captured.Message.Content)
-	}
-	if block := captured.Message.Content[0]; block.Type != "text" || block.Text != content {
-		t.Fatalf("content block = %+v, want exact text block %q", block, content)
-	}
-}
-
-// TestSessionSendStampsUserMessageUUID verifies that a client-supplied
-// UserMessageUUID rides the user envelope as the top-level `uuid` — the
-// contract app_send.go depends on so a revert can slice the transcript
-// by a uuid it knew at send time (see the Send doc comment).
-func TestSessionSendStampsUserMessageUUID(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "bash",
-		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env:    map[string]string{"CAPTURE": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture process: %v", err)
-	}
-	t.Cleanup(func() { _ = proc.Close() })
-
-	const wantUUID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-	s := &Session{proc: proc}
-	if err := s.Send(context.Background(), "hello", provider.SendOptions{UserMessageUUID: wantUUID}); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-
-	lines := waitCapturedLines(t, capturePath, 1)
-	var captured struct {
-		Type string `json:"type"`
-		UUID string `json:"uuid"`
-	}
-	if err := json.Unmarshal([]byte(lines[0]), &captured); err != nil {
-		t.Fatalf("unmarshal captured line: %v", err)
-	}
-	if captured.Type != "user" {
-		t.Fatalf("captured type = %q, want user", captured.Type)
-	}
-	if captured.UUID != wantUUID {
-		t.Fatalf("captured top-level uuid = %q, want %q", captured.UUID, wantUUID)
-	}
-}
-
-// TestSessionSendOmitsUUIDWhenEmpty verifies the optional-field contract:
-// when no UserMessageUUID is supplied, the envelope carries no `uuid` key
-// and the CLI assigns its own id (legacy behaviour, learned from the echo).
-func TestSessionSendOmitsUUIDWhenEmpty(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "bash",
-		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env:    map[string]string{"CAPTURE": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture process: %v", err)
-	}
-	t.Cleanup(func() { _ = proc.Close() })
-
-	s := &Session{proc: proc}
-	if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-
-	lines := waitCapturedLines(t, capturePath, 1)
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(lines[0]), &raw); err != nil {
-		t.Fatalf("unmarshal captured line: %v", err)
-	}
-	if _, present := raw["uuid"]; present {
-		t.Fatalf("envelope carried a uuid key with no UserMessageUUID supplied: %s", lines[0])
+	for _, tc := range []struct {
+		name     string
+		uuid     string
+		wantUUID string // raw JSON of the top-level uuid key; "" means absent
+	}{
+		{name: "no uuid"},
+		{name: "stamped uuid", uuid: "f47ac10b-58cc-4372-a567-0e02b2c3d479", wantUUID: `"f47ac10b-58cc-4372-a567-0e02b2c3d479"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := captureSentUserLine(t, content, provider.SendOptions{UserMessageUUID: tc.uuid})
+			var captured struct {
+				Type    string `json:"type"`
+				Message struct {
+					Role    string `json:"role"`
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"message"`
+			}
+			if err := json.Unmarshal(line, &captured); err != nil {
+				t.Fatalf("unmarshal captured line: %v", err)
+			}
+			if captured.Type != "user" || captured.Message.Role != "user" {
+				t.Fatalf("captured line = %+v, want user message", captured)
+			}
+			if len(captured.Message.Content) != 1 {
+				t.Fatalf("content blocks: got %d, want 1 (%+v)", len(captured.Message.Content), captured.Message.Content)
+			}
+			if block := captured.Message.Content[0]; block.Type != "text" || block.Text != content {
+				t.Fatalf("content block = %+v, want exact text block %q", block, content)
+			}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(line, &raw); err != nil {
+				t.Fatalf("unmarshal captured line: %v", err)
+			}
+			if got := string(raw["uuid"]); got != tc.wantUUID {
+				t.Fatalf("captured top-level uuid = %s, want %s (empty means no key): %s", got, tc.wantUUID, line)
+			}
+		})
 	}
 }
 
 // TestSessionSendRejectsMalformedUUID verifies the validation guard fails
 // the send loudly BEFORE any stdin write, so a malformed id never poisons
-// the session JSONL with a uuid the revert path can't match.
+// the session JSONL with a uuid the revert path can't match. A parseable
+// but non-canonical id (uppercase: uuid.Parse accepts it, but String()
+// round-trips to lowercase) is refused rather than silently normalized:
+// app_send.go stamps the exact minted string on the user row and
+// checkpoint, so a canonicalized envelope uuid would no longer match the
+// echoed JSONL uuid and would drop a pre-echo revert back to the
+// ordinal-walk fallback.
 func TestSessionSendRejectsMalformedUUID(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "bash",
-		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env:    map[string]string{"CAPTURE": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture process: %v", err)
-	}
-	t.Cleanup(func() { _ = proc.Close() })
+	for _, tc := range []struct {
+		name    string
+		uuid    string
+		wantErr string
+	}{
+		{"malformed", "not-a-uuid", "invalid user message uuid"},
+		{"non-canonical", "F47AC10B-58CC-4372-A567-0E02B2C3D479", "not in canonical form"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
+			proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
+				Binary: "bash",
+				Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
+				Env:    provider.EnvInput{Custom: map[string]string{"CAPTURE": capturePath}},
+			})
+			if err != nil {
+				t.Fatalf("spawn capture process: %v", err)
+			}
+			t.Cleanup(func() { _ = proc.Close() })
 
-	s := &Session{proc: proc}
-	err = s.Send(context.Background(), "hello", provider.SendOptions{UserMessageUUID: "not-a-uuid"})
-	if err == nil {
-		t.Fatal("Send with malformed uuid returned nil, want error")
-	}
-	if !strings.Contains(err.Error(), "invalid user message uuid") {
-		t.Fatalf("Send error = %v, want invalid-user-message-uuid", err)
-	}
-	if data, readErr := os.ReadFile(capturePath); readErr == nil && len(data) > 0 {
-		t.Fatalf("malformed-uuid send wrote to stdin before validation: %q", data)
-	}
-}
-
-// TestSessionSendRejectsNonCanonicalUUID verifies that a parseable but
-// non-canonical id (here, uppercase) is refused rather than silently
-// normalized. app_send.go stamps the exact minted string on the user row
-// and checkpoint; if Send canonicalized a different string into the
-// envelope the pre-stamped row would no longer match the echoed JSONL
-// uuid, dropping a pre-echo revert back to the ordinal-walk fallback. The
-// guard makes that contract enforceable at the boundary.
-func TestSessionSendRejectsNonCanonicalUUID(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "bash",
-		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
-		Env:    map[string]string{"CAPTURE": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture process: %v", err)
-	}
-	t.Cleanup(func() { _ = proc.Close() })
-
-	s := &Session{proc: proc}
-	// Uppercase of a valid uuid: uuid.Parse accepts it, but String()
-	// round-trips to the lowercase canonical form, so the guard rejects it.
-	err = s.Send(context.Background(), "hello", provider.SendOptions{UserMessageUUID: "F47AC10B-58CC-4372-A567-0E02B2C3D479"})
-	if err == nil {
-		t.Fatal("Send with non-canonical uuid returned nil, want error")
-	}
-	if !strings.Contains(err.Error(), "not in canonical form") {
-		t.Fatalf("Send error = %v, want not-in-canonical-form", err)
-	}
-	if data, readErr := os.ReadFile(capturePath); readErr == nil && len(data) > 0 {
-		t.Fatalf("non-canonical-uuid send wrote to stdin before validation: %q", data)
+			s := &Session{proc: proc}
+			err = s.Send(context.Background(), "hello", provider.SendOptions{UserMessageUUID: tc.uuid})
+			if err == nil {
+				t.Fatalf("Send with %s uuid returned nil, want error", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Send error = %v, want %q", err, tc.wantErr)
+			}
+			if data, readErr := os.ReadFile(capturePath); readErr == nil && len(data) > 0 {
+				t.Fatalf("%s-uuid send wrote to stdin before validation: %q", tc.name, data)
+			}
+		})
 	}
 }
 
@@ -595,9 +437,9 @@ done
 		Binary:             scriptPath,
 		BasePermissionMode: "default",
 		InteractionMode:    provider.ModePlan,
-		Env: map[string]string{
+		Env: provider.EnvInput{Custom: map[string]string{
 			"CAPTURE_FILE": capturePath,
-		},
+		}},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -680,9 +522,9 @@ done
 				Binary:             scriptPath,
 				BasePermissionMode: baseMode,
 				InteractionMode:    provider.ModeChat,
-				Env: map[string]string{
+				Env: provider.EnvInput{Custom: map[string]string{
 					"CAPTURE_FILE": capturePath,
-				},
+				}},
 			}, func(provider.ProviderEvent) {})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
@@ -723,19 +565,6 @@ done
 				t.Fatalf("currentPermissionMode = %q, want %q", got, baseMode)
 			}
 		})
-	}
-}
-
-// TestSession_StopTask_SuccessRoundTrip drives the happy path end to
-// end: StopTask writes a stop_task control_request, the fake CLI
-// matches the request_id and replies with subtype=success, and
-// StopTask returns nil.
-func TestSession_StopTask_SuccessRoundTrip(t *testing.T) {
-	s := newStopTaskResponderSession(t, "success", 2*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := s.StopTask(ctx, "task-abc"); err != nil {
-		t.Fatalf("StopTask success: %v", err)
 	}
 }
 

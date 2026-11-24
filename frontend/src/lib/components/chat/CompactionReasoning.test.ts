@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { describe, expect, it } from 'vitest';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import CompactionReasoning from './CompactionReasoning.svelte';
 import { __setSmoothingClockForTest } from '../../stores/thread.svelte';
 import type { SmoothingClock } from '../../markdown/smoothing/PerItemSmoother';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 class FakeSmoothingClock implements SmoothingClock {
   private current = 0;
@@ -44,13 +44,6 @@ function reasoningItem(overrides = {}) {
 }
 
 describe('<CompactionReasoning>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
-
-  afterEach(() => {
-    cleanup();
-  });
 
   it('renders the compaction (list-collapse) icon and the "compact" label', () => {
     // Its own identity — NOT the brain/think row. Discriminated by kind at the
@@ -64,23 +57,20 @@ describe('<CompactionReasoning>', () => {
     expect(getByTestId('compaction-reasoning-label').textContent).toBe('compact');
   });
 
-  it('renders the reasoning summary tail-clamped to 3 lines when collapsed', () => {
-    const { container } = render(CompactionReasoning, {
-      props: { item: reasoningItem({ status: 'completed' }) },
-    });
-    const body = container.querySelector('[data-testid="compaction-reasoning-body"]');
-    expect(body?.textContent).toContain('Reviewing the conversation');
-    expect(body?.className).toMatch(/max-h-\[3lh\]/);
-    expect(body?.className).toMatch(/overflow-hidden/);
-  });
-
-  it('loads the full reasoning and removes the cap on expand', async () => {
+  it('renders the summary tail-clamped to 3 lines with no copy button, then loads the full reasoning uncapped on expand', async () => {
     setBindingMock('GetPayloadData', async () => ({
       data: 'Reviewing the conversation so far to decide what still matters.',
     }));
-    const { container, getByRole } = render(CompactionReasoning, {
+    const { container, getByRole, getAllByRole, queryByLabelText } = render(CompactionReasoning, {
       props: { item: reasoningItem({ status: 'completed' }) },
     });
+
+    const collapsed = container.querySelector('[data-testid="compaction-reasoning-body"]');
+    expect(collapsed?.textContent).toContain('Reviewing the conversation');
+    expect(collapsed?.className).toMatch(/max-h-\[3lh\]/);
+    expect(collapsed?.className).toMatch(/overflow-hidden/);
+    expect(queryByLabelText('Copy reasoning')).toBeNull();
+    expect(getAllByRole('button')).toHaveLength(1);
 
     await fireEvent.click(getByRole('button', { name: /toggle compaction reasoning/i }));
     await tick();
@@ -145,13 +135,5 @@ describe('<CompactionReasoning>', () => {
     } finally {
       __setSmoothingClockForTest(undefined);
     }
-  });
-
-  it('renders no copy button', () => {
-    const { queryByLabelText, getAllByRole } = render(CompactionReasoning, {
-      props: { item: reasoningItem({ status: 'completed' }) },
-    });
-    expect(queryByLabelText('Copy reasoning')).toBeNull();
-    expect(getAllByRole('button')).toHaveLength(1);
   });
 });

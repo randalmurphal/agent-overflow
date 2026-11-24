@@ -53,14 +53,9 @@ describe('parseCustomManifest', () => {
 describe('buildCustomSprite', () => {
   const manifest = { frames: 4, frameMs: 100 };
 
-  it('derives frame geometry from the decoded size', () => {
+  it('derives frame geometry from the decoded size and labels the sprite by its id', () => {
     const sprite = buildCustomSprite('cat', manifest, 'data:x', 288, 72);
-    expect(sprite).toMatchObject({ frames: 4, frameWidth: 72, frameHeight: 72, custom: true });
-  });
-
-  it('labels fall back to the id', () => {
-    const sprite = buildCustomSprite('cat', manifest, 'data:x', 288, 72);
-    expect(typeof sprite === 'object' && sprite.label).toBe('cat');
+    expect(sprite).toMatchObject({ frames: 4, frameWidth: 72, frameHeight: 72, custom: true, label: 'cat' });
   });
 
   it('rejects a width that does not divide into frames', () => {

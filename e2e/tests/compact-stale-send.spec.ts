@@ -49,7 +49,7 @@ test('a stale idle phone sends into the running Codex turn exactly once', async 
     await page.getByTestId('thread-row').click();
     await expect(page.getByLabel('Message Input')).toBeEnabled();
     const mock = await startMock(harness, thread);
-    await harness.rpc('SendMessage', thread, 'Started from the laptop.', null);
+    await harness.send(thread, 'Started from the laptop.');
     await waitForGate(harness, 'hold-first-turn');
     await expect.poll(() => suppressedStarts).toBeGreaterThan(0);
     await expect(page.getByTestId('user-message-bubble').filter({ hasText: 'Started from the laptop.' })).toHaveCount(1);
@@ -62,11 +62,11 @@ test('a stale idle phone sends into the running Codex turn exactly once', async 
     await expect(bubbles.filter({ hasText: prompt })).toHaveCount(1);
     await expect(page.locator('[data-testid="composer-send"][data-pending]')).toHaveCount(0);
     await expect.poll(async () => {
-      const rows = await harness.rpc<Item[]>('ListItems', thread, true);
+      const rows = await harness.items<Item>(thread, true);
       return rows.filter(row => row.kind === 'user_text' && row.summary === prompt).length;
     }).toBe(1);
     expect(sendIDs).toHaveLength(1);
-    const rows = await harness.rpc<Item[]>('ListItems', thread, true);
+    const rows = await harness.items<Item>(thread, true);
     const accepted = rows.find(row => row.summary === prompt)!;
     expect(JSON.parse(accepted.meta).sendId).toBe(sendIDs[0]);
     expect(accepted.turnIndex).toBe(rows.find(row => row.summary === 'Started from the laptop.')!.turnIndex);
@@ -83,7 +83,7 @@ test('a stale idle phone sends into the running Codex turn exactly once', async 
       const answer = Array.from(document.querySelectorAll('p')).find(row => row.textContent === 'Finished turn 1.');
       return !!answer && !!(element.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING);
     })).toBe(true);
-    const ordered = await harness.rpc<Item[]>('ListItems', thread, true);
+    const ordered = await harness.items<Item>(thread, true);
     expect(ordered.findIndex(row => row.id === accepted.id)).toBeLessThan(ordered.findIndex(row => row.summary === 'Finished turn 1.'));
     await page.reload();
     await page.getByTestId('thread-row').click();

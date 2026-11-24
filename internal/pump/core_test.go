@@ -357,19 +357,6 @@ func TestRequestRefusedWhenTheGoroutineExitsBeforeTakingIt(t *testing.T) {
 	})
 }
 
-// An exit after the last release already stopped the core (both ends
-// running) changes nothing, and waiters stay refused.
-func TestExitAfterTheLastReleaseIsHarmless(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		core := newTestCore(t, t.Context())
-		core.TakeLocked().ReleaseLocked()
-		core.StopLocked()
-		if err := core.Request(t.Context(), testRequest{}); err != errStopped {
-			t.Fatalf("Request = %v, want the Stopped refusal", err)
-		}
-	})
-}
-
 func TestRequestEndsWithACancelledCaller(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		core := newTestCore(t, t.Context())

@@ -72,7 +72,7 @@ func seedClaudeGetSettingsThread(
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 
 	current, _ := app.sessionManager().get(id)
 	current.Claude = sess
@@ -304,10 +304,10 @@ func TestSpawnedClaudeSessionReadsProjectAliasThroughProbeList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, thread.ID) })
 	current, ok := app.sessionManager().get(thread.ID)
 	if !ok || current.Claude == nil {
 		t.Fatalf("session = %+v, %v; want a live claude session", current, ok)

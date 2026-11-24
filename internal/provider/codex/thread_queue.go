@@ -60,17 +60,11 @@ const maxReportedForeignSubmissions = 64
 const queueListPageCap = 8
 
 // ErrThreadQueueUnsupported is returned by every queue method when the
-// connected app-server predates the family. Callers fall back to AO's own
-// queue rather than surfacing an error to the user: the capability is a
-// property of the binary, not of the request.
+// connected app-server predates the family. The app checks ThreadQueueNative
+// before it calls one, so the sentinel is the method's own refusal of a
+// caller that did not: the capability is a property of the binary, not of
+// the request.
 var ErrThreadQueueUnsupported = errors.New("codex: thread/queue is unavailable on this app-server")
-
-// isThreadQueueUnsupported reports the version-gate refusal without importing
-// the sentinel by value. Unexported: AO no longer writes to the provider's
-// queue, so every branch on it lives inside this package.
-func isThreadQueueUnsupported(err error) bool {
-	return errors.Is(err, ErrThreadQueueUnsupported)
-}
 
 // ErrThreadQueueListIncomplete says a `thread/queue/list` walk stopped before
 // the server ran out of pages — the page cap was reached, or the server
@@ -145,18 +139,11 @@ type QueuedSubmission struct {
 // attempt — which is a state the app layer must be able to see rather than a
 // failure to swallow.
 //
-// Decided ONCE, at handshake time (`recordThreadQueueSupport`), and never
-// re-evaluated: a value that could flip mid-session would let one caller
+// Decided ONCE, when the connection's `initialize` answers (Dial), and
+// copied to each session the connection opens; never re-evaluated: a value that could flip mid-session would let one caller
 // believe the queue is readable and the next believe it is not, with no way
 // to reconcile what either of them concluded.
 func (s *Session) ThreadQueueNative() bool { return s.threadQueueNative.Load() }
-
-// recordThreadQueueSupport freezes the queue decision for this session.
-// Called exactly once, straight after recordAppServerVersion, so every later
-// reader sees a value that cannot change under it.
-func (s *Session) recordThreadQueueSupport() {
-	s.threadQueueNative.Store(s.appServerAtLeast(threadQueueMinimumCodexVersion))
-}
 
 // QueueList reads the provider's queue for this thread, following
 // `nextCursor` up to queueListPageCap pages.

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -165,39 +166,31 @@ func TestServeEnrollmentConfirmsOnYes(t *testing.T) {
 }
 
 // Anything that is not an explicit yes cancels. The question's yes enrolls a
-// device, so the default has to be the other one.
+// device, so the default has to be the other one. Case and surrounding space
+// are the operator's, not the parser's.
 func TestServeEnrollmentCancelsOnAnythingButYes(t *testing.T) {
-	for _, answer := range []string{"n\n", "no\n", "\n", "maybe\n", "  \n", "Y es\n"} {
-		t.Run(strings.TrimSpace(answer)+"|", func(t *testing.T) {
+	for _, tc := range []struct {
+		answer  string
+		confirm bool
+	}{
+		{"n\n", false}, {"no\n", false}, {"\n", false}, {"maybe\n", false}, {"  \n", false}, {"Y es\n", false},
+		{"y\n", true}, {"Y\n", true}, {"yes\n", true}, {"YES\n", true}, {" y \n", true}, {"y", true},
+	} {
+		t.Run(fmt.Sprintf("%q", tc.answer), func(t *testing.T) {
 			surface := &fakeEnrollment{invite: testInvite(), statuses: []appservice.PairingStatusView{redeemedStatus()}}
-			console, out := testConsole(answer, true)
+			console, out := testConsole(tc.answer, true)
 
 			runServeEnrollment(t.Context(), console, surface, time.Millisecond)
 
-			if len(surface.confirmed) != 0 {
-				t.Fatalf("confirmed %q on answer %q", surface.confirmed, answer)
+			wantConfirmed, wantCanceled := 0, 1
+			if tc.confirm {
+				wantConfirmed, wantCanceled = 1, 0
 			}
-			if len(surface.canceled) != 1 {
-				t.Fatalf("canceled = %q on answer %q, want one", surface.canceled, answer)
+			if len(surface.confirmed) != wantConfirmed || len(surface.canceled) != wantCanceled {
+				t.Fatalf("confirmed = %q, canceled = %q on answer %q, want %d and %d", surface.confirmed, surface.canceled, tc.answer, wantConfirmed, wantCanceled)
 			}
-			if !strings.Contains(out.String(), "Canceled") {
-				t.Fatalf("the console does not say the pairing was refused:\n%s", out.String())
-			}
-		})
-	}
-}
-
-// Case and surrounding space are the operator's, not the parser's.
-func TestServeEnrollmentAcceptsYesInAnyCase(t *testing.T) {
-	for _, answer := range []string{"y\n", "Y\n", "yes\n", "YES\n", " y \n", "y"} {
-		t.Run(strings.TrimSpace(answer), func(t *testing.T) {
-			surface := &fakeEnrollment{invite: testInvite(), statuses: []appservice.PairingStatusView{redeemedStatus()}}
-			console, _ := testConsole(answer, true)
-
-			runServeEnrollment(t.Context(), console, surface, time.Millisecond)
-
-			if len(surface.confirmed) != 1 {
-				t.Fatalf("confirmed = %q on answer %q, want one", surface.confirmed, answer)
+			if said := strings.Contains(out.String(), "Canceled"); said == tc.confirm {
+				t.Fatalf("console says Canceled = %v on answer %q:\n%s", said, tc.answer, out.String())
 			}
 		})
 	}

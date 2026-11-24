@@ -67,61 +67,38 @@ func hasKind(events []provider.ProviderEvent, kind provider.EventKind) bool {
 	return false
 }
 
-// TestParseEnterWorktreeEmitsWorkspaceChange: the structured
-// tool_use_result names the worktree the process moved into; the event
-// carries it beside the ordinary tool completion.
-func TestParseEnterWorktreeEmitsWorkspaceChange(t *testing.T) {
-	events := parseWorktreeRoundtrip(t, "EnterWorktree",
-		`"Created worktree at /repo/.claude/worktrees/feature-x on branch worktree-feature-x"`,
-		`{"worktreePath":"/repo/.claude/worktrees/feature-x","worktreeBranch":"worktree-feature-x","message":"Created worktree"}`,
-		false, "")
-
-	if !hasKind(events, provider.EventToolComplete) {
-		t.Fatalf("tool completion row missing: %+v", events)
+// TestParseWorktreeToolEmitsWorkspaceChange: the structured
+// tool_use_result names the worktree the process moved into or returned
+// from; the event carries it beside the ordinary tool completion.
+func TestParseWorktreeToolEmitsWorkspaceChange(t *testing.T) {
+	cases := []struct {
+		name, tool, content, toolUseResult string
+		want                               provider.WorkspaceChangeMeta
+	}{
+		{"enter", "EnterWorktree", `"Created worktree at /repo/.claude/worktrees/feature-x on branch worktree-feature-x"`,
+			`{"worktreePath":"/repo/.claude/worktrees/feature-x","worktreeBranch":"worktree-feature-x","message":"Created worktree"}`,
+			provider.WorkspaceChangeMeta{Tool: "EnterWorktree", Cwd: "/repo/.claude/worktrees/feature-x", WorktreePath: "/repo/.claude/worktrees/feature-x", Branch: "worktree-feature-x"}},
+		{"exit keep returns to original cwd", "ExitWorktree", `"Exited worktree; kept /repo/.claude/worktrees/feature-x"`,
+			`{"action":"keep","originalCwd":"/repo","worktreePath":"/repo/.claude/worktrees/feature-x","worktreeBranch":"worktree-feature-x","message":"kept"}`,
+			provider.WorkspaceChangeMeta{Tool: "ExitWorktree", Cwd: "/repo", WorktreePath: "/repo/.claude/worktrees/feature-x", Branch: "worktree-feature-x"}},
+		{"exit remove flags removal", "ExitWorktree", `"Exited and removed worktree"`,
+			`{"action":"remove","originalCwd":"/repo","worktreePath":"/repo/.claude/worktrees/feature-x","worktreeBranch":"worktree-feature-x","discardedFiles":[],"message":"removed"}`,
+			provider.WorkspaceChangeMeta{Tool: "ExitWorktree", Cwd: "/repo", WorktreePath: "/repo/.claude/worktrees/feature-x", Branch: "worktree-feature-x", RemovedWorktree: true}},
 	}
-	evt := pickEvent(t, events, provider.EventWorkspaceChanged)
-	if evt.ItemID != "tool-wt-1" {
-		t.Errorf("ItemID = %q, want tool-wt-1", evt.ItemID)
-	}
-	meta := decodeWorkspaceMeta(t, evt)
-	want := provider.WorkspaceChangeMeta{
-		Tool:         "EnterWorktree",
-		Cwd:          "/repo/.claude/worktrees/feature-x",
-		WorktreePath: "/repo/.claude/worktrees/feature-x",
-		Branch:       "worktree-feature-x",
-	}
-	if meta != want {
-		t.Errorf("meta = %+v, want %+v", meta, want)
-	}
-}
-
-func TestParseExitWorktreeKeepEmitsReturnToOriginalCwd(t *testing.T) {
-	events := parseWorktreeRoundtrip(t, "ExitWorktree",
-		`"Exited worktree; kept /repo/.claude/worktrees/feature-x"`,
-		`{"action":"keep","originalCwd":"/repo","worktreePath":"/repo/.claude/worktrees/feature-x","worktreeBranch":"worktree-feature-x","message":"kept"}`,
-		false, "")
-
-	meta := decodeWorkspaceMeta(t, pickEvent(t, events, provider.EventWorkspaceChanged))
-	want := provider.WorkspaceChangeMeta{
-		Tool:         "ExitWorktree",
-		Cwd:          "/repo",
-		WorktreePath: "/repo/.claude/worktrees/feature-x",
-		Branch:       "worktree-feature-x",
-	}
-	if meta != want {
-		t.Errorf("meta = %+v, want %+v", meta, want)
-	}
-}
-
-func TestParseExitWorktreeRemoveFlagsRemoval(t *testing.T) {
-	events := parseWorktreeRoundtrip(t, "ExitWorktree",
-		`"Exited and removed worktree"`,
-		`{"action":"remove","originalCwd":"/repo","worktreePath":"/repo/.claude/worktrees/feature-x","worktreeBranch":"worktree-feature-x","discardedFiles":[],"message":"removed"}`,
-		false, "")
-
-	meta := decodeWorkspaceMeta(t, pickEvent(t, events, provider.EventWorkspaceChanged))
-	if !meta.RemovedWorktree || meta.Cwd != "/repo" || meta.WorktreePath != "/repo/.claude/worktrees/feature-x" {
-		t.Errorf("meta = %+v, want removal back to /repo", meta)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			events := parseWorktreeRoundtrip(t, tc.tool, tc.content, tc.toolUseResult, false, "")
+			if !hasKind(events, provider.EventToolComplete) {
+				t.Fatalf("tool completion row missing: %+v", events)
+			}
+			evt := pickEvent(t, events, provider.EventWorkspaceChanged)
+			if evt.ItemID != "tool-wt-1" {
+				t.Errorf("ItemID = %q, want tool-wt-1", evt.ItemID)
+			}
+			if meta := decodeWorkspaceMeta(t, evt); meta != tc.want {
+				t.Errorf("meta = %+v, want %+v", meta, tc.want)
+			}
+		})
 	}
 }
 

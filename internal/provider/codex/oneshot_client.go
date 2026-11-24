@@ -48,7 +48,7 @@ type oneshotSpec struct {
 	WorkDir string
 	// Env is the per-provider pin map merged over the inherited
 	// environment. CODEX_HOME is always unset — AO owns Codex's home.
-	Env map[string]string
+	Env provider.EnvInput
 	// ClientName is the `clientInfo.name` sent at initialize. Diagnostics
 	// only; the app-server does not branch on it.
 	ClientName string
@@ -84,8 +84,7 @@ func startOneshotClient(ctx context.Context, lifetime provider.Lifetime, spec on
 		Binary:   binary,
 		Args:     codexAppServerArgs(),
 		Dir:      spec.WorkDir,
-		Env:      spec.Env,
-		UnsetEnv: []string{"CODEX_HOME"},
+		Env:      spec.Env.Clear(provider.CodexHomeEnv),
 		Provider: string(provider.Codex),
 	})
 	if err != nil {

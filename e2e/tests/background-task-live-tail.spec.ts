@@ -29,6 +29,7 @@ import {
   waitForGate,
   type ScenarioStep,
 } from './agent-visibility-helpers.js';
+import { attachScreenshot, screenshotsOn } from '../src/screenshot.js';
 
 const TASK = { task_id: 'task-bg', task_type: 'local_bash', description: 'Build in the background' };
 const COMMAND = 'make -j8 build 2>&1 | tee build.log';
@@ -86,7 +87,7 @@ async function openThreadAndStart(harness: HarnessApp, page: Page, title: string
   await page.getByTestId('thread-row-title').getByText(title, { exact: true }).click();
   const mockId = await startMock(harness, threadId);
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'build it', null);
+  await harness.send(threadId, 'build it');
   await completed;
   await page.getByTestId('activity-rail-background-toggle').click();
   const body = page.getByTestId('activity-rail-background-body');
@@ -112,11 +113,10 @@ async function useTheme(page: Page, theme: 'dark' | 'light'): Promise<void> {
 
 /** One viewport screenshot per theme, named for the design pass. */
 async function shoot(page: Page, testInfo: TestInfo, state: string): Promise<void> {
+  if (!screenshotsOn) return;
   for (const theme of ['dark', 'light'] as const) {
     await useTheme(page, theme);
-    const path = testInfo.outputPath(`tail-${state}-${theme}.png`);
-    await page.screenshot({ path });
-    await testInfo.attach(`tail-${state}-${theme}`, { path, contentType: 'image/png' });
+    await attachScreenshot(testInfo, `tail-${state}-${theme}`, page);
   }
   await useTheme(page, 'dark');
 }
@@ -136,7 +136,6 @@ test('an expanded running command shows its live tail, follows the bottom, and y
     ]),
   });
   const { threadId, mockId, row } = await openThreadAndStart(harness, page, 'Live tail');
-  await useTheme(page, 'dark');
 
   // Collapsed: the row's chevron is live because the launch names its file.
   const toggle = row.getByTestId('command-output-toggle');
@@ -328,7 +327,7 @@ test("a Monitor's tray row tails its output once a notification names the file",
   await page.getByTestId('thread-row-title').getByText('Monitor tail', { exact: true }).click();
   const mockId = await startMock(harness, threadId);
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'watch the gate', null);
+  await harness.send(threadId, 'watch the gate');
   await completed;
   await page.getByTestId('activity-rail-background-toggle').click();
   const row = page.getByTestId('activity-rail-background-body').locator('[data-testid="background-task-tray-row"][data-row-id="tu-watch"]');

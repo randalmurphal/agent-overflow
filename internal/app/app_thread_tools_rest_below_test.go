@@ -8,6 +8,7 @@ package app
 // holds either for the next pass.
 
 import (
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -17,6 +18,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // holdAgentRowsDrain makes the Agents rows' drain wait before its next
@@ -108,7 +111,7 @@ func TestAHeldRequestReadsTheThreadsBelowItFresh(t *testing.T) {
 		{"a message typed there", func(t *testing.T, f *requestFixture, worker, child string) func(*testing.T) {
 			gate := filepath.Join(t.TempDir(), "child-turn")
 			installMockClaudeTurns(t, f.app, [][]string{gatedTurn(gate, "Looking.")})
-			if err := f.app.SendMessage(t.Context(), child, "how is it going?", nil); err != nil {
+			if _, err := f.app.SendMessageWithOptions(t.Context(), child, "how is it going?", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			return func(t *testing.T) { release(t, gate) }
@@ -160,7 +163,7 @@ func TestAHeldRequestReadsTheThreadsBelowItFresh(t *testing.T) {
 // nothing reported to the Agents rows, keeps its answer and token on both
 // sides: the sweep reads the worker's sources before it clears anything,
 // and clears nothing while it cannot read them. Once the loop is cancelled
-// the next sweep keeps only its lineage.
+// a later sweep keeps only its lineage.
 func TestTheRetentionSweepLeavesAWorkingSpawnWhole(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -204,13 +207,15 @@ func TestTheRetentionSweepLeavesAWorkingSpawnWhole(t *testing.T) {
 	if _, found, err := f.app.store.CancelAgentWake(ack.ThreadID, wake.Label, store.AgentWakeLoop, agentWakeOutcomeCancelled); err != nil || !found {
 		t.Fatalf("CancelAgentWake: %v %v", found, err)
 	}
-	f.app.expireThreadRequests(later)
-	if _, found, err := f.app.store.GetThreadRequest(ack.Token); err != nil || found {
-		t.Fatalf("the spawn's token once its worker rests: found %v, %v; want unknown", found, err)
-	}
-	if _, found, err := f.app.store.GetThreadRequestReceipt(ack.Token); err != nil || found {
-		t.Fatalf("the receipt once its worker rests: found %v, %v; want unknown", found, err)
-	}
+	passesUntil(t, func() { f.app.expireThreadRequests(later) }, func() error {
+		if _, found, err := f.app.store.GetThreadRequest(ack.Token); err != nil || found {
+			return fmt.Errorf("the spawn's token once its worker rests: found %v, %v; want unknown", found, err)
+		}
+		if _, found, err := f.app.store.GetThreadRequestReceipt(ack.Token); err != nil || found {
+			return fmt.Errorf("the receipt once its worker rests: found %v, %v; want unknown", found, err)
+		}
+		return nil
+	})
 	if link, found, err := f.app.store.SpawnLinkOf(ack.ThreadID); err != nil || !found || link != ack.Token {
 		t.Fatalf("the spawn's lineage %q, %v, %v; want it kept as the worker's link", link, found, err)
 	}

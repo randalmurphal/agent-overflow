@@ -228,7 +228,7 @@ type SkillsFetcher struct {
 	// which is the value that makes an ephemeral read match what a session
 	// in that workspace would have answered.
 	WorkDir string
-	Env     map[string]string
+	Env     provider.EnvInput
 	Timeout time.Duration // 0 → DefaultSkillsListTimeout
 }
 

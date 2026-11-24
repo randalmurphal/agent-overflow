@@ -24,7 +24,7 @@ func envelopeWithMemory(entries string) string {
 // post-validation: the top-level object is closed, so a provider under it
 // physically cannot emit a property the schema does not declare.
 func TestEnvelopeSchemaDeclaresMemoryAndBothProvidersAcceptIt(t *testing.T) {
-	encoded, err := EnvelopeSchema(memoryPhase())
+	encoded, err := PhaseEnvelope(memoryPhase()).Schema()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,13 +62,13 @@ func TestEnvelopeSchemaDeclaresMemoryAndBothProvidersAcceptIt(t *testing.T) {
 	nested := Phase{ID: "p", Outputs: map[string]Variable{"memory": {Schema: JSONSchema{Type: "string"}}}}
 	payload := `{"status":"done","outputs":{"memory":"a deliverable"},"question":null,"reason":null,` +
 		`"narrative":null,"memory":[{"kind":"warning","text":"a lesson","files":null}]}`
-	if err := ValidateEnvelope(nested, []byte(payload)); err != nil {
+	if err := PhaseEnvelope(nested).Validate([]byte(payload)); err != nil {
 		t.Fatalf("an output named memory collided with the control field: %v", err)
 	}
 }
 
 func TestValidateEnvelopeRefusesABadMemoryKind(t *testing.T) {
-	err := ValidateEnvelope(memoryPhase(), []byte(envelopeWithMemory(
+	err := PhaseEnvelope(memoryPhase()).Validate([]byte(envelopeWithMemory(
 		`[{"kind":"insight","text":"a lesson","files":null}]`)))
 	if err == nil || !strings.Contains(err.Error(), "$.memory[0].kind") {
 		t.Fatalf("bad kind error = %v", err)
@@ -88,7 +88,7 @@ func TestValidateEnvelopeRefusesAuthorSuppliedProvenance(t *testing.T) {
 		`"wave":9`,
 	} {
 		payload := envelopeWithMemory(`[{"kind":"warning","text":"x","files":null,` + field + `}]`)
-		err := ValidateEnvelope(memoryPhase(), []byte(payload))
+		err := PhaseEnvelope(memoryPhase()).Validate([]byte(payload))
 		if err == nil || !strings.Contains(err.Error(), "stamped by the system") {
 			t.Fatalf("%s was accepted: %v", field, err)
 		}
@@ -97,8 +97,8 @@ func TestValidateEnvelopeRefusesAuthorSuppliedProvenance(t *testing.T) {
 
 func TestValidateEnvelopeAppliesTheNoteBoundsAndTheEnvelopeBound(t *testing.T) {
 	long := strings.Repeat("x", memory.MaxTextBytes+1)
-	err := ValidateEnvelope(memoryPhase(), []byte(envelopeWithMemory(
-		`[{"kind":"warning","text":"`+long+`","files":null}]`)))
+	err := PhaseEnvelope(memoryPhase()).Validate([]byte(envelopeWithMemory(
+		`[{"kind":"warning","text":"` + long + `","files":null}]`)))
 	if err == nil || !strings.Contains(err.Error(), "$.memory[0].text") {
 		t.Fatalf("oversize text error = %v", err)
 	}
@@ -106,7 +106,7 @@ func TestValidateEnvelopeAppliesTheNoteBoundsAndTheEnvelopeBound(t *testing.T) {
 	for index := 0; index <= MaxEnvelopeMemoryNotes; index++ {
 		entries = append(entries, `{"kind":"learning","text":"a lesson","files":null}`)
 	}
-	err = ValidateEnvelope(memoryPhase(), []byte(envelopeWithMemory("["+strings.Join(entries, ",")+"]")),
+	err = PhaseEnvelope(memoryPhase()).Validate([]byte(envelopeWithMemory("["+strings.Join(entries, ",")+"]")),
 		DefaultEnvelopeSizeCap)
 	if err == nil || !strings.Contains(err.Error(), "at most") {
 		t.Fatalf("over-count error = %v", err)
@@ -125,11 +125,11 @@ func TestMemoryIsLegalOnEveryStatus(t *testing.T) {
 		"absent":   `{"status":"done","outputs":{"summary":"s"},"question":null,"reason":null}`,
 		"empty":    `{"status":"done","outputs":{"summary":"s"},"question":null,"reason":null,"memory":[]}`,
 	} {
-		if err := ValidateEnvelope(memoryPhase(), []byte(payload)); err != nil {
+		if err := PhaseEnvelope(memoryPhase()).Validate([]byte(payload)); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if err := ValidateEnvelope(memoryPhase(), []byte(envelopeWithMemory(`"not an array"`))); err == nil ||
+	if err := PhaseEnvelope(memoryPhase()).Validate([]byte(envelopeWithMemory(`"not an array"`))); err == nil ||
 		!strings.Contains(err.Error(), "$.memory") {
 		t.Fatalf("a non-array memory was accepted: %v", err)
 	}

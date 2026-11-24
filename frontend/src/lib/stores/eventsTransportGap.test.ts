@@ -12,18 +12,15 @@ import { setPullsReceiver } from './pullsStore.svelte';
 import { resetPanesForTest } from './panes.svelte';
 import {
   registerComposerDraft,
-  resetComposerDraftRegistryForTest,
 } from './composerDraftRegistry.svelte';
 import {
   rememberDraftSnapshot,
-  resetComposerDraftSnapshotStateForTest,
 } from './composerDraftSnapshots';
 import type { ComposerDraftStore } from './composerDraft.svelte';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import {
   getQueueForThread,
   getFlushedForThread,
-  resetForTest as resetSendQueueForTest,
 } from './sendQueue.svelte';
 import { applyQueueStateChanged } from './eventsQueue';
 
@@ -34,29 +31,26 @@ import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import {
   isWorkflowEnginePaused,
   loadWorkflowsOverlayData,
-  resetWorkflowRunsForTest,
 } from './workflowRuns.svelte';
 import {
   attachWorkflowRunMap,
-  __resetWorkflowRunMapStoreForTest,
 } from './workflowRunMap.svelte';
 import { mapRun, mapView } from '../../test/fixtures/runMap';
 import { makeItem } from '../../test/helpers/chat';
 import {
   regenerateThreadTitle,
-  resetThreadTitleGenerationForTest,
   titleGenerationPending,
 } from './threadTitleGeneration.svelte';
 import type { ThreadItemSnapshot } from './threadItemCache';
 import type { ThreadHistoryStamp } from './threadHistoryStamps';
 import { itemEventQueued, itemEventsSettled } from './itemEventSettlement';
 
-import { __resetSystemsForTest, loadSystems } from './systems.svelte';
+import { loadSystems } from './systems.svelte';
 import { resetToLocalPage, pairViewOnly } from '../../test/helpers/scopes';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { onBackendRecovery } from './transportRecovery';
 import { backendById } from '../transport/backends';
-import { __resetManifestBackendsForTest, manifestBackendDescriptors } from '../transport/manifestBackends';
+import { manifestBackendDescriptors } from '../transport/manifestBackends';
 import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 it('starts a gap snapshot after older queued replay mutations settle', async () => {
@@ -88,7 +82,6 @@ function snapshot(threadId: string, stamp: ThreadHistoryStamp): ThreadItemSnapsh
 describe('transport gap', () => {
   beforeEach(() => {
     threadItemCache.clear();
-    resetThreadTitleGenerationForTest();
     // The gap handler resyncs the sidebar; both legs swallow their own
     // errors, but an unmocked binding would still log and toast.
     setBindingMock('ListThreads', async () => []);
@@ -242,7 +235,6 @@ describe('transport gap', () => {
 describe('transport gap — attributed item-event loss', () => {
   const releases: Array<() => void> = [];
   beforeEach(() => {
-    resetPanesForTest();
     threadItemCache.clear();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
@@ -250,7 +242,6 @@ describe('transport gap — attributed item-event loss', () => {
   });
   afterEach(() => {
     for (const release of releases.splice(0)) release();
-    resetPanesForTest();
   });
 
   async function twoThreads() {
@@ -322,8 +313,6 @@ describe('transport gap — attributed item-event loss', () => {
  */
 describe('transport gap — workflow channels', () => {
   beforeEach(() => {
-    resetWorkflowRunsForTest();
-    __resetWorkflowRunMapStoreForTest();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
     setBindingMock('WorkflowListItems', async () => []);
@@ -397,8 +386,6 @@ describe('transport gap — workflow channels', () => {
 // carry delivery badges nothing can re-derive.
 describe('transport gap — the send-queue channels', () => {
   beforeEach(() => {
-    resetPanesForTest();
-    resetSendQueueForTest();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
   });
@@ -523,9 +510,6 @@ describe('transport gap — the send-queue channels', () => {
 // client wrote itself costs a round trip and changes nothing.
 describe('transport gap — draft:updated', () => {
   beforeEach(() => {
-    resetPanesForTest();
-    resetComposerDraftRegistryForTest();
-    resetComposerDraftSnapshotStateForTest();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
   });
@@ -573,16 +557,10 @@ describe('transport gap — computer membership', () => {
     name: 'Laptop', nickname: '', endpoint: 'https://laptop.example:8123', lastReachedMs: 0,
   };
   beforeEach(() => {
-    __resetSystemsForTest();
-    resetStagedBackends();
-    __resetManifestBackendsForTest();
     resetToLocalPage();
   });
   afterEach(() => {
     resetToLocalPage();
-    resetStagedBackends();
-    __resetManifestBackendsForTest();
-    __resetSystemsForTest();
   });
   it.each(['backend:attach', 'backend:set-changed'])('repairs a %s gap and supersedes a list started before it', async (channel) => {
     let reply!: (rows: typeof LAPTOP[]) => void;
@@ -608,7 +586,10 @@ describe('transport gap — computer membership', () => {
 });
 
 describe('transport gap — the Pull requests channels', () => {
-  it('holds the computer\'s recovery until the list\'s re-subscribe settles', async () => {
+  it.each([
+    ["the list's re-subscribe settles", 'pulls:updated', 'pullsGap'],
+    ["the pipelines' re-subscribes settle", 'ci:pipeline_updated', 'pipelinesGap'],
+  ] as const)('holds the computer\'s recovery until %s', async (_name, channel, gap) => {
     const laptop = stageBackend();
     const phases: string[] = [];
     const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
@@ -616,34 +597,10 @@ describe('transport gap — the Pull requests channels', () => {
     const resync = new Promise<void>((resolve) => {
       done = resolve;
     });
-    const remove = setPullsReceiver({ pullsGap: () => resync });
+    const remove = setPullsReceiver({ [gap]: () => resync });
     try {
       laptop.replay('start');
-      applyTransportGap({ channel: 'pulls:updated', seq: 3 }, { backendId: backendById('laptop')!.backendId });
-      laptop.replay('complete');
-      for (let i = 0; i < 6; i += 1) await Promise.resolve();
-      expect(phases).toEqual(['laptop:start']);
-      done();
-      await vi.waitFor(() => expect(phases).toEqual(['laptop:start', 'laptop:complete']));
-    } finally {
-      remove();
-      off();
-      resetStagedBackends();
-    }
-  });
-
-  it('holds the computer\'s recovery until the pipelines\' re-subscribes settle', async () => {
-    const laptop = stageBackend();
-    const phases: string[] = [];
-    const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
-    let done!: () => void;
-    const resync = new Promise<void>((resolve) => {
-      done = resolve;
-    });
-    const remove = setPullsReceiver({ pipelinesGap: () => resync });
-    try {
-      laptop.replay('start');
-      applyTransportGap({ channel: 'ci:pipeline_updated', seq: 3 }, { backendId: backendById('laptop')!.backendId });
+      applyTransportGap({ channel, seq: 3 }, { backendId: backendById('laptop')!.backendId });
       laptop.replay('complete');
       for (let i = 0; i < 6; i += 1) await Promise.resolve();
       expect(phases).toEqual(['laptop:start']);

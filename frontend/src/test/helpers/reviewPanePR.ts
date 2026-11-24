@@ -8,7 +8,7 @@ import { expect } from 'vitest';
 import ReviewPane from '../../lib/components/review/ReviewPane.svelte';
 import { makeStubPanelContext } from './panelContext';
 import { __resetReviewPaneStateForTest } from '../../lib/stores/reviewPane.svelte';
-import { resetForTest as resetDiffReviewCommentsForTest } from '../../lib/stores/diffReviewComments.svelte';
+import { resetDiffReviewCommentsForTest } from '../../lib/stores/diffReviewComments.svelte';
 import { resetAppStorageForTest } from '../../lib/stores/appStorage';
 import { resetToastsForTest } from '../../lib/stores/toast.svelte';
 import { setBindingMock, setReviewDiffMock } from '../mocks/bindings-app';

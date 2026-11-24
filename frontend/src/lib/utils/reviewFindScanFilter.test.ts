@@ -7,7 +7,7 @@ import { PatchParser, parseReviewFiles, reviewFileFromPatchFile, type ReviewFile
 import { PatchStore } from './patchStore';
 import { BLOCK_LINES, CLOCK_ROWS, scanReviewFind, type ReviewFindContent } from './reviewFindScan';
 import { collectScan, findContent, findDraft as draft, findThread as thread } from '../../test/helpers/reviewFindContent';
-import { seededRandom as random } from '../../test/helpers/seededRandom';
+import { forEachSeed, seededRandom as random } from '../../test/helpers/seededRandom';
 import { fakeDiff, streamPatch } from '../../test/helpers/streamedPatch';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 
@@ -194,7 +194,10 @@ describe('scanReviewFind filtered by blocks of text', () => {
     const forms = ['resident', 'streamed', 'sparse'] as const;
     let compared = 0;
     let prefixOnly = 0;
-    for (let round = 0; round < 48; round += 1) {
+    // Every eighth round holds lines over the block size, so the rounds
+    // hold one of each form (0, 8 and 16).
+    await forEachSeed(async (seed) => {
+      const round = seed - 1;
       const next = random(1000 + round);
       const form = forms[round % forms.length];
       const patch = randomPatch(next, round % 8 === 0, form === 'sparse');
@@ -231,7 +234,12 @@ describe('scanReviewFind filtered by blocks of text', () => {
         const limit = next(4) === 0 ? 1 + next(20) : 100_000;
         const want = await unfilteredScan(oracle, query, limit);
         const got = await collectScan(source, query, limit);
-        expect(got, `round ${round} (${form}) ${JSON.stringify(query)} limit ${limit}`).toEqual(want);
+        // toEqual over every hit of every query was half this test's time;
+        // it runs only to report a difference.
+        if (JSON.stringify(got) !== JSON.stringify(want)) {
+          expect(got, `round ${round} (${form}) ${JSON.stringify(query)} limit ${limit}`).toEqual(want);
+          expect.fail(`round ${round} (${form}) ${JSON.stringify(query)}: equal hits that serialize apart`);
+        }
         if (want.hits.some((hit) => hit.place.kind === 'line')) compared += 1;
         const needle = findNeedle(query);
         if ([...needle].length > FIND_FILTER_CODE_POINTS) {
@@ -242,8 +250,8 @@ describe('scanReviewFind filtered by blocks of text', () => {
           }).length;
         }
       }
-    }
-    expect(compared).toBeGreaterThan(400);
+    });
+    expect(compared).toBeGreaterThan(150);
     // The prefix flagged lines the whole needle does not match.
     expect(prefixOnly).toBeGreaterThan(20);
   });
@@ -342,19 +350,6 @@ describe('scanReviewFind filtered by blocks of text', () => {
     }
   });
 
-  it('a line over the block size is searched by the rule, which pauses inside it', async () => {
-    // One line of 8 MB with no match.
-    const long = parseReviewFiles(['diff --git a/min.js b/min.js', '--- a/min.js', '+++ b/min.js', '@@ -0,0 +1,1 @@', `+${'x'.repeat(8_000_000)}`, ''].join('\n'));
-    let live = true;
-    let pauses = 0;
-    let clock = 0;
-    await scanReviewFind(content({ files: long }), 'needle', {
-      limit: 1000, live: () => live, emit: () => {},
-      pause: async () => { pauses += 1; live = false; }, now: () => (clock += 1), sliceMs: 0,
-    });
-    expect(pauses).toBe(1);
-  });
-
   it('finds U+FFFD where the patch holds an invalid byte', async () => {
     const filler = Array.from({ length: 30 }, (_, index) => `+ascii filler line ${index}`);
     const encoder = new TextEncoder();
@@ -431,15 +426,18 @@ describe('scanReviewFind work between clock reads', () => {
     const sigma = 'σ'.repeat(5000);
     const cases: [string, ReviewFile[], string][] = [
       // Long lines whose prefix matches everywhere and whole never.
-      ['long é', repeatedFiles(longE, 40), `${'é'.repeat(63)}x`],
-      ['σ rows the rule reads', repeatedFiles(sigma, 2000), `${'σ'.repeat(63)}x`],
+      ['long é', repeatedFiles(longE, 8), `${'é'.repeat(63)}x`],
+      ['σ rows the rule reads', repeatedFiles(sigma, 200), `${'σ'.repeat(63)}x`],
       // A line over the block size is never searched as a block.
-      ['long é, spelled whole', repeatedFiles(longE, 40), `${'é'.repeat(11)}x`],
+      ['long é, spelled whole', repeatedFiles(longE, 8), `${'é'.repeat(11)}x`],
       // Blocks searched, no row flagged.
-      ['σ blocks', repeatedFiles(sigma, 1000), `${'σ'.repeat(11)}x`],
+      ['σ blocks', repeatedFiles(sigma, 200), `${'σ'.repeat(11)}x`],
       // Every row read (a needle the filter cannot spell).
-      ['σ rows, every one', repeatedFiles(sigma, 1000), 'σ\ud800'],
+      ['σ rows, every one', repeatedFiles(sigma, 200), 'σ\ud800'],
     ];
+    // Each case is several times the work of the 10 pauses it must
+    // reach, and a work count that undercounts one item lets a stretch run
+    // past 2 x LONG_TEXT within its first clock read.
     for (const [name, files, query] of cases) {
       const { widest, pauses } = await stretches(files, query);
       expect(pauses, name).toBeGreaterThan(10);

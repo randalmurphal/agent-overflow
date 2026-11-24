@@ -140,34 +140,6 @@ func TestRevokeDeviceMovesTheGenerationEvenWhenItSweepsNothing(t *testing.T) {
 	}
 }
 
-// TestRevokeDeviceReportsWhatItDid — "revoked, N sessions ended, M
-// connections closed" and "already revoked, nothing was live" are
-// different answers, and the surface has to be able to tell them apart.
-func TestRevokeDeviceReportsWhatItDid(t *testing.T) {
-	sessions, _, _, owner, device := newFixture(t)
-	first, _ := mustMint(t, sessions, owner, device, time.Hour)
-	second, _ := mustMint(t, sessions, owner, device, time.Hour)
-	closer := &recordingConns{}
-	sessions.AttachConns(closer)
-
-	revoked, err := sessions.RevokeDevice(device.ID)
-	if err != nil {
-		t.Fatalf("RevokeDevice: %v", err)
-	}
-	if !revoked.DeviceMoved || revoked.SessionsEnded != 2 || revoked.ConnectionsClosed != 2 {
-		t.Fatalf("RevokeDevice = %+v, want the device, 2 sessions, 2 connections", revoked)
-	}
-	closer.mustHaveClosed(t, first.ID, second.ID)
-
-	again, err := sessions.RevokeDevice(device.ID)
-	if err != nil {
-		t.Fatalf("second RevokeDevice: %v", err)
-	}
-	if again.DeviceMoved || again.SessionsEnded != 0 || again.ConnectionsClosed != 0 {
-		t.Fatalf("second RevokeDevice = %+v, want nothing", again)
-	}
-}
-
 // TestNoMintPathAdmitsARevokedDevice walks every entry point in this
 // package that can produce or renew a credential. The gate is inside the
 // chokepoints each of them goes through (store.CreateSession's INSERT

@@ -44,7 +44,7 @@ async function seedTwoTurnThread(harness: {
   return seed.projects[0].threadIds[0];
 }
 
-test('editing a past user message truncates the tail before the replacement streams', async ({
+test('editing a past user message sends the edited text and truncates the tail before the replacement streams', async ({
   harness,
   page,
 }) => {
@@ -88,6 +88,15 @@ test('editing a past user message truncates the tail before the replacement stre
     'harness:mock',
     (ev) => ev.report.kind === 'waiting_signal' && ev.report.detail === 'block-start',
   );
+  // The mock reports the text it actually read off the wire — the one
+  // place the whole edit path is proved end to end rather than at the
+  // timeline's word.
+  const received = await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'user_input',
+  );
+  expect(received.report.input).toContain(EDITED);
+  expect(received.report.input).not.toContain('How do I sort an array in JS?');
 
   await expect(page.getByText(EDITED)).toBeVisible();
   await expect(page.getByText('How do I sort an array in JS?')).toHaveCount(0);
@@ -113,28 +122,6 @@ test('editing a past user message truncates the tail before the replacement stre
   await harness.waitForEvent('provider:turn_completed');
   await expect(page.getByText('First chunk. Second chunk.')).toBeVisible();
   await expect(page.getByText(EDITED)).toBeVisible();
-});
-
-test('the edited text reaches the provider, not the original', async ({ harness, page }) => {
-  await seedTwoTurnThread(harness);
-
-  await harness.open(page);
-  await page.getByText('Sorting question').click();
-  await page.getByText('How do I sort an array in JS?').hover();
-  await page.getByLabel('Edit message and resend from here').first().click();
-  const editor = page.getByTestId('user-message-editor');
-  await editor.getByLabel('Message Input').fill(EDITED);
-  await page.getByTestId('user-message-edit-send').click();
-
-  // The mock reports the text it actually read off the wire — the one
-  // place the whole edit path is proved end to end rather than at the
-  // timeline's word.
-  const received = await harness.waitForEvent<HarnessMockEvent>(
-    'harness:mock',
-    (ev) => ev.report.kind === 'user_input',
-  );
-  expect(received.report.input).toContain(EDITED);
-  expect(received.report.input).not.toContain('How do I sort an array in JS?');
 });
 
 test('cancelling the editor leaves the conversation exactly as it was', async ({

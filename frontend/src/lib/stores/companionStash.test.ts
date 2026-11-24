@@ -15,7 +15,6 @@ import {
   installCompanionPanes,
   isCompanionOpen,
   openCompanion,
-  resetCompanionPanesForTest,
 } from './companionPanes.svelte';
 import { installCompanionStash, resetCompanionStashForTest, stashCompanions } from './companionStash';
 import { draftPlaceholderId } from './draftPlaceholderId';
@@ -30,7 +29,6 @@ import {
   getPane,
   openThreadInNewPane,
   openThreadInPane,
-  resetPanesForTest,
 } from './panes.svelte';
 import { keepSideChat } from './sideChat';
 import { removeThread, replaceAllThreads } from './threads.svelte';
@@ -38,7 +36,7 @@ import { getToasts } from './toast.svelte';
 import type { Thread } from '../types/models';
 import { TransportError } from '../transport/wsClient';
 import { installPaneMocks, makeThread } from '../../test/helpers/chat';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
 const A = makeThread({ id: 'thread-a', title: 'A' });
 const B = makeThread({ id: 'thread-b', title: 'B' });
@@ -71,9 +69,6 @@ async function openSideChatOn(sourcePaneId: string, thread: Thread = SIDE): Prom
 }
 
 beforeEach(() => {
-  resetBindingMocks();
-  resetPanesForTest();
-  resetCompanionPanesForTest();
   resetPaneLayoutForTest();
   installCompanionPanes();
   installCompanionStash();
@@ -86,11 +81,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetCompanionStashForTest();
-  resetCompanionPanesForTest();
-  resetPanesForTest();
   resetPaneLayoutForTest();
-  resetBindingMocks();
   replaceAllThreads([]);
 });
 
@@ -107,8 +98,21 @@ describe('companion stash', () => {
     await mountMain(B);
     expect(paneIds()).toEqual(['main']);
 
-    await mountMain(A);
+    // They reopen without revealing them or moving focus.
+    const revealed: string[] = [];
+    const onReveal = ((event: CustomEvent<{ paneId: string }>) => {
+      revealed.push(event.detail.paneId);
+    }) as EventListener;
+    window.addEventListener(REVEAL_PANE_EVENT, onReveal);
+    try {
+      await mountMain(A);
+    } finally {
+      window.removeEventListener(REVEAL_PANE_EVENT, onReveal);
+    }
     expect(paneIds()).toEqual(['main', 'plan-main', 'review-main', 'agent-main']);
+    expect(isCompanionOpen('main', 'plan')).toBe(true);
+    expect(revealed).toEqual(['main']);
+    expect(getFocusedPaneId()).toBe('main');
     expect(widthOf('review-main')).toBe(720);
     expect(agentScopeForPane('main', A.id)).toEqual({
       scopeItemId: 'launch-2',
@@ -131,26 +135,6 @@ describe('companion stash', () => {
     expect(paneIds()).toEqual(['main', 'plan-main']);
     await mountMain(B);
     expect(paneIds()).toEqual(['main', 'review-main']);
-  });
-
-  it('reopens them without revealing them or moving focus', async () => {
-    await mountMain(A);
-    openCompanion('main', 'plan');
-    await mountMain(B);
-    const revealed: string[] = [];
-    const onReveal = ((event: CustomEvent<{ paneId: string }>) => {
-      revealed.push(event.detail.paneId);
-    }) as EventListener;
-    window.addEventListener(REVEAL_PANE_EVENT, onReveal);
-    try {
-      await mountMain(A);
-    } finally {
-      window.removeEventListener(REVEAL_PANE_EVENT, onReveal);
-    }
-
-    expect(isCompanionOpen('main', 'plan')).toBe(true);
-    expect(revealed).toEqual(['main']);
-    expect(getFocusedPaneId()).toBe('main');
   });
 
   it('forgets a companion closed explicitly', async () => {
@@ -176,14 +160,17 @@ describe('companion stash', () => {
     expect(paneIds()).toEqual([pane.paneId, `plan-${pane.paneId}`]);
   });
 
-  it('leaves the browser companion to the backend state that reopens it', async () => {
+  it.each([
+    ['leaves the browser companion to the backend state that reopens it', 'browser'],
+    ['closes an agent pane that has no scope to reopen at', 'agent'],
+  ] as const)('%s', async (_name, kind) => {
     await mountMain(A);
-    openCompanion('main', 'browser');
+    openCompanion('main', kind);
 
     await mountMain(B);
     await mountMain(A);
 
-    expect(isCompanionOpen('main', 'browser')).toBe(false);
+    expect(isCompanionOpen('main', kind)).toBe(false);
   });
 
   it('closes a draft placeholder\'s companions, since nothing mounts it again', () => {
@@ -227,16 +214,6 @@ describe('companion stash', () => {
 
     expect(paneIds()).toEqual(['main', 'plan-main', 'agent-main']);
     expect(appStorageGet('companionStash:thread-tui')).toBeNull();
-  });
-
-  it('closes an agent pane that has no scope to reopen at', async () => {
-    await mountMain(A);
-    openCompanion('main', 'agent');
-
-    await mountMain(B);
-    await mountMain(A);
-
-    expect(isCompanionOpen('main', 'agent')).toBe(false);
   });
 });
 

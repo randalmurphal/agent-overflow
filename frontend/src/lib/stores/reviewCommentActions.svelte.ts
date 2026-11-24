@@ -8,7 +8,7 @@ import { grantBlockedTitle } from '../transport/scopeRefusal';
 import type { EntityScopeGrant } from '../transport/scopes';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { threadRange } from '../utils/reviewRange';
-import type { CommentAnchor } from '../utils/reviewRows';
+import type { CommentAnchor, ReviewCommentIndex } from '../utils/reviewRows';
 import type { DiffReviewComment, DiffReviewCommentInput, DiffReviewScope, DiffReviewThreadContext, ReviewThread } from '../types/models';
 
 // Send now or hold (docs/specs/pull-requests.md#sending-and-managing-comments)
@@ -91,8 +91,8 @@ export interface ReviewCommentActionsHost {
   prWithheld(): string | null;
   /** Drafts can be saved here and this device may save them. */
   canDraft(): boolean;
-  drafts(): readonly DiffReviewComment[];
-  threads(): readonly ReviewThread[];
+  /** The PR's threads and the pane's drafts. */
+  comments(): ReviewCommentIndex;
   /** A snapshot of the PR's threads is loaded. */
   threadsLoaded(): boolean;
   sourceKey(): string;
@@ -119,7 +119,7 @@ export interface ReviewCommentActions {
    * Throws where comments cannot post now. */
   postLineComment(editorId: string, anchor: CommentAnchor, start: CommentAnchor | null, body: string, onSettled: () => void): Promise<void>;
   /** The thread an agent delivery quotes for a held reply, or undefined. */
-  replyContext(comment: DiffReviewComment, threads: readonly ReviewThread[]): DiffReviewThreadContext | undefined;
+  replyContext(comment: DiffReviewComment, comments: ReviewCommentIndex): DiffReviewThreadContext | undefined;
   dispose(): void;
 }
 
@@ -154,24 +154,10 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
   const canPostNow = $derived(sentCommentActions && host.selectedCommitSHA() === null);
   const canHoldReply = $derived(canPostNow && host.canDraft());
   const nowWithheldReason = $derived(grantBlockedTitle(host.forgeGrant()) ?? host.prWithheld());
-  const primaryCommentAction = $derived<'now' | 'draft'>(host.drafts().length === 0 ? 'now' : 'draft');
-  // A thread's held replies, oldest first. A recovered delivery can leave
-  // several; each shows.
-  const replyDrafts = $derived.by(() => {
-    const out = new Map<string, DiffReviewComment[]>();
-    for (const draft of host.drafts()) {
-      if (draft.replyThreadId) out.set(draft.replyThreadId, [...(out.get(draft.replyThreadId) ?? []), draft]);
-    }
-    for (const list of out.values()) list.sort((a, b) => a.createdAt - b.createdAt);
-    return out;
-  });
+  const primaryCommentAction = $derived<'now' | 'draft'>(host.comments().drafts.length === 0 ? 'now' : 'draft');
   // A held reply whose thread a loaded snapshot no longer lists: it stays
   // a draft (shown where it can be deleted) and is left out of a review.
-  const orphanedReplyDrafts = $derived.by<readonly DiffReviewComment[]>(() => {
-    if (!host.threadsLoaded() || replyDrafts.size === 0) return NO_DRAFTS;
-    const live = new Set(host.threads().map((thread) => thread.id));
-    return [...replyDrafts.values()].flat().filter((draft) => !live.has(draft.replyThreadId!));
-  });
+  const orphanedReplyDrafts = $derived(host.threadsLoaded() ? host.comments().orphanedReplies : NO_DRAFTS);
 
   const writes = createCommentWrites({
     backend: host.backend,
@@ -189,7 +175,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     const out = new Set<string>(writes.activeThreads);
     for (const key of openReplies) out.add(key.slice(key.indexOf(':') + 1));
     for (const [threadId, body] of replyBodies) if (body.trim() !== '') out.add(threadId);
-    for (const threadId of replyDrafts.keys()) out.add(threadId);
+    for (const threadId of host.comments().repliedThreadIds()) out.add(threadId);
     return out;
   });
 
@@ -237,7 +223,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     },
     replyOpen: (threadId, surface) => openReplies.has(`${surface}:${threadId}`),
     openReply(threadId, surface) {
-      const held = replyDrafts.get(threadId)?.at(-1);
+      const held = host.comments().repliesOf(threadId).at(-1);
       if (held) host.editDraft(held);
       else openReplies.add(`${surface}:${threadId}`);
     },
@@ -292,7 +278,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     },
     replyErrorFor: (threadId) => replyErrors.get(threadId) ?? writes.error(commentWriteKey.reply(threadId)),
     sendingReply: (threadId) => holding.has(threadId) || writes.pending(commentWriteKey.reply(threadId)),
-    replyDraftsFor: (threadId) => replyDrafts.get(threadId) ?? NO_DRAFTS,
+    replyDraftsFor: (threadId) => host.comments().repliesOf(threadId),
     get orphanedReplyDrafts() { return orphanedReplyDrafts; },
   };
 
@@ -313,8 +299,8 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
     // A held reply quotes the thread it answers, as the pane shows it. A
     // range from an old line to a new one is quoted by its last line: one
     // span of numbers cannot name both halves.
-    replyContext(comment, threads) {
-      const thread = threads.find((each) => each.id === comment.replyThreadId);
+    replyContext(comment, comments) {
+      const thread = comment.replyThreadId ? comments.thread(comment.replyThreadId) : undefined;
       if (!thread) return undefined;
       return {
         path: thread.path || undefined,

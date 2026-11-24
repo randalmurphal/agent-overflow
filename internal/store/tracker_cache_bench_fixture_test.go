@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+
+	"agent-overflow/internal/testutil/fixturedir"
 )
 
 const (
@@ -29,14 +31,8 @@ var benchDefaultSize = benchMirrorSize{boards: benchBoards, issues: benchBoardIs
 
 func (z benchMirrorSize) String() string { return fmt.Sprintf("%dx%d", z.boards, z.issues) }
 
-// benchMirrorFixtures holds the built fixture file of each size.
+// benchMirrorFixtures holds the fixture of each size, by size.
 var benchMirrorFixtures sync.Map
-
-type benchMirrorFixture struct {
-	once sync.Once
-	path string
-	err  error
-}
 
 // benchIssueID is issue i of board (0 to the size's boards less one). A
 // board's IDs are 10,000,000 apart, so no size, and no new issue a
@@ -95,8 +91,8 @@ func benchHistory(id string, at int64, n int) MirrorHistory {
 
 // buildBenchMirror writes a fixture of size through the store's own
 // writers.
-func buildBenchMirror(path string, size benchMirrorSize) error {
-	if err := copyTestStoreTemplate(path); err != nil {
+func buildBenchMirror(tb testing.TB, path string, size benchMirrorSize) error {
+	if err := copyTestStoreTemplate(tb, path); err != nil {
 		return err
 	}
 	s, err := New(path)
@@ -192,16 +188,12 @@ func openBenchMirrorFile(b *testing.B) (s *Store, root int64, path string) {
 // process.
 func benchMirrorFile(tb testing.TB, size benchMirrorSize) string {
 	tb.Helper()
-	entry, _ := benchMirrorFixtures.LoadOrStore(size, &benchMirrorFixture{})
-	f := entry.(*benchMirrorFixture)
-	f.once.Do(func() {
-		f.path = filepath.Join(filepath.Dir(testStoreTemplatePath), "bench-mirror-"+size.String()+".sqlite")
-		f.err = buildBenchMirror(f.path, size)
-	})
-	if f.err != nil {
-		tb.Fatal(f.err)
-	}
-	return f.path
+	entry, _ := benchMirrorFixtures.LoadOrStore(size, fixturedir.New("bench-mirror-"+size.String()+".sqlite", func(tb testing.TB, path string) {
+		if err := buildBenchMirror(tb, path, size); err != nil {
+			tb.Fatal(err)
+		}
+	}))
+	return entry.(*fixturedir.Lazy).Path(tb)
 }
 
 // openSizedMirror opens a copy of the fixture of size at path, with its

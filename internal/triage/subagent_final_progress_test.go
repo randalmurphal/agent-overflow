@@ -146,12 +146,19 @@ func TestOrdinaryToolCompletionNeverPersistsProgress(t *testing.T) {
 // BACKGROUND launch's terminal. The launch row is the immutable spawn
 // event (docs/specs/agent-visibility.md §Immutable agent history), so the
 // sibling write is the only record its counters can settle on, and it
-// lands there complete on the first write.
+// lands there complete on the first write. The sibling write also settles
+// the launch out of the live set (migration v74's trigger,
+// store/background_settle_triggers.go), and nothing on the terminal path
+// un-settles it: a wholesale meta rewrite of the launch would restore it
+// to "live" and pin it in every partial live index.
 func TestBackgroundCompletionSiblingPersistsFinalProgress(t *testing.T) {
 	r, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
 	launchBackgroundAgent(t, r, "t1", "toolu_bg_agent", "task-bg")
+	if live, err := st.HasQueueBlockingBackgroundToolCall("t1"); err != nil || !live {
+		t.Fatalf("a just-launched background agent must read as live: live=%v err=%v", live, err)
+	}
 	tickProgress(t, r, "t1", "toolu_bg_agent", provider.SubagentProgressMeta{
 		TaskID: "task-bg", ToolUses: 12, TotalTokens: 88000, Activity: "Running tests",
 	})
@@ -169,8 +176,8 @@ func TestBackgroundCompletionSiblingPersistsFinalProgress(t *testing.T) {
 	}
 
 	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
-	if len(dones) != 1 {
-		t.Fatalf("expected the completion sibling, got %d", len(dones))
+	if len(dones) != 1 || dones[0].ID != ToolCompletionID("toolu_bg_agent") {
+		t.Fatalf("expected the completion sibling, got %+v", dones)
 	}
 	progress, ok := persistedProgressFor(t, st, "t1", dones[0].ID)
 	if !ok {
@@ -182,7 +189,24 @@ func TestBackgroundCompletionSiblingPersistsFinalProgress(t *testing.T) {
 	if _, live := r.PeekSubagentProgress("t1", "toolu_bg_agent"); live {
 		t.Fatal("the live entry must be consumed at the terminal")
 	}
+	// Invariant 24: the launch itself never leaves `running`.
 	assertLaunchRowUnchanged(t, st, "t1", launchBefore)
+	launch := launchRow(t, st, "t1", "toolu_bg_agent")
+	var meta struct {
+		LiveBackgroundActive *bool `json:"live_background_active"`
+	}
+	if err := json.Unmarshal([]byte(launch.Meta), &meta); err != nil {
+		t.Fatalf("decode launch meta %q: %v", launch.Meta, err)
+	}
+	if meta.LiveBackgroundActive == nil || *meta.LiveBackgroundActive {
+		t.Fatalf("the sibling write did not settle the launch: meta = %s", launch.Meta)
+	}
+	if _, ok := persistedProgressFor(t, st, "t1", "toolu_bg_agent"); ok {
+		t.Fatal("final progress was written onto the immutable launch row")
+	}
+	if live, err := st.HasQueueBlockingBackgroundToolCall("t1"); err != nil || live {
+		t.Fatalf("a settled launch must not read as live: live=%v err=%v", live, err)
+	}
 }
 
 // TestBackgroundNotificationUsageLandsOnTheSiblingInEitherOrder pins the
@@ -325,63 +349,5 @@ func TestCodexChildTerminalPersistsFinalProgress(t *testing.T) {
 	}
 	if _, ok := persistedProgressFor(t, st, "t1", "spawn-1"); ok {
 		t.Fatal("completion progress modified spawn")
-	}
-}
-
-// TestBackgroundCompletionSiblingLeavesTheLaunchSettled pins that the
-// sibling write settles the launch out of the live set (migration v74's
-// trigger, store/background_settle_triggers.go) and that nothing on the
-// terminal path un-settles it afterwards. Before the numbers moved to the
-// sibling, a wholesale meta rewrite of the launch could restore it to
-// "live" and pin it in every partial live index forever.
-func TestBackgroundCompletionSiblingLeavesTheLaunchSettled(t *testing.T) {
-	r, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	launchBackgroundAgent(t, r, "t1", "toolu_settle", "task-settle")
-	if live, err := st.HasQueueBlockingBackgroundToolCall("t1"); err != nil || !live {
-		t.Fatalf("a just-launched background agent must read as live: live=%v err=%v", live, err)
-	}
-	tickProgress(t, r, "t1", "toolu_settle", provider.SubagentProgressMeta{
-		TaskID: "task-settle", ToolUses: 3, TotalTokens: 4200,
-	})
-
-	terminalMeta, _ := json.Marshal(map[string]any{
-		"task_id": "task-settle", "tool_use_id": "toolu_settle",
-		"status": "completed", "source": "task_output",
-	})
-	if err := r.Handle(provider.ProviderEvent{
-		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "toolu_settle",
-		Meta: terminalMeta, Content: "done", Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("terminal: %v", err)
-	}
-
-	launch := launchRow(t, st, "t1", "toolu_settle")
-	// Invariant 24: the launch itself never leaves `running`.
-	if launch.Status != "running" {
-		t.Fatalf("launch status = %q, want running", launch.Status)
-	}
-	var meta struct {
-		LiveBackgroundActive *bool `json:"live_background_active"`
-	}
-	if err := json.Unmarshal([]byte(launch.Meta), &meta); err != nil {
-		t.Fatalf("decode launch meta %q: %v", launch.Meta, err)
-	}
-	if meta.LiveBackgroundActive == nil || *meta.LiveBackgroundActive {
-		t.Fatalf("the sibling write did not settle the launch: meta = %s", launch.Meta)
-	}
-	if _, ok := persistedProgressFor(t, st, "t1", "toolu_settle"); ok {
-		t.Fatal("final progress was written onto the immutable launch row")
-	}
-	progress, ok := persistedProgressFor(t, st, "t1", ToolCompletionID("toolu_settle"))
-	if !ok {
-		t.Fatal("background terminal did not persist final progress onto the sibling")
-	}
-	if progress.ToolUses != 3 || progress.TotalTokens != 4200 {
-		t.Fatalf("final progress = %+v", progress)
-	}
-	if live, err := st.HasQueueBlockingBackgroundToolCall("t1"); err != nil || live {
-		t.Fatalf("a settled launch must not read as live: live=%v err=%v", live, err)
 	}
 }

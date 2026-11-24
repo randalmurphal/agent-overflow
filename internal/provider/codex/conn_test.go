@@ -313,12 +313,12 @@ func TestConnRouteTargetQuarantinesUnclaimedChildWhileSiblingStarts(t *testing.T
 	sessA := &Session{threadID: "ao-a"}
 	sessB := &Session{threadID: "ao-b"}
 	conn := &Conn{
-		allSessions:            map[*Session]struct{}{sessA: {}, sessB: {}},
-		byThread:               map[string]*Session{"codex-a": sessA},
-		bySessionID:            map[string]*Session{},
-		starting:               sessB,
-		deferredChild:          map[string][]deferredChildWireEvent{},
-		deferredChildDeadlines: map[string]*time.Timer{},
+		allSessions:    map[*Session]struct{}{sessA: {}, sessB: {}},
+		byThread:       map[string]*Session{"codex-a": sessA},
+		bySessionID:    map[string]*Session{},
+		starting:       sessB,
+		holds:          map[string]*childHold{},
+		startHoldTimer: func(d time.Duration, f func()) holdTimer { return time.AfterFunc(d, f) },
 	}
 
 	// An unclaimed child frame or approval (allowStartingFallback=false) MUST NOT
@@ -426,12 +426,12 @@ func TestConnAtomicRouteOrQuarantineAndEarlyRootFIFO(t *testing.T) {
 	sessA.setRootThreadID("codex-a")
 	sessB := &Session{threadID: "ao-b"}
 	conn := &Conn{
-		allSessions:            map[*Session]struct{}{sessA: {}, sessB: {}},
-		byThread:               map[string]*Session{"codex-b": sessB},
-		bySessionID:            map[string]*Session{},
-		loaded:                 map[string]struct{}{"codex-b": {}},
-		deferredChild:          map[string][]deferredChildWireEvent{},
-		deferredChildDeadlines: map[string]*time.Timer{},
+		allSessions:    map[*Session]struct{}{sessA: {}, sessB: {}},
+		byThread:       map[string]*Session{"codex-b": sessB},
+		bySessionID:    map[string]*Session{},
+		loaded:         map[string]struct{}{"codex-b": {}},
+		holds:          map[string]*childHold{},
+		startHoldTimer: func(d time.Duration, f func()) holdTimer { return time.AfterFunc(d, f) },
 	}
 
 	// 1. Unregistered thread frame is atomically quarantined under routesMu.
@@ -447,8 +447,8 @@ func TestConnAtomicRouteOrQuarantineAndEarlyRootFIFO(t *testing.T) {
 	// delivering a newer frame: strict FIFO order must emit "first" then "second".
 	conn.routesMu.Lock()
 	conn.byThread["codex-a"] = sessA
-	early := conn.takeDeferredChildLocked("codex-a")
-	sessA.enqueueEarlyFrames(early)
+	early := conn.takeHoldLocked("codex-a")
+	sessA.enqueueEarlyFrames(early.frames)
 	conn.routesMu.Unlock()
 
 	laterParams := json.RawMessage(`{"threadId":"codex-a","turnId":"turn-1","itemId":"m1","delta":"second"}`)
@@ -474,10 +474,12 @@ func TestConnAtomicRouteOrQuarantineAndEarlyRootFIFO(t *testing.T) {
 	sessA.conn = conn
 	sessA.codexThreadID.Store(&rootID)
 	conn.routesMu.Lock()
-	conn.deferredChild["child-reentrant"] = []deferredChildWireEvent{{
+	if rejection := conn.holdLocked("child-reentrant", deferredChildWireEvent{
 		Method: "item/agentMessage/delta",
 		Params: json.RawMessage(`{"threadId":"child-reentrant","turnId":"t-c","itemId":"m-c","delta":"child-after-spawn"}`),
-	}}
+	}); rejection != "" {
+		t.Fatal(rejection)
+	}
 	conn.routesMu.Unlock()
 	spawnCompleteParams := json.RawMessage(`{"threadId":"codex-a","turnId":"turn-1","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"completed","receiverThreadIds":["child-reentrant"]}}`)
 	sessA.enqueueEarlyFrames([]deferredChildWireEvent{{

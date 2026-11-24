@@ -89,13 +89,35 @@ func boundaryMeta(t *testing.T, e provider.ProviderEvent) map[string]string {
 // TestCompactionStreamsReasoningAndCommitsSummary is the headline behavior: the
 // armed summarizer's reasoning STREAMS live as compaction-scoped thinking (the
 // "compact" tail above the divider), while the single EventCompactBoundary
-// carries only the committed PostCompact summary — never the reasoning.
+// carries only the committed PostCompact summary — never the reasoning. The
+// summarizer never surfaces as an agent TURN: no init, streamed summary text,
+// tool start or turn-complete, and every thinking and content-block event
+// carries the reserved compaction scope, so triage routes it to the compact
+// tail rather than the main timeline.
 func TestCompactionStreamsReasoningAndCommitsSummary(t *testing.T) {
 	rec, out := newParserBackedRec(t)
 
 	rec.armCompaction()
 	captureSummarizer(t, rec, "Let me review the conversation so far.", "SSE summary text")
 	rec.finalizeCompaction("auto", "Committed summary of the conversation.")
+
+	for _, k := range []provider.EventKind{
+		provider.EventInit,
+		provider.EventTextDelta,
+		provider.EventToolStart,
+		provider.EventTurnComplete,
+	} {
+		if got := findKind(*out, k); len(got) != 0 {
+			t.Errorf("summarizer leaked %d %s event(s); it must not render as a turn", len(got), k)
+		}
+	}
+	for _, k := range []provider.EventKind{provider.EventContentBlockStart, provider.EventContentBlockStop} {
+		for _, e := range findKind(*out, k) {
+			if e.ParentToolUseID != provider.CompactionReasoningScope {
+				t.Errorf("%s carried scope %q, want the reserved compaction scope", k, e.ParentToolUseID)
+			}
+		}
+	}
 
 	// Reasoning streams live as compaction-scoped thinking, NOT a main-loop block.
 	thinking := findKind(*out, provider.EventThinking)
@@ -127,50 +149,6 @@ func TestCompactionStreamsReasoningAndCommitsSummary(t *testing.T) {
 	}
 	if got, ok := meta["thinking"]; ok {
 		t.Errorf("boundary must not carry thinking (it streamed live), got %q", got)
-	}
-}
-
-// TestCompactionSummarizerSuppressesTurn proves the summarizer never surfaces as
-// an agent TURN: none of init / streamed summary text / tool starts /
-// turn-complete appear. Its reasoning DOES stream, but every thinking and
-// content-block event carries the reserved compaction scope, so triage routes it
-// to the compact tail rather than the main timeline.
-func TestCompactionSummarizerSuppressesTurn(t *testing.T) {
-	rec, out := newParserBackedRec(t)
-
-	rec.armCompaction()
-	captureSummarizer(t, rec, "internal reasoning", "the summary")
-	rec.finalizeCompaction("auto", "the summary")
-
-	for _, k := range []provider.EventKind{
-		provider.EventInit,
-		provider.EventTextDelta,
-		provider.EventToolStart,
-		provider.EventTurnComplete,
-	} {
-		if got := findKind(*out, k); len(got) != 0 {
-			t.Errorf("summarizer leaked %d %s event(s); it must not render as a turn", len(got), k)
-		}
-	}
-	// The reasoning streams, but only as reserved-scope events (never main-loop).
-	scoped := 0
-	for _, k := range []provider.EventKind{
-		provider.EventThinking,
-		provider.EventContentBlockStart,
-		provider.EventContentBlockStop,
-	} {
-		for _, e := range findKind(*out, k) {
-			if e.ParentToolUseID != provider.CompactionReasoningScope {
-				t.Errorf("%s carried scope %q, want the reserved compaction scope", k, e.ParentToolUseID)
-			}
-			scoped++
-		}
-	}
-	if scoped == 0 {
-		t.Error("summarizer reasoning did not stream (expected scoped thinking / content-block events)")
-	}
-	if got := findKind(*out, provider.EventCompactBoundary); len(got) != 1 {
-		t.Fatalf("want 1 compact-boundary, got %d (kinds %v)", len(got), kindsOf(*out))
 	}
 }
 

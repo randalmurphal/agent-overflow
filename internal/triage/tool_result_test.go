@@ -501,57 +501,51 @@ func TestExtractFileChangeToolResultReadsCurrentCodexFileChangeShape(t *testing.
 }
 
 func TestExtractFileChangeToolResultAcceptsMatchingFullPatch(t *testing.T) {
-	raw := json.RawMessage(`{
-		"item": {
-			"id": "patch-1",
-			"type": "fileChange",
-			"changes": [
-				{
-					"path": "src/app.ts",
-					"kind": {"type": "update", "move_path": null},
-					"diff": "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1,2 @@\n const value = 1;\n+const next = 2;"
-				}
-			]
-		}
-	}`)
-
-	meta, diffData, ok := ExtractFileChangeToolResult(raw, "")
-	if !ok {
-		t.Fatal("expected matching full-patch fileChange extraction to succeed")
-	}
-	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "exact_patch" {
-		t.Fatalf("inline diff = %+v, want exact_patch", meta.InlineDiff)
-	}
-	if !strings.Contains(string(diffData), "diff --git a/src/app.ts b/src/app.ts") {
-		t.Fatalf("expected full patch in payload, got %q", string(diffData))
-	}
-}
-
-func TestExtractFileChangeToolResultAcceptsMatchingExternalFullPatch(t *testing.T) {
-	workspace := "/home/user/repos/agent-overflow"
-	raw := json.RawMessage(`{
-		"item": {
-			"type": "fileChange",
-			"changes": [{
-				"path": "/home/user/repos/dotfiles/install.sh",
-				"kind": {"type": "update", "move_path": null},
-				"diff": "diff --git a//home/user/repos/dotfiles/install.sh b//home/user/repos/dotfiles/install.sh\n--- a//home/user/repos/dotfiles/install.sh\n+++ b//home/user/repos/dotfiles/install.sh\n@@ -1 +1 @@\n-old\n+new"
-			}]
-		}
-	}`)
-
-	meta, diffData, ok := ExtractFileChangeToolResult(raw, workspace)
-	if !ok {
-		t.Fatal("expected matching external full patch to extract")
-	}
-	if meta.InlineDiff == nil || meta.InlineDiff.Availability != "exact_patch" {
-		t.Fatalf("inline diff = %+v, want exact_patch", meta.InlineDiff)
-	}
-	if got := meta.InlineDiff.Files[0].Path; got != "/home/user/repos/dotfiles/install.sh" {
-		t.Fatalf("path = %q, want preserved external absolute path", got)
-	}
-	if !strings.Contains(string(diffData), "a//home/user/repos/dotfiles/install.sh") {
-		t.Fatalf("diff = %q, want external absolute header", string(diffData))
+	for _, tc := range []struct {
+		name, workspace, path, diff, wantHeader string
+	}{
+		{
+			name:       "workspace path",
+			path:       "src/app.ts",
+			diff:       "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1,2 @@\n const value = 1;\n+const next = 2;",
+			wantHeader: "diff --git a/src/app.ts b/src/app.ts",
+		},
+		{
+			name:       "external absolute path",
+			workspace:  "/home/user/repos/agent-overflow",
+			path:       "/home/user/repos/dotfiles/install.sh",
+			diff:       "diff --git a//home/user/repos/dotfiles/install.sh b//home/user/repos/dotfiles/install.sh\n--- a//home/user/repos/dotfiles/install.sh\n+++ b//home/user/repos/dotfiles/install.sh\n@@ -1 +1 @@\n-old\n+new",
+			wantHeader: "a//home/user/repos/dotfiles/install.sh",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"item": map[string]any{
+					"type": "fileChange",
+					"changes": []map[string]any{{
+						"path": tc.path,
+						"kind": map[string]any{"type": "update", "move_path": nil},
+						"diff": tc.diff,
+					}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal raw: %v", err)
+			}
+			meta, diffData, ok := ExtractFileChangeToolResult(raw, tc.workspace)
+			if !ok {
+				t.Fatal("expected matching full-patch fileChange extraction to succeed")
+			}
+			if meta.InlineDiff == nil || meta.InlineDiff.Availability != "exact_patch" {
+				t.Fatalf("inline diff = %+v, want exact_patch", meta.InlineDiff)
+			}
+			if got := meta.InlineDiff.Files[0].Path; got != tc.path {
+				t.Fatalf("path = %q, want %q", got, tc.path)
+			}
+			if !strings.Contains(string(diffData), tc.wantHeader) {
+				t.Fatalf("diff = %q, want header %q", string(diffData), tc.wantHeader)
+			}
+		})
 	}
 }
 
@@ -603,46 +597,55 @@ func TestExtractFileChangeToolResultRejectsMismatchedFullPatchPath(t *testing.T)
 	}
 }
 
+// Each file's preview is capped at inlineDiffPreviewLineCount body lines,
+// including body lines that look like patch headers once prefixed.
 func TestBuildInlineDiffFromChangesStoresLineBoundedFilePreviews(t *testing.T) {
-	var largeContent strings.Builder
-	for i := 1; i <= 35; i++ {
-		if i > 1 {
-			largeContent.WriteByte('\n')
-		}
-		largeContent.WriteString(fmt.Sprintf("line-%02d", i))
-	}
+	for _, tc := range []struct{ name, lineFormat string }{
+		{"plain lines", "line-%02d"},
+		{"patch-looking lines", "++patch-looking-line-%02d"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var largeContent strings.Builder
+			for i := 1; i <= 35; i++ {
+				if i > 1 {
+					largeContent.WriteByte('\n')
+				}
+				fmt.Fprintf(&largeContent, tc.lineFormat, i)
+			}
 
-	inlineDiff, combinedDiff := buildInlineDiffFromChanges([]fileChange{
-		{Path: "src/large.txt", Kind: "added", Diff: largeContent.String()},
-		{Path: "src/small.txt", Kind: "added", Diff: "small"},
-	})
-	if inlineDiff == nil || len(inlineDiff.Files) != 2 {
-		t.Fatalf("inline diff = %+v, want two files", inlineDiff)
-	}
-	if combinedDiff == "" {
-		t.Fatal("combined diff missing")
-	}
+			inlineDiff, combinedDiff := buildInlineDiffFromChanges([]fileChange{
+				{Path: "src/large.txt", Kind: "added", Diff: largeContent.String()},
+				{Path: "src/small.txt", Kind: "added", Diff: "small"},
+			})
+			if inlineDiff == nil || len(inlineDiff.Files) != 2 {
+				t.Fatalf("inline diff = %+v, want two files", inlineDiff)
+			}
+			if combinedDiff == "" {
+				t.Fatal("combined diff missing")
+			}
 
-	large := inlineDiff.Files[0]
-	if large.PreviewLineCount != inlineDiffPreviewLineCount {
-		t.Fatalf("large preview line count = %d, want %d", large.PreviewLineCount, inlineDiffPreviewLineCount)
-	}
-	if !large.PreviewTruncated {
-		t.Fatalf("large preview truncated = false, want true")
-	}
-	if !strings.Contains(large.PreviewPatch, "+line-30") {
-		t.Fatalf("large preview missing capped final line: %q", large.PreviewPatch)
-	}
-	if strings.Contains(large.PreviewPatch, "+line-31") {
-		t.Fatalf("large preview includes line beyond cap: %q", large.PreviewPatch)
-	}
+			large := inlineDiff.Files[0]
+			if large.PreviewLineCount != inlineDiffPreviewLineCount {
+				t.Fatalf("large preview line count = %d, want %d", large.PreviewLineCount, inlineDiffPreviewLineCount)
+			}
+			if !large.PreviewTruncated {
+				t.Fatalf("large preview truncated = false, want true")
+			}
+			if want := "+" + fmt.Sprintf(tc.lineFormat, 30); !strings.Contains(large.PreviewPatch, want) {
+				t.Fatalf("large preview missing capped final line %q: %q", want, large.PreviewPatch)
+			}
+			if beyond := "+" + fmt.Sprintf(tc.lineFormat, 31); strings.Contains(large.PreviewPatch, beyond) {
+				t.Fatalf("large preview includes line beyond cap %q: %q", beyond, large.PreviewPatch)
+			}
 
-	small := inlineDiff.Files[1]
-	if small.PreviewPatch == "" || !strings.Contains(small.PreviewPatch, "+small") {
-		t.Fatalf("small preview patch = %q, want exact per-file preview", small.PreviewPatch)
-	}
-	if small.PreviewTruncated {
-		t.Fatalf("small preview truncated = true, want false")
+			small := inlineDiff.Files[1]
+			if small.PreviewPatch == "" || !strings.Contains(small.PreviewPatch, "+small") {
+				t.Fatalf("small preview patch = %q, want exact per-file preview", small.PreviewPatch)
+			}
+			if small.PreviewTruncated {
+				t.Fatalf("small preview truncated = true, want false")
+			}
+		})
 	}
 }
 
@@ -677,39 +680,6 @@ func TestBuildInlineDiffFromChangesCapsPreviewFiles(t *testing.T) {
 	}
 	if got := fileChangeTitle(inlineDiff); got != "Edited 28 files (+28 -0)" {
 		t.Fatalf("title = %q, want total-file count", got)
-	}
-}
-
-func TestLineBoundedDiffPreviewCountsPatchLikeBodyLines(t *testing.T) {
-	var content strings.Builder
-	for i := 1; i <= 35; i++ {
-		if i > 1 {
-			content.WriteByte('\n')
-		}
-		content.WriteString(fmt.Sprintf("++patch-looking-line-%02d", i))
-	}
-
-	inlineDiff, _ := buildInlineDiffFromChanges([]fileChange{{
-		Path: "src/patch-looking.txt",
-		Kind: "added",
-		Diff: content.String(),
-	}})
-	if inlineDiff == nil || len(inlineDiff.Files) != 1 {
-		t.Fatalf("inline diff = %+v, want one file", inlineDiff)
-	}
-
-	file := inlineDiff.Files[0]
-	if file.PreviewLineCount != inlineDiffPreviewLineCount {
-		t.Fatalf("preview line count = %d, want %d", file.PreviewLineCount, inlineDiffPreviewLineCount)
-	}
-	if !file.PreviewTruncated {
-		t.Fatal("preview truncated = false, want true")
-	}
-	if !strings.Contains(file.PreviewPatch, "+++patch-looking-line-30") {
-		t.Fatalf("preview missing capped hunk body line: %q", file.PreviewPatch)
-	}
-	if strings.Contains(file.PreviewPatch, "+++patch-looking-line-31") {
-		t.Fatalf("preview includes body line beyond cap: %q", file.PreviewPatch)
 	}
 }
 

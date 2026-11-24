@@ -192,3 +192,12 @@ func assertCalls(t *testing.T, fake *fakeBackend, want ...Mode) {
 		}
 	}
 }
+
+func (c *controller) currentMode() Mode {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.effectiveLocked()
+}
+
+// Current reports the last mode Apply successfully reached.
+func Current() Mode { return std.currentMode() }

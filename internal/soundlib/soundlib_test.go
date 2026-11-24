@@ -164,15 +164,6 @@ func TestFilesStopsAtTheCountCap(t *testing.T) {
 	}
 }
 
-// The per-file cap and the count cap are the whole bound on one listing: a
-// third check for the aggregate byte total could never run, so the constant
-// naming that total has to stay derived from the other two.
-func TestListingBoundIsTheCountCap(t *testing.T) {
-	if MaxSoundsBytes != MaxSounds*MaxSoundBytes {
-		t.Fatalf("MaxSoundsBytes = %d, want %d", MaxSoundsBytes, MaxSounds*MaxSoundBytes)
-	}
-}
-
 func TestPutWritesOnePrivateFile(t *testing.T) {
 	service := newService(t)
 	wav := canonicalWAV(wavByteRate / 10)

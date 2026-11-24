@@ -81,7 +81,7 @@ func TestAWithdrawalInTheHandoffOutlivesARecovery(t *testing.T) {
 		t.Run(recovery, func(t *testing.T) {
 			t.Parallel()
 			f := newClaimFixture(t)
-			if err := f.app.StartSession(f.caller.ID); err != nil {
+			if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
 			withdrawn := "withdrawn-" + entityid.New()
@@ -100,7 +100,7 @@ func TestAWithdrawalInTheHandoffOutlivesARecovery(t *testing.T) {
 			if err := f.app.StopSession(f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.app.StartSession(f.caller.ID); err != nil {
+			if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
 			close(proceed)
@@ -119,7 +119,7 @@ func TestAWithdrawalInTheHandoffOutlivesARecovery(t *testing.T) {
 func TestARecoveryAfterADispatchReturnsRestoresNoWithdrawnMessage(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	unlock := f.app.threadLocks().Lock(f.caller.ID)
@@ -154,7 +154,7 @@ func TestABatchLandingWhileAnotherWaitsForTheDecisionIsSent(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newClaimFixture(t)
-			if err := f.app.StartSession(f.caller.ID); err != nil {
+			if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
 			a := "batch-a-" + entityid.New()
@@ -503,7 +503,7 @@ func TestAHandoffARecoveryOvertookGoesWithTheRestOfItsQueue(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				f := newClaimFixture(t)
-				if err := f.app.StartSession(f.caller.ID); err != nil {
+				if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 					t.Fatal(err)
 				}
 				marker := "overtaken-" + entityid.New()
@@ -520,7 +520,7 @@ func TestAHandoffARecoveryOvertookGoesWithTheRestOfItsQueue(t *testing.T) {
 				} else if err := f.app.StopSession(f.caller.ID); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.app.StartSession(f.caller.ID); err != nil {
+				if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 					t.Fatal(err)
 				}
 				unlock := func() {}
@@ -574,7 +574,7 @@ func TestAHandoffARecoveryOvertookGoesWithTheRestOfItsQueue(t *testing.T) {
 func TestACrashAtAGroupsCommitPointLeavesTheMessageToTheBoot(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	marker := "crashed-" + entityid.New()
@@ -697,7 +697,7 @@ func TestARecoveryWhileADispatchWaitsForTheDecisionKeepsTheBatch(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newClaimFixture(t)
-			if err := f.app.StartSession(f.caller.ID); err != nil {
+			if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
 			marker := "recovered-" + entityid.New()
@@ -745,7 +745,7 @@ func TestAMessageWithdrawnAroundAFailedRestoreStaysWithdrawn(t *testing.T) {
 		t.Run(at, func(t *testing.T) {
 			t.Parallel()
 			f := newClaimFixture(t)
-			if err := f.app.StartSession(f.caller.ID); err != nil {
+			if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
 			withdrawn := "withdrawn-" + entityid.New()
@@ -797,7 +797,7 @@ func TestAWithdrawalWaitsForARequeueThatReadItsRow(t *testing.T) {
 		t.Run(by, func(t *testing.T) {
 			t.Parallel()
 			f := newClaimFixture(t)
-			if err := f.app.StartSession(f.caller.ID); err != nil {
+			if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
 			withdrawn := "withdrawn-" + entityid.New()

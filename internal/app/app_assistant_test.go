@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
@@ -400,7 +402,7 @@ func TestASessionTheProviderCleanedUpMovesTheAssistant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = f.app.StartSession(thread.ID)
+	err = f.app.startSessionTakingLock(context.Background(), thread.ID)
 	if !errors.Is(err, errAssistantSessionGone) {
 		t.Fatalf("StartSession = %v, want errAssistantSessionGone", err)
 	}
@@ -514,7 +516,7 @@ func TestACodexSessionTheProviderCleanedUpMovesTheAssistant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := f.app.StartSession(thread.ID); !errors.Is(err, errAssistantSessionGone) {
+	if err := f.app.startSessionTakingLock(context.Background(), thread.ID); !errors.Is(err, errAssistantSessionGone) {
 		t.Fatalf("StartSession = %v, want errAssistantSessionGone", err)
 	}
 	if successor := awaitCurrentThread(t, f.app, thread.ID); successor == thread.ID {
@@ -528,7 +530,7 @@ func TestACodexSessionTheProviderCleanedUpMovesTheAssistant(t *testing.T) {
 	if _, err := f.app.store.UpdateSessionRef(plain.ID, "gone-rollout"); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.StartSession(plain.ID); err == nil || errors.Is(err, errAssistantSessionGone) {
+	if err := f.app.startSessionTakingLock(context.Background(), plain.ID); err == nil || errors.Is(err, errAssistantSessionGone) {
 		t.Fatalf("an ordinary thread's refused resume = %v, want the provider's own error", err)
 	}
 }
@@ -555,7 +557,7 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"fresh-rollout"}}}\n' "$id"
         continue
     fi
-    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+` + testutil.MockCodexUnsubscribeShell + `    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
 done
 `
 	path := filepath.Join(t.TempDir(), "codex-no-rollout.sh")

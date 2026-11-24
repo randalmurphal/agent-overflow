@@ -123,47 +123,36 @@ func TestParseRateLimitsFromHeaders_SingleWindow(t *testing.T) {
 }
 
 // TestParseRateLimitsFromHeaders_PartialWindowDropped ensures a window
-// with one valid header and one missing/malformed header is dropped
-// entirely rather than emitted with a 0 fallback that would visibly
-// reset the ring.
+// with one missing or unparseable header is dropped entirely rather than
+// emitted with a 0 fallback that would visibly reset the ring, while the
+// valid window beside it still comes through.
 func TestParseRateLimitsFromHeaders_PartialWindowDropped(t *testing.T) {
-	headers := http.Header{}
-	headers.Set("Anthropic-Ratelimit-Unified-5h-Utilization", "0.42")
-	// Missing 5h-Reset: window should be dropped.
-	headers.Set("Anthropic-Ratelimit-Unified-7d-Utilization", "0.45")
-	headers.Set("Anthropic-Ratelimit-Unified-7d-Reset", "1778814000")
+	for _, tc := range []struct {
+		name  string
+		fiveH map[string]string
+	}{
+		{"missing reset", map[string]string{"Utilization": "0.42"}},
+		{"malformed utilization", map[string]string{"Utilization": "not-a-number", "Reset": "1778479200"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := http.Header{}
+			for field, value := range tc.fiveH {
+				headers.Set("Anthropic-Ratelimit-Unified-5h-"+field, value)
+			}
+			headers.Set("Anthropic-Ratelimit-Unified-7d-Utilization", "0.45")
+			headers.Set("Anthropic-Ratelimit-Unified-7d-Reset", "1778814000")
 
-	snap, err := parseRateLimitsFromHeaders(headers, time.Now())
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(snap.Limits) != 1 {
-		t.Fatalf("expected 1 entry (partial 5h dropped), got %d: %+v", len(snap.Limits), snap.Limits)
-	}
-	if snap.Limits[0].WindowMins != 10080 {
-		t.Errorf("WindowMins: got %d, want 10080", snap.Limits[0].WindowMins)
-	}
-}
-
-// TestParseRateLimitsFromHeaders_MalformedUtilizationDropped pins the
-// "header present but unparseable" case — silently dropping that
-// window is better than crashing or emitting a 0 fallback.
-func TestParseRateLimitsFromHeaders_MalformedUtilizationDropped(t *testing.T) {
-	headers := http.Header{}
-	headers.Set("Anthropic-Ratelimit-Unified-5h-Utilization", "not-a-number")
-	headers.Set("Anthropic-Ratelimit-Unified-5h-Reset", "1778479200")
-	headers.Set("Anthropic-Ratelimit-Unified-7d-Utilization", "0.45")
-	headers.Set("Anthropic-Ratelimit-Unified-7d-Reset", "1778814000")
-
-	snap, err := parseRateLimitsFromHeaders(headers, time.Now())
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(snap.Limits) != 1 {
-		t.Fatalf("expected 1 entry (malformed 5h dropped), got %d", len(snap.Limits))
-	}
-	if snap.Limits[0].WindowMins != 10080 {
-		t.Errorf("WindowMins: got %d, want 10080", snap.Limits[0].WindowMins)
+			snap, err := parseRateLimitsFromHeaders(headers, time.Now())
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(snap.Limits) != 1 {
+				t.Fatalf("expected 1 entry (bad 5h dropped), got %d: %+v", len(snap.Limits), snap.Limits)
+			}
+			if snap.Limits[0].WindowMins != 10080 {
+				t.Errorf("WindowMins: got %d, want 10080", snap.Limits[0].WindowMins)
+			}
+		})
 	}
 }
 

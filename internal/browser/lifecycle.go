@@ -357,7 +357,7 @@ func (m *Manager) releaseScopeLocked(scope *jarScope) bool {
 // once no tab of it is live or being created: its next private page opens a
 // new jar, while pages still closing, and popups still being adopted, finish in
 // the old one, under its own key. A popup is listed only while its opener is
-// a tab of the jar (adoptPopup), so one being adopted keeps no tab coming.
+// a tab of the jar (runAdoption), so one being adopted keeps no tab coming.
 // The caller holds m.mu.
 func (m *Manager) retirePrivateJarLocked(scope *jarScope) {
 	if scope.jar.private == "" || len(scope.pages) > 0 {

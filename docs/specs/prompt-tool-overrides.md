@@ -300,7 +300,7 @@ switch that works on every model.
 `CLAUDE_CODE_TODO_REMINDER_MODE=off` into Claude spawns (headless
 `withClaudeSessionEnvDefaults` and claudetui `buildEnv`, both as a
 DEFAULT a custom-env value outranks, the same posture as the todo-tools
-opt-in, see `internal/provider/pinnedenv.go`). It rides
+opt-in, see `internal/provider/envtable.go`). It rides
 `SessionOptions.DisableTodoReminders`, the third settings-owned axis:
 stamped by `applySettingsOwnedAxes`, pinned by
 `reconcileSettingsOwnedAxes`.
@@ -313,8 +313,8 @@ write at all.
 `ClaudeMaxCommandTimeoutHours` is the Command timeout row in the same
 section: exported as `BASH_MAX_TIMEOUT_MS` (hours in ms) into every
 Claude spawn, headless (`claude.WithCommandTimeoutEnv` in
-`claudeSpawnEnv`) and claude-tui (the same helper on the override map
-before `BuildEnvironment`), as a DEFAULT a custom-env value outranks; the
+`claudeSpawnEnv`) and claude-tui (the same helper on the session's
+`EnvInput` before `BuildEnvironment`), as a DEFAULT a custom-env value outranks; the
 row names an overriding custom-env entry. Precedence on both paths: the
 custom environment, then the setting, then an inherited host value; a
 value in Claude's own `settings.json` `env` block can still win inside

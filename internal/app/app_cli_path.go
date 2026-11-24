@@ -109,26 +109,3 @@ func ensureCLISymlink(configDir, executable string) (string, error) {
 	}
 	return binDir, nil
 }
-
-// prependCLIBinDir puts binDir at the front of the environment overrides' PATH.
-// The lookup is case-insensitive because provider.BuildEnvironment — which
-// applies these overrides — matches PATH that way too; disagreeing would leave
-// a `Path` override in place and this one appended to a variable nothing reads.
-//
-// Setting PATH to just binDir is not a truncation: BuildEnvironment appends the
-// inherited PATH to whatever a PATH override says, so the child sees
-// <binDir>:<the app's own PATH>.
-func prependCLIBinDir(env map[string]string, binDir string) {
-	for key, value := range env {
-		if !strings.EqualFold(key, "PATH") {
-			continue
-		}
-		if strings.TrimSpace(value) == "" {
-			env[key] = binDir
-			return
-		}
-		env[key] = binDir + string(os.PathListSeparator) + value
-		return
-	}
-	env["PATH"] = binDir
-}

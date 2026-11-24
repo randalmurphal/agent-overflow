@@ -688,21 +688,6 @@ func (a *App) workflowMemoryProvenance(threadID, phaseID string) memory.Provenan
 	return provenance
 }
 
-// describeMemoryFindings renders draft validation for a CLI caller. The CLI
-// prints the error verbatim, so it has to name every rule broken and the value
-// that broke it.
-func describeMemoryFindings(action string, err error) error {
-	var validation *memory.ValidationError
-	if !errors.As(err, &validation) {
-		return err
-	}
-	parts := make([]string, 0, len(validation.Findings))
-	for _, finding := range validation.Findings {
-		parts = append(parts, strings.TrimPrefix(finding.Path, ".")+" "+finding.Message)
-	}
-	return fmt.Errorf("%s: %s", action, strings.Join(parts, "; "))
-}
-
 // workflowAssistantTextKind is the item kind a provider's prose is persisted
 // under. The literal matches the triage write path's own constant; store exports
 // no item-kind vocabulary, and inventing one for a single reader would widen
@@ -942,18 +927,6 @@ func workflowPhaseRuntimeMode(access def.Access) provider.RuntimeMode {
 	return provider.RuntimeReadOnly
 }
 
-// workflowOpenTriageThread opens or returns the item-linked hand-off thread,
-// seeding a newly created thread as its first user turn so work starts
-// immediately.
-//
-// Not a bound method: D32 removed every UI affordance that spawned a thread
-// from a workflow surface. It survives as the PR follow-up surfaces' thread
-// (`WorkflowSendPRReviewCommentsToThread`, `WorkflowDiscussPR`, §4.7) — those
-// ride the run's ONE linked conversation, and this is what makes it one.
-func (a *App) workflowOpenTriageThread(itemID string) (store.Thread, error) {
-	return a.workflowApplication().OpenTriageThread(itemID)
-}
-
 func (a *App) newWorkflowTriageThread(threadID string, project store.Project, workspace, branch, title, providerName, model string) store.Thread {
 	seed := a.seedChatModelProfile(a.lifeCtx(), providerName, model)
 	now := time.Now().UnixMilli()
@@ -975,8 +948,4 @@ func (a *App) newWorkflowTriageThread(threadID string, project store.Project, wo
 	}
 	a.stampThreadCreation(context.Background(), &thread)
 	return a.sanitizeThreadModelSettings(thread)
-}
-
-func (a *App) workflowTriageSeed(item store.WorkItem, phases []store.WorkItemPhase, workspace string) (string, error) {
-	return a.workflowApplication().TriageSeed(item, phases, workspace)
 }

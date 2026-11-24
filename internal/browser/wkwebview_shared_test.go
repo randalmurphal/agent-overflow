@@ -34,27 +34,25 @@ func TestWKStoreIdentifierIsAStableRFC4122UUID(t *testing.T) {
 	}
 }
 
-func TestClampDocumentCaptureStaysWithinTheScreenshotBounds(t *testing.T) {
-	// A page reporting a huge scroll extent must not become a huge allocation:
-	// the frame is cropped to the same maximum afterwards regardless.
-	got := clampDocumentCapture(99_000, 400_000, 1280, 800)
-	if got.width != maxFullScreenshotWidth || got.height != maxFullScreenshotHeight {
-		t.Fatalf("clamped = %+v, want the screenshot maximum", got)
-	}
-}
-
-func TestClampDocumentCaptureNeverShrinksTheView(t *testing.T) {
-	// Shrinking to capture would reflow the very page being captured.
-	got := clampDocumentCapture(300, 200, 1280, 800)
-	if got.width != 1280 || got.height != 800 {
-		t.Fatalf("clamped = %+v, want the view's own size", got)
-	}
-}
-
-func TestClampDocumentCaptureGrowsToATallDocument(t *testing.T) {
-	got := clampDocumentCapture(1280, 5_000, 1280, 800)
-	if got.width != 1280 || got.height != 5_000 {
-		t.Fatalf("clamped = %+v, want the document's own height", got)
+func TestClampDocumentCapture(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		docW, docH, viewW, viewH int
+		wantW, wantH             int
+	}{
+		// A page reporting a huge scroll extent must not become a huge
+		// allocation: the frame is cropped to the same maximum afterwards
+		// regardless.
+		{"stays within the screenshot bounds", 99_000, 400_000, 1280, 800, maxFullScreenshotWidth, maxFullScreenshotHeight},
+		// Shrinking to capture would reflow the very page being captured.
+		{"never shrinks the view", 300, 200, 1280, 800, 1280, 800},
+		{"grows to a tall document", 1280, 5_000, 1280, 800, 1280, 5_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clampDocumentCapture(tc.docW, tc.docH, tc.viewW, tc.viewH); got.width != tc.wantW || got.height != tc.wantH {
+				t.Fatalf("clamped = %+v, want %dx%d", got, tc.wantW, tc.wantH)
+			}
+		})
 	}
 }
 

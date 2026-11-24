@@ -4,7 +4,6 @@ import { findHighlightName } from '../../utils/findHighlights';
 import {
   openPaneFind,
   registerPaneFindProvider,
-  resetPaneFindForTest,
   setPaneFindQuery,
 } from '../../stores/paneFind.svelte';
 
@@ -41,7 +40,6 @@ function visible(root: HTMLElement, index: number): boolean {
 }
 
 afterEach(() => {
-  resetPaneFindForTest();
   for (const f of finds.splice(0)) f.clear();
   for (const root of roots.splice(0)) root.remove();
 });

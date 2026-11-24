@@ -11,6 +11,7 @@ import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpe
 import { PNG_BYTES } from './attachment-fixture.js';
 import { codexTransferScenario, expectTransferComplete, primeTransferRecipient } from './conversation-transfer-helpers.js';
 import { RESULT_LINE, claudeTurnsScenario, emit, listItems, textLines, toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string; threadIds: string[] }> }
 interface Thread { id: string; title: string; sessionRef: string; workspacePath: string; ownershipEpoch?: number }
@@ -183,7 +184,7 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
 
         for (const [round, kind] of (['copy', 'move'] as const).entries()) {
           const used = new Set((await source.rpc<Array<{ mockId: string }>>('HarnessListMocks')).map((mock) => mock.mockId));
-          await source.rpc('SendMessage', sourceThread, 'Check the deploy every five minutes.', null);
+          await source.send(sourceThread, 'Check the deploy every five minutes.');
           await expect.poll(async () => (await listItems(source, sourceThread)).filter((item) => item.summary === reply).length, { timeout: 20_000 }).toBe(round + 1);
           const mocks = await source.rpc<Array<{ mockId: string; registration: { resumeRef?: string } }>>('HarnessListMocks');
           const mockId = mocks.find((mock) => mock.registration.resumeRef === nativeID && !used.has(mock.mockId))?.mockId;
@@ -202,11 +203,11 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
           await dialog.getByRole('combobox', { name: 'Project on destination', exact: true }).selectOption(target.projects[0].projectId);
           // Soft, so a run without the note still records what the transfer does.
           await expect.soft(dialog.getByTestId('transfer-recurring-jobs')).toHaveText('The transfer stops this conversation’s running session, which ends its recurring job: */5 * * * * (5f0c1a2b).');
-          await page.screenshot({ path: info.outputPath(`transfer-recurring-job-${kind}.png`) });
+          await screenshot(page, { path: info.outputPath(`transfer-recurring-job-${kind}.png`) });
 
           await dialog.getByRole('button', { name: kind === 'copy' ? 'Copy conversation' : 'Move conversation', exact: true }).click();
           await expect(dialog.getByTestId('conversation-transfer-status').or(dialog.getByRole('alert'))).toBeVisible();
-          await page.screenshot({ path: info.outputPath(`transfer-recurring-job-${kind}-started.png`) });
+          await screenshot(page, { path: info.outputPath(`transfer-recurring-job-${kind}-started.png`) });
           await expect(dialog.getByRole('alert')).toHaveCount(0);
           const result = await expectTransferComplete(source, destination, sourceThread, kind);
           expect(exits(mockId!), 'the source session holding the job still runs').toBe(1);

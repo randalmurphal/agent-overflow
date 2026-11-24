@@ -343,7 +343,9 @@ func TestProbeCodexRateLimits_EmitsRateLimitsWithoutAccount(t *testing.T) {
 		}
 	}
 
-	app.probeCodexRateLimits(context.Background())
+	if err := app.providerLifecycleService().ProbeCodexRateLimits(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	captured.mu.Lock()
 	defer captured.mu.Unlock()

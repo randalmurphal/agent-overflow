@@ -157,9 +157,17 @@ func (f *failingWriter) WriteHeader(int)           {}
 // HarnessMockCommand had already told its caller the command was
 // accepted, and the driving test waited forever on a gate nothing would
 // release. The response never left, so the mock did not receive it and a
-// requeue cannot duplicate.
+// requeue cannot duplicate. The lost-then-requeued batch is reported, or
+// a flaky control channel looks like a flaky app.
 func TestFailedDeliveryRequeuesTheBatch(t *testing.T) {
-	srv := bareServer(t)
+	var seen []Report
+	srv, err := NewServer(ServerConfig{
+		Resolve:  func(Registration) (Assignment, error) { return Assignment{}, nil },
+		OnReport: func(_ MockInfo, rep Report) { seen = append(seen, rep) },
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 	conn := srv.addMock("mock-1", 1, 0)
 
 	for _, name := range []string{"first", "second"} {
@@ -170,6 +178,9 @@ func TestFailedDeliveryRequeuesTheBatch(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/commands?mock=mock-1", nil)
 	srv.handleCommands(&failingWriter{}, req)
+	if len(seen) != 1 || seen[0].Kind != ReportFixtureError {
+		t.Fatalf("reports after a failed delivery = %+v, want one %s", seen, ReportFixtureError)
+	}
 
 	srv.mu.Lock()
 	front := append([]Command(nil), conn.front...)
@@ -197,28 +208,6 @@ func TestFailedDeliveryRequeuesTheBatch(t *testing.T) {
 	srv.mu.Unlock()
 	if remaining != 0 {
 		t.Fatalf("front buffer after a successful delivery = %d, want empty", remaining)
-	}
-}
-
-// TestFailedDeliveryReports: a lost-then-requeued batch has to be visible
-// somewhere, or a flaky control channel looks like a flaky app.
-func TestFailedDeliveryReports(t *testing.T) {
-	var seen []Report
-	srv, err := NewServer(ServerConfig{
-		Resolve:  func(Registration) (Assignment, error) { return Assignment{}, nil },
-		OnReport: func(_ MockInfo, rep Report) { seen = append(seen, rep) },
-	})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	srv.addMock("mock-1", 1, 0)
-	if err := srv.Command("mock-1", Command{Type: CommandAdvance}); err != nil {
-		t.Fatalf("Command: %v", err)
-	}
-	srv.handleCommands(&failingWriter{}, httptest.NewRequest(http.MethodGet, "/commands?mock=mock-1", nil))
-
-	if len(seen) != 1 || seen[0].Kind != ReportFixtureError {
-		t.Fatalf("reports after a failed delivery = %+v, want one %s", seen, ReportFixtureError)
 	}
 }
 
@@ -317,6 +306,50 @@ func TestMockInfoProjectsGateState(t *testing.T) {
 	apply(Report{Kind: ReportTurnStarted, Turn: 2})
 	if info := read(); info.OpenGate != "" || len(info.PendingAdvances) != 0 {
 		t.Fatalf("after the turn boundary = %+v, want the backlog cleared", info)
+	}
+}
+
+// TestMockInfoProjectsTheStartupGateBesideTheStepGate: a mock can hold its
+// first frame behind its startupGate while an onStart step waits on a gate
+// of its own. Each is reported by its own field, releasing one leaves the
+// other reported, and a turn boundary, which resyncs the step gate, leaves
+// the startup gate alone.
+func TestMockInfoProjectsTheStartupGateBesideTheStepGate(t *testing.T) {
+	srv := bareServer(t)
+	conn := srv.addMock("mock-1", 1, 0)
+	apply := func(rep Report) {
+		srv.mu.Lock()
+		srv.applyReportLocked(conn, rep)
+		srv.mu.Unlock()
+	}
+	expect := func(when, step, startup string) {
+		t.Helper()
+		got := srv.Mocks()
+		if len(got) != 1 || got[0].OpenGate != step || got[0].StartupGate != startup {
+			t.Fatalf("%s: mocks = %+v, want openGate %q and startupGate %q", when, got, step, startup)
+		}
+	}
+
+	apply(Report{Kind: ReportWaitingSignal, Detail: "boot"})
+	apply(Report{Kind: ReportWaitingSignal, Detail: "held-start", Startup: true})
+	expect("both open", "boot", "held-start")
+
+	apply(Report{Kind: ReportAdvanceReleased, Gate: "boot"})
+	expect("the step gate released", "", "held-start")
+
+	apply(Report{Kind: ReportTurnStarted, Turn: 1})
+	expect("after a turn boundary", "", "held-start")
+
+	apply(Report{Kind: ReportWaitingSignal, Turn: 1, Detail: "step"})
+	apply(Report{Kind: ReportAdvanceReleased, Turn: 1, Gate: "held-start", Startup: true})
+	expect("the startup gate released", "step", "")
+
+	// A second advance for the released startup gate is discarded; it
+	// neither joins the step gate's backlog nor moves its gate.
+	apply(Report{Kind: ReportAdvanceBuffered, Turn: 1, Gate: "held-start", Detail: AdvanceDroppedDetail, Startup: true})
+	expect("a discarded startup advance", "step", "")
+	if pending := srv.Mocks()[0].PendingAdvances; len(pending) != 0 {
+		t.Fatalf("a discarded startup advance joined the backlog: %v", pending)
 	}
 }
 

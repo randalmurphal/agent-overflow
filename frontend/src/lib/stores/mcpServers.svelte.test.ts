@@ -1,4 +1,4 @@
-import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
+import { stageBackend, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
 import { setCarriedSessionScopes } from '../transport/scopes';
 import { takePinnedBackend } from '../transport/backends';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -63,7 +63,6 @@ function attach(t: MCPTarget): EntityAttachment<ThreadMCPServer[]> {
 
 afterEach(() => {
   for (const handle of held.splice(0)) handle.release();
-  resetStagedBackends();
 });
 
 describe('needsEphemeralRefresh', () => {
@@ -101,14 +100,12 @@ describe('mcpTargetFor — entity keys', () => {
     expect(worktreeThread?.key).toBe(' claude:/repo/.wt/a');
   });
 
-  it('keys Codex app-globally — its enabled flag is global', () => {
-    expect(mcpTargetFor('codex', 't1', '/a', '')?.key).toBe(MCP_CODEX_KEY);
-    expect(mcpTargetFor('codex', 't2', '/b', '')?.key).toBe(MCP_CODEX_KEY);
-  });
-
-  it('keys Antigravity app-globally — its mcp_config.json is user-global', () => {
-    expect(mcpTargetFor('agy', 't1', '/a', '')?.key).toBe(' agy');
-    expect(mcpTargetFor('agy', 't2', '/b', '')?.key).toBe(' agy');
+  it.each([
+    ['Codex', 'its enabled flag is global', 'codex', MCP_CODEX_KEY],
+    ['Antigravity', 'its mcp_config.json is user-global', 'agy', ' agy'],
+  ])('keys %s app-globally — %s', (_name, _why, provider, key) => {
+    expect(mcpTargetFor(provider, 't1', '/a', '')?.key).toBe(key);
+    expect(mcpTargetFor(provider, 't2', '/b', '')?.key).toBe(key);
   });
 
   it('has no Claude target without a workspace to walk from', () => {
@@ -171,14 +168,6 @@ describe('mcpServers store — one listing per entity', () => {
     expect(mcpRowsSourceThreadId(' claude:/repo')).not.toBe('t2');
   });
 
-  it('reports an empty source thread for a workspace-sourced listing', async () => {
-    setBindingMock('ListWorkspaceMcpServers', async () => [row({ name: 'a' })]);
-    attach(target('claude', '', '/repo'));
-    await flush();
-
-    expect(mcpRowsSourceThreadId(' claude:/repo')).toBe('');
-  });
-
   it('lists a draft placeholder from its workspace, not from a thread', async () => {
     const workspace = setBindingMock('ListWorkspaceMcpServers', async () => [row({ name: 'a' })]);
     setBindingMock('ListThreadMcpServers', async () => {
@@ -188,6 +177,8 @@ describe('mcpServers store — one listing per entity', () => {
     await flush();
 
     expect(workspace).toHaveBeenCalledWith('claude', '/repo');
+    // A workspace-sourced listing has no source thread.
+    expect(mcpRowsSourceThreadId(' claude:/repo')).toBe('');
   });
 
   it('re-sources on attach → release → re-attach', async () => {
@@ -455,38 +446,25 @@ describe('mcpServers store — mcp:status routing', () => {
     expect(calls).toBe(2);
   });
 
-  it('surfaces an asynchronous draft sign-in failure without a thread error row', async () => {
+  it.each([
+    [
+      'surfaces an asynchronous draft sign-in failure without a thread error row',
+      { provider: 'codex', serverName: 'atlassian', error: 'browser approval was denied' },
+      [{ type: 'error', message: 'Sign-in failed for atlassian: browser approval was denied' }],
+    ],
+    [
+      'does not toast when an abandoned draft sign-in times out',
+      { provider: 'claude', serverName: 'srv', timedOut: true, error: 'sign-in not confirmed' },
+      [],
+    ],
+  ])('%s', async (_name, payload, toasts) => {
     const before = new Set(getToasts().map((toast) => toast.id));
-    emitWailsEvent('mcp:oauth-completed', {
-      threadId: '',
-      provider: 'codex',
-      serverName: 'atlassian',
-      success: false,
-      error: 'browser approval was denied',
-    });
+    emitWailsEvent('mcp:oauth-completed', { threadId: '', success: false, ...payload });
     await flush();
 
     const added = getToasts().filter((toast) => !before.has(toast.id));
-    expect(added).toHaveLength(1);
-    expect(added[0]).toMatchObject({
-      type: 'error',
-      message: 'Sign-in failed for atlassian: browser approval was denied',
-    });
+    expect(added).toMatchObject(toasts);
     for (const toast of added) removeToast(toast.id);
-  });
-
-  it('does not toast when an abandoned draft sign-in times out', async () => {
-    const before = getToasts().length;
-    emitWailsEvent('mcp:oauth-completed', {
-      threadId: '',
-      provider: 'claude',
-      serverName: 'srv',
-      success: false,
-      timedOut: true,
-      error: 'sign-in not confirmed',
-    });
-    await flush();
-    expect(getToasts()).toHaveLength(before);
   });
 });
 
@@ -594,7 +572,6 @@ describe('mcpServers store — transport gap', () => {
     expect(list).toHaveBeenCalledTimes(1);
   });
 });
-
 
 it('keeps identically named MCP servers and their connection lifecycles on their own computers', async () => {
   const remote = stageBackend();

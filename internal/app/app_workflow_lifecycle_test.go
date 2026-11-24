@@ -958,3 +958,44 @@ phases:
 		t.Fatal(err)
 	}
 }
+
+// The item detail of a run rerun after its work phase failed a gate with a
+// report keeps that report while the rerun's attempt is parked: the parked
+// attempt supplies nothing, so it never displaces the failed gate's result.
+func TestWorkflowItemDetailKeepsTheFailedGatesResultWhileARerunIsParked(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{
+		Outputs: map[string]def.WorkflowOutput{"report": {From: "work.report"}},
+		Phases:  []def.Phase{{ID: "work", Driver: def.DriverAgent}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := store.WorkItem{
+		ID: "rerun-item", ProjectID: defaultTestProjectID, Goal: "rerun", WorkflowID: "wf",
+		WorkflowScope: "shared", State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonInterrupted),
+		Source: "manual", CreatedAt: 1, Snapshot: snapshot,
+	}
+	if err := app.store.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []store.WorkItemPhase{
+		{ItemID: item.ID, PhaseID: "work", Attempt: 1, Status: "completed", StartedAt: 2,
+			OutputEnvelope: json.RawMessage(`{"status":"done","outputs":{"report":"first.md"}}`)},
+		{ItemID: item.ID, PhaseID: "work", Attempt: 2, Status: "failed", StartedAt: 3,
+			OutputEnvelope: json.RawMessage(`{"status":"done","outputs":{"report":"second.md"}}`)},
+		{ItemID: item.ID, PhaseID: "work", Attempt: 3, Status: "parked", StartedAt: 4},
+	} {
+		if err := app.store.CreateWorkItemPhase(phase); err != nil {
+			t.Fatal(err)
+		}
+	}
+	detail, err := app.WorkflowGetItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Outputs["report"] != "second.md" || len(detail.Outputs) != 1 {
+		t.Fatalf("detail outputs = %v, want the failed gate's second.md", detail.Outputs)
+	}
+}

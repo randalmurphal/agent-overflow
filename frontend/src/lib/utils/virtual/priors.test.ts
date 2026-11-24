@@ -67,7 +67,6 @@ function fakeAdapter(): FakeAdapter {
 }
 
 beforeEach(() => {
-  clearAllThreadSizePriorsForTest();
   setSizePriorsStorageAdapter(undefined);
 });
 

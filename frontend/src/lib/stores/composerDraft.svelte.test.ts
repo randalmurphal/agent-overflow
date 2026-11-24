@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
   type ComposerDraftStore,
   type DraftStoreOptions,
 } from './composerDraft.svelte';
+import { resetComposerDraftSnapshotStateForTest } from './composerDraftSnapshots';
 import type { Attachment } from '../types/attachment';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { getToasts } from './toast.svelte';
 import { flushFrontendErrors, resetFrontendErrorCaptureForTest } from '../utils/frontendErrorCapture';
 import { DraftThreadDeletedError, getRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -24,7 +24,6 @@ function installMocks(draft: {
     updatedAt: 1,
   }));
   setBindingMock('SaveDraft', async () => {});
-  setBindingMock('ClearDraft', async () => {});
   setBindingMock('ListAttachments', async () => [
     sampleAttachment('att-1'),
     sampleAttachment('att-2'),
@@ -59,7 +58,6 @@ function sampleAttachment(id: string): Attachment {
 
 describe('composerDraft store', () => {
   beforeEach(() => {
-    resetComposerDraftSnapshotsForTest();
     installMocks({ content: '', attachmentIds: [], terminalChips: [] });
   });
 
@@ -186,16 +184,15 @@ describe('composerDraft store', () => {
     let persisted = { threadId: 'thread-1', content: 'send [Image #1]', attachmentIds: ['att-1'], terminalChips: [], updatedAt: 1 };
     setBindingMock('GetDraft', async () => persisted);
     setBindingMock('ListAttachments', async () => [sampleAttachment('att-1')]);
-    setBindingMock('ClearDraft', async () => { persisted = { ...persisted, content: '', attachmentIds: [] }; });
     const store = createStore({ debounceMs: 0 });
     await store.setThread('thread-1');
     store.clearLocalForSend();
     expect(store.content).toBe('');
     expect(store.attachments).toHaveLength(0);
 
-    // The page dies before SendMessage reaches the host. A new store loads
+    // The page dies before SendMessageWithOptions reaches the host. A new store loads
     // the saved draft rather than relying on the lost optimistic snapshot.
-    resetComposerDraftSnapshotsForTest();
+    resetComposerDraftSnapshotStateForTest();
     const reopened = createStore({ debounceMs: 0 });
     await reopened.setThread('thread-1');
     expect(reopened.content).toBe('send [Image #1]');
@@ -789,9 +786,6 @@ describe('empty-draft cleanup of a thread another screen may hold', () => {
   let reports: string[];
 
   beforeEach(() => {
-    resetComposerDraftSnapshotsForTest();
-    resetToastsForTest();
-    resetFrontendErrorCaptureForTest();
     installMocks({ content: '', attachmentIds: [], terminalChips: [] });
     stored = {};
     setBindingMock('SaveDraft', async (id: string, content: string) => { stored[id] = content; });

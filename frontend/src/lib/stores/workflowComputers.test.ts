@@ -1,21 +1,27 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { afterEach, expect, it, vi } from 'vitest';
+import { stageBackend } from '../../test/helpers/backends';
 import { deferred } from '../../test/helpers/providerAccounts';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { detachBackend, takePinnedBackend } from '../transport/backends';
-import { __resetEntityIndexForTest, noteWorkflowItem, workflowItemBackend } from '../transport/entityIndex';
+import { noteWorkflowItem, workflowItemBackend } from '../transport/entityIndex';
 import type { WorkItem, WorkflowItemDetail } from '../types/workflow';
 import {
-  applyWorkflowEngineState, applyWorkflowItemState, applyWorkflowSoftStop, getWorkflowDetail, getWorkflowRuns, hydrateWorkflowAttention,
-  isWorkflowEnginePaused, loadWorkflowDetail, resetWorkflowRunsForTest,
-  resyncWorkflowEngineState, retainWorkflowDetails,
+  applyWorkflowEngineState,
+  applyWorkflowItemState,
+  applyWorkflowSoftStop,
+  getWorkflowDetail,
+  getWorkflowRuns,
+  hydrateWorkflowAttention,
+  isWorkflowEnginePaused,
+  loadWorkflowDetail,
+  resyncWorkflowEngineState,
+  retainWorkflowDetails,
 } from './workflowRuns.svelte';
 
 function row(id: string): WorkItem { return { id, projectId: id, state: 'running' } as WorkItem; }
 function detail(id: string, goal: string): WorkflowItemDetail { return { item: { id, goal } } as WorkflowItemDetail; }
 
-beforeEach(() => { resetStagedBackends(); resetWorkflowRunsForTest(); __resetEntityIndexForTest(); resetBindingMocks(); });
-afterEach(() => { resetWorkflowRunsForTest(); resetStagedBackends(); __resetEntityIndexForTest(); resetBindingMocks(); vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); });
 
 it('combines computer catalogs, retains an offline computer, and drops its rows on removal', async () => {
   stageBackend({ id: 'gpu' });

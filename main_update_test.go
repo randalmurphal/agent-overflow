@@ -211,6 +211,14 @@ func TestUpdateCommandsRunThroughMain(t *testing.T) {
 		if result := run.result(t); result.Outcome != supervise.UpdateOutcomeOK || run.code != 0 {
 			t.Fatalf("snapshot = %+v exit %d\n%s", result, run.code, run.stderr)
 		}
+		// Each command logs its phases on its stderr, which the launcher
+		// copies into its log. The stub database is not SQLite, so the
+		// schema read fails and says so with its duration.
+		wantPhasesOnce(t, run.stderr, "command", "snapshot.lock", "snapshot.prepare", "snapshot.schema",
+			"snapshot.clear", "snapshot.space", "snapshot.copy", "snapshot.sync")
+		if _, failed := phaseCounts(t, run.stderr); failed["snapshot.schema"] != 1 || failed["command"] != 0 {
+			t.Fatalf("failed phases = %v\n%s", failed, run.stderr)
+		}
 	}
 
 	t.Run("a failed trial is restored", func(t *testing.T) {
@@ -224,6 +232,16 @@ func TestUpdateCommandsRunThroughMain(t *testing.T) {
 		}
 		if got := readDB(); got != "live" {
 			t.Fatalf("database = %q, want the snapshot restored", got)
+		}
+		// A trial that reports its failure is stopped, then restored. It also
+		// exits on its own, and one whose exit is read first needs no stop.
+		wantPhasesOnce(t, run.stderr, "command", "trial.start", "trial.boot", "shutdown",
+			"restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.clear")
+		if timed, _ := phaseCounts(t, run.stderr); timed["trial.stop"] > 1 {
+			t.Fatalf("trial.stop logged %d times, want at most once\n%s", timed["trial.stop"], run.stderr)
+		}
+		if _, failed := phaseCounts(t, run.stderr); failed["trial.boot"] != 1 || failed["command"] != 1 || len(failed) != 2 {
+			t.Fatalf("failed %v; want the boot and the command\n%s", failed, run.stderr)
 		}
 	})
 
@@ -242,6 +260,13 @@ func TestUpdateCommandsRunThroughMain(t *testing.T) {
 		}
 		if !strings.HasSuffix(run.details(), "Stopping the trial") {
 			t.Fatalf("progress = %q", run.details())
+		}
+		// The trial the command starts logs its phases too, its own
+		// shutdown included.
+		wantPhasesOnce(t, run.stderr, "command", "trial.lock", "trial.prepare", "trial.check",
+			"trial.start", "trial.boot", "trial.stop", "shutdown")
+		if !strings.Contains(run.stderr, "update trial: phase=shutdown duration=") {
+			t.Fatalf("the trial did not time its own shutdown:\n%s", run.stderr)
 		}
 	})
 

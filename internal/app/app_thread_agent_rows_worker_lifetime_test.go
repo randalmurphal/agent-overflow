@@ -20,6 +20,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // callerAgentFrames counts the thread:agent_rows_changed frames addressed to
@@ -277,7 +279,7 @@ func TestAWorkerContinuedFromItsPaneStaysInItsSpawnersPast(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := f.app.SendMessage(context.Background(), ack.ThreadID, "now also update the changelog", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(context.Background(), ack.ThreadID, "now also update the changelog", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {
@@ -549,7 +551,7 @@ func TestLiveWorkersAcrossArchiveDeleteAndPlacement(t *testing.T) {
 	}
 	work := func(worker store.Thread, token string) {
 		t.Helper()
-		if err := f.app.SendMessage(context.Background(), worker.ID, "keep going", nil); err != nil {
+		if _, err := f.app.SendMessageWithOptions(context.Background(), worker.ID, "keep going", pageSendOptions(uuid.NewString())); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 		f.awaitWorker(t, f.caller.ID, token, workerRunning)

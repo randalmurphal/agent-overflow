@@ -472,6 +472,8 @@ func TestFailureQuarantinesFreshButNeverBorrowed(t *testing.T) {
 	}
 }
 
+// Finish runs the cleanup under a bounded context, and a cleanup failure
+// joins the primary error rather than replacing it.
 func TestFinishPreservesPrimaryOverCleanup(t *testing.T) {
 	s, err := New(testPlan(filepath.Join(t.TempDir(), "root"), OwnershipFresh), time.Now().UTC())
 	if err != nil {
@@ -479,24 +481,19 @@ func TestFinishPreservesPrimaryOverCleanup(t *testing.T) {
 	}
 	primary := errors.New("provider disconnected")
 	cleanup := errors.New("close page failed")
-	err = s.Finish(context.Background(), primary, FailureProviderDisconnect, func(context.Context) error { return cleanup })
+	seenDeadline := false
+	err = s.Finish(context.Background(), primary, FailureProviderDisconnect, func(ctx context.Context) error {
+		_, seenDeadline = ctx.Deadline()
+		return cleanup
+	})
+	if !seenDeadline {
+		t.Fatal("cleanup context had no deadline")
+	}
 	if !errors.Is(err, primary) {
 		t.Fatalf("primary error lost: %v", err)
 	}
 	if !strings.Contains(err.Error(), cleanup.Error()) {
 		t.Fatalf("cleanup error lost: %v", err)
-	}
-}
-
-func TestCleanupContextIsBounded(t *testing.T) {
-	s, err := New(testPlan(filepath.Join(t.TempDir(), "root"), OwnershipFresh), time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
-	seenDeadline := false
-	_ = s.Finish(context.Background(), errors.New("failed"), FailureAction, func(ctx context.Context) error { _, seenDeadline = ctx.Deadline(); return nil })
-	if !seenDeadline {
-		t.Fatal("cleanup context had no deadline")
 	}
 }
 
@@ -576,4 +573,21 @@ func TestSupervisorSnapshotsDoNotExposeMutablePlanState(t *testing.T) {
 	if err := s.Finish(context.Background(), errors.New("stop"), FailureAction, nil); err == nil {
 		t.Fatal("failed run returned nil")
 	}
+}
+
+func (l *Lease) Record() LeaseRecord {
+	if l == nil {
+		return LeaseRecord{}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.record
+}
+
+// LeasePath returns the exclusive lease path for a data root.
+func LeasePath(root string) string { return leasePath(root) }
+
+// New is NewWithOptions with no options.
+func New(plan RunPlan, now time.Time) (*Supervisor, error) {
+	return NewWithOptions(plan, now, SupervisorOptions{})
 }

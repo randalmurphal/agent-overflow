@@ -25,7 +25,7 @@ func TestProviderSmokeForkContinuity(t *testing.T) {
 	for _, smoke := range []providerSmokeCase{
 		claude,
 		{providerName: string(provider.Codex), model: "gpt-6-luna",
-			installHint: "install Codex CLI on PATH", loginHint: "run `codex login`", probeAccount: (*App).ProbeCodexAccount},
+			installHint: "install Codex CLI on PATH", loginHint: "run `codex login`", probeAccount: probeCodexAccount},
 	} {
 		t.Run(smoke.providerName, func(t *testing.T) {
 			app, _ := setupE2EApp(t)

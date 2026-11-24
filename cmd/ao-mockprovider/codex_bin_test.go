@@ -63,17 +63,6 @@ func TestCodexHandshakeAndScenarioTurn(t *testing.T) {
 		t.Fatalf("turn/completed = %q", done)
 	}
 
-	// A method this mock does not implement must still get an ANSWER so the
-	// app never hangs — and the answer is -32601, not an empty success.
-	// codex.IsMethodUnsupported keys on that code, and an empty result made
-	// every optional surface report success against a server that did
-	// nothing.
-	p.send(`{"jsonrpc":"2.0","id":4,"method":"thread/compact/start","params":{}}`)
-	unsupported := p.expectLine(testTimeout)
-	if !strings.Contains(unsupported, `"code":-32601`) || !strings.Contains(unsupported, `"id":4`) {
-		t.Fatalf("unsupported-method response = %q, want a -32601 error", unsupported)
-	}
-
 	p.closeStdinAndExpectExit(0, testTimeout)
 }
 

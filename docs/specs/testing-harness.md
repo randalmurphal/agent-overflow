@@ -160,8 +160,8 @@ omits:
 | `scenario set\|list\|clear` | Scenario rules. `set` takes `--name lib-name` or `-f file.json`, `--cwd`, `--session-ref`. |
 | `scenario validate <file…>` | Offline: parse + pacing rules + fixture-path existence. No instance needed. Used by tests and authors. |
 | `mock list\|advance\|emit\|exit` | `HarnessListMocks` / `HarnessMockCommand`. |
-| `threads` / `items --thread T [--turn N]` | Thread rows (harness escape hatch) / items via App RPCs. |
-| `send --thread T <text…>` | `SendMessage`. |
+| `threads` / `items --thread T [--turn N]` | Thread rows (harness escape hatch) / items via `HarnessListItems`. |
+| `send --thread T <text…>` | `HarnessSend` ([method table](../architecture/agent-harness.md#rpc-surface)). |
 | `events tail [--channel C…]` / `events await --channel C [--where path=value] [--timeout 15s]` / `events count` | Live WS subscribe with ring replay; await consumes matches exactly like the TS client so two awaits see two occurrences. Tail defaults to 1,000 records on stdout. `--file` captures without an event-count cap, bounded by `--max-bytes` or `--timeout`, and reports when the capture is incomplete. |
 | `record start\|stop`, `bundles`, `replay bundle\|file\|pause\|resume\|step\|stop\|status` | Bundle workflow. |
 | `logs backend\|frontend-errors\|ui-trace [-f] [-n N]` | Tails the evidence files `HarnessInfo` names (backend = the stderr capture from `up`). |
@@ -307,7 +307,10 @@ the same on every run because the Go test cache keys a result by the
 107 bytes. `/tmp` itself is the host's, so paths a caller passes in stay
 readable. `AO_NETISOLATE_HOST_TMPDIR` names the host's temp directory for
 a file that must outlive the run, such as a data root
-`AO_E2E_KEEP_FAILED_ROOT` keeps.
+`AO_E2E_KEEP_FAILED_ROOT` keeps. A test that needs storage writes, which a
+tmpfs never makes, uses `netisolate.DiskDir`: a directory on disk the run
+owns, inside the Go work directory below (`/tmp/aot-<uid>/.ao-go-work/ao-disk`),
+made even when the developer's `GOTMPDIR` stays, and removed with the run.
 
 The go command's work directory, test binaries included, would add
 several GB to the tmpfs, so each run gets one on disk under the host's

@@ -8,15 +8,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import { fireEvent, render } from '@testing-library/svelte';
-import { resetAppStorageForTest } from './appStorage';
-import { __resetReviewPaneStateForTest, type CommentAnchor, type ReviewPaneState } from './reviewPane.svelte';
-import { __resetPinnedReviewStatesForTest, disposePRReviewStates, reviewStateForPR, reviewSubjectForPR } from './reviewPanePinned.svelte';
-import { getToasts, resetToastsForTest } from './toast.svelte';
+import { type CommentAnchor, type ReviewPaneState } from './reviewPane.svelte';
+import { disposePRReviewStates, reviewStateForPR, reviewSubjectForPR } from './reviewPanePinned.svelte';
+import { getToasts } from './toast.svelte';
 import Toast from '../components/shared/Toast.svelte';
 import { applyPRUpdatedEvent } from './prReviewStore.svelte';
 import { commentWriteKey } from './reviewCommentWrites.svelte';
-import { resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
-import { resetPanesForTest } from './panes.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { prKey, type PRRef } from '../utils/prReference';
@@ -26,7 +23,6 @@ import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app
 import { commitList } from '../../test/helpers/commitList';
 import { TransportError } from '../transport/wsClient';
 import { resetToLocalPage } from '../../test/helpers/scopes';
-import { resetStagedBackends } from '../../test/helpers/backends';
 import ReviewSentCommentBody from '../components/review/ReviewSentCommentBody.svelte';
 import ReviewPRCommentField from '../components/review/ReviewPRCommentField.svelte';
 import ReviewThreadFooter from '../components/review/ReviewThreadFooter.svelte';
@@ -117,13 +113,7 @@ function editorWith(state: ReviewPaneState, anchor: CommentAnchor, body: string)
 }
 
 beforeEach(() => {
-  resetAppStorageForTest();
-  __resetPinnedReviewStatesForTest();
-  __resetReviewPaneStateForTest();
-  resetComposerDraftRegistryForTest();
-  resetPanesForTest();
   resetToLocalPage();
-  resetToastsForTest();
   hello();
   threads = [THREAD];
   setBindingMock('SubscribePRUpdates', async () => ({ id: 'sub-5', prKey: KEY, detail: detail(), threads, headSHA: 'sha-5', seq: 1 }));
@@ -137,9 +127,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  __resetPinnedReviewStatesForTest();
-  __resetReviewPaneStateForTest();
-  resetStagedBackends();
   resetToLocalPage();
 });
 
@@ -825,35 +812,24 @@ describe('a write that fails after its pane is gone', () => {
   // In the order they failed, which the test does not fix.
   const messages = () => getToasts().map((toast) => toast.message).sort();
 
-  it('says each was not sent, once each, held until dismissed', async () => {
+  it.each([
+    ['says each was not sent, once each, held until dismissed', refused, `was not sent. ${REFUSED}`],
+    ['says an unconfirmed one was not confirmed, never that it was not sent', unconfirmed, `was not confirmed. ${UNCONFIRMED}`],
+  ])('%s', async (_name, failure, tail) => {
     const { writes } = await inFlight();
     disposePRReviewStates('tools-1');
-    for (const write of writes) write.reject(refused());
+    for (const write of writes) write.reject(failure());
     await settle();
-    expect(messages()).toEqual([
-      `Your comment on src/a.ts:11–12 was not sent. ${REFUSED}`,
-      `Your comment on src/a.ts:12 was not sent. ${REFUSED}`,
-      `Your comment on the pull request was not sent. ${REFUSED}`,
-      `Your edit to the comment on src/a.ts:12 was not sent. ${REFUSED}`,
-    ].sort());
-    for (const toast of getToasts()) {
-      expect(toast.duration).toBe(0);
-      expect(toast.action).toMatchObject({ label: 'Copy text', keep: true });
-    }
-  });
-
-  it('says an unconfirmed one was not confirmed, never that it was not sent', async () => {
-    const { writes } = await inFlight();
-    disposePRReviewStates('tools-1');
-    for (const write of writes) write.reject(unconfirmed());
-    await settle();
-    const tail = `was not confirmed. ${UNCONFIRMED}`;
     expect(messages()).toEqual([
       `Your comment on src/a.ts:11–12 ${tail}`,
       `Your comment on src/a.ts:12 ${tail}`,
       `Your comment on the pull request ${tail}`,
       `Your edit to the comment on src/a.ts:12 ${tail}`,
     ].sort());
+    for (const toast of getToasts()) {
+      expect(toast.duration).toBe(0);
+      expect(toast.action).toMatchObject({ label: 'Copy text', keep: true });
+    }
   });
 
   it('copies the comment\'s whole text and stays up', async () => {

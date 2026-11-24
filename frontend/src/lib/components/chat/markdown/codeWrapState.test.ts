@@ -1,17 +1,12 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   CODE_WRAP_STATE_MAX_ENTRIES,
   isCodeBlockUnwrapped,
   isCodeBlockUnwrappedByKey,
-  resetCodeWrapStateForTest,
   setCodeBlockUnwrapped,
   setCodeBlockUnwrappedByKey,
 } from './codeWrapState';
 import { contentKey } from '../../../utils/fnv1a';
-
-beforeEach(() => {
-  resetCodeWrapStateForTest();
-});
 
 describe('codeWrapState', () => {
   it('defaults every block to wrapped', () => {

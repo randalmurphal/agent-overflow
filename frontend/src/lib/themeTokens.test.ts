@@ -32,7 +32,6 @@
 // exists to stop dead rules. Every class reference below is therefore prose or
 // a brace-set shape that cannot be a valid candidate.
 
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -41,6 +40,12 @@ import {
   repoPath,
   scannedSources,
 } from '../test/sourceScan';
+
+// What this suite scans (test/sourceScan.ts).
+const SCANNED = scannedSources(import.meta.glob<string>(
+  ['/src/**/*.{ts,svelte,css}', '!/src/test/**', '!**/*.{test,spec}.{ts,js}', '!**/*.manual.ts'],
+  { query: '?raw', import: 'default', eager: true },
+));
 
 const SOURCE_EXTENSIONS = /\.(ts|svelte|css)$/;
 
@@ -210,7 +215,7 @@ const NON_COLOR_UTILITY_ALLOWLIST: Record<string, string> = {};
 // ---------------------------------------------------------------------------
 
 function themeBlock(): string {
-  const css = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const css = SCANNED.text(join(SRC_ROOT, 'app.css')).replace(/\/\*[\s\S]*?\*\//g, ' ');
   const start = css.indexOf('@theme');
   if (start < 0) throw new Error('app.css has no @theme block; the token rules would be vacuous');
   const open = css.indexOf('{', start);
@@ -327,9 +332,9 @@ function scan(): Scan {
   const rawClasses = new Map<string, string[]>();
   const hexes = new Map<string, string[]>();
 
-  for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+  for (const file of SCANNED.files(SOURCE_EXTENSIONS)) {
     const path = repoPath(file);
-    const text = stripComments(readFileSync(file, 'utf8'), path);
+    const text = stripComments(SCANNED.text(file), path);
 
     const reasons: string[] = [];
     const palette = findAll(text, RAW_PALETTE_CLASS);

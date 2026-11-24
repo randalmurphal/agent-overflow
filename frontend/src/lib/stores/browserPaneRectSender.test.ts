@@ -105,7 +105,7 @@ describe('browser pane rect sender', () => {
     expect(calls).toHaveLength(3);
   });
 
-  it('retries three times, each after twice the wait before it', async () => {
+  it('retries three times, each after twice the wait before it, then gives up, says so, and sends the same rect again later', async () => {
     const { calls, failures, sender } = harness();
     sender.report('m', rect(1));
     for (const delay of [100, 200, 400]) {
@@ -123,22 +123,9 @@ describe('browser pane rect sender', () => {
     await flush();
     await flush();
     expect(failures).toHaveLength(1);
+    expect(String(failures[0].error)).toContain('backend restarting');
     await vi.advanceTimersByTimeAsync(10_000);
     expect(calls).toHaveLength(4);
-  });
-
-  it('gives up after the bound, says so, and sends the same rect again later', async () => {
-    const { calls, failures, sender } = harness();
-    sender.report('m', rect(1));
-    for (let attempt = 0; attempt < 4; attempt++) {
-      calls[attempt].reject(new Error('backend restarting'));
-      await flush();
-      await flush();
-      await vi.advanceTimersByTimeAsync(400);
-    }
-    expect(calls).toHaveLength(4);
-    expect(failures).toHaveLength(1);
-    expect(String(failures[0].error)).toContain('backend restarting');
     sender.report('m', rect(1));
     expect(calls).toHaveLength(5);
   });

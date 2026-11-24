@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import PairingScreen from './PairingScreen.svelte';
 import type { PairingPayload } from '../../transport/deviceSession';
-import { __resetHomeEndpointForTest, storedBackendEndpoint } from '../../transport/homeEndpoint';
+import { storedBackendEndpoint } from '../../transport/homeEndpoint';
 import { setPasskeysAvailableFromBootstrap } from '../../transport/passkey';
 
 // Driven through the REAL deviceSession module with a stubbed global
@@ -37,7 +37,6 @@ beforeEach(() => {
 
 afterEach(() => {
   localStorage.clear();
-  __resetHomeEndpointForTest();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -100,12 +99,12 @@ describe('PairingScreen', () => {
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the refusal reason when the link no longer admits anything', async () => {
+  it('shows the refusal reason and offers no retry when the link no longer admits anything', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ reason: 'unknown_credential' }), { status: 401 })),
     );
-    const { getByRole, getByText, queryByLabelText } = render(PairingScreen, {
+    const { getByRole, getByText, queryByLabelText, queryByRole } = render(PairingScreen, {
       props: { payload: PAYLOAD, onDone: () => {} },
     });
     await fireEvent.click(getByRole('button', { name: 'Pair' }));
@@ -114,6 +113,9 @@ describe('PairingScreen', () => {
     await waitFor(() => getByText('This pairing could not be completed.'));
     getByText('Start a new pairing from the app on your computer.');
     expect(queryByLabelText('Verification number')).toBeNull();
+    // The link cannot work again, so nothing offers to retry it.
+    expect(queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(queryByRole('button', { name: 'Start over' })).toBeNull();
   });
 
   it('offers Try again when the request never reached the computer, keeping the same link', async () => {
@@ -138,20 +140,6 @@ describe('PairingScreen', () => {
     expect(attempts).toBe(2);
     const [, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
     expect((JSON.parse(init.body as string) as Record<string, string>).token).toBe('link-token');
-  });
-
-  it('offers no retry for a link that cannot work again', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ reason: 'unknown_credential' }), { status: 401 })),
-    );
-    const { getByRole, findByText, queryByRole } = render(PairingScreen, {
-      props: { payload: PAYLOAD, onDone: () => {} },
-    });
-    await fireEvent.click(getByRole('button', { name: 'Pair' }));
-    await findByText('This pairing could not be completed.');
-    expect(queryByRole('button', { name: 'Try again' })).toBeNull();
-    expect(queryByRole('button', { name: 'Start over' })).toBeNull();
   });
 
   it('starts over on the shell by closing the slot the failed link opened and reloading to the scan screen', async () => {

@@ -1,17 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
 
 import SendQueuePreview from './SendQueuePreview.svelte';
 import { buildPane } from '../../../test/helpers/chat';
-import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
   applyFlushedLifecycle,
   markItemsFlushed,
   replaceQueueForThread,
-  resetForTest as resetSendQueueForTest,
   type QueueItem,
 } from '../../stores/sendQueue.svelte';
-import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 
 function makeQueueItem(overrides: Partial<QueueItem> = {}): QueueItem {
   return {
@@ -28,16 +25,6 @@ function makeQueueItem(overrides: Partial<QueueItem> = {}): QueueItem {
 }
 
 describe('<SendQueuePreview>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetSendQueueForTest();
-    resetThreadStatuses();
-  });
-
-  afterEach(() => {
-    resetSendQueueForTest();
-    resetThreadStatuses();
-  });
 
   it('renders nothing when no pending messages exist', async () => {
     const pane = await buildPane();
@@ -199,43 +186,20 @@ describe('<SendQueuePreview>', () => {
     });
   });
 
-  it('shows the newest four messages and counts the earlier ones', async () => {
+  it.each([
+    { case: 'shows the newest four messages and counts the earlier ones', flushed: [0, 1], queued: [2, 3, 4, 5], earlier: '2 earlier messages waiting' },
+    { case: 'counts one earlier message in the singular', flushed: [], queued: [1, 2, 3, 4, 5], earlier: '1 earlier message waiting' },
+    { case: 'shows every message and no count while four or fewer wait', flushed: [], queued: [1, 2, 3, 4], earlier: undefined },
+  ])('$case', async ({ flushed, queued, earlier }) => {
     const pane = await buildPane();
-    markItemsFlushed('thread-1', [
-      { queueItemId: 'q-0', userItemId: 'user:0', message: 'flushed 0' },
-      { queueItemId: 'q-1', userItemId: 'user:1', message: 'flushed 1' },
-    ]);
-    replaceQueueForThread('thread-1', [2, 3, 4, 5].map((n) => makeQueueItem({ id: `q-${n}`, message: `queued ${n}` })));
-
-    const { getAllByTestId, getByTestId } = render(SendQueuePreview, { props: { pane } });
-
-    expect(getAllByTestId('send-queue-preview-row').map((row) => row.textContent?.trim().replace(/^→\s*/, ''))).toEqual([
-      'queued 2',
-      'queued 3',
-      'queued 4',
-      'queued 5',
-    ]);
-    expect(getByTestId('send-queue-preview-earlier').textContent?.trim()).toBe('2 earlier messages waiting');
-  });
-
-  it('counts one earlier message in the singular', async () => {
-    const pane = await buildPane();
-    replaceQueueForThread('thread-1', [1, 2, 3, 4, 5].map((n) => makeQueueItem({ id: `q-${n}`, message: `queued ${n}` })));
-
-    const { getAllByTestId, getByTestId } = render(SendQueuePreview, { props: { pane } });
-
-    expect(getAllByTestId('send-queue-preview-row')).toHaveLength(4);
-    expect(getByTestId('send-queue-preview-earlier').textContent?.trim()).toBe('1 earlier message waiting');
-  });
-
-  it('shows every message and no count while four or fewer wait', async () => {
-    const pane = await buildPane();
-    replaceQueueForThread('thread-1', [1, 2, 3, 4].map((n) => makeQueueItem({ id: `q-${n}`, message: `queued ${n}` })));
+    markItemsFlushed('thread-1', flushed.map((n) => ({ queueItemId: `q-${n}`, userItemId: `user:${n}`, message: `flushed ${n}` })));
+    replaceQueueForThread('thread-1', queued.map((n) => makeQueueItem({ id: `q-${n}`, message: `queued ${n}` })));
 
     const { getAllByTestId, queryByTestId } = render(SendQueuePreview, { props: { pane } });
 
-    expect(getAllByTestId('send-queue-preview-row')).toHaveLength(4);
-    expect(queryByTestId('send-queue-preview-earlier')).toBeNull();
+    expect(getAllByTestId('send-queue-preview-row').map((row) => row.textContent?.trim().replace(/^→\s*/, '')))
+      .toEqual(queued.slice(-4).map((n) => `queued ${n}`));
+    expect(queryByTestId('send-queue-preview-earlier')?.textContent?.trim()).toBe(earlier);
   });
 
   it('exposes an aria-label naming pending messages', async () => {

@@ -1,16 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import LazyContentBlock from './LazyContentBlock.svelte';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { MAX_INLINE_BYTES } from '../../utils/inlineThreshold';
-import { __resetPayloadCacheForTest } from '../../utils/payloadDataCache';
 import { DEFAULT_PAYLOAD_CHUNK_BYTES, DEFAULT_PAYLOAD_PREVIEW_BYTES } from '../../utils/payloadExpansion.svelte';
 
 describe('<LazyContentBlock>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    __resetPayloadCacheForTest();
-  });
 
   it('renders the preview verbatim and no toggle when preview is short', () => {
     const { getByTestId, queryByTestId } = render(LazyContentBlock, {
@@ -20,9 +15,14 @@ describe('<LazyContentBlock>', () => {
     expect(queryByTestId('lazy-content-toggle')).toBeNull();
   });
 
-  it('omits the toggle when the preview is short and payloadId is absent', () => {
+  // Without a payloadId there's nothing to fetch, so the component falls
+  // back to pure truncation and hides the affordance.
+  it.each([
+    ['short', 'small preview'],
+    ['oversized', 'a'.repeat(MAX_INLINE_BYTES + 1)],
+  ])('omits the toggle when the preview is %s and payloadId is absent', (_name, preview) => {
     const { queryByTestId } = render(LazyContentBlock, {
-      props: { payloadId: undefined, preview: 'small preview' },
+      props: { payloadId: undefined, preview },
     });
     expect(queryByTestId('lazy-content-toggle')).toBeNull();
   });
@@ -45,16 +45,6 @@ describe('<LazyContentBlock>', () => {
     const toggle = getByTestId('lazy-content-toggle');
     expect(toggle.textContent?.trim()).toBe('Show all');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-  });
-
-  it('keeps the button hidden when preview is oversized but payloadId is missing', () => {
-    // Without a payloadId there's nothing to fetch, so the component falls
-    // back to pure truncation and hides the affordance.
-    const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
-    const { queryByTestId } = render(LazyContentBlock, {
-      props: { payloadId: undefined, preview },
-    });
-    expect(queryByTestId('lazy-content-toggle')).toBeNull();
   });
 
   it('links the toggle to the body it reveals (aria-controls)', async () => {

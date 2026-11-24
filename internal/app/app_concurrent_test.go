@@ -72,7 +72,7 @@ func TestConcurrent_CreateThreadsUnderLoad(t *testing.T) {
 	}
 }
 
-// TestConcurrent_SameThreadUpdates: 10 goroutines racing UpdateThreadModel on
+// TestConcurrent_SameThreadUpdates: 10 goroutines racing UpdateThreadModelSelection on
 // the same inactive thread. All writes must succeed; the final stored value
 // must be one of the requested models (no garbled state, no torn writes).
 func TestConcurrent_SameThreadUpdates(t *testing.T) {
@@ -97,8 +97,8 @@ func TestConcurrent_SameThreadUpdates(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			if _, err := app.UpdateThreadModel(thread.ID, models[i%len(models)]); err != nil {
-				t.Errorf("UpdateThreadModel[%d]: %v", i, err)
+			if _, err := app.UpdateThreadModelSelection(thread.ID, thread.Provider, models[i%len(models)]); err != nil {
+				t.Errorf("UpdateThreadModelSelection[%d]: %v", i, err)
 				return
 			}
 			successes.Add(1)
@@ -155,10 +155,10 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "go", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "go", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -181,7 +181,7 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 					return
 				default:
 				}
-				items, err := app.ListItems(thread.ID, true)
+				items, err := app.listThreadItems(thread.ID, true)
 				if err != nil {
 					t.Errorf("ListItems: %v", err)
 					return
@@ -224,7 +224,7 @@ func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := app.StartSession(thread.ID); err != nil {
+		if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 			t.Errorf("StartSession: %v", err)
 		}
 	}()
@@ -251,7 +251,7 @@ func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 	if got.ClaudeBinaryPath == "" {
 		t.Fatalf("claudeBinaryPath lost: %+v", got)
 	}
-	_ = app.StopSession(thread.ID)
+	stopSessionChecked(t, app, thread.ID)
 }
 
 // TestConcurrent_ThreadArchiveAndListRace: flip archive state while listers

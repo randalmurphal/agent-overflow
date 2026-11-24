@@ -4,12 +4,10 @@
 // specific first, so their document listeners run in that order and exactly
 // one menu opens for any press.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { SRC_ROOT } from '../../../test/sourceScan';
+import app from '../../../App.svelte?raw';
 import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
 import DiagramInteractionHost from '../chat/DiagramInteractionHost.svelte';
 import ImageMenuHost from '../chat/ImageMenuHost.svelte';
@@ -74,7 +72,6 @@ describe('delegated context menu hosts', () => {
   });
 
   it('are mounted in App.svelte most specific first', () => {
-    const app = readFileSync(join(SRC_ROOT, 'App.svelte'), 'utf8');
     const positions = HOSTS_IN_ORDER.map((name) => app.indexOf(`<${name} />`));
     expect(positions.every((at) => at >= 0), 'every host is mounted in App.svelte').toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);

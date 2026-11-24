@@ -322,7 +322,7 @@ func providerSmokePhaseSchema(item store.WorkItem) ([]byte, error) {
 		if phase.ID != providerSmokePhaseID {
 			continue
 		}
-		return def.EnvelopeSchema(phase)
+		return def.PhaseEnvelope(phase).Schema()
 	}
 	return nil, fmt.Errorf("frozen snapshot has no phase %q", providerSmokePhaseID)
 }

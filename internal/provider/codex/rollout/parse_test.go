@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -449,4 +450,17 @@ func TestSessionIDFromPath(t *testing.T) {
 			t.Fatalf("SessionIDFromPath(%q) = %q, want %q", path, got, want)
 		}
 	}
+}
+
+// ReadLatestProfile scans a rollout without constructing its event history.
+// It exists for repairing imported rows created by older readers that lost a
+// late turn_context. Normal imports obtain the same profile for free from
+// Parse; callers should not add this second pass to that path.
+func ReadLatestProfile(ctx context.Context, path string) (importir.ModelProfile, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return importir.ModelProfile{}, fmt.Errorf("rollout: open %s for profile: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+	return ReadLatestProfileAt(ctx, file, path)
 }

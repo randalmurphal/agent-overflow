@@ -5,7 +5,6 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/base64"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,12 +36,12 @@ func newTakeControlFixture(t *testing.T) (*App, string) {
 		Retention: claude.UserHomeRetention(0),
 		Binary:    binary,
 		WorkDir:   dir,
-		Env:       []string{"HOME=" + dir, "PATH=" + os.Getenv("PATH")},
+		Env:       provider.EnvInput{Custom: map[string]string{"HOME": dir}},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claudetui.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 
 	app := &App{}
 	app.sessionManager().put(threadID, session{ClaudeTUI: sess})

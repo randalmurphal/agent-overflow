@@ -23,6 +23,8 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/engine"
+
+	"github.com/google/uuid"
 )
 
 // TestRunParallelClosersRunsEveryCloserConcurrently pins that shutdown
@@ -454,17 +456,22 @@ func TestShutdownAggregatesMultipleErrorsWithErrorsJoin(t *testing.T) {
 // TestShutdownBlocksNewWork covers the first step of the Shutdown
 // contract: after Shutdown returns, binding entry points must fail fast
 // with ErrShuttingDown instead of spinning up subsystems we'd have to
-// tear straight back down.
+// tear straight back down. The flag is what refuses them: before Shutdown,
+// StartSession fails for another reason (the thread is unknown), never
+// ErrShuttingDown.
 func TestShutdownBlocksNewWork(t *testing.T) {
 	app, _ := newFullyWiredTestApp(t)
+	if err := app.startSessionTakingLock(context.Background(), "thread-x"); errors.Is(err, ErrShuttingDown) {
+		t.Fatal("StartSession returned ErrShuttingDown before shutdown")
+	}
 	if err := app.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
 
-	if err := app.StartSession("thread-x"); !errors.Is(err, ErrShuttingDown) {
+	if err := app.startSessionTakingLock(context.Background(), "thread-x"); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("StartSession after shutdown = %v, want ErrShuttingDown", err)
 	}
-	if err := app.SendMessage(context.Background(), "thread-x", "hi", nil); !errors.Is(err, ErrShuttingDown) {
+	if _, err := app.SendMessageWithOptions(context.Background(), "thread-x", "hi", pageSendOptions(uuid.NewString())); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("SendMessage after shutdown = %v, want ErrShuttingDown", err)
 	}
 	if err := app.ReconnectSession("thread-x"); !errors.Is(err, ErrShuttingDown) {
@@ -472,32 +479,6 @@ func TestShutdownBlocksNewWork(t *testing.T) {
 	}
 	if err := app.startSession(context.Background(), "thread-x"); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("startSession after shutdown = %v, want ErrShuttingDown", err)
-	}
-}
-
-// TestShutdownSetsFlagAtomically protects the ordering of the CAS in
-// Shutdown: a concurrent StartSession must see the flag before the
-// teardown runs, so the CAS happens before any subsystem close. If a
-// regression moved the CAS after (say) the triage drain, this test
-// would see late StartSession calls slip through and reach
-// startSessionNow before the flag flipped.
-func TestShutdownSetsFlagAtomically(t *testing.T) {
-	app, _ := newFullyWiredTestApp(t)
-
-	// Pre-flight: StartSession without shutdown should not trip the
-	// ErrShuttingDown branch (it will fail for a different reason —
-	// unknown thread — but not ErrShuttingDown).
-	if err := app.StartSession("nonexistent"); errors.Is(err, ErrShuttingDown) {
-		t.Fatal("StartSession returned ErrShuttingDown before shutdown")
-	}
-
-	if err := app.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown() error = %v", err)
-	}
-
-	// Post-shutdown.
-	if err := app.StartSession("nonexistent"); !errors.Is(err, ErrShuttingDown) {
-		t.Fatalf("StartSession post-shutdown = %v, want ErrShuttingDown", err)
 	}
 }
 

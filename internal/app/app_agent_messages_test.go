@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
@@ -31,7 +32,7 @@ type agentMessageMeta struct {
 
 func loadAgentMessageMetas(t *testing.T) []agentMessageMeta {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("internal", "usermessage", "testdata", "agent_message_metas.json"))
+	data, err := os.ReadFile(reporoot.Path(t, "internal/usermessage/testdata/agent_message_metas.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +286,7 @@ func TestFlushAcknowledgementClassifiesTheJoinedRow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("claude.NewSession: %v", err)
 			}
-			t.Cleanup(func() { _ = sess.Close() })
+			t.Cleanup(func() { closeSessionChecked(t, sess) })
 			app.sessionManager().put(thread.ID, session{
 				Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now()),
 			})

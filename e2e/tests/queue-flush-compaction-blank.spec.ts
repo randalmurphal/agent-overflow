@@ -36,6 +36,7 @@ import {
   setScenario,
   threadToolsScenario,
 } from './thread-tools-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 const QUEUED = 'Queued mid-turn: also consider the unpaired case.';
 const AGENTS = 5;
@@ -240,6 +241,23 @@ async function timelineSettled(page: import('@playwright/test').Page, frames: nu
   }), { frames, capMs });
 }
 
+// Resolves once the sampler's latest frame paints rows, or once the blank
+// that frame is part of has lasted the limit, so a blank that persists into
+// the settled state is a run longer than the limit, and one hidden frame at
+// the boundary is a run of one frame.
+async function blankResolved(page: import('@playwright/test').Page): Promise<void> {
+  await page.waitForFunction((limit) => {
+    const frames = (window as unknown as { __aoFrames: FrameSample[] }).__aoFrames;
+    const blank = (s: FrameSample) => s.visibleNodes === 0 || s.hidden;
+    const last = frames.at(-1);
+    if (!last) return false;
+    if (!blank(last)) return true;
+    let start = frames.length - 1;
+    while (start > 0 && blank(frames[start - 1])) start--;
+    return last.t - frames[start].t >= limit;
+  }, BLANK_LIMIT_MS, { timeout: BLANK_LIMIT_MS + 10_000 });
+}
+
 function longestBlankRun(samples: FrameSample[]): { ms: number; at: FrameSample | null } {
   let best = 0;
   let bestAt: FrameSample | null = null;
@@ -320,14 +338,13 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
     try {
       await expect(page.getByText('Confirming two facts before writing the plan.', { exact: true })).toBeVisible({ timeout: 20_000 });
       await timelineSettled(page, 12);
-      // A blank that persists into the settled state runs past the limit.
-      await page.waitForTimeout(BLANK_LIMIT_MS + 200);
+      await blankResolved(page);
     } finally {
       samples = await collectSamples(page);
       const blank = longestBlankRun(samples);
       console.log(`[probe ${order}] frames=${samples.length} longestBlankMs=${Math.round(blank.ms)} at=${JSON.stringify(blank.at)} last=${JSON.stringify(samples[samples.length - 1])}`);
     }
-    await page.screenshot({ path: `test-results/flush-compact-${order}.png`, fullPage: false });
+    await screenshot(page, { path: `test-results/flush-compact-${order}.png`, fullPage: false });
     const blank = longestBlankRun(samples);
     expect(blank.ms, `timeline painted no rows for ${Math.round(blank.ms)}ms starting at ${JSON.stringify(blank.at)}`).toBeLessThan(BLANK_LIMIT_MS);
     await expect(page.getByText(QUEUED, { exact: true })).toHaveCount(1);
@@ -339,10 +356,13 @@ for (const order of ['send-during-compaction', 'send-after-boundary'] as const) 
 // animation frame. A message queued behind a blocking tool, typed in the
 // composer or replied by another thread, is consumed into the running turn
 // at a later tool boundary. The rows that arrive with it reach the
-// virtualizer while other frame owners still read its geometry.
-const MID_LOOP_BLOCKS = 110;
+// virtualizer while other frame owners still read its geometry. Twenty
+// blocks and a two-second compaction are enough trail: with 40e240793's
+// virtualizer fix reverted the composer variant paints no rows for about
+// thirty seconds at this size, as it does at five times it.
+const MID_LOOP_BLOCKS = 20;
 const MID_LOOP_PACE_MS = 60;
-const MID_LOOP_SILENCE_MS = 8_000;
+const MID_LOOP_SILENCE_MS = 2_000;
 const MID_LOOP_QUEUED = 'Composer queued: also check the unpaired case.';
 
 // A whole (unstreamed) assistant block: the activity is not about streamed
@@ -431,8 +451,8 @@ function midLoopScenario(name: string, source: MidLoopSource, targetId: string):
 interface ListedItem { id: string; kind: string; summary?: string; meta?: string }
 
 // Each variant streams MID_LOOP_BLOCKS activity blocks at the pace the
-// reveal trails, so one takes close to two minutes. Parallel mode lets a
-// worker take each variant instead of one worker running both in turn.
+// reveal trails. Parallel mode lets a worker take each variant instead of
+// one worker running both in turn.
 test.describe('mid-loop consumption', () => {
   test.describe.configure({ mode: 'parallel' });
   for (const source of ['composer', 'agent'] as const) {
@@ -489,7 +509,7 @@ test.describe('mid-loop consumption', () => {
 
       // The reservation: the consumed message's quiet row, before it moves to
       // where the drain consumes it.
-      const consumedRows = async () => (await harness.rpc('ListItems', caller, true) as ListedItem[]).filter((item) =>
+      const consumedRows = async () => (await harness.items(caller, true) as ListedItem[]).filter((item) =>
         item.kind === 'user_text' && (source === 'agent'
           ? (item.meta ?? '').includes('thread-wake:')
           : (item.summary ?? '').includes(MID_LOOP_QUEUED)));
@@ -535,8 +555,8 @@ test.describe('mid-loop consumption', () => {
       await advance(harness, callerMock, 'finish');
       await harness.waitForEvent('provider:turn_completed', (d: any) => d.threadId === caller, 30_000);
       notShown ??= await shown('All done after the compaction.', 20_000);
-      // A blank that persists into the settled state runs past the limit.
-      await page.waitForTimeout(BLANK_LIMIT_MS + 200);
+      if (notShown) await timelineSettled(page, 12);
+      await blankResolved(page);
 
       const samples = await collectSamples(page);
       const blank = longestBlankRun(samples);

@@ -65,6 +65,7 @@ import {
   visibleAgentRows,
 } from '../../utils/agentTray';
 import { AGENT_ROW_SETTLED_LINGER_MS } from './activityRailBackground.svelte';
+import { harnessInterval } from '../../transport/harnessMode';
 import { createPastAgentRows, placedRow, type AgentReadStatus, type PastAgentRows } from './activityRailAgentsPast.svelte';
 import { errString } from '../../utils/errors';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
@@ -378,7 +379,7 @@ export function createAgentController(
   });
   const keepRows = createAgentRowMemo();
   const rows = $derived(
-    keepRows(visibleAgentRows(listed, settledSeen, leftOpen, getNow(), AGENT_ROW_SETTLED_LINGER_MS)),
+    keepRows(visibleAgentRows(listed, settledSeen, leftOpen, getNow(), harnessInterval('agent-row-linger', AGENT_ROW_SETTLED_LINGER_MS))),
   );
   // Identity per queue item comes from the queue store, which replaces an
   // entry only when its snapshot does.

@@ -2,13 +2,15 @@ package app
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/testutil/reporoot"
 )
 
 // testProviderHome is the provider home the App resolves: the fixture's own
@@ -120,7 +122,7 @@ func TestProviderHomeFallsBackToTheOSHomeWithoutAnOverride(t *testing.T) {
 // provider packages, and the two shared-config adapters that WRITE into a
 // provider home.
 var providerHomeSeamScanRoots = []string{
-	".", // app_*.go only — see scanFilesUnder
+	"internal/app",
 	"internal/provider",
 	"internal/claudeconfig",
 	"internal/codexconfig",
@@ -143,6 +145,8 @@ var providerHomeSeamAllowlist = map[string]string{
 	"app_provider_account_env.go": "providerProbeWorkDir: the project-free cwd every account probe is " +
 		"pinned to. A cwd, not a provider home — the probe's own home comes from its ProbeConfig",
 	"app_provider_home.go": "the seam itself",
+	"app_downloads.go": "downloadsDir: the user's Downloads folder a saved file lands in, not a provider home; " +
+		"an isolated boot (downloadsIsolated) never reads it",
 }
 
 // TestAppLayerResolvesProviderHomesThroughOneSeam fails on a bare
@@ -193,26 +197,12 @@ func TestAppLayerResolvesProviderHomesThroughOneSeam(t *testing.T) {
 	}
 }
 
-// scanFilesUnder lists the non-test .go files this rule covers. The repo root
-// is narrowed to `app_*.go` on purpose: main*.go owns boot-time data-root and
-// launcher-default paths that are legitimately home-relative and have nothing
-// to do with provider state.
+// scanFilesUnder lists the non-test .go files under root, a slash path from
+// the checkout's root, as slash paths from the checkout's root.
 func scanFilesUnder(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
-	if root == "." {
-		matches, err := filepath.Glob("app_*.go")
-		if err != nil {
-			t.Fatalf("glob app_*.go: %v", err)
-		}
-		for _, m := range matches {
-			if !strings.HasSuffix(m, "_test.go") {
-				out = append(out, m)
-			}
-		}
-		return out
-	}
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err := fs.WalkDir(os.DirFS(reporoot.Dir(t)), root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -225,6 +215,9 @@ func scanFilesUnder(t *testing.T, root string) []string {
 	if err != nil {
 		t.Fatalf("walk %s: %v", root, err)
 	}
+	if len(out) == 0 {
+		t.Fatalf("no Go sources under %s", root)
+	}
 	return out
 }
 
@@ -234,7 +227,7 @@ func scanFilesUnder(t *testing.T, root string) []string {
 func homeResolvingCalls(t *testing.T, path string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, 0)
+	file, err := reporoot.ParseGoFile(t, fset, path, 0)
 	if err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}

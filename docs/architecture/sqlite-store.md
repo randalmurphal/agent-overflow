@@ -94,7 +94,7 @@ Record new versions before deployment; repair deployed versions with a forward
 migration.
 
 The chain only moves forward, so an older build cannot run on a database a
-newer one migrated. Before it configures or migrates anything, `runMigrations`
+newer one migrated. Before it configures or migrates anything, `runMigrationsContext`
 refuses a database whose recorded migration version or deferred watermark is
 above this build's latest migration, with `SchemaTooNewError`: "database is at
 schema v121; this build knows v119; install the newer version". `Store.New`

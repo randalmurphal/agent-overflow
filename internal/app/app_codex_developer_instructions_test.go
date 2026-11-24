@@ -14,12 +14,16 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/mockexec"
+
+	"github.com/google/uuid"
 )
 
 // writeCodexInstructionsAppServer is a mock app-server that logs every
 // request to requestLog and answers the requests a session start, a fork
 // and an injection make: thread/start mints "codex-root", thread/resume
-// echoes the thread it names, thread/fork mints an id unique to the
+// echoes the thread it names, thread/memoryMode/set accepts the mode a
+// resume with Codex memories off sets, thread/read reports the thread idle
+// to the probe after a resumed start, thread/fork mints an id unique to the
 // request, and thread/turns/list reports the fork's cut as its tail.
 func writeCodexInstructionsAppServer(t *testing.T, requestLog string) string {
 	t.Helper()
@@ -40,6 +44,11 @@ while IFS= read -r line; do
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
         thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%%s"}}}\n' "$id" "$thread"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/read"'; then
+        thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%%s","status":{"type":"idle"}}}}\n' "$id" "$thread"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/memoryMode/set"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/inject_items"'; then
         printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/fork"'; then
@@ -102,7 +111,7 @@ func codexInjections(t *testing.T, requestLog, codexThreadID string) []string {
 // which the session emits after any injection.
 func startCodexSessionAndWait(t *testing.T, app *App, bus *capturedEventBus, threadID string) {
 	t.Helper()
-	if err := app.StartSession(threadID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), threadID); err != nil {
 		t.Fatalf("StartSession(%s): %v", threadID, err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 10*time.Second)
@@ -314,6 +323,9 @@ while IFS= read -r line; do
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
         thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%%s"}}}\n' "$id" "$thread"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/read"'; then
+        thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%%s","status":{"type":"idle"}}}}\n' "$id" "$thread"
     elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/inject_items"'; then
         (
             /bin/sleep 0.3
@@ -379,8 +391,12 @@ func TestCodexInjectPrecedesASendRacingTheResume(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	wg.Add(2)
-	go func() { defer wg.Done(); errs <- app.StartSession(thread.ID) }()
-	go func() { defer wg.Done(); errs <- app.SendMessage(context.Background(), thread.ID, "hello", nil) }()
+	go func() { defer wg.Done(); errs <- app.startSessionTakingLock(context.Background(), thread.ID) }()
+	go func() {
+		defer wg.Done()
+		_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", pageSendOptions(uuid.NewString()))
+		errs <- err
+	}()
 	wg.Wait()
 	close(errs)
 	for err := range errs {

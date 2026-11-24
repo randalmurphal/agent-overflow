@@ -6,45 +6,41 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// A failed request is one error row whose api_error_enum drives the
+// api_error row kind, from the SDK `error` enum on the message or from the
+// CLI's own `isApiErrorMessage` row with its HTTP status.
 func TestConvertAssistantAPIError(t *testing.T) {
-	events, _ := convertFixture(t, ConvertOptions{},
-		userRow("u1", "", "go", "2026-01-01T00:00:00.000Z"),
-		assistantRow("a1", "u1", "msg_1", []any{textBlock("Rate limit reached")}, "2026-01-01T00:00:01.000Z",
-			with("message", map[string]any{
-				"role": "assistant", "id": "msg_1", "model": "claude-test-1",
-				"error":   "rate_limit",
-				"content": []any{textBlock("Rate limit reached")},
-			})),
-	)
-	errs := eventsOfKind(events, provider.EventError)
-	if len(errs) != 1 {
-		t.Fatalf("got %d error events, want 1: %s", len(errs), renderEvents(events))
-	}
-	meta := decodeMeta(t, errs[0].Meta)
-	if meta["api_error_enum"] != "rate_limit" {
-		t.Errorf("api_error_enum = %v, want rate_limit (drives the api_error row kind)", meta)
-	}
-	if errs[0].Content != "Rate limit reached" {
-		t.Errorf("content = %q", errs[0].Content)
-	}
-	// The error copy must not ALSO become an assistant bubble.
-	if len(eventsOfKind(events, provider.EventTextDelta)) != 0 {
-		t.Errorf("error envelope text leaked as assistant content: %s", renderEvents(events))
-	}
-}
-
-func TestConvertCLIErrorRow(t *testing.T) {
-	events, _ := convertFixture(t, ConvertOptions{},
-		userRow("u1", "", "go", "2026-01-01T00:00:00.000Z"),
-		assistantRow("a1", "u1", "msg_1", []any{textBlock("API Error: 529")}, "2026-01-01T00:00:01.000Z",
-			with("isApiErrorMessage", true), with("apiErrorStatus", 529)),
-	)
-	errs := eventsOfKind(events, provider.EventError)
-	if len(errs) != 1 {
-		t.Fatalf("got %d error events, want 1", len(errs))
-	}
-	if meta := decodeMeta(t, errs[0].Meta); meta["api_error_enum"] != "529" {
-		t.Errorf("api_error_enum = %v, want 529", meta["api_error_enum"])
+	for _, tc := range []struct {
+		name, text, wantEnum string
+		opts                 []rowOpt
+	}{
+		{"sdk error enum", "Rate limit reached", "rate_limit", []rowOpt{with("message", map[string]any{
+			"role": "assistant", "id": "msg_1", "model": "claude-test-1",
+			"error":   "rate_limit",
+			"content": []any{textBlock("Rate limit reached")},
+		})}},
+		{"cli error row", "API Error: 529", "529", []rowOpt{with("isApiErrorMessage", true), with("apiErrorStatus", 529)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events, _ := convertFixture(t, ConvertOptions{},
+				userRow("u1", "", "go", "2026-01-01T00:00:00.000Z"),
+				assistantRow("a1", "u1", "msg_1", []any{textBlock(tc.text)}, "2026-01-01T00:00:01.000Z", tc.opts...),
+			)
+			errs := eventsOfKind(events, provider.EventError)
+			if len(errs) != 1 {
+				t.Fatalf("got %d error events, want 1: %s", len(errs), renderEvents(events))
+			}
+			if meta := decodeMeta(t, errs[0].Meta); meta["api_error_enum"] != tc.wantEnum {
+				t.Errorf("api_error_enum = %v, want %s", meta["api_error_enum"], tc.wantEnum)
+			}
+			if errs[0].Content != tc.text {
+				t.Errorf("content = %q, want %q", errs[0].Content, tc.text)
+			}
+			// The error copy must not ALSO become an assistant bubble.
+			if len(eventsOfKind(events, provider.EventTextDelta)) != 0 {
+				t.Errorf("error envelope text leaked as assistant content: %s", renderEvents(events))
+			}
+		})
 	}
 }
 

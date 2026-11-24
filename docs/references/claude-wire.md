@@ -10,7 +10,7 @@ confirm against the Python SDK or captured samples before coding.
 **Shape-of-truth, in priority order:**
 
 1. **Captured wire samples** (real NDJSON from live sessions) in
-   `docs/references/fixtures/claude/`. See
+   `internal/provider/wirecaptures/claude/`. See
    [§Captured samples](#captured-samples). Host paths, device names and private service
    configuration use synthetic values; protocol structure and correlations are
    preserved.
@@ -75,9 +75,9 @@ and absorb the late `result` envelope as a token-usage / cost /
 (each announced by `system/init`) starts a turn of its own
 ([turn-lifecycle.md §Rounds and turns](../architecture/turn-lifecycle.md#rounds-and-turns)).
 Backed by fixtures
-[`local_agent_outlives.ndjson`](fixtures/claude/local_agent_outlives.ndjson)
+[`local_agent_outlives.ndjson`](../internal/provider/wirecaptures/claude/local_agent_outlives.ndjson)
 and
-[`local_agent_user_input_during_wait.ndjson`](fixtures/claude/local_agent_user_input_during_wait.ndjson).
+[`local_agent_user_input_during_wait.ndjson`](../internal/provider/wirecaptures/claude/local_agent_user_input_during_wait.ndjson).
 
 ```json
 {
@@ -232,7 +232,7 @@ sessions. Seeing `sdk_opt_in_required` on a live thread session is
 therefore an AO bug worth surfacing, not a normal state. The one place it
 is correct is the zero-token account probe, which never opts in. That is
 why it appears in
-`docs/references/fixtures/claude/initialize_models_20260802.json`.
+`internal/provider/wirecaptures/claude/initialize_models_20260802.json`.
 
 **AO handling.** Live session state, not history: it flows
 `parse_result.go` / `parse_system.go` → `WireTurnCompleteMeta.FastMode` /
@@ -363,15 +363,15 @@ are already summarised by their category row, and the per-category
 `color` is a CLI theme token.
 
 Captured references:
-`fixtures/claude/context_usage_control_20260803.summary.json`
+`internal/provider/wirecaptures/claude/context_usage_control_20260803.summary.json`
 (2.1.219: the control_response shape, the deferred-exclusion
 arithmetic, and the version drift above),
-`fixtures/claude/context_usage_spike_20260429.summary.json`
+`internal/provider/wirecaptures/claude/context_usage_spike_20260429.summary.json`
 (Bash + Agent subagent, single iteration on message_delta),
-`fixtures/claude/advisor_context_usage_20260522.summary.json`
+`internal/provider/wirecaptures/claude/advisor_context_usage_20260522.summary.json`
 (control / single advisor / double advisor: wire shape only, no
 ground-truth anchor), and
-`fixtures/claude/advisor_pretokens_correlation_20260523.summary.json`
+`internal/provider/wirecaptures/claude/advisor_pretokens_correlation_20260523.summary.json`
 (authoritative: five production compactions correlating top-level
 against `compactMetadata.preTokens`).
 
@@ -1012,7 +1012,7 @@ intermediate patches and should be treated as no-ops.
 
 ### What `task_updated` does NOT carry
 
-Fresh app-style spikes in `docs/references/fixtures/claude/`
+Fresh app-style spikes in `internal/provider/wirecaptures/claude/`
 confirmed that terminal `task_updated` is only a lifecycle update for
 ordinary background Bash tasks:
 
@@ -1324,7 +1324,7 @@ Two rules the parser enforces:
   names no launch has nothing to update.
 
 Fixture:
-[`task_progress_20260822.ndjson`](fixtures/claude/task_progress_20260822.ndjson).
+[`task_progress_20260822.ndjson`](../internal/provider/wirecaptures/claude/task_progress_20260822.ndjson).
 
 ## `system/background_tasks_changed`
 
@@ -1354,10 +1354,10 @@ triage forwards it as the `provider:background_tasks_changed` refetch
 nudge.
 
 Fixtures:
-[`task_progress_20260822.ndjson`](fixtures/claude/task_progress_20260822.ndjson)
+[`task_progress_20260822.ndjson`](../internal/provider/wirecaptures/claude/task_progress_20260822.ndjson)
 (a nested backgrounded Bash moving the set to one member and back to
 empty) and
-[`background_tasks_control_20260822.ndjson`](fixtures/claude/background_tasks_control_20260822.ndjson)
+[`background_tasks_control_20260822.ndjson`](../internal/provider/wirecaptures/claude/background_tasks_control_20260822.ndjson)
 (a foreground agent entering the set).
 
 ---
@@ -1574,7 +1574,7 @@ Consequences:
   report) interleaves with pending queued sends. Identity matching,
   not FIFO position, is what keeps those from mispairing.
 - The revert / fork slice must anchor on EITHER shape:
-  `sessionfork.parentUUIDForUserMessageUUIDInTranscript` prefers the
+  `sessionfork.entryForUserMessageUUIDInTranscript` prefers the
   real user entry and falls back to the `queued_command` attachment's
   `source_uuid`. A user-uuid-only matcher silently misses every
   mid-loop-consumed queued message (`ErrMessageNotFound` → refused
@@ -1709,7 +1709,7 @@ read (`Router.PendingSendTurn`).
 
 Spike 2026-10-15, claude 2.1.284 (Sonnet), AO's flag set, three runs per
 case; the order was identical in every run. Each fixture is run 1 under
-`docs/references/fixtures/claude/`;
+`internal/provider/wirecaptures/claude/`;
 `queued_delivery_orders_20261015.summary.json` has every run's order with
 timings. Writes are the client's stdin writes; `queued` acks are left out.
 
@@ -1862,8 +1862,8 @@ overrides the socket location.
 
 **Discovery** is keyed on a SHARED `CLAUDE_CONFIG_DIR`: the registry is
 `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json` plus a keyfile, deleted on
-exit. AO's Claude sessions CLEAR that variable (`NewSession`'s
-`UnsetEnv`), so they land in the user's own `~/.claude` and can see, and
+exit. AO's Claude sessions CLEAR that variable (the command line's
+clears), so they land in the user's own `~/.claude` and can see, and
 be seen by, sessions the user ran in a terminal.
 
 **Name.** The peer-visible name comes from `--name` / `-n` at spawn or
@@ -1968,7 +1968,7 @@ flips the row to errored on `success:false`, persists the reply line as
 against this thread's launches to stamp `meta.recipient_description`,
 so the card reads "To <agent's description>" plus the CLI's own line,
 red when refused. Fixture:
-[`send_message_ack_20260904.ndjson`](fixtures/claude/send_message_ack_20260904.ndjson).
+[`send_message_ack_20260904.ndjson`](../internal/provider/wirecaptures/claude/send_message_ack_20260904.ndjson).
 
 
 ---
@@ -2203,7 +2203,7 @@ for the same task is expected and handled by the store layer.
 TaskOutput is an explicit tool call made by the agent. It is not a
 durable task-history lookup.
 
-Fresh app-style spikes in `docs/references/fixtures/claude/`
+Fresh app-style spikes in `internal/provider/wirecaptures/claude/`
 confirmed:
 
 - If the agent calls `TaskOutput(block=true)` while the background task
@@ -2327,7 +2327,7 @@ foreground gate (`!launch.IsBackground`) and
    `task_started`.
 
 See
-[`local_agent_async_launch.ndjson`](fixtures/claude/local_agent_async_launch.ndjson)
+[`local_agent_async_launch.ndjson`](../internal/provider/wirecaptures/claude/local_agent_async_launch.ndjson)
 for the full captured 7-line sequence (content_block_start,
 assistant tool_use, task_started, the ack, one task_progress sample,
 task_updated terminal, task_notification).
@@ -2457,7 +2457,7 @@ An E5 async agent goes idle once it finishes and can be RESUMED. The
 model calls the harness's resume tool (observed: `SendMessage`,
 `input.to: <agentId>`) to send it a follow-up message. Verified from a
 live capture (AO thread `9941d40f`, 2026-07-02; fixture
-[`local_agent_async_resume.ndjson`](fixtures/claude/local_agent_async_resume.ndjson)).
+[`local_agent_async_resume.ndjson`](../internal/provider/wirecaptures/claude/local_agent_async_resume.ndjson)).
 
 On resume the CLI emits a FRESH `system/task_started` with the SAME
 `task_id` (the agentId) but `tool_use_id` = the resuming tool's OWN
@@ -2652,7 +2652,7 @@ and its rows project under its command row
 a resumed agent that was backgrounded or parked.
 
 See
-[`local_agent_async_resume.ndjson`](fixtures/claude/local_agent_async_resume.ndjson)
+[`local_agent_async_resume.ndjson`](../internal/provider/wirecaptures/claude/local_agent_async_resume.ndjson)
 for the full captured 10-line two-round sequence (assistant tool_use /
 task_started / ack / task_updated / task_notification, twice, where the
 second round's `task_started` and `tool_use_id`s are the resuming
@@ -2661,7 +2661,7 @@ tool's own).
 ### E6b: Waking a parked async agent (`task_started` with no new `tool_use_id`)
 
 Confirmed by five live spikes against claude 2.1.261 (2026-09-08),
-each checked in under `fixtures/claude/local_agent_*_20260908.ndjson`
+each checked in under `internal/provider/wirecaptures/claude/local_agent_*_20260908.ndjson`
 (the README names which is which), and by two against 2.1.280
 (2026-09-25, `local_agent_*_20260925.ndjson`), where the wake names the
 bound tool_use (§Wake shape).
@@ -2783,7 +2783,7 @@ usage, and in `meta` the run it closes: `parked_commands` (N),
 root written since the run began, when there is one), `run_started_at`
 and `run_woke`. The keys are mirrored in
 `frontend/src/lib/utils/parkedStop.ts` and pinned by
-`TestParkedStopMetaKeysMatchFrontendMirror`. A parked sibling settles
+`TestStoreMetaKeysMatchFrontendMirrors`. A parked sibling settles
 nothing and ends nothing: the settle triggers pass over it and the
 agent end (`agent_end.go`) fires only for the ending sibling.
 
@@ -2829,7 +2829,7 @@ Like E5, the launch input carries NO `run_in_background` flag and the
 ack carries NO `backgroundTaskId`, a fourth background-launch shape.
 Captured live 2026-07-28 (AO thread `b44a738d`, session `d946175f`;
 shape summary:
-[`monitor_wakeup_20260728.summary.json`](fixtures/claude/monitor_wakeup_20260728.summary.json)):
+[`monitor_wakeup_20260728.summary.json`](../internal/provider/wirecaptures/claude/monitor_wakeup_20260728.summary.json)):
 
 ```json
 {"type": "user",
@@ -3110,7 +3110,7 @@ its completion, which both CLIs still send:
   `status=running` with no terminal ever coming.
 
   Fixture:
-  [`forked_skill_20260822.ndjson`](fixtures/claude/forked_skill_20260822.ndjson),
+  [`forked_skill_20260822.ndjson`](../internal/provider/wirecaptures/claude/forked_skill_20260822.ndjson),
   containing the Skill tool_use, four attributed sidechain rows, a
   `tool_progress` heartbeat, and the forked completion. Top-level
   `tool_progress` updates session liveness only; it creates no history row
@@ -3227,9 +3227,9 @@ turns it starts itself. Like §E8 there is no task lifecycle and no wire
 traffic between the ack and a fire, so an armed job is invisible to
 every other "is this session busy" signal. Captured on 2.1.284
 (2026-10-10, isolated spike):
-[`cron_create_fire_20261010.ndjson`](fixtures/claude/cron_create_fire_20261010.ndjson),
-[`cron_loop_midturn_20261010.ndjson`](fixtures/claude/cron_loop_midturn_20261010.ndjson)
-and [`cron_spike_20261010.summary.json`](fixtures/claude/cron_spike_20261010.summary.json).
+[`cron_create_fire_20261010.ndjson`](../internal/provider/wirecaptures/claude/cron_create_fire_20261010.ndjson),
+[`cron_loop_midturn_20261010.ndjson`](../internal/provider/wirecaptures/claude/cron_loop_midturn_20261010.ndjson)
+and [`cron_spike_20261010.summary.json`](../internal/provider/wirecaptures/claude/cron_spike_20261010.summary.json).
 
 Acks (`tool_use_result`):
 
@@ -3332,7 +3332,7 @@ looking the requested tool's own persisted row scope up. A main-agent
 ask carries no `agent_id` at all and stays unscoped.
 
 Fixture:
-[`can_use_tool_agent_id_20260822.ndjson`](fixtures/claude/can_use_tool_agent_id_20260822.ndjson).
+[`can_use_tool_agent_id_20260822.ndjson`](../internal/provider/wirecaptures/claude/can_use_tool_agent_id_20260822.ndjson).
 
 ### Steering a running subagent from a client
 
@@ -3895,11 +3895,11 @@ envelope idempotently.
 
 Captured against `claude --version` 2.1.132, OAuth-subscription auth.
 The investigation log lives in
-[`fixtures/claude/opus47_thinking_summary.json`](fixtures/claude/opus47_thinking_summary.json)
+[`internal/provider/wirecaptures/claude/opus47_thinking_summary.json`](../internal/provider/wirecaptures/claude/opus47_thinking_summary.json)
 and the two raw NDJSON fixtures
-[`opus47_thinking_redacted.ndjson`](fixtures/claude/opus47_thinking_redacted.ndjson)
+[`opus47_thinking_redacted.ndjson`](../internal/provider/wirecaptures/claude/opus47_thinking_redacted.ndjson)
 and
-[`opus47_thinking_summarized.ndjson`](fixtures/claude/opus47_thinking_summarized.ndjson).
+[`opus47_thinking_summarized.ndjson`](../internal/provider/wirecaptures/claude/opus47_thinking_summarized.ndjson).
 
 ### Two independent knobs
 
@@ -3956,7 +3956,7 @@ raw chain of thought is not returned via the public API (sales-team
 contact required). Empirically though, the surfaced text reads as
 first-person reasoning with self-corrections, planning, and
 uncertainty. See Sonnet 4.6's thinking block in
-[`ndjson_bash.log`](fixtures/claude/ndjson_bash.log). Treat the
+[`ndjson_bash.log`](../internal/provider/wirecaptures/claude/ndjson_bash.log). Treat the
 output as legitimate thinking content for UX purposes; treat the
 "summary" framing as the documented API contract, not as evidence
 that the text is lossy. Anthropic notes that "the first few lines of
@@ -4128,7 +4128,7 @@ CLI binary; the subtypes we use or plan to use:
   terminal status and `is_backgrounded` stays a terminal.
 
   Fixture:
-  [`background_tasks_control_20260822.ndjson`](fixtures/claude/background_tasks_control_20260822.ndjson),
+  [`background_tasks_control_20260822.ndjson`](../internal/provider/wirecaptures/claude/background_tasks_control_20260822.ndjson),
   covering the full round trip including our outbound control_request and the
   CLI's control_response, neither of which produces an event.
   **Ordinary-stdout visibility price:** an agent backgrounded mid-flight
@@ -4490,7 +4490,7 @@ the array. Polling callers should treat "missing entry" as
 "keep retrying," not as a terminal state.
 
 **Used by AO** in the OAuth-completion poller at
-`app_mcp_auth.go:pollClaudeMCPAfterOAuth`. Claude emits no
+`internal/mcpapp/auth.go:pollClaudeMCPAfterOAuth`. Claude emits no
 spontaneous post-OAuth wire envelope (`reconnectMcpServerImpl`
 runs inline in `print.ts` and updates state in-process), so AO
 polls `mcp_status` after `TriggerMcpAuth` with a 1+2+3+5+8+13s
@@ -4528,7 +4528,7 @@ about a second and takes the loopback listener with it.
 
 `CLAUDE_CONFIG_DIR` points at an isolated directory and
 `CLAUDE_SECURESTORAGE_CONFIG_DIR` is cleared, for the reasons
-`internal/provider/pinnedenv.go` gives for every other temporary-home spawn: a
+`internal/provider/envtable.go` gives for every other temporary-home spawn: a
 sign-in must not land in the canonical home before the adoption epilogue has
 decided which slot it belongs in. The rest of the environment is the user's
 configured one, because `ANTHROPIC_BASE_URL` decides which backend the person
@@ -4616,7 +4616,7 @@ control_request returns the **same array**, verified byte-identical on 2.1.219,
 so AO reads it off `initialize` and never spends a second subprocess on it.
 
 Captured fixture:
-[`docs/references/fixtures/claude/initialize_models_20260802.json`](fixtures/claude/initialize_models_20260802.json)
+[`internal/provider/wirecaptures/claude/initialize_models_20260802.json`](../internal/provider/wirecaptures/claude/initialize_models_20260802.json)
 (2.1.219, trimmed to `models` + `account` + the fast-mode keys, identity
 anonymised).
 
@@ -4811,7 +4811,7 @@ scope owns a live background shell or watch task.
 ### Local command envelope sequence
 
 Captured fixture:
-[`docs/references/fixtures/claude/local_command_20260803.ndjson`](fixtures/claude/local_command_20260803.ndjson)
+[`internal/provider/wirecaptures/claude/local_command_20260803.ndjson`](../internal/provider/wirecaptures/claude/local_command_20260803.ndjson)
 (hand-written from the probe's shapes).
 
 ```
@@ -4938,7 +4938,7 @@ Verified on **claude 2.1.219** by a 2026-08-12 spike (AO's exact flag set;
 every command zero-token, plus one minimal real turn through a local
 `ANTHROPIC_BASE_URL` capture sink to prove the request-level effect).
 Sanitized fixture:
-[`fixtures/claude/effort_live_20260812.ndjson`](fixtures/claude/effort_live_20260812.ndjson).
+[`internal/provider/wirecaptures/claude/effort_live_20260812.ndjson`](../internal/provider/wirecaptures/claude/effort_live_20260812.ndjson).
 These are the live path for two axes that have no control_request subtype.
 
 **`/effort <low|medium|high|xhigh|max|ultracode|auto>`** sets the
@@ -5338,7 +5338,7 @@ and `internal/claudemodels/AGENTS.md`. Follow-up, not a shipped behaviour.
 ## Resume does not re-emit assistant content (stdout)
 
 Spike-verified on 2.1.170 (2026-06-24), fixture
-[`fixtures/claude/resume_no_assistant_replay_20260624.summary.json`](fixtures/claude/resume_no_assistant_replay_20260624.summary.json).
+[`internal/provider/wirecaptures/claude/resume_no_assistant_replay_20260624.summary.json`](../internal/provider/wirecaptures/claude/resume_no_assistant_replay_20260624.summary.json).
 
 `claude --resume <id>` loads prior turns into the model's context
 **silently**. It does **not** re-emit historical `assistant` content
@@ -5603,7 +5603,7 @@ section above): every cold `--resume` silently drops the prior turn's
 tail from context, and `--resume-session-at` any tail row hard-fails.
 The next user row chains onto the api_error rows, entrenching the
 bypass. Fixture:
-[`fixtures/claude/session_api_error_offbranch.jsonl`](fixtures/claude/session_api_error_offbranch.jsonl)
+[`internal/provider/wirecaptures/claude/session_api_error_offbranch.jsonl`](../internal/provider/wirecaptures/claude/session_api_error_offbranch.jsonl)
 (sanitized incident replica).
 
 AO countermeasures: `sessionfork/rechain.go` forces each deferred
@@ -5726,7 +5726,7 @@ not fabricate shapes when these samples cover the scenario. Where an
 entry says a value was truncated, that is the ONLY edit: no key is ever
 added, removed, or renamed.
 
-### `docs/references/fixtures/claude/ndjson_bash.log`
+### `internal/provider/wirecaptures/claude/ndjson_bash.log`
 **Scenario**: one `run_in_background:true` Bash + one foreground
 `sleep 6` + one `Read` of the output file.
 
@@ -5736,7 +5736,7 @@ foreground), `user` backgrounded placeholder (E2), `system/task_updated`
 terminal, `system/task_notification`, `user` inline tool_result (E1),
 `result` envelope.
 
-### `docs/references/fixtures/claude/stream_abandoned_{midblock,twoblock,afterblock}_20261016.ndjson`
+### `internal/provider/wirecaptures/claude/stream_abandoned_{midblock,twoblock,afterblock}_20261016.ndjson`
 **Scenario**: Claude Code 2.1.300 against a fake API on loopback with
 `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` at its 10 s floor and
 `--include-partial-messages`; the fake stalls inside block 0 (midblock:
@@ -5750,7 +5750,7 @@ Paths rewritten to `/home/user/spike`; nothing else edited.
 CLI's own `content_block_stop` + `message_stop` with `abandoned_blocks`,
 the `isSynthetic:true` user nudge, `transcript_mirror`.
 
-### `docs/references/fixtures/claude/ndjson_task.log`
+### `internal/provider/wirecaptures/claude/ndjson_task.log`
 **Scenario**: `Task` subagent with `run_in_background: true` + `TaskOutput`
 retrieval.
 
@@ -5758,7 +5758,7 @@ retrieval.
 and `prompt`, `user` TaskOutput tool_result (E3),
 `assistant` streams with `parent_tool_use_id` for the subagent.
 
-### `docs/references/fixtures/claude/local_agent_async_launch.ndjson`
+### `internal/provider/wirecaptures/claude/local_agent_async_launch.ndjson`
 **Scenario**: a `local_agent` (`Agent` tool) launch whose input carries
 NO `run_in_background`, launched asynchronously anyway: the bare
 "Async agent launched successfully." ack (E5), then the real terminal
@@ -5772,7 +5772,7 @@ terminal, `system/task_notification`. 7 real wire lines; the three long
 `tool_use_result.prompt`) are truncated to a placeholder sentence, and
 every other key/value is byte-identical to the capture.
 
-### `docs/references/fixtures/claude/local_agent_async_resume.ndjson`
+### `internal/provider/wirecaptures/claude/local_agent_async_resume.ndjson`
 **Scenario**: an E5 async agent resumed via the harness's SendMessage
 tool (E6). The CLI rebinds `system/task_started` onto SendMessage's
 own `tool_use_id` carrying the ORIGINAL agent's description, and the
@@ -5790,7 +5790,7 @@ are truncated to placeholders, and every other key/value, including the
 the ack's `resumedAgentId`, is byte-identical to the capture (AO
 thread `9941d40f`, 2026-07-02).
 
-### `docs/references/fixtures/claude/task_progress_20260822.ndjson`
+### `internal/provider/wirecaptures/claude/task_progress_20260822.ndjson`
 **Scenario**: one `local_agent` (`Agent` tool, foreground/awaited) that
 runs a backgrounded Bash of its own, the agent-visibility happy path.
 
@@ -5807,7 +5807,7 @@ this sequence, and the CLI never routed them to the subagent). Replayed
 by `TestReplay_TaskProgressFixture` (2.1.237, 2026-08-22,
 `/tmp/spike-steer/wire.ndjson`).
 
-### `docs/references/fixtures/claude/background_tasks_control_20260822.ndjson`
+### `internal/provider/wirecaptures/claude/background_tasks_control_20260822.ndjson`
 **Scenario**: AO backgrounds a running FOREGROUND `local_agent`
 mid-flight with the `background_tasks` control_request, the Ctrl+B
 equivalent.
@@ -5825,7 +5825,7 @@ fixture because the round trip is the point. Replayed by
 `TestReplay_BackgroundTasksControlFixture` (2.1.237, 2026-08-22,
 `/tmp/spike-steer/wire2.ndjson`).
 
-### `docs/references/fixtures/claude/can_use_tool_agent_id_20260822.ndjson`
+### `internal/provider/wirecaptures/claude/can_use_tool_agent_id_20260822.ndjson`
 **Scenario**: a subagent asks for permission (`control_request
 /can_use_tool` with `agent_id` and NO `parent_tool_use_id` anywhere on
 the envelope) and is denied.
@@ -5841,7 +5841,7 @@ byte-identical to the capture. Replayed by
 `TestReplay_CanUseToolAgentIDFixture` (2.1.237, 2026-08-22,
 `/tmp/spike-steer/wire3.ndjson`).
 
-### `docs/references/fixtures/claude/forked_skill_20260822.ndjson`
+### `internal/provider/wirecaptures/claude/forked_skill_20260822.ndjson`
 **Scenario**: a forked skill (§E9), the `code-review` skill running as
 a subagent with NO task lifecycle of any kind.
 
@@ -5860,7 +5860,7 @@ Replayed by `TestReplay_ForkedSkillFixture` (2.1.237, AO thread
 `provider-events-2026-08-21.ndjson.2`, whose name is the rotation day
 rather than the capture day).
 
-### `docs/references/fixtures/claude/ndjson_outlives.log` + `ndjson_outlives_turn2.log`
+### `internal/provider/wirecaptures/claude/ndjson_outlives.log` + `ndjson_outlives_turn2.log`
 **Scenario**: backgrounded Bash that outlives its launching turn. The
 first turn's `result` arrives BEFORE the task's `task_updated`.
 
@@ -5869,17 +5869,17 @@ invariant. The turn closes normally; terminal signals for the
 backgrounded task land afterward on the stream (they address the same
 `thread_id` via `session_id` correlation).
 
-### `docs/references/fixtures/claude/local_agent_plus_bg_bash.ndjson`
+### `internal/provider/wirecaptures/claude/local_agent_plus_bg_bash.ndjson`
 **Scenario**: a backgrounded Bash and a backgrounded `local_agent`
 running together across one turn boundary.
 
 **Critical for**: proving the withheld-`result` delay is keyed on
 `local_agent` specifically, not on background work in general. Read
 alongside
-[`local_agent_outlives.ndjson`](fixtures/claude/local_agent_outlives.ndjson),
+[`local_agent_outlives.ndjson`](../internal/provider/wirecaptures/claude/local_agent_outlives.ndjson),
 which is the same delay with no Bash in the mix.
 
-### `docs/references/fixtures/claude/taskoutput_multi.ndjson`
+### `internal/provider/wirecaptures/claude/taskoutput_multi.ndjson`
 **Scenario**: two parallel `run_in_background:true` Bashes + one
 blocking `TaskOutput` on the longer one.
 
@@ -5887,7 +5887,7 @@ blocking `TaskOutput` on the longer one.
 two `task_updated` terminals for different `task_id`s, single
 TaskOutput `tool_result` enrichment for one of them.
 
-### `docs/references/fixtures/claude/interactive_outlives_taskoutput_monitor.ndjson`
+### `internal/provider/wirecaptures/claude/interactive_outlives_taskoutput_monitor.ndjson`
 **Scenario**: app-style long-lived CLI process. Turn 1 launches a
 background Bash and ends immediately. The process stays alive long
 enough to receive `task_updated` + `task_notification`. A later turn
@@ -5904,21 +5904,21 @@ task that reads the output file.
 been notified/cleaned, TaskOutput can return "No task found"; do not
 rely on TaskOutput as durable history.
 
-### `docs/references/fixtures/claude/blocking_taskoutput.ndjson`
+### `internal/provider/wirecaptures/claude/blocking_taskoutput.ndjson`
 **Scenario**: background Bash sleeps for 10 seconds, then the agent
 immediately calls `TaskOutput(block=true)` while it is still running.
 
 **Shapes covered**: `task_updated` fires before the TaskOutput
 `tool_result`; TaskOutput carries `task.output` and `task.exitCode`.
 
-### `docs/references/fixtures/claude/blocking_taskoutput_failure.ndjson`
+### `internal/provider/wirecaptures/claude/blocking_taskoutput_failure.ndjson`
 **Scenario**: same as above, but the background Bash exits with code 7.
 
 **Shapes covered**: failed `task_updated` has only
 `patch.status="failed"` + `end_time`; TaskOutput carries `exitCode: 7`
 and merged stdout/stderr in `task.output`.
 
-### `docs/references/fixtures/claude/plain_failure_outlives.ndjson`
+### `internal/provider/wirecaptures/claude/plain_failure_outlives.ndjson`
 **Scenario**: failed background Bash without TaskOutput retrieval.
 
 **Shapes covered**: `task_updated` terminal plus

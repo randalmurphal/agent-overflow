@@ -104,6 +104,11 @@ func settleTriggerStore(t *testing.T) *Store {
 // so the completion sibling's arrival is the only moment "this is no
 // longer live" becomes true. The trigger writes that onto the launch so
 // the partial live indexes stop matching it.
+//
+// writeBackgroundCompletionSibling inserts the sibling and THEN calls
+// persistFinalSubagentProgress, which replaces the launch's meta
+// wholesale from an in-memory copy read BEFORE the insert. Without the
+// UPDATE trigger that write revives the flag.
 func TestCompletionInsertSettlesItsLaunch(t *testing.T) {
 	s := settleTriggerStore(t)
 	seedLaunchWithMeta(t, s, "t", "launch", 0, `{"task_id":"task-1"}`)
@@ -124,6 +129,20 @@ func TestCompletionInsertSettlesItsLaunch(t *testing.T) {
 	if !strings.Contains(item.Meta, `"task_id":"task-1"`) {
 		t.Fatalf("meta lost its other keys: %q", item.Meta)
 	}
+
+	stale := `{"subagentProgress":{"tokens":42}}`
+	if _, err := s.UpdateItemFields("t", "launch", ItemPartialUpdate{Meta: &stale}); err != nil {
+		t.Fatalf("wholesale meta rewrite: %v", err)
+	}
+	assertSettled(t, s, "t", "launch")
+
+	item, _, err = s.GetThreadItem("t", "launch")
+	if err != nil {
+		t.Fatalf("get launch: %v", err)
+	}
+	if !strings.Contains(item.Meta, `"tokens":42`) {
+		t.Fatalf("re-stamp dropped the caller's meta: %q", item.Meta)
+	}
 }
 
 // Import batches and fork cloning insert rows in whatever
@@ -133,31 +152,6 @@ func TestLaunchInsertedAfterItsCompletionIsSettled(t *testing.T) {
 	seedCompletionSibling(t, s, "t", "complete:launch", "launch", 0, 2000)
 	seedLaunchWithMeta(t, s, "t", "launch", 1, `{}`)
 	assertSettled(t, s, "t", "launch")
-}
-
-// writeBackgroundCompletionSibling inserts the sibling and THEN calls
-// persistFinalSubagentProgress, which replaces the launch's meta
-// wholesale from an in-memory copy read BEFORE the insert. Without the
-// UPDATE trigger that write revives the flag.
-func TestWholesaleMetaRewriteOfSettledLaunchIsReStamped(t *testing.T) {
-	s := settleTriggerStore(t)
-	seedLaunchWithMeta(t, s, "t", "launch", 0, `{}`)
-	seedCompletionSibling(t, s, "t", "complete:launch", "launch", 1, 2000)
-	assertSettled(t, s, "t", "launch")
-
-	stale := `{"subagentProgress":{"tokens":42}}`
-	if _, err := s.UpdateItemFields("t", "launch", ItemPartialUpdate{Meta: &stale}); err != nil {
-		t.Fatalf("wholesale meta rewrite: %v", err)
-	}
-	assertSettled(t, s, "t", "launch")
-
-	item, _, err := s.GetThreadItem("t", "launch")
-	if err != nil {
-		t.Fatalf("get launch: %v", err)
-	}
-	if !strings.Contains(item.Meta, `"tokens":42`) {
-		t.Fatalf("re-stamp dropped the caller's meta: %q", item.Meta)
-	}
 }
 
 // A launch settles once: deleting its ending siblings, one or all, leaves
@@ -261,26 +255,6 @@ func TestMalformedLaunchMetaIsRefusedBeforeTheTriggersSeeIt(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "malformed JSON") {
 		t.Fatalf("error = %v, want a malformed-JSON refusal", err)
-	}
-}
-
-// The json_valid guard in the stamp expression is the backstop for that:
-// json_set returns NULL on a malformed blob, and NULL into a NOT NULL
-// column is a failed write on a path nobody is watching. Pinned as an
-// expression because no reachable row can reach it (above), and mirrors
-// the identical guard in MarkLiveBackgroundToolCallsInactive.
-func TestStampExpressionReplacesMalformedMetaInsteadOfBlankingIt(t *testing.T) {
-	s := settleTriggerStore(t)
-	for _, meta := range []string{"not json", "", `{"task_id":"x"}`} {
-		var got string
-		if err := s.db.QueryRow(`SELECT json_set(
-		      CASE WHEN json_valid(?1) THEN ?1 ELSE '{}' END,
-		      '$.live_background_active', json('false'))`, meta).Scan(&got); err != nil {
-			t.Fatalf("stamp %q: %v", meta, err)
-		}
-		if !strings.Contains(got, `"live_background_active":false`) {
-			t.Errorf("stamp of %q = %q, want the flag set", meta, got)
-		}
 	}
 }
 

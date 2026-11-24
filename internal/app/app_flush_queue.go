@@ -168,8 +168,8 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 	// resurrect a message whose dispatch has already settled.
 	a.triage.ReleaseFlushClaim(threadID, items)
 	if stale {
-		a.flushDispatch.wg.Add(1)
-		go a.restoreStaleFlushHandoff(threadID, slices.Clone(items))
+		restore := slices.Clone(items)
+		a.flushDispatch.wg.Go(func() { a.restoreStaleFlushHandoff(threadID, restore) })
 	} else {
 		a.startFlushDispatchWorkerLocked(threadID)
 	}
@@ -186,7 +186,6 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 // (discardFlushDispatch), which the restore holds from its check through
 // its writes.
 func (a *App) restoreStaleFlushHandoff(threadID string, items []triage.QueuedFlushItem) {
-	defer a.flushDispatch.wg.Done()
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 	unlockMutations := a.threadApplication().LockMutations(threadID)
@@ -226,12 +225,10 @@ func (a *App) startFlushDispatchWorkerLocked(threadID string) {
 		return
 	}
 	a.flushDispatch.running[threadID] = true
-	a.flushDispatch.wg.Add(1)
-	go a.runFlushDispatchWorker(threadID)
+	a.flushDispatch.wg.Go(func() { a.runFlushDispatchWorker(threadID) })
 }
 
 func (a *App) runFlushDispatchWorker(threadID string) {
-	defer a.flushDispatch.wg.Done()
 	for {
 		a.flushDispatch.mu.Lock()
 		queue := a.flushDispatch.queues[threadID]
@@ -1606,21 +1603,6 @@ func (a *App) cleanupStaleFlushRows(threadID string, userItemIDs []string) error
 	return nil
 }
 
-// nextFlushSequenceForTurn returns the next available flush sequence
-// number for (threadID, turnIndex). It considers both persisted rows
-// and deferred pending rows waiting for provider echo, because queued
-// sends no longer persist the user_text row optimistically.
-func (a *App) nextFlushSequenceForTurn(threadID string, turnIndex int) (int, error) {
-	if a.triage != nil {
-		// Both reads (persisted rows + deferred registry) run under the
-		// thread's flush anchor: an unanchored pair here could land
-		// inside the echo path's pop->persist section and re-issue a
-		// consumed message's sequence (triage.NextFlushSequence doc).
-		return a.triage.NextFlushSequence(threadID, turnIndex)
-	}
-	return a.nextSequenceForScope(threadID, turnIndex, "flush")
-}
-
 // dispatchFlushToProvider routes the actual provider call based on
 // session type. A Codex drain STEERS (mid-turn pending_input); the caller
 // handles the no-active-turn fallback after it can re-register the pending
@@ -1651,9 +1633,8 @@ func (a *App) nextFlushSequenceForTurn(threadID string, turnIndex int) (int, err
 //     error string is stable per codex-rs/core/src/session/mod.rs.
 func (a *App) dispatchFlushToProvider(sess session, content string, opts provider.SendOptions) error {
 	// Every branch below writes to provider stdin, so stamp activity
-	// once up front. Matches the pre-Send bumps in sendToProvider /
-	// steerMessageWithOptions so the idle reaper can't reap a session
-	// in the middle of a flush dispatch.
+	// once up front. Matches the pre-Send bump in sendToProvider so the
+	// idle reaper can't reap a session in the middle of a flush dispatch.
 	sess.Liveness.BumpActivity(time.Now())
 	if sess.Codex != nil {
 		return sess.Codex.Steer(context.Background(), content, opts)
@@ -2178,13 +2159,14 @@ const queueMaxMessageBytes = 512 * 1024 // 512 KiB
 
 func maxQueueMessageBytes() int { return queueMaxMessageBytes }
 
-// nextFlushUserItemID is the flush-scope wrapper around
-// nextSequencedUserItemID. Format: `user:<turnIndex>:flush:<n>`.
-// Sortable; never collides with the seed `user:<turnIndex>` row or
-// with `:steer:<n>` rows. Reads existing rows so a session reopen
-// sees the right next sequence even after a restart.
+// nextFlushUserItemID formats the next flush-scope user item id, whose
+// sequence the router allocates (triage.Router.NextFlushSequence) from
+// the persisted rows and the sends awaiting their echo. Format:
+// `user:<turnIndex>:flush:<n>`. Sortable; never collides with the seed
+// `user:<turnIndex>` row or with `:steer:<n>` rows. Its callers hold the
+// router already: they take its turn allocation lock first.
 func (a *App) nextFlushUserItemID(threadID string, turnIndex int) (string, error) {
-	seq, err := a.nextFlushSequenceForTurn(threadID, turnIndex)
+	seq, err := a.triage.NextFlushSequence(threadID, turnIndex)
 	if err != nil {
 		return "", err
 	}

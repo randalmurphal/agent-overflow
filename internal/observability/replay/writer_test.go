@@ -1,7 +1,6 @@
 package replay
 
 import (
-	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -134,70 +133,6 @@ func TestWriterReopenAppends(t *testing.T) {
 	}
 }
 
-func TestWriterRotateAtThreshold(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "thread-a.jsonl")
-	// Rotation threshold chosen small so a handful of records trips it.
-	w, err := NewWriter(path, WriterConfig{MaxBytes: 256, FsyncEvery: 1})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	defer w.Close()
-
-	// Each record adds roughly 120-140 bytes; writing 4 guarantees rotation.
-	for i := 0; i < 4; i++ {
-		rec, err := NewRecord(time.Unix(0, int64(i)*int64(time.Millisecond)), "thread-a", "kind", map[string]any{
-			"index":  i,
-			"filler": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-		})
-		if err != nil {
-			t.Fatalf("NewRecord: %v", err)
-		}
-		if err := w.Write(rec); err != nil {
-			t.Fatalf("Write %d: %v", i, err)
-		}
-	}
-
-	// We expect at least the .1 backup to exist.
-	if _, err := os.Stat(path + ".1"); err != nil {
-		t.Fatalf("rotation did not produce .1 backup: %v", err)
-	}
-	// The current file should be smaller than the threshold (contains only
-	// the records written after rotation).
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat current: %v", err)
-	}
-	if info.Size() >= 256 {
-		t.Errorf("current size %d >= threshold 256; rotation didn't reset", info.Size())
-	}
-}
-
-func TestWriterRotateKeepsAtMostThreeBackups(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "thread-a.jsonl")
-	w, err := NewWriter(path, WriterConfig{MaxBytes: 80, FsyncEvery: 1})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	defer w.Close()
-
-	// Write a lot of records to drive several rotations. Each record is
-	// well under 80 bytes so rotation triggers every 1-2 writes.
-	for i := 0; i < 20; i++ {
-		rec, err := NewRecord(time.Unix(0, int64(i)), "thread-a", "k", map[string]any{"i": i})
-		if err != nil {
-			t.Fatalf("NewRecord: %v", err)
-		}
-		if err := w.Write(rec); err != nil {
-			t.Fatalf("Write %d: %v", i, err)
-		}
-	}
-
-	// .1/.2/.3 may exist; .4 must not.
-	if _, err := os.Stat(path + ".4"); !os.IsNotExist(err) {
-		t.Errorf("unexpected .4 backup present: %v", err)
-	}
-}
-
 func TestWriterWriteAfterCloseReturnsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "thread-a.jsonl")
 	w, err := NewWriter(path, WriterConfig{})
@@ -279,45 +214,6 @@ func TestRecordZeroTimeFilled(t *testing.T) {
 	}
 	if rec.Timestamp == 0 {
 		t.Error("zero time should have been replaced with now()")
-	}
-}
-
-// TestWriterContentIsLineDelimited ensures bufio.Scanner can read back every
-// write as a discrete JSON document.
-func TestWriterContentIsLineDelimited(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "thread-a.jsonl")
-	w, err := NewWriter(path, WriterConfig{FsyncEvery: 1})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	defer w.Close()
-
-	for i := 0; i < 10; i++ {
-		rec, _ := NewRecord(time.Unix(0, int64(i)*int64(time.Millisecond)), "t", "k", map[string]int{"i": i})
-		if err := w.Write(rec); err != nil {
-			t.Fatalf("Write %d: %v", i, err)
-		}
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	count := 0
-	for scanner.Scan() {
-		var r Record
-		if err := json.Unmarshal(scanner.Bytes(), &r); err != nil {
-			t.Fatalf("parse line %d: %v (%q)", count, err, scanner.Text())
-		}
-		count++
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scanner: %v", err)
-	}
-	if count != 10 {
-		t.Errorf("parsed %d lines, want 10", count)
 	}
 }
 

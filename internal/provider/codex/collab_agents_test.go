@@ -1,34 +1,29 @@
 package codex
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/providertest"
 )
 
 func TestDispatchLineCollabSpawnRemembersReceiverThread(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-done": "call-collab-1"},
-		},
+	fx := newConnFixture(t)
+	// The spawn reads the child's metadata in the background.
+	fx.answer("thread/read", `{"thread":{"id":"child-provider-1"}}`)
+	s := fx.session("parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-done": "call-collab-1"},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"call-collab-1","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["child-provider-1"],"prompt":"Refactor auth","status":"completed"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"call-collab-1","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["child-provider-1"],"prompt":"Refactor auth","status":"completed"}}}`))
 
 	if got := s.parentToolUseForProviderThread("child-provider-1"); got != "call-collab-1" {
 		t.Fatalf("child mapping: got %q, want %q", got, "call-collab-1")
@@ -40,18 +35,14 @@ func TestDispatchLineCollabSpawnRemembersReceiverThread(t *testing.T) {
 
 func TestDispatchLineThreadStartedRemembersAgentPath(t *testing.T) {
 	t.Parallel()
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  func(provider.ProviderEvent) {},
-		collab: sessionCollabState{
-			childParentByThread:    map[string]string{"child-provider-1": "call-collab-1"},
-			childParentByAgentPath: make(map[string]string),
-			agentPathByThread:      make(map[string]string),
-		},
+	s := fixtureSession(t, "parent-thread", "", func(provider.ProviderEvent) {})
+	s.collab = sessionCollabState{
+		childParentByThread:    map[string]string{"child-provider-1": "call-collab-1"},
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-provider-1","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"provider-parent","depth":1,"agent_path":"/root/researcher"}}}}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-provider-1","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"provider-parent","depth":1,"agent_path":"/root/researcher"}}}}}}`))
 
 	if got := s.parentToolUseForAgentPath("/root/researcher"); got != "call-collab-1" {
 		t.Fatalf("agent path mapping: got %q, want %q", got, "call-collab-1")
@@ -61,22 +52,18 @@ func TestDispatchLineThreadStartedRemembersAgentPath(t *testing.T) {
 func TestDispatchLineWaitAgentEnrichesReceiverMetadata(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread:    map[string]string{"child-provider-1": "call-collab-1"},
-			childParentByAgentPath: make(map[string]string),
-			agentPathByThread:      make(map[string]string),
-			agentMetaByThread:      make(map[string]collabReceiverMeta),
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread:    map[string]string{"child-provider-1": "call-collab-1"},
+		childParentByAgentPath: make(map[string]string),
+		agentPathByThread:      make(map[string]string),
+		agentMetaByThread:      make(map[string]collabReceiverMeta),
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-provider-1","agentNickname":"Galileo","agentRole":"explorer","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"provider-parent","depth":1,"agent_path":"/root/researcher"}}}}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"parent-thread","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"status":"inProgress"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-provider-1","agentNickname":"Galileo","agentRole":"explorer","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"provider-parent","depth":1,"agent_path":"/root/researcher"}}}}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"parent-thread","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"status":"inProgress"}}}`))
 
 	var waitEvent *provider.ProviderEvent
 	for i := range events {
@@ -107,30 +94,17 @@ func TestDispatchLineWaitAgentEnrichesReceiverMetadata(t *testing.T) {
 func TestDispatchLineRawSpawnOutputMapsAgentIDForSubagentNotification(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread:    make(map[string]string),
-			childParentByAgentPath: make(map[string]string),
-			agentPathByThread:      make(map[string]string),
-			agentMetaByThread:      make(map[string]collabReceiverMeta),
-		},
-		rawCalls: sessionRawToolCallState{
-			byID: make(map[string]rawToolCall),
-		},
-	}
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"agent_type\":\"default\",\"message\":\"Run a command, then finish\"}"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"019ecee6-4686-75e3-91aa-6594ec7aab09\",\"nickname\":\"Pasteur\"}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"agent_type\":\"default\",\"message\":\"Run a command, then finish\"}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"019ecee6-4686-75e3-91aa-6594ec7aab09\",\"nickname\":\"Pasteur\"}"}}}`))
 	if got := s.parentToolUseForProviderThread("019ecee6-4686-75e3-91aa-6594ec7aab09"); got != "spawn-1" {
 		t.Fatalf("parent for raw spawn agent id = %q, want spawn-1", got)
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"019ecee6-4686-75e3-91aa-6594ec7aab09\",\"status\":{\"completed\":\"detached child finished after bash command\"}}</subagent_notification>"}]}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","item":{"id":"user-msg-1","type":"userMessage","content":[{"type":"text","text":"<subagent_notification>{\"agent_path\":\"019ecee6-4686-75e3-91aa-6594ec7aab09\",\"status\":{\"completed\":\"detached child finished after bash command\"}}</subagent_notification>"}]}}}`))
 
 	var notif *provider.ProviderEvent
 	for i := range events {
@@ -163,31 +137,17 @@ func TestDispatchLineRawSpawnOutputMapsAgentIDForSubagentNotification(t *testing
 func TestDispatchLineRawSpawnOutputMapsAgentIDForRawUserSubagentNotification(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread:    make(map[string]string),
-			childParentByAgentPath: make(map[string]string),
-			agentPathByThread:      make(map[string]string),
-			agentMetaByThread:      make(map[string]collabReceiverMeta),
-		},
-		rawCalls: sessionRawToolCallState{
-			byID: make(map[string]rawToolCall),
-		},
-	}
-	s.setRootThreadID("parent-provider-thread")
+	s := fixtureSession(t, "parent-thread", "parent-provider-thread", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-provider-thread","turnId":"turn-1","item":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"agent_type\":\"default\",\"message\":\"Run a command, then finish\"}"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-provider-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"019ecef1-4a59-7932-8c94-76099197299b\",\"nickname\":\"Bernoulli\"}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-provider-thread","turnId":"turn-1","item":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"agent_type\":\"default\",\"message\":\"Run a command, then finish\"}"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-provider-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"019ecef1-4a59-7932-8c94-76099197299b\",\"nickname\":\"Bernoulli\"}"}}}`))
 	if got := s.parentToolUseForProviderThread("019ecef1-4a59-7932-8c94-76099197299b"); got != "spawn-1" {
 		t.Fatalf("parent for raw spawn agent id = %q, want spawn-1", got)
 	}
 
-	s.dispatchLine(rawUserSubagentNotificationLineForThread(t, "parent-provider-thread", map[string]any{
+	feed(t, s, rawUserSubagentNotificationLineForThread(t, "parent-provider-thread", map[string]any{
 		"agent_path": "019ecef1-4a59-7932-8c94-76099197299b",
 		"status": map[string]any{
 			"completed": "detached child retest finished after bash command",
@@ -224,35 +184,11 @@ func TestDispatchLineRawSpawnOutputMapsAgentIDForRawUserSubagentNotification(t *
 
 func TestReadChildThreadMetadataEmitsSpawnMetaUpdate(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args:   []string{"-c", "cat > /dev/null"},
-	})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-	t.Cleanup(func() { proc.Close() })
-
 	events := make(chan provider.ProviderEvent, 10)
-	s := &Session{
-		proc:     proc,
-		ctx:      ctx,
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events <- evt
-		},
-		cancel: cancel,
-		collab: sessionCollabState{
-			childParentByThread:    make(map[string]string),
-			childParentByAgentPath: make(map[string]string),
-			agentPathByThread:      make(map[string]string),
-			agentMetaByThread:      make(map[string]collabReceiverMeta),
-		},
-	}
+	fx := newConnFixture(t)
+	s := fx.session("parent-thread", "parent-provider-thread", func(evt provider.ProviderEvent) {
+		events <- evt
+	})
 
 	done := make(chan struct{})
 	go func() {
@@ -265,8 +201,7 @@ func TestReadChildThreadMetadataEmitsSpawnMetaUpdate(t *testing.T) {
 		close(done)
 	}()
 
-	pending, rpcID := waitForPending(t, s, 3*time.Second)
-	pending <- json.RawMessage(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"thread":{"id":"child-provider-1","agentNickname":"Newton","agentRole":"default"}}}`, rpcID))
+	fx.answerNext(`{"thread":{"id":"child-provider-1","agentNickname":"Newton","agentRole":"default"}}`)
 
 	select {
 	case <-done:
@@ -318,50 +253,10 @@ func TestReadChildThreadMetadataEmitsSpawnMetaUpdate(t *testing.T) {
 
 func TestReadChildThreadMetadataRetriesUntilLabelsArrive(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args: []string{"-c", `
-			count=0
-			while IFS= read -r line; do
-				id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-				count=$((count + 1))
-				if [ "$count" -eq 1 ]; then
-					printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"child-provider-1"}}}\n' "$id"
-				else
-					printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"child-provider-1","agentNickname":"Curie","agentRole":"default"}}}\n' "$id"
-				fi
-			done
-		`},
-	})
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
-
+	fx := newConnFixture(t)
 	events := make(chan provider.ProviderEvent, 10)
-	s := &Session{
-		proc:                proc,
-		ctx:                 ctx,
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		collabMetadataReads: make(chan struct{}, 1),
-		onEvent: func(evt provider.ProviderEvent) {
-			events <- evt
-		},
-		cancel: cancel,
-		collab: sessionCollabState{
-			childParentByThread:    make(map[string]string),
-			childParentByAgentPath: make(map[string]string),
-			agentPathByThread:      make(map[string]string),
-			agentMetaByThread:      make(map[string]collabReceiverMeta),
-		},
-	}
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		_ = proc.Close()
+	s := fx.session("parent-thread", "parent-provider-thread", func(evt provider.ProviderEvent) {
+		events <- evt
 	})
 
 	done := make(chan struct{})
@@ -371,10 +266,12 @@ func TestReadChildThreadMetadataRetriesUntilLabelsArrive(t *testing.T) {
 		})
 		close(done)
 	}()
+	fx.answerNext(`{"thread":{"id":"child-provider-1"}}`)
+	fx.answerNext(`{"thread":{"id":"child-provider-1","agentNickname":"Curie","agentRole":"default"}}`)
 
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(fixtureWait):
 		t.Fatal("readChildThreadMetadata did not return")
 	}
 
@@ -394,50 +291,15 @@ func TestReadChildThreadMetadataRetriesUntilLabelsArrive(t *testing.T) {
 
 func TestReadChildThreadMetadataRequestsNoTurns(t *testing.T) {
 	t.Parallel()
-	capturePath := t.TempDir() + "/request.json"
-	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
-		Binary: "sh",
-		Args: []string{"-c", `
-			IFS= read -r line || exit 1
-			printf '%s\n' "$line" > "$CAPTURE_PATH"
-			id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-			printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"child-provider-1","agentNickname":"Noether","agentRole":"default"}}}\n' "$id"
-		`},
-		Env: map[string]string{"CAPTURE_PATH": capturePath},
-	})
-	if err != nil {
-		t.Fatalf("spawn capture sh: %v", err)
-	}
-	s := &Session{
-		proc:                proc,
-		ctx:                 ctx,
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		collabMetadataReads: make(chan struct{}, 1),
-		onEvent:             func(provider.ProviderEvent) {},
-		cancel:              cancel,
-		collab: sessionCollabState{
-			childParentByThread:    make(map[string]string),
-			childParentByAgentPath: make(map[string]string),
-			agentPathByThread:      make(map[string]string),
-			agentMetaByThread:      make(map[string]collabReceiverMeta),
-		},
-	}
-	go s.readLoop()
-	t.Cleanup(func() {
-		cancel()
-		_ = proc.Close()
-	})
+	fx := newConnFixture(t)
+	s := fx.session("parent-thread", "parent-provider-thread", nil)
+	fx.answer("thread/read", json.RawMessage(`{"thread":{"id":"child-provider-1","agentNickname":"Noether","agentRole":"default"}}`))
 
 	s.readChildThreadMetadata("child-provider-1", "spawn-1", collabLaunchMeta{
 		ReceiverThreadIDs: []string{"child-provider-1"},
 	})
 
-	data, err := os.ReadFile(capturePath)
-	if err != nil {
-		t.Fatalf("read captured request: %v", err)
-	}
+	data := fx.written(1)[0]
 	var frame struct {
 		Method string `json:"method"`
 		Params struct {
@@ -473,23 +335,19 @@ func TestReadChildThreadMetadataRequestsNoTurns(t *testing.T) {
 func TestDispatchLineTypedWaitCompletionPreservesStartedReceiverTargetsSeparately(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			agentMetaByThread: map[string]collabReceiverMeta{
-				"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
-				"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
-				"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
-			},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		agentMetaByThread: map[string]collabReceiverMeta{
+			"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+			"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+			"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
 		},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1","child-provider-2","child-provider-3"],"agentsStates":{},"status":"inProgress"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"agentsStates":{"child-provider-1":{"status":"completed","message":"done"}},"status":"completed"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1","child-provider-2","child-provider-3"],"agentsStates":{},"status":"inProgress"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"id":"wait-1","type":"collabAgentToolCall","tool":"wait","receiverThreadIds":["child-provider-1"],"agentsStates":{"child-provider-1":{"status":"completed","message":"done"}},"status":"completed"}}}`))
 
 	var waitEvent *provider.ProviderEvent
 	for i := range events {
@@ -544,18 +402,14 @@ func TestDispatchLineTypedWaitCompletionPreservesStartedReceiverTargetsSeparatel
 func TestDispatchLineCloseAgentKeepsOwnItemID(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
-	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent: func(evt provider.ProviderEvent) {
-			events = append(events, evt)
-		},
-		collab: sessionCollabState{
-			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		},
+	s := fixtureSession(t, "parent-thread", "", func(evt provider.ProviderEvent) {
+		events = append(events, evt)
+	})
+	s.collab = sessionCollabState{
+		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 	}
 
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
+	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","item":{"id":"close-call-1","type":"collabAgentToolCall","tool":"closeAgent","receiverThreadIds":["child-provider-1"],"status":"completed"}}}`))
 
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))

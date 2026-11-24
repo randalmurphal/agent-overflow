@@ -66,6 +66,28 @@ func (h *Harness) HarnessForgeInvocations(since int) forgefake.InvocationLog {
 	return h.forge.Invocations(since)
 }
 
+// MergedPRPollResult is the merged pull request poll's progress.
+type MergedPRPollResult struct {
+	// LastPassStartedAt is when the last poll pass that ran to its end
+	// began, in Unix milliseconds; 0 before one has. A repository whose
+	// read was due by then has been read, or is no longer tracked.
+	LastPassStartedAt int64 `json:"lastPassStartedAt"`
+}
+
+// HarnessMergedPRPoll reports the merged pull request poll's progress, so a
+// spec can wait for a pass that would have read a repository rather than
+// for a forge request that marks one.
+func (h *Harness) HarnessMergedPRPoll() (MergedPRPollResult, error) {
+	if h.config.Host == nil {
+		return MergedPRPollResult{}, errors.New("harness has no app host")
+	}
+	at := h.config.Host.MergedPRPolled()
+	if at.IsZero() {
+		return MergedPRPollResult{}, nil
+	}
+	return MergedPRPollResult{LastPassStartedAt: at.UnixMilli()}, nil
+}
+
 // HarnessForgeOffline makes the fake forge unreachable (true) or reachable
 // again (false): while offline every gh and glab call fails the way the
 // real CLI does when the forge host does not resolve, every HTTP request

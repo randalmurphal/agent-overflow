@@ -16,7 +16,8 @@ type options struct {
 	redemption func() (time.Duration, error)
 	retry      string
 	lifetime   context.Context
-	// roundTrip wraps the credential transport (withRoundTrip).
+	// roundTrip wraps the credential transport; set by this package's tests
+	// (withRoundTrip).
 	roundTrip func(http.RoundTripper) http.RoundTripper
 }
 type Option func(*options)
@@ -51,12 +52,6 @@ func WithRedemptionBound(bound func() (time.Duration, error)) Option {
 // then ends with then. Without it they read as a renewal's do.
 func WithRetryRemedy(then string) Option {
 	return func(o *options) { o.retry = then }
-}
-
-// withRoundTrip wraps the credential transport, so this package's tests can
-// read the deadline each exchange is sent with.
-func withRoundTrip(wrap func(http.RoundTripper) http.RoundTripper) Option {
-	return func(o *options) { o.roundTrip = wrap }
 }
 
 // WithLifetime is the owner's lifetime. When it ends, a rotation in flight

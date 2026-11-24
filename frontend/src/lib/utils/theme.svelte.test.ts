@@ -17,7 +17,6 @@ import { flushSync } from 'svelte';
 import { applyThemeClass } from './theme';
 import { getResolvedTheme, teardownThemeModeForTest } from '../stores/themeMode.svelte';
 import {
-  resetAppearanceForTest,
   setAppearance,
   type AppearanceMode,
 } from '../stores/appearance.svelte';
@@ -49,7 +48,7 @@ function makeFakeMatchMedia(initialDark: boolean): FakeMediaQueryList {
     fire(matches: boolean) {
       list.matches = matches;
       const e = { matches } as unknown as MediaQueryListEvent;
-      for (const h of [...handlers]) h(e);
+      for (const h of handlers.slice()) h(e);
     },
   };
   return list;
@@ -124,7 +123,6 @@ describe('theme pipeline (App.svelte wiring)', () => {
       vi.fn(() => mediaList),
     );
     teardownThemeModeForTest();
-    resetAppearanceForTest();
     localStorage.clear();
     setBindingMock('SetAppearance', async () => undefined);
     document.documentElement.classList.remove('light', 'dark');
@@ -132,7 +130,6 @@ describe('theme pipeline (App.svelte wiring)', () => {
 
   afterEach(() => {
     teardownThemeModeForTest();
-    resetAppearanceForTest();
     localStorage.clear();
     vi.unstubAllGlobals();
   });

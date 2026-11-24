@@ -181,7 +181,7 @@ type AccountUsageFetcher struct {
 	Reaper procutil.Reaper
 	// WorkDir is the required absolute parent of the isolated account directory.
 	WorkDir string
-	Env     map[string]string
+	Env     provider.EnvInput
 	Timeout time.Duration // 0 → DefaultAccountUsageTimeout
 }
 
@@ -201,11 +201,10 @@ func (f *AccountUsageFetcher) Fetch(ctx context.Context) (_ AccountUsage, retErr
 	defer cancel()
 
 	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
-		Binary:   f.Binary,
-		Args:     codexAppServerArgs(),
-		Dir:      f.WorkDir,
-		Env:      f.Env,
-		UnsetEnv: []string{"CODEX_HOME"},
+		Binary: f.Binary,
+		Args:   codexAppServerArgs(),
+		Dir:    f.WorkDir,
+		Env:    f.Env.Clear(provider.CodexHomeEnv),
 	})
 	if err != nil {
 		return AccountUsage{}, err

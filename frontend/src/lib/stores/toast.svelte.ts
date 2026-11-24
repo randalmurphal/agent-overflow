@@ -1,4 +1,5 @@
 import { captureError, type CapturedError } from './errorReports.svelte';
+import { TOAST_MS } from '../pageTiming';
 import { refusalReason } from '../utils/errorReport';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
@@ -33,7 +34,7 @@ export function getToasts(): Toast[] {
 export function addToast(
   type: ToastType,
   message: string,
-  duration = 5000,
+  duration = TOAST_MS,
   action?: ToastAction,
   captured?: CapturedError,
 ): string {
@@ -55,7 +56,7 @@ export function addToast(
 export function addErrorToast(
   message: string,
   err: unknown,
-  duration = 5000,
+  duration = TOAST_MS,
   action?: ToastAction,
 ): string {
   const refusal = refusalReason(err);

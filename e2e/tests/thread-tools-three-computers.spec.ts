@@ -19,6 +19,8 @@ import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../sr
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { backgroundShellSteps } from './agents-tray-helpers.js';
+import { laterMessage } from './standing-agent-wake-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -165,8 +167,7 @@ test('computers narrows a search to the one computer it names', async () => {
       ],
     }),
   );
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'what is on every computer?', null);
+  await home.send(caller.threadIds[0], 'what is on every computer?');
 
   // The default fan-out covers this computer and both paired ones.
   const every = await awaitToolAnswer<SearchAnswer>(home, {
@@ -188,7 +189,7 @@ test('computers narrows a search to the one computer it names', async () => {
 
   // Naming one computer drops every other group, this computer's included.
   await awaitTurnCompleted(home, caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'now only the studio', null);
+  await home.send(caller.threadIds[0], 'now only the studio');
   const narrowed = await awaitToolAnswer<SearchAnswer>(home, {
     tool: 'thread_search',
     cwd: caller.path,
@@ -211,7 +212,7 @@ test('computers narrows a search to the one computer it names', async () => {
 
   // "local" is the same filter pointed at the caller's own computer.
   await awaitTurnCompleted(home, caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'now only this computer', null);
+  await home.send(caller.threadIds[0], 'now only this computer');
   const local = await awaitToolAnswer<SearchAnswer>(home, {
     tool: 'thread_search',
     cwd: caller.path,
@@ -277,8 +278,7 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
     } }], text: 'Packaged.' }, { text: 'Noted.' }],
   }));
 
-  await home.rpc('StartSession', lead.threadIds[0]);
-  await home.rpc('SendMessage', lead.threadIds[0], 'build it two computers away', null);
+  await home.send(lead.threadIds[0], 'build it two computers away');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const nested = await awaitToolAnswer<{ token: string; thread_id: string }>(studio, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
@@ -302,7 +302,7 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
   await advanceGate(bench!, heldGrand.mockId, 'two-hop-grand-hold');
   await expect(grandRow.getByTestId('agent-tray-row-state')).toHaveText('blocked');
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('running');
-  await body.screenshot({ path: test.info().outputPath('agents-two-hop-nested.png'), animations: 'disabled' });
+  await screenshot(body, { path: test.info().outputPath('agents-two-hop-nested.png'), animations: 'disabled' });
 
   const childInterrupted = studio.waitForEvent<HarnessMockEventData>(
     'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === child.path, 90_000);
@@ -310,17 +310,22 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
     'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === grand.path, 90_000);
   // The cascade disarms the child's own spawn there: the person stopped
   // the child's work, so the child takes no new turn for it.
-  const childWoken = studio.waitForEvent<HarnessMockEventData>(
+  const childWoken = studio.watchEvents<HarnessMockEventData>(
     'harness:mock',
     (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes(nested.value!.token),
-    30_000).then(() => true, () => false);
+  );
   await childRow.getByTestId('agent-tray-row-stop').click();
   await expect(page.getByTestId('toast-message').filter({ hasText: 'Stopped Studio child' }))
     .toHaveText('Stopped Studio child: its turn, 1 background task and 1 agent of its own.', { timeout: 60_000 });
   await childInterrupted;
   await grandInterrupted;
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
-  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
+  // A later message to the child, read by its session, is the barrier: a
+  // wake for the stopped grandchild would reach the child's session before it.
+  await childWoken.expectNoneThrough(
+    () => laterMessage(studio, spawn.value!.thread_id, child.path),
+    'the child took a turn for the agent the person stopped',
+  );
 });
 
 /** A thread on the computer that holds it: its placement and archive state, null once it is gone. */
@@ -384,8 +389,7 @@ test('workers two computers away are placed on their own computers, and archivin
     turns: [{ steps: [{ gate: 'owned-grand-hold' }], text: 'Packaged.' }, { text: 'Noted.' }],
   }));
 
-  await home.rpc('StartSession', lead.threadIds[0]);
-  await home.rpc('SendMessage', lead.threadIds[0], 'build it two computers away, owned', null);
+  await home.send(lead.threadIds[0], 'build it two computers away, owned');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const nested = await awaitToolAnswer<{ token: string; thread_id: string }>(studio, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
@@ -472,8 +476,7 @@ test('a paired computer that is down becomes an errors row beside the live rows'
   const down = bench!;
   bench = undefined;
   await down.close();
-  await home.rpc('StartSession', offlineCaller.threadIds[0]);
-  await home.rpc('SendMessage', offlineCaller.threadIds[0], 'search every computer again', null);
+  await home.send(offlineCaller.threadIds[0], 'search every computer again');
 
   const answer = await awaitToolAnswer<SearchAnswer>(home, {
     tool: 'thread_search',

@@ -1,15 +1,13 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
 import ChatHeaderFactsLine from './ChatHeaderFactsLine.svelte';
 import type { GitStatus } from '../../types/git';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane as buildRegisteredPane, makeThread } from '../../../test/helpers/chat';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
-import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
-import { resetForTest as resetWorktreeIntent } from '../../stores/worktreeIntent.svelte';
+import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { noteThread } from '../../transport/entityIndex';
 
@@ -37,12 +35,6 @@ async function renderAt(status: GitStatus | null, branch = '') {
 }
 
 describe('<ChatHeaderFactsLine> branch segment', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetPanesForTest();
-    resetWorktreeIntent();
-    __resetGitStatusStoreForTest();
-  });
 
   it('names a detached HEAD at no tag by its commit, with the commit icon', async () => {
     const segment = await renderAt(detached());

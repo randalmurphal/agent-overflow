@@ -52,9 +52,9 @@ test('a consumed message older than the opening window leaves no pending preview
   await page.getByTestId('thread-row').filter({ hasText: 'Elsewhere' }).first().click();
   await expect(page.getByTestId('message-timeline-scroll')).toBeVisible();
 
-  await harness.rpc('StartSession', target);
+  await harness.startSession(target);
   const reviewing = gate('review');
-  await harness.rpc('SendMessage', target, 'Review the change.', null);
+  await harness.send(target, 'Review the change.');
   const { mockId } = await reviewing;
   const advance = (name: string) => harness.rpc('HarnessMockCommand', mockId, { type: 'advance', name });
 

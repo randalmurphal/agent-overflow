@@ -7,12 +7,10 @@ import {
   registerWorkflowsActionTarget,
 } from './workflowCommands.svelte';
 import {
-  closeWorkflowsPane,
   getWorkflowsOverlayRunId,
   getWorkflowsOverlayTop,
   openWorkflowsPane,
   pushWorkflowRunDetail,
-  resetWorkflowsOverlayForTest,
   setWorkflowArmedAction,
 } from './workflowsOverlay.svelte';
 // Imported for its side effect as much as its API: the settings store arms the
@@ -20,13 +18,11 @@ import {
 import {
   isSettingsOpen,
   openSettingsOverlay,
-  resetSettingsOverlayForTest,
 } from './settingsOverlay.svelte';
-import { resetAppStorageForTest } from './appStorage';
 import { createPane, focusPane, getFocusedPaneId, resetPanesForTest } from './panes.svelte';
-import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import { isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
-import { evaluateWhen, parseWhen } from './keybindingParser';
+import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest, toolPaneIdFor } from './paneLayout.svelte';
+import { closeToolPane, isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
+import { evaluateWhen, tryParseWhen } from './keybindingParser';
 import { KEYBINDING_DEFAULTS } from '../generated/keybindingDefaults';
 
 /** The palette/keybinding call shape the workflows commands are dispatched with. */
@@ -56,9 +52,6 @@ function resetPaneState(): void {
 describe('workflows commands', () => {
   beforeEach(() => {
     clearCommandRegistry();
-    resetAppStorageForTest();
-    resetWorkflowsOverlayForTest();
-    resetSettingsOverlayForTest();
     resetPaneState();
     registerWorkflowCommands();
   });
@@ -100,7 +93,7 @@ describe('workflows commands', () => {
   it('ships the Escape chord gated on an open detail step', () => {
     const rule = KEYBINDING_DEFAULTS.find((entry) => entry.command === 'workflows.escape');
     expect(rule?.when).toBe('workflowsPaneFocused && toolDetailOpen');
-    const ast = parseWhen(rule?.when ?? '');
+    const ast = tryParseWhen(rule?.when ?? '')!;
     expect(evaluateWhen(ast, { workflowsPaneFocused: true, toolDetailOpen: false })).toBe(false);
     expect(evaluateWhen(ast, { workflowsPaneFocused: true, toolDetailOpen: true })).toBe(true);
   });
@@ -201,7 +194,7 @@ describe('workflows commands', () => {
     runCommand('workflows.back', ctx());
     expect(getWorkflowsOverlayTop()).toEqual({ level: 'home' });
     expect(isToolOpen('workflows')).toBe(true);
-    closeWorkflowsPane();
+    closeToolPane(toolPaneIdFor('workflows'));
     expect(isToolOpen('workflows')).toBe(false);
   });
 

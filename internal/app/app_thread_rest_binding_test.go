@@ -7,7 +7,6 @@ package app
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -43,7 +42,8 @@ type reportingRuns struct {
 }
 
 // reportingRuns writes the workflow and its profile in thread's project and
-// starts the engine. The check is released when the test ends.
+// starts the engine. A check still holding when the test ends is stopped by
+// the engine fixture's teardown, through the runner's own stop.
 func (f *requestFixture) reportingRuns(t *testing.T, threadID string) *reportingRuns {
 	t.Helper()
 	thread, err := f.app.store.GetThread(threadID)
@@ -51,41 +51,9 @@ func (f *requestFixture) reportingRuns(t *testing.T, threadID string) *reporting
 		t.Fatal(err)
 	}
 	project := mustReloadProject(t, f.app.store, thread.ProjectID)
-	root := t.TempDir()
-	dir := filepath.Join(root, "workflows")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	definition := `id: tool-flow
-name: Tool flow
-phases:
-  - id: check
-    driver: tool
-    check: hold
-    gate:
-      routes:
-        - when:
-            eq:
-              ref: check.passed
-              value: true
-          to: done
-        - to: failed
-cleanup: manual
-`
-	if err := os.WriteFile(filepath.Join(dir, "tool-flow.yaml"), []byte(definition), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	gate := filepath.Join(t.TempDir(), "run-gate")
 	script := writeExecutable(t, "hold.sh", "#!/bin/sh\nwhile [ ! -e "+gate+" ]; do sleep 0.05; done\necho ok\n")
-	profile := filepath.Join(root, "projects", project.Slug)
-	if err := os.MkdirAll(profile, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(profile, "profile.yaml"), []byte("checks:\n  hold: [\""+script+"\"]\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	startWorkflowEngineForTest(t, f.app, root)
-	t.Cleanup(func() { _ = os.WriteFile(gate, nil, 0o600) })
+	startToolFlowEngine(t, f.app, project, script)
 	return &reportingRuns{f: f, project: project, gate: gate}
 }
 

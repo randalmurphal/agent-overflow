@@ -185,7 +185,7 @@ func TestAWatchFireReadsItsRowOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	a.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "costs-tok", Claude: sess, Liveness: newSessionLiveness(time.Now())})
 	handle := startedSessionEventHandler(a, thread.ID, "costs-tok", string(provider.Claude))
 	handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: thread.ID, Timestamp: time.Now()})

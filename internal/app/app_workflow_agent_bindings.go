@@ -3,14 +3,12 @@ package app
 import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
-	"agent-overflow/internal/untrustedtext"
 	"agent-overflow/internal/workflow/catalog"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/memory"
 	"agent-overflow/internal/workflow/profile"
 	"agent-overflow/internal/workflowapp"
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,7 +16,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"sort"
 	"strings"
 	"time"
 )
@@ -936,132 +933,6 @@ type WorkflowAgentPhaseAttempt struct {
 type WorkflowAgentOutputDigest struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
-}
-
-// Digest budgets. A run's inspection names every phase attempt, so the per-
-// attempt digest has to stay small enough that a twenty-attempt run is still one
-// readable answer.
-const (
-	maxDigestOutputs    = 8
-	maxDigestValueRunes = 200
-)
-
-// workflowSessionContinued is the root wire vocabulary asserted by App-level
-// integration tests; workflowapp owns the persisted projection that sets it.
-const workflowSessionContinued = "continued"
-
-// workflowAttemptOutputs decodes one attempt's envelope outputs. An attempt with
-// no envelope, or one that rested on a question or a stuck reason, simply has
-// none — that is an answer rather than an error. The size assertion is the read
-// side of the contract every envelope was accepted under: a record past the cap
-// is corrupt, and shipping it into an agent's context window unremarked is the
-// one thing worse than refusing it.
-func workflowAttemptOutputs(itemID, phaseID string, attempt int, payload json.RawMessage) (map[string]json.RawMessage, error) {
-	if len(payload) == 0 {
-		return nil, nil
-	}
-	if len(payload) > def.DefaultEnvelopeSizeCap {
-		return nil, fmt.Errorf(
-			"workflow run %s: envelope for %s attempt %d is %d bytes; maximum is %d",
-			itemID, phaseID, attempt, len(payload), def.DefaultEnvelopeSizeCap)
-	}
-	var envelope struct {
-		Outputs map[string]json.RawMessage `json:"outputs"`
-	}
-	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return nil, fmt.Errorf(
-			"workflow run %s: envelope for %s attempt %d is unreadable: %w", itemID, phaseID, attempt, err)
-	}
-	return envelope.Outputs, nil
-}
-
-// workflowOutputDigest projects an attempt's outputs into the bounded form, in a
-// stable order, and reports how many it left out. The overflow count is returned
-// rather than silently dropped: a digest that hides its own truncation is how a
-// reader concludes an output does not exist.
-func workflowOutputDigest(outputs map[string]json.RawMessage) ([]WorkflowAgentOutputDigest, int) {
-	names := make([]string, 0, len(outputs))
-	for name := range outputs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	digest := make([]WorkflowAgentOutputDigest, 0, min(len(names), maxDigestOutputs))
-	for index, name := range names {
-		if index == maxDigestOutputs {
-			return digest, len(names) - index
-		}
-		digest = append(digest, WorkflowAgentOutputDigest{
-			Name:  name,
-			Value: untrustedtext.Truncate(workflowOutputText(outputs[name]), maxDigestValueRunes),
-		})
-	}
-	return digest, 0
-}
-
-// workflowOutputText renders one output value for a line. A JSON string becomes
-// its text — the caller quotes it as untrusted data when it renders it, and a
-// value that arrived already quoted would reach the reader double-quoted —
-// while every other shape keeps its JSON, compacted so one value stays one line.
-func workflowOutputText(raw json.RawMessage) string {
-	var text string
-	if json.Unmarshal(raw, &text) == nil {
-		return text
-	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, raw); err != nil {
-		return string(raw)
-	}
-	return compact.String()
-}
-
-// workflowAttachLatestDigests stamps each phase's LATEST attempt with the digest
-// of its envelope outputs. Earlier attempts are left bare: they were superseded,
-// and a run that retried a phase five times would otherwise answer with five
-// digests of which only one is current.
-func workflowAttachLatestDigests(
-	itemID string, attempts []WorkflowAgentPhaseAttempt, timeline []store.WorkItemPhaseTimeline,
-) error {
-	latest := make(map[string]int, len(attempts))
-	for _, attempt := range attempts {
-		if attempt.Attempt > latest[attempt.PhaseID] {
-			latest[attempt.PhaseID] = attempt.Attempt
-		}
-	}
-	envelopes := make(map[string]json.RawMessage, len(timeline))
-	for _, phase := range timeline {
-		if latest[phase.PhaseID] == phase.Attempt {
-			envelopes[phase.PhaseID] = phase.OutputEnvelope
-		}
-	}
-	for index := range attempts {
-		attempt := &attempts[index]
-		if latest[attempt.PhaseID] != attempt.Attempt {
-			continue
-		}
-		outputs, err := workflowAttemptOutputs(itemID, attempt.PhaseID, attempt.Attempt, envelopes[attempt.PhaseID])
-		if err != nil {
-			return err
-		}
-		attempt.Outputs, attempt.OutputOverflow = workflowOutputDigest(outputs)
-	}
-	return nil
-}
-
-// workflowAgentPhaseAttempts projects a run's phase history for the single-run
-// status read. A gate trace that no longer decodes fails the read rather than
-// reporting an attempt with no decision: "this attempt reached no gate" and
-// "this attempt's record is corrupt" are different answers, and only one of
-// them is a state a run can legitimately be in.
-func (a *App) workflowAgentPhaseAttempts(itemID string) ([]WorkflowAgentPhaseAttempt, error) {
-	values, err := a.workflowApplication().PhaseAttempts(itemID)
-	if err != nil {
-		return nil, err
-	}
-	attempts := make([]WorkflowAgentPhaseAttempt, 0, len(values))
-	for _, value := range values {
-		attempts = append(attempts, projectWorkflowPhaseAttempt(value))
-	}
-	return attempts, nil
 }
 
 // The methods the workflow tools call. Each one takes its project from the

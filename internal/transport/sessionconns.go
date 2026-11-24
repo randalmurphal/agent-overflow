@@ -127,15 +127,3 @@ func (c *SessionConns) CountForSession(sessionID string) int {
 	defer c.mu.Unlock()
 	return len(c.bySession[sessionID])
 }
-
-// sessions reports how many distinct sessions currently hold at least one
-// connection. The registry's own bound, readable so a test can assert it
-// returns to zero.
-func (c *SessionConns) sessions() int {
-	if c == nil {
-		return 0
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.bySession)
-}

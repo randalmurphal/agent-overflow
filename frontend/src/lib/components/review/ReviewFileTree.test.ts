@@ -2,7 +2,7 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewFileTree from './ReviewFileTree.svelte';
 import ReviewRail from './ReviewRail.svelte';
-import { appStorageGet, appStorageSet, resetAppStorageForTest } from '../../stores/appStorage';
+import { appStorageGet, appStorageSet } from '../../stores/appStorage';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { PatchFile } from '../../utils/patchFiles';
 
@@ -19,7 +19,6 @@ const FILES = [
 ];
 
 beforeEach(() => {
-  resetAppStorageForTest();
   setCompactLayoutForTest(false);
 });
 
@@ -49,11 +48,6 @@ describe('<ReviewFileTree>', () => {
     // Clearing the search restores the manual collapse.
     await fireEvent.input(view.getByTestId('review-tree-search'), { target: { value: '' } });
     expect(view.queryByText('app.ts')).toBeNull();
-
-    await fireEvent.input(view.getByTestId('review-tree-search'), {
-      target: { value: 'no-such-file' },
-    });
-    expect(view.getByTestId('review-tree-empty')).toBeInTheDocument();
   });
 
   it('says no file matches without an empty list beside it', async () => {

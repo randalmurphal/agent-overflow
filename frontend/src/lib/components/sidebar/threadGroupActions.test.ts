@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   CROSS_MACHINE_GROUP_REFUSAL,
   NEW_THREAD_GROUP_NAME,
@@ -14,13 +14,12 @@ import {
   consumePendingGroupRename,
   getThreadGroupById,
   getThreadGroups,
-  resetThreadGroupsForTest,
   upsertThreadGroup,
 } from '../../stores/threadGroups.svelte';
 import { getThreadById, getThreads, prependThread, removeThread } from '../../stores/threads.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { noteThread } from '../../transport/entityIndex';
 import type { Thread, ThreadGroup } from '../../types/models';
 
 function mkGroup(id: string, overrides: Partial<ThreadGroup> = {}): ThreadGroup {
@@ -61,9 +60,6 @@ function errorToasts(): string {
 
 describe('threadGroupActions', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    __resetEntityIndexForTest();
-    resetThreadGroupsForTest();
     for (const t of getThreads()) removeThread(t.id);
     for (const toast of getToasts()) removeToast(toast.id);
   });
@@ -145,26 +141,18 @@ describe('threadGroupActions', () => {
   });
 
   describe('deleteThreadGroupAction', () => {
-    it('drops the group and ungroups its members locally', async () => {
-      setBindingMock('DeleteThreadGroup', async () => null);
-      prependThread(mkThread('t1', { groupId: 'g1' }));
-      prependThread(mkThread('t2', { groupId: 'other' }));
-
-      expect(await deleteThreadGroupAction('g1')).toBe(true);
-      expect(getThreadGroups()).toEqual([]);
-      expect(getThreadById('t1')?.groupId).toBeUndefined();
-      // A member of another group is not touched.
-      expect(getThreadById('t2')?.groupId).toBe('other');
-    });
-
-    it('clears the pins of the deleted group members, as the backend does', async () => {
+    it('drops the group and ungroups its members locally, clearing their pins as the backend does', async () => {
       setBindingMock('DeleteThreadGroup', async () => null);
       prependThread(mkThread('t1', { groupId: 'g1', pinnedAt: 10, pinGroup: 1 }));
       prependThread(mkThread('t2', { groupId: 'other', pinnedAt: 20 }));
 
       expect(await deleteThreadGroupAction('g1')).toBe(true);
+      expect(getThreadGroups()).toEqual([]);
+      expect(getThreadById('t1')?.groupId).toBeUndefined();
       expect(getThreadById('t1')?.pinnedAt).toBeUndefined();
       expect(getThreadById('t1')?.pinGroup).toBeUndefined();
+      // A member of another group is not touched.
+      expect(getThreadById('t2')?.groupId).toBe('other');
       expect(getThreadById('t2')?.pinnedAt).toBe(20);
     });
 

@@ -13,6 +13,8 @@ import (
 // TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage covers the
 // happy path: a thread with a temporary ao-<8-hex> branch in a real
 // worktree is renamed to a descriptive target derived from the user message.
+// The rename happens exactly once: a second send short-circuits at the "not
+// temporary" gate, never calls the generator, and keeps the name.
 func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -31,14 +33,16 @@ func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	worktreePath, err := app.GitCreateWorktree(thread.ID, "")
+	worktreePath, err := worktreePathOf(app.PrepareThreadWorktree(thread.ID, "", "", false))
 	if err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 
 	var seenMessage string
+	callCount := 0
 	app.generateBranchNameFn = func(th store.Thread, message string) (string, error) {
 		seenMessage = message
+		callCount++
 		if th.ID != thread.ID {
 			t.Fatalf("generate called with thread %q, want %q", th.ID, thread.ID)
 		}
@@ -70,6 +74,18 @@ func TestMaybeRenameTemporaryWorktreeBranchRenamesOnFirstMessage(t *testing.T) {
 	if strings.TrimSpace(status) != "ao-describe-the-work" {
 		t.Fatalf("worktree HEAD branch = %q, want ao-describe-the-work", strings.TrimSpace(status))
 	}
+
+	app.maybeRenameTemporaryWorktreeBranch(thread.ID, "second message")
+	if callCount != 1 {
+		t.Fatalf("after second call: callCount = %d, want 1 (no re-rename)", callCount)
+	}
+	stored, err = app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if stored.Branch != "ao-describe-the-work" {
+		t.Fatalf("branch after second call = %q, want preserved", stored.Branch)
+	}
 }
 
 // The rename writes the branch and nothing else: a move that lands while the
@@ -89,9 +105,9 @@ func TestMaybeRenameTemporaryWorktreeBranchKeepsAMoveThatLandedAfterItsRead(t *t
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	worktreePath, err := app.GitCreateWorktree(thread.ID, "")
+	worktreePath, err := worktreePathOf(app.PrepareThreadWorktree(thread.ID, "", "", false))
 	if err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 	elsewhere := worktreePath + "-elsewhere"
 	app.generateBranchNameFn = func(store.Thread, string) (string, error) {
@@ -109,66 +125,45 @@ func TestMaybeRenameTemporaryWorktreeBranchKeepsAMoveThatLandedAfterItsRead(t *t
 	}
 }
 
-// TestMaybeRenameTemporaryWorktreeBranchSkipsNonWorktreeThread verifies the
-// no-op path: when the thread has no WorktreePath set, we never try to
-// rename (and never call generateBranchNameFn).
-func TestMaybeRenameTemporaryWorktreeBranchSkipsNonWorktreeThread(t *testing.T) {
+// TestMaybeRenameTemporaryWorktreeBranchSkipsANonCandidate verifies the
+// no-op paths: a thread with no WorktreePath, and a branch that is already
+// descriptive (only the ao-<8-hex> placeholder is a rename candidate), are
+// never renamed and never call generateBranchNameFn.
+func TestMaybeRenameTemporaryWorktreeBranchSkipsANonCandidate(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
+	for name, test := range map[string]struct{ branch, worktreePath string }{
+		"no worktree":        {gitops.BuildTemporaryWorktreeBranchNameWithPrefix(gitops.AutoWorktreeBranchPrefix), ""},
+		"descriptive branch": {"feature/already-named", "/tmp/unused-worktree"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread("thread-rename-skip")
+			thread.Provider = string(provider.Claude)
+			thread.Branch = test.branch
+			thread.WorktreePath = test.worktreePath
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread() error = %v", err)
+			}
+			called := false
+			app.generateBranchNameFn = func(store.Thread, string) (string, error) {
+				called = true
+				return "should-not-happen", nil
+			}
 
-	thread := testThread("thread-no-worktree")
-	thread.Branch = gitops.BuildTemporaryWorktreeBranchName()
-	// WorktreePath intentionally empty; this is not a worktree thread.
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
+			app.maybeRenameTemporaryWorktreeBranch(thread.ID, "fix the bug")
 
-	called := false
-	app.generateBranchNameFn = func(store.Thread, string) (string, error) {
-		called = true
-		return "should-not-happen", nil
-	}
-
-	app.maybeRenameTemporaryWorktreeBranch(thread.ID, "fix the bug")
-
-	if called {
-		t.Fatal("generateBranchNameFn was called for a non-worktree thread")
-	}
-}
-
-// TestMaybeRenameTemporaryWorktreeBranchSkipsNonTemporaryBranch ensures we
-// don't overwrite an already-descriptive branch name. Only the ao-<8-hex>
-// placeholder is a rename candidate.
-func TestMaybeRenameTemporaryWorktreeBranchSkipsNonTemporaryBranch(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-
-	thread := testThread("thread-descriptive-branch")
-	thread.Provider = string(provider.Claude)
-	thread.Branch = "feature/already-named"
-	thread.WorktreePath = "/tmp/unused-worktree"
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	called := false
-	app.generateBranchNameFn = func(store.Thread, string) (string, error) {
-		called = true
-		return "different-name", nil
-	}
-
-	app.maybeRenameTemporaryWorktreeBranch(thread.ID, "fix the bug")
-
-	if called {
-		t.Fatal("generateBranchNameFn was called for a non-temporary branch")
-	}
-
-	stored, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if stored.Branch != "feature/already-named" {
-		t.Fatalf("stored Branch = %q, want preserved", stored.Branch)
+			if called {
+				t.Fatal("generateBranchNameFn was called")
+			}
+			stored, err := app.store.GetThread(thread.ID)
+			if err != nil {
+				t.Fatalf("GetThread() error = %v", err)
+			}
+			if stored.Branch != test.branch {
+				t.Fatalf("stored Branch = %q, want preserved %q", stored.Branch, test.branch)
+			}
+		})
 	}
 }
 
@@ -193,8 +188,8 @@ func TestMaybeRenameTemporaryWorktreeBranchGeneratorErrorIsNonFatal(t *testing.T
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	if _, err := app.GitCreateWorktree(thread.ID, ""); err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+	if _, err := app.PrepareThreadWorktree(thread.ID, "", "", false); err != nil {
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 
 	stored, err := app.store.GetThread(thread.ID)
@@ -202,7 +197,7 @@ func TestMaybeRenameTemporaryWorktreeBranchGeneratorErrorIsNonFatal(t *testing.T
 		t.Fatalf("GetThread() error = %v", err)
 	}
 	originalBranch := stored.Branch
-	if !gitops.IsTemporaryWorktreeBranch(originalBranch) {
+	if !gitops.IsTemporaryWorktreeBranchWithPrefix(originalBranch, gitops.AutoWorktreeBranchPrefix) {
 		t.Fatalf("seed branch %q is not temporary", originalBranch)
 	}
 
@@ -241,12 +236,12 @@ func TestMaybeRenameTemporaryWorktreeBranchFallsBackOnEmptyMessage(t *testing.T)
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	if _, err := app.GitCreateWorktree(thread.ID, ""); err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
+	if _, err := app.PrepareThreadWorktree(thread.ID, "", "", false); err != nil {
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
 	}
 
 	// Leaving generateBranchNameFn nil exercises the
-	// branchNameFromUserMessage → BuildGeneratedWorktreeBranchName path.
+	// branchNameFromUserMessage → BuildGeneratedWorktreeBranchNameWithPrefix path.
 	app.maybeRenameTemporaryWorktreeBranch(thread.ID, "   \t\n")
 
 	stored, err := app.store.GetThread(thread.ID)
@@ -255,64 +250,6 @@ func TestMaybeRenameTemporaryWorktreeBranchFallsBackOnEmptyMessage(t *testing.T)
 	}
 	if stored.Branch != "ao-update" {
 		t.Fatalf("stored Branch = %q, want ao-update", stored.Branch)
-	}
-}
-
-// TestMaybeRenameTemporaryWorktreeBranchIsIdempotentWhenSkipped verifies the
-// "happens exactly once" property: once the branch has been renamed to a
-// descriptive name, a second send does not attempt another rename. The
-// generator fn is never called, and the branch keeps its descriptive name.
-func TestMaybeRenameTemporaryWorktreeBranchIsIdempotentWhenSkipped(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	repo := initMainGitRepo(t)
-
-	thread := testThread("thread-rename-idempotent")
-	thread.Provider = string(provider.Claude)
-	project, err := app.ensureProjectForWorkspace(repo)
-	if err != nil {
-		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
-	}
-	thread.ProjectID = project.ID
-	thread.WorkspacePath = repo
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	if _, err := app.GitCreateWorktree(thread.ID, ""); err != nil {
-		t.Fatalf("GitCreateWorktree() error = %v", err)
-	}
-
-	callCount := 0
-	app.generateBranchNameFn = func(store.Thread, string) (string, error) {
-		callCount++
-		return "first-rename", nil
-	}
-
-	app.maybeRenameTemporaryWorktreeBranch(thread.ID, "first message")
-	if callCount != 1 {
-		t.Fatalf("after first call: callCount = %d, want 1", callCount)
-	}
-
-	stored, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if stored.Branch != "ao-first-rename" {
-		t.Fatalf("branch after first rename = %q, want ao-first-rename", stored.Branch)
-	}
-
-	// Second call should short-circuit inside the "not temporary" gate.
-	app.maybeRenameTemporaryWorktreeBranch(thread.ID, "second message")
-	if callCount != 1 {
-		t.Fatalf("after second call: callCount = %d, want 1 (no re-rename)", callCount)
-	}
-
-	stored, err = app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if stored.Branch != "ao-first-rename" {
-		t.Fatalf("branch after second call = %q, want preserved", stored.Branch)
 	}
 }
 

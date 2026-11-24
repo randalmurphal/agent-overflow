@@ -1095,7 +1095,7 @@ func TestPhaseAttemptsReportAContinuedSession(t *testing.T) {
 		})
 	}
 
-	attempts, err := h.app.workflowAgentPhaseAttempts(item.ID)
+	attempts, err := h.app.workflowApplication().PhaseAttempts(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1123,7 +1123,7 @@ func TestPhaseAttemptsWithoutAThreadCarryNoSession(t *testing.T) {
 	h.phase(t, store.WorkItemPhase{ItemID: item.ID, PhaseID: "check", Attempt: 1, StartedAt: 10})
 	h.phase(t, store.WorkItemPhase{ItemID: item.ID, PhaseID: "check", Attempt: 2, StartedAt: 20})
 
-	attempts, err := h.app.workflowAgentPhaseAttempts(item.ID)
+	attempts, err := h.app.workflowApplication().PhaseAttempts(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

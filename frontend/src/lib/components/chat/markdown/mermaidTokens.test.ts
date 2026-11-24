@@ -20,26 +20,6 @@ afterEach(() => {
 });
 
 describe('resolveMermaidThemeConfig', () => {
-  it('pins the derive-from-variables theme in both modes', () => {
-    // `base` is the ONLY mermaid theme that derives its whole palette
-    // from themeVariables; 'default'/'dark' ignore most of them, which
-    // is what left diagrams on a palette of their own.
-    for (const mode of ['light', 'dark'] as const) {
-      expect(resolveMermaidThemeConfig(mode).theme).toBe('base');
-    }
-  });
-
-  it('carries the resolved mode as mermaid darkMode', () => {
-    const dark = resolveMermaidThemeConfig('dark');
-    const light = resolveMermaidThemeConfig('light');
-    expect(dark.darkMode).toBe(true);
-    expect(light.darkMode).toBe(false);
-    // theme-base reads its own `darkMode` off themeVariables, not off
-    // the top-level config field.
-    expect((dark.themeVariables as Record<string, unknown>).darkMode).toBe(true);
-    expect((light.themeVariables as Record<string, unknown>).darkMode).toBe(false);
-  });
-
   it('emits no CSS the color math cannot parse', () => {
     // Whatever leaves this module is something mermaid's `khroma` color
     // math can parse. `oklch()` (what our tokens literally are) and

@@ -1,6 +1,9 @@
 // Shared Playwright fixtures: one harness backend per worker, reset to
-// a blank slate before every test. Import { test, expect } from here
-// instead of '@playwright/test'.
+// a blank slate before every test, and the page error and CSP checks. They
+// extend tests/base-test.ts, which carries the gate's rules. Import
+// { test, expect } from here, or from tests/base-test.ts in a spec that
+// launches its own harnesses, never from '@playwright/test'.
+import type { Page } from '@playwright/test';
 import { test as base, expect } from './base-test.js';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { webkitKeychainHome } from '../src/webkit-keychain.js';
@@ -150,31 +153,42 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   // than once cannot lose the violations from its earlier page — an init
   // script re-runs per navigation and would reset a page-side array.
   page: async ({ page }, use) => {
-    const violations: string[] = [];
-    await page.exposeFunction('__aoReportCspViolation', (violation: string) => {
-      violations.push(violation);
-    });
-    await page.addInitScript(() => {
-      document.addEventListener('securitypolicyviolation', (event) => {
-        const report = `${event.effectiveDirective || event.violatedDirective} refused ${
-          event.blockedURI || '(inline)'
-        }${event.sourceFile ? ` from ${event.sourceFile}:${event.lineNumber}` : ''}`;
-        (
-          window as unknown as { __aoReportCspViolation?: (value: string) => void }
-        ).__aoReportCspViolation?.(report);
-      });
-    });
-
+    const expectNoCspViolations = await watchCspViolations(page);
     await use(page);
+    expectNoCspViolations();
+  },
+});
 
+/**
+ * Collects the Content-Security-Policy violations `page` reports from here
+ * on, across its navigations, and returns the check that it reported none.
+ * The `page` fixture's page has it; a spec calls it for a page of a context
+ * it opens itself when that page stands in for a fixture page.
+ */
+export async function watchCspViolations(page: Page): Promise<() => void> {
+  const violations: string[] = [];
+  await page.exposeFunction('__aoReportCspViolation', (violation: string) => {
+    violations.push(violation);
+  });
+  await page.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (event) => {
+      const report = `${event.effectiveDirective || event.violatedDirective} refused ${
+        event.blockedURI || '(inline)'
+      }${event.sourceFile ? ` from ${event.sourceFile}:${event.lineNumber}` : ''}`;
+      (
+        window as unknown as { __aoReportCspViolation?: (value: string) => void }
+      ).__aoReportCspViolation?.(report);
+    });
+  });
+  return () => {
     expect(
       violations,
       'the page reported Content-Security-Policy violations: either the load is legitimate and ' +
         'internal/transport.CSPProduction has to admit it (with the reason recorded on the ' +
         'constant), or it is a load the app should not be making',
     ).toEqual([]);
-  },
-});
+  };
+}
 
 export { expect };
 

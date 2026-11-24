@@ -1635,41 +1635,6 @@ func (s *Store) ClearLastTokenUsage(threadID string) error {
 	return s.UpdateLastTokenUsage(threadID, "")
 }
 
-// UpdateProvider overwrites the provider ('claude' / 'codex' / 'claude-tui' /
-// 'agy') and clears reasoning_effort if the thread's existing effort tier is
-// illegal for the new provider.
-func (s *Store) UpdateProvider(threadID, prov string) error {
-	if _, ok := legalProviders[prov]; !ok {
-		return fmt.Errorf("%w: %q", ErrInvalidProvider, prov)
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin update provider for %s: %w", threadID, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var currentEffort string
-	if err := tx.QueryRow(`SELECT reasoning_effort FROM threads WHERE id = ?`, threadID).Scan(&currentEffort); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("store: update provider for %s: %w", threadID, sql.ErrNoRows)
-		}
-		return fmt.Errorf("store: read effort for provider update %s: %w", threadID, err)
-	}
-	nextEffort := normalizeEffort(currentEffort)
-	if !legalEffortForProvider(prov, nextEffort) {
-		nextEffort = normalizeEffort("")
-	}
-	result, err := tx.Exec(`UPDATE threads SET provider = ?, reasoning_effort = ? WHERE id = ?`,
-		prov, nextEffort, threadID)
-	if err != nil {
-		return fmt.Errorf("store: update provider for %s: %w", threadID, err)
-	}
-	if err := requireRowsAffected(result, fmt.Sprintf("store: update provider for %s", threadID)); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 // UpdateMode overwrites the thread's mode (chat, plan, terminal, or a
 // workflow-owned mode). Empty strings are normalized to "chat" to
 // match CreateThread/UpdateThread. This is the permissive store

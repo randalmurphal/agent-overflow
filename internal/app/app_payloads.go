@@ -2,8 +2,6 @@ package app
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"unicode/utf8"
 
 	"agent-overflow/internal/store"
@@ -144,71 +142,6 @@ func (a *App) GetPayloadData(threadID string, payloadID string) (PayloadContent,
 		Data:       string(data),
 		PatchSpans: a.persistedPayloadPatchSpans(threadID, meta.Kind, payloadID),
 	}, nil
-}
-
-// savePayloadPicker resolves a destination path for SavePayloadToFile.
-// Production uses the Wails save dialog; tests inject a stub via
-// a.savePayloadPickerFn so the write path is exercisable without a
-// running GUI.
-type savePayloadPicker func(filename string) (string, error)
-
-func (a *App) resolveSavePayloadPicker() savePayloadPicker {
-	if a.savePayloadPickerFn != nil {
-		return a.savePayloadPickerFn
-	}
-	// a.saveDialog is wired by the desktop-mode ServiceStartup
-	// (app_desktop.go). Headless mode (Phase D's WSL backend) leaves it
-	// nil — the native save dialog is replaced by a frontend-side
-	// download path. Returning nil makes SavePayloadToFile error out
-	// with a clear "requires active application" message; the WSL
-	// frontend never invokes this path because its UI uses the
-	// download fallback.
-	return a.saveDialog
-}
-
-//ao:scope host
-func (a *App) SavePayloadToFile(threadID string, payloadID string) (string, error) {
-	if err := a.readyThreadHistory(threadID); err != nil {
-		return "", err
-	}
-	picker := a.resolveSavePayloadPicker()
-	if picker == nil {
-		return "", fmt.Errorf("app: save payload to file requires active application")
-	}
-
-	item, err := a.findThreadItemByPayloadID(threadID, payloadID)
-	if err != nil {
-		return "", err
-	}
-
-	filename := "payload.txt"
-	if item.ToolName != "" {
-		filename = item.ToolName + ".txt"
-	} else if item.PayloadKind != "" {
-		filename = item.PayloadKind + ".txt"
-	}
-	filename = filepath.Base(filename)
-
-	path, err := picker(filename)
-	if err != nil {
-		return "", fmt.Errorf("save payload dialog: %w", err)
-	}
-	if path == "" {
-		return "", nil
-	}
-
-	data, err := a.store.GetPayloadData(threadID, payloadID)
-	if err != nil {
-		return "", err
-	}
-	// 0600 — saved payloads can carry tool output and provider responses
-	// the user wouldn't want world-readable on a shared host. The user
-	// picked the path explicitly, so it's deliberate persistence; lock
-	// the file mode down rather than leave it world-readable by default.
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return "", fmt.Errorf("write payload to %s: %w", path, err)
-	}
-	return path, nil
 }
 
 // readyThreadHistory prepares a read of a thread's history or payloads:

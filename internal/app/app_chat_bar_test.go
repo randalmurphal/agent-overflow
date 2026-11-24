@@ -16,6 +16,8 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
+
+	"github.com/google/uuid"
 )
 
 func TestSeedChatModelProfileSkipsHiddenLastUsedModel(t *testing.T) {
@@ -261,18 +263,18 @@ func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "tok", Claude: sess})
 
 	const commandText = "/workflow start the release run"
 	const plainText = "and then tell me what happened"
 	// The bound wire method, not the internal helper: expansion is an
 	// explicit opt-in that only the composer-facing entry points set.
-	if err := app.SendMessage(context.Background(), thread.ID, commandText, nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, commandText, pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("send command message: %v", err)
 	}
 	acknowledgeMockClaudeSend(t, app, thread.ID)
-	if err := app.SendMessage(context.Background(), thread.ID, plainText, nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, plainText, pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("send plain message: %v", err)
 	}
 	_ = sess.Close()
@@ -350,7 +352,7 @@ func TestSendMessageSkipsExpansionForInjectedText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
+	t.Cleanup(func() { closeSessionChecked(t, sess) })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "tok", Claude: sess})
 
 	const injected = "/workflow was mentioned by a run that woke this thread"

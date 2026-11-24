@@ -3,8 +3,7 @@
 // cancel), the workflow run and memory tools, the browser tools on a local
 // page, and the remote tools on a paired computer. The target answers the
 // lead's send with thread_reply, so its own timeline holds a reply row.
-// Shared by ao-tool-rows-more.spec.ts (desktop) and
-// compact-ao-tool-rows-more.spec.ts (compact).
+// ao-tool-rows-more.spec.ts reads it on a desktop page and a phone page.
 
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -28,7 +27,7 @@ import {
   doneFlowYaml,
   otherProvider,
 } from './workflows-agent-tools-helpers.js';
-import { expandRow, expectRowTextWhole, shootRow } from './ao-tool-rows-helpers.js';
+import { expandRow, expectRowTextWhole, shootRow, shootRowBeforeOpening } from './ao-tool-rows-helpers.js';
 import { timelineOf } from './timeline-follow-helpers.js';
 
 export const MORE_LEAD_TITLE = 'Lead thread';
@@ -201,9 +200,9 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
     ],
   }));
 
-  await app.rpc('StartSession', leadThreadId);
+  await app.startSession(leadThreadId);
   const spawnTurn = awaitTurnCompleted(app, leadThreadId);
-  await app.rpc('SendMessage', leadThreadId, 'spawn the crash triage', null);
+  await app.send(leadThreadId, 'spawn the crash triage');
   // The spawned thread answers inside the call's wait, so no wake will
   // take the next turn.
   const spawn = await awaitToolAnswer<{ outcome: string }>(app, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 60_000 });
@@ -212,7 +211,7 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
   await spawnTurn;
   // A watch runs a script from a standing agent's home, so the lead is one.
   await app.rpc('HarnessMakeAssistant', leadThreadId);
-  await app.rpc('SendMessage', leadThreadId, 'run every tool once', null);
+  await app.send(leadThreadId, 'run every tool once');
   const last = await app.awaitMcpResult({ server: REMOTE, tool: 'remote_run', cwd: lead.path, timeoutMs: 120_000 });
   expect(last.report.isError, last.report.result).toBeFalsy();
   return { leadThreadId, targetThreadId };
@@ -257,9 +256,9 @@ export async function readRow(page: Page, tool: string, shot: (name: string) => 
     }
     await expect(row).toHaveCount(1, { timeout: 500 });
   }).toPass({ timeout: 30_000 });
-  await shootRow(row, shot(`${tool}-collapsed`));
+  await shootRowBeforeOpening(row, shot(`${tool}-collapsed`));
   // Where the row sits on screen, net of its activity run's own clip: with
-  // the reader above the bottom (shootRow left the follow), the timeline must
+  // the reader above the bottom (expandRow left the follow), the timeline must
   // not move a row they open. A run's clip that follows its own end is the
   // run's.
   const placed = () => row.evaluate((el) => {

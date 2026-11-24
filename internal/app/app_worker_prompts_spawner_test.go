@@ -17,6 +17,8 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+
+	"github.com/google/uuid"
 )
 
 // workerPromptTokens is the token of each worker prompt wake threadID's
@@ -82,10 +84,10 @@ func TestAnOrdinarySpawnersWorkerPromptsWakeItAndItsReplyAnswersThem(t *testing.
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.StartSession(worker.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), worker.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), worker.ID, "go", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, "go", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	// A prompt's wake is queued before its start is launched, so both are
@@ -137,7 +139,7 @@ func TestAnOrdinarySpawnersWorkerPromptsWakeItAndItsReplyAnswersThem(t *testing.
 		left := app.triage.PendingInteractiveRequests(worker.ID)
 		return len(left.Approvals) == 0 && len(left.UserInputs) == 0
 	})
-	_ = app.StopSession(worker.ID)
+	stopSessionChecked(t, app, worker.ID)
 }
 
 // The user answering in an ordinary spawner's worker first settles the
@@ -340,10 +342,10 @@ func TestAnOldPromptTokenCannotAnswerAReplacementSessionsPrompt(t *testing.T) {
 	}
 	start := func(message string) {
 		t.Helper()
-		if err := app.StartSession(worker.ID); err != nil {
+		if err := app.startSessionTakingLock(context.Background(), worker.ID); err != nil {
 			t.Fatalf("StartSession: %v", err)
 		}
-		if err := app.SendMessage(context.Background(), worker.ID, message, nil); err != nil {
+		if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, message, pageSendOptions(uuid.NewString())); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 	}
@@ -379,7 +381,7 @@ func TestAnOldPromptTokenCannotAnswerAReplacementSessionsPrompt(t *testing.T) {
 	release := make(chan struct{})
 	app.workerPrompts.queue.Go(func() { <-release })
 	start("go again")
-	t.Cleanup(func() { _ = app.StopSession(worker.ID) })
+	t.Cleanup(func() { stopSessionChecked(t, app, worker.ID) })
 	waitUntil(t, 10*time.Second, func() bool {
 		return len(app.triage.PendingInteractiveRequests(worker.ID).Approvals) == 1
 	})

@@ -225,13 +225,8 @@ func (s *Store) LatestChatModelProfileContext(ctx context.Context) (ChatModelPro
 	return scanChatModelProfile(row)
 }
 
-// LatestChatModelProfileForProvider returns the newest profile for one provider.
-func (s *Store) LatestChatModelProfileForProvider(providerName string) (ChatModelProfile, error) {
-	return s.LatestChatModelProfileForProviderContext(context.Background(), providerName)
-}
-
-// LatestChatModelProfileForProviderContext is
-// LatestChatModelProfileForProvider bounded by ctx.
+// LatestChatModelProfileForProviderContext returns the newest profile for one
+// provider, bounded by ctx.
 func (s *Store) LatestChatModelProfileForProviderContext(ctx context.Context, providerName string) (ChatModelProfile, error) {
 	row := s.reader().QueryRowContext(
 		ctx,

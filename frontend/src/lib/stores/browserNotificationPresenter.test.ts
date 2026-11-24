@@ -13,7 +13,7 @@
 // settings and THIS page's focus, and acts on the answer.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { emitWailsEvent, resetWailsMocks } from '../../test/mocks/wailsio-runtime';
+import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { loadSettingsFixture } from '../../test/helpers/settingsFixture';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
@@ -167,7 +167,6 @@ describe('the remote browser notification presenter', () => {
     // would otherwise leave a live subscription for the next one.
     stopBrowserNotificationPresenter();
     vi.unstubAllGlobals();
-    resetWailsMocks();
   });
 
   it('raises a silent notification and plays the cue for a live send', async () => {
@@ -335,22 +334,16 @@ describe('the remote browser notification presenter', () => {
     stop();
   });
 
-  it('installs nothing on a loopback page, where the host already presents', async () => {
-    page.loopback = true;
+  it.each([
+    ['on a loopback page, where the host already presents', 'loopback'],
+    ['in the native shell, which has its own presenter', 'shell'],
+  ] as const)('installs nothing %s', async (_where, flag) => {
+    page[flag] = true;
     const stop = startPresenter();
     emit(send());
 
     expect(raised).toEqual([]);
     expect(playNotificationCue).not.toHaveBeenCalled();
-    stop();
-  });
-
-  it('installs nothing in the native shell, which has its own presenter', async () => {
-    page.shell = true;
-    const stop = startPresenter();
-    emit(send());
-
-    expect(raised).toEqual([]);
     stop();
   });
 

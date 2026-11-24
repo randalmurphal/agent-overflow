@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	droppedWakeFixture = "../../../docs/references/fixtures/claude/local_agent_dropped_wake_20261014.ndjson"
-	mirrorWakeFixture  = "../../../docs/references/fixtures/claude/local_agent_mirror_wake_20261014.ndjson"
+	droppedWakeFixture = "../wirecaptures/claude/local_agent_dropped_wake_20261014.ndjson"
+	mirrorWakeFixture  = "../wirecaptures/claude/local_agent_mirror_wake_20261014.ndjson"
 )
 
 func wakeDroppedMeta(t *testing.T, evt provider.ProviderEvent) provider.AgentWakeDroppedMeta {

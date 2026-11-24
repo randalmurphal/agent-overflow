@@ -129,47 +129,12 @@ func decided(t *testing.T, done <-chan error, refuse bool) {
 
 // A claim that lands while a live session's batch waits for the thread's
 // action lock holds the batch: the dispatch reads the claim once it has the
-// lock and waits for the decision. A refused delete's batch is sent once; a
-// committed one's is sent nothing, with no waiter or worker left.
-func TestAClaimLandingWhileABatchWaitsOnTheActionLockHoldsIt(t *testing.T) {
-	t.Parallel()
-	for _, refuse := range []bool{true, false} {
-		t.Run(map[bool]string{true: "refused", false: "committed"}[refuse], func(t *testing.T) {
-			t.Parallel()
-			f := newClaimFixture(t)
-			if err := f.app.StartSession(f.caller.ID); err != nil {
-				t.Fatal(err)
-			}
-			unlock := f.app.threadLocks().Lock(f.caller.ID)
-			marker := "held-" + entityid.New()
-			queueTestWake(t, f.app, f.caller.ID, marker)
-			heldAtTheActionLock(t, f.app, f.caller.ID)
-			done := deleteOf(t, f.app, f.caller.ID, refuse, func() {
-				waitAtGates(t, f.app, 1)
-				if n := f.sent(t, marker); n != 0 {
-					t.Errorf("a claimed thread's batch reached the provider %d times", n)
-				}
-			})
-			unlock()
-			decided(t, done, refuse)
-			if refuse {
-				f.deliveredOnce(t, marker)
-				return
-			}
-			nothingWaits(t, f.app)
-			if n := f.sent(t, marker); n != 0 {
-				t.Fatalf("a committed thread's batch reached the provider %d times", n)
-			}
-		})
-	}
-}
-
-// A batch the dispatcher holds, at the thread's action lock or at a
-// delete's decision, has left triage's queue and is not the provider's
-// yet: it keeps its thread from rest, so a request held for that rest
-// (threadRest) does not settle on a thread about to take a message. A
-// refused delete's batch is then sent once; a committed one's is sent
-// nothing.
+// lock and waits for the decision. A batch the dispatcher holds, at the
+// thread's action lock or at a delete's decision, has left triage's queue
+// and is not the provider's yet: it keeps its thread from rest, so a request
+// held for that rest (threadRest) does not settle on a thread about to take
+// a message. A refused delete's batch is then sent once; a committed one's
+// is sent nothing, with no waiter or worker left.
 func TestABatchTheDispatcherHoldsKeepsItsThreadFromRest(t *testing.T) {
 	t.Parallel()
 	for _, refuse := range []bool{true, false} {
@@ -177,7 +142,7 @@ func TestABatchTheDispatcherHoldsKeepsItsThreadFromRest(t *testing.T) {
 			t.Parallel()
 			f := newClaimFixture(t)
 			id := f.caller.ID
-			if err := f.app.StartSession(id); err != nil {
+			if err := f.app.startSessionTakingLock(context.Background(), id); err != nil {
 				t.Fatal(err)
 			}
 			notAtRest := func(when string) {
@@ -196,6 +161,9 @@ func TestABatchTheDispatcherHoldsKeepsItsThreadFromRest(t *testing.T) {
 			notAtRest("at the action lock")
 			done := deleteOf(t, f.app, id, refuse, func() {
 				waitAtGates(t, f.app, 1)
+				if n := f.sent(t, marker); n != 0 {
+					t.Errorf("a claimed thread's batch reached the provider %d times", n)
+				}
 				notAtRest("at the delete's decision")
 			})
 			unlock()
@@ -218,7 +186,7 @@ func TestABatchTheDispatcherHoldsKeepsItsThreadFromRest(t *testing.T) {
 func TestABatchWaitsForAReclaimAfterARelease(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	marker := "twice-held-" + entityid.New()
@@ -252,7 +220,7 @@ func TestACommitEndsEveryStartWaitingForIt(t *testing.T) {
 	f := newClaimFixture(t)
 	worker := f.plainThread(t)
 	recordSpawn(t, f.app, "spawn-"+entityid.New(), f.caller.ID, worker.ID)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	batch := "batch-" + entityid.New()
@@ -304,7 +272,7 @@ func TestShutdownEndsTheStartsWaitingForADecision(t *testing.T) {
 	f.app.appCtx, f.app.appCancel = context.WithCancel(context.Background())
 	worker := f.plainThread(t)
 	recordSpawn(t, f.app, "spawn-"+entityid.New(), f.caller.ID, worker.ID)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	batch := "batch-" + entityid.New()
@@ -534,7 +502,7 @@ func TestAFireRunWhoseDeleteCommittedEndsSilently(t *testing.T) {
 func TestAReleaseBeforeTheBatchReachesTheGateIsNotMissed(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	marker := "early-release-" + entityid.New()
@@ -578,7 +546,7 @@ func TestTheBootLeavesNoClaimWithoutItsDelete(t *testing.T) {
 func TestAClaimNoDeleteDecidesEndsTheStart(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	worker := f.plainThread(t)

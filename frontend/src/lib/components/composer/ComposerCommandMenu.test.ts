@@ -11,28 +11,19 @@ import { tick } from 'svelte';
 import Composer from './Composer.svelte';
 import {
   createComposerDraftStore,
-  resetComposerDraftSnapshotsForTest,
 } from '../../stores/composerDraft.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { applyProviderCommands } from '../../stores/providerCommands.svelte';
-import { resetForTest as resetClaudeSkills } from '../../stores/claudeSkills.svelte';
-import { resetForTest as resetCodexSkills } from '../../stores/codexSkills.svelte';
 import {
   projectTurnStarted,
-  resetForTest as resetThreadStatuses,
 } from '../../stores/threadStatuses.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
-import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
-import { resetForTest as resetWorktreeIntent } from '../../stores/worktreeIntent.svelte';
 import { resetProposedPlanCacheForTests } from '../../stores/proposedPlans.svelte';
-import { resetProviderModelsForTest } from '../../stores/providerModels.svelte';
-import { resetComposerPickerRegistryForTest, registerComposerPicker } from '../../stores/composerPickerRegistry.svelte';
+import { registerComposerPicker } from '../../stores/composerPickerRegistry.svelte';
 import {
   registerPaneTitleRename,
-  resetPaneTitleRenameForTest,
 } from '../../stores/paneTitleRename';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
@@ -46,7 +37,6 @@ function installBaseMocks() {
     updatedAt: 0,
   }));
   setBindingMock('SaveDraft', async () => {});
-  setBindingMock('ClearDraft', async () => {});
   setBindingMock('DeleteEmptyDraftThread', async () => false);
   setBindingMock('ListAttachments', async () => []);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
@@ -109,19 +99,8 @@ function optionNames(getAll: (id: string) => HTMLElement[]): string[] {
 
 describe('composer command menu', () => {
   beforeEach(() => {
-    resetBindingMocks();
-    resetComposerDraftSnapshotsForTest();
     resetProposedPlanCacheForTests();
-    resetWorktreeIntent();
-    resetThreadStatuses();
-    resetPanesForTest();
     resetPaneLayoutForTest();
-    resetCompanionPanesForTest();
-    resetCodexSkills();
-    resetClaudeSkills();
-    resetProviderModelsForTest();
-    resetComposerPickerRegistryForTest();
-    resetPaneTitleRenameForTest();
     installBaseMocks();
   });
 
@@ -423,20 +402,6 @@ describe('composer command menu', () => {
       expect(start).toHaveBeenCalled();
     });
 
-    it('opens the model picker on a bare /model', async () => {
-      const open = vi.fn();
-      const pane = await buildPane(makeThread({ provider: 'claude' }));
-      const { textarea, getByTestId } = await mountComposer(pane);
-      // Registered after mount so it wins over the toolbar's own handle.
-      registerComposerPicker(pane.paneId, 'model', { isOpen: () => false, open, close: () => {} });
-
-      await typeInto(textarea, '/model');
-      await fireEvent.click(getByTestId('composer-send'));
-      await tick();
-
-      expect(open).toHaveBeenCalled();
-    });
-
     it('applies /model <arg> through the picker’s own path', async () => {
       const update = setBindingMock('UpdateThreadModelSelection', async () =>
         makeThread({ model: 'claude-opus-5' }),
@@ -476,6 +441,7 @@ describe('composer command menu', () => {
       const open = vi.fn();
       const pane = await buildPane(makeThread({ provider: 'claude' }));
       const { textarea, getAllByTestId, getByTestId } = await mountComposer(pane);
+      // Registered after mount so it wins over the toolbar's own handle.
       registerComposerPicker(pane.paneId, 'model', { isOpen: () => false, open, close: () => {} });
 
       await typeInto(textarea, '/mod');

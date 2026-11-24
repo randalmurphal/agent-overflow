@@ -94,11 +94,11 @@ test('a crash with agents running: the next boot settles every agent and its row
     const threadId = await seedAgentThread(host, 'restart-app', 'Agent restart');
     const mockId = await startMock(host, threadId);
     const completed = host.waitForEvent('provider:turn_completed');
-    await host.rpc('SendMessage', threadId, 'launch two workers', null);
+    await host.send(threadId, 'launch two workers');
     await completed;
     await waitForGate(host, 'work');
     await advance(host, mockId, 'work');
-    await host.rpc('SendMessage', threadId, 'what next', null);
+    await host.send(threadId, 'what next');
     await waitForGate(host, 'never');
     const live = host;
     await expect

@@ -11,6 +11,8 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+
+	"github.com/google/uuid"
 )
 
 // softCloseLine is Claude's soft close of a turn: the message's stop reason,
@@ -132,7 +134,7 @@ func TestARestartKeepsTheTurnAHeldSpawnAnswersFrom(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"call-1","type":"tool_result","content":"ok","is_error":false}]}}`,
 		mockClaudeResultLine,
 	})
-	if err := f.app.SendMessage(t.Context(), ack.ThreadID, "check it again", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "check it again", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {

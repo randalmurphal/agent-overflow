@@ -1,12 +1,12 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 
 import ContextBreakdown from './ContextBreakdown.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 // Shape mirrors the Go `ThreadContextUsage` wire type; the fixture numbers
 // are the real 2.1.219 capture in
-// docs/references/fixtures/claude/context_usage_control_20260803.summary.json.
+// internal/provider/wirecaptures/claude/context_usage_control_20260803.summary.json.
 function fixture() {
   return {
     available: true,
@@ -26,9 +26,6 @@ function fixture() {
 }
 
 describe('<ContextBreakdown>', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-  });
 
   it('shows a loading line until the live read answers', async () => {
     let resolve: ((value: unknown) => void) | undefined;
@@ -153,26 +150,19 @@ describe('<ContextBreakdown>', () => {
     expect(await screen.findByText(/context analysis failed/)).toBeTruthy();
   });
 
+  // Nothing is cached across popover opens: a second mount re-reads rather
+  // than replaying a stale breakdown.
   it('reads once per mount — it is user-initiated, never polled', async () => {
     const mock = setBindingMock('GetThreadContextUsage', () => Promise.resolve(fixture()));
 
-    render(ContextBreakdown, { props: { threadId: 'thread-7' } });
+    const first = render(ContextBreakdown, { props: { threadId: 'thread-7' } });
     await screen.findByText(/Exact:/);
 
     expect(mock).toHaveBeenCalledTimes(1);
     expect(mock).toHaveBeenCalledWith('thread-7');
-  });
-
-  // Nothing is cached across popover opens: a second mount re-reads rather
-  // than replaying a stale breakdown.
-  it('re-reads on every mount', async () => {
-    const mock = setBindingMock('GetThreadContextUsage', () => Promise.resolve(fixture()));
-
-    const first = render(ContextBreakdown, { props: { threadId: 'thread-1' } });
-    await screen.findByText(/Exact:/);
     first.unmount();
 
-    render(ContextBreakdown, { props: { threadId: 'thread-1' } });
+    render(ContextBreakdown, { props: { threadId: 'thread-7' } });
     await screen.findByText(/Exact:/);
 
     expect(mock).toHaveBeenCalledTimes(2);

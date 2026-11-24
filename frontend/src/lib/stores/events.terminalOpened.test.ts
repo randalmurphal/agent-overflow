@@ -3,10 +3,8 @@ import { setupEventListeners } from './events';
 import {
   getExistingThreadTerminalState,
   getThreadTerminalState,
-  resetThreadTerminalStatesForTest,
 } from '../components/terminal/terminalStore.svelte';
-import { resetPanesForTest } from './panes.svelte';
-import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { loadSidebarCatalogs } from './sidebarCatalogs';
 import type { TerminalSessionSummary } from '../types/terminal';
@@ -47,9 +45,6 @@ function fireOpened(threadID: string, terminalID: string): void {
 let cleanupEvents: (() => void) | null = null;
 
 beforeEach(async () => {
-  resetThreadTerminalStatesForTest();
-  resetPanesForTest();
-  resetBindingMocks();
   setBindingMock('ListThreads', async () => []);
   await loadSidebarCatalogs();
   cleanupEvents = setupEventListeners();
@@ -58,7 +53,6 @@ beforeEach(async () => {
 afterEach(() => {
   cleanupEvents?.();
   cleanupEvents = null;
-  resetThreadTerminalStatesForTest();
 });
 
 describe('applyTerminalOpened', () => {

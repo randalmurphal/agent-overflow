@@ -166,7 +166,7 @@ External repos and tools we track, and how to use them. Under
 | [`ao-cli.md`](references/ao-cli.md) | The `ao` scoped-token CLI: command tree and `--json` result shapes. |
 | [`android-emulator.md`](references/android-emulator.md) | Running the Android emulator for the shell smoke under a memory cap, the emulator 37.1 adb-proxy leak behind that rule, and WebView-driving pitfalls. |
 | [`mobile-browser-testing.md`](references/mobile-browser-testing.md) | Emulator-free Chromium/WebKit checks, real browser visibility events and the real-phone validation boundary. |
-| [`fixtures/`](references/fixtures/) | Recorded provider wire captures backing `claude-wire.md` and the parser replay tests. |
+| [`internal/provider/wirecaptures/`](../internal/provider/wirecaptures/) | Recorded provider wire captures backing `claude-wire.md` and the parser replay tests. |
 
 ## Glossary
 

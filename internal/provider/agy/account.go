@@ -209,7 +209,7 @@ type ProbeConfig struct {
 	// the isolated home of a sign-in or a saved login. It runs inside the
 	// probe's time limit.
 	Home   HomeSource
-	Env    map[string]string
+	Env    provider.EnvInput
 	Reaper procutil.Reaper
 }
 
@@ -246,7 +246,6 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		Args:         launch.ACPArgs(),
 		WorkDir:      workDir,
 		Env:          launch.Env,
-		UnsetEnv:     launch.Unset,
 		Reaper:       cfg.Reaper,
 		ThreadID:     "agy-account-probe",
 		ProviderName: string(provider.Agy),

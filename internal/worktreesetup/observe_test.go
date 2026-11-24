@@ -149,6 +149,9 @@ func TestRunObservedReportsCopyFailureAsStepZero(t *testing.T) {
 	}
 }
 
+// The error still quotes the output tail with a subscriber attached: the
+// observer is a SECOND writer, not a replacement for the buffer the message
+// reads.
 func TestRunObservedStopsAtTheFirstFailedCommand(t *testing.T) {
 	observer := newRecordingObserver()
 	err := RunObserved(context.Background(), procutiltest.Reaper(), t.TempDir(), t.TempDir(), Config{
@@ -163,18 +166,6 @@ func TestRunObservedStopsAtTheFirstFailedCommand(t *testing.T) {
 	want := []string{"run-started", "step-started:0", "step-finished:0:err", "run-finished:err"}
 	if strings.Join(observer.events, "|") != strings.Join(want, "|") {
 		t.Fatalf("events = %v, want %v", observer.events, want)
-	}
-}
-
-// The failure message still quotes the tail with a subscriber attached: the
-// observer is a SECOND writer, not a replacement for the buffer the message
-// reads.
-func TestRunObservedKeepsTheFailureTail(t *testing.T) {
-	err := RunObserved(context.Background(), procutiltest.Reaper(), t.TempDir(), t.TempDir(), Config{
-		Run: [][]string{{"/bin/sh", "-c", "echo diagnosis >&2; exit 3"}},
-	}, newRecordingObserver())
-	if err == nil || !strings.Contains(err.Error(), "diagnosis") {
-		t.Fatalf("failure error = %v", err)
 	}
 }
 

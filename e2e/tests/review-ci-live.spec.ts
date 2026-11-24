@@ -6,8 +6,10 @@
 // who moves to the end follows its growth while one who scrolled up keeps
 // their place, and End brings them back to the end though the rows
 // mounting there measure taller while it scrolls; the chips and an open
-// job log follow a running GitLab job without a click, and the polling
-// stops once every job is terminal; the
+// job log follow a running GitLab job without a click (that the polling
+// stops once every job is terminal is internal/app's
+// TestPRCIPollsWhileLiveAndStopsWhenTerminal and
+// TestSetPRCILogFollowsFetchesNowAndEmitsIndexesUntilTerminal); the
 // saved log and a section sent to chat carry no section markers; a
 // running GitHub job lists its steps live (read only while its log is
 // open), waits without an error while the forge answers 404 for its log,
@@ -16,8 +18,7 @@
 // final log is withheld past the quick tries, and the final log lands on
 // its own once the forge serves it. Logs too big to hold are
 // review-ci-large-log.spec.ts. The harness shortens the CI cadences
-// to 250ms and the log wait to 500ms (HARNESS_TIMING), so "stops polling"
-// is a flat invocation count across several cadences.
+// to 250ms and the log wait to 500ms (HARNESS_TIMING).
 
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -39,6 +40,7 @@ import {
   type ForgeRepo,
   type ForgeStep,
 } from './forge-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 const TITLE = 'CI thread';
 const JOB_ID = 7_001;
@@ -85,15 +87,6 @@ function seedProject(harness: HarnessApp): Promise<string> {
 
 function countRoute(calls: ForgeInvocation[], route: string): number {
   return calls.filter((call) => call.route === route).length;
-}
-
-/** The count of `route` calls must not move across several CI cadences. */
-async function expectRouteIdle(harness: HarnessApp, route: string): Promise<void> {
-  // Let a poll already in flight land first.
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  const before = countRoute(await forgeInvocations(harness), route);
-  await new Promise((resolve) => setTimeout(resolve, 1_200));
-  expect(countRoute(await forgeInvocations(harness), route), `${route} kept being called`).toBe(before);
 }
 
 /** Re-seed the repository with its CI moved to `patch`. */
@@ -161,7 +154,7 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   await expect(scroll).toContainText('line 1\n');
   await expect.poll(() => scroll.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(200);
   expect(await scroll.evaluate((el) => el.scrollTop)).toBe(0);
-  await page.screenshot({ path: testInfo.outputPath('ci-log-sections-gitlab-running.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-log-sections-gitlab-running.png') });
 
   // A reader who moves to the end follows the trace as it grows, with no
   // click.
@@ -172,7 +165,7 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   repo = await moveCI(harness, repo, { jobs: [{ id: JOB_ID, name: 'unit', stage: 'test', status: 'running', log: gitlabTrace(2) }] });
   await expect(scroll).toContainText('step 2 done');
   await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
-  await page.screenshot({ path: testInfo.outputPath('ci-log-store-gitlab-following.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-log-store-gitlab-following.png') });
   expect(countRoute(await forgeInvocations(harness), 'glab api job trace')).toBeGreaterThan(1);
 
   // A reader who scrolled up keeps their place when more arrives. The
@@ -182,14 +175,15 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBe(0);
   const tracesBefore = countRoute(await forgeInvocations(harness), 'glab api job trace');
   repo = await moveCI(harness, repo, { jobs: [{ id: JOB_ID, name: 'unit', stage: 'test', status: 'running', log: gitlabTrace(3) }] });
-  // The backend has read the grown trace; its frame follows within the
-  // cadence. Several cadences later the position must have held.
+  // The backend has read the grown trace and the page shows it: the row
+  // counted the lines as they came. A read after that is a cadence later,
+  // and the position must have held through both.
   await expect.poll(async () => countRoute(await forgeInvocations(harness), 'glab api job trace')).toBeGreaterThan(tracesBefore);
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  await expect(script.getByTestId('review-ci-section-lines')).toHaveText('484 lines');
+  const tracesShown = countRoute(await forgeInvocations(harness), 'glab api job trace');
+  await expect.poll(async () => countRoute(await forgeInvocations(harness), 'glab api job trace')).toBeGreaterThan(tracesShown);
   expect(await scroll.evaluate((el) => el.scrollTop)).toBe(0);
   await expect(scroll).toContainText('Preparing the "docker" executor');
-  // The row counted the lines as they came.
-  await expect(script.getByTestId('review-ci-section-lines')).toHaveText('484 lines');
 
   // The job completes: the final trace and the status land on their own.
   await moveCI(harness, repo, { jobs: [{ id: JOB_ID, name: 'unit', stage: 'test', status: 'success', log: gitlabTrace(3, true) }] });
@@ -206,9 +200,6 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   await expect(section(log, `output:section:step_script:${T0 + 4}`)).toContainText('Job succeeded');
   await expect(chip).toHaveAttribute('title', /1 success/);
 
-  // Terminal everywhere: neither the trace nor the pipeline is polled again.
-  await expectRouteIdle(harness, 'glab api job trace');
-  await expectRouteIdle(harness, 'glab graphql PipelineJobs');
 
   // The saved log is the trace as text, without its section markers.
   await log.getByTestId('review-ci-log-save').click();
@@ -355,10 +346,9 @@ test('a running GitHub job lists its steps, waits out a log the forge has not pu
   await expect(log.getByTestId('review-ci-log-error')).toHaveCount(0);
   await expect(scroll).toContainText('step 2 done');
   let asked = await logFetches();
-  await expect.poll(logFetches).toBeGreaterThan(asked);
   // Past the quick tries (six at 250ms) it keeps asking at the wait
   // cadence, still without an error.
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  await expect.poll(logFetches, { timeout: 15_000 }).toBeGreaterThan(asked + 6);
   asked = await logFetches();
   await expect.poll(logFetches).toBeGreaterThan(asked);
   await expect(log.getByTestId('review-ci-log-error')).toHaveCount(0);
@@ -373,16 +363,14 @@ test('a running GitHub job lists its steps, waits out a log the forge has not pu
   await expect(section(log, 'step:7')).toHaveAttribute('data-status', 'success');
   await expect(section(log, 'step:8')).toHaveAttribute('data-status', 'success');
   await expect(scroll).not.toContainText('Post job cleanup.');
-  await page.screenshot({ path: testInfo.outputPath('ci-log-sections-github-failed-end.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-log-sections-github-failed-end.png') });
   await page.mouse.wheel(0, -100_000);
   await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBe(0);
   await expect(step3).toHaveAttribute('data-status', 'failed');
   await expect(step3).toContainText('59s');
   await expect(section(log, 'step:4')).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath('ci-log-sections-github-failed-top.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-log-sections-github-failed-top.png') });
 
-  await expectRouteIdle(harness, 'gh api job logs');
-  await expectRouteIdle(harness, 'gh api run jobs');
 
   await expectEveryForgeCallHandled(harness);
 });

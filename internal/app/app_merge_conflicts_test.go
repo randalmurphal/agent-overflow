@@ -218,15 +218,6 @@ func TestGetPRMergeConflictsPromptsOnlyForAUserRead(t *testing.T) {
 	}
 }
 
-func readAppTestFile(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return string(data)
-}
-
 func TestGetPRMergeConflictsRequiresAGitWorkspace(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)

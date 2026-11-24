@@ -8,7 +8,10 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// FailedUnits returns the failed units of the run's current phase attempt.
+// FailedUnits returns the failed units of the run's current phase attempt,
+// the join included: its failure is the failure of a unit of the attempt.
+// Earlier attempts are excluded because their rows are history, and the
+// engine's repair only addresses the attempt the run is parked on.
 func (s *Service) FailedUnits(itemID string) ([]store.WorkItemUnit, error) {
 	database, err := s.store()
 	if err != nil {

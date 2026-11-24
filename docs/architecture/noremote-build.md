@@ -37,8 +37,14 @@ settings, dials and listeners refused, they have nothing to act on.
 
 ## Testing
 
-Run Go tests for both variants:
-`make go-test` and `make go-test GO_TEST_FLAGS='-tags noremote'`. A test of
+Run Go tests for both variants: `make go-test` and `make go-test-noremote`,
+which runs every package whose test binary the tag changes: a package with
+a file the tag adds or drops, and every package whose test binary links one
+(the recipe holds the rule and names the count, 79 of 263 packages today).
+`go-test-noremote` sets the tags itself, for the package list, the
+prefetch and the tests alike (`GO_TEST_TAGS`), and refuses tags in
+`GO_TEST_FLAGS` or `GO_TEST_TAGS`; `make go-test GO_TEST_TAGS=noremote`
+runs every package with the tag. A test of
 remote behavior calls `remotetest.Require(t)` or carries `//go:build
 !noremote`. `make harness-build` also builds `bin/agent-overflow-noremote`,
 which `e2e/tests/noremote-build.spec.ts` runs. Frontend tests of the hidden

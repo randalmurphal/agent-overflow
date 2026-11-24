@@ -14,7 +14,6 @@ import (
 func (s *Session) handleDynamicToolCall(rpcID int64, handler DynamicToolHandler, params json.RawMessage) {
 	var parsed struct {
 		Tool      string         `json:"tool"`
-		ToolName  string         `json:"toolName"`
 		Arguments map[string]any `json:"arguments"`
 	}
 	if err := json.Unmarshal(params, &parsed); err != nil {
@@ -25,9 +24,6 @@ func (s *Session) handleDynamicToolCall(rpcID int64, handler DynamicToolHandler,
 	}
 
 	toolName := parsed.Tool
-	if toolName == "" {
-		toolName = parsed.ToolName
-	}
 	args := parsed.Arguments
 	if args == nil {
 		args = make(map[string]any)
@@ -65,6 +61,7 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 	if providerThreadID == "" {
 		providerThreadID = s.rootThreadID()
 	}
+	// Cannot miss for a child's request; see dispatchesWireThread.
 	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
 	if parentToolUseID == "" {
 		parentToolUseID = s.reviewScopeForTurn(turnID)
@@ -79,7 +76,6 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 	switch method {
 	case "item/commandExecution/requestApproval",
 		"item/fileChange/requestApproval",
-		"item/fileRead/requestApproval",
 		"applyPatchApproval",
 		"execCommandApproval":
 
@@ -93,7 +89,7 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		s.trackPendingApprovalScoped(rpcID, provider.EventApprovalResolved, providerThreadID)
 		emit(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
-	case "item/tool/call", "dynamicToolCall":
+	case "item/tool/call":
 		s.mu.Lock()
 		handler := s.dynamicToolHandler
 		s.mu.Unlock()

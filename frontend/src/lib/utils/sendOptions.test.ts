@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
+import pageDefaultSend from '../../test/fixtures/pageDefaultSend.json';
 import { buildSendOptions } from './sendOptions';
 
 describe('buildSendOptions', () => {
+  // The fixture is the default send the harness makes (HarnessSend, for
+  // the test drivers and the soak), checked against it from each side; it
+  // differs from a page send only by the id.
+  it('builds the default send the drivers reproduce', () => {
+    const { sendId, ...rest } = buildSendOptions({ attachmentIds: [] });
+    expect(sendId).not.toBe('');
+    expect(rest).toEqual(pageDefaultSend);
+  });
+
   it('carries diff review source and comment ids', () => {
     expect(buildSendOptions({
       attachmentIds: [],

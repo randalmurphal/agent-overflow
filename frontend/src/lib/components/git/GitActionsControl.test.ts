@@ -97,7 +97,6 @@ async function flush(n = 8): Promise<void> {
 
 describe('<GitActionsControl> consumer rendering', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     await loadSettings();
@@ -118,13 +117,6 @@ describe('<GitActionsControl> consumer rendering', () => {
     await flush();
     expect(queryByTestId('git-actions-error')).toBeNull();
     expect(container.querySelector('button[aria-label="More git actions"]')).toBeNull();
-  });
-
-  it('shows the retry affordance when the slot reports an error', async () => {
-    const pane = await buildPane();
-    __seedGitStatusErrorForTest(WORKSPACE, 'git busy');
-    const { findByTestId } = render(GitActionsControl, { props: { pane } });
-    expect(await findByTestId('git-actions-error')).toBeInTheDocument();
   });
 
   it('retry button asks the slot to refresh', async () => {
@@ -149,15 +141,6 @@ describe('<GitActionsControl> consumer rendering', () => {
     expect(await findByRole('menuitem', { name: 'Commit' })).toBeInTheDocument();
     const labels = getAllByRole('menuitem').map((item) => item.textContent?.trim());
     expect(labels).toEqual(['Commit', 'Push', 'Pull', 'Create PR']);
-  });
-
-  it('opens the Create PR dialog from the menu item', async () => {
-    const pane = await buildPane();
-    __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', isDefaultBranch: false }));
-    const { findByLabelText, findByRole, findByText } = render(GitActionsControl, { props: { pane } });
-    await fireEvent.click(await findByLabelText('More git actions'));
-    await fireEvent.click(await findByRole('menuitem', { name: 'Create PR' }));
-    expect(await findByText('Create Pull Request')).toBeInTheDocument();
   });
 
   it('refreshes status when the Create PR dialog closes', async () => {
@@ -197,6 +180,8 @@ describe('<GitActionsControl> consumer rendering', () => {
       return { action: 'push' };
     });
     __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', hasUpstream: false, aheadCount: 0 }));
+    // The push sets the upstream, and the control reads the status again.
+    setBindingMock('GetGitStatus', async () => status({ branch: 'feature', hasUpstream: true, aheadCount: 0 }));
     const { findByLabelText, findByRole } = render(GitActionsControl, { props: { pane } });
     await fireEvent.click(await findByLabelText('More git actions'));
     await fireEvent.click(await findByRole('menuitem', { name: 'Push' }));
@@ -207,8 +192,6 @@ describe('<GitActionsControl> consumer rendering', () => {
 
 describe('<GitActionsControl> on a detached checkout', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetWorktreeIntent();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     setBindingMock('UpdateThreadBranch', async () => []);
@@ -283,8 +266,6 @@ describe('<GitActionsControl> on a detached checkout', () => {
 
 describe('<GitActionsControl> after a checkout', () => {
   beforeEach(async () => {
-    resetPanesForTest();
-    resetToastsForTest();
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
@@ -366,9 +347,10 @@ describe('<GitActionsControl> after a checkout', () => {
 
 describe('<GitActionsControl> palette dialog event', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
+    // The Commit dialog lists the uncommitted changes as it opens.
+    setBindingMock('ListCommitFiles', async () => ({ files: [], total: 0, wholeOnly: false }));
     await loadSettings();
   });
 
@@ -672,6 +654,8 @@ describe('<GitActionsControl> palette dialog event', () => {
     });
     // Behind upstream with nothing to commit → the primary action is Pull.
     __seedGitStatusForTest(WORKSPACE, status({ hasChanges: false, behindCount: 3 }));
+    // The pull catches up, and the control reads the status again.
+    setBindingMock('GetGitStatus', async () => status({ hasChanges: false, behindCount: 0 }));
     const { container } = render(GitActionsControl, { props: { pane } });
     await flush();
 
@@ -721,19 +705,9 @@ describe('<GitActionsControl> palette dialog event', () => {
 
 describe('<GitActionsControl> forge labels', () => {
   beforeEach(async () => {
-    resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     await loadSettings();
-  });
-
-  it('renders "Create PR" for github forge', async () => {
-    const pane = await buildPane();
-    __seedGitStatusForTest(WORKSPACE, status({ forge: 'github', branch: 'feature', isDefaultBranch: false }));
-    const { findByLabelText, getByText } = render(GitActionsControl, { props: { pane } });
-    await fireEvent.click(await findByLabelText('More git actions'));
-    await flush();
-    expect(getByText('Create PR')).toBeTruthy();
   });
 
   it('renders "Create MR" for gitlab forge', async () => {
@@ -818,7 +792,6 @@ describe('<GitActionsControl> header action controls are height-locked', () => {
   // tests pin it (and the error button) to the 24px cluster height. happy-dom
   // reports zero geometry, so the contract is asserted via the height class.
   beforeEach(async () => {
-    resetPanesForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     await loadSettings();

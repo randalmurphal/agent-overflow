@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import CreatePRDialog from './CreatePRDialog.svelte';
-import { resetPanesForTest } from '../../stores/panes.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { GitActionOutcome, GitActionResult, GitStatus } from '../../types/git';
@@ -55,8 +54,6 @@ async function mount(s: GitStatus = status()) {
 
 describe('<CreatePRDialog>', () => {
   beforeEach(() => {
-    resetPanesForTest();
-    resetBindingMocks();
     for (const toast of getToasts()) removeToast(toast.id);
   });
 

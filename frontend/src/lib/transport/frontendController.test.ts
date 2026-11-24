@@ -1,26 +1,27 @@
-import { afterEach, expect, it, vi } from 'vitest';
-import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { stageBackend } from '../../test/helpers/backends';
 import { attachedBackends, attachedBackendCount, backendById, callEveryBackend, detachBackend, requireEntityBackend, subscribeEveryBackend } from './backends';
 import { Call } from './runtime';
 import { HOME_BACKEND } from './backendKey';
 import { __resetSelectedBackendForTest, initializeSelectedBackend, selectedBackend, setSelectedBackend } from '../stores/selectedBackend.svelte';
 import { setCarriedSessionScopes } from './scopes';
-import { workflowItemHasScope } from './entityScopes';
+import { workflowItemScopeGrant } from './entityScopes';
 
-// setup.ts has already imported the ordinary desktop registry. This fixture
-// boots a fresh document in frontend-only mode, just as the native shell does.
+// This fixture boots a fresh document in frontend-only mode, just as the
+// native shell does.
 vi.hoisted(() => vi.resetModules());
 vi.mock('./runMode', () => ({ isFrontendOnly: () => true, isClientMode: () => true, initialComputer: () => 'first' }));
 
-afterEach(() => { resetStagedBackends(); vi.restoreAllMocks(); setSelectedBackend('first'); });
+beforeEach(() => { setSelectedBackend('first'); });
+afterEach(() => { vi.restoreAllMocks(); });
 
 it('uses the sole execution computer for unknown-item permissions, never the controller', () => {
   stageBackend({ id: 'first', backendId: 'first' });
   setCarriedSessionScopes('first', ['threads:read']);
-  expect(workflowItemHasScope('threads:read', 'unknown-run')).toBe(true);
-  expect(workflowItemHasScope('threads:autonomy', 'unknown-run')).toBe(false);
+  expect(workflowItemScopeGrant('threads:read', 'unknown-run')).toBe('granted');
+  expect(workflowItemScopeGrant('threads:autonomy', 'unknown-run')).not.toBe('granted');
   detachBackend('first');
-  expect(workflowItemHasScope('threads:read', 'unknown-run')).toBe(false);
+  expect(workflowItemScopeGrant('threads:read', 'unknown-run')).not.toBe('granted');
 });
 
 it('keeps local administration outside the computer catalog and every-computer calls', async () => {

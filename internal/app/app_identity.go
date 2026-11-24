@@ -238,16 +238,6 @@ func bindingAdmitsPeer(session store.Session, remoteAddr string) bool {
 	return loopback.PeerAddress(remoteAddr)
 }
 
-// SessionLive reports whether a session id still admits work.
-func SessionLive(a *App, sessionID string) bool {
-	state := a.identityState()
-	if state == nil {
-		return false
-	}
-	_, reason := state.sessions.Live(sessionID)
-	return !reason.Refused()
-}
-
 // SessionAdmitsPeer reports whether a session id may be presented from
 // this peer address. Satisfies transport.SessionAuthority.AdmitsPeer.
 //

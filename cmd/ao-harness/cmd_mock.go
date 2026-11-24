@@ -61,6 +61,9 @@ type mockRow struct {
 	// not open yet. Absent from an older backend, which renders as "-".
 	OpenGate        string   `json:"openGate"`
 	PendingAdvances []string `json:"pendingAdvances"`
+	// StartupGate names the startupGate the mock holds its first frame
+	// behind, beside any OpenGate.
+	StartupGate string `json:"startupGate"`
 }
 
 func listMocks(ctx context.Context, client *harnessclient.Client) ([]mockRow, json.RawMessage, error) {
@@ -117,6 +120,17 @@ func mockList(e *env, args []string) error {
 // lives in the scenario document, and "which one is open right now" is
 // the only question worth asking before releasing one.
 func gateCell(mock mockRow) string {
+	step := stepGateCell(mock)
+	if mock.StartupGate == "" {
+		return step
+	}
+	if step == "-" {
+		return mock.StartupGate + " (startup)"
+	}
+	return mock.StartupGate + " (startup), " + step
+}
+
+func stepGateCell(mock mockRow) string {
 	switch {
 	case mock.OpenGate != "" && len(mock.PendingAdvances) > 0:
 		return fmt.Sprintf("%s (+%d buffered)", mock.OpenGate, len(mock.PendingAdvances))

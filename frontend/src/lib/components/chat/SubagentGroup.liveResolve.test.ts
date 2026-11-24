@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, installTimelineScopeCapability } from '../../../test/helpers/chat';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { ThreadPane } from '../../stores/thread.svelte';
@@ -29,7 +29,6 @@ import {
 import SubagentGroupTestHarness from './SubagentGroupTestHarness.svelte';
 import {
   applySubagentProgress,
-  resetForTest as resetSubagentProgressForTest,
 } from '../../stores/subagentProgress.svelte';
 
 function findGroup(nodes: readonly TimelineNode[]): SubagentGroupNode {
@@ -80,7 +79,6 @@ function indicatorState(container: HTMLElement): string | null {
 
 describe('<SubagentGroup> live resolution against the pane', () => {
   beforeEach(async () => {
-    resetBindingMocks();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
   });
@@ -201,10 +199,8 @@ describe('<SubagentGroup> live resolution against the pane', () => {
 
 describe('<SubagentGroup> card affordances (agent-visibility)', () => {
   beforeEach(async () => {
-    resetBindingMocks();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
-    resetSubagentProgressForTest();
   });
 
   it('shows the live activity line, tool count and tokens while the agent runs', async () => {
@@ -523,10 +519,8 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
 
 describe('<SubagentGroup> settled background agent counters', () => {
   beforeEach(async () => {
-    resetBindingMocks();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
-    resetSubagentProgressForTest();
   });
 
   it('reads the final numbers off the completion sibling, never the launch row, and shows no row count', async () => {

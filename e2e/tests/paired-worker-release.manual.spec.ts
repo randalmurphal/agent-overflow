@@ -40,8 +40,9 @@ test('a worker finishes for its spawner in both directions with the released thr
           wait_seconds: 60,
         } } }], text: 'Received the answer.' }],
       }));
-      await source.rpc('StartSession', caller.threadIds[0]);
-      await source.rpc('SendMessage', caller.threadIds[0], 'Run the worker.', null);
+      // v0.0.19 has no HarnessSend: remove this branch once the saved release has it.
+      if (source === released) await released.rpc('SendMessage', caller.threadIds[0], 'Run the worker.', []);
+      else await source.send(caller.threadIds[0], 'Run the worker.');
       const result = await awaitToolAnswer<{ state: string }>(source, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 90_000 });
       expect(result.isError, result.text).toBe(false);
       expect(result.value?.state).toBe('finished');

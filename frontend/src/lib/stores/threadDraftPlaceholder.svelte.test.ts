@@ -6,7 +6,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane } from './thread.svelte';
-import { openEmptyPane, resetPanesForTest } from './panes.svelte';
+import { openEmptyPane } from './panes.svelte';
 import { wsClient } from '../transport/wsClient';
 import {
   resetForTest as resetWorktreeIntent,
@@ -551,7 +551,6 @@ describe('dematerializing an empty draft', () => {
 describe('threadDraftPlaceholder watch set', () => {
   beforeEach(() => {
     installThreadPaneTestEnv();
-    resetPanesForTest();
   });
 
   it('re-sends the watched set with the real thread id once the placeholder materializes', async () => {
@@ -597,7 +596,6 @@ describe('threadDraftPlaceholder watch set', () => {
     }
   });
 });
-
 
 describe('grouped draft lifecycle', () => {
   beforeEach(installThreadPaneTestEnv);

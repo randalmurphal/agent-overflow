@@ -39,6 +39,17 @@ func scopedThinkingStop(threadID string) provider.ProviderEvent {
 // completed on the scoped content-block-stop with the full reasoning in its
 // on-demand payload. The dispatch must route the sentinel away from
 // handleThinking — proven by the absence of any plain `thinking` row.
+//
+// The same sequence pins the row-reuse contract that keeps an
+// aborted-then-retried compaction from leaving a dangling streaming row. A user
+// who submits mid-compaction aborts summarizer #1 (its reasoning already
+// streamed, but its thinking block never stops) and triggers a fresh PreCompact
+// + summarizer #2. The reserved-scope thinking deltas carry NO provider item
+// id, so activeStreamKey collapses to the scope counter — #2's deltas append to
+// #1's still-open row, and #2's content-block-stop settles that single row,
+// with both attempts' reasoning concatenated in arrival order. If a future
+// change ever stamped a per-attempt item id, #1's row would dangle in
+// 'streaming' forever (a phantom perpetual compact tail).
 func TestCompactionReasoningStreamsAsTopLevelRow(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -88,6 +99,12 @@ func TestCompactionReasoningStreamsAsTopLevelRow(t *testing.T) {
 	}
 	router.WaitForPendingSettles()
 
+	if rows := findItemsByKind(t, st, "t1", itemKindCompactionReasoning); len(rows) != 1 {
+		t.Fatalf("compaction_reasoning rows after settle = %d, want 1 (the stop must settle the open row)", len(rows))
+	}
+	if leaked := findItemsByKind(t, st, "t1", itemKindThinking); len(leaked) != 0 {
+		t.Fatalf("sentinel leaked %d plain thinking row(s) at settle", len(leaked))
+	}
 	settled, found, err := st.GetThreadItem("t1", row.ID)
 	if err != nil || !found {
 		t.Fatalf("get settled reasoning: found=%v err=%v", found, err)
@@ -184,69 +201,5 @@ func TestCompactionReasoningEmptyContentNoOps(t *testing.T) {
 	}
 	if rows := findItemsByKind(t, st, "t1", itemKindCompactionReasoning); len(rows) != 0 {
 		t.Fatalf("empty reasoning created %d row(s), want none", len(rows))
-	}
-}
-
-// TestCompactionReasoningAbortedAttemptReusesRow pins the row-reuse contract
-// that keeps an aborted-then-retried compaction from leaving a dangling
-// streaming row. A user who submits mid-compaction aborts summarizer #1 (its
-// reasoning already streamed, but its thinking block never stops) and triggers a
-// fresh PreCompact + summarizer #2. The reserved-scope thinking deltas carry NO
-// provider item id, so activeStreamKey collapses to the scope counter — #2's
-// deltas append to #1's still-open row, and #2's content-block-stop settles that
-// single row. If a future change ever stamped a per-attempt item id, #1's row
-// would dangle in 'streaming' forever (a phantom perpetual compact tail); this
-// test fails loudly in that case.
-func TestCompactionReasoningAbortedAttemptReusesRow(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	// Summarizer #1 streams partial reasoning, then is aborted — no stop frame.
-	if err := router.Handle(scopedThinking("t1", "Attempt one partial")); err != nil {
-		t.Fatalf("attempt-one reasoning: %v", err)
-	}
-	// Summarizer #2 (re-armed) streams under the same reserved scope, then stops.
-	if err := router.Handle(scopedThinking("t1", " then attempt two")); err != nil {
-		t.Fatalf("attempt-two reasoning: %v", err)
-	}
-	if err := router.Handle(scopedThinkingStop("t1")); err != nil {
-		t.Fatalf("attempt-two stop: %v", err)
-	}
-	router.WaitForPendingSettles()
-
-	// Exactly one row — the retry reused the aborted attempt's open row rather
-	// than starting a second. No plain thinking row leaked either.
-	rows := findItemsByKind(t, st, "t1", itemKindCompactionReasoning)
-	if len(rows) != 1 {
-		t.Fatalf("compaction_reasoning rows = %d, want 1 (the retry must reuse the open row)", len(rows))
-	}
-	if leaked := findItemsByKind(t, st, "t1", itemKindThinking); len(leaked) != 0 {
-		t.Fatalf("sentinel leaked %d plain thinking row(s)", len(leaked))
-	}
-
-	// That single row settled to completed — no dangling streaming row.
-	got, found, err := st.GetThreadItem("t1", rows[0].ID)
-	if err != nil || !found {
-		t.Fatalf("get settled row: found=%v err=%v", found, err)
-	}
-	if got.Status != statusCompleted {
-		t.Errorf("settled status = %q, want completed (an un-reused attempt would dangle as streaming)", got.Status)
-	}
-
-	// The payload holds both attempts' reasoning concatenated in arrival order:
-	// the aborted partial already streamed live and cannot be un-sent, so the
-	// retry appends to it (documented minor limitation, not a correctness bug).
-	data, err := st.GetPayloadData(got.ThreadID, got.PayloadID)
-	if err != nil {
-		t.Fatalf("get payload data: %v", err)
-	}
-	if string(data) != "Attempt one partial then attempt two" {
-		t.Errorf("payload data = %q, want both attempts concatenated", data)
-	}
-
-	// Counts balanced — thread idle after settle (invariant 11). A dangling
-	// streaming row would keep this true-y.
-	if router.hasActiveStreamingItem("t1") {
-		t.Error("thread still streaming after the retry settled; counts did not balance")
 	}
 }

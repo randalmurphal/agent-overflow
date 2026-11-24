@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"testing"
 
 	"agent-overflow/internal/eventchan"
@@ -18,6 +19,12 @@ import (
 // The CONNECTION and not the device: two tabs of one browser answer
 // independently, so a device stamp would put the losing tab's error on the
 // other one.
+//
+// An in-process caller — a saga, a workflow phase, a test — has no connection,
+// and the frame it produces carries no stamp. A client must show that one:
+// unstamped has to keep meaning what it meant before the stamp existed, or a
+// bundle running against an older backend would swallow the only surfacing
+// this failure has.
 func TestAFailedApprovalNamesTheConnectionThatAnswered(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -33,21 +40,30 @@ func TestAFailedApprovalNamesTheConnectionThatAnswered(t *testing.T) {
 		}
 	}
 
-	ctx := ctxFromClient(transport.ClientIdentity{DeviceID: "laptop-1", ConnectionID: "conn-9"})
-	// No session in this fixture, so the write fails — which is exactly the
-	// event under test.
-	if err := app.RespondToApproval(ctx, "thread-1", provider.ApprovalResponse{
-		RequestID: "req-1",
-		Decision:  "accept",
-	}); err == nil {
-		t.Fatal("expected the no-session failure this fixture produces")
-	}
-
-	if len(failures) != 1 {
-		t.Fatalf("emitted %d approval failures, want 1: %+v", len(failures), failures)
-	}
-	if failures[0].ConnectionID != "conn-9" {
-		t.Fatalf("connectionId = %q, want conn-9", failures[0].ConnectionID)
+	for _, c := range []struct {
+		name, wantConn string
+		ctx            context.Context
+	}{
+		{"a connection", "conn-9", ctxFromClient(transport.ClientIdentity{DeviceID: "laptop-1", ConnectionID: "conn-9"})},
+		{"no connection", "", t.Context()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			failures = nil
+			// No session in this fixture, so the write fails — which is
+			// exactly the event under test.
+			if err := app.RespondToApproval(c.ctx, "thread-1", provider.ApprovalResponse{
+				RequestID: "req-1",
+				Decision:  "accept",
+			}); err == nil {
+				t.Fatal("expected the no-session failure this fixture produces")
+			}
+			if len(failures) != 1 {
+				t.Fatalf("emitted %d approval failures, want 1: %+v", len(failures), failures)
+			}
+			if failures[0].ConnectionID != c.wantConn {
+				t.Fatalf("connectionId = %q, want %q", failures[0].ConnectionID, c.wantConn)
+			}
+		})
 	}
 }
 
@@ -78,40 +94,5 @@ func TestAFailedUserInputNamesTheConnectionThatSubmitted(t *testing.T) {
 	}
 	if failures[0].ConnectionID != "conn-9" {
 		t.Fatalf("connectionId = %q, want conn-9", failures[0].ConnectionID)
-	}
-}
-
-// An in-process caller — a saga, a workflow phase, a test — has no connection,
-// and the frame it produces carries no stamp. A client must show that one:
-// unstamped has to keep meaning what it meant before the stamp existed, or a
-// bundle running against an older backend would swallow the only surfacing
-// this failure has.
-func TestAFailureWithNoConnectionCarriesNoStamp(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.ensureTriageRouter()
-
-	var failures []provider.ApprovalEvent
-	app.testEmitHook = func(name string, data any) {
-		if name != eventchan.ProviderApproval.String() {
-			return
-		}
-		if evt, ok := data.(provider.ApprovalEvent); ok && evt.Action == "fail" {
-			failures = append(failures, evt)
-		}
-	}
-
-	if err := app.RespondToApproval(t.Context(), "thread-1", provider.ApprovalResponse{
-		RequestID: "req-1",
-		Decision:  "accept",
-	}); err == nil {
-		t.Fatal("expected the no-session failure this fixture produces")
-	}
-
-	if len(failures) != 1 {
-		t.Fatalf("emitted %d approval failures, want 1: %+v", len(failures), failures)
-	}
-	if failures[0].ConnectionID != "" {
-		t.Fatalf("connectionId = %q, want empty", failures[0].ConnectionID)
 	}
 }

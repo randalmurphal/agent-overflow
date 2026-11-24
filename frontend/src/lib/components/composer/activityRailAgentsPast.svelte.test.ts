@@ -7,7 +7,6 @@ import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { noteThread } from '../../transport/entityIndex';
 import { setupEventListeners } from '../../stores/events';
 import type { ThreadAgentRow } from '../../stores/bindings';
-import { resetForTest as resetSendQueue } from '../../stores/sendQueue.svelte';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 
 vi.mock('../../utils/frontendErrorCapture', async (importOriginal) => ({
@@ -55,7 +54,6 @@ describe('the Agents segment\'s Past', () => {
     stopEvents = () => {};
     vi.useRealTimers();
     vi.restoreAllMocks();
-    resetSendQueue();
   });
 
   async function mount(options: { open?: ThreadAgentRow[]; past?: () => ThreadAgentRow[] } = {}) {

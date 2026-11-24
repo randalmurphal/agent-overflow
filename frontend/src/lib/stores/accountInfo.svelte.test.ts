@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 
 import {
@@ -9,9 +9,6 @@ import {
 } from './accountInfo.svelte';
 
 describe('accountInfo store', () => {
-  afterEach(() => {
-    resetForTest();
-  });
 
   it('returns null when no account has been set for a provider', () => {
     expect(getProviderAccount('claude')).toBeNull();

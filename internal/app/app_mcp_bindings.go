@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"time"
 
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/mcpapp"
 	"agent-overflow/internal/mcpstatus"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -138,8 +138,8 @@ func (a *App) mcpDeps() mcpapp.Deps {
 			return out
 		},
 		ProviderBinary: a.providerBinaryPath,
-		SessionProcessEnv: func(providerName string) map[string]string {
-			return a.sessionProcessEnv(providerName, nil)
+		SessionProcessEnv: func(providerName string) provider.EnvInput {
+			return a.sessionProcessEnv(providerName)
 		},
 		AgyCanonicalHome: func(ctx context.Context) (agy.Home, error) {
 			return a.ensureProviderAccountManager().AgyCanonicalHome(ctx)
@@ -238,19 +238,6 @@ func (a *App) ReconnectMcpServer(threadID, name string) error {
 //ao:route home
 func (a *App) GetMcpServerStatus(providerName, name string, force bool) (mcpstatus.ServerStatus, error) {
 	return a.mcpService().GetMcpServerStatus(providerName, name, force)
-}
-
-// ListMcpServerStatuses returns the cached snapshot for one
-// provider. Does NOT trigger an ephemeral fetch — used to render
-// the popup on first open before the explicit refresh kicks in.
-// Live sessions push their own state into the cache continuously,
-// so for any provider that has run a thread this lifetime the
-// snapshot is already populated.
-//
-//ao:scope settings:write
-//ao:route home
-func (a *App) ListMcpServerStatuses(providerName string) ([]mcpstatus.ServerStatus, error) {
-	return a.mcpService().ListMcpServerStatuses(providerName)
 }
 
 // RefreshMcpServerStatus forces a fresh ephemeral fetch for the
@@ -394,15 +381,4 @@ func (a *App) handleCodexMCPOAuthCompleted(threadID, serverName string, success 
 
 func (a *App) handleCodexMCPStartupUpdate(update codex.MCPStartupUpdate) {
 	a.mcpService().HandleCodexMCPStartupUpdate(update)
-}
-
-func (a *App) pollClaudeMCPAfterOAuth(
-	ctx context.Context,
-	threadID, serverName string,
-	intervals []time.Duration,
-	getQuerier func() claudeMCPStatusQuerier,
-) {
-	a.mcpService().PollClaudeMCPAfterOAuth(ctx, threadID, serverName, intervals, func() mcpapp.ClaudeMCPStatusQuerier {
-		return mcpapp.ClaudeMCPStatusQuerier(getQuerier())
-	})
 }

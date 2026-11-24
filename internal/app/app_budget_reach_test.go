@@ -5,7 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 	"agent-overflow/internal/mcpapp"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/providerupdate"
+	"agent-overflow/internal/testutil/reporoot"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 )
@@ -200,7 +200,7 @@ func longestReachedStep(g *driveGraph, from string, steps map[string]longStep, s
 // bodies name step.marker.
 func longStepEntries(t *testing.T, step longStep) []string {
 	t.Helper()
-	entries, err := os.ReadDir(step.dir)
+	entries, err := os.ReadDir(reporoot.Path(t, step.dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func longStepEntries(t *testing.T, step longStep) []string {
 		if entry.IsDir() || !strings.HasSuffix(file, ".go") || strings.HasSuffix(file, "_test.go") {
 			continue
 		}
-		parsed, err := parser.ParseFile(fset, filepath.Join(step.dir, file), nil, parser.SkipObjectResolution)
+		parsed, err := reporoot.ParseGoFile(t, fset, step.dir+"/"+file, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatal(err)
 		}

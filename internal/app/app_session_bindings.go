@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/dispatchrefusal"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -16,23 +17,6 @@ import (
 // five seconds the writer isn't contended, it's wedged, and waiting
 // longer only parks a goroutine that shutdown then has to join.
 const markThreadReadTimeout = 5 * time.Second
-
-// StartSession is the Wails-bound entry point for "bring this thread's
-// provider subprocess up." The sendMessage path also calls
-// startSessionNow via runSessionStart when a thread has no active
-// session yet.
-//
-// Takes the per-thread action lock: an unserialized start racing a
-// revert can read the pre-revert SessionRef, clear the stopped-thread
-// gate mid-revert (MarkThreadActive), and register a session bound to
-// the old provider thread after the revert repointed the row. Internal
-// callers that already hold the lock (sends, deferred config restarts)
-// go through a.startSession / runSessionStart directly.
-//
-//ao:scope threads:operate
-func (a *App) StartSession(threadID string) error {
-	return a.startSessionTakingLock(context.Background(), threadID)
-}
 
 // StopSession tears down the thread's provider session. Idempotent: a thread
 // with no active session still runs triage cleanup so stale state doesn't leak.
@@ -46,46 +30,42 @@ func (a *App) StopSession(threadID string) error {
 	return a.teardownAndCloseSession(threadID, sess)
 }
 
-// SendMessage is the Wails-bound compatibility entry point for user-typed
-// content. The options-aware path below owns newer composer controls.
-//
-//ao:scope threads:operate
-func (a *App) SendMessage(ctx context.Context, threadID string, content string, attachmentIDs []string) error {
-	if a.shuttingDown.Load() {
-		return ErrShuttingDown
-	}
-	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
-		return err
-	}
-	_, err := a.sendMessageWithOptions(context.Background(), threadID, content, sendMessageOptions{
-		AttachmentIDs: attachmentIDs,
-		QueueIfActive: true,
-		// Wire entry: this text was typed into a composer (D31). The internal
-		// a.sendMessage helper deliberately does NOT set this — its other
-		// callers send app-composed prompts.
-		ExpandComposerCommands: true,
-	})
-	return err
-}
-
 // SendMessageWithOptions applies send-time composer settings and dispatches the
 // user turn. RuntimeMode is staged in the composer and persisted here, under
 // the same per-thread action lock as provider session start/send.
 //
 //ao:scope threads:operate
 func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
+	if _, err := a.sendClientMessage(ctx, threadID, content, opts, admitQueueing, nil); err != nil {
+		return store.Thread{}, err
+	}
+	return a.store.GetThread(threadID)
+}
+
+// sendClientMessage is the send of a message a client typed or wrote:
+// the page's composer through SendMessageWithOptions, and the harness's
+// HarnessSend. It answers the user row, or the zero item when the message
+// was queued. onPlaced is sendMessageOptions.onPlaced.
+//
+// A client finds its row by send id. A window older than v0.0.15 does not
+// say so, and predicts its row as user:<nextTurn>: it is refused before
+// anything else, a repeat of a send it made before an upgrade included.
+func (a *App) sendClientMessage(ctx context.Context, threadID string, content string, opts SendMessageOptions, admission sendAdmission, onPlaced func()) (store.Item, error) {
+	if !opts.ReconcileBySendID {
+		return store.Item{}, errors.New(dispatchrefusal.Unreadable) //nolint:staticcheck // ST1005: the user sees this sentence as written.
+	}
 	if a.shuttingDown.Load() {
-		return store.Thread{}, ErrShuttingDown
+		return store.Item{}, ErrShuttingDown
 	}
 	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
-		return store.Thread{}, err
+		return store.Item{}, err
 	}
 	if err := refusePRDraftSource(opts); err != nil {
-		return store.Thread{}, err
+		return store.Item{}, err
 	}
 	unlockAdmission, err := a.lockClientSendAdmission(ctx, threadID, opts.SendID)
 	if err != nil {
-		return store.Thread{}, err
+		return store.Item{}, err
 	}
 	defer unlockAdmission()
 
@@ -95,7 +75,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 	// client identity has to reach the draft delete inside, or the sending
 	// screen's own draft:updated frame comes back anonymous and it re-reads
 	// a row it just consumed.
-	if _, err := a.sendMessageWithOptions(context.WithoutCancel(ctx), threadID, content, sendMessageOptions{
+	return a.sendMessageWithOptions(context.WithoutCancel(ctx), threadID, content, sendMessageOptions{
 		AttachmentIDs:                opts.AttachmentIDs,
 		RuntimeMode:                  opts.RuntimeMode,
 		SourceProposedPlan:           opts.SourceProposedPlan,
@@ -104,15 +84,12 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		SendID:                       opts.SendID,
-		ReconcileBySendID:            opts.ReconcileBySendID,
 		ConsumeDraft:                 opts.ConsumeDraft,
-		QueueIfActive:                true,
+		Admission:                    admission,
+		onPlaced:                     onPlaced,
 		// Wire entry: this text was typed into a composer (D31).
 		ExpandComposerCommands: true,
-	}); err != nil {
-		return store.Thread{}, err
-	}
-	return a.store.GetThread(threadID)
+	})
 }
 
 // InterruptTurn fires a provider-level interrupt on the thread's active
@@ -142,30 +119,6 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 func (a *App) InterruptTurn(threadID string, confirmedAgents []string) error {
 	_, err := a.interruptTurnAtIndex(context.Background(), threadID, anyOpenTurn, stopByUser(confirmedAgents))
 	return err
-}
-
-// InterruptRevertOptions is InterruptAndRevertIfClean's second argument.
-// Older clients send {expectedSendId, draft}; the fields are ignored.
-type InterruptRevertOptions struct{}
-
-// InterruptAndRevertResult answers InterruptAndRevertIfClean. Older clients
-// read reverted:false as "the Stop was a plain interrupt; keep the message".
-type InterruptAndRevertResult struct {
-	Reverted bool   `json:"reverted"`
-	Reason   string `json:"reason,omitempty"`
-}
-
-// InterruptAndRevertIfClean is InterruptTurn, retained for wire
-// compatibility with clients that call it for a Stop on a just-sent message.
-// It never reverts.
-//
-//ao:scope threads:operate
-//ao:budget 90s
-func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOptions, confirmedAgents []string) (InterruptAndRevertResult, error) {
-	if err := a.InterruptTurn(threadID, confirmedAgents); err != nil {
-		return InterruptAndRevertResult{}, err
-	}
-	return InterruptAndRevertResult{Reason: "plain interrupt"}, nil
 }
 
 // SwitchThread returns the requested thread. Provider sessions are
@@ -210,21 +163,10 @@ func (a *App) AutoResumeThread(threadID string) error {
 	return nil
 }
 
-// markThreadFocused stamps the thread's read-state in the background.
-// Registration happens synchronously under a.markThreadRead.mu so the
-// WaitGroup can never be joined by a stamp that was accepted after
-// stopMarkThreadReads decided nothing more would run.
+// markThreadFocused stamps the thread's read-state in the background. Once
+// stopMarkThreadReads has begun it starts nothing.
 func (a *App) markThreadFocused(threadID string) {
-	a.markThreadRead.mu.Lock()
-	if a.markThreadRead.stopped {
-		a.markThreadRead.mu.Unlock()
-		return
-	}
-	a.markThreadRead.wg.Add(1)
-	a.markThreadRead.mu.Unlock()
-
-	go func() {
-		defer a.markThreadRead.wg.Done()
+	a.markThreadRead.wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 		defer cancel()
 		row, changed, err := a.store.MarkThreadReadNow(ctx, threadID)
@@ -251,14 +193,7 @@ func (a *App) markThreadFocused(threadID string) {
 		if changed {
 			a.threadAnnouncer().AnnounceWithin(a.lifeCtx(), a.emitEvent, triage.ThreadActionFull, row.ID)
 		}
-	}()
-}
-
-// waitMarkThreadReads blocks until every read-state stamp already
-// registered has landed, WITHOUT refusing later ones. It is the
-// observation point for tests that need the durable row.
-func (a *App) waitMarkThreadReads() {
-	a.markThreadRead.wg.Wait()
+	})
 }
 
 // stopMarkThreadReads refuses new read-state stamps and waits out the
@@ -266,10 +201,7 @@ func (a *App) waitMarkThreadReads() {
 // writes to SQLite, and markThreadReadTimeout caps how long that wait
 // can add to quit latency.
 func (a *App) stopMarkThreadReads() {
-	a.markThreadRead.mu.Lock()
-	a.markThreadRead.stopped = true
-	a.markThreadRead.mu.Unlock()
-	a.markThreadRead.wg.Wait()
+	a.markThreadRead.wg.Close()
 }
 
 func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
@@ -297,8 +229,8 @@ func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
 //  1. Single-flight across the stop-then-start pair: a second concurrent
 //     caller returns nil without doing any work. Without the gate, a
 //     second call's stopSession can yank the new session out from under
-//     the first call's in-flight startSession (runSessionStart serialises
-//     starts but not stops). This matters for the auto-reconnect path
+//     the first call's in-flight startSession (runRegisteredSessionStart
+//     serialises starts but not stops). This matters for the auto-reconnect path
 //     racing a manual click on the banner Reconnect button, and it runs
 //     BEFORE the lock so the no-op answer stays immediate.
 //  2. The per-thread action lock, so the stop-then-start pair cannot
@@ -356,7 +288,7 @@ func (a *App) releaseReconnect(threadID string) {
 // startSession brings the thread's provider subprocess up, sharing an
 // in-flight start with any concurrent caller. ctx bounds only the JOIN — the
 // wait for somebody else's start — never the spawn itself; see
-// runSessionStart. Callers with no cancellation of their own pass
+// runRegisteredSessionStart. Callers with no cancellation of their own pass
 // context.Background().
 func (a *App) startSession(ctx context.Context, threadID string) error {
 	_, err := a.startRegisteredSession(ctx, threadID)

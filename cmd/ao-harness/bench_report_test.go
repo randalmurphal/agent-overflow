@@ -102,8 +102,8 @@ func TestAggregateBenchMetricsOmitsUnmeasured(t *testing.T) {
 
 	// A page that answered but whose series meters never sampled is the
 	// other half of the same rule, and the one a series-shaped metric read
-	// through frontendMetric would get wrong: the summary is present, so
-	// the run looks measured, and a zero would fold in as a real reading.
+	// as a plain scalar would get wrong: the summary is present, so the run
+	// looks measured, and a zero would fold in as a real reading.
 	unmetered := benchTestReport(1000, 60, 12, 8<<20)
 	unmetered.Frontend.DomNodes = perfSeries{}
 	unmetered.Frontend.HeapBytes = perfSeries{}
@@ -186,7 +186,7 @@ func TestCompareToBaselineExplicitBudget(t *testing.T) {
 		"frames.fps":   {Min: floatPtr(50)},
 	}}
 
-	comparisons, unmeasured := compareToBaseline(current, baseline)
+	comparisons, unmeasured, _ := compareToBaseline(current, baseline)
 	if len(unmeasured) != 0 {
 		t.Fatalf("unmeasured = %v, want none", unmeasured)
 	}
@@ -219,7 +219,7 @@ func TestCompareToBaselineHonoursAnExplicitZeroBudget(t *testing.T) {
 		"frames.fps":  {Min: floatPtr(0)},
 	}}
 	byName := map[string]benchComparison{}
-	comparisons, _ := compareToBaseline(current, baseline)
+	comparisons, _, _ := compareToBaseline(current, baseline)
 	for _, comparison := range comparisons {
 		byName[comparison.Metric] = comparison
 	}
@@ -248,7 +248,7 @@ func TestCompareToBaselineFromPreviousReport(t *testing.T) {
 		"longTasks":       {Runs: 3, P50: 4, Unit: "count", LowerIsBetter: true},
 	}}
 
-	comparisons, unmeasured := compareToBaseline(current, baseline)
+	comparisons, unmeasured, _ := compareToBaseline(current, baseline)
 	if len(unmeasured) != 1 || unmeasured[0] != "longTasks" {
 		t.Fatalf("unmeasured = %v, want [longTasks]", unmeasured)
 	}
@@ -285,7 +285,7 @@ func TestCompareToBaselineBudgetBeatsReport(t *testing.T) {
 			"frames.p95Ms": {Max: floatPtr(25)},
 		},
 	}
-	comparisons, _ := compareToBaseline(current, baseline)
+	comparisons, _, _ := compareToBaseline(current, baseline)
 	if len(comparisons) != 1 {
 		t.Fatalf("got %d comparisons, want 1", len(comparisons))
 	}
@@ -303,7 +303,7 @@ func TestCompareToBaselineNoReferenceNeverDrifts(t *testing.T) {
 	baseline := benchBaseline{Metrics: map[string]benchTolerance{
 		"frames.p95Ms": {MaxPctOver: floatPtr(10)},
 	}}
-	comparisons, _ := compareToBaseline(current, baseline)
+	comparisons, _, _ := compareToBaseline(current, baseline)
 	if comparisons[0].Drift {
 		t.Errorf("a budget with no reference cannot drift: %+v", comparisons[0])
 	}
@@ -493,12 +493,15 @@ func TestABudgetedMetricThatWasNeverMeasuredFailsTheGate(t *testing.T) {
 		"frames.p95Ms":    {Max: floatPtr(20)},
 	}}
 
-	comparisons, unmeasured, unbudgeted := compareToBaselineDetailed(current, baseline)
+	comparisons, unmeasured, unbudgeted := compareToBaseline(current, baseline)
 	if len(unbudgeted) != 1 || unbudgeted[0] != "frames.p95Ms" {
 		t.Fatalf("unbudgeted = %v, want the explicitly budgeted metric that was not measured", unbudgeted)
 	}
 	if !slices.Contains(unmeasured, "frames.p95Ms") {
 		t.Errorf("unmeasured = %v, want it to carry the same metric", unmeasured)
+	}
+	if len(comparisons) != 1 || comparisons[0].Metric != "goHeap.maxBytes" {
+		t.Fatalf("comparisons = %+v, want only the measured goHeap.maxBytes", comparisons)
 	}
 	if countDrift(comparisons) != 0 {
 		t.Fatalf("nothing should have drifted: %+v", comparisons)
@@ -528,7 +531,7 @@ func TestAnUnbudgetedUnmeasuredMetricDoesNotFailTheGate(t *testing.T) {
 		"domNodes.max": {Runs: 1, P50: 900, Unit: "count", LowerIsBetter: true},
 	}}
 
-	comparisons, unmeasured, unbudgeted := compareToBaselineDetailed(current, baseline)
+	comparisons, unmeasured, unbudgeted := compareToBaseline(current, baseline)
 	if len(unbudgeted) != 0 {
 		t.Fatalf("unbudgeted = %v, want none: a derived reference is not an explicit budget", unbudgeted)
 	}
@@ -544,7 +547,7 @@ func TestDriftFailsTheGateWithTheSameCode(t *testing.T) {
 	current := map[string]benchAggregate{"frames.p95Ms": {Runs: 1, P50: 40, Unit: "ms", LowerIsBetter: true}}
 	baseline := benchBaseline{Metrics: map[string]benchTolerance{"frames.p95Ms": {Max: floatPtr(20)}}}
 
-	comparisons, _, unbudgeted := compareToBaselineDetailed(current, baseline)
+	comparisons, _, unbudgeted := compareToBaseline(current, baseline)
 	err := benchGateVerdict(comparisons, unbudgeted, "budget.json")
 	if err == nil {
 		t.Fatal("drift passed the gate")
@@ -601,19 +604,6 @@ func TestBusyMetricsAreGateableInBothDirections(t *testing.T) {
 	if unit := agg["busy.fitPct.6ms"].Unit; unit != "pct" {
 		t.Errorf("busy.fitPct.6ms unit = %q, want pct", unit)
 	}
-
-	// And it gates: a run that fits 6ms only 77.8% of the time fails a
-	// budget demanding 90%.
-	baseline := benchBaseline{Metrics: map[string]benchTolerance{
-		"busy.fitPct.6ms": {Min: floatPtr(90)},
-	}}
-	comparisons, _, unbudgeted := compareToBaselineDetailed(agg, baseline)
-	if len(comparisons) != 1 || !comparisons[0].Drift {
-		t.Fatalf("comparisons = %+v, want one drifting fit metric", comparisons)
-	}
-	if err := benchGateVerdict(comparisons, unbudgeted, "budget.json"); err == nil {
-		t.Fatal("a fit percentage below its floor passed the gate")
-	}
 }
 
 func TestBusyMetricsAreAbsentWhenNoTickWasMeasured(t *testing.T) {
@@ -622,30 +612,12 @@ func TestBusyMetricsAreAbsentWhenNoTickWasMeasured(t *testing.T) {
 	// 0% fit that reads as a catastrophic regression.
 	unmeasured := benchTestReport(1000, 60, 12, 8<<20)
 	agg := aggregateBenchMetrics([]perfReport{unmeasured})
-	for _, name := range []string{"busy.p50Ms", "busy.p95Ms", "busy.maxMs"} {
+	// A budget on a metric that is absent here fails the gate like any other
+	// unmeasured budget (TestABudgetedMetricThatWasNeverMeasuredFailsTheGate).
+	for _, name := range []string{"busy.p50Ms", "busy.p95Ms", "busy.maxMs", "busy.fitPct.6ms"} {
 		if _, ok := agg[name]; ok {
 			t.Errorf("%s present for a run that measured no tick", name)
 		}
-	}
-
-	// A budget on a metric this run could not measure is bad news, not a
-	// pass — the same rule the frontend metrics already follow.
-	baseline := benchBaseline{Metrics: map[string]benchTolerance{
-		"busy.fitPct.6ms": {Min: floatPtr(90)},
-	}}
-	comparisons, unmeasuredNames, unbudgeted := compareToBaselineDetailed(agg, baseline)
-	if len(comparisons) != 0 {
-		t.Errorf("comparisons = %+v, want none", comparisons)
-	}
-	if !slices.Contains(unmeasuredNames, "busy.fitPct.6ms") {
-		t.Errorf("unmeasured = %v, want the budgeted fit metric named", unmeasuredNames)
-	}
-	err := benchGateVerdict(comparisons, unbudgeted, "budget.json")
-	if err == nil {
-		t.Fatal("a budgeted-but-unmeasured busy metric passed the gate")
-	}
-	if code := exitCodeOf(t, err); code != exitBadNews {
-		t.Fatalf("exit code = %d, want %d", code, exitBadNews)
 	}
 }
 

@@ -152,7 +152,7 @@ func TestCacheHandsOutIndependentCopies(t *testing.T) {
 	}
 }
 
-func TestCacheKeysAreIndependentAndInvalidatable(t *testing.T) {
+func TestCacheKeysAreIndependent(t *testing.T) {
 	cache := New()
 	calls := map[string]int{}
 	fetchFor := func(key string) Fetch {
@@ -169,16 +169,5 @@ func TestCacheKeysAreIndependentAndInvalidatable(t *testing.T) {
 	}
 	if calls["acct-a"] != 1 || calls["acct-b"] != 1 {
 		t.Fatalf("calls = %v, want one per distinct key", calls)
-	}
-
-	cache.Invalidate("acct-a")
-	if _, err := cache.Get(context.Background(), "acct-a", fetchFor("acct-a")); err != nil {
-		t.Fatalf("Get after invalidate: %v", err)
-	}
-	if calls["acct-a"] != 2 {
-		t.Fatalf("acct-a fetched %d times, want a refetch after Invalidate", calls["acct-a"])
-	}
-	if calls["acct-b"] != 1 {
-		t.Fatalf("invalidating one key refetched another: %v", calls)
 	}
 }

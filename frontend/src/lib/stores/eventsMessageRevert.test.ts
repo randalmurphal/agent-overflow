@@ -12,17 +12,14 @@ import {
 } from './eventsMessageRevert';
 import {
   registerComposerDraft,
-  resetComposerDraftRegistryForTest,
 } from './composerDraftRegistry.svelte';
 import type { ComposerDraftStore } from './composerDraft.svelte';
-import { resetPanesForTest } from './panes.svelte';
 import { resetForTest as resetThreadStatuses } from './threadStatuses.svelte';
 import {
   isThreadWorking,
   projectSendStarted,
 } from './threadStatuses.svelte';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
-import { resetBindingMocks } from '../../test/mocks/bindings-app';
 import { getConnectionId } from '../transport/clientIdentity';
 
 import { threadItemCache } from './threadItemCache';
@@ -31,7 +28,6 @@ import {
   beginThreadInterrupt,
   finishThreadInterrupt,
   isThreadInterruptPending,
-  resetThreadInterruptStateForTest,
 } from './threadInterruptState.svelte';
 import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
@@ -55,12 +51,6 @@ async function seedPane(): Promise<ThreadPane> {
 describe('applyUserMessageReverted', () => {
   beforeEach(() => {
     resetItemEventQueue();
-    resetBindingMocks();
-    resetPanesForTest();
-    resetThreadStatuses();
-    resetComposerDraftRegistryForTest();
-    resetResendRevertMarkersForTest();
-    resetThreadInterruptStateForTest();
   });
 
   it('drops every cached copy of the pre-cut window', async () => {
@@ -139,17 +129,6 @@ describe('applyUserMessageReverted', () => {
       connectionId: getConnectionId(),
     });
     expect(consumeResendRevertMarker('thread-a', 'u:2')).toBe(true);
-  });
-
-  it('records an unstamped saga frame, as a pre-stamp backend produced it', async () => {
-    await seedPane();
-    applyUserMessageReverted({
-      threadId: 'thread-a',
-      userItemId: 'u:1',
-      turnIndex: 1,
-      draftPendingResend: true,
-    });
-    expect(consumeResendRevertMarker('thread-a', 'u:1')).toBe(true);
   });
 
   it('retires a thread\'s older markers when any newer revert lands', async () => {
@@ -358,7 +337,6 @@ describe('applyUserMessageReverted', () => {
   });
 
 });
-
 
 it('fences turn events that arrive after the RPC cut and allows the replacement turn', async () => {
   resetThreadStatuses(); resetItemEventQueue(); resetResendRevertMarkersForTest();

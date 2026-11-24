@@ -34,8 +34,8 @@ describe('indicatorStateForItem on a background launch row', () => {
 
   it('keeps the dots through a parked stop, whose sibling leaves the bit set', () => {
     // The store's settle triggers skip a `parked` sibling, so a parked
-    // agent's launch still carries the bit; the parked sibling is its own row.
-    expect(indicatorStateForItem(launch({ live_background_active: true, task_id: 't1' }))).toBe('backgrounded');
+    // agent's launch still carries the bit (the launch's state is pinned in
+    // the test above); the parked sibling is its own row.
     const parked = makeItem({
       id: 'complete:bg:parked:u1', kind: 'tool_completion', status: 'parked', isBackground: true, completionOf: 'bg',
     });

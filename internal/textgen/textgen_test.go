@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/procutil/procutiltest"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 )
@@ -266,17 +267,28 @@ func TestReadOutputFile_HappyPath(t *testing.T) {
 	}
 }
 
-func TestTranslateCLINotFound_NotFoundMessage(t *testing.T) {
-	err := TranslateCLINotFound("codex", time.Second, exec.ErrNotFound)
-	if err == nil || !strings.Contains(err.Error(), "codex CLI not found on PATH") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestTranslateCLINotFound_TimeoutMessage(t *testing.T) {
-	err := TranslateCLINotFound("claude", time.Second, context.DeadlineExceeded)
-	if err == nil || err.Error() != "claude CLI timed out after 1s" {
-		t.Fatalf("unexpected error: %v", err)
+// A path error's message travels the same wire path as RedactError's output,
+// and pathErr.Path is the user's configured absolute binary path, so the
+// message must not name it.
+func TestTranslateCLINotFound_Messages(t *testing.T) {
+	for _, tc := range []struct {
+		name, cli string
+		err       error
+		want      string
+	}{
+		{"not found", "codex", exec.ErrNotFound, "codex CLI not found on PATH"},
+		{"timeout", "claude", context.DeadlineExceeded, "claude CLI timed out after 1s"},
+		{"path error omits the path", "claude", &os.PathError{
+			Op:   "fork/exec",
+			Path: "/home/developer/.local/bin/claude",
+			Err:  errors.New("permission denied"),
+		}, "claude CLI not found or not executable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := TranslateCLINotFound(tc.cli, time.Second, tc.err); err == nil || err.Error() != tc.want {
+				t.Fatalf("TranslateCLINotFound = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -298,64 +310,33 @@ func TestTranslateCLINotFound_TimeoutKeepsDeadlineSentinel(t *testing.T) {
 	}
 }
 
-func TestRedactError_ReplacesCLIFailure(t *testing.T) {
-	err := errors.New("codex CLI failed: exit status 1")
-	if got := RedactError(err); got != "provider CLI failed" {
-		t.Fatalf("RedactError(%q) = %q, want %q", err, got, "provider CLI failed")
-	}
-}
-
-func TestRedactError_PassesNonCLIErrorsThrough(t *testing.T) {
-	err := errors.New("decode claude structured output: unexpected EOF")
-	if got := RedactError(err); got != err.Error() {
-		t.Fatalf("RedactError(%q) = %q, want passthrough", err, got)
-	}
-}
-
-// TestRedactError_KeepsTheTimeoutMessage: the timeout names the CLI and
-// the budget it had and repeats nothing the subprocess wrote, so
-// collapsing it would only lose information.
-func TestRedactError_KeepsTheTimeoutMessage(t *testing.T) {
-	err := TranslateCLINotFound("codex", 3*time.Minute, context.DeadlineExceeded)
-	if got := RedactError(err); got != "codex CLI timed out after 3m0s" {
-		t.Fatalf("RedactError(timeout) = %q", got)
-	}
-}
-
-// TestRedactError_CollapsesPathErrors: RedactError's output reaches the
-// AudienceAny thread:title_generation channel, and a wrapped *os.PathError
-// names an absolute host path (scratch/temp file, output file). The collapse
-// is typed rather than substring-matched so a new error shape carrying a path
-// cannot silently opt out (security review 2026-08-25, finding 2).
-func TestRedactError_CollapsesPathErrors(t *testing.T) {
-	err := fmt.Errorf("codex: scratch files: %w", &os.PathError{
-		Op:   "open",
-		Path: "/home/developer/.cache/agent-overflow/scratch-1234.json",
-		Err:  errors.New("permission denied"),
-	})
-	got := RedactError(err)
-	if strings.Contains(got, "/home/developer") {
-		t.Fatalf("RedactError leaked the path: %q", got)
-	}
-	if got != "provider file access failed (open)" {
-		t.Fatalf("RedactError(path error) = %q", got)
-	}
-}
-
-// TestTranslateCLINotFound_PathErrorOmitsThePath: the translated message
-// travels the same wire path as RedactError's output, and pathErr.Path is
-// the user's configured absolute binary path.
-func TestTranslateCLINotFound_PathErrorOmitsThePath(t *testing.T) {
-	err := TranslateCLINotFound("claude", time.Second, &os.PathError{
-		Op:   "fork/exec",
-		Path: "/home/developer/.local/bin/claude",
-		Err:  errors.New("permission denied"),
-	})
-	if err == nil || strings.Contains(err.Error(), "/home/developer") {
-		t.Fatalf("translated error leaked the path: %v", err)
-	}
-	if err.Error() != "claude CLI not found or not executable" {
-		t.Fatalf("unexpected message: %v", err)
+// RedactError's output reaches the AudienceAny thread:title_generation
+// channel. The timeout names the CLI and the budget it had and repeats
+// nothing the subprocess wrote, so collapsing it would only lose
+// information. A wrapped *os.PathError names an absolute host path
+// (scratch/temp file, output file); the collapse is typed rather than
+// substring-matched so a new error shape carrying a path cannot silently
+// opt out (security review 2026-08-25, finding 2).
+func TestRedactError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"replaces a CLI failure", errors.New("codex CLI failed: exit status 1"), "provider CLI failed"},
+		{"passes other errors through", errors.New("decode claude structured output: unexpected EOF"), "decode claude structured output: unexpected EOF"},
+		{"keeps the timeout message", TranslateCLINotFound("codex", 3*time.Minute, context.DeadlineExceeded), "codex CLI timed out after 3m0s"},
+		{"collapses path errors", fmt.Errorf("codex: scratch files: %w", &os.PathError{
+			Op:   "open",
+			Path: "/home/developer/.cache/agent-overflow/scratch-1234.json",
+			Err:  errors.New("permission denied"),
+		}), "provider file access failed (open)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactError(tc.err); got != tc.want {
+				t.Fatalf("RedactError(%q) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -392,17 +373,14 @@ func TestDecodeClaudeStructuredLastLine_TakesLastNonEmpty(t *testing.T) {
 	}
 }
 
-func TestDecodeClaudeStructuredLastLine_EmptyInput(t *testing.T) {
+func TestDecodeClaudeStructuredLastLine_RefusesUnreadableInput(t *testing.T) {
 	type payload struct{}
-	if _, err := DecodeClaudeStructuredLastLine[payload]([]byte("  \n\n")); err == nil {
-		t.Fatalf("expected error for empty input")
-	}
-}
-
-func TestDecodeClaudeStructuredLastLine_MalformedJSON(t *testing.T) {
-	type payload struct{}
-	if _, err := DecodeClaudeStructuredLastLine[payload]([]byte("not-json")); err == nil {
-		t.Fatalf("expected decode error")
+	for name, in := range map[string]string{"empty input": "  \n\n", "malformed JSON": "not-json"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeClaudeStructuredLastLine[payload]([]byte(in)); err == nil {
+				t.Fatalf("decode(%q) returned no error", in)
+			}
+		})
 	}
 }
 
@@ -423,72 +401,48 @@ func TestNormalizeStructuredOutputLine(t *testing.T) {
 	}
 }
 
-func TestPickAvailableProvider_PreferredAvailable(t *testing.T) {
-	lookPath := func(bin string) error {
-		if bin == "codex" || bin == "claude" {
-			return nil
-		}
-		return exec.ErrNotFound
-	}
-	if got := PickAvailableProvider("codex", "claude", "codex", lookPath); got != "codex" {
-		t.Fatalf("both available, prefer codex: got %q, want codex", got)
-	}
-	if got := PickAvailableProvider("claude", "claude", "codex", lookPath); got != "claude" {
-		t.Fatalf("both available, prefer claude: got %q, want claude", got)
-	}
+// pickBetween is PickAvailableProviderOrdered over claude and codex at the
+// given binaries, falling back in that order.
+func pickBetween(preferred, claudeBinary, codexBinary string, lookPath func(string) error) string {
+	return PickAvailableProviderOrdered(preferred, map[string]string{"claude": claudeBinary, "codex": codexBinary}, []string{"claude", "codex"}, lookPath)
 }
 
-func TestPickAvailableProvider_PreferredMissingFallsBack(t *testing.T) {
-	onlyClaude := func(bin string) error {
-		if bin == "claude" {
-			return nil
-		}
-		return exec.ErrNotFound
-	}
-	if got := PickAvailableProvider("codex", "claude", "codex", onlyClaude); got != "claude" {
-		t.Fatalf("only claude installed but prefer codex: got %q, want claude", got)
-	}
-
-	onlyCodex := func(bin string) error {
-		if bin == "codex" {
-			return nil
-		}
-		return exec.ErrNotFound
-	}
-	if got := PickAvailableProvider("claude", "claude", "codex", onlyCodex); got != "codex" {
-		t.Fatalf("only codex installed but prefer claude: got %q, want codex", got)
-	}
-}
-
-func TestPickAvailableProvider_NeitherAvailableReturnsPreferred(t *testing.T) {
-	none := func(string) error { return exec.ErrNotFound }
-	if got := PickAvailableProvider("codex", "claude", "codex", none); got != "codex" {
-		t.Fatalf("neither installed, prefer codex: got %q, want codex (so caller surfaces the codex error)", got)
-	}
-	if got := PickAvailableProvider("claude", "claude", "codex", none); got != "claude" {
-		t.Fatalf("neither installed, prefer claude: got %q, want claude", got)
-	}
-}
-
-func TestPickAvailableProvider_EmptyBinaryPathTreatedAsUnavailable(t *testing.T) {
-	always := func(string) error { return nil }
-	// Empty codexBinary means we can't probe it — must fall back to claude.
-	if got := PickAvailableProvider("codex", "claude", "", always); got != "claude" {
-		t.Fatalf("empty codex binary, claude available: got %q, want claude", got)
-	}
-}
-
-func TestPickAvailableProvider_UnknownPreferredReturnedVerbatim(t *testing.T) {
-	always := func(string) error { return nil }
-	if got := PickAvailableProvider("nonsense", "claude", "codex", always); got != "nonsense" {
-		t.Fatalf("unknown preferred should pass through: got %q", got)
+// When neither is installed the preferred provider comes back, so the caller
+// surfaces its error. An empty binary path cannot be probed and counts as
+// not installed.
+func TestPickAvailableProvider_FallsBackInOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name, preferred, codexBinary string
+		installed                    []string
+		want                         string
+	}{
+		{"both available, prefer codex", "codex", "codex", []string{"claude", "codex"}, "codex"},
+		{"both available, prefer claude", "claude", "codex", []string{"claude", "codex"}, "claude"},
+		{"only claude installed, prefer codex", "codex", "codex", []string{"claude"}, "claude"},
+		{"only codex installed, prefer claude", "claude", "codex", []string{"codex"}, "codex"},
+		{"neither installed, prefer codex", "codex", "codex", nil, "codex"},
+		{"neither installed, prefer claude", "claude", "codex", nil, "claude"},
+		// The lookup accepts the empty name, so only the guard refuses it.
+		{"empty codex binary, prefer codex", "codex", "", []string{"claude", "codex", ""}, "claude"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookPath := func(bin string) error {
+				if slices.Contains(tc.installed, bin) {
+					return nil
+				}
+				return exec.ErrNotFound
+			}
+			if got := pickBetween(tc.preferred, "claude", tc.codexBinary, lookPath); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
 func TestPickAvailableProvider_NilLookPathReturnsPreferred(t *testing.T) {
 	// Defensive: production callers always supply lookPath, but a nil
 	// callback shouldn't panic.
-	if got := PickAvailableProvider("codex", "claude", "codex", nil); got != "codex" {
+	if got := pickBetween("codex", "claude", "codex", nil); got != "codex" {
 		t.Fatalf("nil lookPath: got %q, want codex (pass-through)", got)
 	}
 }
@@ -578,9 +532,9 @@ func TestRunClaude_CarriesCleanupPeriodDays(t *testing.T) {
 				t.Fatalf("RunClaude: %v", err)
 			}
 			assertFlagValue(t, got.Args, "--settings", tc.want)
-			for _, name := range []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"} {
-				if !slices.Contains(got.UnsetEnv, name) {
-					t.Fatalf("UnsetEnv = %v, want it to drop %s", got.UnsetEnv, name)
+			for _, env := range []provider.ReservedEnv{provider.ClaudeConfigDirEnv, provider.ClaudeSecureStorageConfigDirEnv} {
+				if !slices.Contains(got.Env.Clears, env) {
+					t.Fatalf("clears = %v, want them to drop %s", got.Env.Clears, env.Name())
 				}
 			}
 		})
@@ -615,8 +569,8 @@ func TestRunCodex_DropsAnInheritedCodexHome(t *testing.T) {
 	if _, err := RunCodex(context.Background(), cfg, t.TempDir(), `{"type":"object"}`, nil, "prompt", time.Minute); err != nil {
 		t.Fatalf("RunCodex: %v", err)
 	}
-	if !slices.Contains(got.UnsetEnv, "CODEX_HOME") {
-		t.Fatalf("UnsetEnv = %v, want it to drop CODEX_HOME", got.UnsetEnv)
+	if !slices.Contains(got.Env.Clears, provider.CodexHomeEnv) {
+		t.Fatalf("clears = %v, want them to drop CODEX_HOME", got.Env.Clears)
 	}
 }
 
@@ -765,14 +719,14 @@ func TestRunners_PassTheAdmissionToTheExecutor(t *testing.T) {
 	}
 }
 
-// ExecCLI removes the variables a spec names from the child's environment.
-func TestExecCLI_DropsUnsetEnv(t *testing.T) {
+// ExecCLI removes the variables a spec clears from the child's environment.
+func TestExecCLI_AppliesTheSpecsClears(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/alternate")
 	t.Setenv("AO_TEXTGEN_KEPT", "kept")
 	result, err := ExecCLI(context.Background(), procutiltest.Reaper(), CLISpec{
-		Binary:   "/bin/sh",
-		Args:     []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_TEXTGEN_KEPT-unset}"`},
-		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},
+		Binary: "/bin/sh",
+		Args:   []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_TEXTGEN_KEPT-unset}"`},
+		Env:    provider.EnvInput{Clears: []provider.ReservedEnv{provider.ClaudeConfigDirEnv}},
 	})
 	if err != nil {
 		t.Fatalf("ExecCLI: %v", err)
@@ -876,13 +830,13 @@ func TestRunAgyAndDecodeStructured(t *testing.T) {
 	if got.Stdin != "" {
 		t.Errorf("agy stdin = %q, want empty (prompt rides --print=...)", got.Stdin)
 	}
-	if got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"] != "1" {
-		t.Errorf("AGY_CLI_DISABLE_AUTO_UPDATE = %q, want 1", got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"])
+	if got.Env.Pins[provider.AgyDisableAutoUpdateEnv] != "1" {
+		t.Errorf("AGY_CLI_DISABLE_AUTO_UPDATE = %q, want 1", got.Env.Pins[provider.AgyDisableAutoUpdateEnv])
 	}
 	// The run reads the login from the store its home names: the Keychain
 	// here, so an inherited file-storage flag is cleared.
-	if !slices.Contains(got.UnsetEnv, "AGY_ACP_FORCE_FILE_STORAGE") {
-		t.Errorf("agy unset = %v, want the file-storage flag cleared", got.UnsetEnv)
+	if !slices.Contains(got.Env.Clears, provider.AgyForceFileStorageEnv) {
+		t.Errorf("agy clears = %v, want the file-storage flag cleared", got.Env.Clears)
 	}
 	isolated, err := agy.IsolatedHome(t.TempDir())
 	if err != nil {

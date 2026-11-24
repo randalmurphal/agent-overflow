@@ -3,7 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
 import { closeImageLightbox, imageLightbox } from '../../stores/imageLightbox.svelte';
 import type { Attachment } from '../../types/attachment';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
 
 function makeAttachment(id: string, filename = `${id}.png`, size = 512): Attachment {
@@ -34,7 +34,6 @@ function makeFile(id: string, filename = `${id}.pdf`, size = 2048): Attachment {
 
 describe('<ComposerAttachmentRow>', () => {
   beforeEach(() => {
-    resetBindingMocks();
     // Inline grid loads thumbnails; a lightbox item's `original` fetches the
     // bytes. Stub both so any test path produces a usable preview.
     setBindingMock('GetAttachmentThumbnail', async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' }));

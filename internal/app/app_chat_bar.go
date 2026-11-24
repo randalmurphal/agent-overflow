@@ -238,17 +238,6 @@ func (a *App) SetChatBarFavorite(fav store.ChatBarFavorite, starred bool) ([]sto
 	return favorites, nil
 }
 
-func (a *App) projectPathForThread(thread store.Thread) (string, error) {
-	if strings.TrimSpace(thread.ProjectID) == "" {
-		return "", fmt.Errorf("thread %s has no project", thread.ID)
-	}
-	project, err := a.store.GetProject(thread.ProjectID)
-	if err != nil {
-		return "", err
-	}
-	return project.Path, nil
-}
-
 // Composer slash commands (spec §5.2, D31). A composer message containing the
 // word `/name` — at any word position — is expanded at SEND TIME, on this side
 // of the wire:

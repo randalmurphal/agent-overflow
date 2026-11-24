@@ -19,7 +19,7 @@ import (
 func readersFixture(tb testing.TB, rows, readers int) *Store {
 	tb.Helper()
 	path := filepath.Join(tb.TempDir(), "store.sqlite")
-	if err := copyTestStoreTemplate(path); err != nil {
+	if err := copyTestStoreTemplate(tb, path); err != nil {
 		tb.Fatal(err)
 	}
 	s, err := New(path)

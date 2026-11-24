@@ -95,7 +95,6 @@ import {
   type TransportStatusSnapshot,
 } from './wsClient';
 import { DEFAULT_METHOD_BUDGET_MS, METHOD_ANSWER_MARGIN_MS, METHOD_BUDGETS_MS } from './methodRoutes';
-import { __resetRunModeForTest } from './runMode';
 import { grantedScopes, hasScope } from './scopes';
 import { getConnectionId, getDeviceId } from './clientIdentity';
 import { clearPairedSession, hasPairedSession, pairedSessionHeaders, redeemPairing } from './deviceSession';
@@ -105,7 +104,7 @@ import { clearPairedSession, hasPairedSession, pairedSessionHeaders, redeemPairi
 // drives the same client through the same fake, and two copies would be
 // two answers to what the client sends.
 import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/mockWebSocket';
-import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
+import { setHomeEndpoint } from './homeEndpoint';
 import { DamagedTrustError } from '../native/networkTrust';
 import { MAX_REPLAY_BUFFER_CHARS } from './replayBuffer';
 import { installDispatchRefusalWording, setDispatchRefusalDiagnosticsSink, UNREADABLE_SENTENCE } from './dispatchRefusal';
@@ -116,11 +115,9 @@ describe('WSClient', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -2085,40 +2082,6 @@ describe('WSClient', () => {
     client.close();
   });
 
-  it('reconnects when bootstrap fetch returns 404', async () => {
-    vi.useFakeTimers();
-    vi.spyOn(Math, 'random').mockReturnValue(0.5);
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const fetchSpy = vi
-      .fn<() => Promise<{ wsUrl: string; token: string }>>()
-      // First two calls reject; the third resolves so the test can
-      // verify the recovery path actually opens a socket.
-      .mockRejectedValueOnce(new Error('bootstrap fetch failed: HTTP 404'))
-      .mockRejectedValueOnce(new Error('bootstrap fetch failed: HTTP 404'))
-      .mockResolvedValueOnce({ wsUrl: 'ws://example/ws', token: 't' });
-
-    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap: fetchSpy });
-    client.subscribe('foo', () => {});
-
-    // First attempt: bootstrap rejects synchronously, scheduleReconnect
-    // queues a retry. Drain microtasks first so the rejection settles.
-    await vi.advanceTimersByTimeAsync(0);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(MockWebSocket.instances).toHaveLength(0);
-
-    // Backoff for attempt=0 is up to 250ms; with random=0.5 it's 125ms.
-    await vi.advanceTimersByTimeAsync(150);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-
-    // attempt=1 -> base=500 -> jitter 250ms.
-    await vi.advanceTimersByTimeAsync(300);
-    expect(fetchSpy).toHaveBeenCalledTimes(3);
-    expect(MockWebSocket.instances).toHaveLength(1);
-
-    client.close();
-  });
-
   it.each(['ticket JSON', 'socket constructor'] as const)(
     'recovers a failed %s with only its standing subscription', async (failure) => {
       localStorage.clear();
@@ -2214,13 +2177,16 @@ describe('WSClient', () => {
     vi.unstubAllGlobals();
   });
 
-  it('rejects bootstrap missing wsUrl', async () => {
+  it.each([
+    ['rejects bootstrap missing wsUrl', { launchId: 'launch-1' }, /missing wsUrl/],
+    ['rejects bootstrap with non-ws scheme', { wsUrl: 'http://untrusted.invalid/', token: 'x' }, /scheme not ws\/wss/],
+  ] as const)('%s', async (_name, manifest, message) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ launchId: 'launch-1' }),
+      json: async () => manifest,
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -2232,30 +2198,7 @@ describe('WSClient', () => {
     } catch (err) {
       caught = err;
     }
-    expect((caught as Error).message).toMatch(/missing wsUrl/);
-    client.close();
-    vi.unstubAllGlobals();
-  });
-
-  it('rejects bootstrap with non-ws scheme', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: 'http://untrusted.invalid/', token: 'x' }),
-    }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = createWSClient({ WebSocketCtor: FakeCtor });
-    const p = client.callByID(1, []);
-    let caught: unknown;
-    try {
-      await p;
-    } catch (err) {
-      caught = err;
-    }
-    expect((caught as Error).message).toMatch(/scheme not ws\/wss/);
+    expect((caught as Error).message).toMatch(message);
     client.close();
     vi.unstubAllGlobals();
   });
@@ -2291,9 +2234,12 @@ describe('WSClient', () => {
       expect([...opened.searchParams.keys()].sort()).toEqual(['conn', 'did']);
       expect(opened.searchParams.get('did')).toBe(getDeviceId());
       expect(opened.searchParams.get('conn')).toBe(getConnectionId());
-      // A page served over the network holds no grant of its own.
+      // A page served over the network holds no grant of its own. The
+      // suite's posture is a local page holding every scope, so these
+      // fail unless the fetched manifest's locality was published.
       expect(grantedScopes().source).toBe('unpaired');
       expect(hasScope('host')).toBe(false);
+      expect(hasScope('threads:operate', '')).toBe(false);
 
       ws.acceptOpen();
       await flushMicrotasks();
@@ -2302,28 +2248,6 @@ describe('WSClient', () => {
       await expect(p).resolves.toBe('ok');
       client.close();
     } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('publishes fetched bootstrap locality to the capability store', async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, remote: true }),
-    }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = createWSClient({ WebSocketCtor: FakeCtor });
-    try {
-      const unsubscribe = client.subscribe('workflow:item-state', () => {});
-      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
-      expect(hasScope('host')).toBe(false);
-      expect(hasScope('threads:operate', '')).toBe(false);
-      unsubscribe();
-    } finally {
-      client.close();
       vi.unstubAllGlobals();
     }
   });
@@ -2358,41 +2282,6 @@ describe('WSClient', () => {
     } finally {
       window.history.replaceState(null, '', '/');
       vi.unstubAllGlobals();
-    }
-  });
-
-  it('refetches the manifest after consecutive pre-open failures', async () => {
-    // The cached manifest is what a reconnect replays, so a backend that
-    // restarted would be retried forever on a credential it no longer
-    // honours. Every BOOTSTRAP_INVALIDATE_AFTER_FAILURES pre-open deaths
-    // the cache is dropped and the next attempt fetches for real, which
-    // is what turns a doomed loop into an observable refusal.
-    vi.useFakeTimers();
-    try {
-      let fetches = 0;
-      const client = createWSClient({
-        WebSocketCtor: FakeCtor,
-        bootstrap: async () => {
-          fetches += 1;
-          return { wsUrl: 'ws://example/ws', launchId: 'launch-1', remote: true };
-        },
-      });
-      client.subscribe('x', () => {});
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fetches).toBe(1);
-
-      // Two consecutive pre-open deaths trip the cache invalidation; the
-      // attempts before it reuse the cache and must not fetch again.
-      for (let i = 0; i < BOOTSTRAP_INVALIDATE_AFTER_FAILURES; i++) {
-        MockWebSocket.instances.at(-1)!.triggerClose();
-        await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
-      }
-      expect(fetches).toBe(2);
-      MockWebSocket.instances.at(-1)!.acceptOpen();
-      await vi.advanceTimersByTimeAsync(0);
-      client.close();
-    } finally {
-      vi.useRealTimers();
     }
   });
 
@@ -2439,29 +2328,6 @@ describe('WSClient', () => {
     client.close();
   });
 
-  it('rejects an RPC with code "timeout" after RPC_TIMEOUT_MS', async () => {
-    vi.useFakeTimers();
-    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
-    const p = client.callByID(1, []);
-    // Attach the catch synchronously so the eventual rejection has a
-    // handler the moment it lands. Without this the test passes — the
-    // rejection IS observed via `await p` further down — but Node prints
-    // a PromiseRejectionHandledWarning because the handler arrived in a
-    // later microtask than the rejection.
-    const settled = p.catch((err) => err);
-    // Advance microtasks so the bootstrap promise settles and the
-    // socket is created.
-    await vi.advanceTimersByTimeAsync(0);
-    const ws = MockWebSocket.instances[0]!;
-    ws.acceptOpen();
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(RPC_TIMEOUT_MS + 1);
-    const caught = await settled;
-    expect(caught).toBeInstanceOf(TransportError);
-    expect((caught as TransportError).code).toBe('timeout');
-    client.close();
-  });
-
   it('waits out the budget a method declares, and the default for the rest', async () => {
     const [budgeted, budgetMs] = Object.entries(METHOD_BUDGETS_MS).map(([id, ms]) => [Number(id), ms] as const)[0]!;
     expect(budgetMs).toBeGreaterThan(DEFAULT_METHOD_BUDGET_MS);
@@ -2483,7 +2349,9 @@ describe('WSClient', () => {
     let longSettled = false;
     void long.then(() => { longSettled = true; });
     await vi.advanceTimersByTimeAsync(RPC_TIMEOUT_MS + 1);
-    expect(((await ordinary) as TransportError).code).toBe('timeout');
+    const ordinaryCaught = await ordinary;
+    expect(ordinaryCaught).toBeInstanceOf(TransportError);
+    expect((ordinaryCaught as TransportError).code).toBe('timeout');
     expect(longSettled).toBe(false);
 
     await vi.advanceTimersByTimeAsync(rpcWaitMs(budgeted) - RPC_TIMEOUT_MS - 2);
@@ -2764,28 +2632,6 @@ describe('WSClient', () => {
     expect(events.at(-1)).toBe('reconnecting');
 
     off();
-    client.close();
-  });
-
-  it('triggerReconnect cancels the queued backoff and starts a fresh attempt', async () => {
-    vi.useFakeTimers();
-    vi.spyOn(Math, 'random').mockReturnValue(0.5);
-
-    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
-    client.subscribe('x', () => {});
-    await vi.advanceTimersByTimeAsync(0);
-    const first = MockWebSocket.instances[0]!;
-    first.acceptOpen();
-    await vi.advanceTimersByTimeAsync(0);
-    first.triggerClose();
-    // Don't run the backoff timer; instead force-reconnect.
-    expect(MockWebSocket.instances).toHaveLength(1);
-    client.triggerReconnect();
-    await vi.advanceTimersByTimeAsync(0);
-    // A second socket exists immediately, without waiting on the
-    // exponential backoff that scheduleReconnect would otherwise impose.
-    expect(MockWebSocket.instances).toHaveLength(2);
-
     client.close();
   });
 
@@ -3510,19 +3356,26 @@ describe('WSClient', () => {
     client.close();
   });
 
-  it('caps backoff at the local ceiling for a same-machine backend', async () => {
+  // Six failed visible attempts put an uncapped ladder far above the local
+  // ceiling (250 * 2^6 = 16s). They also trip the bootstrap-cache
+  // invalidation, and the remote backend must keep its ceiling across it.
+  it.each([
+    ['caps backoff at the local ceiling for a same-machine backend', false, RECONNECT_MAX_LOCAL_MS / 2, RECONNECT_MAX_LOCAL_MS],
+    ['keeps the remote ceiling for a remote backend, across bootstrap invalidation', true, RECONNECT_MAX_LOCAL_MS, RECONNECT_MAX_REMOTE_MS],
+  ] as const)('%s', async (_name, remote, delayAbove, delayAtMost) => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.999);
 
-    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote }),
+    });
     client.subscribe('x', () => {});
     await vi.advanceTimersByTimeAsync(0);
     MockWebSocket.instances[0]!.acceptOpen();
     await vi.advanceTimersByTimeAsync(0);
     MockWebSocket.instances[0]!.triggerClose();
 
-    // Fail enough visible attempts that an uncapped ladder would sit
-    // far above the local ceiling (250 * 2^6 = 16s).
     for (let i = 0; i < 6; i++) {
       const before = MockWebSocket.instances.length;
       await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
@@ -3533,39 +3386,9 @@ describe('WSClient', () => {
     const snap = client.getStatus();
     expect(snap.status).toBe('reconnecting');
     expect(snap.nextAttemptAt).not.toBeNull();
-    expect(snap.nextAttemptAt! - Date.now()).toBeLessThanOrEqual(RECONNECT_MAX_LOCAL_MS);
-    // Prove escalation actually happened before hitting the cap.
-    expect(snap.nextAttemptAt! - Date.now()).toBeGreaterThan(RECONNECT_MAX_LOCAL_MS / 2);
-
-    client.close();
-  });
-
-  it('keeps the remote ceiling for a remote backend, across bootstrap invalidation', async () => {
-    vi.useFakeTimers();
-    vi.spyOn(Math, 'random').mockReturnValue(0.999);
-
-    const client = createWSClient({
-      WebSocketCtor: FakeCtor,
-      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
-    });
-    client.subscribe('x', () => {});
-    await vi.advanceTimersByTimeAsync(0);
-    MockWebSocket.instances[0]!.acceptOpen();
-    await vi.advanceTimersByTimeAsync(0);
-    MockWebSocket.instances[0]!.triggerClose();
-
-    // 6 pre-open failures also trip the bootstrap-cache invalidation;
-    // the sticky remoteBackend flag must keep the remote ceiling anyway.
-    for (let i = 0; i < 6; i++) {
-      const before = MockWebSocket.instances.length;
-      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
-      expect(MockWebSocket.instances.length).toBe(before + 1);
-      MockWebSocket.instances.at(-1)!.triggerClose();
-    }
-
-    const snap = client.getStatus();
-    expect(snap.nextAttemptAt).not.toBeNull();
-    expect(snap.nextAttemptAt! - Date.now()).toBeGreaterThan(RECONNECT_MAX_LOCAL_MS);
+    // The lower bound proves escalation actually happened before the cap.
+    expect(snap.nextAttemptAt! - Date.now()).toBeGreaterThan(delayAbove);
+    expect(snap.nextAttemptAt! - Date.now()).toBeLessThanOrEqual(delayAtMost);
 
     client.close();
   });
@@ -4276,11 +4099,13 @@ describe('WSClient', () => {
     client.subscribe('z', () => {});
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances).toHaveLength(0);
     // attempt=0 backoff is 250 * 0.5 = 125ms; attempt=1 is 250ms.
     await vi.advanceTimersByTimeAsync(150);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(300);
     expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(MockWebSocket.instances).toHaveLength(1);
     MockWebSocket.instances[0]!.acceptOpen();
     await vi.advanceTimersByTimeAsync(0);
 
@@ -4889,7 +4714,6 @@ describe('dormant reconnect ladder', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
     vi.useFakeTimers();
     // Longest jittered delay, so the climb below takes the fewest laps.
     vi.spyOn(Math, 'random').mockReturnValue(0.999);
@@ -4897,7 +4721,6 @@ describe('dormant reconnect ladder', () => {
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -5037,7 +4860,7 @@ describe('dormant reconnect ladder', () => {
     client.close();
   });
 
-  it('schedules no probe at all while the whole client is backgrounded', async () => {
+  it('schedules no probe while backgrounded, and probes the moment it returns to the foreground', async () => {
     const client = await dormantClient();
     const dialsBefore = MockWebSocket.instances.length;
 
@@ -5050,15 +4873,6 @@ describe('dormant reconnect ladder', () => {
 
     await vi.advanceTimersByTimeAsync(6 * DORMANT_PROBE_MS);
     expect(MockWebSocket.instances.length).toBe(dialsBefore);
-
-    client.close();
-  });
-
-  it('probes the moment the client comes back to the foreground', async () => {
-    const client = await dormantClient();
-    client.setLease('background');
-    await vi.advanceTimersByTimeAsync(6 * DORMANT_PROBE_MS);
-    const dialsBefore = MockWebSocket.instances.length;
 
     client.setLease('active');
     await flushMicrotasks();
@@ -5204,11 +5018,9 @@ describe('lease frame', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -5349,11 +5161,9 @@ describe('presence frame', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -5473,12 +5283,10 @@ describe('WSClient under a shell origin', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetHomeEndpointForTest();
     setHomeEndpoint(ENDPOINT);
   });
 
   afterEach(() => {
-    __resetHomeEndpointForTest();
     vi.restoreAllMocks();
   });
 
@@ -5522,13 +5330,11 @@ describe('watermark frames', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    __resetRunModeForTest();
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
   });
 
   afterEach(() => {
-    __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });

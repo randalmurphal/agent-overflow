@@ -13,7 +13,7 @@
 import { randomBytes } from 'node:crypto';
 
 import type { Page } from '@playwright/test';
-import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
+import { harnessTiming, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import {
   expectEveryForgeCallHandled,
@@ -121,10 +121,7 @@ async function watchForBanner(page: Page): Promise<void> {
 
 test('a pane showing its PR rides out one failed poll the retry answers, and shows the banner when the retry fails too', async ({ page }) => {
   test.setTimeout(120_000);
-  const timing = HARNESS_TIMING.split(',').filter((entry) => !entry.startsWith('pr-update-retry='));
-  const harness = await launchHarness({
-    env: { AO_HARNESS_TIMING: [...timing, 'pr-update=2s', 'pr-update-retry=1500ms'].join(',') },
-  });
+  const harness = await launchHarness({ env: harnessTiming({ 'pr-update': '2s', 'pr-update-retry': '1500ms' }) });
   try {
     await seedOutagePullRequest(harness, 'github');
     await harness.open(page);

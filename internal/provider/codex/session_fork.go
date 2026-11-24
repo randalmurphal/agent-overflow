@@ -90,7 +90,7 @@ type ForkSpec struct {
 	// project configuration from its cwd.
 	WorkDir string
 	// Env is the per-provider environment for the spawned process.
-	Env map[string]string
+	Env provider.EnvInput
 	// SourceThreadID is the provider thread to fork.
 	SourceThreadID string
 	// LastTurnID is the inclusive cut; empty forks the full history.

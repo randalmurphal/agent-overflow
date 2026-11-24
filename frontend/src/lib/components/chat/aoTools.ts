@@ -761,11 +761,6 @@ function withNextFire(what: string, itemMeta: Record<string, unknown> | null): s
   return [what, `next ${when}`].filter(Boolean).join(' · ');
 }
 
-/** Whether the row is a tool one of AO's own MCP servers served. */
-export function isAoToolMeta(itemMeta: Record<string, unknown> | null): boolean {
-  return aoToolServer(itemMeta) !== null;
-}
-
 /** The AO server a row's tool belongs to, or null for any other row. */
 export function aoToolServer(itemMeta: Record<string, unknown> | null): string | null {
   const mcp = readMcp(itemMeta);

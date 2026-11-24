@@ -53,7 +53,7 @@ export interface ThreadItemStreamApplyOptions {
   timelineWindow: ThreadTimelineWindow;
   /**
    * An upsert, delta or patch of this scope arrived, whether or not the
-   * window holds its row; see `ThreadItemWindow.noteSearchableEvent`.
+   * window holds its row; see `noteSearchableEvent` in threadItemWindow.svelte.ts.
    */
   noteSearchableEvent(): void;
   /**

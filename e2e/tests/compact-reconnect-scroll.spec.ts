@@ -39,7 +39,7 @@ for (const mode of ['large', 'small', 'reading', 'gesture', 'gap'] as const) {
     await harness.open(page);
     await page.getByTestId('thread-row').click();
     const mock = await startMock(harness, thread);
-    await harness.rpc('SendMessage', thread, 'Continue', null);
+    await harness.send(thread, 'Continue');
     await waitForGate(harness, 'finish');
     const scroll = page.getByTestId('message-timeline-scroll');
     await expect(page.getByText('Working before the disconnect.', { exact: true })).toBeVisible();
@@ -83,7 +83,9 @@ for (const mode of ['large', 'small', 'reading', 'gesture', 'gap'] as const) {
     releaseReplay!();
     await expect(page.getByRole('button', { name: 'Interrupt current turn', exact: true })).toHaveCount(0);
     if (mode === 'reading' || mode === 'gesture') {
-      await page.waitForTimeout(300);
+      // Thirty still frames after the replay landed: a pin to the bottom
+      // would have moved it.
+      await waitForScrollSettle(scroll);
       expect(await scroll.evaluate((el) => el.scrollTop)).toBeCloseTo(readingTop, 0);
       expect(await distance()).toBeGreaterThan(200);
     } else {

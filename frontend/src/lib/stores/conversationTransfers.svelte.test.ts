@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { grantBackendScopes, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
 import { resetStagedBackends, stageBackend, REMOTE_BACKEND_UUID } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
-import { noteProject, noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
+import { noteProject, noteThread } from '../transport/entityIndex';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { takePinnedBackend } from '../transport/backends';
 import type { TransportHello } from '../transport/wsClient';
@@ -27,7 +27,7 @@ const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 let stop = () => {};
 
 beforeEach(async () => {
-  resetBindingMocks(); resetStagedBackends(); resetToLocalPage(); resetConversationTransfersForTest(); __resetEntityIndexForTest();
+  resetToLocalPage();
   stageBackend({ id: 'tower', backendId: SOURCE, hello: hello(SOURCE) });
   stageBackend({ hello: hello(REMOTE_BACKEND_UUID) });
   setBackendIdentityFromBootstrap(SOURCE, 'generation-a', 'Tower', 'tower');
@@ -35,6 +35,11 @@ beforeEach(async () => {
   for (const backend of ['tower', 'laptop']) await grantBackendScopes(backend, ['threads:read', 'threads:operate', 'git:operate']);
   noteThread(thread.id, 'tower', 0); noteProject('project-source', 'tower'); noteProject('project-target', 'laptop');
   setBindingMock('GetThreadTransfers', async () => { takePinnedBackend(); return []; });
+  // Opening the dialog asks the source for the conversation's recurring jobs
+  // and standing agent: none (app_thread_transfer_status.go,
+  // app_standing_agents.go).
+  setBindingMock('ListThreadRecurringJobs', async () => { takePinnedBackend(); return []; });
+  setBindingMock('GetStandingAgent', async () => { takePinnedBackend(); return null; });
 });
 afterEach(() => {
   stop(); stop = () => {}; resetConversationTransfersForTest(); resetStagedBackends();
@@ -81,15 +86,20 @@ it('recovers the accepted project after the frontend lost setup state', async ()
   expect(pendingConversationTransfer()).toMatchObject({ operationID: 'op-1', kind: 'copy', includeWorkspace: false, destination: 'laptop', projectID: 'project-target', submitted: true });
 });
 
-it('merges events arriving during a status read without losing other recovered operations', async () => {
+it.each([
+  ['merges events arriving during a status read without losing other recovered operations',
+    row({ phase: 'complete', needsDestination: false, updatedAt: 3 }), [row(), row({ id: 'other-operation' })], 'complete'],
+  ['keeps the status read over an older event that arrived during it',
+    row({ phase: 'preparing', updatedAt: 2 }), [row({ phase: 'sending', updatedAt: 4 })], 'sending'],
+])('%s', async (_name, frame, answer, phase) => {
   stop = initConversationTransfers(); await tick();
   let resolve!: (rows: ConversationTransfer[]) => void;
   setBindingMock('GetThreadTransfers', () => new Promise<ConversationTransfer[]>((done) => { resolve = done; }));
   const read = refreshComputerTransfers('tower');
-  emitWailsEvent('thread:transfer', row({ phase: 'complete', needsDestination: false, updatedAt: 3 }), SOURCE);
-  resolve([row(), row({ id: 'other-operation' })]); await read;
-  expect(computerTransfers('tower').rows).toHaveLength(2);
-  expect(computerTransfers('tower').rows.find((value) => value.id === 'op-1')?.phase).toBe('complete');
+  emitWailsEvent('thread:transfer', frame, SOURCE);
+  resolve(answer); await read;
+  expect(computerTransfers('tower').rows).toHaveLength(answer.length);
+  expect(computerTransfers('tower').rows.find((value) => value.id === 'op-1')?.phase).toBe(phase);
 });
 
 // The transport writes events queued for this connection ahead of a reply,
@@ -118,16 +128,6 @@ it('applies a phase that follows the Bind reply', async () => {
   expect(computerTransfers('tower').rows[0]?.phase).toBe('preparing');
   emitWailsEvent('thread:transfer', row({ id, needsDestination: false, phase: 'sending', updatedAt: 1 }), SOURCE);
   expect(computerTransfers('tower').rows[0]?.phase).toBe('sending');
-});
-
-it('keeps the status read over an older event that arrived during it', async () => {
-  stop = initConversationTransfers(); await tick();
-  let resolve!: (rows: ConversationTransfer[]) => void;
-  setBindingMock('GetThreadTransfers', () => new Promise<ConversationTransfer[]>((done) => { resolve = done; }));
-  const read = refreshComputerTransfers('tower');
-  emitWailsEvent('thread:transfer', row({ phase: 'preparing', updatedAt: 2 }), SOURCE);
-  resolve([row({ phase: 'sending', updatedAt: 4 })]); await read;
-  expect(computerTransfers('tower').rows.find((value) => value.id === 'op-1')?.phase).toBe('sending');
 });
 
 const busy = (count: number) => Array.from({ length: count }, (_, index) => row({ id: `busy-${index}`, updatedAt: 100 + index }));
@@ -215,19 +215,6 @@ it('names the source session\'s recurring jobs when the dialog opens', async () 
   expect(pendingConversationTransfer()?.recurringJobs).toEqual([{ id: '6ae146b0', cron: '*/5 * * * *' }]);
 });
 
-it('reports a failed recurring-job check and stays quiet for a source without the method', async () => {
-  setBindingMock('ListThreadRecurringJobs', async () => { throw new Error('Database is locked'); });
-  openConversationTransfer(thread);
-  await tick();
-  expect(pendingConversationTransfer()?.recurringJobsError).toContain('Database is locked');
-
-  setBindingMock('ListThreadRecurringJobs', async () => { throw methodNotFound(); });
-  openConversationTransfer(thread);
-  await tick();
-  expect(pendingConversationTransfer()?.recurringJobs).toEqual([]);
-  expect(pendingConversationTransfer()?.recurringJobsError).toBeUndefined();
-});
-
 it('asks the source whether the conversation is a standing agent when the dialog opens', async () => {
   const get = setBindingMock('GetStandingAgent', async (threadId: string) => {
     expect(takePinnedBackend()).toBe('tower');
@@ -244,15 +231,18 @@ it('asks the source whether the conversation is a standing agent when the dialog
   expect(pendingConversationTransfer()?.standingAgent).toBe(false);
 });
 
-it('reports a failed standing-agent check and stays quiet for a source without the method', async () => {
-  setBindingMock('GetStandingAgent', async () => { throw new Error('Database is locked'); });
+it.each([
+  ['reports a failed recurring-job check and stays quiet for a source without the method', 'ListThreadRecurringJobs', 'recurringJobs', []],
+  ['reports a failed standing-agent check and stays quiet for a source without the method', 'GetStandingAgent', 'standingAgent', false],
+] as const)('%s', async (_name, binding, field, quiet) => {
+  setBindingMock(binding, async () => { throw new Error('Database is locked'); });
   openConversationTransfer(thread);
   await tick();
-  expect(pendingConversationTransfer()?.standingAgentError).toContain('Database is locked');
+  expect(pendingConversationTransfer()?.[`${field}Error`]).toContain('Database is locked');
 
-  setBindingMock('GetStandingAgent', async () => { throw methodNotFound(); });
+  setBindingMock(binding, async () => { throw methodNotFound(); });
   openConversationTransfer(thread);
   await tick();
-  expect(pendingConversationTransfer()?.standingAgent).toBe(false);
-  expect(pendingConversationTransfer()?.standingAgentError).toBeUndefined();
+  expect(pendingConversationTransfer()?.[field]).toEqual(quiet);
+  expect(pendingConversationTransfer()?.[`${field}Error`]).toBeUndefined();
 });

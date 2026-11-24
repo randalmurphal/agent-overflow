@@ -9,9 +9,9 @@ import SettingsView from './SettingsView.svelte';
 import { seedSettingsPages } from '../../../test/helpers/settingsPages';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { hideSettingsRail, resetSettingsOverlayForTest } from '../../stores/settingsOverlay.svelte';
+import { hideSettingsRail } from '../../stores/settingsOverlay.svelte';
 import { resetForTest as resetProviderAccountsForTest } from '../../stores/providerAccounts.svelte';
-import { resetForTest as resetRateLimitsForTest, setProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
+import { setProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
 import { applyFonts } from '../../utils/fonts';
 import { applyFontScale } from '../../utils/zoom';
 import type { SansFont } from '../../types/settings';
@@ -59,9 +59,6 @@ beforeEach(async () => {
 afterEach(() => {
   cleanup();
   host.remove();
-  resetProviderAccountsForTest();
-  resetRateLimitsForTest();
-  resetSettingsOverlayForTest();
   setCompactLayoutForTest(false);
   applyFonts('geist', 'geist');
   applyFontScale(DEFAULT_TEXT_SIZE);
