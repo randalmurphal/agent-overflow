@@ -1,6 +1,6 @@
 package store
 
-// Migration v164 holds every change of the mirror after v162, which is
+// Migration v165 holds every change of the mirror after v162, which is
 // shipped: the tables it adds are new, and the tables it changes are a
 // cache nothing in a shipped build writes.
 //
@@ -34,7 +34,7 @@ package store
 //     reconcile_refused (the tracker refused the listing's rule, which
 //     starts the reconcile's wait). Only a completed reconcile clears it,
 //     and the other failure is cleared only by a read
-//     (RecordMirrorSyncAttempt). A failure stored before v164 stays in the
+//     (RecordMirrorSyncAttempt). A failure stored before v165 stays in the
 //     other slot, which the next read clears.
 //   - The issue record is the one record of an issue (StoreMirrorTickets):
 //     tracker_cache_issues.status_final_for is the update time whose
@@ -69,9 +69,9 @@ package store
 //
 // A root's read clock is seeded from the read times the root stores
 // (BeginMirrorRead): no table holds it.
-const trackerMirrorMigrationVersion = 164
+const trackerMirrorMigrationVersion = 165
 
-const trackerMirrorV164SQL = `
+const trackerMirrorV165SQL = `
 CREATE TABLE tracker_cache_open_tickets (
  root_id INTEGER NOT NULL REFERENCES tracker_cache_roots(id) ON DELETE CASCADE,
  issue_id TEXT NOT NULL CHECK(issue_id <> ''),

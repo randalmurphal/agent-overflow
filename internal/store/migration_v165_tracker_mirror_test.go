@@ -9,7 +9,7 @@ import (
 )
 
 // migrateMirrorFrom applies to db, made at v162, every migration through
-// v164.
+// v165.
 func migrateMirrorFrom(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for v := trackerMigrationVersion + 1; v <= trackerMirrorMigrationVersion; v++ {
@@ -25,7 +25,7 @@ func migrateMirrorFrom(t *testing.T, db *sql.DB) {
 }
 
 // A database that main's v162 filled with cards, memberships, boards, sync
-// rows, histories and documents upgrades through v164 with every row but
+// rows, histories and documents upgrades through v165 with every row but
 // the documents kept: its wall times are 0, so each scope is due once, an
 // issue that holds memberships gets the digest no set has, so its next
 // card write replaces them, and one without holds the empty digest; an
@@ -88,7 +88,7 @@ func TestTrackerMirrorMigration(t *testing.T) {
 }
 
 // The upgrade of a large mirror: 50,000 issues, half of them in a sprint
-// and half with a final history, and 200 documents. v164 rewrites each
+// and half with a final history, and 200 documents. v165 rewrites each
 // issue that holds memberships or a final history once, adds its columns
 // without rewriting the others, drops the documents with their table, and
 // builds the bodies' index over no body. The time is logged, measured on
@@ -110,13 +110,13 @@ func TestTrackerMirrorMigrationOfALargeMirror(t *testing.T) {
 		SELECT 1, issue_id, 905, 906, randomblob(16000) FROM tracker_cache_issues LIMIT 200`)
 	began := time.Now()
 	migrateMirrorFrom(t, db)
-	t.Logf("v163 and v164 over 50000 issues, 25000 sprint memberships and 200 documents: %v", time.Since(began))
+	t.Logf("v163 to v165 over 50000 issues, 25000 sprint memberships and 200 documents: %v", time.Since(began))
 	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issues WHERE status_final_for = 5`, "25000")
 	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issues WHERE sprint_set = x'00'`, "25000")
 	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issues WHERE body_updated_at > 0`, "0")
 }
 
-// v164 adds the open tickets of the mirror, one bind of an issue at a time.
+// v165 adds the open tickets of the mirror, one bind of an issue at a time.
 // Each refused statement below is valid but for the one rule it names; a
 // root's delete takes its rows, and the keep rule's probe and a root's
 // drain read the issue index.
@@ -153,7 +153,7 @@ func TestTrackerOpenTicketsTable(t *testing.T) {
 	}
 }
 
-// v164 adds the bodies of the issue records. Each refused statement below
+// v165 adds the bodies of the issue records. Each refused statement below
 // is valid but for the one rule it names; an issue's delete takes its
 // body, and the cap's eviction walks the bodies' index in its order.
 func TestTrackerIssueBodiesTable(t *testing.T) {

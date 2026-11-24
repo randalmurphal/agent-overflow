@@ -263,7 +263,7 @@ const (
 
 // MirrorSyncFailure is a scope's last failure; the zero value is none. At
 // is the order time of the read it followed and Wall the wall time a
-// person is shown (zero: stored before v164).
+// person is shown (zero: stored before v165).
 type MirrorSyncFailure struct {
 	At, Wall      int64
 	Kind, Message string
@@ -284,7 +284,7 @@ type MirrorReconcileFailure struct {
 // only a later read clears; ReconcileFailure is a board's last reconcile
 // failure, which only a later reconcile clears. ReadWall and
 // ReconciledWall are the wall times the read and the reconcile began (zero:
-// stored before v164): what the reconcile interval is measured from and
+// stored before v165): what the reconcile interval is measured from and
 // what a person is shown, where ReadAt and ReconciledAt are order times,
 // which order the writes.
 type MirrorSyncOutcome struct {
@@ -314,7 +314,7 @@ type MirrorSyncOutcome struct {
 // it in each page of the walk (MirrorRowPage.EstimateResetAt), so a walk
 // begun under an earlier definition stores no cursor. StructureWall, set
 // for a listed board, is the wall time the stored structure's read began
-// (zero: none stored, or stored before v164). HistoryDue, set for every
+// (zero: none stored, or stored before v165). HistoryDue, set for every
 // scope, reports that an issue the root keeps is due a history read at
 // the time GetMirrorSync was given (ListMirrorHistoryDue lists them), so
 // a caller deciding whether to run history reads nothing more.
