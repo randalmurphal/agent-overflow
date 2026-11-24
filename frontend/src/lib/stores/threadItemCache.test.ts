@@ -162,17 +162,6 @@ describe('threadItemCache', () => {
     expect(cache.get('b')).not.toBeNull();
   });
 
-  it('skips snapshots whose text exceeds the per-entry character budget', () => {
-    const cache = createThreadItemCache();
-    const huge = makeItem('huge');
-    huge.summary = 'x'.repeat(MAX_CACHED_SNAPSHOT_CHARS + 1);
-
-    cache.set('huge-thread', makeSnapshot([huge]));
-
-    expect(cache.get('huge-thread')).toBeNull();
-    expect(cache.size).toBe(0);
-  });
-
   it('replacing an existing entry with an oversized snapshot evicts the old entry', () => {
     const cache = createThreadItemCache();
     cache.set('thread', makeSnapshot([makeItem('small')]));

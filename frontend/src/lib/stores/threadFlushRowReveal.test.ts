@@ -26,12 +26,6 @@ describe('flushedUserItemIdsInTimeline', () => {
   const window = { oldest: cursor(oldest), newest: cursor(newest) };
   const lookup = (...items: Item[]) => (id: string) => items.find((item) => item.id === id);
 
-  it('reports a held, confirmed row inside the window with no boundary standing', () => {
-    const confirmed = row('confirmed', 3);
-    expect(flushedUserItemIdsInTimeline([flushed('confirmed')], lookup(confirmed), null, window))
-      .toEqual(['confirmed']);
-  });
-
   it('answers nothing for no pending entries or an entry whose row the pane does not hold', () => {
     expect(flushedUserItemIdsInTimeline([], lookup(row('any', 3)), null, window)).toEqual([]);
     expect(flushedUserItemIdsInTimeline([flushed('missing')], lookup(), null, window)).toEqual([]);

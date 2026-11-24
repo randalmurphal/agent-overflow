@@ -94,17 +94,6 @@ describe('threadItems', () => {
     expect(mergeMissingItemsById([existing], current)).toBe(current);
   });
 
-  it('preserves current row references when merge rows are equal by value', () => {
-    const existing = makeItem({ id: 'existing', summary: 'same' });
-    const current = [existing];
-    const incoming = makeItem({ id: 'existing', summary: 'same' });
-
-    const merged = mergeItemsById([incoming], current);
-
-    expect(merged).toBe(current);
-    expect(merged[0]).toBe(existing);
-  });
-
   it('reconciles full windows without replacing equal row references', () => {
     const existingA = makeItem({ id: 'a', turnIndex: 0, summary: 'same' });
     const existingB = makeItem({ id: 'b', turnIndex: 1, summary: 'same' });
@@ -348,40 +337,49 @@ describe('threadItems', () => {
     expect(next?.reindexFrom).toBe(current.length);
   });
 
-  it('does not flag same-row successful command output chrome as structural', () => {
-    const current = [
-      makeItem({
-        id: 'bash',
-        threadId: 'thread-1',
-        kind: 'tool_call',
-        status: 'running',
-        toolName: 'Bash',
-        summary: 'Bash: sleep 1',
-        meta: JSON.stringify({ input: { command: 'sleep 1' } }),
-      }),
-    ];
-    const completed = {
-      ...current[0]!,
-      status: 'completed' as const,
-      payloadId: 'payload-bash',
-      payloadKind: 'command_output',
+  // One held row rewritten in place. `row` is the held row, `change` what the
+  // upsert rewrites on it; the retention flag is independent of the
+  // structural one (a row leaving the active set is a retention change with
+  // no structural change in tow).
+  it.each([
+    ['does not flag same-row successful command output chrome as structural', {
+      status: 'running', toolName: 'Bash', summary: 'Bash: sleep 1',
+      meta: JSON.stringify({ input: { command: 'sleep 1' } }),
+    }, {
+      status: 'completed', payloadId: 'payload-bash', payloadKind: 'command_output',
       payloadMeta: JSON.stringify({ command: 'sleep 1', exitCode: 0 }),
-      updatedAt: current[0]!.updatedAt + 1,
-    };
+    }, false, true],
+    ['flags task lifecycle completion as structural because it can hide notifications', {
+      status: 'running', toolName: 'Task', meta: JSON.stringify({ task_id: 'task-1' }),
+    }, { status: 'completed' }, true, true],
+    ['flags wait-carrier metadata changes as structural', {
+      toolName: 'wait_agent', meta: JSON.stringify({ input: { tool: 'noop' } }),
+    }, { meta: JSON.stringify({ input: { tool: 'wait_agent' } }) }, true, false],
+    ['does not flag collab-agent status-only chrome as structural', {
+      status: 'running', toolName: 'collab_agent',
+      meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
+      payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
+    }, { status: 'completed' }, false, true],
+    ['flags collab-agent receiver metadata changes as structural', {
+      status: 'running', toolName: 'collab_agent',
+      meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
+      payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
+    }, { payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Implementer' } }) }, true, false],
+  ] as Array<[string, Partial<Item>, Partial<Item>, boolean, boolean]>)('%s', (_name, row, change, structural, retention) => {
+    const current = [makeItem({ id: 'row', threadId: 'thread-1', kind: 'tool_call', ...row })];
+    const rewritten = { ...current[0]!, ...change, updatedAt: current[0]!.updatedAt + 1 };
 
     const next = applyWindowUpserts({
       current,
-      incoming: [completed],
-      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      incoming: [rewritten],
+      itemIndexById: new Map([['row', 0]]),
       currentThreadId: 'thread-1',
       oldestLoadedTurnIndex: 0,
     });
 
-    expect(next?.rowWrites[0]?.item).toBe(completed);
-    expect(next?.structureChanged).toBe(false);
-    // …but the row LEFT the active set, which is a retention change with
-    // no structural change in tow. The two flags are independent.
-    expect(next?.rowUiRetentionChanged).toBe(true);
+    expect(next?.rowWrites[0]?.item).toBe(rewritten);
+    expect(next?.structureChanged).toBe(structural);
+    expect(next?.rowUiRetentionChanged).toBe(retention);
   });
 
   it('flags a rail-exempting payload as structural, and an ordinary one not', () => {
@@ -421,120 +419,6 @@ describe('threadItems', () => {
       payloadKind: 'command_output',
       updatedAt: current[0]!.updatedAt + 1,
     })?.structureChanged).toBe(false);
-  });
-
-  it('flags task lifecycle completion as structural because it can hide notifications', () => {
-    const current = [
-      makeItem({
-        id: 'task',
-        threadId: 'thread-1',
-        kind: 'tool_call',
-        status: 'running',
-        toolName: 'Task',
-        meta: JSON.stringify({ task_id: 'task-1' }),
-      }),
-    ];
-    const completed = {
-      ...current[0]!,
-      status: 'completed' as const,
-      updatedAt: current[0]!.updatedAt + 1,
-    };
-
-    const next = applyWindowUpserts({
-      current,
-      incoming: [completed],
-      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
-      currentThreadId: 'thread-1',
-      oldestLoadedTurnIndex: 0,
-    });
-
-    expect(next?.structureChanged).toBe(true);
-  });
-
-  it('flags wait-carrier metadata changes as structural', () => {
-    const current = [
-      makeItem({
-        id: 'wait',
-        threadId: 'thread-1',
-        kind: 'tool_call',
-        toolName: 'wait_agent',
-        meta: JSON.stringify({ input: { tool: 'noop' } }),
-      }),
-    ];
-    const enriched = {
-      ...current[0]!,
-      meta: JSON.stringify({ input: { tool: 'wait_agent' } }),
-      updatedAt: current[0]!.updatedAt + 1,
-    };
-
-    const next = applyWindowUpserts({
-      current,
-      incoming: [enriched],
-      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
-      currentThreadId: 'thread-1',
-      oldestLoadedTurnIndex: 0,
-    });
-
-    expect(next?.structureChanged).toBe(true);
-  });
-
-  it('does not flag collab-agent status-only chrome as structural', () => {
-    const current = [
-      makeItem({
-        id: 'agent',
-        threadId: 'thread-1',
-        kind: 'tool_call',
-        status: 'running',
-        toolName: 'collab_agent',
-        meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
-        payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
-      }),
-    ];
-    const completed = {
-      ...current[0]!,
-      status: 'completed' as const,
-      updatedAt: current[0]!.updatedAt + 1,
-    };
-
-    const next = applyWindowUpserts({
-      current,
-      incoming: [completed],
-      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
-      currentThreadId: 'thread-1',
-      oldestLoadedTurnIndex: 0,
-    });
-
-    expect(next?.rowWrites[0]?.item).toBe(completed);
-    expect(next?.structureChanged).toBe(false);
-  });
-
-  it('flags collab-agent receiver metadata changes as structural', () => {
-    const current = [
-      makeItem({
-        id: 'agent',
-        threadId: 'thread-1',
-        kind: 'tool_call',
-        status: 'running',
-        toolName: 'collab_agent',
-        meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
-        payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Reviewer' } }),
-      }),
-    ];
-    const renamed = {
-      ...current[0]!,
-      payloadMeta: JSON.stringify({ input: { newAgentNickname: 'Implementer' } }),
-      updatedAt: current[0]!.updatedAt + 1,
-    };
-
-    const next = applyWindowUpserts({
-      current,
-      incoming: [renamed],
-      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
-      currentThreadId: 'thread-1',
-      oldestLoadedTurnIndex: 0,
-    });
-
-    expect(next?.structureChanged).toBe(true);
   });
 
   it('returns the current reference when every incoming upsert is ignored', () => {

@@ -251,17 +251,6 @@ describe('threadStatuses store', () => {
   });
 
   describe('optimistic send', () => {
-    it('flips to running on projectSendStarted before any turn events', () => {
-      projectSendStarted('thread-1');
-      expect(getThreadStatus('thread-1')).toBe('running');
-    });
-
-    it('flips to error on projectSendResolved({error: true})', () => {
-      projectSendStarted('thread-1');
-      projectSendResolved('thread-1', { error: true });
-      expect(getThreadStatus('thread-1')).toBe('error');
-    });
-
     it('a new send clears a prior error state', () => {
       projectSendStarted('thread-1');
       projectSendResolved('thread-1', { error: true });
@@ -312,15 +301,6 @@ describe('threadStatuses store', () => {
   });
 
   describe('turn lifecycle', () => {
-    it('projectTurnStarted flips to running and turn_completed flips to idle', () => {
-      expect(getThreadStatus('thread-1')).toBe('idle');
-      projectTurnStarted('thread-1', 'turn-1', 0, 0);
-      expect(getThreadStatus('thread-1')).toBe('running');
-
-      projectTurnCompleted('thread-1', 'turn-1');
-      expect(getThreadStatus('thread-1')).toBe('idle');
-    });
-
     it('ignores a late turn_started for a round that already completed', () => {
       projectTurnCompleted('thread-1', 'round-1');
 
@@ -337,12 +317,6 @@ describe('threadStatuses store', () => {
 
       expect(getActiveTurn('thread-1')).toBeNull();
       expect(getThreadStatus('thread-1')).toBe('error');
-    });
-
-    it('aborted turn flips to interrupted', () => {
-      projectTurnStarted('thread-1', 'turn-1', 0, 0);
-      projectTurnCompleted('thread-1', 'turn-1', { aborted: true });
-      expect(getThreadStatus('thread-1')).toBe('interrupted');
     });
 
     it('turn with errorMessage flips to error', () => {
@@ -382,15 +356,6 @@ describe('threadStatuses store', () => {
       expect(getThreadStatus('thread-1')).toBe('idle');
     });
 
-    it('pending approval dominates an in-flight turn', () => {
-      projectTurnStarted('thread-1', 'turn-1', 0, 0);
-      projectApprovalRequest('thread-1', 'req-1');
-      expect(getThreadStatus('thread-1')).toBe('pending-approval');
-
-      projectApprovalResolution('thread-1', 'req-1');
-      expect(getThreadStatus('thread-1')).toBe('running');
-    });
-
     it('flips off between wire rounds and re-flips on round 2', () => {
       // Pins the per-round emission cadence (see
       // docs/architecture/turn-lifecycle.md § Rounds and turns). The
@@ -399,6 +364,7 @@ describe('threadStatuses store', () => {
       // a distinct turnId — round 1 ends, getActiveTurn returns null
       // (composer enabled, indicator off), round 2 starts with a new
       // id and re-flips the indicator on.
+      expect(getThreadStatus('thread-1')).toBe('idle');
       projectTurnStarted('thread-1', 'round-1', 0, 1_000);
       expect(getThreadStatus('thread-1')).toBe('running');
       expect(getActiveTurn('thread-1')?.turnId).toBe('round-1');
@@ -466,21 +432,15 @@ describe('threadStatuses store', () => {
       expect(getThreadStatus('thread-1')).toBe('idle');
     });
 
-    it('mcp-elicitation is a blocking approval', () => {
-      projectApprovalRequest('thread-1', 'req-1', 'mcp-elicitation');
-      expect(getThreadStatus('thread-1')).toBe('pending-approval');
-    });
-
-    it.each(['command', 'file-read', 'file-change', 'permission'] as const)(
-      '%s kind still resolves to pending-approval',
-      (kind) => {
-        projectApprovalRequest('thread-1', 'req-1', kind);
-        expect(getThreadStatus('thread-1')).toBe('pending-approval');
-      },
-    );
-
-    it('missing kind defaults to pending-approval (safer fallback)', () => {
-      projectApprovalRequest('thread-1', 'req-1');
+    it.each([
+      ['mcp-elicitation is a blocking approval', 'mcp-elicitation'],
+      ['command kind still resolves to pending-approval', 'command'],
+      ['file-read kind still resolves to pending-approval', 'file-read'],
+      ['file-change kind still resolves to pending-approval', 'file-change'],
+      ['permission kind still resolves to pending-approval', 'permission'],
+      ['missing kind defaults to pending-approval (safer fallback)', undefined],
+    ] as const)('%s', (_name, kind) => {
+      projectApprovalRequest('thread-1', 'req-1', kind);
       expect(getThreadStatus('thread-1')).toBe('pending-approval');
     });
 

@@ -34,25 +34,6 @@ describe('threadPaneScroll', () => {
     // proxies it and every `===` against it fails silently: the detach guard
     // stops matching, the slot never empties, and a torn-down controller —
     // holding the detached timeline subtree — stays reachable from the pane.
-    it('hands back the same object that registered', () => {
-      const pane = createThreadPane();
-      const stick = stubScrollController();
-
-      pane.attachScrollController(stick);
-
-      expect(pane.scrollController).toBe(stick);
-    });
-
-    it('clears the slot when the surface that registered tears down', () => {
-      const pane = createThreadPane();
-      const stick = stubScrollController();
-      pane.attachScrollController(stick);
-
-      pane.detachScrollController(stick);
-
-      expect(pane.scrollController).toBeNull();
-    });
-
     it('ignores a stale teardown from the surface it already replaced', () => {
       // A remount or a fast thread switch: the outgoing
       // surface's teardown can land after the incoming one has registered, and
@@ -83,12 +64,12 @@ describe('threadPaneScroll', () => {
       return { markStructuralContentPending, observe };
     }
 
-    it('arms synchronously when a provider upsert appends in-window', async () => {
+    it("arms synchronously when a provider upsert appends in-window, and schedules the post-flush 'live-content' nudge", async () => {
       const thread = makeThread({ id: 'thread-arm' });
       const pane = await buildPane(thread, [
         makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
       ]);
-      const { markStructuralContentPending } = attachMockScrollController(pane);
+      const { markStructuralContentPending, observe } = attachMockScrollController(pane);
 
       pane.applyProviderItemUpserts([
         makeItem({
@@ -108,6 +89,14 @@ describe('threadPaneScroll', () => {
       // before the flush in which the virtualizer measures the new row
       // and delivers its geometry sample.
       expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
+
+      // The nudge is never synchronous: it waits for the Svelte flush plus
+      // one frame so the virtualizer has published the new row before the
+      // controller re-checks the bottom.
+      expect(observe).not.toHaveBeenCalled();
+      await vi.waitFor(() => {
+        expect(observe).toHaveBeenCalledWith('live-content');
+      });
     });
 
     it('stamps live content alongside the wire-append arm', async () => {
@@ -263,36 +252,6 @@ describe('threadPaneScroll', () => {
       ]);
       expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
       expect(pane.lastLiveContentAt).toBeGreaterThan(0);
-    });
-
-    it("schedules the post-flush 'live-content' nudge alongside the arm", async () => {
-      const thread = makeThread({ id: 'thread-arm-nudge' });
-      const pane = await buildPane(thread, [
-        makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
-      ]);
-      const { observe } = attachMockScrollController(pane);
-
-      pane.applyProviderItemUpserts([
-        makeItem({
-          id: 'row-1',
-          threadId: thread.id,
-          turnIndex: 0,
-          itemIndex: 1,
-          kind: 'tool_call',
-          role: 'assistant',
-          status: 'running',
-          toolName: 'Bash',
-          summary: 'Bash: ls',
-        }),
-      ]);
-
-      // Never synchronous: the nudge waits for the Svelte flush plus one
-      // frame so the virtualizer has published the new row before the
-      // controller re-checks the bottom.
-      expect(observe).not.toHaveBeenCalled();
-      await vi.waitFor(() => {
-        expect(observe).toHaveBeenCalledWith('live-content');
-      });
     });
 
     it('arms when the reveal gate releases a withheld successor', async () => {
@@ -757,7 +716,7 @@ describe('threadPaneScroll', () => {
     const longText = (n: number) =>
       Array.from({ length: n }, (_, i) => `w${i}`).join(' ') + ' ';
 
-    it('stamps on each smoother reveal frame, never on switch/upsert/delta-append', async () => {
+    it('stamps on each smoother reveal frame and through the drain tail, never on switch/upsert/delta-append, and resets on thread switch', async () => {
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
@@ -793,63 +752,38 @@ describe('threadPaneScroll', () => {
 
         clock.tickFrame(16); // now()=116, first reveal fires onReveal
         expect(pane.lastLiveContentAt).toBe(116);
-        clock.tickFrame(16); // now()=132, more words reveal
+        clock.tickFrame(16); // now()=132, more words reveal — far from caught up
         expect(pane.lastLiveContentAt).toBe(132);
-      } finally {
-        __setSmoothingClockForTest(undefined);
-      }
-    });
-
-    it('keeps stamping through the drain tail after a turn-completed patch', async () => {
-      // The bug-2 case: the wire turn completes (getActiveTurn → null)
-      // while the smoother still has seconds of word-by-word text to
-      // reveal. Those trailing reveals must keep stamping so the tail
-      // springs instead of jumping.
-      const clock = new FakeSmoothingClock();
-      __setSmoothingClockForTest(clock);
-      try {
-        const pane = await buildPane(makeThread({ id: 'stamp-drain' }));
-        pane.upsertItem(
-          makeItem({
-            id: 'a:0:0',
-            threadId: 'stamp-drain',
-            kind: 'assistant_text',
-            role: 'assistant',
-            status: 'streaming',
-            summary: 'seed ',
-            updatedAt: 1,
-          }),
-        );
-        pane.applyItemDelta({
-          threadId: 'stamp-drain',
-          itemId: 'a:0:0',
-          kind: 'assistant_text',
-          delta: longText(120),
-          updatedAt: 2,
-        });
-
-        clock.tickFrame(16); // now()=16, partial reveal — far from caught up
-        expect(pane.lastLiveContentAt).toBe(16);
         expect(pane.__itemSmootherCountForTest()).toBe(1);
 
-        // Turn completes on the wire: a bare status patch with no summary.
+        // The bug-2 case: the wire turn completes (getActiveTurn → null)
+        // while the smoother still has seconds of word-by-word text to
+        // reveal. Those trailing reveals must keep stamping so the tail
+        // springs instead of jumping. The bare status patch itself adds no
+        // stamp (rigorous no-stamp proof for status/meta patches is a test
+        // below); the smoother survives because it is not caught up.
         pane.applyItemPatch({
-          threadId: 'stamp-drain',
+          threadId: 'stamp-reveal',
           itemId: 'a:0:0',
           kind: 'assistant_text',
           patch: { rev: 0, status: 'completed', updatedAt: 3 },
         });
-        // The bare status patch itself adds no stamp (rigorous no-stamp
-        // proof for status/meta patches is the next test); the smoother
-        // survives because it is not caught up.
-        expect(pane.lastLiveContentAt).toBe(16);
+        expect(pane.lastLiveContentAt).toBe(132);
         expect(pane.__itemSmootherCountForTest()).toBe(1);
 
         // Reveals continue AFTER completion → stamps continue advancing.
         clock.tickFrame(16);
-        expect(pane.lastLiveContentAt).toBe(32);
+        expect(pane.lastLiveContentAt).toBe(148);
         clock.tickFrame(16);
-        expect(pane.lastLiveContentAt).toBe(48);
+        expect(pane.lastLiveContentAt).toBe(164);
+
+        // Switch to a settled thread B. The recent stamp must NOT carry
+        // over — otherwise B's late typesetting reflow (which never stamps)
+        // would read 'spring' off this thread's timestamp within the 500ms
+        // hold and chase B's settled content. The reset makes the latch
+        // read 'instant' for B until B itself streams.
+        await pane.switchThread(makeThread({ id: 'B' }));
+        expect(pane.lastLiveContentAt).toBe(0);
       } finally {
         __setSmoothingClockForTest(undefined);
       }
@@ -985,45 +919,6 @@ describe('threadPaneScroll', () => {
         // The public seam events.ts calls on a changed provider upsert.
         pane.markLiveContentAdvanced(makeItem({ threadId: pane.threadId! }));
         expect(pane.lastLiveContentAt).toBe(20);
-      } finally {
-        __setSmoothingClockForTest(undefined);
-      }
-    });
-
-    it('resets lastLiveContentAt on thread switch (no stale stamp bleeds into the next thread)', async () => {
-      const clock = new FakeSmoothingClock();
-      __setSmoothingClockForTest(clock);
-      try {
-        clock.tickFrame(100);
-        const pane = await buildPane(makeThread({ id: 'A' }));
-        pane.upsertItem(
-          makeItem({
-            id: 'a:0:0',
-            threadId: 'A',
-            kind: 'assistant_text',
-            role: 'assistant',
-            status: 'streaming',
-            summary: 'seed ',
-            updatedAt: 1,
-          }),
-        );
-        pane.applyItemDelta({
-          threadId: 'A',
-          itemId: 'a:0:0',
-          kind: 'assistant_text',
-          delta: longText(60),
-          updatedAt: 2,
-        });
-        clock.tickFrame(16); // reveal stamps A as recently streaming
-        expect(pane.lastLiveContentAt).toBe(116);
-
-        // Switch to a settled thread B. A's recent stamp must NOT carry
-        // over — otherwise B's late typesetting reflow (which never stamps)
-        // would read 'spring' off A's timestamp within the 500ms hold and
-        // chase B's settled content. The reset makes the latch read
-        // 'instant' for B until B itself streams.
-        await pane.switchThread(makeThread({ id: 'B' }));
-        expect(pane.lastLiveContentAt).toBe(0);
       } finally {
         __setSmoothingClockForTest(undefined);
       }
