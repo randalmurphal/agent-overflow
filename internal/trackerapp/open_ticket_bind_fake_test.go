@@ -20,9 +20,9 @@ import (
 // ticket while it closes and opens again, against the fake Jira site.
 
 // bindGate is a store that records every ticket write and, for each frame
-// armed (hold), holds the next BeginMirrorRead whose stack names it until
-// released; the first refuse drops of an open ticket fail, and the first
-// keep of refuseKeep.
+// armed, holds until released the next BeginMirrorRead (hold) or
+// StoreMirrorTickets (holdStore) whose stack names it; the first refuse
+// drops of an open ticket fail, and the first keep of refuseKeep.
 type bindGate struct {
 	*store.Store
 	mu         sync.Mutex
@@ -32,12 +32,14 @@ type bindGate struct {
 	refuseKeep string
 }
 
-// gateHold is one armed hold of a bindGate: arrived closes when a read
-// arrives at it, which then waits for release.
+// gateHold is one armed hold of a bindGate: arrived closes when a call
+// arrives at it, which then waits for release; done closes when the held
+// call returned.
 type gateHold struct {
-	frame            string
-	arrived, release chan struct{}
-	once             sync.Once
+	frame                  string
+	store                  bool
+	arrived, release, done chan struct{}
+	once                   sync.Once
 }
 
 // open releases the read h holds, once.
@@ -51,8 +53,14 @@ type ticketWrite struct {
 }
 
 // hold arms a hold of the next BeginMirrorRead whose stack names frame.
-func (g *bindGate) hold(t *testing.T, frame string) *gateHold {
-	h := &gateHold{frame: frame, arrived: make(chan struct{}), release: make(chan struct{})}
+func (g *bindGate) hold(t *testing.T, frame string) *gateHold { return g.arm(t, frame, false) }
+
+// holdStore arms a hold of the next StoreMirrorTickets whose stack names
+// frame.
+func (g *bindGate) holdStore(t *testing.T, frame string) *gateHold { return g.arm(t, frame, true) }
+
+func (g *bindGate) arm(t *testing.T, frame string, store bool) *gateHold {
+	h := &gateHold{frame: frame, store: store, arrived: make(chan struct{}), release: make(chan struct{}), done: make(chan struct{})}
 	t.Cleanup(h.open)
 	g.mu.Lock()
 	g.holds = append(g.holds, h)
@@ -60,10 +68,13 @@ func (g *bindGate) hold(t *testing.T, frame string) *gateHold {
 	return h
 }
 
-func (g *bindGate) BeginMirrorRead(root, now int64) (store.MirrorRead, error) {
+// wait holds the caller at the first armed hold of its kind whose frame
+// its stack names, until released, and returns the hold (nil for none),
+// whose done the caller closes when its call returned.
+func (g *bindGate) wait(store bool) *gateHold {
 	stack := string(debug.Stack())
 	g.mu.Lock()
-	i := slices.IndexFunc(g.holds, func(h *gateHold) bool { return strings.Contains(stack, h.frame) })
+	i := slices.IndexFunc(g.holds, func(h *gateHold) bool { return h.store == store && strings.Contains(stack, h.frame) })
 	var h *gateHold
 	if i >= 0 {
 		h = g.holds[i]
@@ -74,11 +85,21 @@ func (g *bindGate) BeginMirrorRead(root, now int64) (store.MirrorRead, error) {
 		close(h.arrived)
 		<-h.release
 	}
+	return h
+}
+
+func (g *bindGate) BeginMirrorRead(root, now int64) (store.MirrorRead, error) {
+	if h := g.wait(false); h != nil {
+		defer close(h.done)
+	}
 	return g.Store.BeginMirrorRead(root, now)
 }
 
 func (g *bindGate) StoreMirrorTickets(root, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog,
 	opened, read store.MirrorRead) (store.MirrorTicketsWrite, error) {
+	if h := g.wait(true); h != nil {
+		defer close(h.done)
+	}
 	out, err := g.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
 	if err == nil {
 		g.mu.Lock()
@@ -260,6 +281,51 @@ func TestAReadOfAClosedTicketWhoseDropIsOwedStoresNoBody(t *testing.T) {
 	s.svc.payOwedDrops("test")
 	if n := s.openTicketRows(t); n != 1 {
 		t.Fatalf("%d open-ticket rows after both closed; want 10102's", n)
+	}
+}
+
+// A round's check by card of an open ticket (a ticket write with no body)
+// is held at the store; the ticket closes and opens again, and the new
+// ticket's first read is held after its keep, before it stores anything.
+// The old check then lands: it records no opening on the issue's body,
+// so the body's opening is not the reopened ticket's until the reopened
+// ticket's own read stores it.
+func TestACheckByCardOfAClosedTicketRecordsNoOpeningForTheReopenedOne(t *testing.T) {
+	t.Parallel()
+	s, conn, gate, oldPump, old := bindScenario(t)
+	oldBind := s.svc.bindOf(oldPump)
+	root := must[int64](t)(rootOf(s, conn))
+	check := gate.holdStore(t, "(*run).ticketCards(")
+	s.svc.subMu.Lock()
+	s.svc.readNowLocked(oldPump)
+	s.svc.subMu.Unlock()
+	waitClosed(t, "the round's check by card", check.arrived)
+	s.closeTicket(t, conn, old, "10101")
+	opening := gate.hold(t, "(*run).verifiedDetails(")
+	reopened := must[TicketSubscription](t)(s.svc.SubscribeTicket(conn.ID, "10101"))
+	waitClosed(t, "the reopened ticket's first read", opening.arrived)
+	before := must[store.MirrorBody](t)(bodyOrFail(t, s, root))
+	check.open()
+	waitClosed(t, "the round's check by card to return", check.done)
+	gate.mu.Lock()
+	last := gate.writes[len(gate.writes)-1].tickets
+	gate.mu.Unlock()
+	if i := slices.IndexFunc(last, func(tk store.MirrorTicket) bool { return tk.Card.IssueID == "10101" }); i < 0 ||
+		last[i].Body != nil || last[i].Bind != oldBind {
+		t.Fatalf("the last ticket write %+v; want the closed ticket's check by card under bind %d", last, oldBind)
+	}
+	if mid := must[store.MirrorBody](t)(bodyOrFail(t, s, root)); mid.OpenedAt != before.OpenedAt {
+		t.Fatalf("the closed ticket's check by card moved the body's opening from %d to %d before the reopened ticket wrote",
+			before.OpenedAt, mid.OpenedAt)
+	}
+	opening.open()
+	settled(t, s.svc)
+	quiet(t, s.svc)
+	if v := must[TicketView](t)(s.svc.TicketDetail(reopened.ID)); !v.Loaded || v.Failure != nil {
+		t.Fatalf("the reopened ticket shows %+v", v)
+	}
+	if after := must[store.MirrorBody](t)(bodyOrFail(t, s, root)); after.OpenedAt <= before.OpenedAt {
+		t.Fatalf("the reopened ticket's read left the body's opening at %d; want it later than %d", after.OpenedAt, before.OpenedAt)
 	}
 }
 
