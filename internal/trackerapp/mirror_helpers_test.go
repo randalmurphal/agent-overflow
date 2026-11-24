@@ -422,7 +422,7 @@ func (k keepsLost) KeepMirrorTicket(root int64, issue string, session, pump int6
 	if err != nil {
 		return store.MirrorBind{}, false, err
 	}
-	if _, err := k.Store.DropMirrorTicket(session, pump); err != nil {
+	if _, err := k.DropMirrorTicket(session, pump); err != nil {
 		return store.MirrorBind{}, false, err
 	}
 	return bind, false, nil
