@@ -179,8 +179,8 @@ func TestSendMessagePersistsUserItemAndErrorWhenLazyStartFails(t *testing.T) {
 	}
 
 	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "still visible", SendMessageOptions{})
-	if err == nil || !strings.Contains(err.Error(), "provider boot exploded") {
-		t.Fatalf("SendMessage() error = %v, want lazy-start failure", err)
+	if err == nil || !strings.Contains(err.Error(), "start session") || !strings.Contains(err.Error(), "provider boot exploded") {
+		t.Fatalf("SendMessage() error = %v, want the wrapped start-session failure", err)
 	}
 
 	items, err := app.store.ListItems(thread.ID)
@@ -251,91 +251,6 @@ func TestSendMessageWithOptionsAppliesRuntimeModeBeforeLazyStart(t *testing.T) {
 	fired := emissionsFor(emissions, "thread:runtime_mode_changed")
 	if len(fired) != 1 {
 		t.Fatalf("runtime_mode_changed emissions = %d, want 1", len(fired))
-	}
-}
-
-// Regression: implement-time plan→chat flip must be atomic with
-// persisting the user message. Splitting the two on the frontend used
-// to leave plan-mode threads stuck reading "chat" when send failed.
-func TestSendMessageWithOptionsImplementSwitchesPlanModeToChat(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-implement-plan-mode")
-	thread.Provider = string(provider.Claude)
-	thread.Mode = "plan"
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	now := time.Now().UnixMilli()
-	if err := app.store.InsertItemWithPayload(store.Item{
-		ID:        "plan-item",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "tool_call",
-		Role:      "assistant",
-		Status:    "completed",
-		Summary:   "Plan",
-		PayloadID: "plan-payload",
-		ToolName:  "plan",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, store.Payload{
-		ID:        "plan-payload",
-		Kind:      "proposed_plan",
-		Meta:      `{"title":"Fix plan","preview":"do it","lineCount":1,"charCount":5}`,
-		Data:      []byte("# Fix plan\n\nDo it."),
-		CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("seed plan: %v", err)
-	}
-	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
-		t.Fatalf("ensure plan state: %v", err)
-	}
-
-	sess, err := claude.NewSession(
-		context.Background(),
-		thread.ID,
-		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("NewSession() error = %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
-
-	updated, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
-		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
-	})
-	if err != nil {
-		t.Fatalf("SendMessageWithOptions() error = %v", err)
-	}
-	if updated.Mode != "chat" {
-		t.Errorf("returned thread mode = %q, want chat", updated.Mode)
-	}
-
-	// applyProposedPlanAcceptance fires synchronously between PersistItem
-	// and sendToProvider, so the implemented mark is durable by the time
-	// SendMessageWithOptions returns. No wire-init simulation is needed.
-	stored, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if stored.Mode != "chat" {
-		t.Errorf("stored thread mode = %q, want chat", stored.Mode)
-	}
-	if stored.HasActionableProposedPlan {
-		t.Error("stored thread.HasActionableProposedPlan = true, want false (plan was just implemented)")
-	}
-	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
-	if err != nil {
-		t.Fatalf("GetProposedPlanState: %v", err)
-	}
-	if !found || state.ImplementedAt == 0 {
-		t.Errorf("plan state = %+v, want implemented_at > 0", state)
 	}
 }
 
@@ -419,109 +334,20 @@ func TestSendMessageWithOptionsImplementSendFailureKeepsPlanAccepted(t *testing.
 	}
 }
 
-// Pins the re-click contract: a second implement-the-plan send against
-// the same plan must NOT overwrite the original attribution. The user
-// might click "implement" twice (network retry, double-click); the
-// mark is gated on `WHERE implemented_at = 0` so the first click owns
-// the badge forever.
-func TestSendMessageWithOptionsImplementOnAlreadyImplementedPlanKeepsFirstAttribution(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-implement-replay")
-	thread.Provider = string(provider.Claude)
-	thread.Mode = "plan"
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	now := time.Now().UnixMilli()
-	if err := app.store.InsertItemWithPayload(store.Item{
-		ID:        "plan-item",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "tool_call",
-		Role:      "assistant",
-		Status:    "completed",
-		Summary:   "Plan",
-		PayloadID: "plan-payload",
-		ToolName:  "plan",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, store.Payload{
-		ID:        "plan-payload",
-		Kind:      "proposed_plan",
-		Meta:      `{"title":"Plan","preview":"x","lineCount":1,"charCount":1}`,
-		Data:      []byte("# Plan"),
-		CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("seed plan: %v", err)
-	}
-	if _, err := app.store.EnsureProposedPlanState(thread.ID, "plan-item", now); err != nil {
-		t.Fatalf("ensure plan state: %v", err)
-	}
-
-	sess, err := claude.NewSession(
-		context.Background(),
-		thread.ID,
-		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("NewSession() error = %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
-
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
-		SendID: "first-implementation", ReconcileBySendID: true,
-		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
-	}); err != nil {
-		t.Fatalf("first SendMessageWithOptions() error = %v", err)
-	}
-
-	first, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
-	if err != nil || !found {
-		t.Fatalf("first GetProposedPlanState err=%v found=%v", err, found)
-	}
-	if first.ImplementedAt == 0 || first.ImplementedByItemID == "" {
-		t.Fatalf("first send did not mark plan: %+v", first)
-	}
-
-	// The passthrough mock emits no echoes/results. Complete its first input
-	// so the second click exercises persisted plan attribution, not only
-	// queue admission while the first implementation is still pending.
-	acknowledgeMockClaudeSend(t, app, thread.ID)
-
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement again.", SendMessageOptions{
-		SendID: "second-implementation", ReconcileBySendID: true,
-		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
-	}); err != nil {
-		t.Fatalf("second SendMessageWithOptions() error = %v", err)
-	}
-
-	if _, found, err := app.store.FindUserTextItemBySendID(thread.ID, "second-implementation"); err != nil || !found {
-		t.Fatalf("second implementation did not persist: found=%v err=%v", found, err)
-	}
-
-	second, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
-	if err != nil || !found {
-		t.Fatalf("second GetProposedPlanState err=%v found=%v", err, found)
-	}
-	if second.ImplementedAt != first.ImplementedAt {
-		t.Errorf("ImplementedAt = %d, want %d (must not be overwritten by re-click)", second.ImplementedAt, first.ImplementedAt)
-	}
-	if second.ImplementedByItemID != first.ImplementedByItemID {
-		t.Errorf("ImplementedByItemID = %q, want %q (re-click must not steal attribution)", second.ImplementedByItemID, first.ImplementedByItemID)
-	}
-}
-
+// An implement-the-plan send on a plan-mode thread flips the thread to chat
+// atomically with persisting the user message (splitting the two on the
+// frontend used to leave plan-mode threads stuck reading "chat" when send
+// failed), records the plan on the user row, and marks the plan implemented
+// by that row. A second implement send against the same plan (a network
+// retry, a double-click) records the plan on its own row but must NOT
+// overwrite the original attribution: the mark is gated on
+// `WHERE implemented_at = 0` so the first click owns the badge forever.
 func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-source-plan")
 	thread.Provider = string(provider.Claude)
+	thread.Mode = "plan"
 	thread.WorkspacePath = t.TempDir()
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -566,11 +392,36 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 	t.Cleanup(func() { _ = sess.Close() })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
-	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
+	updated, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
+		SendID: "first-implementation", ReconcileBySendID: true,
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	})
 	if err != nil {
 		t.Fatalf("SendMessageWithOptions() error = %v", err)
+	}
+	if updated.Mode != "chat" {
+		t.Errorf("returned thread mode = %q, want chat", updated.Mode)
+	}
+
+	// applyProposedPlanAcceptance fires synchronously between PersistItem
+	// and sendToProvider, so the implemented mark is durable by the time
+	// SendMessageWithOptions returns. No wire-init simulation is needed.
+	stored, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if stored.Mode != "chat" {
+		t.Errorf("stored thread mode = %q, want chat", stored.Mode)
+	}
+	if stored.HasActionableProposedPlan {
+		t.Error("stored thread.HasActionableProposedPlan = true, want false (plan was just implemented)")
+	}
+	first, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil || !found {
+		t.Fatalf("first GetProposedPlanState err=%v found=%v", err, found)
+	}
+	if first.ImplementedAt == 0 || first.ImplementedByItemID == "" {
+		t.Fatalf("first send did not mark plan: %+v", first)
 	}
 
 	items, err := app.store.ListItems(thread.ID)
@@ -606,12 +457,18 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 		t.Fatalf("plan meta = %v, want implemented by %s", plans, userItem.ID)
 	}
 
+	// The passthrough mock emits no echoes/results. Complete its first input
+	// so the second click exercises persisted plan attribution, not only
+	// queue admission while the first implementation is still pending.
 	acknowledgeMockClaudeSend(t, app, thread.ID)
-	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan again.", SendMessageOptions{
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan again.", SendMessageOptions{
+		SendID: "second-implementation", ReconcileBySendID: true,
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("second SendMessageWithOptions() error = %v", err)
+	}
+	if _, found, err := app.store.FindUserTextItemBySendID(thread.ID, "second-implementation"); err != nil || !found {
+		t.Fatalf("second implementation did not persist: found=%v err=%v", found, err)
 	}
 
 	items, err = app.store.ListItems(thread.ID)
@@ -641,15 +498,15 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 		t.Fatalf("second sourceProposedPlan = %+v, want plan-item", secondMeta.SourceProposedPlan)
 	}
 
-	state, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
-	if err != nil {
-		t.Fatalf("GetProposedPlanState after second send: %v", err)
+	second, found, err := app.store.GetProposedPlanState(thread.ID, "plan-item")
+	if err != nil || !found {
+		t.Fatalf("second GetProposedPlanState err=%v found=%v", err, found)
 	}
-	if !found {
-		t.Fatal("plan state missing after second send")
+	if second.ImplementedAt != first.ImplementedAt {
+		t.Errorf("ImplementedAt = %d, want %d (must not be overwritten by re-click)", second.ImplementedAt, first.ImplementedAt)
 	}
-	if state.ImplementedByItemID != userItem.ID {
-		t.Fatalf("ImplementedByItemID after second send = %q, want first implementation item %q", state.ImplementedByItemID, userItem.ID)
+	if second.ImplementedByItemID != userItem.ID || first.ImplementedByItemID != userItem.ID {
+		t.Errorf("ImplementedByItemID = %q then %q, want the first implementation item %q (re-click must not steal attribution)", first.ImplementedByItemID, second.ImplementedByItemID, userItem.ID)
 	}
 	threadAfterSecondSend, err := app.store.GetThread(thread.ID)
 	if err != nil {
@@ -726,27 +583,6 @@ func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.
 	}
 	if !found || state.ImplementedByThreadID != targetThread.ID || state.ImplementedByItemID != "user:0" {
 		t.Fatalf("state = %+v, want implemented by target user turn", state)
-	}
-}
-
-func TestSendMessageReturnsLazyStartError(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-send-lazy-start-fail")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	app.startSessionFn = func(threadID string) error {
-		return fmt.Errorf("synthetic start failure")
-	}
-
-	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Hello", SendMessageOptions{})
-	if err == nil {
-		t.Fatal("SendMessage() error = nil, want lazy-start error")
-	}
-	if !strings.Contains(err.Error(), "start session") || !strings.Contains(err.Error(), "synthetic start failure") {
-		t.Fatalf("SendMessage() error = %v, want wrapped start-session failure", err)
 	}
 }
 
@@ -880,71 +716,11 @@ func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 		t.Fatalf("first user item TurnIndex = %d, want 0", userItem.TurnIndex)
 	}
 
-	if _, ok, err := app.store.GetMessageAnchor(thread.ID, userItem.ID); err != nil || !ok {
-		t.Fatalf("anchor for first user item missing after first send: ok=%v err=%v", ok, err)
-	}
-
-	acknowledgeMockClaudeSend(t, app, thread.ID)
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second turn", SendMessageOptions{}); err != nil {
-		t.Fatalf("SendMessage(second) error = %v", err)
-	}
-	if _, ok, err := app.store.GetMessageAnchor(thread.ID, "user:1"); err != nil || !ok {
-		t.Fatalf("anchor for second user item missing after second send: ok=%v err=%v", ok, err)
-	}
-}
-
-// TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho pins the
-// send-time-uuid fix. A rollback to the message can run before
-// Claude's replay echo arrives, and resolveMessageAnchor returns the
-// anchor as-is when one exists (the common case). So the minted uuid
-// must land on BOTH the row meta AND the anchor at send time — before
-// any echo — or the rollback reads an empty id and drops to the
-// ordinal-walk slice. No provider echo is simulated here: the assertion
-// is precisely the pre-echo state.
-func TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-
-	workspace := t.TempDir()
-	thread := testThread("thread-send-prestamp-uuid")
-	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = workspace
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	sess, err := claude.NewSession(
-		context.Background(),
-		thread.ID,
-		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: workspace},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
-
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "fix the reconnect bug", SendMessageOptions{}); err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-
-	items, err := app.store.ListItems(thread.ID)
-	if err != nil {
-		t.Fatalf("ListItems: %v", err)
-	}
-	var userItem store.Item
-	for _, it := range items {
-		if it.Role == "user" {
-			userItem = it
-			break
-		}
-	}
-	if userItem.ID == "" {
-		t.Fatal("expected persisted user item")
-	}
-
+	// The minted uuid lands on BOTH the row meta AND the anchor at send
+	// time, before any echo: a rollback to the message can run before
+	// Claude's replay echo arrives, and resolveMessageAnchor returns the
+	// anchor as-is when one exists, so an empty id would drop the rollback
+	// to the ordinal-walk slice. No provider echo is simulated here.
 	var meta map[string]any
 	if err := json.Unmarshal([]byte(userItem.Meta), &meta); err != nil {
 		t.Fatalf("decode user meta %q: %v", userItem.Meta, err)
@@ -953,13 +729,20 @@ func TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho(t *testing.T) {
 	if rowID == "" {
 		t.Fatalf("user row has no provider_item_id at persist time — send-time pre-stamp did not fire (meta: %q)", userItem.Meta)
 	}
-
 	anchor, ok, err := app.store.GetMessageAnchor(thread.ID, userItem.ID)
 	if err != nil || !ok {
-		t.Fatalf("anchor missing after send: ok=%v err=%v", ok, err)
+		t.Fatalf("anchor for first user item missing after first send: ok=%v err=%v", ok, err)
 	}
 	if anchor.ProviderUserMessageID != rowID {
 		t.Fatalf("anchor ProviderUserMessageID = %q, want %q (must mirror the pre-stamped row meta so an early rollback keys on the UUID-slice path)", anchor.ProviderUserMessageID, rowID)
+	}
+
+	acknowledgeMockClaudeSend(t, app, thread.ID)
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second turn", SendMessageOptions{}); err != nil {
+		t.Fatalf("SendMessage(second) error = %v", err)
+	}
+	if _, ok, err := app.store.GetMessageAnchor(thread.ID, "user:1"); err != nil || !ok {
+		t.Fatalf("anchor for second user item missing after second send: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -1363,58 +1146,6 @@ func TestInterruptTurnMissingSessionIsNoOp(t *testing.T) {
 	}
 }
 
-func TestInterruptTurnHappyPathClaude(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-interrupt-claude")
-	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	// Use the interrupt-responder binary so Interrupt takes the clean
-	// control_request → control_response round-trip instead of falling
-	// through to the 10s kill timeout.
-	sess, err := claude.NewSession(
-		context.Background(),
-		thread.ID,
-		claude.Config{
-			Reaper:    procutiltest.Reaper(),
-			Retention: claude.UserHomeRetention(0),
-			Binary:    writeClaudeInterruptResponderBinary(t),
-			WorkDir:   thread.WorkspacePath,
-		},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("NewSession() error = %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Claude),
-		Token:    "test-token",
-		Claude:   sess,
-	})
-
-	start := time.Now()
-	err = app.InterruptTurn(thread.ID, nil)
-	if err != nil {
-		t.Fatalf("InterruptTurn() error = %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("InterruptTurn took %s — should have completed quickly via the round-trip, not via the kill fallback", elapsed)
-	}
-	// Clean ack path keeps the session in the registry — only the
-	// timeout-fallback kill evicts it. Pin that behaviour so a future
-	// regression in the round-trip path doesn't silently force every
-	// interrupt onto the cold-start --resume path.
-	_, stillThere := app.sessionManager().get(thread.ID)
-	if !stillThere {
-		t.Fatal("session was evicted from registry after a clean interrupt; should only happen on kill fallback")
-	}
-}
-
 // TestInterruptCreatesStoppedSystemError covers spec behavior: a user
 // interrupt flips running/streaming items to errored with a " — stopped"
 // suffix and records a new "Stopped by user" system error row. The
@@ -1478,8 +1209,21 @@ func TestInterruptCreatesStoppedSystemError(t *testing.T) {
 		Claude:   sess,
 	})
 
+	// The interrupt-responder binary answers the control_request, so the
+	// interrupt takes the clean round-trip instead of falling through to the
+	// 10s kill timeout.
+	start := time.Now()
 	if err := app.InterruptTurn(thread.ID, nil); err != nil {
 		t.Fatalf("InterruptTurn: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("InterruptTurn took %s — should have completed quickly via the round-trip, not via the kill fallback", elapsed)
+	}
+	// The clean ack path keeps the session in the registry — only the
+	// timeout-fallback kill evicts it — so an interrupt does not force the
+	// next send onto the cold-start --resume path.
+	if _, stillThere := app.sessionManager().get(thread.ID); !stillThere {
+		t.Fatal("session was evicted from registry after a clean interrupt; should only happen on kill fallback")
 	}
 
 	items, err := app.store.ListItems(thread.ID)
@@ -1833,9 +1577,15 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 }
 
 // TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails exercises the
-// current optimistic-send contract: the user_text lands first so the turn is
-// visible immediately, and a follow-up error row records the failed provider
-// send.
+// optimistic-send contract on a failed provider send: the user_text lands
+// first so the turn is visible immediately, and a follow-up error row records
+// the failure. Both flow through triage.Router.PersistItem (the single
+// persistence chokepoint) rather than a raw store.UpsertItem call, which
+// would emit nothing and let the error:<turn>:<seq> id collide with a fresh
+// provider error on the same turn. The failure also drops the pending-send
+// marker via ClearPendingSendForFailure; a leaked marker would let a later
+// wire init for a different (or orphaned) send mis-route through the
+// handleTurnStart path on stale state.
 func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -1845,6 +1595,19 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
+
+	var mu sync.Mutex
+	var upsertedIDs []string
+	app.triage = triage.NewRouter(app.store, func(name eventchan.Channel, data any) {
+		if name != "provider:item_event" {
+			return
+		}
+		if event, ok := data.(triage.ItemStreamEvent); ok && event.Action == "upsert" && event.Item != nil {
+			mu.Lock()
+			upsertedIDs = append(upsertedIDs, event.Item.ID)
+			mu.Unlock()
+		}
+	})
 
 	// Create a real claude session, then close it so the next Send's
 	// WriteLine fails with "process already exited".
@@ -1871,8 +1634,7 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 		Claude:   sess,
 	})
 
-	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "doomed content", SendMessageOptions{})
-	if err == nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "doomed content", SendMessageOptions{}); err == nil {
 		t.Fatal("expected Send to fail with a closed session, got nil")
 	}
 
@@ -1892,183 +1654,46 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 	if !userFound || !errorFound {
 		t.Fatalf("expected user_text + error after provider send failure, got %+v", items)
 	}
-}
 
-// TestSendMessageGoesThroughRouter asserts that both the optimistic
-// user_text item and the send-failure error row flow through
-// triage.Router.PersistItem (the single persistence chokepoint) rather
-// than bypassing it via a raw store.UpsertItem call. We exercise the
-// failure path because it hits both persistence sites in the same run;
-// success alone would miss the send-failure branch. Regression mode:
-// if a future refactor re-introduces the direct store.UpsertItem call,
-// the items wouldn't emit through the registered emit func, and the
-// error:<turn>:<seq> id would collide with a fresh provider error on
-// the same turn.
-func TestSendMessageGoesThroughRouter(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-send-router")
-	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	// Record every emit so we can assert the items flowed through the
-	// router (which emits on persist) and not via a direct
-	// store.UpsertItem (which wouldn't call emit at all).
-	var mu sync.Mutex
-	var emissions []string
-	var upsertedIDs []string
-	app.triage = triage.NewRouter(app.store, func(name eventchan.Channel, data any) {
-		mu.Lock()
-		emissions = append(emissions, name.String())
-		if name == "provider:item_event" {
-			if event, ok := data.(triage.ItemStreamEvent); ok && event.Action == "upsert" && event.Item != nil {
-				upsertedIDs = append(upsertedIDs, event.Item.ID)
-			}
-		}
-		mu.Unlock()
-	})
-
-	sess, err := claude.NewSession(
-		context.Background(),
-		thread.ID,
-		claude.Config{
-			Reaper:    procutiltest.Reaper(),
-			Retention: claude.UserHomeRetention(0),
-			Binary:    writeClaudePassthroughBinary(t),
-			WorkDir:   thread.WorkspacePath,
-		},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	// Close the session so Send fails and we exercise both paths.
-	if err := sess.Close(); err != nil {
-		t.Logf("close: %v (expected)", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Claude),
-		Token:    "tok",
-		Claude:   sess,
-	})
-
-	// Expected to fail because the session is closed.
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "will-fail", SendMessageOptions{}); err == nil {
-		t.Fatal("expected send failure on closed session")
-	}
-
+	// The user item is user:0, and the send-failure error id uses the
+	// router's sequence counter: first error on turn 0 → seq 0 → error:0:0.
 	mu.Lock()
-	defer mu.Unlock()
-
-	// Both the user item and the error item must have been emitted as
-	// provider:item_event — that only happens when the router's
-	// persistItem runs, not when we call store.UpsertItem directly.
-	wantUserID := "user:0"
-	var sawUser, sawError bool
-	for _, id := range upsertedIDs {
-		if id == wantUserID {
+	ids := append([]string(nil), upsertedIDs...)
+	mu.Unlock()
+	sawUser, sendFailureID := false, ""
+	for _, id := range ids {
+		if id == "user:0" {
 			sawUser = true
 		}
-		if strings.HasPrefix(id, "error:0:") {
-			sawError = true
+		if sendFailureID == "" && strings.HasPrefix(id, "error:") {
+			sendFailureID = id
 		}
 	}
 	if !sawUser {
-		t.Errorf("router did not emit user item upsert (ids=%v)", upsertedIDs)
-	}
-	if !sawError {
-		t.Errorf("router did not emit send-failure error upsert (ids=%v)", upsertedIDs)
-	}
-
-	// The send-failure error id MUST use the router's sequence counter —
-	// not a hardcoded :0 suffix. First error on turn 0 → seq 0 → error:0:0.
-	// If a future refactor reverts to a hardcoded :0 this still matches,
-	// so the distinguishing signal is the prefix format (error:<turn>:<seq>)
-	// rather than a numeric collision check alone.
-	sendFailureID := ""
-	for _, id := range upsertedIDs {
-		if strings.HasPrefix(id, "error:") {
-			sendFailureID = id
-			break
-		}
+		t.Errorf("router did not emit user item upsert (ids=%v)", ids)
 	}
 	if sendFailureID != "error:0:0" {
-		t.Errorf("first send-failure error id = %q, want error:0:0", sendFailureID)
+		t.Errorf("first send-failure error upsert = %q, want error:0:0 (ids=%v)", sendFailureID, ids)
+	}
+
+	if app.triage.HasPendingSendForThread(thread.ID) {
+		t.Errorf("ClearPendingSendForFailure was not called by the send-failure path — marker leaked into idle state")
 	}
 }
 
-// TestSendMessagePersistsUserItemOnSuccess confirms the happy path is
-// preserved: a successful Send still results in the user item landing
-// in the store. Regression would be moving the InsertItem call past a
-// success branch by mistake.
+// TestSendMessagePersistsUserItemOnSuccess pins the successful Claude send:
+// the user item lands in the store (a regression would be moving the
+// InsertItem call past a success branch), and a pending-send marker is
+// registered before sendMessage returns, without which triage.handleInit
+// cannot tell a fresh AO send from an idle reconnect when the wire
+// system/init arrives. No provider:turn_started is emitted: both providers
+// derive turn-start from native wire events (Claude's system/init, Codex's
+// turn/started), and a synthetic EventTurnStart would emit it before the
+// wire init arrived.
 func TestSendMessagePersistsUserItemOnSuccess(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-send-success")
-	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	sess, err := claude.NewSession(
-		context.Background(),
-		thread.ID,
-		claude.Config{
-			Reaper:    procutiltest.Reaper(),
-			Retention: claude.UserHomeRetention(0),
-			Binary:    writeClaudePassthroughBinary(t),
-			WorkDir:   thread.WorkspacePath,
-		},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Claude),
-		Token:    "test-token",
-		Claude:   sess,
-	})
-
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello world", SendMessageOptions{}); err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-
-	items, err := app.store.ListItems(thread.ID)
-	if err != nil {
-		t.Fatalf("ListItems: %v", err)
-	}
-	var userItem store.Item
-	for _, item := range items {
-		if item.Role == "user" {
-			userItem = item
-		}
-	}
-	if userItem.ID == "" {
-		t.Fatal("user item missing after successful Send")
-	}
-	if userItem.Summary != "hello world" {
-		t.Fatalf("summary = %q, want hello world", userItem.Summary)
-	}
-}
-
-// TestSendMessageDoesNotEmitSyntheticTurnStart pins the Phase F deletion
-// of the synthetic EventTurnStart. Pre-Phase-F, a successful Claude
-// send drove turn-start by manually calling triage.Handle with
-// EventTurnStart; post-Phase-F, both providers derive turn-start from
-// native wire events (Claude's system/init, Codex's turn/started) so
-// the synthetic emission is gone. A regression that re-introduces the
-// synthetic emission would emit provider:turn_started before the wire
-// init arrived, breaking the wire-driven contract this phase
-// established.
-func TestSendMessageDoesNotEmitSyntheticTurnStart(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-no-synthetic-turn-start")
 	thread.Provider = string(provider.Claude)
 	thread.WorkspacePath = t.TempDir()
 	if err := app.store.CreateThread(thread); err != nil {
@@ -2100,139 +1725,42 @@ func TestSendMessageDoesNotEmitSyntheticTurnStart(t *testing.T) {
 	t.Cleanup(func() { _ = sess.Close() })
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
-		Token:    "tok",
-		Claude:   sess,
-	})
-
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", SendMessageOptions{}); err != nil {
-		t.Fatalf("SendMessage: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	for _, name := range emissions {
-		if name == "provider:turn_started" {
-			t.Fatalf("provider:turn_started emitted on bare send — Phase F removed the synthetic EventTurnStart, turn-start must wait for wire system/init (emissions=%v)", emissions)
-		}
-	}
-}
-
-// TestSendMessageRegistersPendingSend pins the post-Phase-F send
-// contract: a successful Claude send must register a pending-send
-// marker BEFORE returning from sendMessage. Without the marker,
-// triage.handleInit can't tell a fresh AO send from an idle reconnect
-// when the wire system/init arrives, and turn-start would never fire
-// for Claude.
-func TestSendMessageRegistersPendingSend(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-pending-send-registered")
-	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-
-	sess, err := claude.NewSession(
-		context.Background(),
-		thread.ID,
-		claude.Config{
-			Reaper:    procutiltest.Reaper(),
-			Retention: claude.UserHomeRetention(0),
-			Binary:    writeClaudePassthroughBinary(t),
-			WorkDir:   thread.WorkspacePath,
-		},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Claude),
-		Token:    "tok",
+		Token:    "test-token",
 		Claude:   sess,
 	})
 
 	if app.triage.HasPendingSendForThread(thread.ID) {
 		t.Fatal("setup: thread should have no pending sends before SendMessage")
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello world", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	if !app.triage.HasPendingSendForThread(thread.ID) {
-		t.Fatalf("RegisterPendingSend was not called by the send path — Phase F's wire-driven turn-start can't run without the marker")
-	}
-}
 
-// TestSendMessageClearsPendingSendOnFailure pins the cleanup contract:
-// when sendToProvider fails, the send path must drop the pending-send
-// marker via ClearPendingSendForFailure. Without this, the marker
-// would persist; a later wire init for a different (or orphaned) send
-// could mis-route through the handleTurnStart path on stale state.
-func TestSendMessageClearsPendingSendOnFailure(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-pending-send-cleared-on-failure")
-	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-
-	// Closed Claude session so sendToProvider's WriteLine returns "process
-	// already exited". Mirrors TestSendMessagePersistsUserItemAndError-
-	// WhenProviderSendFails.
-	sess, err := claude.NewSession(
-		context.Background(),
-		thread.ID,
-		claude.Config{
-			Reaper:    procutiltest.Reaper(),
-			Retention: claude.UserHomeRetention(0),
-			Binary:    writeClaudePassthroughBinary(t),
-			WorkDir:   thread.WorkspacePath,
-		},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	if err := sess.Close(); err != nil {
-		t.Logf("close: %v (expected)", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Claude),
-		Token:    "tok",
-		Claude:   sess,
-	})
-
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "doomed", SendMessageOptions{}); err == nil {
-		t.Fatal("expected SendMessage to fail with closed session")
-	}
-
-	if app.triage.HasPendingSendForThread(thread.ID) {
-		t.Errorf("ClearPendingSendForFailure was not called by the send-failure path — marker leaked into idle state")
-	}
-
-	// Existing optimistic-send contract must still hold: the error item
-	// is persisted alongside the orphan user_text. Pinning this here so
-	// the cleanup change can't accidentally short-circuit the existing
-	// failure persistence.
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
-	var sawError bool
+	var userItem store.Item
 	for _, item := range items {
-		if item.Kind == "error" {
-			sawError = true
-			break
+		if item.Role == "user" {
+			userItem = item
 		}
 	}
-	if !sawError {
-		t.Error("expected error item after failed send — existing optimistic-send contract regressed")
+	if userItem.ID == "" {
+		t.Fatal("user item missing after successful Send")
+	}
+	if userItem.Summary != "hello world" {
+		t.Fatalf("summary = %q, want hello world", userItem.Summary)
+	}
+	if !app.triage.HasPendingSendForThread(thread.ID) {
+		t.Fatalf("RegisterPendingSend was not called by the send path — the wire-driven turn-start can't run without the marker")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, name := range emissions {
+		if name == "provider:turn_started" {
+			t.Fatalf("provider:turn_started emitted on bare send — turn-start must wait for wire system/init (emissions=%v)", emissions)
+		}
 	}
 }
 

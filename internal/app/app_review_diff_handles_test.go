@@ -212,24 +212,6 @@ func TestReviewDiffIsReleasedWithItsConnection(t *testing.T) {
 	}
 }
 
-func TestOpenReviewDiffRefusesPastTheHandleLimit(t *testing.T) {
-	t.Parallel()
-	app := newReviewDiffTestApp(t)
-	ref, _ := largeWorkspace(t, app)
-	app.reviewDiffs.diffs = make(map[string]*openReviewDiff, maxReviewDiffHandles)
-	for i := range maxReviewDiffHandles {
-		app.reviewDiffs.diffs[string(rune('a'+i%26))+strings.Repeat("x", i)] = &openReviewDiff{}
-	}
-	t.Cleanup(func() { app.reviewDiffs.diffs = nil })
-	ctx, _ := reviewDiffConn(t)
-	if _, err := app.OpenWorkspaceDiff(ctx, ref, false); !errors.Is(err, ErrTooManyReviewDiffs) {
-		t.Fatalf("open past the limit: err = %v, want ErrTooManyReviewDiffs", err)
-	}
-	if n := snapshotEntries(t, app); n != 0 {
-		t.Fatalf("a refused open left %d snapshots", n)
-	}
-}
-
 func TestReviewDiffBootSweepRemovesSnapshotsFromTheLastRun(t *testing.T) {
 	t.Parallel()
 	app := newReviewDiffTestApp(t)
@@ -571,5 +553,8 @@ func TestAnOpenRefusedAfterItsRecordLeavesNothingTied(t *testing.T) {
 	}
 	if keys := state.BoundKeys(); len(keys) != 0 {
 		t.Fatalf("the refused open left releases bound on its connection: %v", keys)
+	}
+	if n := snapshotEntries(t, app); n != 0 {
+		t.Fatalf("a refused open left %d snapshots", n)
 	}
 }

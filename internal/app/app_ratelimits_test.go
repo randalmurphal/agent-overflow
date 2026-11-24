@@ -75,132 +75,52 @@ func TestMergeRateLimitsSnapshotCollapsesClaudeLegacyAliases(t *testing.T) {
 	}
 }
 
-func TestMergeRateLimitsSnapshotAcceptsHigherUsageAcrossResetTimestampJitter(t *testing.T) {
+// Readings of the one session window. Reset-boundary jitter within tolerance
+// never moves the established boundary: a higher reading wins, an equal one
+// is a no-op, and a lower one wins too (same-window usage may legitimately
+// drop when the limit grows mid-window — see MergeSnapshot). A later boundary
+// is a new quota window, whose lower reading replaces the old; an earlier one
+// is an older window, which is rejected.
+func TestMergeRateLimitsSnapshotReadingsOfOneWindow(t *testing.T) {
 	t.Parallel()
-	current := provider.RateLimitsSnapshot{
-		Provider:  string(provider.Claude),
-		AccountID: "account-one",
-		UpdatedAt: 10,
-		Limits: []provider.RateLimitEntry{{
-			LimitID: "session", LimitName: "Current session",
-			WindowMins: 300, UsedPercent: 0, ResetsAt: 1784841601,
-		}},
-	}
-	incoming := provider.RateLimitsSnapshot{
-		Provider:  string(provider.Claude),
-		AccountID: "account-one",
-		UpdatedAt: 20,
-		Limits: []provider.RateLimitEntry{{
-			LimitID: "session", LimitName: "Current session",
-			WindowMins: 300, UsedPercent: 8, ResetsAt: 1784841599,
-		}},
-	}
-
-	got, changed := providerlifecycleapp.MergeSnapshot(current, incoming)
-	if !changed {
-		t.Fatal("merge rejected a higher reading from the same jittered window")
-	}
-	if got.Limits[0].UsedPercent != 8 {
-		t.Fatalf("UsedPercent = %v, want 8", got.Limits[0].UsedPercent)
-	}
-	if got.Limits[0].ResetsAt != 1784841601 {
-		t.Fatalf("ResetsAt = %d, want stable boundary 1784841601", got.Limits[0].ResetsAt)
-	}
-}
-
-// Reset-boundary jitter within tolerance never moves the boundary. An equal
-// reading is a no-op; a lower reading wins (same-window usage may
-// legitimately drop when the limit grows mid-window — see MergeSnapshot)
-// but still keeps the established boundary.
-func TestMergeRateLimitsSnapshotKeepsBoundaryUnderJitter(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
+	for _, tc := range []struct {
 		name            string
+		currentPercent  float64
+		currentReset    int64
 		incomingPercent float64
+		incomingReset   int64
 		wantChanged     bool
+		wantPercent     float64
+		wantReset       int64
 	}{
-		{name: "equal usage", incomingPercent: 8, wantChanged: false},
-		{name: "lower usage", incomingPercent: 7, wantChanged: true},
+		{name: "higher usage across jitter", currentPercent: 0, currentReset: 1784841601, incomingPercent: 8, incomingReset: 1784841599, wantChanged: true, wantPercent: 8, wantReset: 1784841601},
+		{name: "equal usage across jitter", currentPercent: 8, currentReset: 1784841601, incomingPercent: 8, incomingReset: 1784841599, wantPercent: 8, wantReset: 1784841601},
+		{name: "lower usage across jitter", currentPercent: 8, currentReset: 1784841601, incomingPercent: 7, incomingReset: 1784841599, wantChanged: true, wantPercent: 7, wantReset: 1784841601},
+		{name: "lower usage in a new quota window", currentPercent: 95, currentReset: 1784823600, incomingPercent: 5, incomingReset: 1784841600, wantChanged: true, wantPercent: 5, wantReset: 1784841600},
+		{name: "an older quota window", currentPercent: 5, currentReset: 1784841600, incomingPercent: 95, incomingReset: 1784823600, wantPercent: 5, wantReset: 1784841600},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			current := provider.RateLimitsSnapshot{
-				Provider: string(provider.Claude),
-				Limits: []provider.RateLimitEntry{{
-					LimitID: "session", LimitName: "Current session",
-					WindowMins: 300, UsedPercent: 8, ResetsAt: 1784841601,
-				}},
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := func(percent float64, reset int64) provider.RateLimitsSnapshot {
+				return provider.RateLimitsSnapshot{
+					Provider: string(provider.Claude),
+					Limits: []provider.RateLimitEntry{{
+						LimitID: "session", LimitName: "Current session",
+						WindowMins: 300, UsedPercent: percent, ResetsAt: reset,
+					}},
+				}
 			}
-			incoming := provider.RateLimitsSnapshot{
-				Provider: string(provider.Claude),
-				Limits: []provider.RateLimitEntry{{
-					LimitID: "session", LimitName: "Current session",
-					WindowMins: 300, UsedPercent: test.incomingPercent, ResetsAt: 1784841599,
-				}},
+			got, changed := providerlifecycleapp.MergeSnapshot(
+				snapshot(tc.currentPercent, tc.currentReset),
+				snapshot(tc.incomingPercent, tc.incomingReset),
+			)
+			if changed != tc.wantChanged {
+				t.Fatalf("merge changed = %v, want %v: %+v", changed, tc.wantChanged, got.Limits)
 			}
-
-			got, changed := providerlifecycleapp.MergeSnapshot(current, incoming)
-			if changed != test.wantChanged {
-				t.Fatalf("merge changed = %v, want %v: %+v", changed, test.wantChanged, got.Limits)
-			}
-			if !changed {
-				return
-			}
-			if got.Limits[0].UsedPercent != test.incomingPercent {
-				t.Fatalf("newest same-window reading did not win: %+v", got.Limits)
-			}
-			if got.Limits[0].ResetsAt != 1784841601 {
-				t.Fatalf("jittered boundary replaced the established one: %+v", got.Limits)
+			if len(got.Limits) != 1 || got.Limits[0].UsedPercent != tc.wantPercent || got.Limits[0].ResetsAt != tc.wantReset {
+				t.Fatalf("limits = %+v, want %v%% at %d", got.Limits, tc.wantPercent, tc.wantReset)
 			}
 		})
-	}
-}
-
-func TestMergeRateLimitsSnapshotAcceptsLowerUsageInNewQuotaWindow(t *testing.T) {
-	t.Parallel()
-	current := provider.RateLimitsSnapshot{
-		Provider: string(provider.Claude),
-		Limits: []provider.RateLimitEntry{{
-			LimitID: "session", LimitName: "Current session",
-			WindowMins: 300, UsedPercent: 95, ResetsAt: 1784823600,
-		}},
-	}
-	incoming := provider.RateLimitsSnapshot{
-		Provider: string(provider.Claude),
-		Limits: []provider.RateLimitEntry{{
-			LimitID: "session", LimitName: "Current session",
-			WindowMins: 300, UsedPercent: 5, ResetsAt: 1784841600,
-		}},
-	}
-
-	got, changed := providerlifecycleapp.MergeSnapshot(current, incoming)
-	if !changed {
-		t.Fatal("merge rejected a lower reading from a new quota window")
-	}
-	if got.Limits[0].UsedPercent != 5 || got.Limits[0].ResetsAt != 1784841600 {
-		t.Fatalf("new-window limit = %+v, want 5%% at 1784841600", got.Limits[0])
-	}
-}
-
-func TestMergeRateLimitsSnapshotStillRejectsOlderQuotaWindow(t *testing.T) {
-	t.Parallel()
-	current := provider.RateLimitsSnapshot{
-		Provider: string(provider.Claude),
-		Limits: []provider.RateLimitEntry{{
-			LimitID: "session", LimitName: "Current session", WindowMins: 300,
-			UsedPercent: 5, ResetsAt: 1784841600,
-		}},
-	}
-	incoming := provider.RateLimitsSnapshot{
-		Provider: string(provider.Claude),
-		Limits: []provider.RateLimitEntry{{
-			LimitID: "session", LimitName: "Current session", WindowMins: 300,
-			UsedPercent: 95, ResetsAt: 1784823600,
-		}},
-	}
-
-	got, changed := providerlifecycleapp.MergeSnapshot(current, incoming)
-	if changed {
-		t.Fatalf("merge accepted an older quota window: %+v", got.Limits)
 	}
 }
 
