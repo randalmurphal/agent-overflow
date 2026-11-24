@@ -854,7 +854,7 @@ through the §12 teardown (partial envelope recorded, locks released) and parks
 `needs-human(paused)`; the members keep their provider sessions. **Pause
 and End Sessions** does the same and then ends the session of every
 member it paused, with its background work, so nothing of the run stays
-resident ([standing agents ruling 29](standing-agents.md#interrupt-and-end-session)).
+resident ([workflow pause and end sessions](standing-agents.md#workflow-pause-and-end-sessions)).
 **Resume** creates the next attempt **on the same
 provider thread** with a continue message, the identical mechanics as
 answering a question below, so the agent keeps its session context across the

@@ -3679,15 +3679,14 @@ export function ListThreadGroups(): $CancellablePromise<store$0.ThreadGroup[]> {
 /**
  * ListThreadLiveActivity returns every thread on this computer with live
  * activity: an open wire round, pending approvals or questions, an open
- * compacting window, sends pending, or a provider session. Idle threads are omitted, so the
+ * compacting window, or sends pending. Idle threads are omitted, so the
  * answer is authoritative for the whole computer: a client reconciles every
  * thread it attributes to this computer against it and clears the ones not
  * named.
  * 
  * This is the snapshot leg of the threads:read push channels
  * (provider:turn_started / turn_completed, provider:approval,
- * provider:user_input, provider:compacting, provider:sends_pending,
- * provider:session_live). A
+ * provider:user_input, provider:compacting, provider:sends_pending). A
  * client that connects, reloads, or drops frames mid-turn has no other way
  * to learn that a thread it has no pane on is running or blocked on the
  * user; GetThreadLiveState is per thread and rides threads:operate because
@@ -7547,9 +7546,9 @@ export function WorkflowPauseItem(itemID: string): $CancellablePromise<void> {
 
 /**
  * WorkflowPauseItemAndEndSessions is Pause and End Sessions
- * (docs/specs/standing-agents.md, "Interrupt and end session"): the pause
+ * (docs/specs/standing-agents.md, "Workflow pause and end sessions"): the pause
  * WorkflowPauseItem makes, then the provider session of every thread the
- * paused runs were working in is ended, as End Session ends one. Resuming
+ * paused runs were working in is ended, as StopSession ends one. Resuming
  * starts them again on the same provider threads.
  */
 export function WorkflowPauseItemAndEndSessions(itemID: string): $CancellablePromise<void> {

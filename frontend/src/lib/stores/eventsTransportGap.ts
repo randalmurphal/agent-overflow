@@ -219,9 +219,6 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // Working through minutes of silence, a missed close leaves it
       // saying Compacting after the turn moved on. The flag is read from
       // the registry by panes and rows alike, so no pane refresh is owed.
-    case 'provider:session_live':
-      // A missed frame leaves End Session offered for a session that
-      // ended, or withheld from one that started.
       resyncThreadLiveActivity(origin);
       return;
     case 'provider:sends_pending': {

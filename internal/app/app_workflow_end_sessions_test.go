@@ -17,7 +17,7 @@ import (
 // Pause keeps the paused members' sessions, as it always did; Pause and End
 // Sessions also ends them, a member already paused included, and Resume
 // starts them again on the same provider session
-// (docs/specs/standing-agents.md, "Interrupt and end session").
+// (docs/specs/standing-agents.md, "Workflow pause and end sessions").
 func TestWorkflowPauseAndEndSessionsEndsThePausedMembersSessions(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)

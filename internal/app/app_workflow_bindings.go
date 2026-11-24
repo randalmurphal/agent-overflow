@@ -574,9 +574,9 @@ func (a *App) WorkflowPauseItem(ctx context.Context, itemID string) error {
 }
 
 // WorkflowPauseItemAndEndSessions is Pause and End Sessions
-// (docs/specs/standing-agents.md, "Interrupt and end session"): the pause
+// (docs/specs/standing-agents.md, "Workflow pause and end sessions"): the pause
 // WorkflowPauseItem makes, then the provider session of every thread the
-// paused runs were working in is ended, as End Session ends one. Resuming
+// paused runs were working in is ended, as StopSession ends one. Resuming
 // starts them again on the same provider threads.
 //
 //ao:scope threads:autonomy
