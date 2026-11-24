@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// minimumCodexCLIVersion is the oldest Codex that honors
+// minimumCodexCLIVersion is the first stable Codex release that honors
 // `thread_unload_delay_secs`, which the shared app-server is started with
 // (codex.codexSharedAppServerArgs) so a closed thread unloads at once. An
 // older Codex ignores the setting and keeps a closed thread loaded, with its
@@ -165,14 +165,15 @@ func isCodexCLIVersionSupported(version string) bool {
 	return compareCodexCLIVersions(version, minimumCodexCLIVersion) >= 0
 }
 
-// formatCodexCLIUpgradeMessage names the installed version, the binary it
-// came from and the minimum.
+// formatCodexCLIUpgradeMessage names the installed version, the minimum and
+// the binary the version came from. The binary comes last: a surface that
+// clips the message still shows what to do.
 func formatCodexCLIUpgradeMessage(version, path string) string {
 	return fmt.Sprintf(
-		"Codex CLI v%s (%s) is too old for Agent Overflow. Upgrade to v%s or newer and restart the app.",
+		"Codex CLI v%s is too old for Agent Overflow. Upgrade to v%s or newer and restart the app. Binary: %s",
 		version,
-		path,
 		minimumCodexCLIVersion,
+		path,
 	)
 }
 

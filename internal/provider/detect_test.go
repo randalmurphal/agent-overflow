@@ -102,7 +102,7 @@ func TestDetectProviderCodexUnsupportedVersion(t *testing.T) {
 	if status.Version != "codex 0.153.4" {
 		t.Fatalf("expected raw Version to be preserved, got %q", status.Version)
 	}
-	wantMessage := "Codex CLI v0.153.4 (" + status.BinaryPath + ") is too old for Agent Overflow. Upgrade to v0.154.0 or newer and restart the app."
+	wantMessage := "Codex CLI v0.153.4 is too old for Agent Overflow. Upgrade to v0.154.0 or newer and restart the app. Binary: " + status.BinaryPath
 	if status.BinaryPath != script {
 		t.Fatalf("BinaryPath = %q, want the binary that was run, %q", status.BinaryPath, script)
 	}

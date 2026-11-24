@@ -56,6 +56,24 @@ func TestTransferReadinessChecksOnlySelectedProviderAndFreshAccount(t *testing.T
 	}
 }
 
+func TestTransferReadinessNamesATooOldCodex(t *testing.T) {
+	const detail = "Codex CLI v0.153.4 is too old for Agent Overflow. Upgrade to v0.154.0 or newer and restart the app. Binary: /mock/codex"
+	s := New(Deps{Reaper: procutiltest.Reaper(), ProviderBinary: func(string) string { return "/mock/codex" },
+		DetectProvider: func(string, string) provider.ProviderStatus {
+			return provider.ProviderStatus{Status: "version_too_old", Message: detail}
+		},
+		CheckCodexTransferAccount: func(context.Context, string) error {
+			t.Fatal("probed the account of a Codex that is too old")
+			return nil
+		},
+	}, testCaches())
+	err := s.CheckTransferReadiness(context.Background(), "codex", "")
+	want := "This computer cannot receive the conversation yet. " + detail
+	if err == nil || err.Error() != want {
+		t.Fatalf("readiness error = %v, want %q", err, want)
+	}
+}
+
 func TestTransferReadinessUsesNativeFormatFloorBeforeAccountProbe(t *testing.T) {
 	for _, tc := range []struct {
 		version, floor string
