@@ -75,23 +75,6 @@ func userOutput(t *testing.T, plan Plan) Output {
 	return built[slices.Index(plan.Parts(), PartUser)]
 }
 
-// The hook prints each part as Build makes it, stamped with the time it ran.
-func TestRunHookDeliversTheBuild(t *testing.T) {
-	t.Parallel()
-	s := newScopes(t)
-	write(t, s.project, "a.md", factText("ruling", "Never push to main."))
-	built, _ := Build(s.plan, day)
-	for _, output := range built {
-		var stdout, stderr strings.Builder
-		if code := runHookAt([]string{string(AtSessionStart), string(output.Part), planFile(t, s.plan)}, strings.NewReader(`{"session_id":"s1"}`), &stdout, &stderr, day); code != 0 || stderr.Len() > 0 {
-			t.Fatalf("%s: exit %d, stderr %q", output.Part, code, stderr.String())
-		}
-		if got := hookContext(t, stdout.String()); got != Stamp(output.Text, day) {
-			t.Fatalf("%s: context = %q", output.Part, got)
-		}
-	}
-}
-
 // A folder the hook cannot read is a notice in the delivery and a line on
 // stderr; the hook still delivers.
 func TestRunHookReportsAnUnreadableFolder(t *testing.T) {

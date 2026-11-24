@@ -240,6 +240,8 @@ func runProbe(t *testing.T) isolationProbe {
 	return probe
 }
 
+// One isolated probe run: the suite sees only lo and the private LAN,
+// reaches nothing off it, and holds no capabilities.
 func TestIsolatedSuiteSeesOnlyLoopbackAndPrivateLAN(t *testing.T) {
 	probe := runProbe(t)
 	if len(probe.Interfaces) != 2 {
@@ -288,6 +290,9 @@ func TestIsolatedSuiteSeesOnlyLoopbackAndPrivateLAN(t *testing.T) {
 			t.Fatalf("dial %s = %q, want connected", name, outcome)
 		}
 	}
+	if probe.CapEff != "0000000000000000" {
+		t.Fatalf("CapEff = %s, want none after the helper execs the suite", probe.CapEff)
+	}
 }
 
 // TestInsideRequiresTheHelpersOwnNamespace: the variable alone, or a value
@@ -309,12 +314,6 @@ func TestInsideRequiresTheHelpersOwnNamespace(t *testing.T) {
 	t.Setenv(EnvNamespace, id)
 	if Inside() != Contained() {
 		t.Fatalf("Inside() = %v with this namespace's identity, want Contained() = %v", Inside(), Contained())
-	}
-}
-
-func TestIsolatedSuiteHoldsNoCapabilities(t *testing.T) {
-	if capEff := runProbe(t).CapEff; capEff != "0000000000000000" {
-		t.Fatalf("CapEff = %s, want none after the helper execs the suite", capEff)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,88 +38,63 @@ func TestBindHost_BranchesOnFlag(t *testing.T) {
 	}
 }
 
-// TestOriginPatterns_LoopbackIsNil documents the loopback case: with no
-// LAN bind and no canonical domain there is nothing to add, and nil is
-// not "accept anything" — transport.OriginAllowed still admits only the
-// authority the request was addressed to.
-func TestOriginPatterns_LoopbackIsNil(t *testing.T) {
-	if got := OriginPatterns(false, "", "", 34115); got != nil {
-		t.Fatalf("loopback patterns should be nil, got %v", got)
-	}
-}
-
-// TestOriginPatterns_BindAllIsExactPort is the wave-9 defect fix. Every
-// entry names the bound port, under both schemes the one listener
-// answers. A wildcard port here admitted a document served by ANY port on
-// this machine — including this machine's own dev-server preview
-// listeners — and the browser attaches the page cookie to the handshake
-// such a document opens.
-func TestOriginPatterns_BindAllIsExactPort(t *testing.T) {
-	patterns := OriginPatterns(true, "192.168.1.10", "", 34115)
-	assertPatterns(t, "bind-all", patterns, []string{
+// TestOriginPatterns_ExactAllowList pins each allow-list as an exact list,
+// which also proves no entry carries a wildcard port.
+func TestOriginPatterns_ExactAllowList(t *testing.T) {
+	bindAllLAN := []string{
 		"http://127.0.0.1:34115", "https://127.0.0.1:34115",
 		"http://localhost:34115", "https://localhost:34115",
 		"http://192.168.1.10:34115", "https://192.168.1.10:34115",
-	})
-	for _, pattern := range patterns {
-		if strings.Contains(pattern, "*") {
-			t.Fatalf("pattern %q carries a wildcard; every origin must name one port", pattern)
-		}
 	}
-}
-
-// TestOriginPatterns_BindAllNoLAN proves the LAN-IP-missing case still
-// produces a usable allow-list. The user's browser may not be reachable
-// in this branch (the URL falls back to loopback upstream) but the
-// loopback origins on the bound port still work.
-func TestOriginPatterns_BindAllNoLAN(t *testing.T) {
-	assertPatterns(t, "bind-all, no LAN", OriginPatterns(true, "", "", 8080), []string{
-		"http://127.0.0.1:8080", "https://127.0.0.1:8080",
-		"http://localhost:8080", "https://localhost:8080",
-	})
-}
-
-// A canonical domain names its own origins on either bind. Two
-// spellings, both exact: the bare name for the proxy that fronts this
-// backend on 443, and the bound port for one that does not. The
-// port-bearing spelling is what matters when something in front
-// terminates TLS — the page's origin is https://<domain> and the request
-// reaching this backend is cleartext, so the authority it computes for
-// itself would not match.
-func TestOriginPatterns_CanonicalDomainOnEitherBind(t *testing.T) {
-	assertPatterns(t, "loopback", OriginPatterns(false, "", "backend.example", 34115), []string{
-		"https://backend.example", "https://backend.example:34115",
-	})
-	assertPatterns(t, "LAN", OriginPatterns(true, "192.168.1.10", "backend.example", 34115), []string{
-		"http://127.0.0.1:34115", "https://127.0.0.1:34115",
-		"http://localhost:34115", "https://localhost:34115",
-		"http://192.168.1.10:34115", "https://192.168.1.10:34115",
-		"https://backend.example", "https://backend.example:34115",
-	})
-}
-
-// A port this process has not resolved yet drops every port-bearing
-// pattern rather than guessing one. Failing closed leaves the request's
-// own authority as the whole admission, which is exact by construction.
-func TestOriginPatterns_UnresolvedPortDropsPortBearingEntries(t *testing.T) {
-	for _, port := range []int{0, -1, 70000} {
-		assertPatterns(t, fmt.Sprintf("port %d, bind-all", port),
-			OriginPatterns(true, "192.168.1.10", "", port), nil)
-		assertPatterns(t, fmt.Sprintf("port %d, domain", port),
-			OriginPatterns(false, "", "backend.example", port),
-			[]string{"https://backend.example"})
-	}
-}
-
-func assertPatterns(t *testing.T, label string, got, want []string) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("%s patterns = %v, want %v", label, got, want)
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			t.Fatalf("%s patterns[%d] = %q, want %q", label, i, got[i], want[i])
-		}
+	for _, tc := range []struct {
+		name    string
+		bindAll bool
+		lanIP   string
+		domain  string
+		port    int
+		want    []string
+	}{
+		// With no LAN bind and no canonical domain there is nothing to add,
+		// and nil is not "accept anything": transport.OriginAllowed still
+		// admits only the authority the request was addressed to.
+		{"loopback is nil", false, "", "", 34115, nil},
+		// The wave-9 defect fix. Every entry names the bound port, under
+		// both schemes the one listener answers. A wildcard port here
+		// admitted a document served by ANY port on this machine, and the
+		// browser attaches the page cookie to the handshake such a document
+		// opens.
+		{"bind-all is exact port", true, "192.168.1.10", "", 34115, bindAllLAN},
+		// The LAN-IP-missing case still produces a usable allow-list: the
+		// loopback origins on the bound port.
+		{"bind-all, no LAN", true, "", "", 8080, []string{
+			"http://127.0.0.1:8080", "https://127.0.0.1:8080",
+			"http://localhost:8080", "https://localhost:8080",
+		}},
+		// A canonical domain names its own origins on either bind, in two
+		// exact spellings: the bare name for a proxy that fronts this
+		// backend on 443, and the bound port for one that does not, which
+		// matters when something in front terminates TLS and the request
+		// reaching this backend is cleartext.
+		{"domain, loopback", false, "", "backend.example", 34115, []string{
+			"https://backend.example", "https://backend.example:34115",
+		}},
+		{"domain, LAN", true, "192.168.1.10", "backend.example", 34115,
+			slices.Concat(bindAllLAN, []string{"https://backend.example", "https://backend.example:34115"})},
+		// A port this process has not resolved yet drops every port-bearing
+		// pattern rather than guessing one. Failing closed leaves the
+		// request's own authority as the whole admission.
+		{"port 0, bind-all", true, "192.168.1.10", "", 0, nil},
+		{"port 0, domain", false, "", "backend.example", 0, []string{"https://backend.example"}},
+		{"port -1, bind-all", true, "192.168.1.10", "", -1, nil},
+		{"port -1, domain", false, "", "backend.example", -1, []string{"https://backend.example"}},
+		{"port 70000, bind-all", true, "192.168.1.10", "", 70000, nil},
+		{"port 70000, domain", false, "", "backend.example", 70000, []string{"https://backend.example"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := OriginPatterns(tc.bindAll, tc.lanIP, tc.domain, tc.port); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("OriginPatterns(%v, %q, %q, %d) = %#v, want %#v", tc.bindAll, tc.lanIP, tc.domain, tc.port, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -164,142 +140,75 @@ func TestOriginPatternsRefuseAnotherPortOnThisHost(t *testing.T) {
 	}
 }
 
-// TestDiscoverLocalLANIP_DeterministicOrder pins the determinism
-// guarantee: a multi-homed host returns the same answer across
-// runs. We swap the iface enumeration hook with a fake that returns
-// interfaces in a non-Index order; discovery must sort them so two
-// calls land on the same IP.
-func TestDiscoverLocalLANIP_DeterministicOrder(t *testing.T) {
-	prevIfaces := Interfaces
-	prevAddrs := InterfaceAddrs
-	t.Cleanup(func() {
-		Interfaces = prevIfaces
-		InterfaceAddrs = prevAddrs
-	})
-
-	// Two RFC1918 interfaces, presented to discovery in reverse-Index
-	// order. Without sorting, the result would be 10.0.0.5 (the first
-	// one we saw); with sorting it must be 192.168.1.10 (Index 1).
-	addrsByIndex := map[int][]net.Addr{
-		1: {&net.IPNet{IP: net.IPv4(192, 168, 1, 10), Mask: net.CIDRMask(24, 32)}},
-		2: {&net.IPNet{IP: net.IPv4(10, 0, 0, 5), Mask: net.CIDRMask(8, 32)}},
+// TestDiscoverLocalLANIP swaps in fake interface enumeration and checks the
+// address discovery picks, twice, so a multi-homed host returns the same
+// answer across runs.
+func TestDiscoverLocalLANIP(t *testing.T) {
+	prevIfaces, prevAddrs := Interfaces, InterfaceAddrs
+	t.Cleanup(func() { Interfaces, InterfaceAddrs = prevIfaces, prevAddrs })
+	ipNet := func(a, b, c, d byte, bits int) []net.Addr {
+		return []net.Addr{&net.IPNet{IP: net.IPv4(a, b, c, d), Mask: net.CIDRMask(bits, 32)}}
 	}
-	Interfaces = func() ([]net.Interface, error) {
-		// Reverse order on purpose. A sort by Index ascending must
-		// override this so the result is stable.
-		return []net.Interface{
-			{Index: 2, Name: "eth1", Flags: net.FlagUp | net.FlagRunning},
-			{Index: 1, Name: "eth0", Flags: net.FlagUp | net.FlagRunning},
-		}, nil
-	}
-	InterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
-		return addrsByIndex[iface.Index], nil
-	}
-
-	first := DiscoverLocalLANIP()
-	second := DiscoverLocalLANIP()
-	if first != second {
-		t.Fatalf("non-deterministic discovery: first=%q second=%q", first, second)
-	}
-	if first != "192.168.1.10" {
-		t.Fatalf("Index sort not applied: got %q, want lowest-Index iface IP 192.168.1.10", first)
-	}
-}
-
-// TestDiscoverLocalLANIP_TailscalePreference proves that on a host
-// where the ONLY non-loopback IPv4 is a Tailscale CGNAT address,
-// the discovery still returns it (rather than empty). Tailscale is
-// the user's typical "remote access" path; not surfacing the URL
-// would strand a Tailscale-only host with no usable bind-all UX.
-func TestDiscoverLocalLANIP_TailscalePreference(t *testing.T) {
-	prevIfaces := Interfaces
-	prevAddrs := InterfaceAddrs
-	t.Cleanup(func() {
-		Interfaces = prevIfaces
-		InterfaceAddrs = prevAddrs
-	})
-
-	Interfaces = func() ([]net.Interface, error) {
-		return []net.Interface{
-			{Index: 1, Name: "tailscale0", Flags: net.FlagUp | net.FlagRunning},
-		}, nil
-	}
-	InterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
-		// 100.96.5.42 is inside the 100.64.0.0/10 CGNAT range
-		// Tailscale uses for its mesh.
-		return []net.Addr{
-			&net.IPNet{IP: net.IPv4(100, 96, 5, 42), Mask: net.CIDRMask(10, 32)},
-		}, nil
-	}
-
-	if got := DiscoverLocalLANIP(); got != "100.96.5.42" {
-		t.Fatalf("Tailscale CGNAT not picked: got %q, want 100.96.5.42", got)
-	}
-}
-
-// TestDiscoverLocalLANIP_RFC1918BeatsTailscale verifies the
-// preference order. When both an RFC1918 and a Tailscale CGNAT
-// address are present, the LAN address wins — a user on a normal
-// home network shouldn't see a Tailscale URL when their phone is
-// already on the same Wi-Fi.
-func TestDiscoverLocalLANIP_RFC1918BeatsTailscale(t *testing.T) {
-	prevIfaces := Interfaces
-	prevAddrs := InterfaceAddrs
-	t.Cleanup(func() {
-		Interfaces = prevIfaces
-		InterfaceAddrs = prevAddrs
-	})
-
-	Interfaces = func() ([]net.Interface, error) {
-		return []net.Interface{
-			// Tailscale on the lower index — without a preference
-			// scan we'd return it first. With preference, the
-			// 192.168 address must win even though it's on a
-			// higher-index iface.
-			{Index: 1, Name: "tailscale0", Flags: net.FlagUp | net.FlagRunning},
-			{Index: 2, Name: "en0", Flags: net.FlagUp | net.FlagRunning},
-		}, nil
-	}
-	InterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
-		switch iface.Index {
-		case 1:
-			return []net.Addr{&net.IPNet{IP: net.IPv4(100, 96, 5, 42), Mask: net.CIDRMask(10, 32)}}, nil
-		case 2:
-			return []net.Addr{&net.IPNet{IP: net.IPv4(192, 168, 1, 10), Mask: net.CIDRMask(24, 32)}}, nil
-		}
-		return nil, nil
-	}
-
-	if got := DiscoverLocalLANIP(); got != "192.168.1.10" {
-		t.Fatalf("RFC1918 preference broken: got %q, want 192.168.1.10", got)
-	}
-}
-
-// TestDiscoverLocalLANIP_SkipsLoopbackAndDown locks the iface
-// filter: loopback and down interfaces never contribute to the LAN
-// URL.
-func TestDiscoverLocalLANIP_SkipsLoopbackAndDown(t *testing.T) {
-	prevIfaces := Interfaces
-	prevAddrs := InterfaceAddrs
-	t.Cleanup(func() {
-		Interfaces = prevIfaces
-		InterfaceAddrs = prevAddrs
-	})
-
-	Interfaces = func() ([]net.Interface, error) {
-		return []net.Interface{
-			{Index: 1, Name: "lo", Flags: net.FlagUp | net.FlagRunning | net.FlagLoopback},
-			{Index: 2, Name: "down0", Flags: 0}, // not up
-		}, nil
-	}
-	InterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) {
-		return []net.Addr{
-			&net.IPNet{IP: net.IPv4(127, 0, 0, 1), Mask: net.CIDRMask(8, 32)},
-		}, nil
-	}
-
-	if got := DiscoverLocalLANIP(); got != "" {
-		t.Fatalf("loopback/down iface should yield empty result, got %q", got)
+	up := net.FlagUp | net.FlagRunning
+	for _, tc := range []struct {
+		name   string
+		ifaces []net.Interface
+		addrs  map[int][]net.Addr
+		want   string
+	}{
+		// Two RFC1918 interfaces presented in reverse-Index order. Without
+		// sorting, the result would be 10.0.0.5 (the first one seen); with
+		// sorting it must be 192.168.1.10 (Index 1).
+		{"deterministic order", []net.Interface{
+			{Index: 2, Name: "eth1", Flags: up},
+			{Index: 1, Name: "eth0", Flags: up},
+		}, map[int][]net.Addr{1: ipNet(192, 168, 1, 10, 24), 2: ipNet(10, 0, 0, 5, 8)}, "192.168.1.10"},
+		// The ONLY non-loopback IPv4 is a Tailscale CGNAT address
+		// (100.64.0.0/10): it is still returned rather than empty, or a
+		// Tailscale-only host has no usable bind-all URL.
+		{"tailscale only", []net.Interface{
+			{Index: 1, Name: "tailscale0", Flags: up},
+		}, map[int][]net.Addr{1: ipNet(100, 96, 5, 42, 10)}, "100.96.5.42"},
+		// Tailscale on the lower index: the RFC1918 address still wins, so a
+		// phone on the same Wi-Fi is not handed a Tailscale URL.
+		{"RFC1918 beats tailscale", []net.Interface{
+			{Index: 1, Name: "tailscale0", Flags: up},
+			{Index: 2, Name: "en0", Flags: up},
+		}, map[int][]net.Addr{1: ipNet(100, 96, 5, 42, 10), 2: ipNet(192, 168, 1, 10, 24)}, "192.168.1.10"},
+		// Loopback and down interfaces never contribute to the LAN URL.
+		{"skips loopback and down", []net.Interface{
+			{Index: 1, Name: "lo", Flags: up | net.FlagLoopback},
+			{Index: 2, Name: "down0", Flags: 0},
+		}, map[int][]net.Addr{1: ipNet(127, 0, 0, 1, 8), 2: ipNet(127, 0, 0, 1, 8)}, ""},
+		// A Docker bridge sits at a low index with a private subnet and no
+		// LAN behind it, and an interface that is up without carrier reaches
+		// nobody. The real NIC behind both must win, or the share URL names
+		// an address no peer routes to.
+		{"skips bridges and carrierless interfaces", []net.Interface{
+			{Index: 1, Name: "docker0", Flags: up},
+			{Index: 2, Name: "eth0", Flags: net.FlagUp},
+			{Index: 3, Name: "br-3f2a9c1d", Flags: up},
+			{Index: 4, Name: "virbr0", Flags: up},
+			{Index: 5, Name: "wlan0", Flags: up},
+		}, map[int][]net.Addr{
+			1: ipNet(172, 17, 0, 1, 16),
+			2: ipNet(10, 0, 0, 5, 8),
+			3: ipNet(172, 18, 0, 1, 16),
+			4: ipNet(192, 168, 122, 1, 24),
+			5: ipNet(192, 168, 1, 10, 24),
+		}, "192.168.1.10"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			Interfaces = func() ([]net.Interface, error) { return tc.ifaces, nil }
+			InterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) { return tc.addrs[iface.Index], nil }
+			first, second := DiscoverLocalLANIP(), DiscoverLocalLANIP()
+			if first != second {
+				t.Fatalf("non-deterministic discovery: first=%q second=%q", first, second)
+			}
+			if first != tc.want {
+				t.Fatalf("DiscoverLocalLANIP = %q, want %q", first, tc.want)
+			}
+		})
 	}
 }
 
@@ -594,34 +503,5 @@ func TestPairingURLOnNetwork(t *testing.T) {
 				t.Fatalf("unavailable choice returned %q, %q, %v", link, pin, err)
 			}
 		})
-	}
-}
-
-// TestDiscoverLocalLANIP_SkipsBridgesAndCarrierlessInterfaces: a Docker
-// bridge sits at a low index with a private subnet and no LAN behind it,
-// and an interface that is up without carrier reaches nobody. The real NIC
-// behind both must win, or the share URL names an address no peer routes to.
-func TestDiscoverLocalLANIP_SkipsBridgesAndCarrierlessInterfaces(t *testing.T) {
-	prevIfaces, prevAddrs := Interfaces, InterfaceAddrs
-	t.Cleanup(func() { Interfaces, InterfaceAddrs = prevIfaces, prevAddrs })
-	addrsByIndex := map[int][]net.Addr{
-		1: {&net.IPNet{IP: net.IPv4(172, 17, 0, 1), Mask: net.CIDRMask(16, 32)}},
-		2: {&net.IPNet{IP: net.IPv4(10, 0, 0, 5), Mask: net.CIDRMask(8, 32)}},
-		3: {&net.IPNet{IP: net.IPv4(172, 18, 0, 1), Mask: net.CIDRMask(16, 32)}},
-		4: {&net.IPNet{IP: net.IPv4(192, 168, 122, 1), Mask: net.CIDRMask(24, 32)}},
-		5: {&net.IPNet{IP: net.IPv4(192, 168, 1, 10), Mask: net.CIDRMask(24, 32)}},
-	}
-	Interfaces = func() ([]net.Interface, error) {
-		return []net.Interface{
-			{Index: 1, Name: "docker0", Flags: net.FlagUp | net.FlagRunning},
-			{Index: 2, Name: "eth0", Flags: net.FlagUp}, // no carrier
-			{Index: 3, Name: "br-3f2a9c1d", Flags: net.FlagUp | net.FlagRunning},
-			{Index: 4, Name: "virbr0", Flags: net.FlagUp | net.FlagRunning},
-			{Index: 5, Name: "wlan0", Flags: net.FlagUp | net.FlagRunning},
-		}, nil
-	}
-	InterfaceAddrs = func(iface net.Interface) ([]net.Addr, error) { return addrsByIndex[iface.Index], nil }
-	if got := DiscoverLocalLANIP(); got != "192.168.1.10" {
-		t.Fatalf("DiscoverLocalLANIP = %q, want the running NIC behind the bridges and the carrier-less port", got)
 	}
 }

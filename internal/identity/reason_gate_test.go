@@ -41,24 +41,12 @@ func TestReasonSetIsClosed(t *testing.T) {
 	}
 }
 
-// TestReasonOrdinalsAreContiguous — reasonCodes is a slice indexed by
-// ordinal, so a gap would silently be an empty code, and Code() would
-// report a real refusal as admitted.
-func TestReasonOrdinalsAreContiguous(t *testing.T) {
-	for ordinal, code := range reasonCodes {
-		if ordinal == int(ReasonNone) {
-			continue
-		}
-		if code == "" {
-			t.Fatalf("ordinal %d has no code: the constant block left a gap", ordinal)
-		}
-	}
-}
-
 // TestReasonCodesAreUniqueAndWireShaped — two constants sharing a code
 // would make the code ambiguous, and a code with prose or capitals in
 // it would not survive being a stable token in a log, an audit row, and a
-// client bundle at once.
+// client bundle at once. An empty code, which is what a gap in the
+// ordinal-indexed reasonCodes would be, fails the shape and would
+// otherwise make Code() report a real refusal as admitted.
 func TestReasonCodesAreUniqueAndWireShaped(t *testing.T) {
 	shape := regexp.MustCompile(`^[a-z]+(_[a-z]+)*$`)
 	seen := map[string]Reason{}

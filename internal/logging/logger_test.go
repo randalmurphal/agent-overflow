@@ -110,64 +110,52 @@ func TestLogSetsTimestamp(t *testing.T) {
 	}
 }
 
+// Each entry is roughly 80-120 bytes of JSON: at maxBytes=100 entries
+// accumulate before a rotation, at maxBytes=50 every entry rotates. Either
+// way the current file is fresh (under maxBytes) and at most three backups
+// are kept.
 func TestRotationTriggersAtMaxBytes(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.log")
-	lg, err := NewLogger(path, 100)
-	if err != nil {
-		t.Fatalf("NewLogger: %v", err)
-	}
-	defer lg.Close()
-
-	// Each entry is roughly 80-120 bytes of JSON. Write enough to trigger rotation.
-	for i := 0; i < 10; i++ {
-		if err := lg.Log(LogEntry{Level: "info", Component: "test", Message: "padding message"}); err != nil {
-			t.Fatalf("Log %d: %v", i, err)
-		}
-	}
-
-	// Verify .1 backup exists.
-	if _, err := os.Stat(path + ".1"); err != nil {
-		t.Fatalf("expected %s.1 to exist: %v", path, err)
-	}
-
-	// Current file should be smaller than maxBytes (fresh after rotation).
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat current: %v", err)
-	}
-	if info.Size() >= 100 {
-		t.Errorf("current file size = %d, expected < 100 after rotation", info.Size())
-	}
-}
-
-func TestRotationKeepsThreeBackups(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.log")
-	// Use a very small maxBytes so each write triggers rotation.
-	lg, err := NewLogger(path, 50)
-	if err != nil {
-		t.Fatalf("NewLogger: %v", err)
-	}
-	defer lg.Close()
-
-	// Write many entries to trigger multiple rotations (each entry is ~80+ bytes,
-	// so every entry triggers a rotation at maxBytes=50).
-	for i := 0; i < 20; i++ {
-		if err := lg.Log(LogEntry{Level: "info", Component: "test", Message: "trigger rotation"}); err != nil {
-			t.Fatalf("Log %d: %v", i, err)
-		}
-	}
-
-	// .1, .2, .3 should exist.
-	for _, suffix := range []string{".1", ".2", ".3"} {
-		if _, err := os.Stat(path + suffix); err != nil {
-			t.Errorf("expected %s%s to exist: %v", path, suffix, err)
-		}
-	}
-	// .4 should NOT exist.
-	if _, err := os.Stat(path + ".4"); err == nil {
-		t.Error("expected .4 to not exist, but it does")
+	for _, tc := range []struct {
+		name     string
+		maxBytes int64
+		entries  int
+		message  string
+		present  []string
+		absent   []string
+	}{
+		{"triggers at max bytes", 100, 10, "padding message", []string{".1"}, nil},
+		{"keeps three backups", 50, 20, "trigger rotation", []string{".1", ".2", ".3"}, []string{".4"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "test.log")
+			lg, err := NewLogger(path, tc.maxBytes)
+			if err != nil {
+				t.Fatalf("NewLogger: %v", err)
+			}
+			defer lg.Close()
+			for i := 0; i < tc.entries; i++ {
+				if err := lg.Log(LogEntry{Level: "info", Component: "test", Message: tc.message}); err != nil {
+					t.Fatalf("Log %d: %v", i, err)
+				}
+			}
+			for _, suffix := range tc.present {
+				if _, err := os.Stat(path + suffix); err != nil {
+					t.Errorf("expected %s%s to exist: %v", path, suffix, err)
+				}
+			}
+			for _, suffix := range tc.absent {
+				if _, err := os.Stat(path + suffix); err == nil {
+					t.Errorf("expected %s%s to not exist, but it does", path, suffix)
+				}
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat current: %v", err)
+			}
+			if info.Size() >= tc.maxBytes {
+				t.Errorf("current file size = %d, expected < %d after rotation", info.Size(), tc.maxBytes)
+			}
+		})
 	}
 }
 
@@ -326,62 +314,41 @@ func TestLogReturnsMarshalError(t *testing.T) {
 	}
 }
 
+// A rename of a current file that is not at the logger's path fails. If the
+// path can be opened the logger reopens it and stays usable; if it cannot,
+// the logger holds no file and says both failed.
 func TestRotateReopensLoggerWhenRenameFails(t *testing.T) {
-	dir := t.TempDir()
-	actualPath := filepath.Join(dir, "actual.log")
-	file, err := os.OpenFile(actualPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
-	defer file.Close()
+	for _, tc := range []struct {
+		name     string
+		path     []string
+		wantErr  string
+		reopened bool
+	}{
+		{"reopens", []string{"missing.log"}, "rename current to .1", true},
+		{"reopen fails too", []string{"missing", "test.log"}, "rename current and reopen", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			file, err := os.OpenFile(filepath.Join(dir, "actual.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+			if err != nil {
+				t.Fatalf("OpenFile: %v", err)
+			}
+			defer file.Close()
+			path := filepath.Join(append([]string{dir}, tc.path...)...)
+			lg := &Logger{file: file, maxBytes: 1, path: path}
+			defer lg.Close()
 
-	lg := &Logger{
-		file:     file,
-		maxBytes: 1,
-		path:     filepath.Join(dir, "missing.log"),
-	}
-
-	err = lg.rotate()
-	if err == nil {
-		t.Fatal("expected rotate error")
-	}
-	if !strings.Contains(err.Error(), "rename current to .1") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if lg.file == nil {
-		t.Fatal("logger should reopen a usable file after rename failure")
-	}
-	defer lg.Close()
-
-	if _, statErr := os.Stat(filepath.Join(dir, "missing.log")); statErr != nil {
-		t.Fatalf("expected reopened log file: %v", statErr)
-	}
-}
-
-func TestRotateReturnsErrorWhenRenameAndReopenFail(t *testing.T) {
-	dir := t.TempDir()
-	actualPath := filepath.Join(dir, "actual.log")
-	file, err := os.OpenFile(actualPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
-	defer file.Close()
-
-	lg := &Logger{
-		file:     file,
-		maxBytes: 1,
-		path:     filepath.Join(dir, "missing", "test.log"),
-	}
-
-	err = lg.rotate()
-	if err == nil {
-		t.Fatal("expected rotate error")
-	}
-	if !strings.Contains(err.Error(), "rename current and reopen") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if lg.file != nil {
-		t.Fatal("logger file should be nil when reopen fails")
+			err = lg.rotate()
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("rotate error = %v, want one containing %q", err, tc.wantErr)
+			}
+			if (lg.file != nil) != tc.reopened {
+				t.Fatalf("logger holds a file = %v, want %v", lg.file != nil, tc.reopened)
+			}
+			if _, statErr := os.Stat(path); (statErr == nil) != tc.reopened {
+				t.Fatalf("log file at %s exists = %v, want %v", path, statErr == nil, tc.reopened)
+			}
+		})
 	}
 }
 

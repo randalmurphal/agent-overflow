@@ -36,10 +36,16 @@ func TestThreadActionLocksSerializeOneThread(t *testing.T) {
 	default:
 	}
 
+	// The holder releasing hands the key to the waiter; the entry must not be
+	// reclaimed out from under a live reference — a re-mint here would split
+	// the key onto a second semaphore and admit two holders at once.
 	unlock()
 	<-acquired
 	close(release)
 	<-done
+	if got := len(locks.locks); got != 0 {
+		t.Fatalf("lock count after final reference unlock = %d, want 0", got)
+	}
 }
 
 func TestThreadActionLocksAllowDifferentThreads(t *testing.T) {
@@ -67,35 +73,6 @@ func TestThreadActionLocksEntrySelfCleansOnLastRelease(t *testing.T) {
 	}
 }
 
-func TestThreadActionLocksEntrySurvivesWhileAnyReferenceRemains(t *testing.T) {
-	locks := New()
-	unlock := locks.Lock("thread-1")
-
-	waiting := make(chan struct{})
-	acquired := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		close(waiting)
-		secondUnlock := locks.Lock("thread-1")
-		close(acquired)
-		secondUnlock()
-		close(done)
-	}()
-
-	<-waiting
-	waitForThreadLockRefs(t, locks, "thread-1", 2)
-
-	// The holder releasing hands the key to the waiter; the entry must not be
-	// reclaimed out from under a live reference — a re-mint here would split
-	// the key onto a second semaphore and admit two holders at once.
-	unlock()
-	<-acquired
-	<-done
-	if got := len(locks.locks); got != 0 {
-		t.Fatalf("lock count after final reference unlock = %d, want 0", got)
-	}
-}
-
 func TestThreadActionLocksLockCtxCancelReleasesReference(t *testing.T) {
 	locks := New()
 	unlock := locks.Lock("thread-1")
@@ -108,6 +85,8 @@ func TestThreadActionLocksLockCtxCancelReleasesReference(t *testing.T) {
 	}()
 
 	waitForThreadLockRefs(t, locks, "thread-1", 2)
+	// Cancel the waiter while the holder still holds, so its reference is the
+	// one that has to come back on its own — nothing else will return it.
 	cancel()
 
 	select {
@@ -122,36 +101,6 @@ func TestThreadActionLocksLockCtxCancelReleasesReference(t *testing.T) {
 	// The cancelled waiter owes the registry its reference back; only the
 	// holder's remains.
 	waitForThreadLockRefs(t, locks, "thread-1", 1)
-
-	// And the key is still usable: the abandoned wait consumed no token.
-	unlock()
-	next, err := locks.LockCtx(context.Background(), "thread-1")
-	if err != nil {
-		t.Fatalf("LockCtx after cancelled waiter: %v", err)
-	}
-	next()
-	waitForThreadLockRefs(t, locks, "thread-1", 0)
-}
-
-func TestThreadActionLocksLockCtxCancelSelfCleans(t *testing.T) {
-	locks := New()
-	unlock := locks.Lock("thread-1")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	failed := make(chan error, 1)
-	go func() {
-		_, err := locks.LockCtx(ctx, "thread-1")
-		failed <- err
-	}()
-	waitForThreadLockRefs(t, locks, "thread-1", 2)
-
-	// Cancel the waiter while the holder still holds, so its reference is the
-	// one that has to come back on its own — nothing else will return it.
-	cancel()
-	if err := <-failed; !errors.Is(err, context.Canceled) {
-		t.Fatalf("LockCtx err = %v, want context.Canceled", err)
-	}
-	waitForThreadLockRefs(t, locks, "thread-1", 1)
 	if got := len(locks.locks); got != 1 {
 		t.Fatalf("lock count while the holder still references = %d, want 1", got)
 	}
@@ -161,6 +110,14 @@ func TestThreadActionLocksLockCtxCancelSelfCleans(t *testing.T) {
 	// the life of the process.
 	unlock()
 	waitForRegistryEmpty(t, locks)
+
+	// And the key is still usable: the abandoned wait consumed no token.
+	next, err := locks.LockCtx(context.Background(), "thread-1")
+	if err != nil {
+		t.Fatalf("LockCtx after cancelled waiter: %v", err)
+	}
+	next()
+	waitForThreadLockRefs(t, locks, "thread-1", 0)
 }
 
 func TestThreadActionLocksLockCtxRefusesDeadContext(t *testing.T) {

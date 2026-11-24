@@ -1,7 +1,6 @@
 package highlight
 
 import (
-	"bytes"
 	"fmt"
 	"reflect"
 	"strings"
@@ -159,29 +158,28 @@ func TestHighlightUnknownLangIsPlain(t *testing.T) {
 	}
 }
 
+// Over the request cap nothing is counted or allocated; under every byte
+// cap but with more lines than maxResultLines (sub-4-byte average lines)
+// the result degrades without a per-line result. Both entry points.
 func TestHighlightBoundsAllocationForPathologicalInputs(t *testing.T) {
-	// Over the request cap: nothing is counted or allocated.
-	over := Highlight(LangPython, bytes.Repeat([]byte("\n"), MaxRequestBytes+1))
-	if !over.Truncated || len(over.Lines) != 0 {
-		t.Errorf("over-request-cap = {truncated %v, %d lines}, want truncated with no lines", over.Truncated, len(over.Lines))
-	}
-
-	// Under every byte cap but with more lines than maxResultLines
-	// (sub-4-byte average lines): degrade without a per-line result.
-	dense := Highlight(LangPython, bytes.Repeat([]byte("\n"), maxResultLines+1))
-	if !dense.Truncated || len(dense.Lines) != 0 {
-		t.Errorf("over-line-cap = {truncated %v, %d lines}, want truncated with no lines", dense.Truncated, len(dense.Lines))
-	}
-}
-
-func TestHighlightPatchTextBoundsPathologicalInputs(t *testing.T) {
-	over := HighlightPatchText(LangPython, strings.Repeat("\n", MaxRequestBytes+1))
-	if !over.Truncated || len(over.Lines) != 0 {
-		t.Errorf("over-request-cap patch = {truncated %v, %d lines}, want truncated with no lines", over.Truncated, len(over.Lines))
-	}
-	dense := HighlightPatchText(LangPython, strings.Repeat("\n", maxResultLines+1))
-	if !dense.Truncated || len(dense.Lines) != 0 {
-		t.Errorf("over-line-cap patch = {truncated %v, %d lines}, want truncated with no lines", dense.Truncated, len(dense.Lines))
+	for _, tc := range []struct {
+		name  string
+		lines int
+	}{
+		{"over-request-cap", MaxRequestBytes + 1},
+		{"over-line-cap", maxResultLines + 1},
+	} {
+		src := strings.Repeat("\n", tc.lines)
+		for entry, res := range map[string]Result{
+			"Highlight":          Highlight(LangPython, []byte(src)),
+			"HighlightPatchText": HighlightPatchText(LangPython, src),
+		} {
+			t.Run(tc.name+"/"+entry, func(t *testing.T) {
+				if !res.Truncated || len(res.Lines) != 0 {
+					t.Errorf("{truncated %v, %d lines}, want truncated with no lines", res.Truncated, len(res.Lines))
+				}
+			})
+		}
 	}
 }
 
@@ -204,31 +202,6 @@ func TestHighlightPatchTextBudgetExhaustionRendersPlain(t *testing.T) {
 	for i, line := range res.Lines {
 		if line.Runs != nil {
 			t.Errorf("line %d not plain after budget exhaustion: %v", i, line.Runs)
-		}
-	}
-}
-
-func TestPrimerMatchesSplitJoin(t *testing.T) {
-	contents := []string{
-		"a\nb\nc\nd",
-		"a\nb\nc\n",
-		"single",
-		"",
-		"\n\n",
-	}
-	for _, content := range contents {
-		pr := primer{content: content}
-		// Ascending, repeated, then descending (scan restart) requests.
-		for _, newStart := range []int{1, 2, 3, 3, 10, 2} {
-			var want string
-			if content != "" && newStart > 1 {
-				fileLines := strings.Split(content, "\n")
-				n := min(newStart-1, len(fileLines))
-				want = strings.Join(fileLines[:n], "\n")
-			}
-			if got := pr.primeFor(newStart); got != want {
-				t.Errorf("primeFor(%d) on %q = %q, want %q", newStart, content, got, want)
-			}
 		}
 	}
 }

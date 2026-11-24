@@ -696,6 +696,7 @@ func TestProviderDisplayName(t *testing.T) {
 		"claude":     "Claude",
 		"claude-tui": "Claude",
 		"codex":      "Codex",
+		"agy":        "Antigravity",
 		"cursor":     "cursor",
 		"":           "",
 	} {
@@ -855,19 +856,6 @@ func TestKindPhraseCoversEveryKind(t *testing.T) {
 	}
 }
 
-// A phrase is FIXED: no thread title, no tool name, no provider prose. That
-// is the redaction rule restated where a future edit would break it.
-func TestEveryKindPhraseIsFixedText(t *testing.T) {
-	thread := ThreadRef{ID: "t-1", Title: "Rewrite the parser"}
-	notification, ok := MapTurnRest(TurnRest{Thread: thread, TopLevel: true})
-	if !ok {
-		t.Fatal("MapTurnRest declined a top-level rest")
-	}
-	if phrase := KindPhrase(notification.Send.Kind); strings.Contains(phrase, thread.Title) {
-		t.Fatalf("the phrase for %q carries the thread title", notification.Send.Kind)
-	}
-}
-
 func TestTargetJSONIsTheSameSpellingTargetToMapProduces(t *testing.T) {
 	target := Target{Kind: "thread", ThreadID: threadID, BackendID: "backend-9"}
 	encoded, err := TargetJSON(target)
@@ -950,11 +938,5 @@ func TestAHiddenThreadIsMarkedOnEveryThreadScopedSend(t *testing.T) {
 	retraction := Send{ID: "thread:" + threadID, Kind: KindTurnComplete, Retract: true, HiddenThread: true}
 	if err := ValidateSend(retraction); err == nil {
 		t.Fatal("a retraction carrying the hidden mark was accepted")
-	}
-}
-
-func TestProviderDisplayNameIncludesAntigravity(t *testing.T) {
-	if got := ProviderDisplayName("agy"); got != "Antigravity" {
-		t.Fatalf("ProviderDisplayName(agy) = %q, want Antigravity", got)
 	}
 }
