@@ -6,7 +6,7 @@ import { makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { deriveTrayTasks, trayRemoteJob } from '../../utils/backgroundTray';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { getToasts, removeToast } from '../../stores/toast.svelte';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -32,7 +32,7 @@ const chunk = { text: 'epoch 10 complete', error: '', offset: 100, nextOffset: 1
 describe('remote jobs in the background tray', () => {
   beforeEach(() => {
     resetBindingMocks();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    resetToastsForTest();
   });
   afterEach(resetStagedBackends);
 
