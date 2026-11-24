@@ -36,7 +36,8 @@ concurrency:
 #
 # The toolchain job publishes the run's plan (scripts/ci-suites.mjs): every
 # other job, each true or false, and the Playwright tooling specs the change
-# cannot reach, which every shard skips. Each job's `if` reads its own
+# cannot reach, which every shard skips. The vitest job's tooling-check
+# steps read vitest-checks. Each job's `if` reads its own
 # key, and the CI result job fails unless every job the plan selected
 # succeeded and every one it excluded was skipped
 # (scripts/ci-suites.test.mjs holds this file to that shape). Only cache-cleanup, which runs on a push alone,
@@ -53,6 +54,7 @@ jobs:
       image: ${{ steps.image.outputs.image }}
       plan: ${{ steps.plan.outputs.plan }}
       e2e-grep-invert: ${{ steps.plan.outputs.e2e-grep-invert }}
+      vitest-checks: ${{ steps.plan.outputs.vitest-checks }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/toolchain-image
@@ -351,10 +353,15 @@ jobs:
             base='HEAD^1'
           fi
           make vitest-${{ matrix.project }} VITEST_BASE="$base"
+      # The selection a pull request's run above makes.
+      - name: Check the affected-test selection
+        if: matrix.project == 'unit' && fromJSON(needs.toolchain.outputs.vitest-checks)['test-selection']
+        working-directory: frontend
+        run: ../bin/ao-netns pnpm run check:test-selection
       # The stalled-page watchdog ends a blocked browser run through
       # vitest.exit(); this fails the job when a Vitest change stops that.
       - name: Check the stalled-page watchdog
-        if: matrix.project == 'browser'
+        if: matrix.project == 'browser' && fromJSON(needs.toolchain.outputs.vitest-checks)['stall-watchdog']
         working-directory: frontend
         run: ../bin/ao-netns pnpm run check:stall-watchdog
       - uses: ./.github/actions/cache-save

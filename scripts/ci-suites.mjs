@@ -5,11 +5,13 @@
 //
 //   node scripts/ci-suites.mjs plan EVENT [PATHS_FILE]
 //       (the toolchain job) prints plan=JSON for GITHUB_OUTPUT: every job
-//       of ci.yml but toolchain and ci-result, each true or false; and
+//       of ci.yml but toolchain and ci-result, each true or false;
 //       e2e-grep-invert=, the Playwright --grep-invert pattern of the
-//       tooling specs the change cannot reach, empty to run every spec. A
-//       pull request needs PATHS_FILE; a push or a manual run runs every
-//       suite and every spec.
+//       tooling specs the change cannot reach, empty to run every spec; and
+//       vitest-checks=JSON: each check of the Vitest tooling (vitestChecks
+//       below), true or false, which a step of the vitest job reads. A pull
+//       request needs PATHS_FILE; a push or a manual run runs every suite,
+//       every spec and every check.
 //   node scripts/ci-suites.mjs verdict   (the CI result job, with PLAN and
 //       NEEDS in the environment) fails unless every job the plan selected
 //       succeeded and every job it excluded was skipped.
@@ -23,17 +25,18 @@
 // Playwright suite runs all of it: Playwright's --only-changed misses a
 // spec that reaches a changed helper through another helper
 // (review-diff-reading.spec.ts through review-diff-reading-flow.ts to
-// review-comment-actions-flow.ts). The one exception is the specs that
-// test the suite's own tooling (toolingSpecs below), which a change skips
-// when none of its paths can change their result.
+// review-comment-actions-flow.ts). The exceptions are the checks of the
+// suites' own tooling (toolingSpecs and vitestChecks below), which a change
+// skips when none of its paths can change their result.
 //
 // Every path falls in the first class that matches it, and a suite runs
 // when the change holds a path of a class it reads. A path no class
 // matches runs every suite. Each class lists only what a suite provably
 // does not read, so a new kind of file costs time, never coverage.
 import { readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { PROJECT_INPUTS, READERS, TRIGGERS } from '../frontend/scripts/vitest-changed.check.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -150,6 +153,42 @@ export function e2eGrepInvert(event, paths, harnessPackages) {
   return event === 'pull_request' ? grepInvert(skippedSpecs(paths, harnessPackages)) : '';
 }
 
+// vitestChecks names each check of the Vitest tooling that the vitest job
+// runs as a step, with the paths that can change its result. A pull
+// request runs a check when it runs the vitest job and changes one of
+// those paths, or a path no class matches; a push or a manual run runs
+// every check.
+const fromFrontend = path => posix.normalize(`frontend/${path}`);
+const selectionInputs = new Set([
+  ...READERS.flatMap(({ changed, reader }) => [changed, reader]),
+  ...PROJECT_INPUTS.map(({ changed }) => changed),
+  ...TRIGGERS.filter(({ all }) => all).map(({ changed }) => changed),
+].map(fromFrontend));
+export const vitestChecks = {
+  // frontend/scripts/vitest-changed.check.mjs: the files its tables name,
+  // the selector and the check, the TypeScript config, and the Vitest
+  // plugins in src/test/config/ through which the resolver sees what a
+  // test reads. It does not select a change to a file between a reader and
+  // the file it reads (parseBlockRetention.workload.ts), or a frontend file
+  // that starts importing a file the check expects to select no test
+  // (../package.json, ../e2e/package.json).
+  'test-selection': path => selectionInputs.has(path) ||
+    /^frontend\/(scripts\/vitest-changed(\.check)?\.mjs$|tsconfig[^/]*\.json$|src\/test\/config\/)/.test(path),
+  // frontend/scripts/check-stalled-page-watchdog.mjs: the check, the
+  // watchdog, its fixtures and child config, the config whose registration
+  // it checks, the Vitest and Playwright versions, and the TypeScript
+  // config. The browsers come from paths no class matches.
+  'stall-watchdog': path =>
+    /^frontend\/(scripts\/check-stalled-page-watchdog\.mjs$|src\/test\/stalledPageWatchdog\.ts$|src\/test\/stalledPage\/|vitest\.config\.ts$|package\.json$|pnpm-lock\.yaml$|tsconfig[^/]*\.json$)/.test(path),
+};
+
+export function vitestCheckRuns(event, paths, harnessPackages) {
+  const pullRequest = event === 'pull_request';
+  const runsVitest = !pullRequest || suites(paths, harnessPackages).vitest;
+  return Object.fromEntries(Object.entries(vitestChecks).map(([check, reads]) => [check,
+    runsVitest && (!pullRequest || paths.some(path => classify(path, harnessPackages) === 'other' || reads(path)))]));
+}
+
 export const everything = { 'go-checks': true, 'go-lint': true, frontend: true, vitest: true, e2e: true, 'upgrade-lineage': true };
 
 // jobs maps each job of ci.yml the plan decides, but toolchain and
@@ -222,6 +261,7 @@ function main([command, ...args]) {
     const harness = harnessTestPackages();
     console.log(`plan=${JSON.stringify(plan(event, paths, harness))}`);
     console.log(`e2e-grep-invert=${e2eGrepInvert(event, paths, harness)}`);
+    console.log(`vitest-checks=${JSON.stringify(vitestCheckRuns(event, paths, harness))}`);
     return;
   }
   if (command === 'verdict' && args.length === 0) {
