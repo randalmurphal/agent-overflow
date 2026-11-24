@@ -345,16 +345,3 @@ export function evaluateWhen(node: WhenNode, context: Record<string, boolean>): 
       return evaluateWhen(node.left, context) || evaluateWhen(node.right, context);
   }
 }
-
-export function encodeWhen(node: WhenNode): string {
-  switch (node.type) {
-    case 'identifier':
-      return node.name;
-    case 'not':
-      return `!(${encodeWhen(node.node)})`;
-    case 'and':
-      return `(${encodeWhen(node.left)} && ${encodeWhen(node.right)})`;
-    case 'or':
-      return `(${encodeWhen(node.left)} || ${encodeWhen(node.right)})`;
-  }
-}

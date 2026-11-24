@@ -10,6 +10,7 @@ import { createPane, getAllPanes, revealPane } from './panes.svelte';
 import { getCompactScreen, setCompactLayoutForTest } from './layoutMode.svelte';
 import type { Project } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import { getThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 
 function makeProject(id: string, overrides: Partial<Project> = {}): Project {
@@ -39,13 +40,15 @@ describe('applyProjectUpdated — project:updated convergence', () => {
     expect(getProject('p1')?.project.name).toBe('New');
   });
 
-  it("converges a known row on 'full', keeping its thread counts", () => {
-    addProjectLocal(makeProject('p1', { name: 'Old' }));
+  it("converges a known row on 'full', keeping its thread counts", async () => {
+    // The counts come from the catalog read; the frame carries none.
+    setBindingMock('ListProjects', async () => [
+      { project: makeProject('p1', { name: 'Old' }), threadCount: 3, lastActive: 42 },
+    ]);
+    await readSidebarCatalogs();
     applyProjectUpdated({ action: 'full', project: makeProject('p1', { name: 'Renamed' }) });
     expect(getProject('p1')?.project.name).toBe('Renamed');
-    // The applier goes through updateProjectLocal, which keeps the wrapper
-    // addProjectLocal built.
-    expect(getProject('p1')).toMatchObject({ threadCount: 0, lastActive: 0 });
+    expect(getProject('p1')).toMatchObject({ threadCount: 3, lastActive: 42 });
   });
 
   it("does not invent a row it has never seen on 'full'", () => {

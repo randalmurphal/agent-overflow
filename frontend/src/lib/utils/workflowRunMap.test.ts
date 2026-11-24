@@ -772,22 +772,24 @@ describe('§6 fan scale', () => {
     expect([fan.join?.unitId, fan.join?.isJoin]).toEqual(['port-join', true]);
     expect(fan.columns.some((column) => column.unit.isJoin)).toBe(false);
     expect(fan.done.entries.some((chip) => chip.isJoin)).toBe(false);
-  });
-
-  // §7: a queued group names WHICH lanes it stands for, not just how many. The
-  // range is the engine's own `unitIndex`, so it is the same coordinate the
-  // open columns beside it carry — and it holds no entries, because a queued
-  // lane has no record, no thread and no duration for a click to reveal.
-  it('queued lanes group into ONE node labelled by their contiguous range', () => {
-    const fan = fanOf(segmentsOf(fanView(), 'root'), 'port');
+    // §7: the queued lanes group into ONE node that names WHICH lanes it
+    // stands for, not just how many. The range is the engine's own
+    // `unitIndex`, so it is the same coordinate the open columns beside it
+    // carry — and it holds no entries, because a queued lane has no record,
+    // no thread and no duration for a click to reveal.
     expect([fan.queued.label, fan.queued.count, fan.queued.entries]).toEqual(['ports 3 · queued', 1, []]);
-  });
-
-  it('a queued group whose lanes are not contiguous falls back to a count it can prove', () => {
-    // port-d (index 3) plus the even-indexed extras from 10 up: a range label
-    // would claim lanes 4–9 that are not in the group.
-    const fan = fanOf(segmentsOf(fanView({ width: 26 }), 'root'), 'port');
-    expect(fan.queued.label).toBe('14 units · queued');
+    // The fan states no tally of its own any more — the wave's summary row
+    // already carries the unit count, and a second one under the same node
+    // was a number the reader had to reconcile with the first. What still has
+    // to hold is the PARTITION the count was standing in for: every non-join
+    // unit is drawn or counted exactly once, and the join is neither.
+    const placed = [
+      ...fan.columns.map((column) => column.unit.unitId),
+      ...fan.done.entries.map((chip) => chip.unitId),
+    ].sort();
+    expect(placed).toEqual(['port-a', 'port-b', 'port-c', 'port-e', 'port-f']);
+    // port-d is the sixth: queued, so it is counted rather than drawn.
+    expect(placed.length + fan.queued.count).toBe(6);
   });
 
   // The wording rule survives the grouping: a pending unit that EARNS a lane —
@@ -810,27 +812,14 @@ describe('§6 fan scale', () => {
     expect([queued.meta, queued.provider, queued.signal]).toEqual(['queued', 'claude', 'pending']);
   });
 
-  // The fan states no tally of its own any more — the wave's summary row
-  // already carries the unit count, and a second one under the same node was a
-  // number the reader had to reconcile with the first. What still has to hold
-  // is the PARTITION the count was standing in for: every non-join unit is
-  // drawn or counted exactly once, and the join is neither.
-  it('every unit lands in exactly one of column / done / queued, joins apart', () => {
-    const fan = fanOf(segmentsOf(fanView(), 'root'), 'port');
-    const placed = [
-      ...fan.columns.map((column) => column.unit.unitId),
-      ...fan.done.entries.map((chip) => chip.unitId),
-    ].sort();
-    expect(placed).toEqual(['port-a', 'port-b', 'port-c', 'port-e', 'port-f']);
-    // port-d is the sixth: queued, so it is counted rather than drawn.
-    expect([fan.queued.count, placed.length + fan.queued.count]).toEqual([1, 6]);
-    expect(fan.join?.unitId).toBe('port-join');
-  });
-
   it('fan-out at the width cap (32) | columns stay bounded, the bulk becomes arithmetic', () => {
     const fan = fanOf(segmentsOf(fanView({ width: 26 }), 'root'), 'port');
     expect(fan.columns).toHaveLength(3);
     expect(fan.queued.count).toBe(14);
+    // A queued group whose lanes are not contiguous falls back to a count it
+    // can prove: port-d (index 3) plus the even-indexed extras from 10 up, so
+    // a range label would claim lanes 4–9 that are not in the group.
+    expect(fan.queued.label).toBe('14 units · queued');
     expect(fan.done.count).toBe(14);
     expect(fan.done.entries).toHaveLength(15); // the 14 plus the dropped one
     // Every unit is accounted for exactly once, whether it is drawn or counted.
@@ -1860,7 +1849,8 @@ describe('ghostAttempt — the row a node with no records renders as', () => {
   }
 
   it('carries the node forward with nothing an attempt would have recorded', () => {
-    const node = nodeById(ghostNodes(), 'verify');
+    const nodes = ghostNodes();
+    const node = nodeById(nodes, 'verify');
     expect(node.attempts).toHaveLength(0);
     expect(ghostAttempt(node)).toEqual({
       key: node.key,
@@ -1883,10 +1873,10 @@ describe('ghostAttempt — the row a node with no records renders as', () => {
     });
     // Keyed on the node, so the ghost row is the row `now ▸` can mark.
     expect(node.key).not.toBe('');
-  });
 
-  it('names a pre-expansion fan by where its units come from, never by a count', () => {
-    const fan = nodeById(ghostNodes(), 'port');
+    // A pre-expansion fan is named by where its units come from, never by a
+    // count.
+    const fan = nodeById(nodes, 'port');
     expect(fan.kind).toBe('fan');
     expect(ghostAttempt(fan).label).toBe(fan.kind === 'fan' ? fan.ghostLabel : '');
     expect(ghostAttempt(fan).label).not.toMatch(/\d/);

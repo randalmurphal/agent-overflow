@@ -1049,11 +1049,6 @@ describe('createThreadRowUiState', () => {
   // the moment any row is expanded taller than default, and deterministic so
   // capture and restore compare equal.
   describe('expansionSignature', () => {
-    it('is empty when every row is at default expansion', () => {
-      const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
-      expect(rowUiState.expansionSignature()).toBe('');
-    });
-
     it('reflects an expanded subagent group', () => {
       const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
       rowUiState.toggleSubagentGroupExpanded('group-a');

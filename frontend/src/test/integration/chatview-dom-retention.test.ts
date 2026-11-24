@@ -28,10 +28,9 @@
 //    svelte-patch-event-slot.test.ts), so this suite needs no flush —
 //    the settle waits in collectHard let the clear fire.
 //
-// Needs --expose-gc; the suite reports skipped without it. The
-// `make test` gate runs without it — run explicitly via:
-//   NODE_OPTIONS=--expose-gc pnpm exec vitest run --project unit \
-//     src/test/integration/chatview-dom-retention.test.ts
+// The file turns on --expose-gc itself, so it runs in the unit project.
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it, beforeAll, beforeEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
 import ChatView from '../../lib/components/chat/ChatView.svelte';
@@ -66,8 +65,10 @@ import { commitList } from '../helpers/commitList';
 import { installPaneMocks, makeItem } from '../helpers/chat';
 import type { Item } from '../../lib/types/models';
 import { idleWorkspaceActivity } from '../helpers/workspaceLock';
+import { modelCatalog } from '../helpers/modelCatalog';
 
-const gc = (globalThis as { gc?: () => void }).gc;
+setFlagsFromString('--expose-gc');
+const gc = runInNewContext('gc') as () => void;
 
 function seedThread(id: string): Thread {
   return {
@@ -104,6 +105,7 @@ async function buildPane(thread: Thread, paneId: string, items: Item[] = []) {
   }));
   setBindingMock('SaveDraft', async () => {});
   setBindingMock('ListAttachments', async () => []);
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   const pane = createThreadPane({ paneId });
   registerPaneForTest(paneId, pane);
   focusPane(paneId);
@@ -115,7 +117,7 @@ const settle = () => new Promise((r) => setTimeout(r, 25));
 
 async function collectHard(): Promise<void> {
   for (let i = 0; i < 5; i += 1) {
-    gc!();
+    gc();
     await settle();
   }
 }
@@ -146,7 +148,7 @@ beforeEach(() => {
   resetAccountInfoForTest();
 });
 
-describe.runIf(gc)('closed chat pane DOM is collectable', () => {
+describe('closed chat pane DOM is collectable', () => {
   it('unmount + destroyPane releases the pane subtree (incl. composer textarea)', async () => {
     // Inner scope so no stack local keeps the elements alive.
     async function mountAndClose(): Promise<WeakRef<Element>[]> {
@@ -182,7 +184,7 @@ describe.runIf(gc)('closed chat pane DOM is collectable', () => {
   });
 });
 
-describe.runIf(gc)('closed review companion DOM is collectable', () => {
+describe('closed review companion DOM is collectable', () => {
   it('unmounting ReviewPane (source pane still alive) releases the diff DOM', async () => {
     // Mirrors the live-app ghost scenario: the review companion closes
     // while the source thread pane stays open, so any per-thread review
@@ -249,7 +251,7 @@ describe.runIf(gc)('closed review companion DOM is collectable', () => {
   });
 });
 
-describe.runIf(gc)('closed pane under PaneHost is collectable while siblings live', () => {
+describe('closed pane under PaneHost is collectable while siblings live', () => {
   it('removing one pane from the layout releases its section + subtree', async () => {
     // The live-app ghost topology: real ChatViews under PaneHost (each
     // pane's ChatView receives the host's onPaneDragStart closure, whose
@@ -306,7 +308,7 @@ describe.runIf(gc)('closed pane under PaneHost is collectable while siblings liv
   });
 });
 
-describe.runIf(gc)('closed pane after the rate-limit popover was re-hovered post session-connect', () => {
+describe('closed pane after the rate-limit popover was re-hovered post session-connect', () => {
   it('releases the pane even though the toolbar account derived changed its dep list between hovers', async () => {
     // Live-app shape (2026-08-23 heap snapshot): the ring popover is the
     // only reader of ComposerToolbar's `sessionUsesSelectedAccount`, and

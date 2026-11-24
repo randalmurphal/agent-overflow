@@ -123,6 +123,18 @@ describe('validateWsUrl against the page origin', () => {
   it('rejects an unparseable url', () => {
     expect(() => validateWsUrl('not a url', httpPage)).toThrow(/invalid/);
     expect(() => validateWsUrl('/ws', httpPage)).toThrow(/invalid/);
+    expect(() => validateWsUrl('nonsense', httpPage)).toThrow(/invalid/);
+  });
+
+  it('rejects a non-ws scheme', () => {
+    expect(() => validateWsUrl('http://127.0.0.1:34567/ws', httpPage)).toThrow(/scheme not ws\/wss/);
+    expect(() => validateWsUrl('javascript:alert(1)', httpPage)).toThrow();
+  });
+
+  it('refuses URL credentials and fragments before opening a socket', () => {
+    for (const value of ['ws://user:secret@127.0.0.1:34567/ws', 'ws://127.0.0.1:34567/ws#fragment']) {
+      expect(() => validateWsUrl(value, httpPage)).toThrow('cannot contain credentials or a fragment');
+    }
   });
 });
 
@@ -130,24 +142,6 @@ describe('validateWsUrl against the page origin', () => {
 // this document — derived rather than spelled out, since the environment
 // picks the port the suite runs on.
 const SAME_ORIGIN_WS = `ws://${window.location.host}/ws`;
-
-describe('validateWsUrl', () => {
-  it('rejects a non-ws scheme', () => {
-    expect(() => validateWsUrl(`http://${window.location.host}/ws`)).toThrow(/scheme not ws\/wss/);
-    expect(() => validateWsUrl('javascript:alert(1)')).toThrow();
-    expect(() => validateWsUrl('nonsense')).toThrow(/invalid/);
-  });
-
-  it('accepts a same-origin wsUrl', () => {
-    expect(() => validateWsUrl(SAME_ORIGIN_WS)).not.toThrow();
-  });
-
-  it('refuses URL credentials and fragments before opening a socket', () => {
-    for (const value of [`ws://user:secret@${window.location.host}/ws`, `${SAME_ORIGIN_WS}#fragment`]) {
-      expect(() => validateWsUrl(value)).toThrow('cannot contain credentials or a fragment');
-    }
-  });
-});
 
 describe('defaultBootstrap', () => {
   // The page ticket lives in the URL, so each case stamps the URL it is

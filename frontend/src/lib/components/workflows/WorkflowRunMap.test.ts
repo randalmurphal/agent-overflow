@@ -566,12 +566,30 @@ describe('WorkflowRunMapFan', () => {
     // not a count the reader cannot place against the columns beside it.
     expect(view.getAllByTestId('workflow-map-group').map((node) => node.textContent?.trim().replace(/\s+/g, ' ')))
       .toEqual(['◌ ports 3 · queued']);
+    const queued = view.getAllByTestId('workflow-map-group')
+      .find((node) => node.dataset.groupKind === 'queued');
+    // The range IS the group's identity: it wraps rather than clipping,
+    // because it is built from the phase's display name and a real phase name
+    // is a sentence.
+    const queuedLabel = queued?.querySelector('span:last-child');
+    expect(queuedLabel?.textContent?.trim()).toBe('ports 3 · queued');
+    expect(queuedLabel?.className).toContain('break-words');
+    expect(queuedLabel?.className).not.toContain('truncate');
+    // Non-interactive by construction, not by a disabled button: the model
+    // holds no entries for a queued group, so there is nothing a click could
+    // reveal.
+    expect(queued?.querySelector('button')).toBeNull();
     // §7: a small done group (≤ RUN_MAP_INLINE_DONE_MAX) is IN the flow — no
     // click between the reader and "what completed" — dropped entries riding
     // inside it as struck chips.
     const chips = view.getByTestId('workflow-map-done-chips');
     expect([...chips.querySelectorAll<HTMLElement>('[data-unit-id]')].map((node) => node.dataset.unitId))
       .toEqual(['port-a', 'port-e']);
+    expect(chips.parentElement?.querySelector('[data-testid="workflow-map-group"][data-group-kind="done"]'))
+      .toBeNull();
+    // The strike sits on the LABEL span, not the whole button: the glyph and
+    // meta beside it state their own facts and must not read as crossed out.
+    expect(chips.querySelector('[data-unit-id="port-e"] .line-through')?.textContent).toContain('port-e');
     expect(view.getByTestId('workflow-map-join').textContent).toContain('port-join');
     // The fan's two shapes carry their state on the element that drew it, so a
     // regression that moves a unit between column, chip and group is caught as a
@@ -589,13 +607,10 @@ describe('WorkflowRunMapFan', () => {
         ['port-e', 'dropped'],
         ['port-join', 'pending'],
       ]);
-  });
-
-  // Lane headers are the mockup's small-caps names above each column, and they
-  // ARE the lane's summary: glyph, name, duration. A collapsed lane draws
-  // nothing else, which is what makes "one summary node per settled lane" true.
-  it('heads every lane with its unit name, in the surface\'s small-caps treatment', () => {
-    const view = mountWave(fanView());
+    // Lane headers are the mockup's small-caps names above each column, and
+    // they ARE the lane's summary: glyph, name, duration. A collapsed lane
+    // draws nothing else, which is what makes "one summary node per settled
+    // lane" true.
     const names = view.getAllByTestId('workflow-map-lane-name');
     expect(names.map((name) => name.textContent?.trim())).toEqual(['port-b', 'port-c']);
     expect(names[0].className).toContain('uppercase');
@@ -693,42 +708,6 @@ describe('WorkflowRunMapFan', () => {
     expect(names[8].className).not.toContain('truncate');
   });
 
-  // Same rule, same reason: the range IS the group's identity — it wraps
-  // rather than clipping, because it is built from the phase's display name
-  // and a real phase name is a sentence.
-  it('the queued group states its whole range rather than ellipsising it', () => {
-    const view = mountWave(fanView());
-    const queued = view.getAllByTestId('workflow-map-group')
-      .find((node) => node.dataset.groupKind === 'queued');
-    const label = queued?.querySelector('span:last-child');
-    expect(label?.textContent?.trim()).toBe('ports 3 · queued');
-    expect(label?.className).toContain('break-words');
-    expect(label?.className).not.toContain('truncate');
-  });
-
-  // Non-interactive by construction, not by a disabled button: the model holds
-  // no entries for a queued group, so there is nothing a click could reveal.
-  it('offers no affordance on the queued group, because it stands for no records', () => {
-    const view = mountWave(fanView());
-    const queued = view.getAllByTestId('workflow-map-group')
-      .find((node) => node.dataset.groupKind === 'queued');
-    expect(queued?.querySelector('button')).toBeNull();
-  });
-
-  // §7: at most `RUN_MAP_INLINE_DONE_MAX` done units render as chips in the
-  // flow — no button, nothing to click — and a dropped entry rides among them
-  // struck, because nothing else states it.
-  it('renders a small done group inline, dropped entries struck, no affordance', () => {
-    const view = mountWave(fanView());
-    const chips = view.getByTestId('workflow-map-done-chips');
-    expect(chips.parentElement?.querySelector('[data-testid="workflow-map-group"][data-group-kind="done"]'))
-      .toBeNull();
-    // The strike sits on the LABEL span, not the whole button: the glyph and
-    // meta beside it state their own facts and must not read as crossed out.
-    const dropped = chips.querySelector('[data-unit-id="port-e"] .line-through');
-    expect(dropped?.textContent).toContain('port-e');
-  });
-
   /** `count` settled SCALAR units (no calls — a done group, not lanes) + one live. */
   function scalarDoneView(count: number): WorkflowRunMapView {
     return makeView([makeRun('root', {
@@ -755,6 +734,13 @@ describe('WorkflowRunMapFan', () => {
     // low-power test below asserts both go.
     expect(view.getAllByTestId('workflow-map-branch')[0].className).toContain('run-map-column');
     expect(view.getAllByTestId('workflow-map-group-fold')[0].className).toContain('transition-');
+    // The BUTTON rides the lane row; its chips do NOT — they land beneath it
+    // as a full-width block. Chips inside the row's `flex-none` wrapper set
+    // the lane's intrinsic width to the whole chip-row, which dragged the row
+    // past the card edge (measured 1200px in a 700px card) — the exact
+    // overflow the wrap rule exists to prevent.
+    expect(done?.closest('.run-map-lane-row')).not.toBeNull();
+    expect(view.getAllByTestId('workflow-map-group-fold')[0].closest('.run-map-lane-row')).toBeNull();
 
     await fireEvent.click(done as HTMLElement);
     await waitFor(() => expect(view.container.querySelector('[data-unit-id="port-s0"]')).not.toBeNull());
@@ -806,7 +792,7 @@ describe('WorkflowRunMapFan', () => {
   // width that was already minimal: the nested fan is what put a horizontal
   // scrollbar inside a 200px lane. The scalar groups and the join render in
   // the same block flow.
-  it('stacks a nested fan instead of nesting columns', () => {
+  it('stacks a nested fan instead of nesting columns, and merges a sole child workflow into its lane header', () => {
     const view = mountWave(nestedFanView());
     const fans = view.getAllByTestId('workflow-map-fan');
     expect(fans.map((fan) => fan.dataset.fanLayout)).toEqual(['columns', 'stacked']);
@@ -821,14 +807,11 @@ describe('WorkflowRunMapFan', () => {
       .not.toBeNull();
     expect(stacked.querySelector('[data-testid="workflow-map-join"]')?.textContent)
       .toContain('rev-join');
-  });
 
-  // §7, sole-child merge: a lane whose unit made exactly one call carries the
-  // workflow's name on the lane header, and the composition renders headerless
-  // — the alternative was the same duration twice, one line apart, with the
-  // workflow name truncated in between.
-  it('merges a sole child workflow into its lane header instead of repeating it', () => {
-    const view = mountWave(nestedFanView());
+    // §7, sole-child merge: a lane whose unit made exactly one call carries
+    // the workflow's name on the lane header, and the composition renders
+    // headerless — the alternative was the same duration twice, one line
+    // apart, with the workflow name truncated in between.
     const composition = view.getAllByTestId('workflow-map-composition')[0];
     expect(composition.dataset.collapsed).toBe('false');
     expect(composition.querySelector('[data-testid="workflow-map-composition-row"]')).toBeNull();
@@ -873,23 +856,10 @@ describe('WorkflowRunMapFan', () => {
     expect(view.container.querySelector('[data-phase-id="land"]')).not.toBeNull();
   });
 
-  // The oversized done group's BUTTON rides the lane row; its chips do NOT —
-  // they land beneath it as a full-width block. Chips inside the row's
-  // `flex-none` wrapper set the lane's intrinsic width to the whole chip-row,
-  // which dragged the row past the card edge (measured 1200px in a 700px
-  // card) — the exact overflow the wrap rule exists to prevent.
-  it('lands the oversized done chips below the lane row, not inside it', async () => {
-    const view = mountWave(scalarDoneView(9));
-    const button = view.getAllByTestId('workflow-map-group')
-      .find((node) => node.dataset.groupKind === 'done') as HTMLElement;
-    expect(button.closest('.run-map-lane-row')).not.toBeNull();
-    expect(view.getAllByTestId('workflow-map-group-fold')[0].closest('.run-map-lane-row')).toBeNull();
-  });
-
   // A done group that outgrows the inline bound mid-run folds — but the chips
   // the reader was just looking at must not vanish behind a closed count: the
   // flip seeds the fold open. (A fan that MOUNTS oversized still folds closed
-  // — that is the resting default the previous test pins.)
+  // — that is the resting default `folds an oversized done group…` pins.)
   it('seeds the fold open when an inline done group outgrows the bound', async () => {
     const waveOf = (count: number) => {
       const model = buildRunMap(scalarDoneView(count), NOW, { expandedWaveIds: ['root'] });
