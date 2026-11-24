@@ -20,7 +20,7 @@ import { getProviderDefinition } from '../../providers/catalog';
 import { remoteAccessAvailable } from '../../transport/buildVariant';
 import type { ProviderID } from '../../types/providers';
 
-export const SETTINGS_GROUPS = ['Appearance', 'App', 'Agents', 'Workspace', 'Remote access', 'Data'] as const;
+export const SETTINGS_GROUPS = ['Appearance', 'App', 'Agents', 'Workspace', 'Issues', 'Remote access', 'Data'] as const;
 
 export type SettingsGroup = (typeof SETTINGS_GROUPS)[number];
 
@@ -184,6 +184,18 @@ export const SETTINGS_SECTIONS = [
     description: 'Which editor opens when you click a file path in the chat.',
   },
   {
+    id: 'tracker-connections',
+    label: 'Connections',
+    group: 'Issues',
+    description: 'The Jira, Tempo and Linear accounts this computer reads issues and logs time with.',
+  },
+  {
+    id: 'tracker-boards',
+    label: 'Boards',
+    group: 'Issues',
+    description: 'The boards a project lists in its Issues pane, in order, and which one opens first.',
+  },
+  {
     id: 'systems',
     remote: true,
     label: 'Connect to a computer',
@@ -293,5 +305,5 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'agy', 'commit-messages',
     'browser', 'thread-tools', 'assistants', 'agent-guide', 'memory', 'projects', 'git', 'editor', 'remote', 'agent-access',
-    'observability', 'storage', 'voice'].includes(section);
+    'observability', 'storage', 'voice', 'tracker-connections', 'tracker-boards'].includes(section);
 }

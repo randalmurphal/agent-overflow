@@ -144,6 +144,12 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // about (app_provider_account_bindings.go GetProviderLoginState).
   GetProviderLoginState: async (provider: string) => ({ provider, phase: 'idle' }),
   ListProviderAccounts: async () => [],
+  // The Issues settings pages (stores/trackerConnections,
+  // stores/trackerProjectBoards). A computer with no connection and a
+  // project with no board answer empty lists (app_tracker.go
+  // TrackerConnections, app_tracker_boards.go ProjectTrackerBoards).
+  TrackerConnections: async () => [],
+  ProjectTrackerBoards: async () => [],
   // Custom notification sounds (stores/sounds).
   GetSoundFiles: async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }),
   // Rate limit snapshots read on every hello (stores/eventsRateLimits).

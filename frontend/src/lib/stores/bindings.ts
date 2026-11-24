@@ -1472,3 +1472,41 @@ export function ResolveForgeFacts(
 ): Promise<ForgeFactsClass | null> {
   return orOlder(() => ResolveForgeFactsRaw(ws, pr, rev, keys, fresh), () => null);
 }
+
+// Issue tracker connections and a project's boards (Settings > Issues).
+// A call that names a connection reaches the computer whose answer named
+// it: every caller pins it (stores/trackerConnections.svelte.ts,
+// stores/trackerProjectBoards.svelte.ts). A computer whose release has no
+// tracker reads none.
+import {
+  TrackerConnections as TrackerConnectionsRaw,
+  ProjectTrackerBoards as ProjectTrackerBoardsRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import type { TrackerConnection as TrackerConnectionRow } from '../../../bindings/agent-overflow/internal/app/models.js';
+import type { BoardChoice as TrackerBoardChoiceRow } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
+
+export {
+  AddTrackerConnection,
+  RenameTrackerConnection,
+  SetTrackerConnectionEnabled,
+  SetTrackerConnectionTokenExpiry,
+  RemoveTrackerConnection,
+  VerifyTrackerConnection,
+  EditTrackerKeyFile,
+  OpenTrackerTokenPage,
+  TrackerProjects,
+  TrackerBoards,
+  SetProjectTrackerBoards,
+} from '../../../bindings/agent-overflow/app.js';
+export type { TrackerConnection, TrackerProblem, NewTrackerConnection } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { BoardChoice as TrackerBoardChoice, ProjectBoard as TrackerProjectBoard, ProjectView as TrackerProjectView, BoardInfoView as TrackerBoardInfo } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
+
+/** This computer's tracker connections; none on a computer without them. */
+export function TrackerConnections(): Promise<TrackerConnectionRow[]> {
+  return orOlder(() => TrackerConnectionsRaw(), () => []);
+}
+
+/** The boards a project lists; none on a computer without trackers. */
+export function ProjectTrackerBoards(projectId: string): Promise<TrackerBoardChoiceRow[]> {
+  return orOlder(() => ProjectTrackerBoardsRaw(projectId), () => []);
+}
