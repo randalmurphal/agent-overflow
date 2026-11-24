@@ -108,7 +108,8 @@ type Provider interface {
 	BoardIssues(ctx context.Context, board BoardID, window time.Time) (Listing, error)
 	// BoardRows are board's rows of issues that rule lists (Listing.Rule):
 	// an issue the board holds that rule leaves out is Missing, as the
-	// listing left it out.
+	// listing left it out. A rule the tracker refuses fails it with
+	// ErrRuleRefused.
 	BoardRows(ctx context.Context, board BoardID, issues []IssueID, rule Eligibility) (Rows, error)
 	// NewRows places issue, which a create just made, on boards, after
 	// CheckNewRows: its row on each board that holds it, as that board's

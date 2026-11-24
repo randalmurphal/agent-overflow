@@ -663,7 +663,23 @@ and writes share:
   attempted again by the next pass, a reconcile interval later. Jira's rows read
   asks `jql/match` about an issue the list left out and fails when the
   match cannot judge the board (after reading the board's configuration
-  again once), so a miss never removes a row on the list's word alone. A listing the
+  again once), so a miss never removes a row on the list's word alone. A
+  rule the tracker no longer holds ends the pass's candidates: Jira's board
+  issue list answers 400 for a sprint ID that names nothing (a sprint
+  deleted since the listing), which its rows read returns as
+  `tracker.ErrRuleRefused`; on that error from any provider the pass drops
+  its candidates and rule, stays open in its board lifetime, and its next
+  tick, after the failure's retry delay, lists the board again
+  (`TestARefusedRuleListsTheBoardAgain`). The rows stored before the
+  refusal stand. Every other failed rows read keeps the pass's candidates,
+  so only the refusal costs a relist (about 4 Jira pages at 20,000
+  issues). Linear refuses no rule: its issue filter answers a cycle ID
+  that names nothing with no issues and no error (measured 2026-11-23:
+  `issues(filter: {cycle: {id: {in: [...]}}}, first: 1)` with a
+  well-formed UUID that never named a cycle answered HTTP 200 with data,
+  no nodes and no `errors`; a deleted cycle's ID is unmeasured and
+  expected to answer the same), so its rows read judges by the rest of
+  the rule. A listing the
   provider reports as incomplete adds and reads no row it leaves out,
   and so does one that began before the newest complete listing the
   board reconciled, which saw the rows it leaves out. A read by ID that

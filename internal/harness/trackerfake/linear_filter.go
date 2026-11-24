@@ -90,6 +90,11 @@ var operandKinds = map[string]*operandKind{
 func eq(v, o any) bool  { return v == o }
 func neq(v, o any) bool { return v != o }
 
+// in matches nothing for an ID that names nothing. Measured 2026-11-23:
+// issues(filter: {cycle: {id: {in: [a well-formed UUID that names no
+// cycle]}}}, first: 1) answered HTTP 200 with data, no nodes and no
+// errors. The ID had never existed; a deleted cycle's ID is unmeasured
+// and expected to answer the same.
 func in(v, o any) bool {
 	list, _ := o.([]any)
 	return slices.Contains(list, v)

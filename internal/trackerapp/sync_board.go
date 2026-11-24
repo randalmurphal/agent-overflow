@@ -122,7 +122,9 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 // the walk delivers the rows a listing would find missing, so a first
 // sync longer than one tick's pages reads each row once and lists the
 // board once, after the walk. A listing that fails leaves the pass open
-// and not listed. An open pass is due at the pump's next tick whatever
+// and not listed, and so does a rows read that refuses the listing's rule
+// (tracker.ErrRuleRefused); every other failed rows read keeps the pass's
+// candidates. An open pass is due at the pump's next tick whatever
 // the interval (boardDue), so one a refresh began goes on at once.
 func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	lifetime, err := r.lifetime(board)
@@ -193,6 +195,14 @@ func (r *run) reconcileReads(board tracker.BoardID, pass *reconcilePass, log *ch
 		batch := pass.left[:min(readBatch, len(pass.left))]
 		ch, _, unread, err := r.boardRows(board, batch, pass.rule)
 		log.add(ch)
+		if errors.Is(err, tracker.ErrRuleRefused) {
+			// The tracker no longer holds the rule the listing captured (a
+			// sprint deleted since): no candidate can be judged by it, so the
+			// pass, still open in its lifetime, lists the board again. The
+			// rows stored before the refusal stand.
+			pass.left, pass.rule = nil, tracker.Eligibility{}
+			return err
+		}
 		if err != nil {
 			// The batch's issues a stored write settled were attempted; the
 			// pass keeps the rest of it, moved up against the batches after.

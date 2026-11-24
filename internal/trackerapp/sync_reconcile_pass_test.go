@@ -12,8 +12,11 @@ import (
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
+// passRule is the rule a passBoard lists by.
+var passRule = tracker.Eligibility{Window: time.UnixMilli(1_790_000_000_000), Sprints: []tracker.SprintID{"5"}}
+
 // passBoard scripts a board whose listing names n issues from 20000 up,
-// all of them complete, a delta that delivers none of them, and rows by
+// all of them complete, by passRule, a delta that delivers none of them, and rows by
 // ID that answer only the issues available says; it records each issue
 // a rows read asks for.
 type passBoard struct {
@@ -21,8 +24,8 @@ type passBoard struct {
 	listed    []tracker.IssueID
 	available func(i int) bool
 	asked     map[tracker.IssueID]int
-	// fail, when set, fails the rows read it returns true for.
-	fail func(read int) bool
+	// fail, when set, fails the rows read it returns an error for.
+	fail func(read int) error
 	read int
 }
 
@@ -36,7 +39,7 @@ func newPassBoard(m *mirrorFixture, n int, available func(i int) bool) *passBoar
 			return tracker.RowPage{Next: cursorAfter("none")}, nil
 		}
 		p.boardIssues = func(tracker.BoardID, time.Time) (tracker.Listing, error) {
-			return tracker.Listing{IDs: slices.Clone(b.listed), Complete: true}, nil
+			return tracker.Listing{IDs: slices.Clone(b.listed), Complete: true, Rule: passRule}, nil
 		}
 		p.boardRows = b.rows
 		p.history = func(tracker.HistoryQuery) (tracker.History, error) { return tracker.History{}, nil }
@@ -51,8 +54,10 @@ func (b *passBoard) rows(_ tracker.BoardID, asked []tracker.IssueID) (tracker.Ro
 	for _, id := range asked {
 		b.asked[id]++
 	}
-	if b.fail != nil && b.fail(b.read) {
-		return tracker.Rows{}, &trackerapi.TransientError{Err: errors.New("reset")}
+	if b.fail != nil {
+		if err := b.fail(b.read); err != nil {
+			return tracker.Rows{}, err
+		}
 	}
 	var out tracker.Rows
 	for _, id := range asked {
@@ -190,7 +195,7 @@ func TestAReconcilePassResumesAtAFailedBatchAndEndsWithItsRoot(t *testing.T) {
 	m := newMirrorFixture(t)
 	n := reconcileBatches*readBatch + readBatch*5
 	b := newPassBoard(m, n, func(int) bool { return true })
-	b.fail = func(read int) bool { return read == 3 }
+	b.fail = failAt(3, &trackerapi.TransientError{Err: errors.New("reset")})
 	holder := &boardPump{scope: m.scope()}
 	due := BoardDue{Structure: true, Reconcile: true}
 	if out := passTick(t, m, holder, due); out.Failure == nil || out.Failure.Kind != FailureTransient {

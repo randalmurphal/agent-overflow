@@ -116,7 +116,9 @@ func andRule(jql string, rule tracker.Eligibility) string {
 // board under the configuration held (a board given another filter
 // since), the configuration is read again and the rows once more; a board
 // still unjudged fails the read, so that no issue reads as Missing on
-// the list's word alone.
+// the list's word alone. A rule naming a sprint the board issue list
+// refuses (a sprint deleted since the listing) fails it with
+// tracker.ErrRuleRefused.
 func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []tracker.IssueID, rule tracker.Eligibility) (tracker.Rows, error) {
 	if err := checkIssues(issues); err != nil {
 		return tracker.Rows{}, err
@@ -205,9 +207,21 @@ func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID,
 		return nil, nil
 	case len(ids):
 		// Every issue exists, so the failure is not about a missing one.
-		return nil, err
+		return nil, ruleRefused(err, rule)
 	}
-	return p.listIDs(ctx, b, exist, fields, rule)
+	list, err = p.listIDs(ctx, b, exist, fields, rule)
+	return list, ruleRefused(err, rule)
+}
+
+// ruleRefused is err, a listing by IDs that exist, as tracker.ErrRuleRefused
+// when it is a 400 while rule names sprints: the JQL is this package's and
+// the IDs exist, so what the board issue list refuses is a sprint that
+// names nothing (measured, see BoardIssues).
+func ruleRefused(err error, rule tracker.Eligibility) error {
+	if len(rule.Sprints) > 0 && isStatus(err, http.StatusBadRequest) {
+		return fmt.Errorf("%w: %w", tracker.ErrRuleRefused, err)
+	}
+	return err
 }
 
 // errIncomplete is a listing Jira attached a warning to.

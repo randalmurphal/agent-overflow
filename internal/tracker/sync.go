@@ -1,6 +1,9 @@
 package tracker
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // Cursor is where a board's delta resumes, in the provider's own bytes.
 // The caller stores what a page returns, in the same transaction as that
@@ -83,6 +86,12 @@ type Eligibility struct {
 	Window  time.Time
 	Sprints []SprintID
 }
+
+// ErrRuleRefused is a read by ID that the tracker refused because of the
+// Eligibility it was given (Provider.BoardRows): it names a sprint the
+// tracker no longer has. The error wraps the tracker's answer. The rule
+// is spent: a caller lists the board again for a rule the tracker holds.
+var ErrRuleRefused = errors.New("tracker: the tracker refused the listing's rule")
 
 // Rows are a board's rows for a set of issues. Missing are the issues
 // asked for that the board does not list now: moved off it, deleted, or
