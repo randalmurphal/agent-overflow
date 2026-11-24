@@ -72,6 +72,9 @@ func registerCommandPendingSend(r *Router, threadID, itemID, commandUUID string,
 	r.RegisterPendingSendWithExpectation(threadID, itemID, turnIndex, expect)
 }
 
+// A `queued` ack resolves the send's row, and must never consume the
+// pending-send entry: only the wire echo may pop it, and popping here
+// would strand the row unconfirmed.
 func TestCommandLifecycle_QueuedResolvesUserItemID(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -79,6 +82,9 @@ func TestCommandLifecycle_QueuedResolvesUserItemID(t *testing.T) {
 
 	if err := router.Handle(commandLifecycleEvent("t1", testCommandUUID, provider.CommandQueued)); err != nil {
 		t.Fatalf("queued: %v", err)
+	}
+	if !router.HasPendingSendForThread("t1") {
+		t.Fatal("pending send consumed by a lifecycle ack")
 	}
 	got := lastCommandLifecycleEmission(t, emissions)
 	if got.UserItemID != "user:0:flush:1" {
@@ -282,21 +288,6 @@ func TestCommandLifecycle_CorrelationMapIsBounded(t *testing.T) {
 	router.mu.Unlock()
 	if size > maxCommandLifecycleEntriesPerThread {
 		t.Fatalf("correlation map size = %d, want <= %d", size, maxCommandLifecycleEntriesPerThread)
-	}
-}
-
-// A `queued` ack must never consume the pending-send entry: only the wire
-// echo may pop it, and popping here would strand the row unconfirmed.
-func TestCommandLifecycle_QueuedDoesNotConsumePendingSend(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	registerCommandPendingSend(router, "t1", "user:0:flush:1", testCommandUUID, 1)
-
-	if err := router.Handle(commandLifecycleEvent("t1", testCommandUUID, provider.CommandQueued)); err != nil {
-		t.Fatalf("queued: %v", err)
-	}
-	if !router.HasPendingSendForThread("t1") {
-		t.Fatal("pending send consumed by a lifecycle ack")
 	}
 }
 

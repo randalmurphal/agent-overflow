@@ -650,49 +650,9 @@ func TestFlushSendDigestLedgerIsBounded(t *testing.T) {
 // member (settleFoldedMergeState: "the message is provably in provider
 // context"). An answer or completion carried by that member must reach the
 // consumed hook, or its owner's delivery stays unconfirmed and the next boot
-// gives back a message the agent already holds.
-func TestAMergeFoldedMemberIsReportedConsumed(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	var consumed []string
-	router.SetFlushSendConsumedHook(func(_ string, sends []ConsumedSend) {
-		for _, send := range sends {
-			consumed = append(consumed, send.SendIDs...)
-		}
-	})
-
-	digestA, err := claude.UserMessageBlockDigest("the completion", nil, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metaA, err := usermessage.MarshalMeta(usermessage.Meta{SendID: "remote-completion:c:r"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UnixMilli()
-	deferredA := store.Item{
-		ID: "user:3:flush:1", ThreadID: "t1", TurnIndex: 4,
-		Kind: "user_text", Role: "user", Status: "completed",
-		Summary: "the completion", Meta: metaA, CreatedAt: now, UpdatedAt: now,
-	}
-	router.RegisterPendingFlushSendWithExpectation("t1", "queue:1", deferredA, now,
-		PendingSendExpectation{ProviderItemID: "uuid-a", ContentBlockDigest: digestA})
-	mergeFoldSend(t, router, "t1", "user:3:flush:2", "uuid-b", "person text", nil,
-		usermessage.Meta{SendID: "send-b"}, 3, 5)
-
-	if err := router.Handle(mergeEcho(t, "t1", "uuid-b", textBlocks("the completion", "person text"), true)); err != nil {
-		t.Fatalf("echo B: %v", err)
-	}
-	if _, ok := router.peekPendingSendByItemID("t1", deferredA.ID); ok {
-		t.Fatalf("fixture: the fold did not consume the member")
-	}
-	if !slices.Contains(consumed, "remote-completion:c:r") {
-		t.Fatalf("consumed hook saw %q; the folded member's completion was never confirmed", consumed)
-	}
-}
-
-// A merge that absorbs several members consumes them all in one settle, so
-// every member's owner must reach the consumed hook, not only the first.
+// gives back a message the agent already holds. A merge that absorbs several
+// members consumes them all in one settle, so every member's owner must reach
+// the consumed hook, not only the first.
 // Neither member's own echo arrives first: A is still deferred and B, though
 // persisted, was never echoed, so the fold is the only confirmation either
 // gets.

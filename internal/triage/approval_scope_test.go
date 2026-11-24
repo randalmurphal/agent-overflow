@@ -56,74 +56,49 @@ func seedScopedToolCall(t *testing.T, r *Router, threadID, id, parentID, toolNam
 	}
 }
 
-// TestApprovalScopeFallsBackToTheRequestedToolsOwnRow pins the triage
-// half of Q10: `can_use_tool` carries no parent of its own, so when the
-// parser could not resolve `agent_id` the requested tool's persisted
-// parent_id IS the attribution.
-func TestApprovalScopeFallsBackToTheRequestedToolsOwnRow(t *testing.T) {
-	r, st, emits := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	seedScopedToolCall(t, r, "t1", "toolu_agent", "", "Agent")
-	seedScopedToolCall(t, r, "t1", "toolu_bash", "toolu_agent", "Bash")
+// TestApprovalScopeResolutionOrder pins the triage half of Q10 and its
+// precedence. A scope the parser resolved from `agent_id` is stronger
+// evidence than the row lookup and is not overwritten by it; an
+// envelope-carried scope is used when the parser had none; and since
+// `can_use_tool` carries no parent of its own, when neither resolved one
+// the requested tool's persisted parent_id IS the attribution.
+func TestApprovalScopeResolutionOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		rowParent   string
+		parserScope string
+		eventScope  string
+		input       json.RawMessage
+		want        string
+	}{
+		{"falls back to the requested tool's own row", "toolu_agent", "", "", json.RawMessage(`{"command":"ls"}`), "toolu_agent"},
+		{"parser resolution wins", "toolu_stale", "toolu_parser", "toolu_event", nil, "toolu_parser"},
+		{"event envelope beats the row lookup", "toolu_stale", "", "toolu_event", nil, "toolu_event"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, st, emits := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			seedScopedToolCall(t, r, "t1", tc.rowParent, "", "Agent")
+			seedScopedToolCall(t, r, "t1", "toolu_bash", tc.rowParent, "Bash")
 
-	if err := r.Handle(approvalRequestEvent(t, "t1", provider.ApprovalRequest{
-		RequestID: "req-1", ThreadID: "t1", ToolUseID: "toolu_bash",
-		ToolName: "Bash", Kind: "command", Input: json.RawMessage(`{"command":"ls"}`),
-	}, "")); err != nil {
-		t.Fatal(err)
-	}
+			if err := r.Handle(approvalRequestEvent(t, "t1", provider.ApprovalRequest{
+				RequestID: "req-1", ThreadID: "t1", ToolUseID: "toolu_bash",
+				ParentToolUseID: tc.parserScope, ToolName: "Bash", Kind: "command", Input: tc.input,
+			}, tc.eventScope)); err != nil {
+				t.Fatal(err)
+			}
 
-	if got := lastApprovalRequest(t, emits).ParentToolUseID; got != "toolu_agent" {
-		t.Fatalf("emitted scope = %q, want toolu_agent", got)
-	}
-	pending, ok, _ := r.takePendingApproval("t1", "req-1", 0)
-	if !ok {
-		t.Fatal("approval was not registered")
-	}
-	if pending.Request.ParentToolUseID != "toolu_agent" {
-		t.Fatalf("pending scope = %q, want toolu_agent", pending.Request.ParentToolUseID)
-	}
-}
-
-// TestApprovalScopeParserResolutionWins pins the precedence: a scope the
-// parser resolved from `agent_id` is stronger evidence than the row
-// lookup, and is not overwritten by it.
-func TestApprovalScopeParserResolutionWins(t *testing.T) {
-	r, st, emits := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	// The persisted row says one thing; the parser says another.
-	seedScopedToolCall(t, r, "t1", "toolu_stale", "", "Agent")
-	seedScopedToolCall(t, r, "t1", "toolu_bash", "toolu_stale", "Bash")
-
-	if err := r.Handle(approvalRequestEvent(t, "t1", provider.ApprovalRequest{
-		RequestID: "req-1", ThreadID: "t1", ToolUseID: "toolu_bash",
-		ParentToolUseID: "toolu_parser", ToolName: "Bash", Kind: "command",
-	}, "toolu_event")); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := lastApprovalRequest(t, emits).ParentToolUseID; got != "toolu_parser" {
-		t.Fatalf("emitted scope = %q, want the parser's toolu_parser", got)
-	}
-}
-
-// TestApprovalScopeEventEnvelopeBeatsTheRowLookup pins the middle rung:
-// an envelope-carried scope is used when the parser had none.
-func TestApprovalScopeEventEnvelopeBeatsTheRowLookup(t *testing.T) {
-	r, st, emits := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	seedScopedToolCall(t, r, "t1", "toolu_stale", "", "Agent")
-	seedScopedToolCall(t, r, "t1", "toolu_bash", "toolu_stale", "Bash")
-
-	if err := r.Handle(approvalRequestEvent(t, "t1", provider.ApprovalRequest{
-		RequestID: "req-1", ThreadID: "t1", ToolUseID: "toolu_bash",
-		ToolName: "Bash", Kind: "command",
-	}, "toolu_event")); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := lastApprovalRequest(t, emits).ParentToolUseID; got != "toolu_event" {
-		t.Fatalf("emitted scope = %q, want toolu_event", got)
+			if got := lastApprovalRequest(t, emits).ParentToolUseID; got != tc.want {
+				t.Fatalf("emitted scope = %q, want %s", got, tc.want)
+			}
+			pending, ok, _ := r.takePendingApproval("t1", "req-1", 0)
+			if !ok {
+				t.Fatal("approval was not registered")
+			}
+			if pending.Request.ParentToolUseID != tc.want {
+				t.Fatalf("pending scope = %q, want %s", pending.Request.ParentToolUseID, tc.want)
+			}
+		})
 	}
 }
 

@@ -35,27 +35,54 @@ func compactionStatusEvent(t *testing.T, threadID string, meta provider.Compacti
 	}
 }
 
-func TestCompacting_OpenAndExplicitClose(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
+// Each close signal ends an open window with an inactive frame and clears
+// the snapshot: the explicit close frame; the compact boundary, which is
+// both providers' success signal and must close the window even when no
+// explicit close frame arrived (Codex's open is item/started; its completed
+// item IS the boundary); and a turn boundary, which closes the window
+// defensively because a failed Codex compaction abandons its item (no
+// completed half, no boundary), so the turn's own completion is the only
+// reliable close on that path.
+func TestCompacting_EachCloseSignalClosesWindow(t *testing.T) {
 	opened := time.UnixMilli(1_754_000_000_000)
+	for _, tc := range []struct {
+		name  string
+		close provider.ProviderEvent
+	}{
+		{"explicit close", compactionStatusEvent(t, "t1", provider.CompactionStatusMeta{Result: "success"}, opened.Add(2*time.Minute))},
+		{"compact boundary", provider.ProviderEvent{
+			Kind: provider.EventCompactBoundary, ThreadID: "t1", Content: "Context compacted", Timestamp: time.Now(),
+		}},
+		{"turn complete", provider.ProviderEvent{
+			Kind: provider.EventTurnComplete, ThreadID: "t1",
+			TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}, Timestamp: time.Now(),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, emissions := newTestRouter(t)
+			createTestThread(t, st, "t1")
 
-	if err := router.Handle(compactionStatusEvent(t, "t1", provider.CompactionStatusMeta{Active: true}, opened)); err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	if err := router.Handle(compactionStatusEvent(t, "t1", provider.CompactionStatusMeta{Result: "success"}, opened.Add(2*time.Minute))); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+			if err := router.Handle(compactionStatusEvent(t, "t1", provider.CompactionStatusMeta{Active: true}, opened)); err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			if err := router.Handle(tc.close); err != nil {
+				t.Fatalf("close: %v", err)
+			}
 
-	got := compactingEmissions(emissions)
-	if len(got) != 2 {
-		t.Fatalf("emissions = %+v, want open+close", got)
-	}
-	if !got[0].Active || got[0].SinceUnixMs != opened.UnixMilli() {
-		t.Fatalf("open frame = %+v", got[0])
-	}
-	if got[1].Active || got[1].SinceUnixMs != 0 {
-		t.Fatalf("close frame = %+v", got[1])
+			got := compactingEmissions(emissions)
+			if len(got) != 2 {
+				t.Fatalf("emissions = %+v, want open+close", got)
+			}
+			if !got[0].Active || got[0].SinceUnixMs != opened.UnixMilli() {
+				t.Fatalf("open frame = %+v", got[0])
+			}
+			if got[1].Active || got[1].SinceUnixMs != 0 {
+				t.Fatalf("close frame = %+v", got[1])
+			}
+			if snap := router.LiveStateSnapshotForThread("t1"); snap.CompactingSinceUnixMs != 0 {
+				t.Fatalf("snapshot still compacting: %d", snap.CompactingSinceUnixMs)
+			}
+		})
 	}
 }
 
@@ -99,61 +126,6 @@ func TestCompacting_CloseWithoutOpenEmitsNothing(t *testing.T) {
 	}
 	if got := compactingEmissions(emissions); len(got) != 0 {
 		t.Fatalf("emissions = %+v, want none", got)
-	}
-}
-
-// The compact boundary is both providers' success signal and must close
-// the window even when no explicit close frame arrived (Codex's open is
-// item/started; its completed item IS the boundary).
-func TestCompacting_CompactBoundaryClosesWindow(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	if err := router.Handle(compactionStatusEvent(t, "t1", provider.CompactionStatusMeta{Active: true}, time.Now())); err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventCompactBoundary,
-		ThreadID:  "t1",
-		Content:   "Context compacted",
-		Timestamp: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("boundary: %v", err)
-	}
-
-	got := compactingEmissions(emissions)
-	if len(got) != 2 || got[1].Active {
-		t.Fatalf("emissions = %+v, want open then close", got)
-	}
-	if snap := router.LiveStateSnapshotForThread("t1"); snap.CompactingSinceUnixMs != 0 {
-		t.Fatalf("snapshot still compacting: %d", snap.CompactingSinceUnixMs)
-	}
-}
-
-// A turn boundary closes the window defensively: a failed Codex
-// compaction abandons its item (no completed half, no boundary), so the
-// turn's own completion is the only reliable close on that path.
-func TestCompacting_TurnCompleteClosesWindow(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	if err := router.Handle(compactionStatusEvent(t, "t1", provider.CompactionStatusMeta{Active: true}, time.Now())); err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	err := router.Handle(provider.ProviderEvent{
-		Kind:         provider.EventTurnComplete,
-		ThreadID:     "t1",
-		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
-		Timestamp:    time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("turn complete: %v", err)
-	}
-
-	got := compactingEmissions(emissions)
-	if len(got) != 2 || got[1].Active {
-		t.Fatalf("emissions = %+v, want open then close", got)
 	}
 }
 

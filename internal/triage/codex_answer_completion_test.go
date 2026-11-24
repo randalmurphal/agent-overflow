@@ -97,49 +97,41 @@ func heldSpawn(t *testing.T) (*Router, *store.Store) {
 }
 
 // The child's FINAL_ANSWER is the completion row's payload and preview,
-// and no separate delivery row is minted for it.
+// and no separate delivery row is minted for it. An encrypted answer
+// carries the placeholder the delivery row would.
 func TestCodexCompletionWaitsForTheAnswerAndCarriesIt(t *testing.T) {
-	router, st := heldSpawn(t)
+	for _, tc := range []struct {
+		name   string
+		answer json.RawMessage
+		want   string
+	}{
+		{"readable", rootAnswer(t, "final-1", "Reviewer verdict: ship it."), "Reviewer verdict: ship it."},
+		{"encrypted", json.RawMessage(`{"agent_path":"/root/child","status":"completed","message_type":"FINAL_ANSWER",` +
+			`"mailbox_delivery":true,"recipient":"/root","delivery_id":"item:final-1","encrypted":true}`), codexEncryptedMessagePlaceholder},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st := heldSpawn(t)
 
-	deliverMailbox(t, router, "t1", "spawn", rootAnswer(t, "final-1", "Reviewer verdict: ship it."))
+			deliverMailbox(t, router, "t1", "spawn", tc.answer)
 
-	rows := completionRowsFor(t, st, "t1", "spawn")
-	if len(rows) != 1 || rows[0].ID != "complete:spawn:turn:A" || rows[0].Status != statusCompleted {
-		t.Fatalf("completion rows after answer: %+v", rows)
-	}
-	if rows[0].PayloadID == "" {
-		t.Fatalf("completion carries no answer payload: %+v", rows[0])
-	}
-	if got := payloadPreview(t, st, "t1", rows[0].PayloadID); got != "Reviewer verdict: ship it." {
-		t.Fatalf("completion preview = %q", got)
-	}
-	data, err := st.GetPayloadData("t1", rows[0].PayloadID)
-	if err != nil || string(data) != "Reviewer verdict: ship it." {
-		t.Fatalf("completion payload = %q err=%v", data, err)
-	}
-	if deliveries := deliveryRowsFor(t, st, "t1"); len(deliveries) != 0 {
-		t.Fatalf("answer consumed by the completion still minted delivery rows: %+v", deliveries)
-	}
-}
-
-func TestCodexEncryptedAnswerCompletionCarriesThePlaceholder(t *testing.T) {
-	router, st := heldSpawn(t)
-
-	meta, err := json.Marshal(map[string]any{
-		"agent_path": "/root/child", "status": "completed", "message_type": "FINAL_ANSWER",
-		"mailbox_delivery": true, "recipient": "/root", "delivery_id": "item:final-1", "encrypted": true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	deliverMailbox(t, router, "t1", "spawn", meta)
-
-	rows := completionRowsFor(t, st, "t1", "spawn")
-	if len(rows) != 1 || rows[0].PayloadID == "" {
-		t.Fatalf("completion rows after encrypted answer: %+v", rows)
-	}
-	if got := payloadPreview(t, st, "t1", rows[0].PayloadID); got != codexEncryptedMessagePlaceholder {
-		t.Fatalf("encrypted preview = %q", got)
+			rows := completionRowsFor(t, st, "t1", "spawn")
+			if len(rows) != 1 || rows[0].ID != "complete:spawn:turn:A" || rows[0].Status != statusCompleted {
+				t.Fatalf("completion rows after answer: %+v", rows)
+			}
+			if rows[0].PayloadID == "" {
+				t.Fatalf("completion carries no answer payload: %+v", rows[0])
+			}
+			if got := payloadPreview(t, st, "t1", rows[0].PayloadID); got != tc.want {
+				t.Fatalf("completion preview = %q", got)
+			}
+			data, err := st.GetPayloadData("t1", rows[0].PayloadID)
+			if err != nil || string(data) != tc.want {
+				t.Fatalf("completion payload = %q err=%v", data, err)
+			}
+			if deliveries := deliveryRowsFor(t, st, "t1"); len(deliveries) != 0 {
+				t.Fatalf("answer consumed by the completion still minted delivery rows: %+v", deliveries)
+			}
+		})
 	}
 }
 

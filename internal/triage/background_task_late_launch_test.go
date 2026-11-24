@@ -93,89 +93,66 @@ func TestTaskStartedBeforeLaunchRowStampsTaskID(t *testing.T) {
 	}
 }
 
-// TestKilledTerminalBeforeLaunchRowSettlesWhenRowArrives pins the
-// terminal-before-row ordering: a foreground agent exits, the CLI kills
+// TestTerminalBeforeLaunchRowSettlesWhenRowArrives pins the
+// terminal-before-row ordering. A foreground agent exits, the CLI kills
 // its backgrounded shells and emits task_updated{killed} on the main
-// wire, and only afterwards does the launch row land. The killed
-// terminal must be stashed (not dropped) and drained into the
-// completion sibling when the row arrives.
-func TestKilledTerminalBeforeLaunchRowSettlesWhenRowArrives(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
+// wire, and only afterwards does the launch row land; or a
+// subagent-owned shell exits normally (task_updated{completed}) before
+// its row lands. The terminal must be stashed (not dropped) and drained
+// into the completion sibling, with the stash's outcome, when the row
+// arrives.
+func TestTerminalBeforeLaunchRowSettlesWhenRowArrives(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		terminal   map[string]any
+		wantStatus string
+	}{
+		{"killed", map[string]any{"task_id": "tsk-1", "status": "killed", "source": "task_updated"}, statusKilled},
+		{"completed", map[string]any{"task_id": "tsk-1", "status": "completed", "exit_code": 0, "source": "task_updated"}, statusCompleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			createTestThread(t, st, "t1")
 
-	handleToolStart(t, router, "t1", "bg-k", "", map[string]any{"task_id": "tsk-k"})
+			handleToolStart(t, router, "t1", "bg-1", "", map[string]any{"task_id": "tsk-1"})
 
-	termMeta, _ := json.Marshal(map[string]any{
-		"task_id": "tsk-k", "status": "killed", "source": "task_updated",
-	})
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-k",
-		Meta: termMeta, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("handle killed terminal: %v", err)
-	}
+			termMeta, _ := json.Marshal(tc.terminal)
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-1",
+				Meta: termMeta, Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("handle terminal: %v", err)
+			}
 
-	// The killed terminal is stashed, not destroyed.
-	if _, found, err := st.GetPendingBackgroundTerminal("t1", "tsk-k"); err != nil {
-		t.Fatalf("read stash: %v", err)
-	} else if !found {
-		t.Fatal("killed terminal with no launch row must be stashed")
-	}
+			// The terminal is stashed, not destroyed.
+			if _, found, err := st.GetPendingBackgroundTerminal("t1", "tsk-1"); err != nil {
+				t.Fatalf("read stash: %v", err)
+			} else if !found {
+				t.Fatal("terminal with no launch row must be stashed")
+			}
 
-	handleToolStart(t, router, "t1", "bg-k", "Bash", map[string]any{
-		"toolName":      "Bash",
-		"is_background": true,
-		"input":         map[string]any{"command": "sleep 999"},
-	})
+			handleToolStart(t, router, "t1", "bg-1", "Bash", map[string]any{
+				"toolName":      "Bash",
+				"is_background": true,
+				"input":         map[string]any{"command": "sleep 999"},
+			})
 
-	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
-	if len(dones) != 1 {
-		t.Fatalf("expected 1 sibling after late launch, got %+v", dones)
-	}
-	if dones[0].CompletionOf != "bg-k" {
-		t.Errorf("CompletionOf = %q, want bg-k", dones[0].CompletionOf)
-	}
-	if dones[0].Status != statusKilled {
-		t.Errorf("Status = %q, want %q", dones[0].Status, statusKilled)
-	}
-	if _, found, err := st.GetPendingBackgroundTerminal("t1", "tsk-k"); err != nil {
-		t.Fatalf("read stash: %v", err)
-	} else if found {
-		t.Error("stash should be drained by the late-launch settle")
-	}
-}
-
-// TestCompletedTerminalBeforeLaunchRowSettlesWhenRowArrives is the
-// non-killed sibling of the test above: a subagent-owned shell exits
-// normally (task_updated{completed} → stash) before its row lands.
-func TestCompletedTerminalBeforeLaunchRowSettlesWhenRowArrives(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	handleToolStart(t, router, "t1", "bg-c", "", map[string]any{"task_id": "tsk-c"})
-
-	termMeta, _ := json.Marshal(map[string]any{
-		"task_id": "tsk-c", "status": "completed", "exit_code": 0, "source": "task_updated",
-	})
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-c",
-		Meta: termMeta, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("handle completed terminal: %v", err)
-	}
-
-	handleToolStart(t, router, "t1", "bg-c", "Bash", map[string]any{
-		"toolName":      "Bash",
-		"is_background": true,
-		"input":         map[string]any{"command": "make build"},
-	})
-
-	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
-	if len(dones) != 1 {
-		t.Fatalf("expected 1 sibling after late launch, got %+v", dones)
-	}
-	if dones[0].Status != statusCompleted {
-		t.Errorf("Status = %q, want %q (stash outcome, not killed)", dones[0].Status, statusCompleted)
+			dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+			if len(dones) != 1 {
+				t.Fatalf("expected 1 sibling after late launch, got %+v", dones)
+			}
+			if dones[0].CompletionOf != "bg-1" {
+				t.Errorf("CompletionOf = %q, want bg-1", dones[0].CompletionOf)
+			}
+			if dones[0].Status != tc.wantStatus {
+				t.Errorf("Status = %q, want %q (the stash outcome)", dones[0].Status, tc.wantStatus)
+			}
+			if _, found, err := st.GetPendingBackgroundTerminal("t1", "tsk-1"); err != nil {
+				t.Fatalf("read stash: %v", err)
+			} else if found {
+				t.Error("stash should be drained by the late-launch settle")
+			}
+		})
 	}
 }
 
