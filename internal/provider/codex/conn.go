@@ -802,8 +802,11 @@ func (c *Conn) registerChildRoute(childThreadID string, s *Session) bool {
 		// Enqueue BEFORE releasing routesMu so any subsequent frame routed to s
 		// on the reader goroutine drains these held frames first in FIFO order.
 		s.enqueueEarlyFrames(hold.frames)
-		claimed, refused = hold, c.takeRefusedLocked()
+		claimed = hold
 	}
+	// Every claim reports the budget refusals since the last report, held
+	// frames or not: a refused frame armed no hold of its own.
+	refused = c.takeRefusedLocked()
 	c.routesMu.Unlock()
 	logClaimedHoldLosses(childThreadID, claimed, refused)
 	return claimed != nil && len(claimed.frames) > 0
@@ -861,16 +864,21 @@ func (c *Conn) takeRefusedLocked() int {
 	return refused
 }
 
-// logClaimedHoldLosses logs, once, the frames a claimed hold lost to its
-// full queue and the connection-wide budget refusals since the last claim or
-// expiry. Nothing reaches a thread: a refused frame names no root.
+// logClaimedHoldLosses logs, once, the frames a claimed hold (nil when the
+// claim took none) lost to its full queue and the connection-wide budget
+// refusals since the last claim, expiry or teardown. Nothing reaches a
+// thread: a refused frame names no root.
 func logClaimedHoldLosses(providerThreadID string, hold *childHold, refused int) {
-	if hold == nil || hold.droppedNotifications+hold.rejectedRequests+refused == 0 {
+	dropped, rejected := 0, 0
+	if hold != nil {
+		dropped, rejected = hold.droppedNotifications, hold.rejectedRequests
+	}
+	if dropped+rejected+refused == 0 {
 		return
 	}
 	log.Printf(
 		"codex: a spawn claimed provider thread %s after its full queue dropped %d notifications and rejected %d requests; %d frames refused connection-wide for a full routing budget",
-		providerThreadID, hold.droppedNotifications, hold.rejectedRequests, refused,
+		providerThreadID, dropped, rejected, refused,
 	)
 }
 
@@ -935,6 +943,7 @@ func (c *Conn) readLoop() {
 			hold.timer.Stop()
 		}
 		c.holds = nil
+		refused := c.takeRefusedLocked()
 		c.loaded = make(map[string]struct{})
 		sessions := make([]*Session, 0, len(c.allSessions))
 		for s := range c.allSessions {
@@ -945,6 +954,9 @@ func (c *Conn) readLoop() {
 		c.bySessionID = make(map[string]*Session)
 		c.starting = nil
 		c.routesMu.Unlock()
+		if refused > 0 {
+			log.Printf("codex: the connection closed with %d frames refused connection-wide for a full routing budget since the last claim or expiry", refused)
+		}
 
 		connClosing := c.closing.Load()
 		var exitMeta json.RawMessage
@@ -1318,10 +1330,7 @@ func (c *Conn) expireHold(providerThreadID string, hold *childHold) {
 	}
 	c.takeHoldLocked(providerThreadID)
 	refused := c.takeRefusedLocked()
-	threadIDs := make([]string, 0, len(c.allSessions))
-	for s := range c.allSessions {
-		threadIDs = append(threadIDs, s.threadID)
-	}
+	sessions := len(c.allSessions)
 	c.routesMu.Unlock()
 	rejected := 0
 	for _, ev := range hold.frames {
@@ -1332,13 +1341,12 @@ func (c *Conn) expireHold(providerThreadID string, hold *childHold) {
 		id := json.Number(ev.RequestID)
 		c.rejectQuarantinedRequest(&id, "subagent ownership did not arrive before the routing deadline")
 	}
-	slices.Sort(threadIDs)
 	// A held frame names only its own thread, so the connection cannot tell
 	// which root the thread belonged to: the expiry is logged, never shown on
 	// a guessed thread.
 	log.Printf(
-		"codex: no spawn claimed provider thread %s before the routing deadline: rejected %d requests, dropped %d notifications (%d and %d more refused for its full queue); %d frames refused connection-wide for a full routing budget; sessions on the connection: %v",
-		providerThreadID, rejected, len(hold.frames)-rejected, hold.rejectedRequests, hold.droppedNotifications, refused, threadIDs,
+		"codex: no spawn claimed provider thread %s before the routing deadline: rejected %d requests, dropped %d notifications (%d and %d more refused for its full queue); %d frames refused connection-wide for a full routing budget; %d sessions on the connection",
+		providerThreadID, rejected, len(hold.frames)-rejected, hold.rejectedRequests, hold.droppedNotifications, refused, sessions,
 	)
 }
 

@@ -769,11 +769,12 @@ holds have per-thread, total-count, byte, and thread-id bounds, shared by every
 session on the connection. If typed ownership does not arrive within ten
 seconds, held approvals are rejected, the held notifications are dropped, and
 the connection logs the thread, both counts, the frames its full queue
-refused, and the sessions on the connection. Nothing is shown on a thread,
-since a held frame does not name its root. Frames refused for a full queue
-are counted on the thread's hold, and frames refused for the full connection
-budget on the connection, and both are logged once at the next claim or
-expiry.
+refused, and how many sessions are on the connection. Nothing is shown on a
+thread, since a held frame does not name its root. Frames refused for a full
+queue are counted on the thread's hold and logged when it is claimed or
+expires. Frames refused for the full connection budget are counted on the
+connection and logged once at the next claim of any thread, the next expiry,
+or teardown, whichever comes first.
 
 `thread/started` includes a `sessionId` shared by a root and its descendants.
 The connection routes a `thread/started` by that `sessionId` or by its

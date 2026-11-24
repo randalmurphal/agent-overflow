@@ -155,7 +155,8 @@ func TestChildFrameBetweenRecoveredOwnershipAndItsSpawnWaitsForTheSpawn(t *testi
 // TestHeldThreadExpiryIsLoggedNotShown pins what the deadline does with a
 // thread no spawn claimed: its request is rejected, its notification dropped,
 // nothing reaches any thread, and one log line names the thread, the counts
-// and every session on the connection, since a held frame names no root.
+// and how many sessions are on the connection, since a held frame names no
+// root.
 func TestHeldThreadExpiryIsLoggedNotShown(t *testing.T) {
 	fx, _, events := recordingRootSession(t)
 	deadlines := fx.deadlines()
@@ -166,7 +167,7 @@ func TestHeldThreadExpiryIsLoggedNotShown(t *testing.T) {
 
 	logged := captureLog(t, func() { deadlines.fire(t, 0) })
 
-	want := "codex: no spawn claimed provider thread child-x before the routing deadline: rejected 1 requests, dropped 1 notifications (0 and 0 more refused for its full queue); 0 frames refused connection-wide for a full routing budget; sessions on the connection: [ao-thread ao-thread-2]"
+	want := "codex: no spawn claimed provider thread child-x before the routing deadline: rejected 1 requests, dropped 1 notifications (0 and 0 more refused for its full queue); 0 frames refused connection-wide for a full routing budget; 2 sessions on the connection"
 	if !strings.Contains(logged, want) {
 		t.Fatalf("expiry log = %q, want it to contain %q", logged, want)
 	}
@@ -331,6 +332,51 @@ func TestRefusedFramesAreCountedAndLoggedOnce(t *testing.T) {
 	if !strings.Contains(logged, "0 frames refused connection-wide") {
 		t.Fatalf("second expiry log = %q, want the budget refusal logged only once", logged)
 	}
+}
+
+// A first frame over the routing budget arms no hold, so no expiry can report
+// it: the connection reports it at the next claim of any child, or at
+// teardown when no claim comes, and only once.
+func TestAnOversizedFirstFrameIsReportedAtTheNextClaimOrTeardown(t *testing.T) {
+	oversized := childDelta("child-big", "big", strings.Repeat("x", maxDeferredChildEventBytes+1))
+	t.Run("claim", func(t *testing.T) {
+		fx, _, _ := recordingRootSession(t)
+		deadlines := fx.deadlines()
+		fx.feed(oversized)
+		if got := fx.heldFrames("child-big"); got != 0 || deadlines.count() != 0 {
+			t.Fatalf("held %d frames and armed %d deadlines for a frame over the budget", got, deadlines.count())
+		}
+		logged := captureLog(t, func() {
+			fx.feed(v2ActivityLine("root-provider-thread", "root-turn", "spawn-c", "started", "child-c", "/root/child-c"))
+		})
+		want := "codex: a spawn claimed provider thread child-c after its full queue dropped 0 notifications and rejected 0 requests; 1 frames refused connection-wide for a full routing budget"
+		if !strings.Contains(logged, want) {
+			t.Fatalf("claim log = %q, want %q", logged, want)
+		}
+		logged = captureLog(t, func() {
+			fx.feed(v2ActivityLine("root-provider-thread", "root-turn", "spawn-d", "started", "child-d", "/root/child-d"))
+			fx.exitAppServer()
+		})
+		if strings.Contains(logged, "refused connection-wide") {
+			t.Fatalf("the refusal was reported again: %q", logged)
+		}
+	})
+	// A held thread whose deadline has not fired yet does not report it
+	// either: the connection closes first.
+	t.Run("teardown before an expiry", func(t *testing.T) {
+		fx, _, _ := recordingRootSession(t)
+		deadlines := fx.deadlines()
+		fx.feed(childDelta("child-h", "h", "x"))
+		fx.feed(oversized)
+		if deadlines.count() != 1 {
+			t.Fatalf("armed %d deadlines, want child-h's only", deadlines.count())
+		}
+		logged := captureLog(t, fx.exitAppServer)
+		want := "codex: the connection closed with 1 frames refused connection-wide for a full routing budget since the last claim or expiry"
+		if strings.Count(logged, want) != 1 {
+			t.Fatalf("teardown log = %q, want %q once", logged, want)
+		}
+	})
 }
 
 // TestForkAnnouncementWithOneSessionWaitsUnseen covers a revert's live-session
