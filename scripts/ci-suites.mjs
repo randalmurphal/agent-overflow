@@ -164,22 +164,43 @@ const selectionInputs = new Set([
   ...PROJECT_INPUTS.map(({ changed }) => changed),
   ...TRIGGERS.filter(({ all }) => all).map(({ changed }) => changed),
 ].map(fromFrontend));
-// Both checks load frontend/vitest.config.ts: the config, what it imports
-// (the plugins in src/test/config/, the watchdog, scripts/bundleId.ts), the
-// Vitest and Playwright versions, and the TypeScript config.
-const vitestConfig = /^frontend\/(vitest\.config\.ts$|src\/test\/config\/|src\/test\/stalledPageWatchdog\.ts$|scripts\/bundleId\.ts$|package\.json$|pnpm-lock\.yaml$|tsconfig[^/]*\.json$)/;
+// loadedBy is entry and every file Node loads with it: the relative
+// imports that are not type-only, followed from the tree the plan runs in.
+// A specifier that names no file is listed and not followed; the check that
+// loads it reports it.
+export function loadedBy(entry, read = path => readFileSync(join(root, path), 'utf8'), loaded = new Set()) {
+  if (loaded.has(entry)) return loaded;
+  loaded.add(entry);
+  let source;
+  try {
+    source = read(entry);
+  } catch (error) {
+    if (error.code === 'ENOENT') return loaded;
+    throw error;
+  }
+  const imports = /^(?:import\s+(?!type\b)|export\s*(?:\*|\{))[^'";]*?\bfrom\s*['"](\.[^'"]+)['"]|^import\s*['"](\.[^'"]+)['"]|\bimport\(\s*['"](\.[^'"]+)['"]/gm;
+  for (const [, from, bare, dynamic] of source.matchAll(imports)) {
+    loadedBy(posix.join(posix.dirname(entry), from ?? bare ?? dynamic), read, loaded);
+  }
+  return loaded;
+}
+
+// Both checks load frontend/vitest.config.ts: the config and what it
+// imports, the Vitest and Playwright versions, and the TypeScript config.
+const vitestConfigModules = loadedBy('frontend/vitest.config.ts');
+const vitestConfig = path => vitestConfigModules.has(path) || /^frontend\/(package\.json$|pnpm-lock\.yaml$|tsconfig[^/]*\.json$)/.test(path);
 export const vitestChecks = {
   // frontend/scripts/vitest-changed.check.mjs: the config, the selector and
   // the check, and the files its tables name, each reader's bridge to the
   // file it reads included (`via`). It does not select a frontend file that
   // starts importing a file the check expects to select no test
   // (../package.json, ../e2e/package.json).
-  'test-selection': path => vitestConfig.test(path) || selectionInputs.has(path) ||
+  'test-selection': path => vitestConfig(path) || selectionInputs.has(path) ||
     /^frontend\/scripts\/vitest-changed(\.check)?\.mjs$/.test(path),
   // frontend/scripts/check-stalled-page-watchdog.mjs: the config, the
   // check, and its fixtures and child config. The browsers come from paths
   // no class matches.
-  'stall-watchdog': path => vitestConfig.test(path) ||
+  'stall-watchdog': path => vitestConfig(path) ||
     /^frontend\/(scripts\/check-stalled-page-watchdog\.mjs$|src\/test\/stalledPage\/)/.test(path),
 };
 

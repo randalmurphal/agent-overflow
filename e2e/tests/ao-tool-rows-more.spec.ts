@@ -18,14 +18,33 @@
 // browser-tools.spec.ts the browser server's; the remote server's Codex
 // registration is internal/app TestRemoteMCPRequiresEnabledPairedComputer.
 
-import { devices } from '@playwright/test';
+import { devices, type Page } from '@playwright/test';
 
-import { test, expect } from './fixtures.js';
+import { test as base, expect, watchCspViolations } from './fixtures.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
 import { driveMoreAoToolRows, readMoreRows } from './ao-tool-rows-more-helpers.js';
 
-test('claude: every other AO tool row reads as decoded text, on a desktop and on a phone', async ({ browser, page }) => {
+// The phone page, held as the `page` fixture holds the desktop one: checked
+// for refused loads, and still open when a failure's stalled-page capture
+// runs.
+const test = base.extend<{ phone: Page }>({
+  phone: async ({ browser, stalledPageCapture }, use, testInfo) => {
+    const context = await browser.newContext({ ...devices['Pixel 7'], colorScheme: 'dark' });
+    try {
+      const phone = await context.newPage();
+      const expectNoCspViolations = await watchCspViolations(phone);
+      await stalledPageCapture.untilArmed(phone);
+      await use(phone);
+      await stalledPageCapture.captureIfFailed(testInfo);
+      expectNoCspViolations();
+    } finally {
+      await context.close();
+    }
+  },
+});
+
+test('claude: every other AO tool row reads as decoded text, on a desktop and on a phone', async ({ page, phone }) => {
   test.setTimeout(300_000);
   let app: HarnessApp | undefined;
   let remote: HarnessApp | undefined;
@@ -34,18 +53,12 @@ test('claude: every other AO tool row reads as decoded text, on a desktop and on
     await driveMoreAoToolRows(app, remote, 'claude', 'claude');
     await readMoreRows(app, page, (name) => test.info().outputPath(`claude-more-${name}.png`));
 
-    const phoneContext = await browser.newContext({ ...devices['Pixel 7'], colorScheme: 'dark' });
-    try {
-      const phone = await phoneContext.newPage();
-      const viewport = phone.viewportSize()!;
-      await readMoreRows(app, phone, (name) => test.info().outputPath(`compact-claude-more-${name}.png`), async (row) => {
-        const box = (await row.boundingBox())!;
-        expect(box.x).toBeGreaterThanOrEqual(0);
-        expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
-      });
-    } finally {
-      await phoneContext.close();
-    }
+    const viewport = phone.viewportSize()!;
+    await readMoreRows(app, phone, (name) => test.info().outputPath(`compact-claude-more-${name}.png`), async (row) => {
+      const box = (await row.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+    });
   } finally {
     await Promise.allSettled([app?.close(), remote?.close()]);
   }
