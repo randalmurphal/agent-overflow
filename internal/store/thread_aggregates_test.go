@@ -409,95 +409,67 @@ func TestListLiveCodexSubagentLaunches_DecoratesLatestDirectToolWithoutMutatingL
 	}
 }
 
+// TestListLiveBackgroundTasks_WithinCompletionCutoff pins retention of a
+// background launch and its completions as a pair. The launch row stays
+// "running" (a background launch never flips out of running; its sibling
+// completion row carries the final state), so it is visible iff it has no
+// completion yet, however old, or at least one completion within the
+// cutoff, whatever that completion's status. A launch returned alone after
+// its completions aged out would re-render in the tray as "running"
+// forever, the stranded-launch race when a second task's completion
+// refreshes the tray after the first one's aged out.
 func TestListLiveBackgroundTasks_WithinCompletionCutoff(t *testing.T) {
+	type seed struct {
+		id, status, completionOf string
+		createdAt                int64
+	}
+	type query struct {
+		cutoff int64
+		want   []string
+	}
 	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	// Launch row is still "running" (the invariant — a background launch
-	// never flips out of running; its sibling completion row carries the
-	// final state). The launch+completion is treated as a pair for
-	// retention: the launch is visible iff at least one of its
-	// completions is still within the cutoff window.
-	seedBackgroundItem(t, s, "t", "launch", 0, 0, "running", "", 1000)
-	// Two completions: one recent (within cutoff), one stale (outside).
-	seedBackgroundItem(t, s, "t", "completion-new", 0, 1, "completed", "launch", 5000)
-	seedBackgroundItem(t, s, "t", "completion-old", 0, 2, "completed", "launch", 3000)
-
-	withCutoff4000, err := s.ListLiveBackgroundTasks("t", 4000)
-	if err != nil {
-		t.Fatalf("list 4000: %v", err)
-	}
-	// launch + the completion whose created_at >= 4000. The fresh
-	// completion keeps the launch visible.
-	if !equalStringSlice(collectIDs(withCutoff4000), []string{"launch", "completion-new"}) {
-		t.Errorf("cutoff=4000 ids: got %v", collectIDs(withCutoff4000))
-	}
-
-	withCutoff5001, err := s.ListLiveBackgroundTasks("t", 5001)
-	if err != nil {
-		t.Fatalf("list 5001: %v", err)
-	}
-	// Every completion has aged past the cutoff, so the launch also
-	// ages out. Returning the launch alone would let the tray re-render
-	// it as "running" forever.
-	if len(withCutoff5001) != 0 {
-		t.Errorf("cutoff=5001 ids: got %v, want [] (pair aged out together)", collectIDs(withCutoff5001))
-	}
-}
-
-// TestListLiveBackgroundTasks_ExcludesLaunchWhenCompletionAgesOut is the
-// regression guard for the two-completions-close-together race that leaves
-// a launch stranded in the tray. When task A finishes and its completion
-// row ages past the retention cutoff, the launch row — which by spec
-// stays `status='running'` forever — must NOT leak through on its own.
-// Otherwise a refresh triggered by ANOTHER event (e.g. task B completing
-// >2 s later) re-queries and the stranded launch re-renders as "running"
-// indefinitely.
-func TestListLiveBackgroundTasks_ExcludesLaunchWhenCompletionAgesOut(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	// L1 completed long ago (completion is stale) — pair must disappear.
-	// L2 completed recently (completion is fresh) — pair stays visible.
-	seedBackgroundItem(t, s, "t", "L1", 0, 0, "running", "", 100)
-	seedBackgroundItem(t, s, "t", "L2", 0, 1, "running", "", 200)
-	seedBackgroundItem(t, s, "t", "C1", 0, 2, "completed", "L1", 1000)
-	seedBackgroundItem(t, s, "t", "C2", 0, 3, "completed", "L2", 3000)
-
-	got, err := s.ListLiveBackgroundTasks("t", 2000)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	// Expected: L2 + C2 only. L1 paired with an expired C1 must NOT be
-	// returned alone — that's exactly the bug where the tray would show
-	// L1 as "running" forever.
-	if !equalStringSlice(collectIDs(got), []string{"L2", "C2"}) {
-		t.Errorf("ids: got %v, want [L2 C2] (L1 must age out with its stale completion)", collectIDs(got))
-	}
-}
-
-// TestListLiveBackgroundTasks_LaunchWithNoCompletionAlwaysShown guards the
-// happy path: a background task that has NOT yet completed has no
-// completion row, so the tray must surface the launch regardless of how
-// long it has been running.
-func TestListLiveBackgroundTasks_LaunchWithNoCompletionAlwaysShown(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	seedBackgroundItem(t, s, "t", "long-runner", 0, 0, "running", "", 100)
-
-	got, err := s.ListLiveBackgroundTasks("t", 999_999)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if !equalStringSlice(collectIDs(got), []string{"long-runner"}) {
-		t.Errorf("ids: got %v, want [long-runner]", collectIDs(got))
+	for i, tc := range []struct {
+		name    string
+		seeds   []seed
+		queries []query
+	}{
+		{"a fresh completion keeps its launch, stale ones age it out", []seed{
+			{"launch", "running", "", 1000},
+			{"completion-new", "completed", "launch", 5000},
+			{"completion-old", "completed", "launch", 3000},
+		}, []query{{4000, []string{"launch", "completion-new"}}, {5001, []string{}}}},
+		{"a launch ages out with its stale completion beside a fresh pair", []seed{
+			{"L1", "running", "", 100},
+			{"L2", "running", "", 200},
+			{"C1", "completed", "L1", 1000},
+			{"C2", "completed", "L2", 3000},
+		}, []query{{2000, []string{"L2", "C2"}}}},
+		{"a launch with no completion shows past any cutoff", []seed{
+			{"long-runner", "running", "", 100},
+		}, []query{{999_999, []string{"long-runner"}}}},
+		{"an errored completion keeps the pair visible", []seed{
+			{"launch", "running", "", 100},
+			{"err-completion", "errored", "launch", 5000},
+		}, []query{{4000, []string{"launch", "err-completion"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			thread := "t" + string(rune('0'+i))
+			if err := s.CreateThread(makeThread(thread, "claude")); err != nil {
+				t.Fatalf("create thread: %v", err)
+			}
+			for i, r := range tc.seeds {
+				seedBackgroundItem(t, s, thread, r.id, 0, i, r.status, r.completionOf, r.createdAt)
+			}
+			for _, q := range tc.queries {
+				got, err := s.ListLiveBackgroundTasks(thread, q.cutoff)
+				if err != nil {
+					t.Fatalf("list %d: %v", q.cutoff, err)
+				}
+				if ids := collectIDs(got); !equalStringSlice(ids, q.want) {
+					t.Errorf("cutoff=%d ids: got %v, want %v", q.cutoff, ids, q.want)
+				}
+			}
+		})
 	}
 }
 
@@ -788,30 +760,6 @@ func TestHasQueueBlockingBackgroundToolCall_ExcludesSubagentScopedBackgroundRows
 	}
 	if !active {
 		t.Fatal("top-level background row should block the queue")
-	}
-}
-
-// TestListLiveBackgroundTasks_ErroredCompletionKeepsPairVisible pins
-// that a completion with status='errored' (or any non-'completed'
-// terminal state) still gates launch visibility via its createdAt.
-// The query is intentionally status-agnostic on the completion side;
-// a future filter that excluded errored completions would orphan
-// every failed background task's launch as "running".
-func TestListLiveBackgroundTasks_ErroredCompletionKeepsPairVisible(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	seedBackgroundItem(t, s, "t", "launch", 0, 0, "running", "", 100)
-	seedBackgroundItem(t, s, "t", "err-completion", 0, 1, "errored", "launch", 5000)
-
-	got, err := s.ListLiveBackgroundTasks("t", 4000)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if !equalStringSlice(collectIDs(got), []string{"launch", "err-completion"}) {
-		t.Errorf("ids: got %v, want [launch err-completion]", collectIDs(got))
 	}
 }
 

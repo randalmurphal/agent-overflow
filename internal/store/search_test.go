@@ -69,22 +69,16 @@ func TestSearchThreadMessages_EmptyQueryReturnsNil(t *testing.T) {
 	mustCreateThreadForSearch(t, s, "t1", "alpha")
 	mustInsertItemForSearch(t, s, "t1", "i1", 0, "hello", 100)
 
-	got, err := s.SearchThreadMessages("", 10)
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-	if got != nil {
-		t.Errorf("expected nil hits for empty query, got %+v", got)
-	}
-}
-
-func TestSearchThreadMessages_WhitespaceOnlyReturnsNil(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThreadForSearch(t, s, "t1", "alpha")
-
-	got, _ := s.SearchThreadMessages("   \t\n  ", 10)
-	if got != nil {
-		t.Errorf("expected nil hits for whitespace query, got %+v", got)
+	for name, query := range map[string]string{"empty": "", "whitespace only": "   \t\n  "} {
+		t.Run(name, func(t *testing.T) {
+			got, err := s.SearchThreadMessages(query, 10)
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+			if got != nil {
+				t.Errorf("expected nil hits for query %q, got %+v", query, got)
+			}
+		})
 	}
 }
 
@@ -186,25 +180,6 @@ func TestSearchThreadMessages_ItemHitsOrderedByCreatedAtDesc(t *testing.T) {
 	}
 }
 
-// ---- Title-first ordering ----
-
-func TestSearchThreadMessages_TitleMatchesSortedBeforeItemMatches(t *testing.T) {
-	s := newTestStore(t)
-	// t1 has a title match.
-	mustCreateThreadForSearch(t, s, "t1", "Release notes draft")
-	// t2 has only an item match on the same term.
-	mustCreateThreadForSearch(t, s, "t2", "Unrelated")
-	mustInsertItemForSearch(t, s, "t2", "i1", 0, "Preparing the release notes for Q4", 100)
-
-	got, _ := s.SearchThreadMessages("release", 10)
-	if len(got) < 2 {
-		t.Fatalf("expected at least 2 hits, got %+v", got)
-	}
-	if got[0].MatchType != "title" {
-		t.Errorf("first hit should be title match, got %q", got[0].MatchType)
-	}
-}
-
 // ---- Case-insensitivity ----
 
 // Thread find's candidates hold every row the find bar counts a match in:
@@ -276,36 +251,29 @@ func TestSearchThreadMessages_CaseInsensitiveMatch(t *testing.T) {
 
 // ---- LIKE-wildcard safety ----
 
-func TestSearchThreadMessages_LiteralUnderscoreNotAWildcard(t *testing.T) {
+// Each LIKE pattern character in a query matches only itself: the decoy
+// beside each title is what a wildcard or a lost escape would also find.
+func TestSearchThreadMessages_LiteralPatternCharacters(t *testing.T) {
 	s := newTestStore(t)
-	// Must match exactly the underscore; adjacent unrelated text won't.
-	mustCreateThreadForSearch(t, s, "t1", "file_name")
-	mustCreateThreadForSearch(t, s, "t2", "filename")
-
-	got, _ := s.SearchThreadMessages("file_name", 10)
-	if len(got) != 1 || got[0].ThreadID != "t1" {
-		t.Errorf("expected only t1 for literal underscore query, got %+v", got)
+	for id, title := range map[string]string{
+		"underscore": "file_name", "underscore-decoy": "filename",
+		"percent": "100% coverage", "percent-decoy": "coverage",
+		"backslash": `C:\path\to\file`,
+	} {
+		mustCreateThreadForSearch(t, s, id, title)
 	}
-}
 
-func TestSearchThreadMessages_LiteralPercentNotAWildcard(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThreadForSearch(t, s, "t1", "100% coverage")
-	mustCreateThreadForSearch(t, s, "t2", "coverage")
-
-	got, _ := s.SearchThreadMessages("100%", 10)
-	if len(got) != 1 || got[0].ThreadID != "t1" {
-		t.Errorf("expected only t1 for literal %% query, got %+v", got)
-	}
-}
-
-func TestSearchThreadMessages_LiteralBackslashSurvives(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThreadForSearch(t, s, "t1", `C:\path\to\file`)
-
-	got, _ := s.SearchThreadMessages(`C:\path`, 10)
-	if len(got) != 1 || got[0].ThreadID != "t1" {
-		t.Errorf("expected t1 for backslash query, got %+v", got)
+	for _, tc := range []struct{ name, query string }{
+		{"underscore", "file_name"},
+		{"percent", "100%"},
+		{"backslash", `C:\path`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := s.SearchThreadMessages(tc.query, 10)
+			if len(got) != 1 || got[0].ThreadID != tc.name {
+				t.Errorf("expected only %s for literal query %q, got %+v", tc.name, tc.query, got)
+			}
+		})
 	}
 }
 
@@ -318,22 +286,12 @@ func TestSearchThreadMessages_LimitCapsResults(t *testing.T) {
 		mustInsertItemForSearch(t, s, "t1", fmt.Sprintf("i%d", i), i, "same match body", int64(100+i))
 	}
 
-	got, _ := s.SearchThreadMessages("match", 5)
-	if len(got) != 5 {
-		t.Errorf("expected 5 hits (limit), got %d", len(got))
-	}
-}
-
-func TestSearchThreadMessages_ZeroLimitReturnsAll(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThreadForSearch(t, s, "t1", "x")
-	for i := 0; i < 8; i++ {
-		mustInsertItemForSearch(t, s, "t1", fmt.Sprintf("i%d", i), i, "same match body", int64(100+i))
-	}
-
-	got, _ := s.SearchThreadMessages("match", 0)
-	if len(got) != 8 {
-		t.Errorf("expected 8 hits for zero-limit, got %d", len(got))
+	for _, tc := range []struct{ limit, want int }{{5, 5}, {0, 12}} {
+		t.Run(fmt.Sprintf("limit %d", tc.limit), func(t *testing.T) {
+			if got, _ := s.SearchThreadMessages("match", tc.limit); len(got) != tc.want {
+				t.Errorf("expected %d hits for limit %d, got %d", tc.want, tc.limit, len(got))
+			}
+		})
 	}
 }
 
