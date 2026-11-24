@@ -1133,12 +1133,18 @@ method wraps (see [Build order](#build-order)).
   are not caller-bound.
 - **A project's boards** are the boards its picker shows, in order, and
   the one that opens first (store `project_tracker_boards`). The list is
-  replaced whole, and the change takes effect before the save answers:
-  the store names the boards the write left no project listing, their
-  subscriptions end (`Ended`, shown or hidden), and the mirror cleanup
-  drains them and starts the next lifetime of a board listed again, so a
-  board removed and added back opens at once. The save waits on that
-  drain: 1.06 s for a 20,050-issue board. A project's delete retires its
+  replaced whole, and the change takes effect before the save answers,
+  doing only what the list needs. The store's write names, in its
+  transaction, the boards whose last listing it removed and the boards it
+  added whose retired copy is not yet cleared
+  (`store.TrackerBoardListing`). The first have their subscriptions end
+  (`Ended`, shown or hidden) and their copies left to the mirror cleanup's
+  callers; the second are readied (`store.ReadyTrackerBoards`: that
+  board's drain and its next lifetime, without the cleanup's lock), so a
+  board removed and added back opens at once. That readying is the only
+  wait a save adds: 116 ms for a 20,050-issue board in a live root, in 49
+  statements deleting at most 500 rows each. A reorder or a move of the
+  board that opens first does neither. A project's delete retires its
   boards in the store and does not end their subscriptions; the
   project's panes close and release them.
 - **A board subscription belongs to the client connection that made it.**

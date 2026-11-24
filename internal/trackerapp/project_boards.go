@@ -14,8 +14,8 @@ import (
 // subscribe is refused for a board its project does not list
 // (SubscribeBoard), and the mirror keeps only the boards some project
 // lists: replacing a list retires each board whose last listing it
-// removes, and that board's subscriptions end with the save, its
-// subscribers told Ended (SetProjectBoards).
+// removes, whose subscriptions end with the save, its subscribers told
+// Ended, and readies each board it lists again (SetProjectBoards).
 
 var (
 	// ErrProjectNotFound is a project that does not exist on this computer.
@@ -52,14 +52,17 @@ func (s *Service) ProjectBoards(projectID string) ([]ProjectBoard, error) {
 // with ErrProjectNotFound and a list the store refuses with
 // ErrInvalidBoards; either leaves the stored list as it was.
 //
-// A list that changed takes effect before the answer. Each board the
-// write left no project listing has its subscriptions ended, shown or
-// hidden (its subscribers told Ended, its handles removed), and the
-// mirror cleanup then drains the boards retired and starts the next
-// lifetime of a board listed again, so a board removed and added back
-// opens and reads at once. The drain is the save's cost: 1.06 s for a
-// 20,050-issue board. A cleanup that fails leaves the list saved, and the
-// next cleanup finishes it.
+// A list that changed takes effect before the answer, and the save does
+// only what its own list needs. Each board the write left no project
+// listing has its subscriptions ended, shown or hidden (its subscribers
+// told Ended, its handles removed); its stored copy is the cleanup's to
+// clear (FinishMirrorCleanup's callers). Each board the write added whose
+// stored copy is retired and not yet cleared is given its next lifetime
+// (store ReadyTrackerBoards), so a board removed and added back opens and
+// reads at once: that drain of the one board is the only wait a save
+// adds. A reorder or a move of the board that opens first does neither.
+// A readying that fails leaves the list saved, and the next cleanup
+// readies the board.
 func (s *Service) SetProjectBoards(projectID string, boards []ProjectBoard) ([]ProjectBoard, error) {
 	if err := s.enter(); err != nil {
 		return nil, err
@@ -72,7 +75,7 @@ func (s *Service) SetProjectBoards(projectID string, boards []ProjectBoard) ([]P
 	for i, b := range boards {
 		rows[i] = store.ProjectTrackerBoard{ConnectionID: b.Connection, BoardID: b.Board, OpensFirst: b.OpensFirst}
 	}
-	changed, unlisted, err := s.store.ReplaceProjectTrackerBoards(projectID, rows)
+	_, listing, err := s.store.ReplaceProjectTrackerBoards(projectID, rows)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, fmt.Errorf("%w: %s: %w", ErrProjectNotFound, projectID, err)
@@ -80,12 +83,16 @@ func (s *Service) SetProjectBoards(projectID string, boards []ProjectBoard) ([]P
 		return nil, fmt.Errorf("%w: %w", ErrInvalidBoards, err)
 	case err != nil:
 		return nil, fmt.Errorf("trackerapp: store the boards of project %s: %w", projectID, err)
-	case !changed:
-		return boards, nil
 	}
-	s.endUnlistedBoards(unlisted)
-	if err := s.clean(); err != nil {
-		return nil, fmt.Errorf("trackerapp: the boards of project %s are saved, and clearing the copies of the boards it dropped failed: %w", projectID, err)
+	s.endUnlistedBoards(listing.Unlisted)
+	if len(listing.Relisted) > 0 {
+		err := s.store.ReadyTrackerBoards(s.halting, listing.Relisted)
+		if err != nil && s.halting.Err() != nil {
+			err = errors.Join(ErrStopped, err)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("trackerapp: the boards of project %s are saved, and readying the boards it listed again failed, so they open after the next cleanup: %w", projectID, err)
+		}
 	}
 	return boards, nil
 }

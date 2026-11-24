@@ -168,7 +168,51 @@ func mirrorAtScale(t *testing.T, size benchMirrorSize) {
 	for _, name := range slices.Sorted(maps.Keys(paths)) {
 		t.Logf("%-34s %s", name, paths[name])
 	}
+	readyListedAgainAtScale(t, filled.path)
 	mirrorPlansAtScale(t, s)
+}
+
+// readyListedAgainAtScale measures, once, on a copy of the first sync's
+// store at filled, what a save that lists board 0 again waits for while
+// its retired copy holds every row of the sync and the root stays live:
+// ReadyTrackerBoards of that board.
+func readyListedAgainAtScale(t *testing.T, filled string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ready.sqlite")
+	if err := copyStoreFile(filled, path); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	rec := recordMirrorWrites(t, s)
+	listed, err := s.ListProjectTrackerBoards(defaultTestProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listed[1:]); err != nil {
+		t.Fatal(err)
+	}
+	_, listing, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listed)
+	if err != nil || len(listing.Relisted) != 1 {
+		t.Fatalf("listing board 0 again: %+v, %v", listing, err)
+	}
+	rec.reset()
+	start := time.Now()
+	statements := countMirrorStatements(t, func() { err = s.ReadyTrackerBoards(context.Background(), listing.Relisted) })
+	took := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	most, total := rec.mostDeletedInATransaction()
+	t.Logf("%-34s %9s %5d statements, %d rows deleted, at most %d in a transaction", "ready a board listed again",
+		took.Round(time.Microsecond), statements, total, most)
 }
 
 // scalePaths measures each path on board 0 of a mirror of size.

@@ -1,10 +1,13 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -96,5 +99,70 @@ func TestASaveThatUnlistsABoardEndsItsViews(t *testing.T) {
 				t.Fatalf("the unlisted board's handle was untied %d times, want 1", n)
 			}
 		})
+	}
+}
+
+// A save does only what its own list needs: a reorder or a change of the
+// board that opens first runs no cleanup, and neither does a save that
+// unlists a board, whose stored copy the cleanup's own callers clear, or
+// one that lists it again, which readies that board alone; none of them
+// can fail on the cleanup.
+func TestASaveRunsNoCleanup(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	cleanups := &cleanupStore{Store: m.st, fail: errors.New("disk full")}
+	m.svc.store = cleanups
+	listed := listedBoards(m, "")
+	reordered := append([]ProjectBoard{listed[len(listed)-1]}, listed[:len(listed)-1]...)
+	reordered[0].OpensFirst = true
+	opensSecond := slices.Clone(reordered)
+	opensSecond[0].OpensFirst, opensSecond[1].OpensFirst = false, true
+	for _, save := range []struct {
+		name   string
+		boards []ProjectBoard
+	}{
+		{"a reorder", reordered},
+		{"an opens-first move", opensSecond},
+		{"a save that unlists", listedBoards(m, testBoard)},
+		{"a save that lists it again", listedBoards(m, "")},
+	} {
+		if _, err := m.svc.SetProjectBoards(m.project(), save.boards); err != nil {
+			t.Fatalf("%s: %v", save.name, err)
+		}
+		if n := cleanups.calls.Load(); n != 0 {
+			t.Fatalf("%s ran the mirror cleanup %d times, want none", save.name, n)
+		}
+	}
+}
+
+// readyFails is a store whose readying of the boards a save listed again
+// fails.
+type readyFails struct{ *store.Store }
+
+func (readyFails) ReadyTrackerBoards(context.Context, []store.TrackerBoardRef) error {
+	return errors.New("disk full")
+}
+
+// A save whose readying of a board listed again fails keeps the list and
+// says that readying failed, and a save that readies nothing does not
+// fail on it.
+func TestASaveSaysTheReadyingFailed(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	sub := m.subscribe(t, testBoard)
+	if loadedOrEnded(t, m, sub.Seq) {
+		t.Fatal("the board ended before it was unlisted")
+	}
+	m.svc.store = readyFails{m.st}
+	if _, err := m.svc.SetProjectBoards(m.project(), listedBoards(m, testBoard)); err != nil {
+		t.Fatalf("a save that unlists: %v", err)
+	}
+	_, err := m.svc.SetProjectBoards(m.project(), listedBoards(m, ""))
+	if err == nil || !strings.Contains(err.Error(), "readying the boards it listed again failed") {
+		t.Fatalf("a save whose readying failed = %v", err)
+	}
+	if got, err := m.svc.ProjectBoards(m.project()); err != nil || len(got) != len(testBoards) {
+		t.Fatalf("the list after a failed readying = %+v, %v", got, err)
 	}
 }

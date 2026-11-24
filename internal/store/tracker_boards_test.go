@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"slices"
@@ -117,28 +118,83 @@ func TestReplaceProjectTrackerBoardsRefusals(t *testing.T) {
 	}
 }
 
-// A replace names the boards it leaves no project listing: those it
-// removed that another project does not list, as the retire trigger
-// judges them.
-func TestReplaceProjectTrackerBoardsNamesTheBoardsItUnlists(t *testing.T) {
+// A replace names, from its own delete, the boards whose last listing it
+// removed, and the boards it added whose stored copy is retired and not
+// yet cleared; a reorder or a move of the board that opens first names
+// neither.
+func TestReplaceProjectTrackerBoardsNamesWhatItDidToTheStoredBoards(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	p := mustCreateTrackerProject(t, s, "p")
 	q := mustCreateTrackerProject(t, s, "q")
 	jira := mustCreateTrackerConnection(t, s, jiraConnection("https://example.atlassian.net", "user1@example.com", 1))
+	if _, _, err := s.GetOrCreateMirrorRoot(jira.ID); err != nil {
+		t.Fatal(err)
+	}
 	board := func(id string) ProjectTrackerBoard { return ProjectTrackerBoard{ConnectionID: jira.ID, BoardID: id} }
-	replace := func(project string, boards []ProjectTrackerBoard, want []TrackerBoardRef) {
+	ref := func(id string) TrackerBoardRef { return TrackerBoardRef{jira.ID, id} }
+	replace := func(project string, boards []ProjectTrackerBoard, want TrackerBoardListing) {
 		t.Helper()
-		_, unlisted, err := s.ReplaceProjectTrackerBoards(project, boards)
-		if err != nil || !slices.Equal(unlisted, want) {
-			t.Fatalf("replace %s with %+v: unlisted %+v, %v; want %+v", project, boards, unlisted, err, want)
+		_, got, err := s.ReplaceProjectTrackerBoards(project, boards)
+		if err != nil || !slices.Equal(got.Unlisted, want.Unlisted) || !slices.Equal(got.Relisted, want.Relisted) {
+			t.Fatalf("replace %s with %+v: %+v, %v; want %+v", project, boards, got, err, want)
 		}
 	}
-	replace(p, []ProjectTrackerBoard{board("10"), board("11"), board("12")}, nil)
-	replace(q, []ProjectTrackerBoard{board("10")}, nil)
+	replace(p, []ProjectTrackerBoard{board("10"), board("11"), board("12")}, TrackerBoardListing{})
+	replace(q, []ProjectTrackerBoard{board("10")}, TrackerBoardListing{})
 	// 10 stays listed by q; 11 goes; 12 stays.
-	replace(p, []ProjectTrackerBoard{board("12")}, []TrackerBoardRef{{jira.ID, "11"}})
-	// A reorder or a same list unlists nothing.
-	replace(p, []ProjectTrackerBoard{board("12")}, nil)
-	replace(q, nil, []TrackerBoardRef{{jira.ID, "10"}})
+	replace(p, []ProjectTrackerBoard{board("12")}, TrackerBoardListing{Unlisted: []TrackerBoardRef{ref("11")}})
+	// A same list, a reorder and an opens-first move name nothing.
+	replace(p, []ProjectTrackerBoard{board("12")}, TrackerBoardListing{})
+	opens := board("12")
+	opens.OpensFirst = true
+	replace(p, []ProjectTrackerBoard{opens}, TrackerBoardListing{})
+	replace(q, []ProjectTrackerBoard{board("13"), board("10")}, TrackerBoardListing{})
+	replace(q, []ProjectTrackerBoard{board("10"), board("13")}, TrackerBoardListing{})
+	// 11 is retired and not yet cleared: listing it again names it, and
+	// so does q listing it while p lists it again in the same state.
+	replace(p, []ProjectTrackerBoard{board("12"), board("11")}, TrackerBoardListing{Relisted: []TrackerBoardRef{ref("11")}})
+	replace(q, []ProjectTrackerBoard{board("10"), board("13"), board("11")}, TrackerBoardListing{Relisted: []TrackerBoardRef{ref("11")}})
+	replace(q, nil, TrackerBoardListing{Unlisted: []TrackerBoardRef{ref("10"), ref("13")}})
+}
+
+// ReadyTrackerBoards drains the named retired boards alone and starts
+// each one's next lifetime: another retired board keeps its rows, and a
+// board already readied is passed over.
+func TestReadyTrackerBoardsReadiesOnlyTheBoardsItNames(t *testing.T) {
+	t.Parallel()
+	s, jira, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "11", []MirrorRow{webRow("10001", 5, "a")})
+	writeMirrorBoard(t, s, root, "12", []MirrorRow{webRow("10002", 5, "b")})
+	old := currentLifetime(s, root, "12")
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10")
+	_, listing, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, []ProjectTrackerBoard{
+		{ConnectionID: jira.ID, BoardID: "10"}, {ConnectionID: jira.ID, BoardID: "12"}})
+	if err != nil || !slices.Equal(listing.Relisted, []TrackerBoardRef{{jira.ID, "12"}}) {
+		t.Fatalf("listing 12 again: %+v, %v", listing, err)
+	}
+	for range 2 {
+		if err := s.ReadyTrackerBoards(context.Background(), listing.Relisted); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if next := currentLifetime(s, root, "12"); next <= old {
+		t.Fatalf("board 12's lifetime after readying = %d, want one after %d", next, old)
+	}
+	assertRows(t, s.db, `SELECT board_id || ':' || retired FROM tracker_cache_boards WHERE board_id IN ('11', '12') ORDER BY board_id`, "11:1,12:0")
+	assertRows(t, s.db, `SELECT board_id || ':' || count(*) FROM tracker_cache_board_issues GROUP BY board_id ORDER BY board_id`, "11:1")
+}
+
+// A drain of a board that another drain overtook, after which the board
+// lived again, filled and was retired again, deletes nothing: the board's
+// delete would cascade through the new lifetime's rows.
+func TestARetiredBoardWithRowsIsNotDeleted(t *testing.T) {
+	t.Parallel()
+	s, jira, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "12", []MirrorRow{webRow("10002", 5, "b")})
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11")
+	if deleted, err := execChangedTx(s.db, mirrorBoardRestartSQL, root, "12"); err != nil || deleted {
+		t.Fatalf("the delete of a retired board with rows: deleted %v, %v", deleted, err)
+	}
+	assertRows(t, s.db, `SELECT retired || ':' || (SELECT count(*) FROM tracker_cache_board_issues WHERE board_id = '12') FROM tracker_cache_boards WHERE board_id = '12'`, "1:1")
 }
