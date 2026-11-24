@@ -308,13 +308,9 @@ describe('terminal focus registry', () => {
     expect(getTerminalFocused(PANE)).toBe(false);
   });
 
-  it('becomes focused on a single notifyTerminalFocus(pane, true)', () => {
+  it('becomes focused on a single notifyTerminalFocus(pane, true) and flips back to false when the paired false notification arrives', () => {
     notifyTerminalFocus(PANE, true);
     expect(getTerminalFocused(PANE)).toBe(true);
-  });
-
-  it('flips back to false when paired false notification arrives', () => {
-    notifyTerminalFocus(PANE, true);
     notifyTerminalFocus(PANE, false);
     expect(getTerminalFocused(PANE)).toBe(false);
   });

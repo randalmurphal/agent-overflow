@@ -62,21 +62,17 @@ describe('TerminalKeyRow', () => {
     ]);
   });
 
-  it('routes Paste to onPaste and emits no bytes of its own', () => {
-    const { onKey, onPaste } = mount();
-    key('paste').click();
-    expect(onPaste).toHaveBeenCalledTimes(1);
-    // Paste reads the clipboard through the terminal's own route; the row
-    // never sees the bytes.
-    expect(onKey).not.toHaveBeenCalled();
-  });
-
-  it('reports Ctrl through onToggleCtrl and emits no bytes of its own', () => {
-    const { onKey, onToggleCtrl } = mount();
-    key('ctrl').click();
-    expect(onToggleCtrl).toHaveBeenCalledTimes(1);
-    // Ctrl is a modifier, not a key: nothing reaches the PTY on its own press.
-    expect(onKey).not.toHaveBeenCalled();
+  // Paste reads the clipboard through the terminal's own route, so the row
+  // never sees the bytes; Ctrl is a modifier, not a key, so nothing reaches
+  // the PTY on its own press.
+  it.each([
+    ['routes Paste to onPaste and emits no bytes of its own', 'paste', 'onPaste'],
+    ['reports Ctrl through onToggleCtrl and emits no bytes of its own', 'ctrl', 'onToggleCtrl'],
+  ] as const)('%s', (_name, id, callback) => {
+    const callbacks = mount();
+    key(id).click();
+    expect(callbacks[callback]).toHaveBeenCalledTimes(1);
+    expect(callbacks.onKey).not.toHaveBeenCalled();
   });
 
   it('exposes the armed state as aria-pressed', () => {
