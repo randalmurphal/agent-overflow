@@ -6,52 +6,34 @@ import { describe, expect, it } from "vitest";
 import { classifyToolName } from "./toolCardHeader";
 
 describe("classifyToolName", () => {
-  it("returns the generic fallback for null", () => {
-    expect(classifyToolName(null)).toEqual({
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["empty string", ""],
+    ["whitespace-only tool names (trimmed)", "   "],
+    ["unknown tool names", "SomeCustomTool"],
+  ])("returns the generic fallback for %s", (_name, toolName) => {
+    expect(classifyToolName(toolName)).toEqual({
       icon: "generic",
       label: "tool",
       isSubagent: false,
     });
   });
 
-  it("returns the generic fallback for undefined", () => {
-    expect(classifyToolName(undefined)).toEqual({
-      icon: "generic",
-      label: "tool",
-      isSubagent: false,
-    });
-  });
-
-  it("returns the generic fallback for empty string", () => {
-    expect(classifyToolName("")).toEqual({
-      icon: "generic",
-      label: "tool",
-      isSubagent: false,
-    });
-  });
-
-  it("trims whitespace-only tool names to the generic fallback", () => {
-    expect(classifyToolName("   ")).toEqual({
-      icon: "generic",
-      label: "tool",
-      isSubagent: false,
-    });
-  });
-
-  it("MCP/ prefix wins over the switch table", () => {
+  it.each([
     // Even a suffix that matches an entry in the switch (e.g. "Bash"
-    // as an MCP tool name) must still be classified as MCP.
-    const out = classifyToolName("MCP/Bash");
-    expect(out.icon).toBe("puzzle");
-    expect(out.label).toBe("mcp");
-    expect(out.isSubagent).toBe(false);
-  });
-
-  it('MCP/ with empty suffix stays in the MCP bucket', () => {
-    const out = classifyToolName("MCP/");
-    expect(out.icon).toBe("puzzle");
-    expect(out.label).toBe("mcp");
-    expect(out.isSubagent).toBe(false);
+    // as an MCP tool name) must still be classified as MCP: the MCP/
+    // prefix wins over the switch table.
+    "MCP/Bash",
+    // An empty suffix stays in the MCP bucket.
+    "MCP/",
+    "MCP",
+  ])("%s maps to the MCP tool bucket", (toolName) => {
+    expect(classifyToolName(toolName)).toEqual({
+      icon: "puzzle",
+      label: "mcp",
+      isSubagent: false,
+    });
   });
 
   it("Bash maps to terminal icon", () => {
@@ -102,32 +84,16 @@ describe("classifyToolName", () => {
     },
   );
 
-  it("bare MCP maps to the MCP tool bucket", () => {
-    const out = classifyToolName("MCP");
-    expect(out.icon).toBe("puzzle");
-    expect(out.label).toBe("mcp");
-  });
-
-  it("Agent classifies as subagent and uses robot icon", () => {
-    const out = classifyToolName("Agent");
-    expect(out.icon).toBe("robot");
-    expect(out.label).toBe("agent");
-    expect(out.isSubagent).toBe(true);
-  });
-
-  it("Task uses the agent presentation bucket", () => {
-    const out = classifyToolName("Task");
-    expect(out.icon).toBe("robot");
-    expect(out.label).toBe("agent");
-    expect(out.isSubagent).toBe(true);
-  });
-
-  it("collab_agent classifies as subagent", () => {
-    const out = classifyToolName("collab_agent");
-    expect(out.icon).toBe("robot");
-    expect(out.label).toBe("agent");
-    expect(out.isSubagent).toBe(true);
-  });
+  it.each(["Agent", "Task", "collab_agent"])(
+    "%s classifies as subagent with the robot icon and agent label",
+    (toolName) => {
+      expect(classifyToolName(toolName)).toEqual({
+        icon: "robot",
+        label: "agent",
+        isSubagent: true,
+      });
+    },
+  );
 
   it("send_input maps to speech-bubble icon", () => {
     const out = classifyToolName("send_input");
@@ -168,13 +134,6 @@ describe("classifyToolName", () => {
       expect(out.isSubagent).toBe(false);
     },
   );
-
-  it("unknown tool names fall through to the generic category", () => {
-    const out = classifyToolName("SomeCustomTool");
-    expect(out.icon).toBe("generic");
-    expect(out.label).toBe("tool");
-    expect(out.isSubagent).toBe(false);
-  });
 
   it('case-sensitive matching — "bash" (lowercase) falls through to generic', () => {
     // The switch table uses exact provider tool names; a lowercase

@@ -231,32 +231,22 @@ describe('preserveViewportBottom — takeover priority', () => {
     expect(h.scrollToIndex).toHaveBeenCalledWith(2, { align: 'end' });
     expect(h.markAtBottom).toHaveBeenCalled();
     expect(h.saveScrollSnapshot).toHaveBeenCalled();
+
+    // The pause outlives the measurement flush: the toggled run's height
+    // has not measured yet — it lands one rendering update later via the
+    // virtualizer's ResizeObserver, and the convergence pass places the
+    // delta in that same update. Releasing here would let the release
+    // repin's yield hand that delta to the engaged spring, whose first
+    // tick kills the pending index scroll (bug-report-20260802T011749Z:
+    // 500-2000ms crawls starting ≤6ms after each toggle while a turn
+    // streamed).
+    expect(h.release).not.toHaveBeenCalled();
     await settleMeasurementFlush();
     expect(h.release).toHaveBeenCalled();
   });
 });
 
 describe('preserveViewportBottom — release timing', () => {
-  it('holds the pause past the measurement flush so the release repin cannot hand the toggle delta to an engaged spring', async () => {
-    const h = makeHarness({ autoScrollInFlight: true });
-    h.anchor.preserveViewportBottom(() => {});
-    await settleRestore();
-
-    // The restore has run — the claim placed the bottom edge — but the
-    // toggled run's height has not measured yet: it lands one rendering
-    // update later via the virtualizer's ResizeObserver, and the
-    // convergence pass places the delta in that same update. Releasing
-    // here would let the release repin's yield hand that delta to the
-    // engaged spring, whose first tick kills the pending index scroll
-    // (bug-report-20260802T011749Z: 500-2000ms crawls starting ≤6ms
-    // after each toggle while a turn streamed).
-    expect(h.scrollToIndex).toHaveBeenCalled();
-    expect(h.release).not.toHaveBeenCalled();
-
-    await settleMeasurementFlush();
-    expect(h.release).toHaveBeenCalled();
-  });
-
   it('a change() throw releases the pause synchronously', () => {
     const h = makeHarness({ autoScrollInFlight: false });
     expect(() =>

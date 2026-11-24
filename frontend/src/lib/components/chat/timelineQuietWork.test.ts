@@ -109,37 +109,13 @@ describe('createTimelineQuietWork', () => {
     // schedules arrive continuously. One run leads, everything arriving
     // during the bound coalesces into ONE trailing run — never a queue of
     // them, and never a run per trigger.
-    const a = pass('a', 'always');
-    const work = scheduler([a]);
-
-    work.schedule();
-    await drainTick();
-    expect(a.runs).toBe(1);
-
-    // 19 steps of a twentieth: the whole burst lands strictly inside the
-    // bound, the last trigger with 5ms still to go.
-    for (let i = 0; i < 19; i += 1) {
-      await vi.advanceTimersByTimeAsync(QUIET_WORK_MIN_INTERVAL_MS / 20);
-      work.schedule();
-      await drainTick();
-    }
-    expect(a.runs).toBe(1);
-
-    await drainRateBound();
-    expect(a.runs).toBe(2);
-
-    // …and the burst does not leave a backlog behind it.
-    await vi.advanceTimersByTimeAsync(QUIET_WORK_MIN_INTERVAL_MS * 10);
-    await drainTick();
-    expect(a.runs).toBe(2);
-  });
-
-  it('a burst inside the rate bound keeps one standing timer instead of re-arming per call', async () => {
-    // schedule() fires per streamed row; a clearTimeout+setTimeout pair
-    // per call was the top remaining timer churner in the 2026-08-26
-    // storm trace. Calls inside the bound all target the same absolute
-    // deadline, so the standing timer must be reused — re-arming is only
-    // for a deadline pulled EARLIER than the standing fire.
+    //
+    // The burst also keeps one standing timer instead of re-arming per call:
+    // a clearTimeout+setTimeout pair per call was the top remaining timer
+    // churner in the 2026-08-26 storm trace. Calls inside the bound all
+    // target the same absolute deadline, so the standing timer must be
+    // reused — re-arming is only for a deadline pulled EARLIER than the
+    // standing fire.
     // Counted through a wrapper rather than vi.spyOn: a spy restored over a
     // fake-timer global is restored again by the next restoreAllMocks, which
     // would reinstall the fake after useRealTimers.
@@ -157,17 +133,25 @@ describe('createTimelineQuietWork', () => {
     expect(a.runs).toBe(1);
 
     installs.mockClear();
+    // 19 steps of a twentieth: the whole burst lands strictly inside the
+    // bound, the last trigger with 5ms still to go.
     for (let i = 0; i < 19; i += 1) {
       await vi.advanceTimersByTimeAsync(QUIET_WORK_MIN_INTERVAL_MS / 20);
       work.schedule();
       await drainTick();
     }
+    expect(a.runs).toBe(1);
     // One trailing-run timer for the whole burst (the fire itself may
     // re-arm once for a residual remainder).
     expect(installs.mock.calls.length).toBeLessThanOrEqual(2);
     globalThis.setTimeout = fakeSetTimeout;
 
     await drainRateBound();
+    expect(a.runs).toBe(2);
+
+    // …and the burst does not leave a backlog behind it.
+    await vi.advanceTimersByTimeAsync(QUIET_WORK_MIN_INTERVAL_MS * 10);
+    await drainTick();
     expect(a.runs).toBe(2);
   });
 
@@ -550,24 +534,6 @@ describe('createTimelineQuietWork', () => {
     expect(a.runs).toBe(1);
   });
 
-  it('invalidate releases the rate bound so a reused instance runs at once', async () => {
-    // Transition coverage for the cooldown as STATE: schedule -> run ->
-    // invalidate -> schedule must not inherit the torn-down instance's
-    // cooldown, or the first callback after a remount is late for no
-    // reason.
-    const a = pass('a', 'always');
-    const work = scheduler([a]);
-
-    work.schedule();
-    await drainTick();
-    expect(a.runs).toBe(1);
-
-    work.invalidate();
-    work.schedule();
-    await drainTick();
-    expect(a.runs).toBe(2);
-  });
-
   it('invalidate is inert with nothing pending and idempotent when repeated', async () => {
     const a = pass('a', 'always');
     const work = scheduler([a]);
@@ -583,6 +549,9 @@ describe('createTimelineQuietWork', () => {
     await drainTick();
     expect(a.runs).toBe(1);
 
+    // The cooldown is STATE: schedule -> run -> invalidate -> schedule must
+    // not inherit the torn-down instance's cooldown, or the first callback
+    // after a remount is late for no reason.
     work.invalidate();
     work.invalidate();
     work.schedule();
