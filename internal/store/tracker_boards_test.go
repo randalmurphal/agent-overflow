@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -136,6 +137,11 @@ func TestReplaceProjectTrackerBoardsNamesWhatItDidToTheStoredBoards(t *testing.T
 	replace := func(project string, boards []ProjectTrackerBoard, want TrackerBoardListing) {
 		t.Helper()
 		_, got, err := s.ReplaceProjectTrackerBoards(project, boards)
+		// The order of each list is not specified: its consumer reads
+		// membership.
+		for _, list := range [][]TrackerBoardRef{got.Unlisted, got.Relisted} {
+			slices.SortFunc(list, func(a, b TrackerBoardRef) int { return strings.Compare(a.BoardID, b.BoardID) })
+		}
 		if err != nil || !slices.Equal(got.Unlisted, want.Unlisted) || !slices.Equal(got.Relisted, want.Relisted) {
 			t.Fatalf("replace %s with %+v: %+v, %v; want %+v", project, boards, got, err, want)
 		}
@@ -186,15 +192,56 @@ func TestReadyTrackerBoardsReadiesOnlyTheBoardsItNames(t *testing.T) {
 }
 
 // A drain of a board that another drain overtook, after which the board
-// lived again, filled and was retired again, deletes nothing: the board's
-// delete would cascade through the new lifetime's rows.
-func TestARetiredBoardWithRowsIsNotDeleted(t *testing.T) {
+// lived again, filled and was retired again, deletes nothing at its end:
+// the board's delete would cascade through the new lifetime's rows. The
+// second drain runs in the first's pause before its final transaction,
+// and the new lifetime keeps only its rows, no columns or sprints.
+func TestAnOvertakenDrainKeepsTheBoardsNewRows(t *testing.T) {
 	t.Parallel()
 	s, jira, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "12", []MirrorRow{webRow("10002", 5, "b")})
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11")
-	if deleted, err := execChangedTx(s.db, mirrorBoardRestartSQL, root, "12"); err != nil || deleted {
-		t.Fatalf("the delete of a retired board with rows: deleted %v, %v", deleted, err)
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11", "12")
+	empty := func() bool {
+		t.Helper()
+		var n int
+		for _, table := range mirrorBoardTables {
+			var rows int
+			if err := s.db.QueryRow(`SELECT count(*) FROM `+table+` WHERE root_id = ? AND board_id = '12'`, root).Scan(&rows); err != nil {
+				t.Fatal(err)
+			}
+			n += rows
+		}
+		return n == 0
 	}
-	assertRows(t, s.db, `SELECT retired || ':' || (SELECT count(*) FROM tracker_cache_board_issues WHERE board_id = '12') FROM tracker_cache_boards WHERE board_id = '12'`, "1:1")
+	overtaken := false
+	between := func() error {
+		if overtaken || !empty() {
+			return nil
+		}
+		// The first drain emptied the board and is about to delete it.
+		overtaken = true
+		if err := s.drainMirrorBoard(root, "12", noMirrorPause); err != nil {
+			return err
+		}
+		writeMirrorBoard(t, s, root, "12", []MirrorRow{webRow("10003", 6, "c"), webRow("10004", 6, "d")})
+		// Its rows alone are left, so they alone keep it.
+		for _, table := range []string{"tracker_cache_board_columns", "tracker_cache_sprints", "tracker_cache_board_unexplained"} {
+			if _, err := s.db.Exec(`DELETE FROM `+table+` WHERE root_id = ? AND board_id = '12'`, root); err != nil {
+				t.Fatal(err)
+			}
+		}
+		listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11")
+		return nil
+	}
+	if err := s.drainMirrorBoard(root, "12", between); err != nil {
+		t.Fatal(err)
+	}
+	if !overtaken {
+		t.Fatal("the first drain never paused with the board emptied")
+	}
+	assertRows(t, s.db, `SELECT retired || ':' || (SELECT count(*) FROM tracker_cache_board_issues WHERE root_id = b.root_id AND board_id = '12')
+		|| ':' || (SELECT count(*) FROM tracker_cache_board_columns WHERE root_id = b.root_id AND board_id = '12')
+		|| ':' || (SELECT count(*) FROM tracker_cache_sprints WHERE root_id = b.root_id AND board_id = '12')
+		FROM tracker_cache_boards b WHERE root_id = `+fmt.Sprint(root)+` AND board_id = '12'`, "1:2:0:0")
 }

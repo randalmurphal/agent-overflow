@@ -116,7 +116,8 @@ func mirrorAtScale(t *testing.T, size benchMirrorSize) {
 			t.Error(err)
 		}
 	})
-	rec := recordMirrorWrites(t, filled)
+	filledRec := recordMirrorWrites(t, filled)
+	rec := filledRec
 	start := time.Now()
 	statements := countMirrorStatements(t, func() { err = fillBenchMirror(filled, size) })
 	if err != nil {
@@ -168,30 +169,16 @@ func mirrorAtScale(t *testing.T, size benchMirrorSize) {
 	for _, name := range slices.Sorted(maps.Keys(paths)) {
 		t.Logf("%-34s %s", name, paths[name])
 	}
-	readyListedAgainAtScale(t, filled.path)
+	readyListedAgainAtScale(t, filled, filledRec)
 	mirrorPlansAtScale(t, s)
 }
 
-// readyListedAgainAtScale measures, once, on a copy of the first sync's
-// store at filled, what a save that lists board 0 again waits for while
-// its retired copy holds every row of the sync and the root stays live:
-// ReadyTrackerBoards of that board.
-func readyListedAgainAtScale(t *testing.T, filled string) {
+// readyListedAgainAtScale measures, once, on the first sync's store s,
+// whose copy the paths ran on, what a save that lists board 0 again waits
+// for while its retired copy holds every row of the sync and the root
+// stays live: ReadyTrackerBoards of that board.
+func readyListedAgainAtScale(t *testing.T, s *Store, rec *mirrorWriteRecorder) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "ready.sqlite")
-	if err := copyStoreFile(filled, path); err != nil {
-		t.Fatal(err)
-	}
-	s, err := New(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := s.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	rec := recordMirrorWrites(t, s)
 	listed, err := s.ListProjectTrackerBoards(defaultTestProjectID)
 	if err != nil {
 		t.Fatal(err)
