@@ -95,21 +95,27 @@ func TestClaudeSessionAxesForProviderIsClaudeOnly(t *testing.T) {
 }
 
 // Zero values must stay out of the persisted file so an older settings
-// file (and a downgrade) keeps reading as "CLI default".
+// file (and a downgrade) keeps reading as "CLI default". The struct axes
+// cannot use omitempty, so they are the ones that have to be proven
+// equal-to-default rather than absent-by-tag.
 func TestClaudeSessionAxesAreSparse(t *testing.T) {
 	sparse, err := buildSparseMap(Settings{})
 	if err != nil {
 		t.Fatalf("buildSparseMap: %v", err)
 	}
-	for _, key := range []string{"claudeOutputStyle", "claudeToolMemoryLimit"} {
-		if _, present := sparse[key]; present {
-			t.Fatalf("%s present in a sparse write of zero settings", key)
-		}
+	for _, key := range []string{"claudeOutputStyle", "claudeToolMemoryLimit", "claudeSubagentLimits", "claudeThinking"} {
+		t.Run(key, func(t *testing.T) {
+			if _, present := sparse[key]; present {
+				t.Fatalf("%s present in a sparse write of zero settings", key)
+			}
+		})
 	}
-	// The struct axis cannot use omitempty, so it is the one that has to
-	// be proven equal-to-default rather than absent-by-tag.
-	if _, present := sparse["claudeSubagentLimits"]; present {
-		t.Fatal("claudeSubagentLimits present in a sparse write of zero settings")
+	sparse, err = buildSparseMap(Settings{ClaudeThinking: ClaudeThinking{Display: ClaudeThinkingDisplayOmitted}})
+	if err != nil {
+		t.Fatalf("buildSparseMap: %v", err)
+	}
+	if _, present := sparse["claudeThinking"]; !present {
+		t.Fatal("claudeThinking absent from a sparse write that set it")
 	}
 }
 
@@ -218,24 +224,5 @@ func TestClaudeThinkingForProviderIsHeadlessClaudeOnly(t *testing.T) {
 		if got := s.ClaudeThinkingForProvider(other); got != (ClaudeThinking{}) {
 			t.Fatalf("ClaudeThinkingForProvider(%q) = %+v, want zero", other, got)
 		}
-	}
-}
-
-// Sparse like every other axis here: a zero value must not reach the file,
-// or an older build (and a downgrade) would read it as a real choice.
-func TestClaudeThinkingIsSparse(t *testing.T) {
-	sparse, err := buildSparseMap(Settings{})
-	if err != nil {
-		t.Fatalf("buildSparseMap: %v", err)
-	}
-	if _, present := sparse["claudeThinking"]; present {
-		t.Fatal("claudeThinking present in a sparse write of zero settings")
-	}
-	sparse, err = buildSparseMap(Settings{ClaudeThinking: ClaudeThinking{Display: ClaudeThinkingDisplayOmitted}})
-	if err != nil {
-		t.Fatalf("buildSparseMap: %v", err)
-	}
-	if _, present := sparse["claudeThinking"]; !present {
-		t.Fatal("claudeThinking absent from a sparse write that set it")
 	}
 }

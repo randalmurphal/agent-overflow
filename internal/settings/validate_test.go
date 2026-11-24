@@ -75,6 +75,16 @@ func TestUpdateRejectsInvalidEnumeratedValues(t *testing.T) {
 			name:  "fontSizeJustAboveMax",
 			patch: map[string]any{"fontSize": 21},
 		},
+		{
+			name:  "retentionNegative",
+			patch: map[string]any{"retention": map[string]any{"days": -5}},
+		},
+		{
+			// Above MaxRetentionDays so the Duration math downstream stays
+			// well-defined regardless of user input.
+			name:  "retentionOverflowingDays",
+			patch: map[string]any{"retention": map[string]any{"days": MaxRetentionDays + 1}},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -334,13 +344,6 @@ func TestTextGenerationSanitizesInvalidOnLoad(t *testing.T) {
 	}
 }
 
-func TestRetentionDefaultIsThirtyDays(t *testing.T) {
-	got := NewService(t.TempDir()).Get()
-	if got.Retention.Days != 30 {
-		t.Fatalf("Retention.Days default = %d, want 30", got.Retention.Days)
-	}
-}
-
 func TestWorkflowSettingsDefaultsAndValidation(t *testing.T) {
 	got := NewService(t.TempDir()).Get()
 	if got.WorkflowPaused {
@@ -409,54 +412,24 @@ func TestRetentionUpdateRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRetentionRejectsNegativeOnWrite(t *testing.T) {
-	svc := NewService(t.TempDir())
-	if _, err := svc.Update(map[string]any{
-		"retention": map[string]any{"days": -5},
-	}); err == nil {
-		t.Fatal("Update(retention.days=-5) should fail validation")
-	}
-}
-
-func TestRetentionSanitizesNegativeOnLoad(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(path, []byte(`{"retention": {"days": -3}}`), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	got := NewService(dir).Get()
-	if got.Retention.Days != 0 {
-		t.Fatalf("Retention.Days = %d, want 0 (clamped from -3)", got.Retention.Days)
-	}
-}
-
-func TestRetentionRejectsOverflowingDaysOnWrite(t *testing.T) {
-	svc := NewService(t.TempDir())
-	// Above MaxRetentionDays so the Duration math downstream stays
-	// well-defined regardless of user input.
-	if _, err := svc.Update(map[string]any{
-		"retention": map[string]any{"days": MaxRetentionDays + 1},
-	}); err == nil {
-		t.Fatal("Update(retention.days > MaxRetentionDays) should fail validation")
-	}
-}
-
-func TestRetentionClampsOverflowingDaysOnLoad(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(path, []byte(`{"retention": {"days": 999999999}}`), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	got := NewService(dir).Get()
-	if got.Retention.Days != MaxRetentionDays {
-		t.Fatalf("Retention.Days = %d, want %d (clamped from 999999999)", got.Retention.Days, MaxRetentionDays)
-	}
-}
-
-func TestFontSizeDefaultIsThirteen(t *testing.T) {
-	got := NewService(t.TempDir()).Get()
-	if got.FontSize != 13 {
-		t.Fatalf("FontSize default = %d, want 13", got.FontSize)
+func TestRetentionClampsOnLoad(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{name: "negative", raw: `{"retention": {"days": -3}}`, want: 0},
+		{name: "overflowing", raw: `{"retention": {"days": 999999999}}`, want: MaxRetentionDays},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(tc.raw), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			if got := NewService(dir).Get(); got.Retention.Days != tc.want {
+				t.Fatalf("Retention.Days = %d, want %d (clamped from %s)", got.Retention.Days, tc.want, tc.raw)
+			}
+		})
 	}
 }
 
@@ -485,18 +458,6 @@ func TestFontSizeUpdateRoundTrip(t *testing.T) {
 	}
 	if got.FontSize != 20 {
 		t.Fatalf("fontSize=20 round-trip: got %d, want 20", got.FontSize)
-	}
-}
-
-func TestFontSizeSanitizesOnLoad(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(path, []byte(`{"fontSize": 99}`), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	got := NewService(dir).Get()
-	if got.FontSize != DefaultSettings.FontSize {
-		t.Fatalf("FontSize = %d, want %d (reset from 99)", got.FontSize, DefaultSettings.FontSize)
 	}
 }
 
@@ -624,32 +585,6 @@ func TestGitLabSelfHostedHostsSanitizesOnLoad(t *testing.T) {
 	}
 }
 
-func TestGitLabSelfHostedHostsDefaultIsNil(t *testing.T) {
-	got := NewService(t.TempDir()).Get()
-	if got.GitLabSelfHostedHosts != nil {
-		t.Fatalf("GitLabSelfHostedHosts default = %v, want nil", got.GitLabSelfHostedHosts)
-	}
-}
-
-func TestUpdateDefaultsBlankBinaryPaths(t *testing.T) {
-	svc := NewService(t.TempDir())
-
-	got, err := svc.Update(map[string]any{
-		"claudeBinaryPath": "   ",
-		"codexBinaryPath":  "",
-	})
-	if err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
-
-	if got.ClaudeBinaryPath != DefaultSettings.ClaudeBinaryPath {
-		t.Fatalf("ClaudeBinaryPath = %q, want %q", got.ClaudeBinaryPath, DefaultSettings.ClaudeBinaryPath)
-	}
-	if got.CodexBinaryPath != DefaultSettings.CodexBinaryPath {
-		t.Fatalf("CodexBinaryPath = %q, want %q", got.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
-	}
-}
-
 // browserChromiumPath is the headless engine's browser override. Empty is
 // the normal value ("search PATH"); a relative one is refused at the write,
 // because it would be resolved against the serve process's own PATH and the
@@ -675,16 +610,6 @@ func TestUpdateRequiresAnAbsoluteBrowserChromiumPath(t *testing.T) {
 	}
 	if got := svc.Get().BrowserChromiumPath; got != "" {
 		t.Fatalf("BrowserChromiumPath = %q after clearing", got)
-	}
-}
-
-func TestActivityRunDefaultsAreCollapsedAndThirty(t *testing.T) {
-	got := NewService(t.TempDir()).Get()
-	if got.ActivityRunDefault != "collapsed" {
-		t.Fatalf("ActivityRunDefault default = %q, want %q", got.ActivityRunDefault, "collapsed")
-	}
-	if got.ActivityRunWindowRows != 30 {
-		t.Fatalf("ActivityRunWindowRows default = %d, want 30", got.ActivityRunWindowRows)
 	}
 }
 

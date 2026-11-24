@@ -122,23 +122,17 @@ func TestGroupByTierSplitsAWriteAcrossTiers(t *testing.T) {
 }
 
 // Read aloud in OpenAI voices sends reply text to OpenAI under this
-// computer's API key: off until turned on, and a host-tier grant.
-func TestReadAloudIsAnOffByDefaultHostGrant(t *testing.T) {
-	if DefaultSettings.ReadAloudAPIEnabled {
-		t.Fatal("read aloud in OpenAI voices is on by default")
-	}
-	if tier, ok := TierForKey("readAloudAPIEnabled"); !ok || tier != TierHost {
-		t.Fatalf("readAloudAPIEnabled tier = %q, %v; want host", tier, ok)
-	}
-}
-
-// Dictation sends recordings to OpenAI under this computer's Codex sign-in:
-// off until turned on, and a host-tier grant like the other authorities.
-func TestDictationIsAnOffByDefaultHostGrant(t *testing.T) {
-	if DefaultSettings.DictationSubscriptionEnabled {
-		t.Fatal("dictation is on by default")
-	}
-	if tier, ok := TierForKey("dictationSubscriptionEnabled"); !ok || tier != TierHost {
-		t.Fatalf("dictationSubscriptionEnabled tier = %q, %v; want host", tier, ok)
+// computer's API key, and dictation sends recordings under its Codex
+// sign-in: each is off until turned on, and a host-tier grant.
+func TestOpenAIGrantsAreOffByDefaultHostGrants(t *testing.T) {
+	for _, key := range []string{"readAloudAPIEnabled", "dictationSubscriptionEnabled"} {
+		t.Run(key, func(t *testing.T) {
+			if value, err := rowValue(DefaultSettings, key); err != nil || value != "false" {
+				t.Fatalf("DefaultSettings %s = %q, %v; want off", key, value, err)
+			}
+			if tier, ok := TierForKey(key); !ok || tier != TierHost {
+				t.Fatalf("%s tier = %q, %v; want host", key, tier, ok)
+			}
+		})
 	}
 }

@@ -59,26 +59,20 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	if got.ProjectSortMode != "lastActivity" {
 		t.Errorf("ProjectSortMode = %q, want %q", got.ProjectSortMode, "lastActivity")
 	}
-}
-
-func TestGetReturnsDefaultsOnMalformedJSON(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(path, []byte("{not valid json!!!"), 0o644); err != nil {
-		t.Fatal(err)
+	if got.Retention.Days != 30 {
+		t.Errorf("Retention.Days default = %d, want 30", got.Retention.Days)
 	}
-
-	svc := NewService(dir)
-	got := svc.Get()
-
-	if got.TimestampFormat != "locale" {
-		t.Errorf("TimestampFormat = %q, want %q", got.TimestampFormat, "locale")
+	if got.FontSize != 13 {
+		t.Errorf("FontSize default = %d, want 13", got.FontSize)
 	}
-	if got.StreamingEnabled != true {
-		t.Error("StreamingEnabled = false, want true")
+	if got.GitLabSelfHostedHosts != nil {
+		t.Errorf("GitLabSelfHostedHosts default = %v, want nil", got.GitLabSelfHostedHosts)
 	}
-	if got.ConfirmDelete != true {
-		t.Error("ConfirmDelete = false, want true")
+	if got.ActivityRunDefault != "collapsed" {
+		t.Errorf("ActivityRunDefault default = %q, want %q", got.ActivityRunDefault, "collapsed")
+	}
+	if got.ActivityRunWindowRows != 30 {
+		t.Errorf("ActivityRunWindowRows default = %d, want 30", got.ActivityRunWindowRows)
 	}
 }
 
@@ -90,8 +84,16 @@ func TestMalformedJSONPreservesOriginalFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewService(dir)
-	_ = svc.Get()
+	got := NewService(dir).Get()
+	if got.TimestampFormat != "locale" {
+		t.Errorf("TimestampFormat = %q, want %q", got.TimestampFormat, "locale")
+	}
+	if got.StreamingEnabled != true {
+		t.Error("StreamingEnabled = false, want true")
+	}
+	if got.ConfirmDelete != true {
+		t.Error("ConfirmDelete = false, want true")
+	}
 
 	// The original settings.json must be moved aside, not silently
 	// dropped. Find a sibling matching settings.json.corrupt-* and
@@ -139,6 +141,16 @@ func TestUpdatePersistsAndSparseSerializes(t *testing.T) {
 	if updated.TimestampFormat != "24-hour" {
 		t.Errorf("TimestampFormat = %q, want %q", updated.TimestampFormat, "24-hour")
 	}
+	// All other fields should still be defaults.
+	if updated.StreamingEnabled != true {
+		t.Error("StreamingEnabled = false, want true")
+	}
+	if updated.ConfirmArchive != true {
+		t.Error("ConfirmArchive = false, want true")
+	}
+	if updated.ClaudeBinaryPath != "claude" {
+		t.Errorf("ClaudeBinaryPath = %q, want %q", updated.ClaudeBinaryPath, "claude")
+	}
 
 	// Read the file directly to verify sparse serialization.
 	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
@@ -165,6 +177,15 @@ func TestUpdatePersistsAndSparseSerializes(t *testing.T) {
 	// CurrentSchemaVersion; if the version bumps we update both.
 	if got, _ := fileMap["$schemaVersion"].(float64); int(got) != CurrentSchemaVersion {
 		t.Errorf("file $schemaVersion = %v, want %d", fileMap["$schemaVersion"], CurrentSchemaVersion)
+	}
+
+	// A fresh service reads the same state back from the file.
+	got := NewService(dir).Get()
+	if got.TimestampFormat != "24-hour" {
+		t.Errorf("re-read TimestampFormat = %q, want %q", got.TimestampFormat, "24-hour")
+	}
+	if got.StreamingEnabled != true {
+		t.Error("re-read StreamingEnabled = false, want true")
 	}
 }
 
@@ -264,88 +285,59 @@ func TestWindowGeometryRoundTripAndSparseDefault(t *testing.T) {
 	}
 }
 
-// TestCollapseDiffPreviewsRoundTripAndSparseDefault confirms the
-// chat-timeline diff-collapse toggle persists like every other
-// setting: Update writes the patch, a fresh service reload yields the
-// same value, and the file omits the key once it equals the default
-// again.
-func TestCollapseDiffPreviewsRoundTripAndSparseDefault(t *testing.T) {
-	dir := t.TempDir()
-	svc := NewService(dir)
+// A bool toggle persists like every other setting, whichever way its default
+// points: the non-default value survives a reload and lands in the file, and
+// the default disappears from the file again. A default-true bool written the
+// naive way (omitempty, or a sparse diff against the zero value) silently
+// re-enables itself on the next load.
+func TestBoolTogglesRoundTripAndSparseDefault(t *testing.T) {
+	for _, tc := range []struct {
+		key string
+		def bool
+	}{
+		{key: "collapseDiffPreviews", def: true},
+		{key: "lowPowerMode", def: false},
+		{key: "backgroundGitFetch", def: true},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			dir := t.TempDir()
+			svc := NewService(dir)
+			expect := func(label string, got Settings, want bool) {
+				t.Helper()
+				if value, err := rowValue(got, tc.key); err != nil || value != strconv.FormatBool(want) {
+					t.Fatalf("%s %s = %q, %v; want %v", label, tc.key, value, err, want)
+				}
+			}
+			readFile := func() map[string]any {
+				t.Helper()
+				data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+				if err != nil {
+					t.Fatalf("ReadFile() error = %v", err)
+				}
+				var fileMap map[string]any
+				if err := json.Unmarshal(data, &fileMap); err != nil {
+					t.Fatalf("unmarshal settings file: %v", err)
+				}
+				return fileMap
+			}
 
-	updated, err := svc.Update(map[string]any{"collapseDiffPreviews": false})
-	if err != nil {
-		t.Fatalf("Update(collapseDiffPreviews=false) error = %v", err)
-	}
-	if updated.CollapseDiffPreviews {
-		t.Fatal("CollapseDiffPreviews = true, want false")
-	}
-
-	reloaded := NewService(dir).Get()
-	if reloaded.CollapseDiffPreviews {
-		t.Fatal("reloaded CollapseDiffPreviews = true, want false")
-	}
-
-	updated, err = svc.Update(map[string]any{"collapseDiffPreviews": true})
-	if err != nil {
-		t.Fatalf("Update(collapseDiffPreviews=true) error = %v", err)
-	}
-	if !updated.CollapseDiffPreviews {
-		t.Fatal("CollapseDiffPreviews = false, want true")
-	}
-
-	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	var fileMap map[string]any
-	if err := json.Unmarshal(data, &fileMap); err != nil {
-		t.Fatalf("unmarshal settings file: %v", err)
-	}
-	if _, ok := fileMap["collapseDiffPreviews"]; ok {
-		t.Fatalf("settings file = %s, want collapseDiffPreviews omitted when default", string(data))
-	}
-}
-
-// TestLowPowerModeRoundTripAndSparseDefault confirms the low-power
-// rendering toggle persists like every other setting: Update writes
-// the patch, a fresh service reload yields the same value, and the
-// file omits the key once it equals the default again.
-func TestLowPowerModeRoundTripAndSparseDefault(t *testing.T) {
-	dir := t.TempDir()
-	svc := NewService(dir)
-
-	updated, err := svc.Update(map[string]any{"lowPowerMode": true})
-	if err != nil {
-		t.Fatalf("Update(lowPowerMode=true) error = %v", err)
-	}
-	if !updated.LowPowerMode {
-		t.Fatal("LowPowerMode = false, want true")
-	}
-
-	reloaded := NewService(dir).Get()
-	if !reloaded.LowPowerMode {
-		t.Fatal("reloaded LowPowerMode = false, want true")
-	}
-
-	updated, err = svc.Update(map[string]any{"lowPowerMode": false})
-	if err != nil {
-		t.Fatalf("Update(lowPowerMode=false) error = %v", err)
-	}
-	if updated.LowPowerMode {
-		t.Fatal("LowPowerMode = true, want false")
-	}
-
-	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	var fileMap map[string]any
-	if err := json.Unmarshal(data, &fileMap); err != nil {
-		t.Fatalf("unmarshal settings file: %v", err)
-	}
-	if _, ok := fileMap["lowPowerMode"]; ok {
-		t.Fatalf("settings file = %s, want lowPowerMode omitted when default", string(data))
+			expect("fresh", svc.Get(), tc.def)
+			for _, want := range []bool{!tc.def, tc.def} {
+				updated, err := svc.Update(map[string]any{tc.key: want})
+				if err != nil {
+					t.Fatalf("Update(%s=%v) error = %v", tc.key, want, err)
+				}
+				expect("updated", updated, want)
+				expect("reloaded", NewService(dir).Get(), want)
+				got, persisted := readFile()[tc.key]
+				if want == tc.def && persisted {
+					t.Fatalf("settings file carries %s=%v, want it omitted at the default", tc.key, got)
+				}
+				if want != tc.def && got != want {
+					t.Fatalf("settings file %s = %v, want %v persisted", tc.key, got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -413,41 +405,6 @@ func TestClaudeTUIEnabledDefaultsOffAndRoundTrips(t *testing.T) {
 	}
 	if NewService(dir).Get().ClaudeTUIEnabled {
 		t.Fatal("reloaded ClaudeTUIEnabled = true after disabling, want false")
-	}
-}
-
-func TestUpdateMergesOverDefaults(t *testing.T) {
-	dir := t.TempDir()
-	svc := NewService(dir)
-
-	updated, err := svc.Update(map[string]any{"timestampFormat": "24-hour"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Changed field.
-	if updated.TimestampFormat != "24-hour" {
-		t.Errorf("TimestampFormat = %q, want %q", updated.TimestampFormat, "24-hour")
-	}
-	// All other fields should still be defaults.
-	if updated.StreamingEnabled != true {
-		t.Error("StreamingEnabled = false, want true")
-	}
-	if updated.ConfirmArchive != true {
-		t.Error("ConfirmArchive = false, want true")
-	}
-	if updated.ClaudeBinaryPath != "claude" {
-		t.Errorf("ClaudeBinaryPath = %q, want %q", updated.ClaudeBinaryPath, "claude")
-	}
-
-	// Read it back via Get to ensure cache and file are consistent.
-	svc2 := NewService(dir)
-	got := svc2.Get()
-	if got.TimestampFormat != "24-hour" {
-		t.Errorf("re-read TimestampFormat = %q, want %q", got.TimestampFormat, "24-hour")
-	}
-	if got.StreamingEnabled != true {
-		t.Error("re-read StreamingEnabled = false, want true")
 	}
 }
 
@@ -612,20 +569,6 @@ func TestBlankBinaryPathsSerializeAsDefaults(t *testing.T) {
 	}
 	if got, _ := fileMap["$schemaVersion"].(float64); int(got) != CurrentSchemaVersion {
 		t.Fatalf("settings file = %s, want $schemaVersion = %d", string(data), CurrentSchemaVersion)
-	}
-}
-
-func TestObservabilityDefaults(t *testing.T) {
-	svc := NewService(t.TempDir())
-	got := svc.Get()
-	if got.ObservabilityTracingEnabled {
-		t.Error("ObservabilityTracingEnabled = true, want false by default")
-	}
-	if got.ObservabilityEventLogEnabled {
-		t.Error("ObservabilityEventLogEnabled = true, want false by default")
-	}
-	if got.ObservabilityOtlpEndpoint != "" {
-		t.Errorf("ObservabilityOtlpEndpoint = %q, want empty by default", got.ObservabilityOtlpEndpoint)
 	}
 }
 
@@ -865,37 +808,26 @@ func TestObservabilityOtlpEndpointBlankSerializesAsDefault(t *testing.T) {
 	}
 }
 
-// TestLoad_AcceptsFileWithoutSchemaVersion documents the backward-compat
-// guarantee for files written by older builds that pre-date schema
-// versioning. The loader must not refuse / reset such files.
-func TestLoad_AcceptsFileWithoutSchemaVersion(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(path, []byte(`{"timestampFormat":"24-hour"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	got := NewService(dir).Get()
-	if got.TimestampFormat != "24-hour" {
-		t.Fatalf("TimestampFormat = %q, want 24-hour (loader rejected unversioned file?)", got.TimestampFormat)
-	}
-}
-
-// TestLoad_AcceptsForwardCompatSchemaVersion documents the
-// forward-compat guarantee: a file from a future build (higher schema
-// version) loads with whatever fields the current struct knows about,
-// rather than refusing the whole file. captureUnknownFields preserves
-// any future keys for a re-write.
-func TestLoad_AcceptsForwardCompatSchemaVersion(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(path, []byte(`{"$schemaVersion":99,"timestampFormat":"24-hour"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	got := NewService(dir).Get()
-	if got.TimestampFormat != "24-hour" {
-		t.Fatalf("TimestampFormat = %q, want 24-hour (loader rejected forward-version file?)", got.TimestampFormat)
+// TestLoad_AcceptsAnySchemaVersion documents the compat guarantee
+// in both directions. A file from an older build that pre-dates schema
+// versioning, and one from a future build (higher schema version), both load
+// with whatever fields the current struct knows about rather than refusing
+// or resetting the file. captureUnknownFields preserves any future keys for
+// a re-write.
+func TestLoad_AcceptsAnySchemaVersion(t *testing.T) {
+	for _, tc := range []struct{ name, raw string }{
+		{name: "unversioned", raw: `{"timestampFormat":"24-hour"}`},
+		{name: "forward version", raw: `{"$schemaVersion":99,"timestampFormat":"24-hour"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(tc.raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := NewService(dir).Get(); got.TimestampFormat != "24-hour" {
+				t.Fatalf("TimestampFormat = %q, want 24-hour (loader rejected %s file?)", got.TimestampFormat, tc.name)
+			}
+		})
 	}
 }
 
@@ -1093,69 +1025,6 @@ func TestHiddenModelsForProvider(t *testing.T) {
 	}
 	if got := s.HiddenModelsForProvider("unknown"); got != nil {
 		t.Errorf("HiddenModelsForProvider(unknown) = %v, want nil", got)
-	}
-}
-
-// TestBackgroundGitFetchRoundTripAndSparseDefault covers the inverted
-// half of the sparse-write contract: the toggle defaults to ON, so it is
-// the user's `false` that must survive a reload, and `true` that must
-// disappear from the file again. A default-true bool written the naive
-// way (omitempty, or a sparse diff against the zero value) silently
-// re-enables itself on the next load.
-func TestBackgroundGitFetchRoundTripAndSparseDefault(t *testing.T) {
-	dir := t.TempDir()
-	svc := NewService(dir)
-
-	if !svc.Get().BackgroundGitFetch {
-		t.Fatal("BackgroundGitFetch = false on a fresh install, want true")
-	}
-
-	updated, err := svc.Update(map[string]any{"backgroundGitFetch": false})
-	if err != nil {
-		t.Fatalf("Update(backgroundGitFetch=false) error = %v", err)
-	}
-	if updated.BackgroundGitFetch {
-		t.Fatal("BackgroundGitFetch = true, want false")
-	}
-
-	reloaded := NewService(dir).Get()
-	if reloaded.BackgroundGitFetch {
-		t.Fatal("reloaded BackgroundGitFetch = true, want the persisted false")
-	}
-
-	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	var fileMap map[string]any
-	if err := json.Unmarshal(data, &fileMap); err != nil {
-		t.Fatalf("unmarshal settings file: %v", err)
-	}
-	if got, ok := fileMap["backgroundGitFetch"]; !ok || got != false {
-		t.Fatalf("settings file = %s, want backgroundGitFetch:false persisted", string(data))
-	}
-
-	updated, err = svc.Update(map[string]any{"backgroundGitFetch": true})
-	if err != nil {
-		t.Fatalf("Update(backgroundGitFetch=true) error = %v", err)
-	}
-	if !updated.BackgroundGitFetch {
-		t.Fatal("BackgroundGitFetch = false, want true")
-	}
-	if !NewService(dir).Get().BackgroundGitFetch {
-		t.Fatal("reloaded BackgroundGitFetch = false after re-enabling")
-	}
-
-	data, err = os.ReadFile(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	fileMap = nil
-	if err := json.Unmarshal(data, &fileMap); err != nil {
-		t.Fatalf("unmarshal settings file: %v", err)
-	}
-	if _, ok := fileMap["backgroundGitFetch"]; ok {
-		t.Fatalf("settings file = %s, want backgroundGitFetch omitted when back at the default", string(data))
 	}
 }
 
