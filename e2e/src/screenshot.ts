@@ -1,9 +1,11 @@
 // The suite's one screenshot switch. A screenshot is evidence for a person
 // reading a run, never an assertion (docs/specs/testing-harness.md: evidence
 // is text), so a run takes none unless AO_E2E_SCREENSHOTS=1. Every capture
-// goes through `screenshot` or `attachScreenshot`; the steps a capture helper
-// takes before its shot (placing a row, checking it is on screen and still)
-// run either way. A spec that reads a screenshot's pixels as its assertion
+// goes through `screenshot` or `attachScreenshot`. A capture helper's checks
+// (a target placed, on screen and still) run either way; work that exists
+// only for the picture (rewriting text, switching themes, waiting for frames
+// or transitions, a placement the next step repeats) runs only when
+// `screenshotsOn`. A spec that reads a screenshot's pixels as its assertion
 // calls Playwright's own `screenshot`, which this switch does not touch.
 import type { Locator, LocatorScreenshotOptions, Page, PageScreenshotOptions, TestInfo } from '@playwright/test';
 

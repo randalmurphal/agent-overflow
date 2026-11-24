@@ -10,7 +10,7 @@
 
 import { test, expect } from './fixtures.js';
 import type { Locator } from '@playwright/test';
-import { SPAWN_TITLE, TARGET_TITLE, atOverlayEdge, driveAoToolRows, expandRow, expectRowTextWhole, firstTextFits, openLead, shootRow, toolRow } from './ao-tool-rows-helpers.js';
+import { SPAWN_TITLE, TARGET_TITLE, atOverlayEdge, driveAoToolRows, expandRow, expectRowTextWhole, firstTextFits, openLead, shootRow, shootRowBeforeOpening, toolRow } from './ao-tool-rows-helpers.js';
 
 test(`claude: AO tool rows read on the compact thread screen`, async ({ harness, page }) => {
   const provider = 'claude';
@@ -38,7 +38,7 @@ test(`claude: AO tool rows read on the compact thread screen`, async ({ harness,
   for (const [name, row] of rows) {
     await expect(row, name).toHaveCount(1);
     await fits(row);
-    await shot(`${name}-collapsed`, row);
+    await shootRowBeforeOpening(row, test.info().outputPath(`compact-${provider}-${name}-collapsed.png`));
   }
 
   await expect(rows[0][1].getByTestId('tool-call-card-ao-live-hint')).toHaveText('(answer arrived)', { timeout: 30_000 });

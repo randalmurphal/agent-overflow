@@ -18,7 +18,7 @@ import {
 } from './thread-tools-helpers.js';
 import { doneEnvelope, doneResult } from './workflows-helpers.js';
 import { openRunsFor } from './standing-agent-wake-helpers.js';
-import { screenshot } from '../src/screenshot.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 export const WORKFLOW_TOOLS_SERVER = 'ao-workflow-tools';
 
@@ -368,7 +368,8 @@ export async function finishMigration(
  * Opens the thread in the page and captures its end: the backgrounded
  * run_start row, the wake that reported the run's rest, and the turn that
  * read it, every activity run expanded and the last row clear of the
- * composer. The harness's temporary root is written as `<harness root>`.
+ * composer. With screenshots on, the harness's temporary root is written
+ * as `<harness root>`.
  */
 export async function captureRunFromThread(
   harness: HarnessApp,
@@ -384,13 +385,15 @@ export async function captureRunFromThread(
   await page.getByTestId('thread-row').filter({ hasText: title }).click();
   await openRunsFor(page, page.getByText(`Run "${runId}"`).last());
   await expect(page.getByTestId('tool-call-card').filter({ hasText: 'migrator' }).first()).toBeAttached();
-  await page.evaluate(() => {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const text = node.textContent ?? '';
-      if (text.includes('/ao-harness-')) node.textContent = text.replace(/\/\S*?\/ao-harness-[^/\s]+/g, '<harness root>');
-    }
-  });
+  if (screenshotsOn) {
+    await page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent ?? '';
+        if (text.includes('/ao-harness-')) node.textContent = text.replace(/\/\S*?\/ao-harness-[^/\s]+/g, '<harness root>');
+      }
+    });
+  }
   const scroller = page.getByTestId('message-timeline-scroll').first();
   await scroller.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
   await page.evaluate(

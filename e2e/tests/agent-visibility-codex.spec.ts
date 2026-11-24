@@ -344,14 +344,13 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   await card.getByTestId('subagent-group-toggle').first().click();
   const body = card.getByTestId('subagent-group-body');
   await expect(body).toContainText(FINAL_ANSWER);
-  await expect(card.getByTestId('subagent-group-final-answer')).toHaveCount(0);
   await expect(body.getByText(FINAL_ANSWER, { exact: false })).toHaveCount(1);
   // The card's own door opens the child's pane with the answer in it.
   await pane.getByTestId('agent-pane-close').click();
   await expect(pane).toHaveCount(0);
   await card.getByTestId('subagent-group-open-pane').first().click();
   await expect(pane.getByTestId('agent-pane-timeline')).toContainText(FINAL_ANSWER);
-  await expect(pane.getByTestId('agent-pane-final-answer')).toHaveCount(0);
+  await expect(pane.getByText(FINAL_ANSWER, { exact: false }).filter({ visible: true })).toHaveCount(1);
   await expect(pane.getByTestId('agent-pane-empty')).toHaveCount(0);
 });
 

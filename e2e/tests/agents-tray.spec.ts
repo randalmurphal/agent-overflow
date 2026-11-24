@@ -34,7 +34,6 @@ import { advanceGate, awaitGate, awaitMockInput, awaitToolAnswer, awaitTurnCompl
 import { capture } from './wake-rows-helpers.js';
 import { scrollTimelineToTop } from './standing-agent-home-contents-helpers.js';
 import {
-  AGENT_ROW_LINGER_MS,
   CHILD,
   GRAND,
   LEAD,
@@ -136,6 +135,14 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
     // The peer answers: its row shows the outcome, and once the lead took
     // the answer in, its click leaves the tray and lands on the wake item.
+    // Scrolled up to the lead's first message, past a report longer than
+    // the pane, the wake row will be out of view; only the click can bring
+    // it in. The scroll is done before the peer answers: the settled row
+    // lingers AGENT_ROW_LINGER_MS from there, and the click must come
+    // within it.
+    const timeline = page.getByTestId('message-timeline-scroll').filter({ visible: true }).first();
+    const firstAsk = timeline.getByText('run the release', { exact: true });
+    await scrollTimelineToTop(page, firstAsk);
     const peerHold = await awaitGate(harness, 'peer-hold', tree.peerPath);
     await advanceGate(harness, peerHold.mockId, 'peer-hold');
     await expect(send).toHaveAttribute('data-settled', 'true', { timeout: 30_000 });
@@ -148,12 +155,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const listing = await harness.rpc<{ rows: { token: string; wakeItemId?: string }[] }>('ListThreadAgentRows', tree.lead);
     const wakeItemId = listing.rows.find((row) => row.token === started.sendToken)?.wakeItemId;
     expect(wakeItemId, 'the settled send names its wake item').toBeTruthy();
-    // Scrolled up to the lead's first message, past a report longer than
-    // the pane, the wake row is out of view; only the click can bring it in.
-    const timeline = page.getByTestId('message-timeline-scroll').filter({ visible: true }).first();
     const wakeItem = timeline.locator(`[data-item-id="${wakeItemId}"]`);
-    const firstAsk = timeline.getByText('run the release', { exact: true });
-    await scrollTimelineToTop(page, firstAsk);
     await expect(firstAsk).toBeInViewport();
     if (await wakeItem.count() > 0) await expect(wakeItem).not.toBeInViewport();
     await sendOpen.click();
@@ -189,8 +191,13 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const { mockId: original, pid: originalPid } = await liveMockIn(harness, tree.childPath);
     const originalProcess = await captureProcessIdentity(originalPid);
     await child.getByTestId('agent-tray-row-stop').click();
-    await expect(page.getByTestId('toast-message').filter({ hasText: `Stopped ${CHILD}` }))
-      .toHaveText(`Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.`, { timeout: 30_000 });
+    // The stopped row lingers, watched for from the stop on; how long is
+    // activityRailAgents.svelte.test.ts's.
+    await Promise.all([
+      expect(page.getByTestId('toast-message').filter({ hasText: `Stopped ${CHILD}` }))
+        .toHaveText(`Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.`, { timeout: 30_000 }),
+      expect(child.getByTestId('agent-tray-row-state')).toHaveText('stopped'),
+    ]);
     expect((await childInterrupted).mockId, 'the stop interrupted the child\'s session').toBe(original);
     await grandInterrupted;
     await leadWoken;
@@ -204,13 +211,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(nested.notify, 'the cascade disarms the nested wake').toBe(0);
     await expect.poll(async () => (await harness.rpc<{ status: string }[]>('ListLiveBackgroundTasks', started.child))
       .filter((item) => item.status === 'running').length, { timeout: 30_000 }).toBe(0);
-    // The stopped row lingers (AGENT_ROW_LINGER_MS on this backend), then
-    // leaves. The row settled before the checks above, so the linger seen
-    // from here is shorter by their time; 3 s of it is allowed.
-    await expect(child.getByTestId('agent-tray-row-state')).toHaveText('stopped');
-    const settledAt = Date.now();
+    // Then it leaves.
     await expect(agentsBody(page).getByTestId('agent-tray-row')).toHaveCount(0, { timeout: 30_000 });
-    expect(Date.now() - settledAt, 'the settled row lingered').toBeGreaterThan(AGENT_ROW_LINGER_MS - 3_000);
     // The segment stays for Past, which holds the send and the stopped child.
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText('2');
     // The child is at rest: its session ended with its shell, and nothing

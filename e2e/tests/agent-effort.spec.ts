@@ -48,10 +48,11 @@ import {
   toolUseLine,
   waitForGate,
 } from './agent-visibility-helpers.js';
-import { screenshot } from '../src/screenshot.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 /** Screenshots a region in light and dark appearance for the PR. */
 async function shoot(page: Page, testInfo: TestInfo, region: import('@playwright/test').Locator, name: string): Promise<void> {
+  if (!screenshotsOn) return;
   for (const theme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await expect(page.locator('html')).toHaveClass(theme === 'dark' ? /dark/ : /^(?!.*\bdark\b).*$/);

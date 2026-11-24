@@ -213,11 +213,12 @@ export async function awaitSidebarSettled(page: Page): Promise<void> {
 }
 
 /**
- * Captures the window once every target is visible and wholly in it. The
- * harness's temporary root, which a watch's directory shows, is written as
- * `<harness root>` in the capture: the spec asserts the real path before it,
- * and the captures are published. The sidebar's system footer, the host
- * machine's own CPU and memory, is not evidence and is hidden.
+ * Captures the window once every target is visible and wholly in it; the
+ * targets are checked with screenshots off too. The harness's temporary
+ * root, which a watch's directory shows, is written as `<harness root>` in
+ * the capture: the spec asserts the real path before it, and the captures
+ * are published. The sidebar's system footer, the host machine's own CPU
+ * and memory, is not evidence and is hidden.
  */
 export async function capture(page: Page, name: string, ...targets: Locator[]): Promise<void> {
   for (const target of targets) {
@@ -231,6 +232,7 @@ export async function capture(page: Page, name: string, ...targets: Locator[]): 
       throw new Error(`${name}: target at ${box ? `y ${Math.round(box.y)}, height ${Math.round(box.height)}` : 'no box'} in a ${viewport.width}x${viewport.height} viewport, timeline scrollTop ${Math.round(scrollTop)}`, { cause: error });
     }
   }
+  if (!screenshotsOn) return;
   await page.evaluate(() => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {

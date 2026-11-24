@@ -193,7 +193,8 @@ async function settle(page: Page): Promise<void> {
  * operating system's own (a headless Linux browser has no voices). On
  * compact each section is a page reached from the rail. With `viewports`,
  * each section, once populated, is measured at each of them in turn, its
- * faults named with the width; without, at the page's own. Saving the
+ * faults named with the width; without, at the page's own. Each section
+ * is opened at the first of `viewports`. Saving the
  * account is process-wide state, so the caller passes a backend it owns.
  */
 export async function settingsLayoutFaults(
@@ -213,6 +214,7 @@ export async function settingsLayoutFaults(
     };
     window.speechSynthesis.getVoices = () => [voice as SpeechSynthesisVoice];
   });
+  if (viewports) await page.setViewportSize(viewports[0]);
   await harness.open(page);
   await page.getByTestId('sidebar-settings-button').click();
   await saveCodexAccountNeedingSignIn(harness, page, compact);
@@ -232,11 +234,16 @@ export async function settingsLayoutFaults(
       await settle(page);
     }
     if (!viewports) faults.push(...await layoutFaults(page, name));
-    for (const viewport of viewports ?? []) {
-      await page.setViewportSize(viewport);
-      await settle(page);
+    // The section was opened and populated at the first width, so its own
+    // settle stands for the first sample; each later width settles anew.
+    for (const [index, viewport] of (viewports ?? []).entries()) {
+      if (index > 0) {
+        await page.setViewportSize(viewport);
+        await settle(page);
+      }
       faults.push(...await layoutFaults(page, `${name} at ${viewport.width}px`));
     }
+    if (viewports) await page.setViewportSize(viewports[0]);
     if (providerPage) await removeEnvVars(page);
     if (compact) await page.getByTestId('settings-page-back').click();
   }

@@ -99,16 +99,19 @@ describe('agents controller', () => {
     expect(controller.past.total).toBe(1);
   });
 
-  it('lingers a settled row from when it first saw it settled, and a click takes it out early', async () => {
+  it('lingers a settled row 8 s from when it first saw it settled, and a click takes it out early', async () => {
     const { pane, controller, clock } = await mountAgents([
       row('done', { state: 'finished', settledAt: 1 }),
       row('other', { state: 'replied', settledAt: 1 }),
     ]);
-    clock.now = Date.now() + AGENT_ROW_SETTLED_LINGER_MS - 1;
+    // The shipped linger (docs/specs/standing-agents.md, Lifetime), written
+    // here rather than read from AGENT_ROW_SETTLED_LINGER_MS: a settled row
+    // is a click target for that long.
+    clock.now = Date.now() + 7_999;
     expect(controller.rows.map((r) => r.token)).toEqual(['done', 'other']);
     controller.dismiss('other');
     expect(controller.rows.map((r) => r.token)).toEqual(['done']);
-    clock.now = Date.now() + AGENT_ROW_SETTLED_LINGER_MS;
+    clock.now = Date.now() + 8_000;
     expect(controller.rows).toEqual([]);
     expect(controller.shown).toBe(0);
     void pane;
