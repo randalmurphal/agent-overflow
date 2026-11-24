@@ -245,6 +245,33 @@ var walkCases = map[string]walkCase{
 			return fmt.Sprintf("%v complete=%t", users, res.Complete), err
 		}, fmt.Sprintf("map[50:%d] complete=true", bulkFetchBatch+1),
 	},
+	"BulkFetchByID": {
+		func(s *walkSite) {
+			s.route("POST", "/rest/api/3/issue/bulkfetch", func(u string, _ *http.Request, b []byte) string {
+				var v struct {
+					Refs []string `json:"issueIdsOrKeys"`
+				}
+				_ = json.Unmarshal(b, &v)
+				var out []string
+				for _, ref := range v.Refs {
+					out = append(out, fmt.Sprintf(`{"id":"%s","key":"U%d-%s","fields":{}}`, ref, uid(u, 0), ref))
+				}
+				return `{"issues":[` + strings.Join(out, ",") + `],"issueErrors":[]}`
+			})
+		},
+		func(ctx context.Context, c *Client) (string, error) {
+			ids := make([]string, bulkFetchBatch+1)
+			for i := range ids {
+				ids[i] = strconv.Itoa(10001 + i)
+			}
+			res, err := c.BulkFetchByID(ctx, ids, "summary")
+			users := map[byte]int{}
+			for _, is := range res.Issues {
+				users[is.Key[1]]++
+			}
+			return fmt.Sprintf("%v complete=%t", users, res.Complete), err
+		}, fmt.Sprintf("map[50:%d] complete=true", bulkFetchBatch+1),
+	},
 	"BulkChangelogs": {
 		func(s *walkSite) {
 			s.route("POST", "/rest/api/3/changelog/bulkfetch", func(u string, r *http.Request, b []byte) string {
@@ -436,7 +463,7 @@ var (
 	oneRequest = []string{
 		"AttachmentMediaID", "Attachments", "Board", "BoardConfig", "Comment", "CountIssues", "CountListIssues",
 		"DownloadAttachment", "EditMeta", "Fields", "FieldsNaming", "GetIssue", "IssueLinkTypes", "MatchJQL", "Me", "Myself", "Project",
-		"ProjectStatuses", "RemoteLinks", "Sprint", "Statuses", "Transitions", "User", "Watchers", "Worklog",
+		"ProjectStatuses", "RemoteLinks", "Statuses", "Transitions", "User", "Watchers", "Worklog",
 	}
 	// writes and the plans and values they are built from compose a write,
 	// not a read's answer.

@@ -2,14 +2,11 @@ package jiraprovider
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
-	"sync"
 	"testing"
 
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/tracker"
-	"agent-overflow/internal/tracker/jira"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
@@ -46,12 +43,12 @@ func isRefusal(err error) bool {
 	return errors.Is(err, tracker.ErrRuleRefused) && ok && status.Status == http.StatusBadRequest
 }
 
-// A rows read by ID is refused for its rule only on evidence: after the
-// 400, a lookup of a sprint the rule names answers 404. A sprint deleted
-// since the listing is refused that way, and so is one the rule names
-// that never existed; the read under the listing's own rule reads the
-// rows. The lookups stop at the first 404.
-func TestARowsReadWhoseRuleNamesADeletedSprintIsRefusedTyped(t *testing.T) {
+// A read by ID that Jira refuses with a 400 under a rule naming sprints
+// is a refusal of the rule, whatever its cause: a sprint deleted since the
+// listing, one that never existed, or a 400 of its own with every sprint
+// valid. No sprint is read to judge it. Under a rule naming no sprint the
+// 400 is the tracker's answer.
+func TestARefusedReadUnderASprintRuleIsARuleRefusal(t *testing.T) {
 	s := newScenario(t, false)
 	window := s.clock.Now().Add(-scenarioWindow)
 	listing := scenarioMust[tracker.Listing](t)(s.p.BoardIssues(s.ctx, "1", window))
@@ -61,124 +58,57 @@ func TestARowsReadWhoseRuleNamesADeletedSprintIsRefusedTyped(t *testing.T) {
 	if rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", listing.IDs, listing.Rule)); len(rows.Rows) != len(listing.IDs) {
 		t.Fatalf("the rows under the listing's rule %+v", rows)
 	}
+	refused := func(what string, rule tracker.Eligibility, want bool) {
+		t.Helper()
+		since := lastSeq(s.e)
+		_, err := s.p.BoardRows(s.ctx, "1", listing.IDs, rule)
+		status, ok := errors.AsType[*trackerapi.StatusError](err)
+		if !ok || status.Status != http.StatusBadRequest || errors.Is(err, tracker.ErrRuleRefused) != want {
+			t.Fatalf("%s: %v; want the 400, a refusal of the rule %v", what, err, want)
+		}
+		if got := routeCounts(s.e, since); got[sprintRoute]+got[boardSprintRoute] != 0 {
+			t.Fatalf("%s made %v; want no sprint read", what, got)
+		}
+	}
 	never := listing.Rule
 	never.Sprints = append(never.Sprints[:len(never.Sprints):len(never.Sprints)], "999")
-	since := lastSeq(s.e)
-	if _, err := s.p.BoardRows(s.ctx, "1", listing.IDs, never); !isRefusal(err) {
-		t.Fatalf("a rule naming a sprint the board does not have: %v; want the typed refusal wrapping the 400", err)
-	}
-	if got := routeCounts(s.e, since); got[sprintRoute] != len(never.Sprints) || got[boardSprintRoute] != 0 {
-		t.Fatalf("the refusal of a rule naming %d sprints made %v; want a lookup of each and no listing", len(never.Sprints), got)
-	}
-	if err := s.p.jira.DeleteSprint(s.ctx, 1); err != nil {
-		t.Fatal(err)
-	}
-	since = lastSeq(s.e)
-	if _, err := s.p.BoardRows(s.ctx, "1", listing.IDs, listing.Rule); !isRefusal(err) {
-		t.Fatalf("the listing's rule after its sprint was deleted: %v; want the typed refusal wrapping the 400", err)
-	}
-	if got := routeCounts(s.e, since); got[sprintRoute] != 1 || got[boardSprintRoute] != 0 {
-		t.Fatalf("the refusal of a rule whose first sprint is deleted made %v; want one lookup and no listing", got)
-	}
-}
-
-// A rule naming more sprints than a page of the board's sprint list
-// holds is judged at most one lookup per sprint it names, stopping at the
-// first 404, with no listing.
-func TestARuleRefusalCostsAtMostOneLookupPerSprint(t *testing.T) {
-	s := newScenario(t, false)
-	for i := range 49 {
-		if _, err := s.p.jira.CreateSprint(s.ctx, jira.SprintInput{Board: 1, Name: fmt.Sprintf("Sprint %d", i+3)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	listing := scenarioMust[tracker.Listing](t)(s.p.BoardIssues(s.ctx, "1", s.clock.Now().Add(-scenarioWindow)))
-	if len(listing.Rule.Sprints) != 51 {
-		t.Fatalf("the listing's rule names %d sprints; want 51", len(listing.Rule.Sprints))
-	}
-	for _, at := range []int{50, 25} {
-		n, err := sprintNumber(listing.Rule.Sprints[at])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := s.p.jira.DeleteSprint(s.ctx, n); err != nil {
-			t.Fatal(err)
-		}
-		since := lastSeq(s.e)
-		if _, err := s.p.BoardRows(s.ctx, "1", listing.IDs, listing.Rule); !isRefusal(err) {
-			t.Fatalf("sprint %d of 51 deleted: %v; want the typed refusal wrapping the 400", at+1, err)
-		}
-		if got := routeCounts(s.e, since); got[sprintRoute] != at+1 || got[boardSprintRoute] != 0 {
-			t.Fatalf("sprint %d of 51 deleted: the refusal made %v; want %d lookups and no listing", at+1, got, at+1)
-		}
-	}
-}
-
-// A 400 on the rows read while every sprint the rule names still exists
-// is the tracker's answer, not the rule's: it is returned as it is, at the
-// cost of one lookup per sprint the rule names, however many times it
-// repeats.
-func TestARowsReadRefusedWithEverySprintValidIsNotARuleRefusal(t *testing.T) {
-	s := newScenario(t, false)
-	listing := scenarioMust[tracker.Listing](t)(s.p.BoardIssues(s.ctx, "1", s.clock.Now().Add(-scenarioWindow)))
+	refused("a rule naming a sprint that never existed", never, true)
 	origin := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: scenarioSite}
 	if err := s.e.AddFault(trackerfake.Fault{Origin: origin, Route: boardListRoute, Kind: trackerfake.FaultRefuse,
 		Status: http.StatusBadRequest, Body: []byte(`{"errorMessages":["Bad request"]}`)}); err != nil {
 		t.Fatal(err)
 	}
-	for range 3 {
-		since := lastSeq(s.e)
-		_, err := s.p.BoardRows(s.ctx, "1", listing.IDs, listing.Rule)
-		status, ok := errors.AsType[*trackerapi.StatusError](err)
-		if errors.Is(err, tracker.ErrRuleRefused) || !ok || status.Status != http.StatusBadRequest {
-			t.Fatalf("a 400 with every sprint valid: %v; want the 400 alone", err)
-		}
-		if got := routeCounts(s.e, since); got[sprintRoute] != len(listing.Rule.Sprints) || got[boardSprintRoute] != 0 || got[matchRoute] != 0 {
-			t.Fatalf("the refused read made %v; want a lookup of each of the rule's %d sprints, no listing and no match", got, len(listing.Rule.Sprints))
-		}
+	refused("a 400 with every sprint valid", listing.Rule, true)
+	refused("a 400 under a rule naming no sprint", tracker.Eligibility{Window: listing.Rule.Window}, false)
+	s.e.ClearFaults(origin, boardListRoute)
+	if err := s.p.jira.DeleteSprint(s.ctx, 1); err != nil {
+		t.Fatal(err)
 	}
-	// A rule naming no sprint is not judged at all.
-	since := lastSeq(s.e)
-	_, err := s.p.BoardRows(s.ctx, "1", listing.IDs, tracker.Eligibility{Window: listing.Rule.Window})
-	if errors.Is(err, tracker.ErrRuleRefused) || routeCounts(s.e, since)[sprintRoute] != 0 {
-		t.Fatalf("a 400 under a rule naming no sprint: %v, %v", err, routeCounts(s.e, since))
-	}
+	refused("the listing's rule after its sprint was deleted", listing.Rule, true)
 }
 
-// The rows read's list leaves an issue out, and the sprint the rule names
-// is deleted between the list and the match, which Jira then refuses: the
-// read is refused for its rule as when the list refused it. The same
-// refused match with every sprint valid is the tracker's answer.
-func TestASprintDeletedBetweenTheListAndTheMatchIsARuleRefusal(t *testing.T) {
-	for _, deleted := range []bool{true, false} {
-		var mu sync.Mutex
-		var armed bool
-		var s *scenario
-		s = newObservedScenario(t, false, func(r trackerfake.Request) {
-			mu.Lock()
-			fire := armed && r.Route == boardListRoute
-			armed = armed && !fire
-			mu.Unlock()
-			if fire && deleted {
-				if err := s.p.jira.DeleteSprint(s.ctx, 1); err != nil {
-					t.Error(err)
-				}
-			}
-		})
-		listing := scenarioMust[tracker.Listing](t)(s.p.BoardIssues(s.ctx, "1", s.clock.Now().Add(-scenarioWindow)))
-		origin := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: scenarioSite}
-		if err := s.e.AddFault(trackerfake.Fault{Origin: origin, Route: matchRoute, Kind: trackerfake.FaultRefuse,
-			Status: http.StatusBadRequest, Body: []byte(`{"errorMessages":["Bad request"]}`)}); err != nil {
-			t.Fatal(err)
-		}
-		mu.Lock()
-		armed = true
-		mu.Unlock()
+// The rows read's list leaves an issue out and Jira refuses the match
+// that judges it with a 400: under a rule naming sprints the read is
+// refused for its rule, with no sprint read; under one naming none the
+// 400 is the tracker's answer.
+func TestARefusedMatchUnderASprintRuleIsARuleRefusal(t *testing.T) {
+	s := newScenario(t, false)
+	listing := scenarioMust[tracker.Listing](t)(s.p.BoardIssues(s.ctx, "1", s.clock.Now().Add(-scenarioWindow)))
+	origin := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: scenarioSite}
+	if err := s.e.AddFault(trackerfake.Fault{Origin: origin, Route: matchRoute, Kind: trackerfake.FaultRefuse,
+		Status: http.StatusBadRequest, Body: []byte(`{"errorMessages":["Bad request"]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range []tracker.Eligibility{listing.Rule, {Window: listing.Rule.Window}} {
+		since := lastSeq(s.e)
 		// 10199 names no issue: the list leaves it out, and only the match
 		// judges it.
-		_, err := s.p.BoardRows(s.ctx, "1", []tracker.IssueID{"10101", "10199"}, listing.Rule)
-		if got := isRefusal(err); got != deleted {
-			t.Fatalf("sprint deleted %v: the refused match %v; typed refusal %v", deleted, err, got)
+		_, err := s.p.BoardRows(s.ctx, "1", []tracker.IssueID{"10101", "10199"}, rule)
+		if got, want := isRefusal(err), len(rule.Sprints) > 0; got != want {
+			t.Fatalf("the refused match under %+v: %v; typed refusal %v, want %v", rule, err, got, want)
+		}
+		if got := routeCounts(s.e, since); got[sprintRoute]+got[boardSprintRoute] != 0 || got[matchRoute] != 1 {
+			t.Fatalf("the refused match made %v; want one match and no sprint read", got)
 		}
 	}
 }

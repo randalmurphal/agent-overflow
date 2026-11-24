@@ -185,7 +185,7 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 	defer r.finish()
 	r.scope, r.origin = scope, origin
 	if origin != nil && origin.board != nil {
-		r.pass = &origin.board.pass
+		r.pass, r.relisted = &origin.board.pass, &origin.board.relisted
 	}
 	if err := r.readState(); errors.Is(err, errEnded) || endsMirror(err) {
 		return ended(out), nil

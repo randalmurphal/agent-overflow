@@ -30,6 +30,10 @@ type boardPump struct {
 	// holds at most the candidates of one listing, and goes with the pump:
 	// only a pump's tick reconciles (syncBoard).
 	pass reconcilePass
+	// relisted is when its reconcile last listed the board again for a
+	// refused rule (run.relisted), which the next such listing waits a
+	// reconcile interval from; read and written as pass is.
+	relisted ruleRelist
 
 	// pending is what the next event carries; sync is the board's sync
 	// view as the last tick recorded it; internal is the failure of the
@@ -401,6 +405,7 @@ func (s *Service) boardTick(p *boardPump, refresh bool, u Urgency) tickResult {
 // every unit for a board never read; otherwise the delta, the reconcile
 // and the structure when their interval passed since they last ran (the
 // reconcile also while the pump's pass is open in the board's lifetime,
+// and not while a listing again for a refused rule waits (ruleRelist);
 // the structure also when the store says it is due), and history when an
 // issue is due one. Each unit that reported More is so run again: the
 // delta always, the reconcile by its pass, the history by the issues the
@@ -417,7 +422,7 @@ func (s *Service) boardDue(r *run) BoardDue {
 	return BoardDue{
 		Structure: r.structureDue || passed(st.StructureWall, s.cadence.Structure),
 		Delta:     true,
-		Reconcile: passed(st.ReconciledWall, s.cadence.Reconcile) || r.pass.openIn(st.Lifetime),
+		Reconcile: passed(st.ReconciledWall, s.cadence.Reconcile) && !r.relisted.waits(s, st.Lifetime) || r.pass.openIn(st.Lifetime),
 		History:   st.HistoryDue,
 	}
 }

@@ -2,8 +2,10 @@ package jira
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -267,11 +269,28 @@ func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string)
 	if err := c.admit(ctx); err != nil {
 		return BulkResult{}, err
 	}
-	return trackerapi.Walk(ctx, func(ctx context.Context) (BulkResult, error) { return c.bulkFetch(ctx, refs, fields) })
+	return trackerapi.Walk(ctx, func(ctx context.Context) (BulkResult, error) { return c.bulkFetch(ctx, refs, fields, false) })
 }
 
-// bulkFetch is one walk of BulkFetch.
-func (c *Client) bulkFetch(ctx context.Context, refs, fields []string) (BulkResult, error) {
+// BulkFetchByID is BulkFetch of issue IDs alone, each answer checked as
+// it is decoded, before anything is collapsed: an issue with no ID, with
+// an ID its request did not ask, or answered twice is a malformed answer
+// and fails the call, so an issue asked never reads as absent because
+// the answer held another in its place.
+func (c *Client) BulkFetchByID(ctx context.Context, ids []string, fields ...string) (BulkResult, error) {
+	if err := c.admit(ctx); err != nil {
+		return BulkResult{}, err
+	}
+	for _, id := range ids {
+		if err := checkID("issue", id); err != nil {
+			return BulkResult{}, err
+		}
+	}
+	return trackerapi.Walk(ctx, func(ctx context.Context) (BulkResult, error) { return c.bulkFetch(ctx, ids, fields, true) })
+}
+
+// bulkFetch is one walk of BulkFetch, of BulkFetchByID when byID.
+func (c *Client) bulkFetch(ctx context.Context, refs, fields []string, byID bool) (BulkResult, error) {
 	named := make(map[string]bool, len(refs))
 	distinct := make([]string, 0, len(refs))
 	for _, ref := range refs {
@@ -312,6 +331,11 @@ func (c *Client) bulkFetch(ctx context.Context, refs, fields []string) (BulkResu
 		if len(v.Issues)+len(v.Errors) < len(batch) {
 			left.note(resp)
 		}
+		if byID {
+			if err := checkAnswered(batch, v.Issues); err != nil {
+				return out, fmt.Errorf("jira: bulk fetch from %s: %w", batch[0], err)
+			}
+		}
 		for _, is := range v.Issues {
 			got := is.decode()
 			if got.ID == "" || !returned[got.ID] {
@@ -328,6 +352,24 @@ func (c *Client) bulkFetch(ctx context.Context, refs, fields []string) (BulkResu
 	}
 	out.Complete = len(out.Failed) == 0 && len(out.Issues) == len(refs)
 	return out, nil
+}
+
+// checkAnswered refuses issues, the answer to a bulk fetch of the IDs
+// asked, when one has no ID, an ID not asked, or an ID answered before.
+func checkAnswered(asked []string, issues []issueJSON) error {
+	seen := make(map[string]bool, len(issues))
+	for _, is := range issues {
+		switch {
+		case is.ID == "":
+			return errors.New("malformed answer: an issue with no ID")
+		case !slices.Contains(asked, is.ID):
+			return fmt.Errorf("malformed answer: issue %s, which was not asked", is.ID)
+		case seen[is.ID]:
+			return fmt.Errorf("malformed answer: issue %s twice", is.ID)
+		}
+		seen[is.ID] = true
+	}
+	return nil
 }
 
 // QuoteJQL writes s as a JQL string literal, so text never reads as

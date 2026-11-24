@@ -45,9 +45,11 @@ type run struct {
 	// walking reports that the tick's delta stopped with more of its walk
 	// to read, which the tick's reconcile waits for (run.reconcile).
 	walking bool
-	// pass is the reconcile pass the tick goes on with, its pump's; nil
-	// for a run no pump makes, which does not reconcile (syncBoard).
-	pass *reconcilePass
+	// pass is the reconcile pass the tick goes on with, and relisted when
+	// its reconcile last listed again for a refused rule, both its pump's;
+	// nil for a run no pump makes, which does not reconcile (syncBoard).
+	pass     *reconcilePass
+	relisted *ruleRelist
 	// lifetimes are the lifetimes of the boards a write's refresh reads
 	// through, captured before its reads (refreshTargets); a tick names its
 	// own board's from state.

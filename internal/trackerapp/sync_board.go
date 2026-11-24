@@ -122,10 +122,15 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 // the walk delivers the rows a listing would find missing, so a first
 // sync longer than one tick's pages reads each row once and lists the
 // board once, after the walk. A listing that fails leaves the pass open
-// and not listed, and so does a rows read that refuses the listing's rule
-// (tracker.ErrRuleRefused); every other failed rows read keeps the pass's
-// candidates. An open pass is due at the pump's next tick whatever
-// the interval (boardDue), so one a refresh began goes on at once.
+// and not listed. A rows read that refuses the listing's rule
+// (tracker.ErrRuleRefused, the tracker refusing the query that carried
+// it) ends the pass, the rows stored before it standing, and the board
+// lists again at once unless the pump did so for a refusal within the
+// last reconcile interval (ruleRelist), after which the pass ends with the
+// refusal and the next listing waits for that interval (boardDue); every
+// other failed rows read keeps the pass's candidates. An open pass is due
+// at the pump's next tick whatever the interval (boardDue), so one a
+// refresh began goes on at once.
 func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	lifetime, err := r.lifetime(board)
 	if err != nil {
@@ -140,6 +145,13 @@ func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	}
 	var log changeLog
 	err = r.reconcileReads(board, pass, &log)
+	if errors.Is(err, tracker.ErrRuleRefused) && !r.relisted.waits(r.s, lifetime) {
+		*r.relisted = ruleRelist{lifetime: lifetime, wall: millis(r.s.now())}
+		err = r.reconcileReads(board, pass, &log)
+	}
+	if errors.Is(err, tracker.ErrRuleRefused) {
+		*pass = reconcilePass{}
+	}
 	out := UnitResult{More: len(pass.left) > 0}
 	if err == nil {
 		err = r.cascade(board, &out)
@@ -162,6 +174,29 @@ type reconcilePass struct {
 
 // openIn reports whether p is open in board lifetime lifetime.
 func (p *reconcilePass) openIn(lifetime int64) bool { return p.lifetime == lifetime && lifetime != 0 }
+
+// ruleRelist is when a board pump's reconcile last listed the board again
+// because a rows read refused the listing's rule (boardPump.relisted), by
+// the wall clock in Unix ms, and the board lifetime it listed in: a
+// listing again for a refusal waits a reconcile interval from it, so a
+// refusal that persists costs one more listing an interval. Another
+// lifetime's is none.
+type ruleRelist struct {
+	lifetime int64
+	wall     int64
+}
+
+// waits reports whether a listing again for a refusal in board lifetime
+// lifetime waits for l: l is of that lifetime and less than a reconcile
+// interval ago. A wall clock behind l waits for nothing, as an interval
+// whose start is unknown is due (sinceWall).
+func (l *ruleRelist) waits(s *Service, lifetime int64) bool {
+	if l.lifetime != lifetime || lifetime == 0 {
+		return false
+	}
+	since, known := s.sinceWall(l.wall)
+	return known && since < s.cadence.Reconcile
+}
 
 // reconcileReads lists board when pass, open in the run's lifetime of
 // board, has no candidate left, then attempts up to reconcileBatches
@@ -196,10 +231,10 @@ func (r *run) reconcileReads(board tracker.BoardID, pass *reconcilePass, log *ch
 		ch, _, unread, err := r.boardRows(board, batch, pass.rule)
 		log.add(ch)
 		if errors.Is(err, tracker.ErrRuleRefused) {
-			// The tracker no longer holds the rule the listing captured (a
-			// sprint deleted since): no candidate can be judged by it, so the
-			// pass, still open in its lifetime, lists the board again. The
-			// rows stored before the refusal stand.
+			// The tracker refused the query that carried the listing's rule
+			// (a sprint deleted since, or a refusal of its own): no candidate
+			// is judged by it, so the pass, still open in its lifetime, awaits
+			// a listing (reconcile). The rows stored before the refusal stand.
 			pass.left, pass.rule = nil, tracker.Eligibility{}
 			return err
 		}

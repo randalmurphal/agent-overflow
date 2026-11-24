@@ -41,9 +41,6 @@ func (c *jiraCall) foundBoard() (*JiraBoard, *answer) {
 }
 
 // foundSprint is the sprint {sprint} names, or the agile API's not-found.
-// Measured 2026-11-23: GET rest/agile/1.0/sprint/{sprint} for an ID that
-// names no sprint answers 404, its body errorMessages with one message
-// and errors empty.
 func (c *jiraCall) foundSprint() (*JiraSprint, *answer) {
 	id, err := strconv.ParseInt(c.params["sprint"], 10, 64)
 	if sp := c.s.sprint(id); err == nil && sp != nil {

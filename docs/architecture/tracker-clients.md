@@ -346,7 +346,9 @@ problem on that record, which stays usable.
 - **Search.** `search/jql` with token paging, the approximate count, and
   the bulk fetch of issues by key or ID. Reading a search to its end
   returns its warnings and whether it is complete; a bulk fetch and a
-  project listing say the same. Text a person or a tracker wrote enters
+  project listing say the same. `BulkFetchByID` fetches IDs alone and
+  fails on an answer holding an issue with no ID, one not asked or one
+  twice, before anything is collapsed. Text a person or a tracker wrote enters
   a JQL string only through `QuoteJQL`, `QuoteJQLText` (after `~`) or
   `QuoteJQLList` (an `in` list). `MatchJQL` asks
   `jql/match` which of up to 50 issue IDs each of up to 10 queries

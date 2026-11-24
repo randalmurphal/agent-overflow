@@ -156,14 +156,6 @@ func (c *Client) BoardSprints(ctx context.Context, board int64) (SprintList, err
 	return l, nil
 }
 
-// Sprint returns one sprint.
-func (c *Client) Sprint(ctx context.Context, id int64) (Sprint, error) {
-	if err := c.admit(ctx); err != nil {
-		return Sprint{}, err
-	}
-	return c.sprint(ctx, id)
-}
-
 func (c *Client) sprint(ctx context.Context, id int64) (Sprint, error) {
 	path, err := sprintPath(id)
 	if err != nil {

@@ -683,23 +683,22 @@ and writes share:
   attempted again by the next pass, a reconcile interval later. Jira's rows read
   asks `jql/match` about an issue the list left out and fails when the
   match cannot judge the board (after reading the board's configuration
-  again once), so a miss never removes a row on the list's word alone. A
-  rule the tracker no longer holds ends the pass's candidates: Jira's board
-  issue list answers 400 for a sprint ID that names nothing (a sprint
-  deleted since the listing). After a refused list or match under a rule
-  naming sprints, Jira's rows read looks up each sprint the rule names,
-  one request each, stopping at the first that answers 404, and returns
-  `tracker.ErrRuleRefused` only on that 404; a lookup that fails
-  otherwise is the read's failure, and any other 400 is returned as it
-  is. An issue the bulk fetch after a refused list shows does not exist
-  is Missing and is not sent to `jql/match`; a bulk answer holding an
-  issue that was not asked fails the read. On `tracker.ErrRuleRefused` from any provider the pass drops
-  its candidates and rule, stays open in its board lifetime, and its next
-  tick, after the failure's retry delay, lists the board again
-  (`TestARefusedRuleListsTheBoardAgain`). The rows stored before the
-  refusal stand. Every other failed rows read keeps the pass's candidates,
-  so only the refusal costs a relist (about 4 Jira pages at 20,000
-  issues). Linear refuses no rule: its issue filter answers a cycle ID
+  again once), so a miss never removes a row on the list's word alone. An
+  issue the bulk fetch after a refused list shows does not exist is
+  Missing and is not sent to `jql/match`; every Jira read by ID is one
+  checked bulk fetch, and an answer holding an issue with no ID, one not
+  asked or one twice fails the read. Jira's rows read returns
+  `tracker.ErrRuleRefused` when Jira answers 400 to the list or the
+  match that carries a rule naming sprints, the cause not judged (a
+  sprint deleted since the listing answers 400 on the board issue list).
+  On it the pass ends, the rows stored before it standing, and the board
+  lists again in the same tick unless the pump listed again for a
+  refusal within the last reconcile interval, after which the tick fails
+  and the next listing waits until that interval has passed
+  (`TestAPersistentRefusalListsAgainOnceAnInterval`). Every other failed
+  rows read keeps the pass's candidates, a failed bulk read included, so
+  a refusal costs at most one more listing a reconcile interval (about 4
+  Jira pages at 20,000 issues) and no other request. Linear refuses no rule: its issue filter answers a cycle ID
   that names nothing with no issues and no error (measured 2026-11-23:
   `issues(filter: {cycle: {id: {in: [...]}}}, first: 1)` with a
   well-formed UUID that never named a cycle answered HTTP 200 with data,
