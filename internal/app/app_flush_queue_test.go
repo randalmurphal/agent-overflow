@@ -106,6 +106,18 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 	if flushRow.Summary != "drained" {
 		t.Errorf("flush row summary: got %q, want %q", flushRow.Summary, "drained")
 	}
+	// The empty payload object the frontend sends with no attachments or
+	// plan refs decodes cleanly and adds nothing to the row.
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(flushRow.Meta), &meta); err != nil {
+		t.Fatalf("decode meta %q: %v", flushRow.Meta, err)
+	}
+	if got, _ := meta["provider_item_id"].(string); got != "wire-user-1" {
+		t.Errorf("provider_item_id: got %q, want wire-user-1", got)
+	}
+	if _, ok := meta["attachments"]; ok {
+		t.Errorf("empty payload unexpectedly created attachments meta: %s", flushRow.Meta)
+	}
 	anchor, ok, err := app.store.GetMessageAnchor(thread.ID, "user:3:flush:1")
 	if err != nil || !ok {
 		t.Fatalf("anchor for flushed user item missing after echo: ok=%v err=%v", ok, err)
@@ -503,12 +515,12 @@ func TestDispatchFlush_NoSession_DoesNotPersistUserRow(t *testing.T) {
 // TestDispatchFlush_PerItemFailure_AbortsBatch pins the
 // abort-on-first-error contract: if item 1 dispatches successfully
 // but item 2's wire dispatch fails, item 3 must not be attempted —
-// preserving wire-visible ordering trumps best-effort delivery.
+// preserving wire-visible ordering trumps best-effort delivery. A failed
+// batch emits no queue_flushed, and its last queue_state_changed shows the
+// requeued items.
 func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-	app.configureTriageQueueCallbacks()
+	app, rec := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-abort")
 	thread.Provider = string(provider.Codex)
@@ -584,55 +596,19 @@ func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 		t.Fatalf("requeued order: got [%s, %s, %s], want [queue:0, queue:1, queue:2]",
 			requeued[0].ID, requeued[1].ID, requeued[2].ID)
 	}
-}
-
-func TestDispatchFlush_FailedItemDoesNotEmitQueueFlushed(t *testing.T) {
-	t.Parallel()
-	app, rec := newAppForFlushQueueRPC(t)
-
-	thread := testThread("flush-failed-no-zone2")
-	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	now := time.Now().UnixMilli()
-	if err := app.store.InsertTurn(store.Turn{
-		TurnID:    "turn-0",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		StartedAt: now,
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
-
-	sess := installSteerTestSession(t, app, thread, "no-active-turn")
-	if err := sess.Close(); err != nil {
-		t.Fatalf("close session: %v", err)
-	}
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "flush-token",
-		Codex:    sess,
-	})
-
-	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
-		{ID: "queue:failed", Message: "failed"},
-	})
 
 	if flushed := emittedQueueFlushed(rec); len(flushed) != 0 {
 		t.Fatalf("failed dispatch emitted queue_flushed events: %+v", flushed)
 	}
-
 	states := emittedQueueStates(rec)
 	if len(states) == 0 {
 		t.Fatalf("queue_state_changed events: got %d, want at least 1", len(states))
 	}
-	// The failed item requeues (round-13, CT13-1) — the final
-	// queue_state_changed must show it back in Zone 1, not vanished.
+	// The final queue_state_changed must show the requeued items back in
+	// Zone 1, not vanished.
 	last := states[len(states)-1]
-	if len(last.Items) != 1 || last.Items[0].ID != "queue:failed" {
-		t.Fatalf("last queue_state_changed items = %+v, want the failed item requeued", last.Items)
+	if len(last.Items) != 3 || last.Items[0].ID != "queue:0" || last.Items[1].ID != "queue:1" || last.Items[2].ID != "queue:2" {
+		t.Fatalf("last queue_state_changed items = %+v, want the batch requeued in order", last.Items)
 	}
 }
 
@@ -889,90 +865,6 @@ func (a *App) dispatchFlushToProviderShouldErrorWith(t *testing.T, sess session,
 	}
 	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("dispatchFlushToProvider err = %v, want substring %q", err, want)
-	}
-}
-
-// TestDispatchFlush_PayloadDecoding pins the Payload roundtrip:
-// flushQueuePayload's JSON shape must match what the frontend
-// produces when it hands attachments + plan refs to the dispatcher.
-// The row is deferred until wire echo, so the assertion runs after
-// provider confirmation.
-func TestDispatchFlush_PayloadDecoding(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-	app.configureTriageQueueCallbacks()
-
-	thread := testThread("flush-payload")
-	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	now := time.Now().UnixMilli()
-	if err := app.store.InsertTurn(store.Turn{
-		TurnID:    "turn-1",
-		ThreadID:  thread.ID,
-		TurnIndex: 1,
-		StartedAt: now,
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
-
-	// Empty payload object — there are no attachments / plan refs to
-	// attach, but the decoder must accept `{}` without erroring.
-	sess := installSteerTestSession(t, app, thread, "ok")
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    "flush-token",
-		Codex:    sess,
-	})
-	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
-		{
-			ID:      "queue:0",
-			Message: "no payload",
-			Payload: json.RawMessage(`{}`),
-		},
-	})
-
-	items, err := app.store.ListTurnItems(thread.ID, 1)
-	if err != nil {
-		t.Fatalf("ListTurnItems: %v", err)
-	}
-	for _, item := range items {
-		if strings.HasPrefix(item.ID, "user:1:flush:") {
-			t.Fatalf("user_text row should wait for provider echo, got %+v", item)
-		}
-	}
-
-	echoMeta, _ := json.Marshal(map[string]any{
-		"provider_item_id": "wire-payload",
-		"client_id":        "user:1:flush:1",
-	})
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventUserText,
-		ThreadID:  thread.ID,
-		TurnIndex: 1,
-		ItemID:    "user:1:flush:1",
-		Content:   "no payload",
-		Meta:      echoMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("EventUserText: %v", err)
-	}
-	row, found, err := app.store.GetThreadItem(thread.ID, "user:1:flush:1")
-	if err != nil || !found {
-		t.Fatalf("expected flush row after echo: found=%v err=%v", found, err)
-	}
-	var meta map[string]any
-	if err := json.Unmarshal([]byte(row.Meta), &meta); err != nil {
-		t.Fatalf("decode meta %q: %v", row.Meta, err)
-	}
-	if got, _ := meta["provider_item_id"].(string); got != "wire-payload" {
-		t.Errorf("provider_item_id: got %q, want wire-payload", got)
-	}
-	if _, ok := meta["attachments"]; ok {
-		t.Errorf("empty payload unexpectedly created attachments meta: %s", row.Meta)
 	}
 }
 
@@ -2936,50 +2828,32 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 	}
 }
 
-func TestRegisterQueueItem_RejectsEmptyThreadID(t *testing.T) {
+func TestRegisterQueueItem_RejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
-	if _, err := app.RegisterQueueItem(context.Background(), "", "x", SendMessageOptions{}); err == nil {
-		t.Errorf("expected error for empty threadID")
-	}
-}
-
-func TestRegisterQueueItem_RejectsTooManyAttachments(t *testing.T) {
-	t.Parallel()
-	app, _ := newAppForFlushQueueRPC(t)
-	thread := testThread("rpc-attach-cap")
+	thread := testThread("rpc-reject")
 	thread.WorkspacePath = t.TempDir()
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-
 	too := make([]string, maxQueueAttachmentCount()+1)
 	for i := range too {
 		too[i] = fmt.Sprintf("att-%d", i)
 	}
-	_, err := app.RegisterQueueItem(context.Background(), thread.ID, "x", SendMessageOptions{AttachmentIDs: too})
-	if err == nil {
-		t.Errorf("expected error for too-many-attachments")
-	}
-	if err != nil && !strings.Contains(err.Error(), "too many attachments") {
-		t.Errorf("err = %v, want too-many-attachments message", err)
-	}
-}
-
-func TestRegisterQueueItem_RejectsRevisionCommentsWithoutPlan(t *testing.T) {
-	t.Parallel()
-	app, _ := newAppForFlushQueueRPC(t)
-	thread := testThread("rpc-rev-comments")
-	thread.WorkspacePath = t.TempDir()
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	_, err := app.RegisterQueueItem(context.Background(), thread.ID, "x", SendMessageOptions{
-		RevisionSourceCommentIDs: []string{"c1"},
-	})
-	if err == nil {
-		t.Errorf("expected error: revision comments require a source plan")
+	for _, c := range []struct {
+		name, threadID string
+		opts           SendMessageOptions
+		wantErr        string
+	}{
+		{name: "empty thread id"},
+		{name: "too many attachments", threadID: thread.ID, opts: SendMessageOptions{AttachmentIDs: too}, wantErr: "too many attachments"},
+		{name: "revision comments without a plan", threadID: thread.ID, opts: SendMessageOptions{RevisionSourceCommentIDs: []string{"c1"}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := app.RegisterQueueItem(context.Background(), c.threadID, "x", c.opts); err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("RegisterQueueItem error = %v, want a refusal containing %q", err, c.wantErr)
+			}
+		})
 	}
 }
 

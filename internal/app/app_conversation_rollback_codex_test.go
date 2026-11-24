@@ -928,102 +928,100 @@ func TestConversationRollbackCodexLiveRevertForgetsToolCallLinks(t *testing.T) {
 // live in-place revert keeps the session, but upstream reloads the thread
 // from its rollout and the cut can drop the message that delivered the
 // session's developer instructions. The session injects its own text once
-// more after the cut, before the rollback returns, and records it.
-func TestConversationRollbackCodexLiveRevertRestoresDeveloperInstructions(t *testing.T) {
-	t.Parallel()
-	requireLiveRevertRestoresDeveloperInstructions(t, "codex-live-cut-instructions", codexForkMock{})
-}
-
-// The same restore on the revert's other success path: the cut is refused
+// more after the cut, before the rollback returns, and records it. The same
+// restore holds on the revert's other success path: the cut is refused
 // because its anchor is already gone, and the provider confirms the thread
 // already sits on the boundary (a retry of a cut that landed), so the
 // rollback converges in place.
-func TestConversationRollbackCodexLiveRevertAlreadyAppliedRestoresDeveloperInstructions(t *testing.T) {
+func TestConversationRollbackCodexLiveRevertRestoresDeveloperInstructions(t *testing.T) {
 	t.Parallel()
-	requireLiveRevertRestoresDeveloperInstructions(t, "codex-live-cut-applied", codexForkMock{
-		revertErrorMessage: "turn not found: turn-b",
-		turnsTail:          "turn-a",
-	})
-}
+	for _, c := range []struct {
+		name, thread string
+		base         codexForkMock
+	}{
+		{"revert applied", "codex-live-cut-instructions", codexForkMock{}},
+		{"revert already applied", "codex-live-cut-applied", codexForkMock{
+			revertErrorMessage: "turn not found: turn-b",
+			turnsTail:          "turn-a",
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestApp(t)
+			app.triage = triage.NewRouter(app.store, app.emit)
+			workspace := t.TempDir()
+			thread := createAppTestThread(t, app, c.thread, "codex", workspace)
+			thread.SessionRef = "provider-" + c.thread
+			if err := app.store.UpdateThread(thread); err != nil {
+				t.Fatalf("update thread: %v", err)
+			}
+			insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+			insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+			insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+			insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
+			seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
 
-// requireLiveRevertRestoresDeveloperInstructions drives a live in-place
-// revert of a two-turn thread over a mock built from base and asserts the
-// session's own text was injected again after the cut and recorded.
-func requireLiveRevertRestoresDeveloperInstructions(t *testing.T, name string, base codexForkMock) {
-	t.Helper()
-	app := newTestApp(t)
-	app.triage = triage.NewRouter(app.store, app.emit)
-	workspace := t.TempDir()
-	thread := createAppTestThread(t, app, name, "codex", workspace)
-	thread.SessionRef = "provider-" + name
-	if err := app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("update thread: %v", err)
-	}
-	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
-	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
-	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
-	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
-	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
+			wireLog := filepath.Join(t.TempDir(), "wire.log")
+			mock := c.base
+			mock.resumedThreadID = thread.SessionRef
+			mock.forkedThreadID = "unused-fork"
+			mock.userAgent = "codex_cli_rs/0.149.0 (Linux; x86_64)"
+			mock.historyMode = "paginated"
+			mock.revertLogPath = wireLog
+			mock.injectLogPath = wireLog
+			binary := writeCodexForkAtBinary(t, mock)
+			delivery, err := app.codexDeveloperInstructionsDelivery(thread.ID, thread.SessionRef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+				Reaper:                        procutiltest.Reaper(),
+				Binary:                        binary,
+				Model:                         "test-model",
+				WorkDir:                       workspace,
+				ResumeThreadID:                thread.SessionRef,
+				DeveloperInstructions:         "session guide",
+				DeveloperInstructionsDelivery: delivery,
+			}, func(provider.ProviderEvent) {})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := sess.Close(); err != nil {
+					t.Errorf("close session: %v", err)
+				}
+			})
+			app.sessionManager().put(thread.ID, session{
+				Provider: string(provider.Codex),
+				Token:    c.thread + "-token",
+				Codex:    sess,
+			})
 
-	wireLog := filepath.Join(t.TempDir(), "wire.log")
-	mock := base
-	mock.resumedThreadID = thread.SessionRef
-	mock.forkedThreadID = "unused-fork"
-	mock.userAgent = "codex_cli_rs/0.149.0 (Linux; x86_64)"
-	mock.historyMode = "paginated"
-	mock.revertLogPath = wireLog
-	mock.injectLogPath = wireLog
-	binary := writeCodexForkAtBinary(t, mock)
-	delivery, err := app.codexDeveloperInstructionsDelivery(thread.ID, thread.SessionRef)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
-		Reaper:                        procutiltest.Reaper(),
-		Binary:                        binary,
-		Model:                         "test-model",
-		WorkDir:                       workspace,
-		ResumeThreadID:                thread.SessionRef,
-		DeveloperInstructions:         "session guide",
-		DeveloperInstructionsDelivery: delivery,
-	}, func(provider.ProviderEvent) {})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := sess.Close(); err != nil {
-			t.Errorf("close session: %v", err)
-		}
-	})
-	app.sessionManager().put(thread.ID, session{
-		Provider: string(provider.Codex),
-		Token:    name + "-token",
-		Codex:    sess,
-	})
-
-	// The thread had no record, so the resume injected once.
-	if got := wireMethods(t, wireLog); !slices.Equal(got, []string{"thread/inject_items"}) {
-		t.Fatalf("wire after the resume = %v, want one injection", got)
-	}
-	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
-		t.Fatalf("revert: %v", err)
-	}
-	if active, ok := app.activeCodexSession(thread.ID); !ok || active != sess {
-		t.Fatal("the live session was replaced; the cut did not converge in place")
-	}
-	if got := wireMethods(t, wireLog); !slices.Equal(got, []string{"thread/inject_items", "thread/revert", "thread/inject_items"}) {
-		t.Fatalf("wire after the live revert = %v, want the session's text injected again after the cut", got)
-	}
-	data, err := os.ReadFile(wireLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if !strings.Contains(lines[2], "session guide") {
-		t.Fatalf("second injection = %s, want the session's own text", lines[2])
-	}
-	if _, ok, err := app.store.CodexDeveloperInstructionsDigest(thread.ID, thread.SessionRef); err != nil || !ok {
-		t.Fatalf("record after the restore = (%v, %v), want it written again", ok, err)
+			// The thread had no record, so the resume injected once.
+			if got := wireMethods(t, wireLog); !slices.Equal(got, []string{"thread/inject_items"}) {
+				t.Fatalf("wire after the resume = %v, want one injection", got)
+			}
+			if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
+				t.Fatalf("revert: %v", err)
+			}
+			if active, ok := app.activeCodexSession(thread.ID); !ok || active != sess {
+				t.Fatal("the live session was replaced; the cut did not converge in place")
+			}
+			if got := wireMethods(t, wireLog); !slices.Equal(got, []string{"thread/inject_items", "thread/revert", "thread/inject_items"}) {
+				t.Fatalf("wire after the live revert = %v, want the session's text injected again after the cut", got)
+			}
+			data, err := os.ReadFile(wireLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if !strings.Contains(lines[2], "session guide") {
+				t.Fatalf("second injection = %s, want the session's own text", lines[2])
+			}
+			if _, ok, err := app.store.CodexDeveloperInstructionsDigest(thread.ID, thread.SessionRef); err != nil || !ok {
+				t.Fatalf("record after the restore = (%v, %v), want it written again", ok, err)
+			}
+		})
 	}
 }
 
@@ -1046,66 +1044,52 @@ func wireMethods(t *testing.T, path string) []string {
 	return methods
 }
 
-// TestConversationRollbackCodexForksBelowTheRevertFloor: 0.147 has no
-// `thread/revert` at all, so the fork cut has to still be there.
-func TestConversationRollbackCodexForksBelowTheRevertFloor(t *testing.T) {
+// TestConversationRollbackCodexForksWhenRevertIsUnsupported: the fork cut
+// stays for servers that cannot revert in place. 0.147 has no
+// `thread/revert` at all. Upstream fixes history mode at thread creation and
+// refuses a legacy revert, so on threads created before AO's
+// paginated-history opt-in a new binary alone must not flip the cut.
+func TestConversationRollbackCodexForksWhenRevertIsUnsupported(t *testing.T) {
 	t.Parallel()
-	app := newTestApp(t)
-	logDir := t.TempDir()
-	mock := codexForkMock{
-		resumedThreadID: "provider-old-server",
-		forkedThreadID:  "forked-provider-thread",
-		requestLogPath:  filepath.Join(logDir, "fork-requests.jsonl"),
-		revertLogPath:   filepath.Join(logDir, "revert-requests.jsonl"),
-		userAgent:       "codex_cli_rs/0.147.0 (Ubuntu 24.04; x86_64) some/1.0",
-		historyMode:     "paginated",
-	}
-	thread := paginatedRevertThread(t, app, "codex-old-server", mock)
+	for _, c := range []struct {
+		name, id, userAgent, historyMode string
+	}{
+		{"below the revert floor", "old-server", "codex_cli_rs/0.147.0 (Ubuntu 24.04; x86_64) some/1.0", "paginated"},
+		{"legacy history thread", "legacy-history", "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0", "legacy"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestApp(t)
+			logDir := t.TempDir()
+			mock := codexForkMock{
+				resumedThreadID: "provider-" + c.id,
+				forkedThreadID:  "forked-provider-thread",
+				requestLogPath:  filepath.Join(logDir, "fork-requests.jsonl"),
+				revertLogPath:   filepath.Join(logDir, "revert-requests.jsonl"),
+				userAgent:       c.userAgent,
+				historyMode:     c.historyMode,
+			}
+			thread := paginatedRevertThread(t, app, "codex-"+c.id, mock)
 
-	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
-		t.Fatalf("revert: %v", err)
-	}
-	requireNoCodexRequest(t, mock.revertLogPath, "thread/revert")
-	if forkRequest := readCodexForkRequest(t, mock.requestLogPath); !strings.Contains(forkRequest, `"lastTurnId":"turn-a"`) {
-		t.Fatalf("fork request = %s, want the inclusive anchor turn-a", forkRequest)
-	}
-	updated, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("get thread: %v", err)
-	}
-	if updated.SessionRef != "forked-provider-thread" {
-		t.Fatalf("SessionRef = %q, want the fork", updated.SessionRef)
-	}
-}
-
-// TestConversationRollbackCodexForksOnLegacyHistoryThreads covers threads
-// created before AO's paginated-history opt-in. Upstream fixes history mode
-// at creation and refuses a legacy revert, so a new binary alone must not
-// flip the cut.
-func TestConversationRollbackCodexForksOnLegacyHistoryThreads(t *testing.T) {
-	t.Parallel()
-	app := newTestApp(t)
-	logDir := t.TempDir()
-	mock := codexForkMock{
-		resumedThreadID: "provider-legacy-history",
-		forkedThreadID:  "forked-provider-thread",
-		requestLogPath:  filepath.Join(logDir, "fork-requests.jsonl"),
-		revertLogPath:   filepath.Join(logDir, "revert-requests.jsonl"),
-		userAgent:       "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
-		historyMode:     "legacy",
-	}
-	thread := paginatedRevertThread(t, app, "codex-legacy-history", mock)
-
-	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
-		t.Fatalf("revert: %v", err)
-	}
-	requireNoCodexRequest(t, mock.revertLogPath, "thread/revert")
-	forkRequest := readCodexForkRequest(t, mock.requestLogPath)
-	if !strings.Contains(forkRequest, `"lastTurnId":"turn-a"`) {
-		t.Fatalf("fork request = %s, want the inclusive anchor turn-a", forkRequest)
-	}
-	if !strings.Contains(forkRequest, `"excludeTurns":true`) {
-		t.Fatalf("fork request = %s, want metadata-only fork response", forkRequest)
+			if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
+				t.Fatalf("revert: %v", err)
+			}
+			requireNoCodexRequest(t, mock.revertLogPath, "thread/revert")
+			forkRequest := readCodexForkRequest(t, mock.requestLogPath)
+			if !strings.Contains(forkRequest, `"lastTurnId":"turn-a"`) {
+				t.Fatalf("fork request = %s, want the inclusive anchor turn-a", forkRequest)
+			}
+			if !strings.Contains(forkRequest, `"excludeTurns":true`) {
+				t.Fatalf("fork request = %s, want metadata-only fork response", forkRequest)
+			}
+			updated, err := app.store.GetThread(thread.ID)
+			if err != nil {
+				t.Fatalf("get thread: %v", err)
+			}
+			if updated.SessionRef != "forked-provider-thread" {
+				t.Fatalf("SessionRef = %q, want the fork", updated.SessionRef)
+			}
+		})
 	}
 }
 

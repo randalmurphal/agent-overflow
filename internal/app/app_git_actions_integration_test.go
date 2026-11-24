@@ -62,7 +62,8 @@ exit %d
 
 // TestGitActions_CommitPushCreatePR: commit, push and PR creation end-to-end
 // against a bare remote. Each step must succeed and leave the workspace in
-// the expected state.
+// the expected state. Each binding is self-contained: the commit carries no
+// PR, and the push publishes the commit without one.
 func TestGitActions_CommitPushCreatePR(t *testing.T) {
 	app, ref, workspace, remote := gitActionTestSetup(t)
 
@@ -91,6 +92,9 @@ func TestGitActions_CommitPushCreatePR(t *testing.T) {
 	if result.Branch != "main" {
 		t.Fatalf("commit Branch = %q, want main", result.Branch)
 	}
+	if result.PRURL != "" {
+		t.Fatalf("PRURL = %q, want empty for the commit", result.PRURL)
+	}
 
 	// Step 2: push to the bare remote.
 	pushResult, err := app.GitPush(ref, "")
@@ -100,9 +104,15 @@ func TestGitActions_CommitPushCreatePR(t *testing.T) {
 	if pushResult.Action != "push" {
 		t.Fatalf("push Action = %q, want push", pushResult.Action)
 	}
+	if pushResult.PRURL != "" {
+		t.Fatalf("push should not include PR URL: %+v", pushResult)
+	}
 	// Remote should now have our commit reachable from refs/heads/main.
 	if err := testutil.RunGitAllowError(remote, "rev-parse", "refs/heads/main"); err != nil {
 		t.Fatalf("remote rev-parse main error = %v (push didn't publish)", err)
+	}
+	if err := testutil.RunGitAllowError(remote, "rev-parse", result.Commit); err != nil {
+		t.Fatalf("remote missing commit %s after push: %v", result.Commit, err)
 	}
 
 	// Step 3: create PR via mock gh.
@@ -118,73 +128,15 @@ func TestGitActions_CommitPushCreatePR(t *testing.T) {
 	}
 }
 
-// TestGitActions_CommitOnly: the user only commits. We assert that no PR
-// side-effects happen — GitCommit is self-contained, no calls to GitPush or
-// GitCreatePR are wired from that single binding.
-func TestGitActions_CommitOnly(t *testing.T) {
-	t.Parallel()
-	app, ref, workspace, _ := gitActionTestSetup(t)
-
-	readme := filepath.Join(workspace, "README.txt")
-	if err := os.WriteFile(readme, []byte("hello\nupdated\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	result, err := app.GitCommit(ref, "update readme", "body", CommitSelection{All: true}, "")
-	if err != nil {
-		t.Fatalf("GitCommit() error = %v", err)
-	}
-	if result.Action != "commit" {
-		t.Fatalf("Action = %q, want commit", result.Action)
-	}
-	if len(result.Commit) != 40 {
-		t.Fatalf("Commit length = %d, want 40", len(result.Commit))
-	}
-	if result.PRURL != "" {
-		t.Fatalf("PRURL = %q, want empty for commit-only path", result.PRURL)
-	}
-}
-
-// TestGitActions_CommitAndPushNoPR: commit and push, but no PR. Remote
-// must have the new commit reachable.
-func TestGitActions_CommitAndPushNoPR(t *testing.T) {
-	t.Parallel()
-	app, ref, workspace, remote := gitActionTestSetup(t)
-
-	testutil.RunGit(t, workspace, "remote", "add", "origin", "https://github.com/test/test.git")
-	testutil.RunGit(t, workspace, "remote", "set-url", "--push", "origin", remote)
-
-	extra := filepath.Join(workspace, "extra.txt")
-	if err := os.WriteFile(extra, []byte("extra\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	commitResult, err := app.GitCommit(ref, "ship: extra", "body", CommitSelection{All: true}, "")
-	if err != nil {
-		t.Fatalf("GitCommit() error = %v", err)
-	}
-
-	pushResult, err := app.GitPush(ref, "")
-	if err != nil {
-		t.Fatalf("GitPush() error = %v", err)
-	}
-	if pushResult.PRURL != "" {
-		t.Fatalf("push should not include PR URL: %+v", pushResult)
-	}
-
-	// Remote now has the commit.
-	if err := testutil.RunGitAllowError(remote, "rev-parse", commitResult.Commit); err != nil {
-		t.Fatalf("remote missing commit %s after push: %v", commitResult.Commit, err)
-	}
-}
-
 // TestGitActions_CommitFailsOnNoChanges: GitCommit runs `git add -A` then
 // `git commit`. On a clean tree, git commit emits a non-zero exit and the
 // wrapper surfaces the error -- the commit dialog must then tell the user
-// there's nothing to commit.
+// there's nothing to commit. A repeated Commit on the state the first one
+// left fails the same way, so a retry from the dialog, which wires to the
+// same binding, cannot produce two commits.
 func TestGitActions_CommitFailsOnNoChanges(t *testing.T) {
 	t.Parallel()
-	app, ref, _, _ := gitActionTestSetup(t)
+	app, ref, workspace, _ := gitActionTestSetup(t)
 
 	_, err := app.GitCommit(ref, "nothing", "", CommitSelection{All: true}, "")
 	if err == nil {
@@ -193,6 +145,27 @@ func TestGitActions_CommitFailsOnNoChanges(t *testing.T) {
 	// git's message is "nothing to commit" on a clean tree.
 	if !strings.Contains(err.Error(), "nothing to commit") && !strings.Contains(err.Error(), "exited with code") {
 		t.Fatalf("err = %v, want 'nothing to commit' or non-zero exit hint", err)
+	}
+
+	feature := filepath.Join(workspace, "feature.txt")
+	if err := os.WriteFile(feature, []byte("shipped\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	first, err := app.GitCommit(ref, "ship: first", "", CommitSelection{All: true}, "")
+	if err != nil {
+		t.Fatalf("first GitCommit() error = %v", err)
+	}
+	if len(first.Commit) != 40 {
+		t.Fatalf("first commit SHA malformed: %q", first.Commit)
+	}
+	// Second call: tree is now clean because we committed everything. Must
+	// error out, not silently produce a duplicate commit.
+	_, err = app.GitCommit(ref, "ship: second", "", CommitSelection{All: true}, "")
+	if err == nil {
+		t.Fatal("second GitCommit() on clean tree error = nil, want failure")
+	}
+	if !strings.Contains(err.Error(), "nothing to commit") && !strings.Contains(err.Error(), "exited with code") {
+		t.Fatalf("second commit error = %v, want clean-tree signal", err)
 	}
 }
 
@@ -273,38 +246,6 @@ func TestGitActions_NewBranchFromCurrent(t *testing.T) {
 	}
 	if !branchNamed(branches, "main") {
 		t.Fatalf("main branch missing: %+v", branches)
-	}
-}
-
-// TestGitActions_RepeatedCommitIdempotent: running GitCommit twice on the
-// same state -- no new changes between them -- the second must fail with the
-// same "nothing to commit" signal as TestGitActions_CommitFailsOnNoChanges.
-// In other words a repeated Commit cannot accidentally produce two commits,
-// which matters because a retry from the dialog wires to the same binding.
-func TestGitActions_RepeatedCommitIdempotent(t *testing.T) {
-	t.Parallel()
-	app, ref, workspace, _ := gitActionTestSetup(t)
-
-	feature := filepath.Join(workspace, "feature.txt")
-	if err := os.WriteFile(feature, []byte("shipped\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	first, err := app.GitCommit(ref, "ship: first", "", CommitSelection{All: true}, "")
-	if err != nil {
-		t.Fatalf("first GitCommit() error = %v", err)
-	}
-	if len(first.Commit) != 40 {
-		t.Fatalf("first commit SHA malformed: %q", first.Commit)
-	}
-
-	// Second call: tree is now clean because we committed everything. Must
-	// error out, not silently produce a duplicate commit.
-	_, err = app.GitCommit(ref, "ship: second", "", CommitSelection{All: true}, "")
-	if err == nil {
-		t.Fatal("second GitCommit() on clean tree error = nil, want failure")
-	}
-	if !strings.Contains(err.Error(), "nothing to commit") && !strings.Contains(err.Error(), "exited with code") {
-		t.Fatalf("second commit error = %v, want clean-tree signal", err)
 	}
 }
 

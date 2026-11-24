@@ -307,6 +307,8 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 // closes or writes into a temporary directory being removed. The fixtures
 // share one teardown, so each kind of work is started on one fixture of its
 // own: the settlement join also outlasts notice work started beside it.
+// Request settlement runs on newTestAppWithStore too, the fixture most tests
+// build.
 func TestAppFixtureTeardownEndsBackgroundWorkAndSessions(t *testing.T) {
 	t.Parallel()
 	e2eApp := func(t *testing.T) *App { app, _ := setupE2EApp(t); return app }
@@ -318,7 +320,7 @@ func TestAppFixtureTeardownEndsBackgroundWorkAndSessions(t *testing.T) {
 		{"setupE2EApp notice work", e2eApp, func(app *App, work func()) bool { return app.goAgentNoticeWork("teardown", work) }},
 		{"setupE2EApp request settlement", e2eApp, (*App).goThreadRequestSettling},
 		{"newTestApp", newTestApp, nil},
-		{"newTestAppWithStore", newTestAppWithStore, nil},
+		{"newTestAppWithStore request settlement", newTestAppWithStore, (*App).goThreadRequestSettling},
 		{"setupCascadeApp", func(t *testing.T) *App { app, _, _ := setupCascadeApp(t); return app }, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1625,7 +1627,8 @@ func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
 }
 
 // TestE2E_CommandOutputPersistsToPayload: a command_output heavy event is
-// persisted as a tool_call item with payload.
+// persisted as a tool_call item with payload, and the payload round-trips
+// as raw bytes, ANSI escapes included; rendering is a frontend projection.
 func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -1645,42 +1648,28 @@ func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 
 	// The authoritative snapshot a command's completion carries (Codex
 	// aggregatedOutput): it names its command, whose row it creates here.
-	evt := provider.ProviderEvent{
-		Kind:      provider.EventCommandOutput,
-		ThreadID:  thread.ID,
-		ItemID:    "cmd-ls",
-		Content:   "line 1\nline 2\nline 3\n",
-		Meta:      json.RawMessage(`{"command":"ls -la","exitCode":0}`),
-		Replace:   true,
-		Timestamp: time.Now(),
-	}
-	if err := app.triage.Handle(evt); err != nil {
-		t.Fatalf("triage.Handle: %v", err)
-	}
-
-	items, err := app.store.ListItems(thread.ID)
-	if err != nil {
-		t.Fatalf("ListItems: %v", err)
-	}
-	var cmd store.Item
-	for _, it := range items {
-		if it.Kind == "tool_call" && it.ToolName == "command_execution" {
-			cmd = it
+	for _, evt := range []provider.ProviderEvent{
+		{ItemID: "cmd-ls", Content: "line 1\nline 2\nline 3\n", Meta: json.RawMessage(`{"command":"ls -la","exitCode":0}`)},
+		{ItemID: "cmd-run", Content: "\x1b[31merror: boom\x1b[0m", Meta: json.RawMessage(`{"command":"run","exitCode":1}`)},
+	} {
+		evt.Kind, evt.ThreadID, evt.Replace, evt.Timestamp = provider.EventCommandOutput, thread.ID, true, time.Now()
+		if err := app.triage.Handle(evt); err != nil {
+			t.Fatalf("triage.Handle(%s): %v", evt.ItemID, err)
 		}
-	}
-	if cmd.ID == "" {
-		t.Fatalf("no command tool_call persisted: %+v", items)
-	}
-	if cmd.PayloadID == "" {
-		t.Fatalf("command item missing payload: %+v", cmd)
-	}
-
-	got, err := app.GetPayloadData(thread.ID, cmd.PayloadID)
-	if err != nil {
-		t.Fatalf("GetPayloadData: %v", err)
-	}
-	if got.Data != evt.Content {
-		t.Fatalf("payload round-trip = %q, want %q", got.Data, evt.Content)
+		cmd, found, err := app.store.GetThreadItem(thread.ID, evt.ItemID)
+		if err != nil || !found || cmd.Kind != "tool_call" || cmd.ToolName != "command_execution" {
+			t.Fatalf("command tool_call %s = %+v (found %v, %v), want it persisted", evt.ItemID, cmd, found, err)
+		}
+		if cmd.PayloadID == "" {
+			t.Fatalf("command item missing payload: %+v", cmd)
+		}
+		got, err := app.GetPayloadData(thread.ID, cmd.PayloadID)
+		if err != nil {
+			t.Fatalf("GetPayloadData: %v", err)
+		}
+		if got.Data != evt.Content {
+			t.Fatalf("payload round-trip = %q, want %q", got.Data, evt.Content)
+		}
 	}
 }
 
@@ -1717,59 +1706,6 @@ func TestE2E_GetPayloadDataReturnsEmptyForMissing(t *testing.T) {
 	_, err := app.GetPayloadData("thread-missing", "no-such-id")
 	if err == nil {
 		t.Fatal("GetPayloadData missing: err = nil, want error")
-	}
-}
-
-// TestE2E_GetPayloadDataReturnsRawCommandOutput verifies command_output
-// payloads round-trip as raw bytes; rendering is a frontend projection.
-func TestE2E_GetPayloadDataReturnsRawCommandOutput(t *testing.T) {
-	t.Parallel()
-	app, _ := setupE2EApp(t)
-	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
-	if err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	if err := app.store.InsertItem(store.Item{
-		ID: "seed-cmd-output", ThreadID: thread.ID, TurnIndex: 1, ItemIndex: 0,
-		Kind: "user_text", Role: "user", Summary: "seed", CreatedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	evt := provider.ProviderEvent{
-		Kind:      provider.EventCommandOutput,
-		ThreadID:  thread.ID,
-		ItemID:    "cmd-run",
-		Content:   "\x1b[31merror: boom\x1b[0m",
-		Meta:      json.RawMessage(`{"command":"run","exitCode":1}`),
-		Replace:   true,
-		Timestamp: time.Now(),
-	}
-	if err := app.triage.Handle(evt); err != nil {
-		t.Fatalf("triage.Handle: %v", err)
-	}
-
-	items, err := app.store.ListItems(thread.ID)
-	if err != nil {
-		t.Fatalf("ListItems: %v", err)
-	}
-	var cmd store.Item
-	for _, it := range items {
-		if it.Kind == "tool_call" && it.ToolName == "command_execution" {
-			cmd = it
-		}
-	}
-	if cmd.PayloadID == "" {
-		t.Fatalf("command item missing payload: %+v", cmd)
-	}
-
-	got, err := app.GetPayloadData(thread.ID, cmd.PayloadID)
-	if err != nil {
-		t.Fatalf("GetPayloadData: %v", err)
-	}
-	if got.Data != evt.Content {
-		t.Fatalf("payload data round-trip = %q", got.Data)
 	}
 }
 

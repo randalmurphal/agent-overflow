@@ -131,55 +131,48 @@ func TestConversationRollbackRefusesAnUnsupportedProviderUpFront(t *testing.T) {
 	}
 }
 
+// A later turn's rollback needs the Claude session: a thread with no session
+// reference, or one whose session file is gone, is refused with the thread
+// and its conversation left as they were.
 func TestConversationRollbackRejectsMissingClaudeSessionForLaterTurn(t *testing.T) {
 	t.Parallel()
-	app := newTestApp(t)
-	thread := createAppTestThread(t, app, "t-missing-session", "claude", t.TempDir())
-	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
-	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
-	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "provider-user-1", "")
+	for _, c := range []struct {
+		name, thread, sessionRef, providerUserID, wantErr string
+	}{
+		{"no session reference", "t-missing-session", "", "provider-user-1", "requires Claude session reference"},
+		{"no session file", "t-missing-session-file", "missing-session", "", "session file not found"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestApp(t)
+			thread := createAppTestThread(t, app, c.thread, "claude", t.TempDir())
+			thread.SessionRef = c.sessionRef
+			if err := app.store.UpdateThread(thread); err != nil {
+				t.Fatalf("update thread: %v", err)
+			}
+			insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+			insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+			seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, c.providerUserID, "")
 
-	err := rollbackToMessage(app, thread.ID, "user:1")
-	if err == nil {
-		t.Fatal("rollback succeeded, want missing session reference error")
-	}
-	if !strings.Contains(err.Error(), "requires Claude session reference") {
-		t.Fatalf("error = %q, want missing session reference", err)
-	}
-}
-
-func TestConversationRollbackRejectsMissingClaudeSessionFileForLaterTurn(t *testing.T) {
-	t.Parallel()
-	app := newTestApp(t)
-	thread := createAppTestThread(t, app, "t-missing-session-file", "claude", t.TempDir())
-	thread.SessionRef = "missing-session"
-	if err := app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("update thread: %v", err)
-	}
-	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
-	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
-	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
-
-	err := rollbackToMessage(app, thread.ID, "user:1")
-	if err == nil {
-		t.Fatal("rollback succeeded, want missing session file error")
-	}
-	if !strings.Contains(err.Error(), "session file not found") {
-		t.Fatalf("error = %q, want missing session file", err)
-	}
-	updated, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("get thread: %v", err)
-	}
-	if updated.SessionRef != "missing-session" {
-		t.Fatalf("session ref after rejected rollback = %q, want original", updated.SessionRef)
-	}
-	items, err := app.store.ListItems(thread.ID)
-	if err != nil {
-		t.Fatalf("list items: %v", err)
-	}
-	if len(items) != 2 {
-		t.Fatalf("items after rejected rollback = %+v, want conversation preserved", items)
+			err := rollbackToMessage(app, thread.ID, "user:1")
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("rollback error = %v, want %q", err, c.wantErr)
+			}
+			updated, err := app.store.GetThread(thread.ID)
+			if err != nil {
+				t.Fatalf("get thread: %v", err)
+			}
+			if updated.SessionRef != c.sessionRef {
+				t.Fatalf("session ref after rejected rollback = %q, want %q", updated.SessionRef, c.sessionRef)
+			}
+			items, err := app.store.ListItems(thread.ID)
+			if err != nil {
+				t.Fatalf("list items: %v", err)
+			}
+			if len(items) != 2 {
+				t.Fatalf("items after rejected rollback = %+v, want conversation preserved", items)
+			}
+		})
 	}
 }
 
