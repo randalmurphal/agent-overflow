@@ -32,9 +32,11 @@ session or history generation has changed.
 
 Every client that completes `initialize` (`Dial`, the one-shot client,
 sign-in, the account, identity and usage probes, MCP status) passes the
-reply to `admitInitialize` before any other request. It refuses an
-app-server whose user agent reports a build below
-`provider.MinimumCodexCLIVersion`, or an empty or unparseable one. A new
+reply to `admitInitialize` before any other request, with the originator
+it started the process with (`handshakeOriginator`). It reads the build
+right after that originator through `provider.ParseCodexVersion`, and
+refuses an app-server whose build is below
+`provider.MinimumCodexCLIVersion`, or empty or unreadable. A new
 handshake uses it too. Raise that minimum instead of adding a per-method
 version gate. Mid-turn user messages use
 `turn/steer`, never the provider queue.

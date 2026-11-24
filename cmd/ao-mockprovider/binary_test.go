@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -361,11 +360,9 @@ func TestVersionSatisfiesBothProviders(t *testing.T) {
 
 	// DetectProvider reports "ready" even when the version fails to parse
 	// (the gate only fires on a parsed version), so additionally pin the
-	// codex parse: the first semver token — the one parseCodexCLIVersion's
-	// regex selects — must be a high version, comfortably >= 0.143.0.
-	first := regexp.MustCompile(`\bv?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)\b`).FindStringSubmatch(got)
-	if len(first) < 2 || first[1] != "99.0.0" {
-		t.Fatalf("first version token in %q = %v, want 99.0.0", got, first)
+	// codex parse: the build the app reads must be the mock's high version.
+	if parsed := provider.ParseCodexCLIVersion(got); parsed != "99.0.0" {
+		t.Fatalf("codex version read from %q = %q, want 99.0.0", got, parsed)
 	}
 }
 

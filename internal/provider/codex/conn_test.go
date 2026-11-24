@@ -53,7 +53,7 @@ for line in sys.stdin:
     params = msg.get("params") or {}
 
     if method == "initialize":
-        emit({"jsonrpc": "2.0", "id": rid, "result": {"userAgent": "codex_cli_rs/0.162.1 (test)"}})
+        emit({"jsonrpc": "2.0", "id": rid, "result": {"userAgent": "agent_overflow/0.162.1 (Linux 6.6.0; x86_64) xterm-256color"}})
     elif method == "initialized":
         continue
     elif method == "thread/start":

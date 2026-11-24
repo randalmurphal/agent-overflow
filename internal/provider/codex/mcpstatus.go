@@ -111,7 +111,8 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	if err != nil {
 		return nil, fmt.Errorf("codex mcp status initialize: %w", err)
 	}
-	if _, err := admitInitialize(cmd.Path, initResp); err != nil {
+	lookup := func(name string) (string, bool) { return provider.LookupEnviron(cmd.Env, name) }
+	if _, err := admitInitialize(cmd.Path, handshakeOriginator(initParams, lookup), initResp); err != nil {
 		return nil, fmt.Errorf("codex mcp status: %w", err)
 	}
 

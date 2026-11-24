@@ -7,106 +7,78 @@ import (
 	"unsafe"
 )
 
-func TestParseCodexCLIVersion(t *testing.T) {
-	tests := []struct {
-		name   string
-		input  string
-		expect string
-	}{
-		{
-			name:   "parses current cli format",
-			input:  "codex-cli 0.120.0",
-			expect: "0.120.0",
-		},
-		{
-			name:   "normalizes missing patch",
-			input:  "codex 0.37",
-			expect: "0.37.0",
-		},
-		{
-			name:   "preserves prerelease suffix",
-			input:  "codex v0.37.0-rc.1",
-			expect: "0.37.0-rc.1",
-		},
-		{
-			name:   "rejects missing semver",
-			input:  "codex version unknown",
-			expect: "",
-		},
+// TestParseCodexVersion pins the one Codex version grammar: strict SemVer
+// with three numbers, an optional prerelease and optional build metadata,
+// and the result an owned copy.
+func TestParseCodexVersion(t *testing.T) {
+	for _, token := range []string{
+		"0.154.0", "0.154.0-alpha.2", "0.154.0-rc.1", "0.154.0+company.1",
+		"0.154.0-rc.1+build.7", "10.0.0", "0.154.0-0", "0.154.0-x-y.z",
+	} {
+		got, ok := ParseCodexVersion(token)
+		if !ok || got != token {
+			t.Errorf("ParseCodexVersion(%q) = (%q, %v), want it admitted whole", token, got, ok)
+		}
+		if ok && unsafe.StringData(got) == unsafe.StringData(token) {
+			t.Errorf("ParseCodexVersion(%q) shares the input's bytes", token)
+		}
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := parseCodexCLIVersion(tt.input); got != tt.expect {
-				t.Fatalf("parseCodexCLIVersion(%q) = %q, want %q", tt.input, got, tt.expect)
-			}
-		})
+	for _, token := range []string{
+		"", "0.154", "0", "0.154.0.1", "v0.154.0", "01.154.0", "0.01.0", "0.154.00",
+		"0.154.0-.", "0.154.0-", "0.154.0+", "0.154.0+.", "0.154.0-rc..1", "0.154.0-01",
+		"dev-0.154.0", "0.154.0 ", " 0.154.0", "0.154.0-rc_1", "garbage",
+	} {
+		if got, ok := ParseCodexVersion(token); ok {
+			t.Errorf("ParseCodexVersion(%q) = %q, want it refused", token, got)
+		}
 	}
 }
 
-func TestCompareCodexCLIVersions(t *testing.T) {
-	tests := []struct {
-		name  string
-		left  string
-		right string
-		want  int
-	}{
-		{
-			name:  "supports equal versions",
-			left:  "0.37.0",
-			right: "0.37.0",
-			want:  0,
-		},
-		{
-			name:  "compares later minor version",
-			left:  "0.120.0",
-			right: "0.37.0",
-			want:  1,
-		},
-		{
-			name:  "compares prerelease lower than final",
-			left:  "0.37.0-rc.1",
-			right: "0.37.0",
-			want:  -1,
-		},
-		{
-			name:  "normalizes missing patch before compare",
-			left:  "0.37",
-			right: "0.37.0",
-			want:  0,
-		},
-		{
-			name:  "shorter prerelease sorts lower",
-			left:  "0.37.0-rc",
-			right: "0.37.0-rc.1",
-			want:  -1,
-		},
-		{
-			name:  "longer prerelease sorts higher",
-			left:  "0.37.0-rc.1",
-			right: "0.37.0-rc",
-			want:  1,
-		},
-		{
-			name:  "falls back for invalid semver",
-			left:  "garbage",
-			right: "0.37.0",
-			want:  1,
-		},
+// TestCompareCodexVersions is SemVer precedence: a prerelease below its
+// release, numeric identifiers by value and below alphanumeric ones, a
+// shorter prerelease below a longer one it prefixes, and build metadata
+// ignored.
+func TestCompareCodexVersions(t *testing.T) {
+	ordered := []string{
+		"0.37.0", "0.120.0-alpha", "0.120.0-alpha.1", "0.120.0-alpha.beta",
+		"0.120.0-beta.2", "0.120.0-beta.11", "0.120.0-rc.1", "0.120.0", "0.120.1", "1.0.0",
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := compareCodexCLIVersions(tt.left, tt.right)
-			switch {
-			case tt.want == 0 && got != 0:
-				t.Fatalf("compareCodexCLIVersions(%q, %q) = %d, want 0", tt.left, tt.right, got)
-			case tt.want < 0 && got >= 0:
-				t.Fatalf("compareCodexCLIVersions(%q, %q) = %d, want < 0", tt.left, tt.right, got)
-			case tt.want > 0 && got <= 0:
-				t.Fatalf("compareCodexCLIVersions(%q, %q) = %d, want > 0", tt.left, tt.right, got)
+	for i := range ordered {
+		for j := range ordered {
+			got := CompareCodexVersions(ordered[i], ordered[j])
+			if (i < j && got >= 0) || (i > j && got <= 0) || (i == j && got != 0) {
+				t.Errorf("CompareCodexVersions(%q, %q) = %d", ordered[i], ordered[j], got)
 			}
-		})
+		}
+	}
+	if got := CompareCodexVersions("0.154.0+company.1", "0.154.0"); got != 0 {
+		t.Errorf("build metadata ordered %d against its release, want 0", got)
+	}
+}
+
+// TestParseCodexCLIVersion reads `codex --version` output. It keeps the
+// display forms a wrapper prints (a v prefix, a two-part version), reads
+// the same build ParseCodexVersion reads, and refuses a malformed one.
+func TestParseCodexCLIVersion(t *testing.T) {
+	for input, want := range map[string]string{
+		"codex-cli 0.120.0":           "0.120.0",
+		"codex 0.37":                  "0.37.0",
+		"codex v0.37.0-rc.1":          "0.37.0-rc.1",
+		"codex v0.154.0":              "0.154.0",
+		"codex-cli 0.154.0+company.1": "0.154.0+company.1",
+		"codex 0.154-rc.1":            "0.154.0-rc.1",
+		"(codex-cli 0.154.0)":         "0.154.0",
+		"99.0.0 (ao-mockprovider; impersonates Claude Code and codex-cli 99.0.0)": "99.0.0",
+		"codex version unknown": "",
+		"codex-cli 0.154.0-.":   "",
+		"codex-cli 0.154.0+":    "",
+		"codex-cli 01.154.0":    "",
+		"codex-cli dev-0.154.0": "",
+		"":                      "",
+	} {
+		if got := ParseCodexCLIVersion(input); got != want {
+			t.Errorf("ParseCodexCLIVersion(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
@@ -121,11 +93,16 @@ func TestCheckCodexVersionBoundary(t *testing.T) {
 	}{
 		{"0.153.4", false},
 		{"0.154.0-alpha.10", false},
+		{"0.154.0-rc.1", false},
 		{"0.154.0", true},
+		{"0.154.0+company.1", true},
 		{"0.154.1", true},
 		{"0.168.0", true},
 		{"", false},
 		{"garbage", false},
+		{"0.154.0-.", false},
+		{"0.154.0+", false},
+		{"01.154.0", false},
 	}
 	for _, tc := range cases {
 		err := CheckCodexVersion("/opt/codex", tc.version, "codex-cli "+tc.version)
@@ -140,7 +117,7 @@ func TestCheckCodexVersionBoundary(t *testing.T) {
 			t.Errorf("CheckCodexVersion(%q) = %v, want a *CodexVersionError", tc.version, err)
 			continue
 		}
-		readable := tc.version != "" && tc.version != "garbage"
+		_, readable := ParseCodexVersion(tc.version)
 		if (versionErr.Version != "") != readable {
 			t.Errorf("CheckCodexVersion(%q).Version = %q, readable %v", tc.version, versionErr.Version, readable)
 		}
@@ -221,71 +198,6 @@ func TestCheckCodexVersionBoundsTheTextItKeeps(t *testing.T) {
 	})
 }
 
-func TestCompareCodexPrereleaseIdentifier(t *testing.T) {
-	tests := []struct {
-		name  string
-		left  string
-		right string
-		want  int
-	}{
-		{
-			name:  "numeric compares numerically",
-			left:  "2",
-			right: "10",
-			want:  -1,
-		},
-		{
-			name:  "numeric sorts before text",
-			left:  "1",
-			right: "beta",
-			want:  -1,
-		},
-		{
-			name:  "text sorts after numeric",
-			left:  "beta",
-			right: "1",
-			want:  1,
-		},
-		{
-			name:  "text compares lexicographically",
-			left:  "beta",
-			right: "alpha",
-			want:  1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := compareCodexPrereleaseIdentifier(tt.left, tt.right)
-			switch {
-			case tt.want == 0 && got != 0:
-				t.Fatalf("compareCodexPrereleaseIdentifier(%q, %q) = %d, want 0", tt.left, tt.right, got)
-			case tt.want < 0 && got >= 0:
-				t.Fatalf("compareCodexPrereleaseIdentifier(%q, %q) = %d, want < 0", tt.left, tt.right, got)
-			case tt.want > 0 && got <= 0:
-				t.Fatalf("compareCodexPrereleaseIdentifier(%q, %q) = %d, want > 0", tt.left, tt.right, got)
-			}
-		})
-	}
-}
-
-func TestIsNumericString(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{input: "", want: false},
-		{input: "123", want: true},
-		{input: "12a", want: false},
-	}
-
-	for _, tt := range tests {
-		if got := isNumericString(tt.input); got != tt.want {
-			t.Fatalf("isNumericString(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
 // TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate pins the
 // dependency internal/provider/codex/session_background.go relies on:
 // `thread/backgroundTerminals/terminate` shipped in codex 0.140.0, and
@@ -296,7 +208,7 @@ func TestIsNumericString(t *testing.T) {
 // instead.
 func TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate(t *testing.T) {
 	const backgroundTerminalTerminateFloor = "0.140.0"
-	if compareCodexCLIVersions(MinimumCodexCLIVersion, backgroundTerminalTerminateFloor) < 0 {
+	if CompareCodexVersions(MinimumCodexCLIVersion, backgroundTerminalTerminateFloor) < 0 {
 		t.Fatalf(
 			"MinimumCodexCLIVersion = %q is below the %q floor required by "+
 				"thread/backgroundTerminals/terminate; either raise the minimum or "+

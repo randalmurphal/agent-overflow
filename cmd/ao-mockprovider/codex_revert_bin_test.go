@@ -28,8 +28,8 @@ func TestCodexThreadRevertCutsInPlace(t *testing.T) {
 	env := writeScenarioFile(t, revertScenario("th-paginated"), "")
 	p := startMock(t, []string{"app-server"}, env, t.TempDir())
 
-	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
-	if got := p.expectLine(testTimeout); !strings.Contains(got, `"userAgent":"codex_cli_rs/`) {
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"agent_overflow"}}}`)
+	if got := p.expectLine(testTimeout); !strings.Contains(got, `"userAgent":"agent_overflow/`+mockVersionNumber+` (`) {
 		t.Fatalf("initialize response = %q, want a parseable app-server version", got)
 	}
 	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"historyMode":"paginated"}}`)

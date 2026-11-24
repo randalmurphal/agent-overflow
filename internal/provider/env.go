@@ -46,6 +46,23 @@ func BuildEnvironment(overrides map[string]string, unset ...string) []string {
 	return env
 }
 
+// LookupEnviron is name's value in env, a process environment as exec.Cmd
+// takes it: the last entry wins, names match exactly as a child process
+// reads them, and a nil env is the inherited one. ok is false when name is
+// unset.
+func LookupEnviron(env []string, name string) (string, bool) {
+	if env == nil {
+		return os.LookupEnv(name)
+	}
+	value, found := "", false
+	for _, entry := range env {
+		if key, candidate, ok := strings.Cut(entry, "="); ok && key == name {
+			value, found = candidate, true
+		}
+	}
+	return value, found
+}
+
 // envValue returns the value of key in env, last entry wins. Lookup is
 // case-insensitive to match the removal rule below: a Windows-style
 // environment that spells the variable `Path` must not have it removed as an

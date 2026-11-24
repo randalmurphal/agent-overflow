@@ -85,7 +85,7 @@ func TestLoginAdmissionOutlivesStartAndReleasesAfterCancel(t *testing.T) {
 	// A Codex below the minimum is refused at its handshake: the person gets
 	// the refusal, and the lease is released.
 	old := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
-		"initialize": `{"id":%s,"result":{"userAgent":"codex_cli_rs/0.153.4 (fake)"}}`,
+		"initialize": `{"id":%s,"result":{"userAgent":"agent_overflow_probe/0.153.4 (Linux 6.6.0; x86_64) xterm-256color"}}`,
 	})
 	manager.deps.ProviderBinary = func(string) string { return old }
 	_, err = manager.StartProviderLogin("codex", LoginMethodRemote)

@@ -122,16 +122,27 @@ func TestDetectProviderCodexBelowMinimum(t *testing.T) {
 			wantText:   "Codex v0.154.0-alpha.1 (%s) is installed; Agent Overflow needs v0.154.0 or newer. Update Codex.",
 		},
 		{
+			name:       "build metadata on the minimum",
+			output:     "codex-cli 0.154.0+company.1",
+			wantStatus: "ready",
+		},
+		{
+			name:       "malformed prerelease",
+			output:     "codex-cli 0.154.0-.",
+			wantStatus: "ready",
+		},
+		// Output that names no version says nothing about the build, so it
+		// reads as ready, as on main; the app-server's initialize admits or
+		// refuses the process that runs.
+		{
 			name:       "unreadable version",
 			output:     "codex version unknown",
-			wantStatus: "error",
-			wantText:   `Agent Overflow could not read the version of Codex (%s) from "codex version unknown". Update Codex to v0.154.0 or newer.`,
+			wantStatus: "ready",
 		},
 		{
 			name:       "no output",
 			output:     "",
-			wantStatus: "error",
-			wantText:   "Agent Overflow could not read the version of Codex (%s). Update Codex to v0.154.0 or newer.",
+			wantStatus: "ready",
 		},
 	}
 	for i, tc := range cases {
@@ -141,7 +152,11 @@ func TestDetectProviderCodexBelowMinimum(t *testing.T) {
 			if !status.Installed || status.Status != tc.wantStatus {
 				t.Fatalf("status = %+v, want status %q", status, tc.wantStatus)
 			}
-			if want := fmt.Sprintf(tc.wantText, script); status.Message != want {
+			want := ""
+			if tc.wantText != "" {
+				want = fmt.Sprintf(tc.wantText, script)
+			}
+			if status.Message != want {
 				t.Fatalf("Message = %q, want %q", status.Message, want)
 			}
 		})

@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"agent-overflow/internal/provider"
 )
 
 // Provider selects which stdio protocol the mock speaks for a scenario.
@@ -477,11 +479,12 @@ const MaxStartupDelayMs = 30_000
 // provider to exit after closing its stdin before it signals the process.
 const MaxExitDelayMs = 2_500
 
-// providerVersionPattern bounds Scenario.ProviderVersion. Empty (the
-// default: report the mock's own version) or a dotted numeric version.
-// It is interpolated verbatim into wire strings the app then parses, so
-// anything else would be injecting text into a userAgent rather than
-// pinning a version.
+// providerVersionPattern bounds a Claude or Antigravity
+// Scenario.ProviderVersion. Empty (the default: report the mock's own
+// version) or a dotted numeric version. It is interpolated verbatim into
+// wire strings the app then parses, so anything else would be injecting
+// text rather than pinning a version. A Codex scenario's version is a
+// Codex build instead (provider.ParseCodexVersion).
 var providerVersionPattern = regexp.MustCompile(`^(\d+(\.\d+)*)?$`)
 
 // afterTurnsModes enumerates Scenario.AfterTurns values.
@@ -520,11 +523,18 @@ func (s *Scenario) Validate() error {
 	if strings.TrimSpace(s.ProviderVersion) != s.ProviderVersion {
 		return fmt.Errorf("scenario %q: providerVersion %q must not carry surrounding whitespace", s.Name, s.ProviderVersion)
 	}
-	if !providerVersionPattern.MatchString(s.ProviderVersion) {
+	if s.Provider == ProviderCodex && s.ProviderVersion != "" {
+		if _, ok := provider.ParseCodexVersion(s.ProviderVersion); !ok {
+			return fmt.Errorf(
+				"scenario %q: providerVersion %q must be a Codex build like %q "+
+					"(it is interpolated into a userAgent string the app parses)",
+				s.Name, s.ProviderVersion, "0.154.0")
+		}
+	} else if !providerVersionPattern.MatchString(s.ProviderVersion) {
 		return fmt.Errorf(
 			"scenario %q: providerVersion %q must be a dotted version like %q "+
-				"(it is interpolated into a userAgent string the app parses)",
-			s.Name, s.ProviderVersion, "0.154.0")
+				"(it is interpolated into a version string the app parses)",
+			s.Name, s.ProviderVersion, "2.1.100")
 	}
 	if s.Codex != nil {
 		switch s.Codex.StartedHistoryMode {

@@ -3,10 +3,10 @@ package provider
 import (
 	"errors"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"golang.org/x/mod/semver"
 )
 
 // MinimumCodexCLIVersion is the oldest Codex app-server AO talks to: every
@@ -81,10 +81,10 @@ func (e *CodexVersionError) PublicDetails() (code, message string) {
 // checked. It returns nil for a supported version and a *CodexVersionError
 // otherwise; an unreadable version is unsupported.
 func CheckCodexVersion(path, version, raw string) error {
-	if _, ok := parseCodexSemver(normalizeCodexCLIVersion(version)); !ok {
+	if _, ok := ParseCodexVersion(version); !ok {
 		return &CodexVersionError{Path: path, Raw: codexVersionText(raw)}
 	}
-	if compareCodexCLIVersions(version, MinimumCodexCLIVersion) < 0 {
+	if CompareCodexVersions(version, MinimumCodexCLIVersion) < 0 {
 		return &CodexVersionError{Path: path, Version: codexVersionText(version), Raw: codexVersionText(raw)}
 	}
 	return nil
@@ -105,184 +105,61 @@ func codexVersionText(text string) string {
 	return strings.Clone(text)
 }
 
-var codexVersionPattern = regexp.MustCompile(`\bv?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)\b`)
-
-// codexBuildPattern is a whole Codex build version as Cargo writes it:
-// MAJOR.MINOR.PATCH with an optional pre-release.
-var codexBuildPattern = regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$`)
-
-// ParseCodexBuildVersion returns token when the whole token is a Codex
-// build version and "" otherwise. It reads the build an app-server reports
-// at `initialize`, where a partial match must not admit the process.
-func ParseCodexBuildVersion(token string) string {
-	if !codexBuildPattern.MatchString(token) {
-		return ""
+// ParseCodexVersion is the one grammar of a Codex build version, the
+// CARGO_PKG_VERSION a Codex build reports: strict SemVer 2.0.0,
+// MAJOR.MINOR.PATCH with an optional -prerelease and an optional +build,
+// numbers without leading zeros and no empty identifier. It returns an
+// owned copy of the whole token, or false. Both readers of a build use it:
+// the `initialize` user agent (codex.admitInitialize) and `codex --version`
+// (ParseCodexCLIVersion), so they cannot disagree about one build.
+func ParseCodexVersion(token string) (string, bool) {
+	core, _, _ := strings.Cut(token, "+")
+	core, _, _ = strings.Cut(core, "-")
+	// semver accepts the shorthands vMAJOR and vMAJOR.MINOR; a build is
+	// always three numbers.
+	if strings.Count(core, ".") != 2 || !semver.IsValid("v"+token) {
+		return "", false
 	}
-	if _, ok := parseCodexSemver(token); !ok {
-		return ""
-	}
-	return token
+	return strings.Clone(token), true
 }
 
-type parsedCodexSemver struct {
-	major      int
-	minor      int
-	patch      int
-	prerelease []string
+// CompareCodexVersions orders two versions ParseCodexVersion accepts by
+// SemVer precedence: a prerelease orders below its release and build
+// metadata is ignored. Negative when left is older, zero when they are
+// equal, positive when left is newer.
+func CompareCodexVersions(left, right string) int {
+	return semver.Compare("v"+left, "v"+right)
 }
 
-func parseCodexCLIVersion(output string) string {
-	match := codexVersionPattern.FindStringSubmatch(output)
-	if len(match) < 2 {
-		return ""
-	}
-
-	normalized := normalizeCodexCLIVersion(match[1])
-	if _, ok := parseCodexSemver(normalized); !ok {
-		return ""
-	}
-	return normalized
-}
-
-func normalizeCodexCLIVersion(version string) string {
-	main, prerelease, hasPrerelease := strings.Cut(strings.TrimSpace(version), "-")
-	segments := make([]string, 0, 3)
-	for _, segment := range strings.Split(main, ".") {
-		segment = strings.TrimSpace(segment)
-		if segment != "" {
-			segments = append(segments, segment)
+// ParseCodexCLIVersion reads the build from `codex --version` output
+// (`codex-cli 0.154.0`): the first whitespace-separated word, stripped of
+// surrounding brackets and punctuation, that is a version. It also reads the
+// display forms a wrapper may print, `v0.154.0` and the two-part `0.154`,
+// normalizing each to the build it names before ParseCodexVersion judges
+// it. Returns "" when no word is a version, which callers treat as unknown,
+// never as old or new. The `initialize` user agent is read by
+// codex.admitInitialize instead.
+func ParseCodexCLIVersion(output string) string {
+	for _, word := range strings.Fields(output) {
+		word = strings.Trim(word, "()[]{},;:'\"")
+		if version, ok := ParseCodexVersion(normalizeCodexDisplayVersion(word)); ok {
+			return version
 		}
 	}
-
-	if len(segments) == 2 {
-		segments = append(segments, "0")
-	}
-
-	normalized := strings.Join(segments, ".")
-	if hasPrerelease {
-		return normalized + "-" + prerelease
-	}
-	return normalized
+	return ""
 }
 
-func parseCodexSemver(version string) (parsedCodexSemver, bool) {
-	main, prerelease, _ := strings.Cut(version, "-")
-	segments := strings.Split(main, ".")
-	if len(segments) != 3 {
-		return parsedCodexSemver{}, false
+// normalizeCodexDisplayVersion turns a display spelling of a build into the
+// build: a leading v is dropped and a missing patch is 0. Anything else is
+// returned as it is, for ParseCodexVersion to judge.
+func normalizeCodexDisplayVersion(word string) string {
+	word = strings.TrimPrefix(word, "v")
+	end := strings.IndexAny(word, "-+")
+	if end < 0 {
+		end = len(word)
 	}
-
-	major, err := strconv.Atoi(segments[0])
-	if err != nil {
-		return parsedCodexSemver{}, false
+	if strings.Count(word[:end], ".") == 1 {
+		return word[:end] + ".0" + word[end:]
 	}
-	minor, err := strconv.Atoi(segments[1])
-	if err != nil {
-		return parsedCodexSemver{}, false
-	}
-	patch, err := strconv.Atoi(segments[2])
-	if err != nil {
-		return parsedCodexSemver{}, false
-	}
-
-	parsed := parsedCodexSemver{
-		major: major,
-		minor: minor,
-		patch: patch,
-	}
-	if prerelease != "" {
-		for _, segment := range strings.Split(prerelease, ".") {
-			segment = strings.TrimSpace(segment)
-			if segment != "" {
-				parsed.prerelease = append(parsed.prerelease, segment)
-			}
-		}
-	}
-
-	return parsed, true
+	return word
 }
-
-func compareCodexCLIVersions(left, right string) int {
-	parsedLeft, okLeft := parseCodexSemver(normalizeCodexCLIVersion(left))
-	parsedRight, okRight := parseCodexSemver(normalizeCodexCLIVersion(right))
-	if !okLeft || !okRight {
-		return strings.Compare(left, right)
-	}
-
-	// The numeric half is the shared ordering (semver.go); only the
-	// prerelease tail below is Codex-specific.
-	if numeric := CompareSemverTriple(
-		[3]int{parsedLeft.major, parsedLeft.minor, parsedLeft.patch},
-		[3]int{parsedRight.major, parsedRight.minor, parsedRight.patch},
-	); numeric != 0 {
-		return numeric
-	}
-
-	if len(parsedLeft.prerelease) == 0 && len(parsedRight.prerelease) == 0 {
-		return 0
-	}
-	if len(parsedLeft.prerelease) == 0 {
-		return 1
-	}
-	if len(parsedRight.prerelease) == 0 {
-		return -1
-	}
-
-	length := len(parsedLeft.prerelease)
-	if len(parsedRight.prerelease) > length {
-		length = len(parsedRight.prerelease)
-	}
-	for index := 0; index < length; index++ {
-		if index >= len(parsedLeft.prerelease) {
-			return -1
-		}
-		if index >= len(parsedRight.prerelease) {
-			return 1
-		}
-		comparison := compareCodexPrereleaseIdentifier(
-			parsedLeft.prerelease[index],
-			parsedRight.prerelease[index],
-		)
-		if comparison != 0 {
-			return comparison
-		}
-	}
-
-	return 0
-}
-
-func compareCodexPrereleaseIdentifier(left, right string) int {
-	leftNumeric := isNumericString(left)
-	rightNumeric := isNumericString(right)
-
-	switch {
-	case leftNumeric && rightNumeric:
-		leftValue, _ := strconv.Atoi(left)
-		rightValue, _ := strconv.Atoi(right)
-		return leftValue - rightValue
-	case leftNumeric:
-		return -1
-	case rightNumeric:
-		return 1
-	default:
-		return strings.Compare(left, right)
-	}
-}
-
-func isNumericString(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// ParseCodexCLIVersion extracts the first semver-shaped token from
-// `codex --version` output. Returns "" when nothing parses, which callers
-// must treat as "unknown", never as "old" or "new". The app-server's
-// `initialize` user agent is read with ParseCodexBuildVersion instead.
-func ParseCodexCLIVersion(output string) string { return parseCodexCLIVersion(output) }

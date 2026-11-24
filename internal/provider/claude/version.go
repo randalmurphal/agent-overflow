@@ -40,8 +40,8 @@ func (s *Session) supportsLiveThinking() bool {
 // unparseable or empty `have` answers false — the caller's fallback is
 // always the safe one.
 //
-// The ORDERING is provider.SemverAtLeast, shared with Codex's own version
-// gate; only the parsing tolerance below is Claude's.
+// The ORDERING is provider.SemverAtLeast; only the parsing tolerance below
+// is Claude's.
 func claudeCLIVersionAtLeast(have, want string) bool {
 	haveParts, ok := parseClaudeCLIVersion(have)
 	if !ok {

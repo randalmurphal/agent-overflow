@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"agent-overflow/internal/provider"
 )
@@ -16,14 +17,21 @@ import (
 //
 // `initialize` carries no capability list and no protocol version a client
 // can branch on; the only in-band statement of the running build is
-// `InitializeResponse.userAgent`, formatted upstream as
-// `{originator}/{build} ({os} {os version}; {arch}) {terminal}`
-// (codex-rs/login/src/auth/default_client.rs get_codex_user_agent), e.g.
-// `codex_cli_rs/0.154.0 (Ubuntu 24.04; x86_64) …`. Every client that
-// completes a handshake admits the process by it through admitInitialize,
-// before its first other request. It describes the process actually on the
-// other end of the pipe, not whatever binary the setting named when the app
-// booted.
+// `InitializeResponse.userAgent`. Upstream assembles it as
+// `{originator}/{build} ({os type} {os version}; {arch}) {terminal}`, then
+// ` ({client name}; {client version})` (rust-v0.154.0
+// codex-rs/login/src/auth/default_client.rs get_codex_user_agent). Every
+// field is written unescaped, and the originator, the os version and the
+// arch may each hold slashes, parentheses and version-like text, so no rule
+// over the string alone can say which slash ends the originator. The
+// originator is what this side knows: a fresh app-server's is
+// CODEX_INTERNAL_ORIGINATOR_OVERRIDE from its environment when that is set,
+// otherwise the clientInfo.name the handshake sent
+// (codex-rs/app-server/src/request_processors/initialize_processor.rs). The
+// build is read right after it. Every client that completes a handshake
+// admits the process by it through admitInitialize, before its first other
+// request, so it describes the process actually on the other end of the
+// pipe.
 
 // AppServerVersion returns the codex build this session's process reported at
 // `initialize`, or "" when it could not be determined.
@@ -34,37 +42,92 @@ func (s *Session) AppServerVersion() string {
 	return s.conn.AppServerVersion()
 }
 
+// codexOriginatorOverrideEnv names the variable that replaces a Codex
+// process's originator, and codexDefaultOriginator is what Codex uses when
+// that variable holds a value no HTTP header can carry.
+const (
+	codexOriginatorOverrideEnv = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+	codexDefaultOriginator     = "codex_cli_rs"
+)
+
+// handshakeOriginator is the originator a fresh app-server starts its user
+// agent with: the override in the environment it was launched with, when
+// set, otherwise the client name params sends. lookup reads that
+// environment. An override that is not UTF-8 is unset to Codex, and one
+// that is not a valid header value is replaced by the default
+// (default_client.rs get_originator_value).
+func handshakeOriginator(params map[string]any, lookup func(string) (string, bool)) string {
+	if override, ok := lookup(codexOriginatorOverrideEnv); ok && utf8.ValidString(override) {
+		if validHeaderValue(override) {
+			return override
+		}
+		return codexDefaultOriginator
+	}
+	info, _ := params["clientInfo"].(map[string]any)
+	name, _ := info["name"].(string)
+	return name
+}
+
+// validHeaderValue is the check Codex's HeaderValue::from_str makes: tab,
+// or a byte from space up, except DEL.
+func validHeaderValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if b := value[i]; b != '\t' && (b < ' ' || b == 0x7f) {
+			return false
+		}
+	}
+	return true
+}
+
 // admitInitialize is the one check of an app-server's `initialize` reply.
-// path is the executable that answered and result the reply. It returns the
-// build the reply reports, or the *provider.CodexVersionError refusing the
-// process, unwrapped so every client refuses with the same message.
-func admitInitialize(path string, result json.RawMessage) (string, error) {
+// path is the executable that answered, originator what its user agent
+// starts with (handshakeOriginator) and result the reply. It returns the
+// build the reply reports, an owned copy, or the *provider.CodexVersionError
+// refusing the process, unwrapped so every client refuses with the same
+// message.
+func admitInitialize(path, originator string, result json.RawMessage) (string, error) {
 	userAgent := readNestedString(result, "userAgent")
-	version := parseAppServerVersion(userAgent)
+	version := appServerBuild(userAgent, originator)
 	if err := provider.CheckCodexVersion(path, version, userAgent); err != nil {
 		return "", err
 	}
 	return version, nil
 }
 
-// parseAppServerVersion pulls the build version out of a codex user agent.
-// The product prefix ends where the OS block ` (` starts; the build is the
-// component after the prefix's last `/`, because an originator override may
-// itself contain slashes (`team/2.0/0.154.0 (…)`). The whole component must
-// be a build version: `dev-0.154.0` is unreadable, not 0.154.0. The OS
-// block and anything after it carry digits of their own and are never read.
-//
-// Anything without that shape yields "", never a guess.
-func parseAppServerVersion(userAgent string) string {
-	prefix, _, found := strings.Cut(userAgent, " (")
-	if !found {
+// appServerBuild reads the build from userAgent: the word right after
+// originator and its slash, which must be a whole version followed by the
+// OS block's " (". A reply that does not start with originator came from a
+// process whose environment a launcher changed; its build is read only
+// when exactly one position in it is a slash, a version and " (", and
+// otherwise it is unreadable. "" when no build can be read.
+func appServerBuild(userAgent, originator string) string {
+	if rest, ok := strings.CutPrefix(userAgent, originator+"/"); ok {
+		return buildBeforeOSBlock(rest)
+	}
+	build, found := "", 0
+	for i := 0; i < len(userAgent); i++ {
+		if userAgent[i] != '/' {
+			continue
+		}
+		if candidate := buildBeforeOSBlock(userAgent[i+1:]); candidate != "" {
+			build, found = candidate, found+1
+		}
+	}
+	if found != 1 {
 		return ""
 	}
-	slash := strings.LastIndexByte(prefix, '/')
-	if slash < 0 {
+	return build
+}
+
+// buildBeforeOSBlock is the version s starts with when the word is a whole
+// Codex version (provider.ParseCodexVersion) and " (" follows it, else "".
+func buildBeforeOSBlock(s string) string {
+	word, after, ok := strings.Cut(s, " ")
+	if !ok || !strings.HasPrefix(after, "(") {
 		return ""
 	}
-	return provider.ParseCodexBuildVersion(prefix[slash+1:])
+	version, _ := provider.ParseCodexVersion(word)
+	return version
 }
 
 // lineHandshake runs `initialize` for a client that reads frames from lines
@@ -75,7 +138,7 @@ func lineHandshake(
 	proc *provider.Process,
 	lines <-chan readResult,
 	id int64,
-	params any,
+	params map[string]any,
 ) error {
 	if err := writeJSONRPC(proc, map[string]any{
 		"jsonrpc": "2.0",
@@ -89,7 +152,7 @@ func lineHandshake(
 	if err != nil {
 		return err
 	}
-	if _, err := admitInitialize(proc.Path(), result); err != nil {
+	if _, err := admitInitialize(proc.Path(), handshakeOriginator(params, proc.LookupEnv), result); err != nil {
 		return err
 	}
 	if err := writeJSONRPC(proc, map[string]any{

@@ -72,7 +72,7 @@ while IFS= read -r line; do
   id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
   if [ -z "$id" ]; then continue; fi
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
-    printf '{"jsonrpc":"2.0","id":%s,"result":{"userAgent":"codex_cli_rs/%s (fake)"}}\n' "$id" "$version"
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"userAgent":"agent_overflow/%s (Linux 6.6.0; x86_64) xterm-256color"}}\n' "$id" "$version"
   elif /bin/echo "$line" | /usr/bin/grep -q '"method":"config/read"'; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"config":{}}}\n' "$id"
   elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then

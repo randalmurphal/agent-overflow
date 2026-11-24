@@ -399,6 +399,10 @@ func isClosedPipeErr(err error) bool {
 // made: the binary a version check names.
 func (p *Process) Path() string { return p.cmd.Path }
 
+// LookupEnv is name's value in the environment the process was started
+// with (LookupEnviron).
+func (p *Process) LookupEnv(name string) (string, bool) { return LookupEnviron(p.cmd.Env, name) }
+
 // Done returns a channel that closes when the process exits.
 func (p *Process) Done() <-chan struct{} {
 	return p.done

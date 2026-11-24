@@ -244,44 +244,6 @@ func TestSession_ReadThreadUsage_ThreadIDMismatchIsAFault(t *testing.T) {
 	}
 }
 
-// TestParseAppServerVersion pins the userAgent parse. The build is the whole
-// component after the last `/` of the product prefix, which ends where the
-// OS block ` (` starts. The OS name, OS version and architecture after it
-// all carry digits, and an originator override may carry slashes and
-// version-like text of its own; neither may be read as the build.
-func TestParseAppServerVersion(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name      string
-		userAgent string
-		want      string
-	}{
-		{"real 0.149", "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) codex_cli_rs/0.149.0", "0.149.0"},
-		{"prerelease survives", "codex_cli_rs/0.150.0-alpha.3 (Linux)", "0.150.0-alpha.3"},
-		{"different originator", "codex_vscode/0.148.0 (Darwin 15.1; arm64)", "0.148.0"},
-		{"originator with a space", "Codex Desktop/0.154.0 (Darwin 15.1; arm64)", "0.154.0"},
-		{"originator with a slash", "team/codex/0.154.0 (Linux)", "0.154.0"},
-		{"version-like originator", "team/2.0.0/0.153.4 (Linux)", "0.153.4"},
-		{"build token with a prefix", "codex_cli_rs/dev-0.154.0 (Linux)", ""},
-		{"build token with a suffix", "codex_cli_rs/0.154.0+dirty (Linux)", ""},
-		{"two-segment build", "codex_cli_rs/0.154 (Linux)", ""},
-		{"no OS block", "codex_cli_rs/0.154.0", ""},
-		{"no slash", "codex_cli_rs 0.149.0 (Linux)", ""},
-		{"no version token", "codex_cli_rs/ (Linux 6.6)", ""},
-		{"empty", "", ""},
-		// The failure this parser exists to prevent: an OS version leading the
-		// string must never be mistaken for the build.
-		{"os version after a versionless originator", "codex/x (Ubuntu 24.04; x86_64)", ""},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := parseAppServerVersion(tc.userAgent); got != tc.want {
-				t.Fatalf("parseAppServerVersion(%q) = %q, want %q", tc.userAgent, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestThreadUsageRejectsNegativeEstimatesAndPreservesZero(t *testing.T) {
 	t.Parallel()
 	for _, body := range []string{

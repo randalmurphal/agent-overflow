@@ -1,16 +1,11 @@
 package provider
 
-// semver.go — the one dotted-triple comparison both provider CLIs' version
-// gates order on.
-//
-// Only the COMPARE is shared. Each CLI prints its version differently and each
-// parser keeps its own tolerance for that: Codex's accepts a `v` prefix, a
-// two-segment version, and a prerelease suffix (`ParseCodexCLIVersion`), while
-// Claude's accepts a trailing token (`claude --version` prints
-// "2.1.237 (Claude Code)" where `system/init` carries the bare number). What
-// they must NOT disagree about is which of two triples is newer — a copy of
-// that arithmetic per provider is a silent ordering bug waiting for its first
-// two-digit component.
+// semver.go — the dotted-triple comparison Claude's version gate orders on.
+// Claude's parser accepts a trailing token (`claude --version` prints
+// "2.1.237 (Claude Code)" where `system/init` carries the bare number) and
+// passes the triple here. Codex builds are strict SemVer with prereleases,
+// and codex_version.go orders them by SemVer precedence instead
+// (CompareCodexVersions).
 
 // CompareSemverTriple orders two `major.minor.patch` triples: negative when
 // left is older, zero when equal, positive when left is newer.

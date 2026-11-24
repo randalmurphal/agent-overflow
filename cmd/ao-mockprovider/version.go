@@ -11,8 +11,8 @@ import "agent-overflow/internal/providerupdate/updatefake"
 //
 //   - Claude: internal/provider/detect.go detectClaudeVersion accepts
 //     any trimmed non-empty output (no minimum-version gate).
-//   - Codex: internal/provider/codex_version.go parseCodexCLIVersion
-//     takes the FIRST semver-looking token and gates it against
+//   - Codex: internal/provider/codex_version.go ParseCodexCLIVersion
+//     takes the FIRST word that is a Codex build and gates it against
 //     MinimumCodexCLIVersion. Leading "99.0.0" parses as
 //     99.0.0, far above the gate, and the trailing text is ignored.
 //

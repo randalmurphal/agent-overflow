@@ -9,6 +9,8 @@ import (
 
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 // queueScenario parks turn 1 on a waitSignal, which is what lets a test hold a
@@ -121,8 +123,14 @@ func TestCodexInitializeReportsAVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp), &body); err != nil {
 		t.Fatalf("decode initialize response %q: %v", resp, err)
 	}
-	if !strings.HasPrefix(body.Result.UserAgent, "codex_cli_rs/"+mockVersionNumber) {
-		t.Fatalf("initialize userAgent = %q, want codex_cli_rs/%s...", body.Result.UserAgent, mockVersionNumber)
+	// Upstream's shape, with the originator the handshake sent and the
+	// mock's version as a whole build.
+	want := providertest.CodexUserAgentFor("agent_overflow", mockVersionNumber)
+	if body.Result.UserAgent != want {
+		t.Fatalf("initialize userAgent = %q, want %q", body.Result.UserAgent, want)
+	}
+	if _, ok := provider.ParseCodexVersion(mockVersionNumber); !ok {
+		t.Fatalf("the mock's version %q is not a Codex build", mockVersionNumber)
 	}
 	p.closeStdinAndExpectExit(0, testTimeout)
 }

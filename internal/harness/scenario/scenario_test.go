@@ -214,18 +214,30 @@ func TestCoalesceIsExclusiveWithPacing(t *testing.T) {
 // other side. Anything that is not a dotted number would read as an
 // unparseable version rather than as the downgrade the author meant.
 func TestProviderVersionValidation(t *testing.T) {
-	doc := func(v string) string {
-		return `{"version":1,"name":"x","provider":"codex","providerVersion":` + v +
+	doc := func(providerName, v string) string {
+		return `{"version":1,"name":"x","provider":"` + providerName + `","providerVersion":` + v +
 			`,"turns":[{"steps":[{"delayMs":1}]}]}`
 	}
-	for _, v := range []string{`""`, `"0.147.0"`, `"99"`, `"1.2.3.4"`} {
-		if _, err := Parse([]byte(doc(v))); err != nil {
-			t.Errorf("providerVersion %s was rejected: %v", v, err)
+	// A Codex version is a Codex build, judged by the grammar the app reads
+	// it with.
+	for _, v := range []string{`""`, `"0.147.0"`, `"0.147.0-beta"`, `"0.154.0+company.1"`} {
+		if _, err := Parse([]byte(doc("codex", v))); err != nil {
+			t.Errorf("codex providerVersion %s was rejected: %v", v, err)
 		}
 	}
-	for _, v := range []string{`"v0.147.0"`, `" 0.147.0"`, `"0.147.0-beta"`, `"latest"`} {
-		if _, err := Parse([]byte(doc(v))); err == nil {
-			t.Errorf("providerVersion %s was accepted; it is not a dotted version", v)
+	for _, v := range []string{`"99"`, `"1.2.3.4"`, `"v0.147.0"`, `" 0.147.0"`, `"0.154.0-."`, `"latest"`} {
+		if _, err := Parse([]byte(doc("codex", v))); err == nil {
+			t.Errorf("codex providerVersion %s was accepted; it is not a Codex build", v)
+		}
+	}
+	for _, v := range []string{`""`, `"2.1.100"`, `"99"`, `"1.2.3.4"`} {
+		if _, err := Parse([]byte(doc("claude", v))); err != nil {
+			t.Errorf("claude providerVersion %s was rejected: %v", v, err)
+		}
+	}
+	for _, v := range []string{`"v2.1.100"`, `" 2.1.100"`, `"2.1.100-beta"`, `"latest"`} {
+		if _, err := Parse([]byte(doc("claude", v))); err == nil {
+			t.Errorf("claude providerVersion %s was accepted; it is not a dotted version", v)
 		}
 	}
 }

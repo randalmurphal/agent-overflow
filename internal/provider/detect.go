@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -23,7 +22,7 @@ const versionTimeout = 5 * time.Second
 //   - "unauthenticated" — binary is present and new enough but has no logged-in
 //     account (Claude: ProbeAccount returned a zero-value AccountInfo).
 //   - "error"           — the version check itself failed (binary exited non-zero,
-//     garbled output, etc.), or Codex printed a version that cannot be read.
+//     garbled output, etc.).
 type ProviderStatus struct {
 	Provider   string `json:"provider"`
 	Installed  bool   `json:"installed"`
@@ -71,13 +70,14 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 	}
 
 	if name == string(Codex) {
-		if err := CheckCodexVersion(resolvedPath, parseCodexCLIVersion(version), version); err != nil {
-			var versionErr *CodexVersionError
-			status.Status = "error"
-			if errors.As(err, &versionErr) && versionErr.Version != "" {
+		// Output with no version in it says nothing about the build, so the
+		// status stays ready; the app-server's own `initialize` is what
+		// admits or refuses the process that runs.
+		if parsed := ParseCodexCLIVersion(version); parsed != "" {
+			if err := CheckCodexVersion(resolvedPath, parsed, version); err != nil {
 				status.Status = "version_too_old"
+				status.Message = err.Error()
 			}
-			status.Message = err.Error()
 		}
 	}
 

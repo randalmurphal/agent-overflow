@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/harness/scenario"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provider/providertest"
 )
 
 // codexRPCFrame is the response envelope the app's JSON-RPC reader
@@ -312,7 +313,7 @@ func TestCodexInitializeCarriesTheScenarioProviderVersion(t *testing.T) {
 	a := newCodexAdapter(e, newLineWriter(&buf), nil)
 	e.adapter = a
 
-	frame := codexRequest(t, a, &buf, "initialize", `{}`)
+	frame := codexRequest(t, a, &buf, "initialize", `{"clientInfo":{"name":"agent_overflow"}}`)
 	if frame.Error != nil {
 		t.Fatalf("initialize = %+v", frame.Error)
 	}
@@ -322,7 +323,7 @@ func TestCodexInitializeCarriesTheScenarioProviderVersion(t *testing.T) {
 	if err := json.Unmarshal(frame.Result, &decoded); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !strings.Contains(decoded.UserAgent, "codex_cli_rs/0.147.0") {
+	if decoded.UserAgent != providertest.CodexUserAgentFor("agent_overflow", "0.147.0") {
 		t.Fatalf("userAgent = %q, want the scenario's pinned 0.147.0", decoded.UserAgent)
 	}
 }

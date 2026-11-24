@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
+	"agent-overflow/internal/provider/providertest"
 )
 
 // codexApprovalIDBase starts mock-originated server-request ids far
@@ -138,8 +139,9 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 		// The userAgent is what the app parses Codex's version off, and it
 		// refuses a version below provider.MinimumCodexCLIVersion. The mock
 		// answers `--version` with 99.0.0 and says the same here. A
-		// scenario's `providerVersion` pins it lower.
-		"initialize": `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"userAgent":"codex_cli_rs/` + e.providerVersion() + ` (mock; ao-mockprovider)"}}`,
+		// scenario's `providerVersion` pins it lower. ${USER_AGENT} is bound
+		// by handleRequest from the handshake (mockUserAgent).
+		"initialize": `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"userAgent":${USER_AGENT}}}`,
 		// ${HISTORY_MODE} is bound by respond(), not by a scenario: the
 		// thread's history contract is decided by the thread/start params
 		// (codex_revert.go), and it is what makes `thread/revert` available
@@ -210,7 +212,10 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// The handshake response is what proves the app-server is up, so
 		// it is where a scenario's startupDelayMs is spent.
 		a.e.awaitStartupDelay()
-		a.respond(id, method, a.e.currentVars())
+		vars := a.e.currentVars()
+		userAgent, _ := json.Marshal(mockUserAgent(params, a.e.providerVersion()))
+		vars["USER_AGENT"] = string(userAgent)
+		a.respond(id, method, vars)
 	case "thread/start":
 		// Codex carries its permission configuration in the thread/start
 		// params rather than argv, so this is the earliest observable point.
@@ -625,6 +630,24 @@ func (a *codexAdapter) sendInterruptedTurn(vars scenario.Vars) {
 			},
 		},
 	}), 0, 0)
+}
+
+// mockUserAgent is the user agent Codex of version answers this handshake
+// with: its originator is CODEX_INTERNAL_ORIGINATOR_OVERRIDE when that is
+// set, otherwise the clientInfo.name the handshake sent, in upstream's
+// shape (providertest.CodexUserAgentFor).
+func mockUserAgent(params json.RawMessage, version string) string {
+	originator, ok := os.LookupEnv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE")
+	if !ok {
+		var init struct {
+			ClientInfo struct {
+				Name string `json:"name"`
+			} `json:"clientInfo"`
+		}
+		_ = json.Unmarshal(params, &init)
+		originator = init.ClientInfo.Name
+	}
+	return providertest.CodexUserAgentFor(originator, version)
 }
 
 func (a *codexAdapter) respond(id json.RawMessage, method string, vars scenario.Vars) {

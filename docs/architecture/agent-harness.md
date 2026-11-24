@@ -559,7 +559,8 @@ holds the process after the app closes its stdin, capped at 2.5s (below
 the app's close grace), so the window while a session shuts down is
 drivable. `providerVersion`
 downgrades the version the mock claims (Codex `initialize` userAgent,
-Claude `system/init.claude_code_version`); the default is above every
+Claude `system/init.claude_code_version`; a Codex one must be a Codex
+build, `provider.ParseCodexVersion`); the default is above every
 minimum, and the app refuses a Codex below its minimum at `initialize`. It does
 not reach `--version`, the account probe, one-shot text generation, or
 the Claude sign-in. Those invocations answer and exit before a scenario

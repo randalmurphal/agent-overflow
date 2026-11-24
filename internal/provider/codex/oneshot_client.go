@@ -117,7 +117,7 @@ func (c *oneshotClient) initialize(ctx context.Context, spec oneshotSpec) error 
 	if err != nil {
 		return fmt.Errorf("codex: initialize for %s: %w", c.label, err)
 	}
-	if _, err := admitInitialize(c.proc.Path(), resp); err != nil {
+	if _, err := admitInitialize(c.proc.Path(), handshakeOriginator(initParams, c.proc.LookupEnv), resp); err != nil {
 		return err
 	}
 	if err := c.notify("initialized", nil); err != nil {

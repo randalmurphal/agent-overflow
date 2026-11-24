@@ -120,13 +120,13 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 	c := newConnWithProcess(proc, cancel, binary)
 	go c.readLoop()
 
-	initResp, err := c.sendRequest(ctx, "initialize",
-		codexInitializeParams(provider.CodexClientOrigin, sessionOptOutNotificationMethods()))
+	initParams := codexInitializeParams(provider.CodexClientOrigin, sessionOptOutNotificationMethods())
+	initResp, err := c.sendRequest(ctx, "initialize", initParams)
 	if err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("codex: initialize handshake failed: %w", err)
 	}
-	version, err := admitInitialize(proc.Path(), initResp)
+	version, err := admitInitialize(proc.Path(), handshakeOriginator(initParams, proc.LookupEnv), initResp)
 	if err != nil {
 		return nil, errors.Join(err, c.Close())
 	}
