@@ -56,40 +56,69 @@ func lockPaths(t *testing.T, claudeHome string) (refresh string, legacy string, 
 	return locks[0].path, locks[1].path, locks[2].path
 }
 
-// The whole point of the lock: a canonical write must not land inside the
-// CLI's read → POST → write section, because the CLI's compare-and-swap would
-// then adopt AO's bytes and drop the rotation it already paid for.
-func TestCanonicalCredentialWriteWaitsForTheClaudeRefreshLock(t *testing.T) {
-	credentials, claudeHome := lockTestCredentials(t)
-	refreshLock, _, _ := lockPaths(t, claudeHome)
-	takeLockLikeTheCLI(t, refreshLock, 0)
+// A canonical write waits out whichever CLI lock is held, then lands.
+func TestCanonicalCredentialWriteWaitsForAHeldCLILock(t *testing.T) {
+	for _, tc := range []struct {
+		// held is the lock the CLI holds; outer are the locks AO must
+		// already hold while it waits.
+		held  string
+		outer []string
+	}{
+		// The whole point of the lock: a canonical write must not land inside
+		// the CLI's read → POST → write section, because the CLI's
+		// compare-and-swap would then adopt AO's bytes and drop the rotation
+		// it already paid for.
+		{held: "refresh"},
+		// The secureStorage lock is the one the CLI holds for a sign-in or a
+		// sign-out, not only for a refresh, so a write that ignored it would
+		// collide with the credential read-modify-write of a `claude /login`
+		// running beside AO. It is the innermost of the three: AO holds the
+		// two refresh locks while it waits.
+		{held: "storage", outer: []string{"refresh", "legacy"}},
+	} {
+		t.Run(tc.held, func(t *testing.T) {
+			t.Parallel()
+			credentials, claudeHome := lockTestCredentials(t)
+			refresh, legacy, storage := lockPaths(t, claudeHome)
+			locks := map[string]string{"refresh": refresh, "legacy": legacy, "storage": storage}
+			held := locks[tc.held]
+			takeLockLikeTheCLI(t, held, 0)
 
-	const held = 250 * time.Millisecond
-	released := make(chan time.Time, 1)
-	go func() {
-		time.Sleep(held)
-		released <- time.Now()
-		_ = os.Remove(refreshLock)
-	}()
+			const wait = 250 * time.Millisecond
+			nested := make(chan bool, 1)
+			go func() {
+				time.Sleep(wait)
+				holding := true
+				for _, name := range tc.outer {
+					if _, err := os.Lstat(locks[name]); err != nil {
+						holding = false
+					}
+				}
+				nested <- holding
+				_ = os.Remove(held)
+			}()
 
-	started := time.Now()
-	if err := credentials.WriteNativeCredentialForTest("claude", []byte("rotated")); err != nil {
-		t.Fatalf("canonical write under a held lock: %v", err)
-	}
-	waited := time.Since(started)
-	if waited < held {
-		t.Fatalf("canonical write finished after %s, want it to wait for the lock (%s)", waited, held)
-	}
-	<-released
+			started := time.Now()
+			if err := credentials.WriteNativeCredentialForTest("claude", []byte("rotated")); err != nil {
+				t.Fatalf("canonical write under a held lock: %v", err)
+			}
+			if waited := time.Since(started); waited < wait {
+				t.Fatalf("canonical write finished after %s, want it to wait for the lock (%s)", waited, wait)
+			}
+			if !<-nested {
+				t.Fatalf("the %v locks were not held while AO waited on the %s lock, want the CLI's nesting", tc.outer, tc.held)
+			}
 
-	data, err := credentials.ReadCredential("claude", "", true)
-	if err != nil {
-		t.Fatal(err)
+			data, err := credentials.ReadCredential("claude", "", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != "rotated" {
+				t.Fatalf("canonical credential = %s, want the write to have landed after the lock cleared", data)
+			}
+			assertLocksReleased(t, claudeHome)
+		})
 	}
-	if string(data) != "rotated" {
-		t.Fatalf("canonical credential = %s, want the write to have landed after the lock cleared", data)
-	}
-	assertLocksReleased(t, claudeHome)
 }
 
 // A CLI that died holding the lock must not brick every later write. The
@@ -188,50 +217,6 @@ func TestCanonicalCredentialWriteReleasesTheLockOnEveryErrorPath(t *testing.T) {
 	// locks.
 	if err := credentials.RemoveActive("claude"); err != nil {
 		t.Fatalf("RemoveActive: %v", err)
-	}
-	assertLocksReleased(t, claudeHome)
-}
-
-// The secureStorage lock is the one the CLI holds for a sign-in or a sign-out,
-// not only for a refresh, so a write that ignored it would collide with the
-// credential read-modify-write of a `claude /login` running beside AO. It is
-// the innermost of the three: AO holds the two refresh locks while it waits.
-func TestCanonicalCredentialWriteWaitsForTheStorageWriteLock(t *testing.T) {
-	credentials, claudeHome := lockTestCredentials(t)
-	refreshLock, legacyLock, storageLock := lockPaths(t, claudeHome)
-	takeLockLikeTheCLI(t, storageLock, 0)
-
-	const held = 250 * time.Millisecond
-	nested := make(chan bool, 1)
-	go func() {
-		time.Sleep(held)
-		outer := true
-		for _, path := range []string{refreshLock, legacyLock} {
-			if _, err := os.Lstat(path); err != nil {
-				outer = false
-			}
-		}
-		nested <- outer
-		_ = os.Remove(storageLock)
-	}()
-
-	started := time.Now()
-	if err := credentials.WriteNativeCredentialForTest("claude", []byte("rotated")); err != nil {
-		t.Fatalf("canonical write under a held storage-write lock: %v", err)
-	}
-	if waited := time.Since(started); waited < held {
-		t.Fatalf("canonical write finished after %s, want it to wait for the lock (%s)", waited, held)
-	}
-	if !<-nested {
-		t.Fatal("the refresh locks were not held while AO waited on the storage-write lock, want the CLI's nesting")
-	}
-
-	data, err := credentials.ReadCredential("claude", "", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "rotated" {
-		t.Fatalf("canonical credential = %s, want the write to have landed after the lock cleared", data)
 	}
 	assertLocksReleased(t, claudeHome)
 }

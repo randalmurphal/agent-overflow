@@ -45,35 +45,6 @@ func TestClaudeLatestFollowsTheDoctorChannel(t *testing.T) {
 	}
 }
 
-func TestBrewInstallsReadTheirCask(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		provider, resolved, cask string
-	}{
-		{ProviderClaude, "/opt/homebrew/Caskroom/claude-code/2.1.300/claude", "claude-code"},
-		{ProviderClaude, "/opt/homebrew/Caskroom/claude-code@latest/2.1.300/claude", "claude-code@latest"},
-		{ProviderCodex, "/usr/local/Caskroom/codex/0.160.0/codex-x86_64-apple-darwin", "codex"},
-	} {
-		t.Run(tc.cask, func(t *testing.T) {
-			t.Parallel()
-			r := newRig(t)
-			r.setBinary(tc.provider, Binary{Path: "/opt/homebrew/bin/" + tc.provider, ResolvedPath: tc.resolved})
-			r.hosts.text(BrewCaskURL(tc.cask), http.StatusOK, `{"token":"`+tc.cask+`","version":"9.9.9"}`)
-			claude, codex := r.check()
-			status := map[string]Status{ProviderClaude: claude, ProviderCodex: codex}[tc.provider]
-			if status.LatestVersion != "9.9.9" || !status.Available {
-				t.Fatalf("%s = %+v, want the cask's 9.9.9", tc.provider, status)
-			}
-			if r.runner.ran("doctor") != 0 && tc.provider == ProviderClaude {
-				t.Error("a brew install ran claude doctor; brew ignores the settings channel")
-			}
-			if tc.provider == ProviderCodex && r.hosts.count(CodexNPMLatestURL) != 0 {
-				t.Error("a brew codex read the npm manifest")
-			}
-		})
-	}
-}
-
 func TestCodexLatestReadsTheNpmManifest(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -317,8 +288,9 @@ func brewCaskOf(providerName, path string) string {
 	return cask
 }
 
-// A Homebrew install is upgraded by the Homebrew whose Caskroom holds it:
-// `claude update` on one only prints advice and exits 0.
+// A Homebrew install reads its cask's version and is upgraded by the Homebrew
+// whose Caskroom holds it: `claude update` on one only prints advice and
+// exits 0.
 func TestABrewInstallIsUpgradedByItsHomebrew(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -334,7 +306,13 @@ func TestABrewInstallIsUpgradedByItsHomebrew(t *testing.T) {
 			r := newRig(t)
 			r.setBinary(tc.provider, Binary{Path: "/opt/homebrew/bin/" + tc.provider, ResolvedPath: tc.resolved})
 			r.hosts.text(BrewCaskURL(tc.cask), http.StatusOK, `{"version":"9.9.9"}`)
-			r.check()
+			claude, codex := r.check()
+			if status := map[string]Status{ProviderClaude: claude, ProviderCodex: codex}[tc.provider]; status.LatestVersion != "9.9.9" || !status.Available {
+				t.Fatalf("%s = %+v, want the cask's 9.9.9", tc.provider, status)
+			}
+			if tc.provider == ProviderCodex && r.hosts.count(CodexNPMLatestURL) != 0 {
+				t.Error("a brew codex read the npm manifest")
+			}
 			r.runner.on(tc.brew+" upgrade", func(context.Context) (Output, error) {
 				r.setInstalled(tc.provider, "9.9.9")
 				return Output{}, nil

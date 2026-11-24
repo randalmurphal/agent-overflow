@@ -13,40 +13,39 @@ func messages(violations []Violation) string {
 	return strings.Join(parts, "; ")
 }
 
-func TestValidateAcceptsGeneratedEnvelopeShape(t *testing.T) {
-	schema := []byte(`{
-		"type": "object",
-		"additionalProperties": false,
-		"properties": {
-			"status": {"type": "string", "enum": ["done", "question", "stuck"]},
-			"outputs": {
-				"type": ["object", "null"],
-				"additionalProperties": false,
-				"properties": {
-					"note": {"type": ["string", "null"], "maxLength": 20},
-					"rows": {"type": "array", "minItems": 1, "items": {
-						"type": "object",
-						"additionalProperties": false,
-						"properties": {"path": {"type": "string"}},
-						"required": ["path"]
-					}}
+func TestValidateAcceptsProviderSafeSchemas(t *testing.T) {
+	for name, schema := range map[string]string{
+		"generated envelope shape": `{
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"status": {"type": "string", "enum": ["done", "question", "stuck"]},
+				"outputs": {
+					"type": ["object", "null"],
+					"additionalProperties": false,
+					"properties": {
+						"note": {"type": ["string", "null"], "maxLength": 20},
+						"rows": {"type": "array", "minItems": 1, "items": {
+							"type": "object",
+							"additionalProperties": false,
+							"properties": {"path": {"type": "string"}},
+							"required": ["path"]
+						}}
+					},
+					"required": ["note", "rows"]
 				},
-				"required": ["note", "rows"]
+				"question": {"type": ["string", "null"]},
+				"reason": {"type": ["string", "null"]}
 			},
-			"question": {"type": ["string", "null"]},
-			"reason": {"type": ["string", "null"]}
-		},
-		"required": ["outputs", "question", "reason", "status"]
-	}`)
-	if violations := Validate(schema); len(violations) > 0 {
-		t.Fatalf("Validate() = %s, want none", messages(violations))
-	}
-}
-
-func TestValidateAcceptsDraft07Declaration(t *testing.T) {
-	schema := []byte(`{"$schema": "` + Draft07 + `", "type": "string"}`)
-	if violations := Validate(schema); len(violations) > 0 {
-		t.Fatalf("Validate() = %s, want none", messages(violations))
+			"required": ["outputs", "question", "reason", "status"]
+		}`,
+		"draft-07 declaration": `{"$schema": "` + Draft07 + `", "type": "string"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if violations := Validate([]byte(schema)); len(violations) > 0 {
+				t.Fatalf("Validate() = %s, want none", messages(violations))
+			}
+		})
 	}
 }
 

@@ -121,15 +121,6 @@ func TestFindByIdentityLattice(t *testing.T) {
 	}
 }
 
-func TestFindByIdentityEmailOnlySingleCandidateStillMatches(t *testing.T) {
-	store := newIdentityTestStore(t)
-	saved := mustUpsert(t, store, Account{ID: "one", Provider: "codex", Email: "only@x.com", OrgID: "org-1"})
-	got, found, err := store.FindByIdentity("codex", Identity{Email: "only@x.com"})
-	if err != nil || !found || got.ID != saved.ID {
-		t.Fatalf("got (%q, %v, %v), want (%q, true, nil)", got.ID, found, err, saved.ID)
-	}
-}
-
 func TestSameEmailAccountsNeedDistinctOrgIDs(t *testing.T) {
 	store := newIdentityTestStore(t)
 	mustUpsert(t, store, Account{ID: "a", Provider: "claude", Email: "dup@x.com", OrgID: "org-a"})
@@ -282,11 +273,13 @@ func TestFindByIdentityMatchesAreWritable(t *testing.T) {
 		name     string
 		saved    []Account
 		observed Identity
+		wantID   string
 	}{
 		{
 			"sole blank-org enrichment",
 			[]Account{{ID: "legacy", Provider: "claude", Email: "e@x.com"}},
 			Identity{Email: "e@x.com", OrgID: "org-1", OrgName: "Alpha"},
+			"legacy",
 		},
 		{
 			"org id match among siblings",
@@ -295,11 +288,13 @@ func TestFindByIdentityMatchesAreWritable(t *testing.T) {
 				{ID: "b", Provider: "claude", Email: "e@x.com", OrgID: "org-2"},
 			},
 			Identity{Email: "e@x.com", OrgID: "org-2"},
+			"b",
 		},
 		{
 			"email-only single candidate",
 			[]Account{{ID: "a", Provider: "claude", Email: "e@x.com", OrgID: "org-1"}},
 			Identity{Email: "e@x.com"},
+			"a",
 		},
 	}
 	for _, tc := range cases {
@@ -308,8 +303,8 @@ func TestFindByIdentityMatchesAreWritable(t *testing.T) {
 			mustUpsert(t, store, account)
 		}
 		target, found, err := store.FindByIdentity("claude", tc.observed)
-		if err != nil || !found {
-			t.Errorf("%s: FindByIdentity = (%v, %v), want a match", tc.name, found, err)
+		if err != nil || !found || target.ID != tc.wantID {
+			t.Errorf("%s: FindByIdentity = (%q, %v, %v), want a match on %q", tc.name, target.ID, found, err, tc.wantID)
 			continue
 		}
 		write := Account{
