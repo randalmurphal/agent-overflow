@@ -456,7 +456,7 @@ func (b *builder) attachPayload(evt importir.Event, payloadKind string) error {
 	}
 	payloadEvt := evt.ProviderEvent
 	payloadEvt.Meta = b.providerMeta(evt)
-	payloadID := triage.AttachedPayloadID(payloadKind, itemID)
+	payloadID := store.AttachedPayloadID(payloadKind, itemID)
 	r.payload = &store.Payload{
 		ID:        payloadID,
 		Kind:      payloadKind,

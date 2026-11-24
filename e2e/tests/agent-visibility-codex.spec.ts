@@ -23,6 +23,11 @@
 // tool_call rows under the spawn (internal/triage/codex_execution_tools.go):
 // live on the tray while the child runs, and from the stored rows on the
 // completion card.
+//
+// A child's background command (`unifiedExecStartup`) that finishes after
+// the root's turn ended is saved on the child's turn, under the spawn: it
+// shows in the agent pane whether the root is idle or running a later
+// turn, and a cut of that later turn cannot take it.
 import { test, expect } from './fixtures.js';
 import {
   advance,
@@ -366,4 +371,251 @@ test('a Codex child\u2019s answer renders once, as a normal message', async ({
   await expect(pane.getByTestId('agent-pane-timeline')).toContainText(FINAL_ANSWER);
   await expect(pane.getByTestId('agent-pane-final-answer')).toHaveCount(0);
   await expect(pane.getByTestId('agent-pane-empty')).toHaveCount(0);
+});
+
+const CHILD_BG_CMD = 'child-bg-cmd';
+const childBackgroundCommand = (status: 'inProgress' | 'completed') => rpc(
+  `item/${status === 'inProgress' ? 'started' : 'completed'}`,
+  {
+    threadId: CHILD_THREAD,
+    turnId: 'child-turn',
+    item: {
+      id: CHILD_BG_CMD, type: 'commandExecution', source: 'unifiedExecStartup', processId: '77',
+      status, command: 'sleep 30 && echo built',
+      ...(status === 'completed' ? { exitCode: 0, aggregatedOutput: 'built\n' } : {}),
+    },
+  },
+);
+// codex 0.162's started activity reports the child's profile, so the app
+// makes no child `thread/resume` read, which the mock answers by rebinding
+// ${THREAD_ID} to the child for the root's later turn.
+const PROFILED_SPAWN_LINES = SPAWN_LINES.map(line => line.includes('"subAgentActivity"')
+  ? rpc('item/completed', {
+    threadId: '${THREAD_ID}',
+    turnId: '${TURN_ID}',
+    item: {
+      type: 'subAgentActivity', id: SPAWN_CALL, kind: 'started', agentThreadId: CHILD_THREAD,
+      agentPath: '/root/reviewer', model: 'gpt-5.6-sol', reasoningEffort: 'high',
+    },
+  })
+  : line);
+// The echo that confirms the turn's send, so the later message can be cut.
+const userEcho = rpc('item/completed', {
+  threadId: '${THREAD_ID}',
+  turnId: '${TURN_ID}',
+  item: { type: 'userMessage', id: 'umsg-${TURN}', status: 'completed', clientId: '${CLIENT_ID}', content: [{ type: 'text', text: '${USER_INPUT}' }] },
+});
+const rootTurnCompleted = rpc('turn/completed', { threadId: '${THREAD_ID}', turn: { id: '${TURN_ID}', status: 'completed' } });
+
+// The root's first turn: it spawns the child, the child starts a background
+// command, and the root's turn ends with the command still running.
+const spawnTurnLines = [
+  PROFILED_SPAWN_LINES[0], userEcho, ...PROFILED_SPAWN_LINES.slice(1),
+  childBackgroundCommand('inProgress'), rootTurnCompleted,
+];
+
+for (const rootRunning of [false, true]) {
+  test(`a Codex child\u2019s background command finishing while the root is ${rootRunning ? 'running a later turn' : 'idle'} stays in the agent\u2019s history`, async ({
+    harness,
+    page,
+  }) => {
+    const late = [
+      { waitSignal: { name: 'late' } },
+      { emit: { lines: [childBackgroundCommand('completed')], delayBetweenMs: 5 } },
+    ];
+    await harness.rpc('HarnessSetScenario', {
+      scenario: {
+        version: 1,
+        name: `codex-child-bg-command-${rootRunning}`,
+        provider: 'codex',
+        turns: rootRunning ? [
+          { steps: [{ emit: { lines: spawnTurnLines, delayBetweenMs: 5 } }] },
+          { steps: [
+            { emit: { lines: [rpc('turn/started', { threadId: '${THREAD_ID}', turn: { id: '${TURN_ID}' } }), userEcho], delayBetweenMs: 5 } },
+            ...late,
+            { waitSignal: { name: 'finish' } },
+            { emit: { lines: [
+              rpc('turn/completed', { threadId: CHILD_THREAD, turn: { id: 'child-turn', status: 'completed' } }),
+              rootTurnCompleted,
+            ], delayBetweenMs: 5 } },
+          ] },
+          // The resend that replaces the later message after its turn is cut.
+          { steps: [{ emit: { lines: [
+            rpc('turn/started', { threadId: '${THREAD_ID}', turn: { id: '${TURN_ID}' } }),
+            userEcho,
+            rootTurnCompleted,
+          ], delayBetweenMs: 5 } }] },
+        ] : [
+          { steps: [{ emit: { lines: spawnTurnLines, delayBetweenMs: 5 } }, ...late] },
+        ],
+        afterTurns: 'silent',
+      },
+    });
+    const title = `Codex child command ${rootRunning}`;
+    const threadId = await seedAgentThread(harness, `codex-child-cmd-${rootRunning}`, title, 'codex');
+    await harness.open(page);
+    await page.getByText(title).click();
+    const mockId = await startMock(harness, threadId);
+    const firstTurnDone = harness.waitForEvent('provider:turn_completed');
+    await harness.rpc('SendMessage', threadId, 'build it in the background', null);
+    await firstTurnDone;
+    if (rootRunning) await harness.rpc('SendMessage', threadId, 'keep going', null);
+
+    await waitForGate(harness, 'late');
+    await advance(harness, mockId, 'late');
+
+    interface Row { id: string; parentId: string; turnIndex: number; status: string }
+    const spawn = async () => (await harness.rpc<Row[]>('ListItems', threadId, true)).find(row => row.id === SPAWN_CALL);
+    await expect.poll(async () => (await harness.rpc<Row[]>('ListItems', threadId, true))
+      .filter(row => row.id === CHILD_BG_CMD)
+      .map(row => [row.parentId, row.turnIndex, row.status]))
+      .toEqual([[SPAWN_CALL, (await spawn())!.turnIndex, 'completed']]);
+
+    const spawnRow = page.getByTestId('message-timeline-scroll').locator(`[data-item-id="${SPAWN_CALL}"]`);
+    await spawnRow.hover();
+    await spawnRow.getByTestId('collab-tool-row-open-pane').click();
+    const paneTimeline = page.getByTestId('companion-pane-agent-body').getByTestId('agent-pane-timeline');
+    await expect(paneTimeline.locator(`[data-item-id="${CHILD_BG_CMD}"]`)).toBeVisible();
+    await expect(paneTimeline).toContainText('sleep 30');
+    if (!rootRunning) return;
+    const laterTurnDone = harness.waitForEvent('provider:turn_completed');
+    await waitForGate(harness, 'finish');
+    await advance(harness, mockId, 'finish');
+    await laterTurnDone;
+
+    // Cutting the later turn keeps the agent's command; the cut message is
+    // replaced by the resend.
+    const later = (await harness.rpc<Row[]>('ListItems', threadId, true)).find(row => row.id === 'user:2');
+    expect(later).toBeTruthy();
+    await harness.rpc('RevertConversationAndResendMessage', threadId, 'user:2', { content: 'keep going, rephrased' });
+    await expect.poll(async () => (await harness.rpc<(Row & { summary: string })[]>('ListItems', threadId, true))
+      .filter(row => row.id === CHILD_BG_CMD || row.summary === 'keep going')
+      .map(row => row.id))
+      .toEqual([CHILD_BG_CMD]);
+    await expect(paneTimeline.locator(`[data-item-id="${CHILD_BG_CMD}"]`)).toBeVisible();
+  });
+}
+
+// Two executions of one child: the first leaves a background command
+// running and answers; the root's follow-up turn wakes the child for a
+// second execution, during which the first one's command exits. The command
+// shows in the agent pane where it exited, but it belongs to the first
+// execution, whose card was already saved: it is counted in neither card
+// and is not in the second card's body.
+test('a Codex child’s command from an earlier execution is in neither card when it exits during a later one', async ({
+  harness,
+  page,
+}) => {
+  const childTool = (id: string, turnId: string) => [
+    rpc('item/started', { threadId: CHILD_THREAD, turnId, item: { id, type: 'commandExecution', status: 'inProgress', command: id } }),
+    rpc('item/completed', { threadId: CHILD_THREAD, turnId, item: { id, type: 'commandExecution', status: 'completed', command: id, exitCode: 0 } }),
+  ];
+  const childAnswer = (turnId: string, id: string, text: string) => [
+    rpc('item/completed', { threadId: CHILD_THREAD, turnId, item: { id, type: 'agentMessage', text } }),
+    rpc('turn/completed', { threadId: CHILD_THREAD, turn: { id: turnId, status: 'completed' } }),
+    rpc('rawResponseItem/completed', {
+      threadId: '${THREAD_ID}',
+      turnId: '${TURN_ID}',
+      item: {
+        type: 'agent_message', id: `amsg-${id}`, author: '/root/reviewer', recipient: '/root',
+        content: [{ type: 'input_text', text: `Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/reviewer\nPayload:\n${text}` }],
+        internal_chat_message_metadata_passthrough: { turn_id: '${TURN_ID}' },
+      },
+    }),
+  ];
+  const rootStart = rpc('turn/started', { threadId: '${THREAD_ID}', turn: { id: '${TURN_ID}' } });
+  await harness.rpc('HarnessSetScenario', {
+    scenario: {
+      version: 1,
+      name: 'codex-child-command-two-executions',
+      provider: 'codex',
+      turns: [
+        { steps: [{ emit: { lines: [
+          PROFILED_SPAWN_LINES[0], userEcho, ...PROFILED_SPAWN_LINES.slice(1),
+          childBackgroundCommand('inProgress'),
+          ...childAnswer('child-turn', 'answer-a', 'First pass done; the build keeps running.'),
+          rootTurnCompleted,
+        ], delayBetweenMs: 5 } }] },
+        { steps: [
+          { emit: { lines: [
+            rootStart, userEcho,
+            // The root's follow-up wakes the child for its second execution.
+            rpc('rawResponseItem/completed', {
+              threadId: '${THREAD_ID}', turnId: '${TURN_ID}',
+              item: {
+                type: 'function_call', name: 'followup_task', namespace: 'collaboration', call_id: 'call_followup_1',
+                arguments: JSON.stringify({ target: '/root/reviewer', message: '<encrypted>' }),
+              },
+            }),
+            rpc('item/completed', {
+              threadId: '${THREAD_ID}', turnId: '${TURN_ID}',
+              item: { type: 'subAgentActivity', id: 'call_followup_1', kind: 'interacted', agentThreadId: CHILD_THREAD, agentPath: '/root/reviewer' },
+            }),
+            rpc('turn/started', { threadId: CHILD_THREAD, turn: { id: 'child-turn-b' } }),
+            ...childTool('child-b1', 'child-turn-b'),
+          ], delayBetweenMs: 5 } },
+          { waitSignal: { name: 'late' } },
+          { emit: { lines: [childBackgroundCommand('completed')], delayBetweenMs: 5 } },
+          { waitSignal: { name: 'finish' } },
+          { emit: { lines: [
+            ...childTool('child-b2', 'child-turn-b'),
+            ...childAnswer('child-turn-b', 'answer-b', 'Second pass done.'),
+            rootTurnCompleted,
+          ], delayBetweenMs: 5 } },
+        ] },
+      ],
+      afterTurns: 'silent',
+    },
+  });
+  const title = 'Codex child two executions';
+  const threadId = await seedAgentThread(harness, 'codex-child-two-runs', title, 'codex');
+  await harness.open(page);
+  await page.getByText(title).click();
+  const mockId = await startMock(harness, threadId);
+  const firstTurnDone = harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('SendMessage', threadId, 'review, and keep the build running', null);
+  await firstTurnDone;
+  const timeline = page.getByTestId('message-timeline-scroll');
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
+  const cardA = timeline.getByTestId('subagent-group').first();
+  await expect(cardA.getByTestId('subagent-group-tools')).toHaveCount(0);
+
+  await harness.rpc('SendMessage', threadId, 'one more pass', null);
+  // The running execution's live count, as the backend answers it.
+  const liveTools = async () => ((await harness.rpc<{ subagentProgress: { itemId: string; progress: { toolUses?: number } }[] }>('GetThreadLiveState', threadId))
+    .subagentProgress.find(entry => entry.itemId === SPAWN_CALL)?.progress.toolUses ?? 0);
+  await waitForGate(harness, 'late');
+  await expect.poll(liveTools).toBe(1);
+  await advance(harness, mockId, 'late');
+  interface Row { id: string; parentId: string; turnIndex: number; meta?: string }
+  await expect.poll(async () => (await harness.rpc<Row[]>('ListItems', threadId, true))
+    .filter(row => row.id === CHILD_BG_CMD)
+    .map(row => [row.parentId, JSON.parse(row.meta ?? '{}').codex_execution_turn_id]))
+    .toEqual([[SPAWN_CALL, 'child-turn']]);
+  // The first execution's command does not join the running one's count.
+  expect(await liveTools()).toBe(1);
+
+  const laterTurnDone = harness.waitForEvent('provider:turn_completed');
+  await waitForGate(harness, 'finish');
+  await advance(harness, mockId, 'finish');
+  await laterTurnDone;
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(2);
+  const cardB = timeline.getByTestId('subagent-group').nth(1);
+  await expect(cardB.getByTestId('subagent-group-tools')).toHaveText('2 tools');
+  await expect(cardA.getByTestId('subagent-group-tools')).toHaveCount(0);
+  await cardB.getByTestId('subagent-group-toggle').first().click();
+  const bodyB = cardB.getByTestId('subagent-group-body');
+  await expect(bodyB.locator('[data-item-id="child-b2"]')).toBeVisible();
+  await expect(bodyB.locator('[data-item-id="child-b1"]')).toBeVisible();
+  await expect(bodyB.locator(`[data-item-id="${CHILD_BG_CMD}"]`)).toHaveCount(0);
+
+  // The pane is the agent's continuous history: the command sits where it
+  // exited, between the second execution's two calls.
+  await cardB.getByTestId('subagent-group-open-pane').first().click();
+  const paneTimeline = page.getByTestId('companion-pane-agent-body').getByTestId('agent-pane-timeline');
+  await paneTimeline.getByRole('button', { name: /Expand 3 activity rows/ }).click();
+  const calls = paneTimeline.locator('[data-item-id="child-b1"], [data-item-id="child-bg-cmd"], [data-item-id="child-b2"]');
+  await expect(calls).toHaveCount(3);
+  expect(await calls.evaluateAll(nodes => nodes.map(node => node.getAttribute('data-item-id'))))
+    .toEqual(['child-b1', CHILD_BG_CMD, 'child-b2']);
 });
