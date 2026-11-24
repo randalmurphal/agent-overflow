@@ -348,21 +348,11 @@ describe('devServers store', () => {
       expect(previewChipFor(THREAD, 'http://localhost:5173/')).toBeNull();
     });
 
-    it('offers nothing for a port nothing is answering on', () => {
-      emitWailsEvent(
-        'devserver:list',
-        list({ servers: [server(5173, { listening: false })] }),
-        REMOTE_BACKEND_UUID,
-      );
-      expect(previewChipFor(THREAD, 'http://localhost:5173/')).toBeNull();
-    });
-
-    it('offers nothing for a live port that is not shared, rather than a dead button', () => {
-      emitWailsEvent(
-        'devserver:list',
-        list({ servers: [server(5173, { allowed: false, source: 'seen' })] }),
-        REMOTE_BACKEND_UUID,
-      );
+    it.each([
+      ['offers nothing for a port nothing is answering on', { listening: false }],
+      ['offers nothing for a live port that is not shared, rather than a dead button', { allowed: false, source: 'seen' }],
+    ] as const)('%s', (_name, overrides) => {
+      emitWailsEvent('devserver:list', list({ servers: [server(5173, overrides)] }), REMOTE_BACKEND_UUID);
       expect(previewChipFor(THREAD, 'http://localhost:5173/')).toBeNull();
     });
 

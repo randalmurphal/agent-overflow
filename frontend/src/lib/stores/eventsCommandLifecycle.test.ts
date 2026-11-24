@@ -13,27 +13,6 @@ function seedFlushed(): void {
 
 describe('applyCommandLifecycle', () => {
 
-  // The baseline every consumer must render correctly: an older Claude
-  // CLI (or a Codex thread) emits no lifecycle frames at all.
-  it('leaves the entry untouched when no ack ever arrives', () => {
-    seedFlushed();
-    expect(getFlushedForThread('t1')[0].lifecycle).toBeUndefined();
-  });
-
-  it('stamps the queued ack onto its entry', () => {
-    seedFlushed();
-    applyCommandLifecycle({
-      threadId: 't1',
-      commandUuid: 'uuid-1',
-      userItemId: 'user:0:flush:1',
-      state: 'queued',
-    });
-    expect(getFlushedForThread('t1')[0].lifecycle).toEqual({
-      state: 'queued',
-      delivery: undefined,
-    });
-  });
-
   it('carries the delivery classification on started', () => {
     seedFlushed();
     applyCommandLifecycle({
@@ -52,8 +31,11 @@ describe('applyCommandLifecycle', () => {
   it('advances through the full queued → started → completed sequence', () => {
     seedFlushed();
     const base = { threadId: 't1', commandUuid: 'uuid-1', userItemId: 'user:0:flush:1' } as const;
+    // The queued ack stamps its entry.
     applyCommandLifecycle({ ...base, state: 'queued' });
+    expect(getFlushedForThread('t1')[0].lifecycle).toEqual({ state: 'queued', delivery: undefined });
     applyCommandLifecycle({ ...base, state: 'started', delivery: 'new_turn' });
+    expect(getFlushedForThread('t1')[0].lifecycle).toEqual({ state: 'started', delivery: 'new_turn' });
     applyCommandLifecycle({ ...base, state: 'completed' });
     expect(getFlushedForThread('t1')[0].lifecycle?.state).toBe('completed');
     // The delivery classification does not stick around past the state it

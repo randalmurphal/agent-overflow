@@ -440,7 +440,10 @@ describe('setupEventListeners', () => {
     cacheModule.threadItemCache.clear();
   });
 
-  it('preserves the cached snapshot for redundant active-thread item upserts', async () => {
+  it('preserves the cached snapshot and the lastLiveContentAt stamp for a redundant active-thread item upsert', async () => {
+    // The stamp lives inside `if (pane.upsertItems(...))`, gated on a real
+    // change. An echo of an existing row dedupes to no change, so the
+    // controller stays sync-pinned.
     const cacheModule = await import('./threadItemCache');
     cacheModule.threadItemCache.clear();
     const item = makeItem({
@@ -449,7 +452,8 @@ describe('setupEventListeners', () => {
       kind: 'assistant_text',
       summary: 'same',
     });
-    await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
+    expect(pane.lastLiveContentAt).toBe(0);
     cacheModule.threadItemCache.set('thread-a', {
       items: [item],
       oldestLoadedTurnIndex: 0,
@@ -467,6 +471,7 @@ describe('setupEventListeners', () => {
     await nextFrame();
 
     expect(cacheModule.threadItemCache.get('thread-a')).not.toBeNull();
+    expect(pane.lastLiveContentAt).toBe(0);
     cacheModule.threadItemCache.clear();
   });
 
@@ -526,29 +531,6 @@ describe('setupEventListeners', () => {
     await nextFrame();
 
     expect(pane.items.map((item) => item.id)).toEqual(['bash-1']);
-    expect(pane.lastLiveContentAt).toBe(0);
-  });
-
-  it('does not stamp lastLiveContentAt for a redundant upsert that leaves the window unchanged', async () => {
-    // The stamp lives inside `if (pane.upsertItems(...))` — gated on a real
-    // change. An echo of an existing row dedupes to no change, so the
-    // controller stays sync-pinned.
-    const item = makeItem({
-      id: 'cached-a',
-      threadId: 'thread-a',
-      kind: 'assistant_text',
-      summary: 'same',
-    });
-    const pane = await buildPane(makeThread({ id: 'thread-a' }), [item]);
-    expect(pane.lastLiveContentAt).toBe(0);
-
-    emitWailsEvent('provider:item_event', {
-      action: 'upsert',
-      threadId: 'thread-a',
-      item: { ...item },
-    });
-    await nextFrame();
-
     expect(pane.lastLiveContentAt).toBe(0);
   });
 
@@ -2318,25 +2300,11 @@ describe('setupEventListeners', () => {
     expect(pane.activeModel).toBe('claude-fable-5');
   });
 
-  it('patches the sidebar row and every matching pane from thread:mode_changed, and toasts when needsReconnect', async () => {
-    setBindingMock('ListThreads', async () => [
-      makeThread({ id: 'thread-1', mode: 'chat' }),
-    ]);
-    await loadSidebarCatalogs();
-    const pane = await buildPane(makeThread({ id: 'thread-1', mode: 'chat' }));
-
-    emitWailsEvent('thread:mode_changed', {
-      threadId: 'thread-1',
-      mode: 'plan',
-      needsReconnect: true,
-    });
-
-    expect(getThreads()[0]?.mode).toBe('plan');
-    expect(pane.thread?.mode).toBe('plan');
-    expect(getToasts().some((toast) => toast.type === 'warning' && toast.message.includes('plan'))).toBe(true);
-  });
-
-  it('patches without a toast from thread:mode_changed when needsReconnect is false', async () => {
+  it.each([
+    ['patches the sidebar row and every matching pane from thread:mode_changed, and toasts when needsReconnect', true,
+      [expect.objectContaining({ type: 'warning', message: expect.stringContaining('plan') })]],
+    ['patches without a toast from thread:mode_changed when needsReconnect is false', false, []],
+  ])('%s', async (_name, needsReconnect, toasts) => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', mode: 'chat' }),
     ]);
@@ -2344,15 +2312,11 @@ describe('setupEventListeners', () => {
     const pane = await buildPane(makeThread({ id: 'thread-1', mode: 'chat' }));
     const toastCountBefore = getToasts().length;
 
-    emitWailsEvent('thread:mode_changed', {
-      threadId: 'thread-1',
-      mode: 'plan',
-      needsReconnect: false,
-    });
+    emitWailsEvent('thread:mode_changed', { threadId: 'thread-1', mode: 'plan', needsReconnect });
 
     expect(getThreads()[0]?.mode).toBe('plan');
     expect(pane.thread?.mode).toBe('plan');
-    expect(getToasts().length).toBe(toastCountBefore);
+    expect(getToasts().slice(toastCountBefore)).toEqual(toasts);
   });
 
   it('patches the sidebar row and every matching pane from thread:runtime_mode_changed', async () => {
@@ -3522,30 +3486,6 @@ describe('setupEventListeners', () => {
     expect(getProviderRateLimitsForWindow('claude', 0).primary).toBeNull();
   });
 
-  // Rate-limit data is account-wide, not thread-wide. A snapshot for
-  // provider 'claude' is visible to every pane that reads with
-  // provider 'claude' — including freshly-switched-to threads. This
-  // is the opposite of the legacy per-pane behavior and the whole
-  // point of the global store. Keep the user expectation pinned:
-  // "values persist even if you switch to a new thread."
-  it('rate-limit snapshots are visible across thread switches', async () => {
-    emitWailsEvent('provider:usage', {
-      action: 'rate_limits',
-      threadId: 'thread-A',
-      rateLimits: {
-        provider: 'claude',
-        limits: [
-          { limitId: 'five_hour', limitName: '5h', usedPercent: 73, windowMins: 300, resetsAt: 4102444800 },
-        ],
-        updatedAt: 1776283000,
-      },
-    });
-
-    // Even before any pane registers itself for thread-B, the global
-    // store carries the value — RateLimitMeter reads from it directly.
-    expect(getProviderRateLimitsForWindow('claude', 300).primary?.usedPercent).toBe(73);
-  });
-
   // Provider isolation: a Codex snapshot must not bleed into the
   // Claude slot, even though both flow through the same UsageEvent
   // listener. The store keys by `snapshot.provider`.
@@ -3570,7 +3510,8 @@ describe('setupEventListeners', () => {
   // store must NOT wipe its last-known state. Holding on to the
   // previous good value is the entire reason for the global store
   // (the per-pane prior implementation had a wipe-on-replaceThread
-  // bug that flickered the rings during a session).
+  // bug that flickered the rings during a session). No pane is open:
+  // rate limits are account-wide, and the store takes them without one.
   it('does not wipe last-known values on an empty rate_limits snapshot', async () => {
     emitWailsEvent('provider:usage', {
       action: 'rate_limits',
@@ -4065,44 +4006,30 @@ describe('setupEventListeners', () => {
   // path missed a row (or this is the only path, e.g. cross-pane
   // reflection), this handler is the safety net that removes every
   // item at the reverted turn — not just the user_text.
-  it('removes every item at the reverted turn on user_message:reverted', async () => {
-    const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    pane.upsertItems([
+  it.each([
+    ['removes every item at the reverted turn on user_message:reverted', 0, [
       makeItem({ id: 'u:0', threadId: 'thread-a', turnIndex: 0, kind: 'user_text', role: 'user' }),
       makeItem({ id: 'think:0:0', threadId: 'thread-a', turnIndex: 0, kind: 'thinking', role: 'assistant', status: 'streaming' }),
       makeItem({ id: 'retry:0', threadId: 'thread-a', turnIndex: 0, kind: 'api_retry', role: 'system', status: 'running' }),
-    ]);
-    expect(pane.items.map((it) => it.id).sort()).toEqual(['retry:0', 'think:0:0', 'u:0']);
-
-    emitWailsEvent('user_message:reverted', {
-      threadId: 'thread-a',
-      userItemId: 'u:0',
-      turnIndex: 0,
-    });
-
-    expect(pane.items).toEqual([]);
-  });
-
-  it('does not disturb earlier turns when handling user_message:reverted', async () => {
-    const pane = await buildPane(makeThread({ id: 'thread-a' }));
-    pane.upsertItems([
+    ], []],
+    ['does not disturb earlier turns when handling user_message:reverted', 1, [
       makeItem({ id: 'u:0', threadId: 'thread-a', turnIndex: 0, kind: 'user_text', role: 'user' }),
       makeItem({ id: 'a:0', threadId: 'thread-a', turnIndex: 0, kind: 'assistant_text', role: 'assistant' }),
       makeItem({ id: 'u:1', threadId: 'thread-a', turnIndex: 1, kind: 'user_text', role: 'user' }),
       makeItem({ id: 'think:1:0', threadId: 'thread-a', turnIndex: 1, kind: 'thinking', role: 'assistant', status: 'streaming' }),
-    ]);
+    ], ['a:0', 'u:0']],
+  ])('%s', async (_name, turnIndex, items, survivors) => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    pane.upsertItems(items);
+    expect(pane.items.map((it) => it.id).sort()).toEqual(items.map((it) => it.id).sort());
 
-    emitWailsEvent('user_message:reverted', {
-      threadId: 'thread-a',
-      userItemId: 'u:1',
-      turnIndex: 1,
-    });
+    emitWailsEvent('user_message:reverted', { threadId: 'thread-a', userItemId: `u:${turnIndex}`, turnIndex });
 
     // Explicit-length assertion guards against an item silently
     // surviving at the reverted turn (sort would still pass if a
-    // hidden id sorted before 'a:0').
-    expect(pane.items).toHaveLength(2);
-    expect(pane.items.map((it) => it.id).sort()).toEqual(['a:0', 'u:0']);
+    // hidden id sorted before a survivor).
+    expect(pane.items).toHaveLength(survivors.length);
+    expect(pane.items.map((it) => it.id).sort()).toEqual(survivors);
   });
 
   // The handler iterates every pane via iterPanes(); a regression that
