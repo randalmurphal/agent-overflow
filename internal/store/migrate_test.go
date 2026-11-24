@@ -845,41 +845,86 @@ func TestMessageAnchorsCascadeOnItemDelete(t *testing.T) {
 
 // --- Index presence and query-planner usage ---
 
-func TestPayloadIDIndexExistsAndIsPartial(t *testing.T) {
+// Each index keeps the shape its readers depend on, and the planner picks it
+// for the query it exists for.
+func TestIndexesUsedByPlanner(t *testing.T) {
 	s := newTestStore(t)
-
-	var sqlText string
-	if err := s.db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE name = 'idx_items_payload_id'`,
-	).Scan(&sqlText); err != nil {
-		t.Fatalf("read idx_items_payload_id: %v", err)
-	}
-	if !strings.Contains(sqlText, "payload_id IS NOT NULL") {
-		t.Errorf("expected partial predicate, got: %s", sqlText)
+	for _, tc := range []struct {
+		index string
+		shape []string
+		query string
+		args  []any
+	}{
+		{
+			"idx_items_meta_task_id",
+			[]string{"json_extract(meta, '$.task_id')", "WHERE json_extract(meta, '$.task_id') IS NOT NULL"},
+			`SELECT id FROM items
+			  WHERE thread_id = ? AND json_extract(meta, '$.task_id') = ?`,
+			[]any{"t", "task-1"},
+		},
+		{
+			"idx_turns_thread_completed",
+			[]string{"thread_id", "completed_at DESC", "completed_at IS NOT NULL"},
+			`SELECT MAX(completed_at)
+			   FROM turns
+			  WHERE thread_id = ?
+			    AND completed_at IS NOT NULL`,
+			[]any{"thread-1"},
+		},
+		{
+			// The tray's launch predicate.
+			"idx_items_live_background",
+			[]string{"is_background = 1", "status = 'running'", "parent_id = ''", "live_background_active"},
+			`SELECT id FROM items
+			  WHERE thread_id = ?
+			    AND is_background = 1
+			    AND status = 'running'
+			    AND parent_id = ''
+			    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0`,
+			[]any{"t"},
+		},
+		{
+			"idx_items_live_codex_subagent",
+			[]string{"status = 'completed'", "tool_name = 'collab_agent'", "live_background_active", "$.input.tool", "spawn_agent", "spawnAgent"},
+			`SELECT id FROM items
+			  WHERE thread_id = ?
+			    AND kind = 'tool_call'
+			    AND status = 'completed'
+			    AND tool_name = 'collab_agent'
+			    AND is_background = 1
+			    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+			    AND json_extract(meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')`,
+			[]any{"t"},
+		},
+	} {
+		t.Run(tc.index, func(t *testing.T) {
+			sqlText := readIndexSQL(t, s.db, tc.index)
+			for _, want := range tc.shape {
+				if !strings.Contains(sqlText, want) {
+					t.Errorf("%s missing %q in SQL: %s", tc.index, want, sqlText)
+				}
+			}
+			assertPlanUses(t, s.db, tc.index, "EXPLAIN QUERY PLAN "+tc.query, tc.args...)
+		})
 	}
 }
 
-func TestMetaTaskIDIndexUsedByPlanner(t *testing.T) {
+// A rebuild that recreates a table must not silently drop a partial index's
+// WHERE clause.
+func TestPartialIndexPredicates(t *testing.T) {
 	s := newTestStore(t)
-
-	var sqlText string
-	if err := s.db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE name = 'idx_items_meta_task_id'`,
-	).Scan(&sqlText); err != nil {
-		t.Fatalf("read idx_items_meta_task_id: %v", err)
+	for _, tc := range []struct{ index, predicate string }{
+		{"idx_items_payload_id", "payload_id IS NOT NULL"},
+		{"idx_threads_pinned_at", "WHERE pinned_at IS NOT NULL"},
+		// v13: backs the boot-time crashed-turn sweep.
+		{"idx_turns_inflight", "completed_at IS NULL"},
+	} {
+		t.Run(tc.index, func(t *testing.T) {
+			if sqlText := readIndexSQL(t, s.db, tc.index); !strings.Contains(sqlText, tc.predicate) {
+				t.Errorf("%s lost its partial predicate %q: %s", tc.index, tc.predicate, sqlText)
+			}
+		})
 	}
-	if !strings.Contains(sqlText, "json_extract(meta, '$.task_id')") {
-		t.Errorf("expected index expression on json_extract(meta, '$.task_id'), got: %s", sqlText)
-	}
-	if !strings.Contains(sqlText, "WHERE json_extract(meta, '$.task_id') IS NOT NULL") {
-		t.Errorf("expected partial predicate, got: %s", sqlText)
-	}
-
-	assertPlanUses(t, s.db, "idx_items_meta_task_id",
-		`EXPLAIN QUERY PLAN
-		 SELECT id FROM items
-		  WHERE thread_id = ? AND json_extract(meta, '$.task_id') = ?`,
-		"t", "task-1")
 }
 
 func TestTurnsTableShape(t *testing.T) {
@@ -910,106 +955,9 @@ func TestTurnsTableShape(t *testing.T) {
 	}
 }
 
-func TestTurnsThreadCompletedIndexUsedByPlanner(t *testing.T) {
-	s := newTestStore(t)
-
-	var sqlText string
-	if err := s.db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE name = 'idx_turns_thread_completed'`,
-	).Scan(&sqlText); err != nil {
-		t.Fatalf("read idx_turns_thread_completed: %v", err)
-	}
-	if !strings.Contains(sqlText, "thread_id") || !strings.Contains(sqlText, "completed_at DESC") {
-		t.Errorf("expected (thread_id, completed_at DESC), got: %s", sqlText)
-	}
-	if !strings.Contains(sqlText, "completed_at IS NOT NULL") {
-		t.Errorf("expected partial predicate, got: %s", sqlText)
-	}
-
-	assertPlanUses(t, s.db, "idx_turns_thread_completed",
-		`EXPLAIN QUERY PLAN
-		 SELECT MAX(completed_at)
-		   FROM turns
-		  WHERE thread_id = ?
-		    AND completed_at IS NOT NULL`,
-		"thread-1")
-}
-
-func TestLiveBackgroundIndexMatchesTrayLaunchPredicate(t *testing.T) {
-	s := newTestStore(t)
-
-	sqlText := readIndexSQL(t, s.db, "idx_items_live_background")
-	for _, want := range []string{
-		"is_background = 1",
-		"status = 'running'",
-		"parent_id = ''",
-		"live_background_active",
-	} {
-		if !strings.Contains(sqlText, want) {
-			t.Errorf("idx_items_live_background missing %q in SQL: %s", want, sqlText)
-		}
-	}
-
-	assertPlanUses(t, s.db, "idx_items_live_background",
-		`EXPLAIN QUERY PLAN
-		 SELECT id FROM items
-		  WHERE thread_id = ?
-		    AND is_background = 1
-		    AND status = 'running'
-		    AND parent_id = ''
-		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0`,
-		"t")
-}
-
-func TestLiveCodexSubagentIndexUsedByPlanner(t *testing.T) {
-	s := newTestStore(t)
-
-	sqlText := readIndexSQL(t, s.db, "idx_items_live_codex_subagent")
-	for _, want := range []string{
-		"status = 'completed'",
-		"tool_name = 'collab_agent'",
-		"live_background_active",
-		"$.input.tool",
-		"spawn_agent",
-		"spawnAgent",
-	} {
-		if !strings.Contains(sqlText, want) {
-			t.Errorf("idx_items_live_codex_subagent missing %q in SQL: %s", want, sqlText)
-		}
-	}
-
-	assertPlanUses(t, s.db, "idx_items_live_codex_subagent",
-		`EXPLAIN QUERY PLAN
-		 SELECT id FROM items
-		  WHERE thread_id = ?
-		    AND kind = 'tool_call'
-		    AND status = 'completed'
-		    AND tool_name = 'collab_agent'
-		    AND is_background = 1
-		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
-		    AND json_extract(meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')`,
-		"t")
-}
-
-func TestThreadsPinnedAtPartialIndex(t *testing.T) {
-	s := newTestStore(t)
-
-	var indexSQL sql.NullString
-	if err := s.db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_threads_pinned_at'`,
-	).Scan(&indexSQL); err != nil {
-		t.Fatalf("look up idx_threads_pinned_at: %v", err)
-	}
-	if !indexSQL.Valid {
-		t.Fatalf("idx_threads_pinned_at missing")
-	}
-	if !strings.Contains(indexSQL.String, "WHERE pinned_at IS NOT NULL") {
-		t.Errorf("expected partial predicate, got %q", indexSQL.String)
-	}
-}
-
 // --- Triggers (payload GC) ---
 
+// Deleting an item sweeps the payload it pointed at through either column.
 func TestTrgItemsGCPayloadSweepsOrphans(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
@@ -1019,60 +967,33 @@ func TestTrgItemsGCPayloadSweepsOrphans(t *testing.T) {
 		defaultTestProjectID, now, now); err != nil {
 		t.Fatalf("seed thread: %v", err)
 	}
-	if _, err := s.db.Exec(`INSERT INTO payloads (thread_id, id, kind, meta, data, created_at)
-		VALUES ('t-gc', 'p-gc', 'thinking', '{}', x'00', ?)`, now); err != nil {
-		t.Fatalf("seed payload: %v", err)
-	}
-	if _, err := s.db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, payload_id, created_at, updated_at)
-		VALUES ('i-gc', 't-gc', 0, 0, 'thinking', 'assistant', '', 'p-gc', ?, ?)`,
-		now, now); err != nil {
-		t.Fatalf("seed item: %v", err)
-	}
-
-	if _, err := s.db.Exec(`DELETE FROM items WHERE id = 'i-gc'`); err != nil {
-		t.Fatalf("delete item: %v", err)
-	}
-
-	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'p-gc'`).Scan(&count); err != nil {
-		t.Fatalf("count payload: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("trg_items_gc_payload should sweep orphaned payload, got %d", count)
-	}
-}
-
-func TestTrgItemsGCInputPayloadSweepsOrphans(t *testing.T) {
-	s := newTestStore(t)
-	now := time.Now().UnixMilli()
-	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
-		created_at, updated_at, archived, mode)
-		VALUES ('t-gci', ?, 'T', 'claude', '/tmp', '', ?, ?, 0, 'chat')`,
-		defaultTestProjectID, now, now); err != nil {
-		t.Fatalf("seed thread: %v", err)
-	}
-	if _, err := s.db.Exec(`INSERT INTO payloads (thread_id, id, kind, meta, data, created_at)
-		VALUES ('t-gci', 'p-tool-input', 'tool_call_input', '{}', x'00', ?)`, now); err != nil {
-		t.Fatalf("seed payload: %v", err)
-	}
-	if _, err := s.db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, input_payload_id, created_at, updated_at)
-		VALUES ('i-tool', 't-gci', 0, 0, 'tool_call', 'assistant', 'Edit', 'p-tool-input', ?, ?)`,
-		now, now); err != nil {
-		t.Fatalf("seed item: %v", err)
-	}
-
-	if _, err := s.db.Exec(`DELETE FROM items WHERE id = 'i-tool'`); err != nil {
-		t.Fatalf("delete item: %v", err)
-	}
-
-	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = 'p-tool-input'`).Scan(&count); err != nil {
-		t.Fatalf("count payload: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("trg_items_gc_input_payload should sweep orphaned input payload, got %d", count)
+	for i, tc := range []struct{ trigger, column, payloadKind, itemKind string }{
+		{"trg_items_gc_payload", "payload_id", "thinking", "thinking"},
+		{"trg_items_gc_input_payload", "input_payload_id", "tool_call_input", "tool_call"},
+	} {
+		t.Run(tc.trigger, func(t *testing.T) {
+			payloadID, itemID := "p-"+tc.column, "i-"+tc.column
+			if _, err := s.db.Exec(`INSERT INTO payloads (thread_id, id, kind, meta, data, created_at)
+				VALUES ('t-gc', ?, ?, '{}', x'00', ?)`, payloadID, tc.payloadKind, now); err != nil {
+				t.Fatalf("seed payload: %v", err)
+			}
+			if _, err := s.db.Exec(`INSERT INTO items
+				(id, thread_id, turn_index, item_index, kind, role, summary, `+tc.column+`, created_at, updated_at)
+				VALUES (?, 't-gc', 0, ?, ?, 'assistant', '', ?, ?, ?)`,
+				itemID, i, tc.itemKind, payloadID, now, now); err != nil {
+				t.Fatalf("seed item: %v", err)
+			}
+			if _, err := s.db.Exec(`DELETE FROM items WHERE id = ?`, itemID); err != nil {
+				t.Fatalf("delete item: %v", err)
+			}
+			var count int
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads WHERE id = ?`, payloadID).Scan(&count); err != nil {
+				t.Fatalf("count payload: %v", err)
+			}
+			if count != 0 {
+				t.Errorf("%s should sweep orphaned payload, got %d", tc.trigger, count)
+			}
+		})
 	}
 }
 
@@ -2044,23 +1965,6 @@ func queryPlanText(t *testing.T, db *sql.DB, query string, args ...any) string {
 		t.Fatalf("read plan: %v", err)
 	}
 	return plan.String()
-}
-
-// v13: the partial in-flight index backing the boot-time crashed-turn
-// sweep. Assert both the index and its partial predicate so a rebuild
-// migration that recreates turns can't silently drop the WHERE clause.
-func TestTurnsInflightPartialIndex(t *testing.T) {
-	s := newTestStore(t)
-
-	var indexSQL string
-	if err := s.db.QueryRow(
-		"SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_turns_inflight'",
-	).Scan(&indexSQL); err != nil {
-		t.Fatalf("idx_turns_inflight not found: %v", err)
-	}
-	if !strings.Contains(indexSQL, "completed_at IS NULL") {
-		t.Fatalf("idx_turns_inflight lost its partial predicate: %s", indexSQL)
-	}
 }
 
 // TestMigrationV20BackfillsProviderTurnID pins the provider_turn_id

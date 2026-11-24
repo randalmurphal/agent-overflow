@@ -255,42 +255,6 @@ func TestTruncateCheckpointShrinksTheWALFile(t *testing.T) {
 	t.Logf("WAL bytes: %d written -> %d after PASSIVE -> %d after TRUNCATE", before, afterPassive, afterTruncate)
 }
 
-func TestCloseTruncatesTheWAL(t *testing.T) {
-	dbPath := newTestStorePath(t)
-	s, err := New(dbPath)
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	before := growWAL(t, s, dbPath)
-
-	// Hold a second connection on the file for the whole of Close, so
-	// SQLite's own last-connection-closes checkpoint cannot be what
-	// removes the WAL. What's measured is Store.Close's checkpoint.
-	guard, err := sql.Open("sqlite", poolDSN(dbPath, readerConnPragmas))
-	if err != nil {
-		t.Fatalf("open guard: %v", err)
-	}
-	defer guard.Close()
-	guardConn, err := guard.Conn(context.Background())
-	if err != nil {
-		t.Fatalf("guard conn: %v", err)
-	}
-	defer guardConn.Close()
-	var probe int
-	if err := guardConn.QueryRowContext(context.Background(), "SELECT 1").Scan(&probe); err != nil {
-		t.Fatalf("guard probe: %v", err)
-	}
-
-	if err := s.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	after := walSize(t, dbPath)
-	if after != 0 {
-		t.Fatalf("WAL = %d bytes after Close, want 0 (was %d)", after, before)
-	}
-	t.Logf("WAL bytes across Close: %d -> %d", before, after)
-}
-
 // A read running on the pool when Close starts holds a mark on the WAL.
 // Close closes the pool, waits for that read and then truncates the WAL,
 // with no settle pause: a read that took the pool from reader() before
@@ -305,8 +269,9 @@ func TestCloseWaitsForAReadInFlightBeforeTruncating(t *testing.T) {
 		t.Fatalf("new store: %v", err)
 	}
 	before := growWAL(t, s, dbPath)
-	// As in TestCloseTruncatesTheWAL: the last connection's own checkpoint
-	// must not be what removes the WAL.
+	// Hold a second connection on the file for the whole of Close, so
+	// SQLite's own last-connection-closes checkpoint cannot be what
+	// removes the WAL. What's measured is Store.Close's checkpoint.
 	guard, err := sql.Open("sqlite", poolDSN(dbPath, readerConnPragmas))
 	if err != nil {
 		t.Fatalf("open guard: %v", err)

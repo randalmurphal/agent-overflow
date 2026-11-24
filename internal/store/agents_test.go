@@ -303,15 +303,18 @@ func TestAssistantNamesAreUniquePerComputer(t *testing.T) {
 	mustCreateThread(t, s, "second")
 	mustRetitle(t, s, "second", "Second")
 	mustCreateAssistant(t, s, "second", "/h/second")
-	if err := s.UpdateTitle("second", "OPS"); !errors.As(err, &taken) || taken.ThreadID != "ops" {
+	if err := s.UpdateTitle("second", "OPS"); !errors.As(err, &taken) || taken.ThreadID != "ops" || taken.Name != "Ops" {
 		t.Fatalf("renaming an assistant to a name in use = %v", err)
 	}
 	if err := s.UpdateTitle("ops", "ops"); err != nil {
 		t.Fatalf("an assistant renamed to its own name in another case: %v", err)
 	}
-	// A provider's title never renames an assistant.
+	// A provider's or a generated title never renames an assistant.
 	if renamed, err := s.UpdateProviderTitle("second", "Generated"); err != nil || renamed {
 		t.Fatalf("provider title on an assistant = %v, %v", renamed, err)
+	}
+	if ok, err := s.UpdateTitleIfCurrent("second", "Second", "Generated"); err != nil || ok {
+		t.Fatalf("generated title on an assistant = %v, %v", ok, err)
 	}
 	if renamed, err := s.UpdateProviderTitle("other", "Generated"); err != nil || !renamed {
 		t.Fatalf("provider title on an ordinary thread = %v, %v", renamed, err)
@@ -802,49 +805,6 @@ func TestHelpersLiveUnderTheirAssistant(t *testing.T) {
 	if ids := assistantDependents(t, s, "next"); !slices.Equal(ids, []string{"ops", "helper-fork"}) {
 		t.Fatalf("after deleting a helper = %q", ids)
 	}
-}
-
-// Names differing only by case clash, and the refusal
-// names the holder.
-func TestAssistantNameCaseClash(t *testing.T) {
-	s := newTestStore(t)
-	mustExec(t, s.db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
-	mustExec(t, s.db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
-		('a', NULL, 'Ops', 'claude', '/h/A', '', 1, 1, 0),
-		('b', NULL, 'Mail', 'claude', '/h/B', '', 1, 1, 0),
-		('c', NULL, '  OPS ', 'claude', '/h/C', '', 1, 1, 0)`)
-	if err := s.CreateStandingAgent(StandingAgent{ID: "A", ThreadID: "a", Home: "/h/A", CreatedAt: 1}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CreateStandingAgent(StandingAgent{ID: "B", ThreadID: "b", Home: "/h/B", CreatedAt: 1}); err != nil {
-		t.Fatal(err)
-	}
-	var taken *AssistantNameTakenError
-	if err := s.CreateStandingAgent(StandingAgent{ID: "C", ThreadID: "c", Home: "/h/C", CreatedAt: 1}); err == nil {
-		t.Fatal("a case-and-space variant of a taken name was accepted at creation")
-	} else if !asNameTaken(err, &taken) || taken.Name != "Ops" {
-		t.Fatalf("creation refusal = %v", err)
-	}
-	if err := s.UpdateTitle("b", "oPs"); err == nil {
-		t.Fatal("rename to a case variant of a taken name was accepted")
-	} else if !asNameTaken(err, &taken) || taken.Name != "Ops" {
-		t.Fatalf("rename refusal = %v", err)
-	}
-	// A provider title never renames an assistant.
-	if renamed, err := s.UpdateProviderTitle("a", "Provider title"); err != nil || renamed {
-		t.Fatalf("provider title renamed an assistant: %v %v", renamed, err)
-	}
-	if ok, err := s.UpdateTitleIfCurrent("a", "Ops", "Generated"); err != nil || ok {
-		t.Fatalf("generated title renamed an assistant: %v %v", ok, err)
-	}
-}
-
-func asNameTaken(err error, out **AssistantNameTakenError) bool {
-	t, ok := err.(*AssistantNameTakenError)
-	if ok {
-		*out = t
-	}
-	return ok
 }
 
 // A handoff moves the remote jobs still owed to the old

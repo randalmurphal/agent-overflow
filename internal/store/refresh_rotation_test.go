@@ -104,14 +104,6 @@ func TestRefreshRotationRefusesAnUnknownPredecessorWhateverTheSuccessor(t *testi
 	}
 }
 
-func TestRefreshRotationRefusesATakenSuccessorTerminally(t *testing.T) {
-	s, in := refreshRotationFixture(t)
-	takeSuccessor(t, s, in)
-	if _, err := s.RotateRefreshSecret(context.Background(), in); !errors.Is(err, ErrRefreshSuccessorTaken) {
-		t.Fatalf("taken successor: %v", err)
-	}
-}
-
 func TestRefreshRotationDistinguishesReuseFromASupersededReceipt(t *testing.T) {
 	s, in := refreshRotationFixture(t)
 	if _, err := s.RotateRefreshSecret(context.Background(), in); err != nil {
@@ -135,8 +127,8 @@ func TestRefreshRotationDistinguishesReuseFromASupersededReceipt(t *testing.T) {
 func TestRefreshRotationFailureDoesNotSpendItsPredecessor(t *testing.T) {
 	s, in := refreshRotationFixture(t)
 	takeSuccessor(t, s, in)
-	if _, err := s.RotateRefreshSecret(context.Background(), in); err == nil {
-		t.Fatal("successor collision admitted")
+	if _, err := s.RotateRefreshSecret(context.Background(), in); !errors.Is(err, ErrRefreshSuccessorTaken) {
+		t.Fatalf("taken successor: %v", err)
 	}
 	old, err := s.GetRefreshSecretByHash(in.OldHash)
 	if err != nil || old.Spent() {
