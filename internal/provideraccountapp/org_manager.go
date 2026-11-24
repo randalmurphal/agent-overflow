@@ -1,6 +1,7 @@
 package provideraccountapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -33,6 +34,7 @@ import (
 // treats as a match on its own. A failed request is an error, because
 // attributing the credential without an answer is the defect this prevents.
 func (m *Manager) identifyClaudeCredential(
+	ctx context.Context,
 	info provider.AccountInfo,
 	credential []byte,
 ) (provider.AccountInfo, error) {
@@ -40,7 +42,7 @@ func (m *Manager) identifyClaudeCredential(
 	if len(credential) == 0 {
 		return info, nil
 	}
-	profile, err := claude.ProbeProfile(m.context(), m.providerHTTPClient(), credential)
+	profile, err := claude.ProbeProfile(ctx, m.providerHTTPClient(), credential)
 	switch {
 	case errors.Is(err, claude.ErrNoCredentials), errors.Is(err, claude.ErrNoProfileScope):
 		return info, nil
@@ -58,6 +60,7 @@ func (m *Manager) identifyClaudeCredential(
 // unattributed credential is asked about. It takes mu's read side, so a
 // caller holding mu uses identifyClaudeCredential.
 func (m *Manager) identifyCanonicalClaudeCredential(
+	ctx context.Context,
 	info provider.AccountInfo,
 	credential []byte,
 ) (provider.AccountInfo, error) {
@@ -74,7 +77,7 @@ func (m *Manager) identifyCanonicalClaudeCredential(
 		info.Email, info.OrgID, info.OrgName = active.Email, active.OrgID, active.OrgName
 		return info, nil
 	}
-	return m.identifyClaudeCredential(info, credential)
+	return m.identifyClaudeCredential(ctx, info, credential)
 }
 
 // findAccountByObservedIdentity answers "is this observed login one of

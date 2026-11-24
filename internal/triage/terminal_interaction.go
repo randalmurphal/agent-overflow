@@ -3,6 +3,7 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -41,9 +42,28 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	if evt.Content == "" && meta.Stdin == "" {
 		return nil
 	}
-	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
-	if !ok || !r.hasCodexBackgroundTerminalForProcess(evt.ThreadID, meta.ProcessID) {
+	if !r.hasCodexBackgroundTerminalForProcess(evt.ThreadID, meta.ProcessID) {
 		return nil
+	}
+	// An agent's interaction belongs to the agent's turn whether or not the
+	// root is running, like the agent's command (persistCodexAgentCommand);
+	// a top-level one is history only while a root turn is open.
+	scope := eventParentID(evt)
+	var turnIndex int
+	if scope != "" {
+		// The scope's turn names the row; the write itself checks the
+		// scope and takes its turn (persistCodexAgentRow).
+		link, _, err := r.lookupItemLink(evt.ThreadID, scope)
+		if err != nil {
+			return fmt.Errorf("terminal interaction scope %s: %w", scope, err)
+		}
+		turnIndex = link.turnIndex
+	} else {
+		open, ok := r.openTurnIndex(evt.ThreadID)
+		if !ok {
+			return nil
+		}
+		turnIndex = open
 	}
 	now := eventTimestampMillis(evt)
 	itemID, release, err := r.reserveItemID(evt.ThreadID, func() string {
@@ -70,7 +90,7 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 	if command := r.codexTerminalSummaryForProcess(evt.ThreadID, meta.ProcessID); command != "" {
 		summary += ": " + command
 	}
-	return r.persistItem(store.Item{
+	item := store.Item{
 		ID:        itemID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
@@ -78,11 +98,27 @@ func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
 		Role:      "assistant",
 		Status:    statusCompleted,
 		Summary:   summary,
-		ParentID:  eventParentID(evt),
+		ParentID:  scope,
 		Meta:      string(metaBlob),
 		CreatedAt: now,
 		UpdatedAt: now,
-	}, nil)
+	}
+	if scope == "" {
+		return r.persistItem(item, nil)
+	}
+	// The interaction belongs to the execution that wrote the stdin, which
+	// Codex names on the event, not to the one that started the command.
+	agentMeta, err := decodeCodexAgentMeta(item.Meta)
+	if err != nil {
+		return fmt.Errorf("terminal interaction %s: %w", item.ID, err)
+	}
+	_, _, err = r.persistCodexAgentRow(store.CodexAgentRow{
+		ThreadID: item.ThreadID, ParentID: scope, ID: item.ID, Interaction: true,
+		Status: item.Status, Summary: item.Summary,
+		Meta: agentMeta, ExecutionTurnID: strings.TrimSpace(evt.TurnID),
+		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+	})
+	return err
 }
 
 // nextTerminalInteractionSequence returns a monotonically-increasing counter

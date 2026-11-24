@@ -1,8 +1,6 @@
 package triage
 
 import (
-	"fmt"
-
 	"agent-overflow/internal/store"
 )
 
@@ -167,18 +165,9 @@ func (r *Router) ToolCallLinkCountForTest(threadID string) int {
 }
 
 // shouldDropParentID decides whether an item's parent_id should be
-// dropped before persistence. The spec invariant is that parent_id
-// ultimately points to a tool_call row, but text/thinking deltas from
-// a subagent can arrive before the parent Task tool_call is persisted,
-// so a missing parent is NOT grounds for dropping the link. Instead
-// we guard against three real corruption patterns:
-//
-//  1. Self-reference (parent_id == item.id).
-//  2. A cycle discovered by walking existing parent_id links back to
-//     the same row.
-//  3. A parent row that EXISTS but is not a tool_call (the invariant
-//     violation the spec actually cares about: a text item attached
-//     to another text item).
+// dropped before persistence (store.ItemParentProblem). A parent not
+// stored yet keeps the link: text/thinking deltas from a subagent can
+// arrive before the parent Task tool_call is persisted.
 //
 // The walk reads links through lookupItemLink, so a chain the session
 // wrote costs no store read.
@@ -188,38 +177,12 @@ func (r *Router) ToolCallLinkCountForTest(threadID string) int {
 // failures downgrade to (false, ""): a transient store error never
 // blocks persistence.
 func (r *Router) shouldDropParentID(threadID, itemID, parentID string) (bool, string) {
-	if parentID == itemID {
-		return true, "self reference"
+	reason, err := store.ItemParentProblem(itemID, parentID, func(id string) (store.ItemParentLink, bool, error) {
+		link, found, err := r.lookupItemLink(threadID, id)
+		return store.ItemParentLink{Kind: link.kind, ParentID: link.parentID}, found, err
+	})
+	if err != nil {
+		return false, ""
 	}
-	var seenBuf [4]string
-	seen := append(seenBuf[:0], itemID)
-	current := parentID
-	for hops := 0; hops < 16; hops++ {
-		for _, id := range seen {
-			if id == current {
-				return true, "cycle detected"
-			}
-		}
-		seen = append(seen, current)
-		parent, found, err := r.lookupItemLink(threadID, current)
-		if err != nil {
-			// Transient lookup error: keep the link, the store write
-			// will surface any hard error.
-			return false, ""
-		}
-		if !found {
-			// Parent hasn't been persisted yet (common for subagent
-			// text deltas arriving before the Task tool_call row).
-			// Leave the link: the row may materialise shortly.
-			return false, ""
-		}
-		if parent.kind != itemKindToolCall {
-			return true, fmt.Sprintf("parent kind %q is not tool_call", parent.kind)
-		}
-		if parent.parentID == "" {
-			return false, ""
-		}
-		current = parent.parentID
-	}
-	return true, "parent chain too deep"
+	return reason != "", reason
 }

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
@@ -268,7 +267,7 @@ func (m *Manager) canonicalProviderAccountProbe(
 		case string(provider.Codex):
 			return codex.ProbeIdentity(ctx, m.codexProbeConfig(binary, nil))
 		case string(provider.Agy):
-			return agy.ProbeAccount(ctx, m.agyProbeConfig(binary, "", "", nil))
+			return m.probeCanonicalAgy(ctx, binary, m.providerCustomEnv(providerName))
 		default:
 			return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
 		}

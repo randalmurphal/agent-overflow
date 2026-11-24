@@ -90,7 +90,7 @@ func (a *App) resolveTextGenerationConfig(ctx context.Context) (textgen.Config, 
 		cfg.ClaudeRetention = a.claudeRetention
 	case string(provider.Agy):
 		cfg.Binary = agyBin
-		cfg.Env = a.agyTextGenEnv(cfg.Env)
+		cfg.AgyHome = a.ensureProviderAccountManager().AgyCanonicalHome
 	}
 	// User's TextGenerationModel only applies when we kept the configured
 	// provider. After a substitution the provider's own default runs: the
@@ -153,7 +153,7 @@ func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName s
 			return textgen.Config{}, false
 		}
 		cfg.Model = textgen.DefaultAgyModel
-		cfg.Env = a.agyTextGenEnv(cfg.Env)
+		cfg.AgyHome = a.ensureProviderAccountManager().AgyCanonicalHome
 	default:
 		return textgen.Config{}, false
 	}
@@ -165,19 +165,6 @@ func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName s
 	cfg.Model = model.Slug
 	cfg.Effort = textGenerationEffort(cfg.Provider, cfg.Effort, model, true)
 	return cfg, true
-}
-
-func (a *App) agyTextGenEnv(base map[string]string) map[string]string {
-	if !a.hasManagedAgyCredentialFile() {
-		return base
-	}
-	out := make(map[string]string)
-	for k, v := range base {
-		out[k] = v
-	}
-	out["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
-	out["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
-	return out
 }
 
 // textGenerationDefaultModel is the catalog row of the model a run on

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claudetui"
@@ -21,6 +22,17 @@ import (
 // values, so a read-mutate-write round trip through the generic patch path
 // would persist the redaction. settings.Service.Update rejects the keys, so
 // this is the only way in.
+
+// reportReservedProviderEnv is the boot's report of the variables a
+// provider's saved custom environment still holds under a reserved name,
+// which load drops: every client shows it until a save of that provider's
+// environment rewrites the file without them.
+func (a *App) reportReservedProviderEnv() error {
+	if notice := settings.ReservedProviderEnvNotice(a.settings.SavedReservedProviderEnv()); notice != "" {
+		return errors.New(notice)
+	}
+	return nil
+}
 
 // SetProviderCustomEnvVar adds or replaces one custom environment variable for
 // a provider and returns the projected settings snapshot the frontend store

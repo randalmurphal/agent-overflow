@@ -195,6 +195,8 @@ func installFakeSecurity(t *testing.T) {
 	script := `#!/bin/sh
 case "$1" in
 find-generic-password)
+  [ -n "$FAKE_SECURITY_LOG" ] && echo "$*" >> "$FAKE_SECURITY_LOG"
+  [ -n "$FAKE_SECURITY_FIND_SLEEP" ] && exec /bin/sleep "$FAKE_SECURITY_FIND_SLEEP"
   wantw=0
   for a in "$@"; do [ "$a" = "-w" ] && wantw=1; done
   code="${FAKE_SECURITY_FIND_EXIT:-0}"
