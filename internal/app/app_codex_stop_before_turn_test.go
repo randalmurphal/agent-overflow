@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,8 +133,16 @@ func TestStopBeforeACodexTurnOpensEndsInOneOutcome(t *testing.T) {
 			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
 
 			const message = "stop me before I start"
+			// A queued message's row is the one the flush allocated; its
+			// echo confirms that row.
+			var queuedRowID string
 			if tc.queued {
 				dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{ID: "queue:stop-before", Message: message}})
+				flushed := app.triage.LiveStateSnapshotForThread(thread.ID).FlushedItems
+				if len(flushed) != 1 {
+					t.Fatalf("pending flushed items = %+v, want the fallback send", flushed)
+				}
+				queuedRowID = flushed[0].UserItemID
 			} else if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, message, pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
@@ -177,6 +187,9 @@ func TestStopBeforeACodexTurnOpensEndsInOneOutcome(t *testing.T) {
 			if len(userRows) != 1 || userRows[0].TurnIndex != turnIndex {
 				t.Fatalf("user rows = %+v, want the message once on turn %d", userRows, turnIndex)
 			}
+			if tc.queued && (userRows[0].ID != queuedRowID || !strings.Contains(userRows[0].Meta, "wire-user-1")) {
+				t.Fatalf("user row = %+v, want %s confirmed by its echo wire-user-1", userRows[0], queuedRowID)
+			}
 			if draft, _, err := app.store.GetThreadDraft(thread.ID); err != nil || draft.Content != "" {
 				t.Fatalf("draft = %q (%v), want it empty: the message was delivered", draft.Content, err)
 			}
@@ -192,4 +205,20 @@ func TestStopBeforeACodexTurnOpensEndsInOneOutcome(t *testing.T) {
 			}
 		})
 	}
+}
+
+// turnStartsCarrying counts the turn/start requests AO wrote that carry text.
+func turnStartsCarrying(t *testing.T, capturePath, text string) int {
+	t.Helper()
+	raw, err := os.ReadFile(capturePath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read capture: %v", err)
+	}
+	count := 0
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, `"method":"turn/start"`) && strings.Contains(line, text) {
+			count++
+		}
+	}
+	return count
 }
