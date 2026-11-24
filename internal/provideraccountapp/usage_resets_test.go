@@ -698,9 +698,10 @@ func TestSpendProviderAccountResetStillCommitsTheRotationItsReadingMade(t *testi
 	}
 }
 
+// The "reset" outcome is TestSpendProviderAccountResetSpendsTheChosenResetThenReads.
 func TestSpendProviderAccountResetMessagesEveryOutcome(t *testing.T) {
 	for outcome, wantSpent := range map[string]bool{
-		"reset": true, "alreadyRedeemed": true, "nothingToReset": false, "noCredit": false,
+		"alreadyRedeemed": true, "nothingToReset": false, "noCredit": false,
 	} {
 		t.Run(outcome, func(t *testing.T) {
 			rig := newResetRig(t, nil)
@@ -711,7 +712,7 @@ func TestSpendProviderAccountResetMessagesEveryOutcome(t *testing.T) {
 				t.Fatalf("result = %+v, %v; want spent=%v", result, err, wantSpent)
 			}
 			// Only this request's own reset clears the refusals.
-			if published := len(rig.sink.limitsReset) == 1; published != (outcome == "reset") {
+			if len(rig.sink.limitsReset) != 0 {
 				t.Fatalf("limits reset published = %v for %s", rig.sink.limitsReset, outcome)
 			}
 			if _, ok := rig.pending(t); ok {

@@ -285,43 +285,38 @@ func TestReconstructBackgroundCompletionMixedBundle(t *testing.T) {
 	}
 }
 
-// TestReconstructBackgroundCompletionAssistantRoleIgnored pins the role
-// discriminator: a <task-notification> the MODEL quoted in its own assistant
-// output is not a completion signal and must reconstruct nothing. Only the
-// CLI's injected user/system messages carry genuine completions; accepting the
-// assistant role would let the model fabricate completion rows by echoing the
-// tag.
-func TestReconstructBackgroundCompletionAssistantRoleIgnored(t *testing.T) {
-	rp := newReconParser(t)
+// A <task-notification> that is not a routable completion reconstructs no
+// terminal and no notification:
+//   - one the MODEL quoted in its own assistant output: only the CLI's injected
+//     user/system messages carry genuine completions, and accepting the
+//     assistant role would let the model fabricate completion rows by echoing
+//     the tag;
+//   - a statusless stall ping: the command is blocked on input, not done, and
+//     must not show a completion (print.ts treats a missing <status> as
+//     non-terminal);
+//   - one with no usable task-id (the ok=false branch of the shared
+//     eachTaskNotification scan): it has nothing to key the completion
+//     sibling on.
+func TestReconstructBackgroundCompletionIgnoresNonCompletions(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"quoted by the assistant", assistantQuotedNotificationReqBody(
+			taskNotificationXML("bgquoted", "toolu_q", "completed", "/tmp/o", "quoted by the model"))},
+		{"statusless stall ping", bgResumeReqBody(taskNotificationXML("bgtask1", "toolu_bg", "", "/tmp/out.txt",
+			`Background command "tick" appears to be waiting for interactive input`))},
+		{"no task-id", bgResumeReqBody(
+			"<task-notification>\n<tool-use-id>toolu_bg</tool-use-id>\n<status>completed</status>\n</task-notification>")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rp := newReconParser(t)
+			rp.drive("", tc.body, endTurnSSE())
 
-	notif := taskNotificationXML("bgquoted", "toolu_q", "completed", "/tmp/o", "quoted by the model")
-	rp.drive("", assistantQuotedNotificationReqBody(notif), endTurnSSE())
-
-	if got := len(findKind(rp.out, provider.EventBackgroundTaskTerminal)); got != 0 {
-		t.Fatalf("EventBackgroundTaskTerminal=%d want 0 — a tag quoted in assistant output is not a completion (kinds %v)", got, kindsOf(rp.out))
-	}
-	if got := len(findKind(rp.out, provider.EventBackgroundTaskNotification)); got != 0 {
-		t.Fatalf("EventBackgroundTaskNotification=%d want 0 — assistant-quoted tag must not synthesize completion events", got)
-	}
-}
-
-// TestReconstructBackgroundStallPingSkipped pins the user requirement that an
-// inline-style "still running" signal must NOT show a completion: a statusless
-// <task-notification> is a stall progress ping (the command is blocked on input,
-// not done), so it reconstructs no terminal and no notification. print.ts treats
-// the absence of <status> as non-terminal; we mirror that.
-func TestReconstructBackgroundStallPingSkipped(t *testing.T) {
-	rp := newReconParser(t)
-
-	ping := taskNotificationXML("bgtask1", "toolu_bg", "", "/tmp/out.txt",
-		`Background command "tick" appears to be waiting for interactive input`)
-	rp.drive("", bgResumeReqBody(ping), endTurnSSE())
-
-	if got := len(findKind(rp.out, provider.EventBackgroundTaskTerminal)); got != 0 {
-		t.Fatalf("EventBackgroundTaskTerminal=%d want 0 — a statusless stall ping is not a terminal (kinds %v)", got, kindsOf(rp.out))
-	}
-	if got := len(findKind(rp.out, provider.EventBackgroundTaskNotification)); got != 0 {
-		t.Fatalf("EventBackgroundTaskNotification=%d want 0 — a stall ping must not synthesize completion events", got)
+			if got := len(findKind(rp.out, provider.EventBackgroundTaskTerminal)); got != 0 {
+				t.Fatalf("EventBackgroundTaskTerminal=%d want 0 (kinds %v)", got, kindsOf(rp.out))
+			}
+			if got := len(findKind(rp.out, provider.EventBackgroundTaskNotification)); got != 0 {
+				t.Fatalf("EventBackgroundTaskNotification=%d want 0 (kinds %v)", got, kindsOf(rp.out))
+			}
+		})
 	}
 }
 
@@ -367,9 +362,12 @@ func TestReconstructAgentStopsDedupByStop(t *testing.T) {
 
 // TestReconstructBackgroundCompletionDedup pins the seen-set: the terminal
 // <task-notification> stays in conversation history and recurs in every later
-// request body, but it must reconstruct the completion exactly once.
+// request body, but it must reconstruct the completion exactly once. The debug
+// decision stream records the first as "emitted" and the recurrence as
+// "deduped", on main routes whose first (re)opened a settled loop.
 func TestReconstructBackgroundCompletionDedup(t *testing.T) {
 	rp := newReconParser(t)
+	decisions := recordDecisions(rp.rec)
 
 	notif := taskNotificationXML("bgtask1", "toolu_bg", "completed", "/tmp/out.txt", "done")
 	// First resume reconstructs the completion.
@@ -383,23 +381,23 @@ func TestReconstructBackgroundCompletionDedup(t *testing.T) {
 	if got := len(findKind(rp.out, provider.EventBackgroundTaskNotification)); got != 1 {
 		t.Fatalf("EventBackgroundTaskNotification=%d want 1 — dedup by task_id", got)
 	}
-}
 
-// TestReconstructBackgroundCompletionUnroutableSkipped pins the ok=false branch
-// of the shared eachTaskNotification scan: a <task-notification> with no usable
-// task-id has nothing to key the completion sibling on, so it reconstructs
-// nothing rather than synthesizing a malformed completion.
-func TestReconstructBackgroundCompletionUnroutableSkipped(t *testing.T) {
-	rp := newReconParser(t)
-
-	noID := "<task-notification>\n<tool-use-id>toolu_bg</tool-use-id>\n<status>completed</status>\n</task-notification>"
-	rp.drive("", bgResumeReqBody(noID), endTurnSSE())
-
-	if got := len(findKind(rp.out, provider.EventBackgroundTaskTerminal)); got != 0 {
-		t.Fatalf("EventBackgroundTaskTerminal=%d want 0 — a task-notification with no task-id is unroutable (kinds %v)", got, kindsOf(rp.out))
+	bg := decisionsOf(*decisions, "bg_completion")
+	if len(bg) != 2 {
+		t.Fatalf("bg_completion decisions = %d, want 2 (emitted, deduped): %+v", len(bg), bg)
 	}
-	if got := len(findKind(rp.out, provider.EventBackgroundTaskNotification)); got != 0 {
-		t.Fatalf("EventBackgroundTaskNotification=%d want 0 — an unroutable notification must not synthesize completion events", got)
+	if bg[0].Action != "emitted" || bg[0].TaskID != "bgtask1" ||
+		bg[0].ToolUseID != "toolu_bg" || bg[0].Status != "completed" {
+		t.Errorf("first bg = %+v, want emitted/bgtask1/toolu_bg/completed", bg[0])
+	}
+	if bg[1].Action != "deduped" || bg[1].TaskID != "bgtask1" {
+		t.Errorf("second bg = %+v, want deduped/bgtask1", bg[1])
+	}
+	if routes := decisionsOf(*decisions, "route"); len(routes) == 0 || routes[0].Route != "main" || !routes[0].Init {
+		t.Fatalf("first route = %+v, want main with init=true", routes)
+	}
+	if tc := decisionsOf(*decisions, "turn_close"); len(tc) != 2 || tc[0].Route != "main" || tc[0].Stop != "end_turn" {
+		t.Fatalf("turn_close decisions = %+v, want 2 main/end_turn", tc)
 	}
 }
 

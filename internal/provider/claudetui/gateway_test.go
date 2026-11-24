@@ -182,6 +182,9 @@ func TestGatewayReconstructsAgentTurn(t *testing.T) {
 	if begins != 1 || ends != 1 {
 		t.Fatalf("begins=%d ends=%d, want 1/1", begins, ends)
 	}
+	if got := drive.subagentBegins(); got != 0 {
+		t.Fatalf("subagent begins = %d, want 0 (no agent-id header must take the main path)", got)
+	}
 	_, _, envelopes := drive.snapshot()
 	var sawStreamEvent bool
 	for _, e := range envelopes {
@@ -273,43 +276,36 @@ func TestGatewayRoutesArmedSummarizerToCapture(t *testing.T) {
 // agent's own id), which must stay on the main path despite the header. See
 // requestReportsAgentCompletion (turndriver.go).
 func TestGatewayRoutesSubagentByHeader(t *testing.T) {
-	t.Run("agent-id header routes to subagent path", func(t *testing.T) {
-		up := sseUpstream(t, http.StatusOK, nil)
-		drive := newRecordingDriver()
-		gw := newTestGateway(t, up.URL, drive, nil)
+	// A plain agent turn, and a genuine subagent (aid-parent) polling a
+	// backgrounded CHILD: the body's <task-notification> task-id is the
+	// child's, not the subagent's own agent-id, so the match fails and it
+	// correctly stays nested. The request without the header is
+	// TestGatewayReconstructsAgentTurn.
+	for _, tc := range []struct{ name, body, agentID string }{
+		{"agent-id header routes to subagent path", agentReqBody, "aid-abc123"},
+		{"agent-id header with a non-self (child) task-notification stays on the subagent path",
+			bgResumeReqBody(taskNotificationXML("child-task-xyz", "toolu_child", "completed", "/tmp/out.txt", "done")), "aid-parent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up := sseUpstream(t, http.StatusOK, nil)
+			drive := newRecordingDriver()
+			gw := newTestGateway(t, up.URL, drive, nil)
 
-		resp := postGatewayWithHeaders(t, gw, http.MethodPost, "/v1/messages", agentReqBody,
-			map[string]string{agentIDHeader: "aid-abc123"})
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
+			resp := postGatewayWithHeaders(t, gw, http.MethodPost, "/v1/messages", tc.body,
+				map[string]string{agentIDHeader: tc.agentID})
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 
-		// beginSubagentTurn is invoked synchronously before any body is streamed,
-		// so it has already run by the time the client drains the response.
-		if got := drive.subagentBegins(); got != 1 {
-			t.Fatalf("subagent begins = %d, want 1", got)
-		}
-		if begins, _, _ := drive.snapshot(); begins != 0 {
-			t.Fatalf("main-loop begins = %d, want 0 (subagent must not take the main path)", begins)
-		}
-	})
-
-	t.Run("no header routes to main path", func(t *testing.T) {
-		up := sseUpstream(t, http.StatusOK, nil)
-		drive := newRecordingDriver()
-		gw := newTestGateway(t, up.URL, drive, nil)
-
-		resp := postGateway(t, gw, http.MethodPost, "/v1/messages", agentReqBody)
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-
-		begins, _ := waitDriver(t, drive, 1)
-		if begins != 1 {
-			t.Fatalf("main-loop begins = %d, want 1", begins)
-		}
-		if got := drive.subagentBegins(); got != 0 {
-			t.Fatalf("subagent begins = %d, want 0 (no header must take the main path)", got)
-		}
-	})
+			// beginSubagentTurn is invoked synchronously before any body is streamed,
+			// so it has already run by the time the client drains the response.
+			if got := drive.subagentBegins(); got != 1 {
+				t.Fatalf("subagent begins = %d, want 1", got)
+			}
+			if begins, _, _ := drive.snapshot(); begins != 0 {
+				t.Fatalf("main-loop begins = %d, want 0 (a subagent turn must not take the main path)", begins)
+			}
+		})
+	}
 
 	// The bug this guards: when the MAIN loop resumes to observe a backgrounded
 	// subagent's completion, Claude attaches that subagent's agent-id to the
@@ -353,28 +349,6 @@ func TestGatewayRoutesSubagentByHeader(t *testing.T) {
 		if !sawUpdated || !sawNotif {
 			t.Fatalf("background completion not reconstructed on the main path: task_updated=%v task_notification=%v; envelopes=%v",
 				sawUpdated, sawNotif, envelopes)
-		}
-	})
-
-	t.Run("agent-id header with a non-self (child) task-notification stays on the subagent path", func(t *testing.T) {
-		up := sseUpstream(t, http.StatusOK, nil)
-		drive := newRecordingDriver()
-		gw := newTestGateway(t, up.URL, drive, nil)
-
-		// A genuine subagent (aid-parent) polling a backgrounded CHILD: the body's
-		// <task-notification> task-id is the child's, not the subagent's own
-		// agent-id, so the match fails and it correctly stays nested.
-		body := bgResumeReqBody(taskNotificationXML("child-task-xyz", "toolu_child", "completed", "/tmp/out.txt", "done"))
-		resp := postGatewayWithHeaders(t, gw, http.MethodPost, "/v1/messages", body,
-			map[string]string{agentIDHeader: "aid-parent"})
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-
-		if got := drive.subagentBegins(); got != 1 {
-			t.Fatalf("subagent begins = %d, want 1 (a child task-notification must not divert to the main path)", got)
-		}
-		if begins, _, _ := drive.snapshot(); begins != 0 {
-			t.Fatalf("main-loop begins = %d, want 0 (a child task-notification is still a subagent turn)", begins)
 		}
 	})
 }

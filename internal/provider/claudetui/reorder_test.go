@@ -59,38 +59,6 @@ func TestFeedReorderPassesThroughOrderedCompletion(t *testing.T) {
 	}
 }
 
-// TestFeedReorderReleasesMultipleToolUses proves a single assistant envelope
-// carrying several tool_use blocks releases every completion that raced ahead.
-func TestFeedReorderReleasesMultipleToolUses(t *testing.T) {
-	fr := newFeedReorder()
-	assistant := `{"type":"assistant","message":{"role":"assistant","content":[` +
-		`{"type":"tool_use","id":"toolu_a","name":"Bash","input":{}},` +
-		`{"type":"tool_use","id":"toolu_b","name":"Read","input":{}}]}}`
-	compA := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_a","content":"a"}]}}`
-	compB := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_b","content":"b"}]}}`
-
-	if got := fr.admit(json.RawMessage(compA)); got != nil {
-		t.Fatalf("compA should be held, got %d", len(got))
-	}
-	if got := fr.admit(json.RawMessage(compB)); got != nil {
-		t.Fatalf("compB should be held, got %d", len(got))
-	}
-
-	got := fr.admit(json.RawMessage(assistant))
-	if len(got) != 3 {
-		t.Fatalf("admit(assistant) = %d envelopes, want 3 (assistant + both completions)", len(got))
-	}
-	released := map[string]bool{}
-	for _, env := range got[1:] {
-		if id, ok := userToolResultID(env); ok {
-			released[id] = true
-		}
-	}
-	if !released["toolu_a"] || !released["toolu_b"] {
-		t.Errorf("both held completions should release, got %v", released)
-	}
-}
-
 func heldIDs(t *testing.T, lines []json.RawMessage) []string {
 	t.Helper()
 	var ids []string
@@ -102,8 +70,9 @@ func heldIDs(t *testing.T, lines []json.RawMessage) []string {
 	return ids
 }
 
-// Completions for two tool_use ids come out in the order they arrived, both
-// when their starts release them and when the session's end flushes them.
+// Completions for two tool_use ids that raced ahead are held, then come out in
+// the order they arrived, both when the session's end flushes them and when
+// one assistant envelope starting both releases them right after itself.
 // Repeated, because an order taken from a map would pass some runs.
 func TestFeedReorderKeepsArrivalOrder(t *testing.T) {
 	assistant := `{"type":"assistant","message":{"role":"assistant","content":[` +
@@ -114,15 +83,24 @@ func TestFeedReorderKeepsArrivalOrder(t *testing.T) {
 	want := []string{"toolu_b", "toolu_a"}
 	for range 20 {
 		fr := newFeedReorder()
-		fr.admit(compB)
-		fr.admit(compA)
+		hold := func() {
+			for _, completion := range []json.RawMessage{compB, compA} {
+				if got := fr.admit(completion); got != nil {
+					t.Fatalf("a completion before its start must be held, got %d envelopes", len(got))
+				}
+			}
+		}
+		hold()
 		if got := heldIDs(t, fr.flush()); !slices.Equal(got, want) {
 			t.Fatalf("flush = %v, want %v", got, want)
 		}
 
-		fr.admit(compB)
-		fr.admit(compA)
-		if got := heldIDs(t, fr.admit(json.RawMessage(assistant))); !slices.Equal(got, want) {
+		hold()
+		released := fr.admit(json.RawMessage(assistant))
+		if len(released) != 3 || envelopeType(released[0]) != "assistant" {
+			t.Fatalf("admit(assistant) = %d envelopes, want 3 (the assistant, then both completions)", len(released))
+		}
+		if got := heldIDs(t, released); !slices.Equal(got, want) {
 			t.Fatalf("released by the start = %v, want %v", got, want)
 		}
 	}

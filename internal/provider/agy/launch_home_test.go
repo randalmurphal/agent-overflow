@@ -131,28 +131,46 @@ func TestACanonicalFileLaunchSetsFileStorageAndClearsAnInheritedHome(t *testing.
 	}
 }
 
-// An isolated home names its own directory and is on file storage, whatever
-// the process inherited.
-func TestAnIsolatedLaunchNamesItsHomeOnFileStorage(t *testing.T) {
+// A home that names its directory, an isolated one or a canonical one that
+// is not agy's default under the process HOME, launches on that directory
+// and on file storage, whatever the process inherited. Only the file store
+// may name a canonical home's directory.
+func TestAHomeThatNamesItsDirectoryLaunchesOnFileStorage(t *testing.T) {
 	inheritOtherAgyStore(t)
 	t.Setenv("AGY_ACP_FORCE_FILE_STORAGE", "")
-	binary, record := recordingAgy(t)
 	appData := filepath.Join(t.TempDir(), "gemini", "antigravity-cli")
-	home, err := IsolatedHome(appData)
+	isolated, err := IsolatedHome(appData)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	probeWith(t, binary, home)
-
-	got := readLaunchRecord(t, record)
-	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" {
-		t.Errorf("AGY_ACP_FORCE_FILE_STORAGE = %q, want 1", got["AGY_ACP_FORCE_FILE_STORAGE"])
+	if _, err := CanonicalHome(appData, false); err == nil {
+		t.Fatal("a canonical home named its directory on the Keychain")
 	}
-	wantCleared(t, got, "GEMINI_HOME", "AGY_APP_DATA_DIR")
-	want := "acp --gemini-dir " + filepath.Dir(appData) + " --app-data-dir antigravity-cli"
-	if got["args"] != want {
-		t.Errorf("isolated agy args = %q, want %q", got["args"], want)
+	for _, tc := range []struct {
+		name     string
+		home     Home
+		isolated bool
+	}{
+		{"isolated", isolated, true},
+		{"canonical", canonical(t, appData, true), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.home.Isolated() != tc.isolated {
+				t.Fatalf("Isolated() = %v, want %v", tc.home.Isolated(), tc.isolated)
+			}
+			binary, record := recordingAgy(t)
+			probeWith(t, binary, tc.home)
+
+			got := readLaunchRecord(t, record)
+			if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" {
+				t.Errorf("AGY_ACP_FORCE_FILE_STORAGE = %q, want 1", got["AGY_ACP_FORCE_FILE_STORAGE"])
+			}
+			wantCleared(t, got, "GEMINI_HOME", "AGY_APP_DATA_DIR")
+			want := "acp --gemini-dir " + filepath.Dir(appData) + " --app-data-dir antigravity-cli"
+			if got["args"] != want {
+				t.Errorf("agy args = %q, want %q", got["args"], want)
+			}
+		})
 	}
 }
 
@@ -197,33 +215,6 @@ func TestALaunchKeepsTheProcessHome(t *testing.T) {
 		if got := builtEnv(launch)["HOME"]; got != os.Getenv("HOME") {
 			t.Errorf("agy gets HOME=%q, want the process HOME %q", got, os.Getenv("HOME"))
 		}
-	}
-}
-
-// A canonical home that is not agy's default under the process HOME names
-// its directory and is still the canonical one; only the file store may name
-// one.
-func TestACanonicalHomeOutsideTheProcessHomeNamesItsDirectory(t *testing.T) {
-	inheritOtherAgyStore(t)
-	binary, record := recordingAgy(t)
-	appData := filepath.Join(t.TempDir(), "gemini", "antigravity-cli")
-	home := canonical(t, appData, true)
-	if home.Isolated() {
-		t.Fatal("a canonical home with a directory reads as isolated")
-	}
-
-	probeWith(t, binary, home)
-
-	got := readLaunchRecord(t, record)
-	want := "acp --gemini-dir " + filepath.Dir(appData) + " --app-data-dir antigravity-cli"
-	if got["args"] != want {
-		t.Errorf("canonical agy args = %q, want %q", got["args"], want)
-	}
-	if got["AGY_ACP_FORCE_FILE_STORAGE"] != "1" {
-		t.Errorf("AGY_ACP_FORCE_FILE_STORAGE = %q, want 1", got["AGY_ACP_FORCE_FILE_STORAGE"])
-	}
-	if _, err := CanonicalHome(appData, false); err == nil {
-		t.Fatal("a canonical home named its directory on the Keychain")
 	}
 }
 

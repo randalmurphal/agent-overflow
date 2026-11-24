@@ -46,30 +46,21 @@ func captureErrGateway(errs *[]error) *gateway {
 // Without the fix stream calls onError unconditionally on any non-EOF read error,
 // so the canceled-context cases below fail RED.
 func TestStreamSuppressesClientAbort(t *testing.T) {
-	t.Run("canceled ctx + context.Canceled read is suppressed", func(t *testing.T) {
-		var errs []error
-		g := captureErrGateway(&errs)
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // the client aborted its request
-		g.stream(ctx, httptest.NewRecorder(), &readSeq{steps: []readStep{{err: context.Canceled}}}, nil)
-		if len(errs) != 0 {
-			t.Fatalf("client abort surfaced %d errors, want 0: %v", len(errs), errs)
-		}
-	})
-
-	t.Run("canceled ctx suppresses even a non-cancel read error", func(t *testing.T) {
-		// The abort can surface as an unexpected EOF rather than context.Canceled;
-		// the canceled inbound context is the authoritative "client went away"
-		// signal, so suppress regardless of the read error's identity.
-		var errs []error
-		g := captureErrGateway(&errs)
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		g.stream(ctx, httptest.NewRecorder(), &readSeq{steps: []readStep{{err: io.ErrUnexpectedEOF}}}, nil)
-		if len(errs) != 0 {
-			t.Fatalf("client abort (non-cancel err) surfaced %d errors, want 0: %v", len(errs), errs)
-		}
-	})
+	// The abort can surface as an unexpected EOF rather than context.Canceled;
+	// the canceled inbound context is the authoritative "client went away"
+	// signal, so suppress regardless of the read error's identity.
+	for _, readErr := range []error{context.Canceled, io.ErrUnexpectedEOF} {
+		t.Run("canceled ctx suppresses a read error of "+readErr.Error(), func(t *testing.T) {
+			var errs []error
+			g := captureErrGateway(&errs)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // the client aborted its request
+			g.stream(ctx, httptest.NewRecorder(), &readSeq{steps: []readStep{{err: readErr}}}, nil)
+			if len(errs) != 0 {
+				t.Fatalf("client abort surfaced %d errors, want 0: %v", len(errs), errs)
+			}
+		})
+	}
 
 	t.Run("live ctx + genuine upstream error surfaces", func(t *testing.T) {
 		var errs []error
