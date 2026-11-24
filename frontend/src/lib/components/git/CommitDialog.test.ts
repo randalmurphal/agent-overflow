@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { methodNotFound } from '../../../test/helpers/olderComputer';
 import { render, fireEvent, waitFor, within } from '@testing-library/svelte';
 import CommitDialog from './CommitDialog.svelte';
 import { setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
@@ -251,12 +252,13 @@ describe('<CommitDialog> — file selection', () => {
     expect(m.rows()).toHaveLength(0);
   });
 
-  it('says to update a connected computer whose build has no file list', async () => {
+  it('shows the refusal of a computer whose build has no file list as the transport words it', async () => {
     const m = await mount(() => {
-      throw Object.assign(new Error('method not found'), { code: 'method_not_found' });
+      throw methodNotFound();
     });
     const alert = await m.findByTestId('commit-dialog-list-error');
-    expect(alert.textContent).toBe('Update Agent Overflow on this computer to commit from here.');
+    expect(alert.textContent).toBe(methodNotFound().message);
+    expect(alert.textContent).toContain('does not support this action.');
     await m.setSubject('Nothing listed');
     expect(m.commitButton().disabled).toBe(true);
   });

@@ -9,6 +9,7 @@ import { installBrowserHistoryGuard } from './lib/utils/browserHistoryGuard';
 import { installIOSInputZoomGuard } from './lib/utils/iosInputZoom';
 import { installFrontendErrorCapture } from './lib/utils/frontendErrorCapture';
 import { installStepUpProof } from './lib/transport/stepUp';
+import { installVersionMismatchWording } from './lib/stores/versionMismatch';
 import { isFrontendOnly } from './lib/transport/runMode';
 import { admitPairingLink } from './lib/transport/buildVariant';
 import { HOME_BACKEND, attachedBackends, backendById, syncAttachedBackends } from './lib/transport/backends';
@@ -41,6 +42,10 @@ installIOSInputZoomGuard();
 // from the first call — including the pairing screen's, which mounts
 // below without the rest of the app.
 installStepUpProof();
+// Names the computer, what the page knows about the two versions and the
+// remedy in the message of every call a computer's dispatcher refused. The
+// transport's own sentence stands without it (transport/dispatchRefusal.ts).
+installVersionMismatchWording();
 // On-demand memory accounting for console / CDP probes. The stub keeps
 // the collector chunk out of the startup graph entirely; the dynamic
 // import resolves from the module cache on every call after the first.

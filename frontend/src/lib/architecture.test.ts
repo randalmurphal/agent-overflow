@@ -445,6 +445,12 @@ const RANDOM_ID_OWNER = 'lib/utils/randomId.ts';
 // A CALL, not the word: the comments at the converted call sites name the API
 // they no longer reach for, and must not read as offenders.
 const RANDOM_UUID_CALL = /\brandomUUID\s*\(/;
+// The wire text of a dispatcher refusal from a release before the frame's
+// "dispatch" field: a call it does not have, or one whose arguments did not
+// fit. Only the legacy table in its owner matches it; everything else reads
+// the transport's verdict, and the message is already the sentence.
+const DISPATCH_REFUSAL_TEXT = /method not registered|params, got \d|too many parameters|bad parameter \d/;
+const DISPATCH_REFUSAL_OWNER = 'lib/transport/dispatchRefusal.ts';
 const RANDOM_ID_ALLOWLIST: Record<string, string> = {};
 
 // 7. A send is built by the one builder that mints its idempotency id.
@@ -722,6 +728,7 @@ describe('architecture', () => {
       callsEventsOn: EVENTS_ON_CALL.test(text),
       callsRandomUUID: RANDOM_UUID_CALL.test(text),
       namesSendOptionsType: SEND_OPTIONS_TYPE.test(text),
+      namesDispatchRefusalText: DISPATCH_REFUSAL_TEXT.test(text),
       inStores: file.startsWith(STORES_DIR + sep),
     };
   });
@@ -1137,6 +1144,33 @@ describe('architecture', () => {
       `Call randomId() from ${RANDOM_ID_OWNER}, which falls back to crypto.getRandomValues`
       + ' on the pages where crypto.randomUUID does not exist.',
     );
+  });
+
+  it('words a refusal by the computer\'s dispatcher only through the transport', () => {
+    const offenders = new Map<string, string[]>();
+    for (const source of sources) {
+      if (!source.namesDispatchRefusalText || source.path === DISPATCH_REFUSAL_OWNER) continue;
+      offenders.set(source.path, ['matches or shows the wire text of a dispatcher refusal']);
+    }
+    expectAllowlistExact(
+      offenders,
+      {},
+      'New violations.',
+      'Branch on the code with isMethodUnavailableError; the error\'s message is already the'
+      + ' sentence for the refusal (transport/dispatchRefusal.ts).',
+    );
+    expect(sources.some((source) => source.path === DISPATCH_REFUSAL_OWNER && source.namesDispatchRefusalText), `${DISPATCH_REFUSAL_OWNER} holds the legacy table`).toBe(true);
+    const main = SCANNED.text(join(SRC_ROOT, 'main.ts'));
+    expect(main, 'src/main.ts installs the named wording (stores/versionMismatch.ts)').toMatch(/^installVersionMismatchWording\(\);$/m);
+  });
+
+  it('keeps the refusal when a call for an older computer cannot do the action', () => {
+    // A fallback that threw its own Error would drop the computer's name,
+    // the remedy, and the code and cause a copied report lists. orOlder
+    // cannot refuse other throws itself: a fallback's own calls fail for
+    // their own reasons (ThreadsPartlyDeleted).
+    const bindings = SCANNED.text(join(SRC_ROOT, BINDINGS_WRAPPER));
+    expect(bindings, `${BINDINGS_WRAPPER} throws the refusal, with withNote for what the feature adds`).not.toMatch(/throw new Error\(/);
   });
 
   it('keeps every send on the builder that mints its idempotency id', () => {

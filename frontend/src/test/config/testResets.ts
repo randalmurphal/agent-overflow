@@ -79,6 +79,10 @@ export const POSTURE: readonly Step[] = [
   // webview's answer: the owner's own screen, every scope.
   step<typeof PageHost, 'setHostWindowFromBootstrap'>('src/lib/transport/pageHost.ts', 'setHostWindowFromBootstrap', (set) => set(true)),
   step<typeof Scopes, 'setPageGrantsFromBootstrap'>('src/lib/transport/scopes.ts', 'setPageGrantsFromBootstrap', (set) => set(false)),
+  // The app installs this at boot (src/main.ts), so a refused call reads in
+  // a test as it does there; a test of the transport's own sentence
+  // uninstalls it for its duration.
+  step('src/lib/stores/versionMismatch.ts', 'installVersionMismatchWording'),
   // Git status re-sources whatever is attached when the transport pin
   // above lands, so its reset follows the pin.
   step('src/lib/stores/gitStatusStore.svelte.ts', '__resetGitStatusStoreForTest'),

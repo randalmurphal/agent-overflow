@@ -28,6 +28,11 @@ func (s *Service) CheckTransferReadiness(ctx context.Context, name, minimumCodex
 		if s.deps.EmitStatus != nil {
 			s.deps.EmitStatus(providerstatus.EventFromDetect(status))
 		}
+		if name == string(provider.Codex) && status.Status == "version_too_old" {
+			// A transfer row is readable without access:admin, so this
+			// names the versions and not the binary's path.
+			return fmt.Errorf("This computer cannot receive the conversation yet. %s", provider.CodexCLIUpgradeMessage(status.Version)) //nolint:staticcheck // ST1005: the user sees this sentence as written.
+		}
 		return fmt.Errorf("Set up %s on this computer before receiving the conversation (%s).", name, status.Status)
 	}
 	if minimumCodexVersion != "" {

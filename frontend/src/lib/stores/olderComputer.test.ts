@@ -36,7 +36,12 @@ import {
   ListThreadWorkerSummaries,
   MarkThreadsRead,
   WorkflowPauseItemAndEndSessions,
+  GetGitBlobImage,
+  SaveGitBlobImage,
 } from './bindings';
+import { userFacingError } from '../utils/userFacingError';
+import { errorReport, errorReportText } from '../utils/errorReport';
+import type { WorkspaceRef } from '../types/git';
 
 beforeEach(() => {
   answerAsV0019();
@@ -127,12 +132,30 @@ describe('the other actions v0.0.19 has', () => {
     expect(getBindingMock('MarkThreadRead')).toHaveBeenCalledTimes(2);
   });
 
-  // That release cannot end sessions; its Pause, on the same row, still pauses.
-  it('refuses Pause and End Sessions, saying the computer cannot end sessions', async () => {
-    await expect(WorkflowPauseItemAndEndSessions('item-1')).rejects.toThrow(
-      'That computer runs an older version, which cannot end sessions. Pause still pauses the run.',
-    );
+  // That release cannot end sessions; its Pause, on the same row, still
+  // pauses. The refusal itself reaches the person and the copied report.
+  it('refuses Pause and End Sessions with the computer\'s refusal, saying Pause still pauses', async () => {
+    const refusal = methodNotFound();
+    setBindingMock('WorkflowPauseItemAndEndSessions', async () => { throw refusal; });
+    const sentence = methodNotFound().message;
+    const caught = await WorkflowPauseItemAndEndSessions('item-1').then(() => null, (err: unknown) => err);
+    expect(caught).toBe(refusal);
+    expect(userFacingError(caught)).toBe(`${sentence} Pause still pauses the run.`);
+    const report = errorReportText(errorReport(caught, { context: 'Could not pause the run' }));
+    expect(report).toContain('- code: method_not_found');
+    expect(report).toContain(`1. ${sentence} Pause still pauses the run.`);
+    expect(report).toContain('2. method not registered');
     expect(getBindingMock('WorkflowPauseItem')).not.toHaveBeenCalled();
+  });
+
+  it('fails a repository image with the computer\'s own refusal', async () => {
+    const shown = methodNotFound();
+    const saved = methodNotFound();
+    setBindingMock('GetGitBlobImage', async () => { throw shown; });
+    setBindingMock('SaveGitBlobImage', async () => { throw saved; });
+    const workspace = { backend: 'home', path: '/work/widget' } as unknown as WorkspaceRef;
+    await expect(GetGitBlobImage(workspace, 'oid', 800)).rejects.toBe(shown);
+    await expect(SaveGitBlobImage(workspace, 'oid', 'a.png')).rejects.toBe(saved);
   });
 });
 

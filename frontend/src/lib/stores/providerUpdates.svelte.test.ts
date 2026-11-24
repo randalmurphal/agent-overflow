@@ -40,6 +40,7 @@ import {
   type ProviderUpdateNotes,
   type ProviderUpdateStatus,
 } from './providerUpdates.svelte';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 
 function status(provider: string, overrides: Partial<ProviderUpdateStatus> = {}): ProviderUpdateStatus {
   return {
@@ -152,7 +153,7 @@ describe('providerUpdates store', () => {
     it('is silent on passive failures and shows any other read failure', async () => {
       for (const err of [
         new TransportError('scope_required', 'no'),
-        new TransportError('method_not_found', 'no such method'),
+        methodNotFound(),
         new DisconnectedError('socket closed'),
       ]) {
         setBindingMock('CheckProviderUpdates', async () => { throw err; });

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 import { render, waitFor } from '@testing-library/svelte';
 
 import Harness from './WorkspaceChangeLockHarness.svelte';
@@ -458,15 +459,11 @@ describe('createWorkspaceChangeLockState', () => {
     expect(workspaceChangeLockKeys()).toEqual([]);
   });
 
-  // A backend that does not register GetWorkspaceActivity at all refuses it
-  // for good on this connection (a session merely lacking `git:operate` is
-  // stopped by the scope check before any call). The fail-safe posture
-  // holds (unverified is locked) but the reason must say why instead of
-  // leaking the transport's own shape.
-  it('reads as locked with the local-only reason when the backend refuses the call', async () => {
-    setBindingMock('GetWorkspaceActivity', async () => {
-      throw Object.assign(new Error('method not registered'), { code: 'method_not_found' });
-    });
+  // A computer that does not register GetWorkspaceActivity runs a different
+  // release. The fail-safe posture holds (unverified is locked) and the
+  // reason says why, in the transport's version mismatch sentence.
+  it('reads as locked and names the version mismatch when the computer lacks the call', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => { throw methodNotFound(); });
     const pane = await buildPane();
 
     const { getByTestId } = render(Harness, { props: { pane } });
@@ -474,8 +471,9 @@ describe('createWorkspaceChangeLockState', () => {
 
     await waitFor(() => {
       expect(state).toHaveAttribute('data-locked', 'true');
-      expect(state.getAttribute('data-reason') ?? '')
-        .toBe('Workspace changes are only available on this computer.');
+      expect(state.getAttribute('data-reason') ?? '').toBe(
+        `Cannot check for running background tasks: ${methodNotFound().message}`,
+      );
     });
   });
 

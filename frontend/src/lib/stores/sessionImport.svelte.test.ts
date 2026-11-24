@@ -10,7 +10,7 @@ import { getSessionImportBackend } from './sessionImport.svelte';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
-import { TransportError } from '../transport/wsClient';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import { getToasts, removeToast } from './toast.svelte';
 import type {
@@ -926,13 +926,12 @@ describe('the unwired case', () => {
     // A backend without the method refuses it, and the store turns that into
     // visible state instead of an empty catalogue that looks like "nothing
     // to do".
-    setBindingMock('ListImportableSessions', async () => {
-      throw new TransportError('method_not_found', 'method not registered');
-    });
+    const refusal = methodNotFound();
+    setBindingMock('ListImportableSessions', async () => { throw refusal; });
     vi.spyOn(console, 'error').mockImplementation(() => {});
     await loadImportCatalog();
     expect(getSessionImportStatus()).toBe('error');
-    expect(getSessionImportError()).toMatch(/method not registered/i);
+    expect(getSessionImportError()).toBe(refusal.message);
   });
 });
 

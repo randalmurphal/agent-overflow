@@ -1,8 +1,10 @@
 package transport
 
 import (
-	"strings"
+	"reflect"
 	"testing"
+
+	"agent-overflow/internal/dispatchrefusal"
 )
 
 // localOnlyReceiver stands in for the one receiver class that is still
@@ -74,8 +76,11 @@ func TestRegisterLocalOnlyReceiver(t *testing.T) {
 		if fe.Code != ErrCodeMethodNotFound {
 			t.Fatalf("refusal code by %s = %v, want method_not_found (unenumerable)", probe.by, fe.Code)
 		}
-		if !strings.Contains(fe.Message, "not registered") {
-			t.Fatalf("refusal message by %s = %q, want the generic shape", probe.by, fe.Message)
+		// Identical, field for field, to a method this computer does not
+		// have at all.
+		_, missing := d.ResolveForOrigin(0, "NoSuchMethod", false)
+		if !reflect.DeepEqual(fe, missing) || fe.Message != dispatchrefusal.Unsupported || fe.Dispatch == nil || fe.Dispatch.Kind != dispatchrefusal.KindUnsupported {
+			t.Fatalf("refusal by %s = %+v, want the unregistered method's %+v", probe.by, fe, missing)
 		}
 	}
 

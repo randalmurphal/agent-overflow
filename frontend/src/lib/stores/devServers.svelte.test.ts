@@ -44,6 +44,7 @@ import {
   sharedPreviewPorts,
 } from './devServers.svelte';
 import { forgetThread, noteThread } from '../transport/entityIndex';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 
 function server(port: number, overrides: Partial<DevServer> = {}): DevServer {
   return {
@@ -108,7 +109,7 @@ describe('devServers store', () => {
 
     it('is silent on a refusal and on an older backend, and loud on anything else', async () => {
       setBindingMock('GetDevServers', async () => {
-        throw new TransportError('method_not_found', 'no such method');
+        throw methodNotFound();
       });
       await loadDevServers(HOME_BACKEND);
       expect(machineDevServers(HOME_BACKEND).loadError).toBe('');
