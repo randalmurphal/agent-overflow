@@ -29,7 +29,14 @@ export const READERS = [
   { kind: 'raw import of a file that is not a module', changed: 'index.html', reader: 'src/indexHtmlNoInlineScript.test.ts' },
   { kind: 'glob', changed: 'src/styles/syntax.css', reader: 'src/lib/styleInvalidation.test.ts' },
   { kind: 'file outside frontend/', changed: '../internal/stringsx/findfold_table.go', reader: 'src/lib/utils/findMatch.test.ts' },
-  { kind: 'child-process workload', changed: 'src/lib/markdown/parser/index.ts', reader: 'src/lib/markdown/parseBlockRetention.test.ts' },
+  // `via` is the file between the reader and what it reads: a change to it
+  // can end the selection this row checks (scripts/ci-suites.mjs).
+  {
+    kind: 'child-process workload',
+    changed: 'src/lib/markdown/parser/index.ts',
+    reader: 'src/lib/markdown/parseBlockRetention.test.ts',
+    via: ['src/lib/markdown/parseBlockRetention.workload.ts'],
+  },
   { kind: 'fixture a child Vitest runs', changed: 'src/test/sharedWorker/skipped.fixture.ts', reader: 'src/test/sharedWorkerRunner.test.ts' },
 ];
 

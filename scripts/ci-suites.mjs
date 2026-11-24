@@ -160,26 +160,27 @@ export function e2eGrepInvert(event, paths, harnessPackages) {
 // every check.
 const fromFrontend = path => posix.normalize(`frontend/${path}`);
 const selectionInputs = new Set([
-  ...READERS.flatMap(({ changed, reader }) => [changed, reader]),
+  ...READERS.flatMap(({ changed, reader, via = [] }) => [changed, reader, ...via]),
   ...PROJECT_INPUTS.map(({ changed }) => changed),
   ...TRIGGERS.filter(({ all }) => all).map(({ changed }) => changed),
 ].map(fromFrontend));
+// Both checks load frontend/vitest.config.ts: the config, what it imports
+// (the plugins in src/test/config/, the watchdog, scripts/bundleId.ts), the
+// Vitest and Playwright versions, and the TypeScript config.
+const vitestConfig = /^frontend\/(vitest\.config\.ts$|src\/test\/config\/|src\/test\/stalledPageWatchdog\.ts$|scripts\/bundleId\.ts$|package\.json$|pnpm-lock\.yaml$|tsconfig[^/]*\.json$)/;
 export const vitestChecks = {
-  // frontend/scripts/vitest-changed.check.mjs: the files its tables name,
-  // the selector and the check, the TypeScript config, and the Vitest
-  // plugins in src/test/config/ through which the resolver sees what a
-  // test reads. It does not select a change to a file between a reader and
-  // the file it reads (parseBlockRetention.workload.ts), or a frontend file
-  // that starts importing a file the check expects to select no test
+  // frontend/scripts/vitest-changed.check.mjs: the config, the selector and
+  // the check, and the files its tables name, each reader's bridge to the
+  // file it reads included (`via`). It does not select a frontend file that
+  // starts importing a file the check expects to select no test
   // (../package.json, ../e2e/package.json).
-  'test-selection': path => selectionInputs.has(path) ||
-    /^frontend\/(scripts\/vitest-changed(\.check)?\.mjs$|tsconfig[^/]*\.json$|src\/test\/config\/)/.test(path),
-  // frontend/scripts/check-stalled-page-watchdog.mjs: the check, the
-  // watchdog, its fixtures and child config, the config whose registration
-  // it checks, the Vitest and Playwright versions, and the TypeScript
-  // config. The browsers come from paths no class matches.
-  'stall-watchdog': path =>
-    /^frontend\/(scripts\/check-stalled-page-watchdog\.mjs$|src\/test\/stalledPageWatchdog\.ts$|src\/test\/stalledPage\/|vitest\.config\.ts$|package\.json$|pnpm-lock\.yaml$|tsconfig[^/]*\.json$)/.test(path),
+  'test-selection': path => vitestConfig.test(path) || selectionInputs.has(path) ||
+    /^frontend\/scripts\/vitest-changed(\.check)?\.mjs$/.test(path),
+  // frontend/scripts/check-stalled-page-watchdog.mjs: the config, the
+  // check, and its fixtures and child config. The browsers come from paths
+  // no class matches.
+  'stall-watchdog': path => vitestConfig.test(path) ||
+    /^frontend\/(scripts\/check-stalled-page-watchdog\.mjs$|src\/test\/stalledPage\/)/.test(path),
 };
 
 export function vitestCheckRuns(event, paths, harnessPackages) {
