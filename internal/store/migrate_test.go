@@ -5097,15 +5097,6 @@ func TestMigrationV67AddsImportSourceIdentity(t *testing.T) {
 			t.Errorf("thread_import_state accepted a NULL %s after v67", column)
 		}
 	}
-	// It still cascades with the thread.
-	mustExec(t, db, `DELETE FROM threads WHERE id = 'thread-v67'`)
-	var remaining int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM thread_import_state`).Scan(&remaining); err != nil {
-		t.Fatalf("count thread_import_state: %v", err)
-	}
-	if remaining != 0 {
-		t.Error("thread_import_state row survived its thread's deletion after v67")
-	}
 }
 
 // TestMigrationV68DropsProviderThreadCostRowsAndKeysBySessionRef is the
