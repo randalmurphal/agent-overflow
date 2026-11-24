@@ -422,7 +422,8 @@ func TestPickAvailableProvider_FallsBackInOrder(t *testing.T) {
 		{"only codex installed, prefer claude", "claude", "codex", []string{"codex"}, "codex"},
 		{"neither installed, prefer codex", "codex", "codex", nil, "codex"},
 		{"neither installed, prefer claude", "claude", "codex", nil, "claude"},
-		{"empty codex binary, prefer codex", "codex", "", []string{"claude", "codex"}, "claude"},
+		// The lookup accepts the empty name, so only the guard refuses it.
+		{"empty codex binary, prefer codex", "codex", "", []string{"claude", "codex", ""}, "claude"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lookPath := func(bin string) error {
