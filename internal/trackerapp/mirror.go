@@ -57,9 +57,8 @@ type MirrorStore interface {
 	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error)
 	ListMirrorHistoryDue(rootID int64, now int64, first ...string) ([]store.MirrorHistoryDue, bool, error)
 	StoreMirrorTickets(rootID, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog, opened, read store.MirrorRead) (store.MirrorTicketsWrite, error)
-	ConfirmMirrorBody(rootID int64, b store.MirrorBody, opened store.MirrorRead) (bool, error)
 
-	GetMirrorBody(rootID int64, issueID string) (store.MirrorBody, bool, error)
+	ListMirrorBodies(rootID int64, issueIDs []string) ([]store.MirrorBody, error)
 	GetMirrorBoard(rootID int64, boardID string) (store.MirrorStructure, bool, error)
 	GetMirrorCatalog(rootID int64, users, statuses []string) (store.MirrorCatalog, error)
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)

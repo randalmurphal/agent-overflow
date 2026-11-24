@@ -209,7 +209,7 @@ func serviceAtScale(t *testing.T, n int) {
 	logCost("ticket open, stored", m.measure(nil, func(int) {
 		must3(t)(svc.IssueDetail(t.Context(), scope.Connection, opened, Interactive))
 	}, false))
-	logCost("ticket first paint", m.measure(nil, func(int) { must3(t)(svc.MirroredDetail(scope.Connection, opened)) }, false))
+	logCost("ticket first paint", m.measure(nil, func(int) { must3(t)(svc.mirroredDetail(scope.Connection, opened)) }, false))
 	logCost("cleanup pass", m.measure(nil, func(int) {
 		if err := svc.FinishMirrorCleanup(); err != nil {
 			t.Fatal(err)

@@ -2,7 +2,6 @@ package trackerapp
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -24,7 +23,7 @@ func (m *mirrorFixture) tickingClock() {
 // is false for none.
 func (m *mirrorFixture) storedDetail(t *testing.T, issue string) (store.MirrorBody, tracker.Detail, bool) {
 	t.Helper()
-	b, ok, err := m.st.GetMirrorBody(m.root(), issue)
+	b, ok, err := getMirrorBody(m.st, m.root(), issue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,71 +250,6 @@ func TestADetailDroppedDuringItsCheckIsReadAgain(t *testing.T) {
 	}
 }
 
-// heldDetail reports whether the record of issue holds a body.
-func (m *mirrorFixture) heldDetail(t *testing.T, issue string) bool {
-	t.Helper()
-	_, ok, err := m.st.GetMirrorBody(m.root(), issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ok
-}
-
-// afterDetailRead is a store that runs then after each stored body read.
-type afterDetailRead struct {
-	*store.Store
-	then func()
-}
-
-func (s afterDetailRead) GetMirrorBody(root int64, issue string) (store.MirrorBody, bool, error) {
-	b, ok, err := s.Store.GetMirrorBody(root, issue)
-	s.then()
-	return b, ok, err
-}
-
-// The mirror's copy of a detail the cap drops between its read and its
-// opening is not mirrored, and its opening adds no detail and drops none.
-func TestTheMirrorsCopyDroppedBeforeItsOpeningIsNotMirrored(t *testing.T) {
-	t.Parallel()
-	m, evict := capFixture(t)
-	m.svc.store = afterDetailRead{Store: m.st, then: evict}
-	if _, _, err := m.svc.MirroredDetail(m.conn.ID, "40000"); !errors.Is(err, ErrNotMirrored) {
-		t.Fatalf("the mirror's copy of a dropped detail: %v", err)
-	}
-	if m.heldDetail(t, "40000") || !m.heldDetail(t, "40001") {
-		t.Fatal("the opening added a detail with no document, dropping the least recently opened")
-	}
-}
-
-// The mirror's copy of a detail another read rewrites between its read and
-// its opening is read again, and the answer is the rewritten document: the
-// mirror holds the issue's detail throughout.
-func TestTheMirrorsCopyRewrittenBeforeItsOpeningIsReadAgain(t *testing.T) {
-	t.Parallel()
-	m := newMirrorFixture(t)
-	m.seedBoard(t)
-	c := card("10001", 1_799_000_000_000)
-	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
-	m.p.cards = cardsAnswering(&c)
-	m.openDetail(t, "10001")
-	rewritten := false
-	m.svc.store = afterDetailRead{Store: m.st, then: func() {
-		if rewritten {
-			return
-		}
-		rewritten = true
-		m.pass(time.Minute)
-		c.Title, c.Updated = "Rewritten", c.Updated.Add(time.Minute)
-		if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil {
-			t.Error(err)
-		}
-	}}
-	v, _, err := m.svc.MirroredDetail(m.conn.ID, "10001")
-	if err != nil || v.Card.Title != "Rewritten" {
-		t.Fatalf("the mirror's copy rewritten before its opening: %v, %q", err, v.Card.Title)
-	}
-}
-
 // A check reads the issue's own card only. A linked issue the mirror keeps
 // shows the mirror's card of it, read in the view's one cards lookup; one
 // it does not keep shows what the detail's last full read found. Nothing
@@ -358,7 +292,7 @@ func TestACheckShowsTheLinkedIssuesAsTheMirrorHasThem(t *testing.T) {
 	if after.ReadAt != before.ReadAt || !bytes.Equal(after.Data, before.Data) || stored.Links[0].Issue.Title != "Issue 10002" {
 		t.Fatalf("the stored detail was rewritten: read %d (was %d), link %+v", after.ReadAt, before.ReadAt, stored.Links[0].Issue)
 	}
-	if v, _, err := m.svc.MirroredDetail(m.conn.ID, "10001"); err != nil || v.Links[0].Issue.Title != link.Title {
+	if v, _, err := m.svc.mirroredDetail(m.conn.ID, "10001"); err != nil || v.Links[0].Issue.Title != link.Title {
 		t.Fatalf("the mirror's copy: %+v, %v", v.Links, err)
 	}
 }
@@ -405,7 +339,7 @@ func TestARefreshReadsTheDetail(t *testing.T) {
 	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
 	m.p.updatedMovesWithDetail(cardsAnswering(&c))
 	m.openDetail(t, "10001")
-	if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil {
+	if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, "10001", Interactive, true); err != nil {
 		t.Fatal(err)
 	}
 	if m.p.count("Cards") != 0 || m.p.count("Details") != 2 {
@@ -436,7 +370,7 @@ func TestADetailTheMirrorKnowsIsStaleIsRead(t *testing.T) {
 		t.Fatalf("a newer mirror card: updated %d, %d card reads, %d detail reads", v.Card.Updated, m.p.count("Cards"), m.p.count("Details"))
 	}
 	c.Updated = c.Updated.Add(time.Minute)
-	if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil {
+	if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, "10001", Interactive, true); err != nil {
 		t.Fatal(err)
 	}
 	m.openDetail(t, "10001")

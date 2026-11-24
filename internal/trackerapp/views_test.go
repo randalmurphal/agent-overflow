@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -220,7 +221,7 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 			m.p.updatedMovesWithDetail(cardsAnswering(&c))
 			v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 		default:
-			v, _, err = m.svc.MirroredDetail(m.conn.ID, "10001")
+			v, _, err = m.svc.mirroredDetail(m.conn.ID, "10001")
 		}
 		if err != nil || v.Card.StatusSince != want || v.Card.Parent == nil {
 			t.Fatalf("detail %s: status since %d, parent %+v, %v", path, v.Card.StatusSince, v.Card.Parent, err)
@@ -320,7 +321,7 @@ func TestDetailShowsTheRecordsCardAndStatusTime(t *testing.T) {
 				var v DetailView
 				var err error
 				if mirrored {
-					v, _, err = m.svc.MirroredDetail(m.conn.ID, "10001")
+					v, _, err = m.svc.mirroredDetail(m.conn.ID, "10001")
 				} else {
 					v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 				}
@@ -358,7 +359,9 @@ func TestATicketDoesNotShowAnEarlierStaysTime(t *testing.T) {
 			must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
 			detail := m.svc.IssueDetail
 			if refresh {
-				detail = m.svc.RefreshIssueDetail
+				detail = func(ctx context.Context, id string, issue tracker.IssueID, u Urgency) (DetailView, Changes, error) {
+					return m.svc.issueDetail(ctx, id, issue, u, true)
+				}
 			}
 			for i, status := range []tracker.StatusID{"s2", "s1"} {
 				m.p.detail = func(tracker.IssueID) (tracker.Detail, error) {

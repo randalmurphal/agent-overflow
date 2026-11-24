@@ -76,7 +76,7 @@ func (s *fakeScenario) kept(t *testing.T, conn Connection, issue tracker.IssueID
 	default:
 		card = true
 	}
-	d, ok, err := s.st.GetMirrorBody(root, string(issue))
+	d, ok, err := getMirrorBody(s.st, root, string(issue))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,14 +111,6 @@ func exited(t *testing.T, tp *ticketPump) {
 	case <-time.After(20 * time.Second):
 		t.Fatalf("the pump of %s did not return", tp.key.issue)
 	}
-}
-
-// pumpHolds reports whether issue's pump holds its document.
-func (s *fakeScenario) pumpHolds(conn Connection, issue tracker.IssueID) bool {
-	tp := s.svc.ticketPumpOf(conn.ID, issue)
-	s.svc.subMu.Lock()
-	defer s.svc.subMu.Unlock()
-	return tp.held != nil
 }
 
 // openTicketRows is how many open-ticket rows the mirror holds, all of
@@ -191,9 +183,6 @@ func TestAnOpenTicketsIssueIsKeptWhateverBroughtItThere(t *testing.T) {
 			}
 			if card, doc := s.kept(t, conn, tc.issue); !card || !doc {
 				t.Fatalf("while open the mirror keeps the card %v and the document %v", card, doc)
-			}
-			if s.pumpHolds(conn, tc.issue) {
-				t.Fatal("the pump holds the document the mirror keeps")
 			}
 			if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); !v.Loaded || v.Detail.Card.ID != string(tc.issue) {
 				t.Fatalf("the open ticket shows %+v", v)
@@ -313,9 +302,6 @@ func TestARestoreKeepsTheOpenTicketsAgain(t *testing.T) {
 				if card, doc := s.kept(t, conn, issue); !card || !doc {
 					t.Fatalf("after the restore the mirror keeps %s's card %v and document %v", issue, card, doc)
 				}
-				if s.pumpHolds(conn, issue) {
-					t.Fatalf("the pump of %s holds its document after the restore", issue)
-				}
 			}
 			if n := s.openTicketRows(t); n != int64(len(open)) {
 				t.Fatalf("%d open-ticket rows after the restore; want the tickets' %d", n, len(open))
@@ -405,7 +391,7 @@ func TestARunBeforeAnyViewReadDeletesTheEarlierRows(t *testing.T) {
 	t.Parallel()
 	s, conn, _ := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
 	s.earlierRows(t, conn, "10105", 2)
-	if _, _, err := s.svc.RefreshIssueDetail(t.Context(), conn.ID, "10105", Interactive); err != nil {
+	if _, _, err := s.svc.issueDetail(t.Context(), conn.ID, "10105", Interactive, true); err != nil {
 		t.Fatal(err)
 	}
 	if n := must[int64](t)(s.st.DropMirrorTicketsOfOtherSessions(s.svc.session)); n != 0 {
@@ -511,11 +497,11 @@ func TestOpeningAndClosingATicketKeepCosts(t *testing.T) {
 			cs := newCountingStore(s.st)
 			s.svc.store = cs
 			sub := s.openTicket(t, conn, issue)
-			// The opening's first read stores the ticket and builds its view
-			// once: its own write, which no change the funnel let pass the
-			// pump follows, builds no second view.
+			// The opening paints from the record (no body yet), then its
+			// first read stores the ticket and builds its view from the
+			// record once, as it settles.
 			quiet(t, s.svc)
-			const want = "GetMirrorBody:2 GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorCards:1 StoreMirrorTickets:1"
+			const want = "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorCards:1 StoreMirrorTickets:1"
 			if got := describeCounts(cs.take()); got != want {
 				t.Fatalf("the opening cost %s; want %s", got, want)
 			}

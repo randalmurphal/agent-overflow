@@ -48,14 +48,13 @@ func ownOf(scope Scope, ch Changes) []boardChanges {
 //     statuses (a name, a status's group, Changes.Catalog), moves rows no
 //     ID names: the board is to be read again, as every board is when the
 //     lookup failed;
-//   - each open ticket is told what moved an input of its view
-//     (ticketInputs): it is due a read at once, or rebuilds its view with
-//     no tracker call.
+//   - each open ticket whose view an input of moved is told so
+//     (tellTicketLocked): its view is built again from the record.
 //
 // What changes the origin pump's own scope is left pending for that pump,
-// which sends it with its failure in one event, and a read of tickets
-// settles its own tickets (readTickets); every other subscription is sent
-// its event or nudge here. root is the connection's mirror root the
+// which sends it with its failure in one event; every other board is sent
+// its event here. A read of tickets is told its own changes as any other,
+// and builds their views as it settles them (settleTickets). root is the connection's mirror root the
 // change was stored under, as the run that stored it held it, and gen its
 // generation: only the pumps of that generation show that mirror, so only
 // they are told (genLocked). A change stored under a mirror a turn off
@@ -122,63 +121,7 @@ func (s *Service) publish(root int64, gen uint64, conn string, ch Changes, own [
 		}
 	}
 	for _, tp := range tickets {
-		if origin == nil || !slices.Contains(origin.tickets, tp) {
-			s.tellTicketLocked(tp, ch)
-		}
-	}
-}
-
-// tellTicketLocked tells tp what moved an input of its view in ch
-// (ticketInputs): it is due a read at once, or rebuilds its view with no
-// tracker call, or, judged by its installed dependencies, neither
-// (ticketPump.judged). The caller holds subMu.
-func (s *Service) tellTicketLocked(tp *ticketPump, ch Changes) {
-	if tp.over || tp.core.DeadLocked() {
-		return
-	}
-	switch read, rebuild := ticketInputs(tp, ch, false); {
-	case read:
-		s.readNowLocked(tp)
-		fallthrough
-	case rebuild:
-		s.rebuildAgainLocked(tp)
-	default:
-		tp.judged = s.nextStampLocked()
-	}
-}
-
-// unwatchedLocked reports that shows, the dependencies of a view of tp
-// whose build began at stamp b, name an issue tp's installed ones do not
-// while the funnel let a change pass tp since b: it judged that change by
-// the installed ones, so it may have moved the new one after the build
-// read it. The caller installs the view and has it built again
-// (rebuildAgainLocked). The caller holds subMu.
-func (s *Service) unwatchedLocked(tp *ticketPump, shows []tracker.IssueID, b uint64) bool {
-	return tp.judged > b &&
-		slices.ContainsFunc(shows, func(id tracker.IssueID) bool { return !slices.Contains(tp.shows, id) })
-}
-
-// rebuildAgainLocked has tp's view built again from the mirror, with no
-// tracker call. The caller holds subMu.
-func (s *Service) rebuildAgainLocked(tp *ticketPump) {
-	tp.inputs = s.nextStampLocked()
-	nudge(tp.viewChanged)
-}
-
-// tellTickets tells pumps of mirror generation gen what ch stored, as
-// publish tells a ticket: the open tickets a write's refresh left out of
-// its publications (tickOrigin.tickets) and stopped before the read that
-// settles them.
-func (s *Service) tellTickets(gen uint64, pumps []*ticketPump, ch Changes) {
-	if ch.Empty() {
-		return
-	}
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	for _, tp := range pumps {
-		if tp.gen == gen {
-			s.tellTicketLocked(tp, ch)
-		}
+		s.tellTicketLocked(tp, ch)
 	}
 }
 

@@ -204,18 +204,6 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 				mirrorReadOf(root, 0), mirrorReadOf(root, 9))
 			return err
 		},
-		"ConfirmMirrorBody": func(root int64) error {
-			b, ok, err := s.GetMirrorBody(root, "10001")
-			if err != nil {
-				return err
-			}
-			if !ok {
-				// A gone root holds none: the body as a live root read it.
-				b = MirrorBody{IssueID: "10001", ReadAt: 7, root: root, sweep: 1}
-			}
-			_, err = s.ConfirmMirrorBody(root, b, mirrorReadOf(root, 9))
-			return err
-		},
 		"ReplaceMirrorWorklogs": func(root int64) error {
 			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadOf(root, 1), nil)
 			return err
@@ -248,7 +236,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "ListMirrorHistoryDue", "GetMirrorBody", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
+	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorBodies", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorSection", "CountMirrorSections",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards",
 	"ReadMirrorRefreshTargets",

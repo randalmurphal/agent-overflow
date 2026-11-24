@@ -376,13 +376,13 @@ the status result for the version it was read for. Its receipt says, for
 each ticket, whether the write changed the card, moved the status time
 (told as `Changes.History`, so every view of the card follows), and
 stored a body or moved the one held to another version (told as
-`Changes.Details`, which the issue's open ticket, when the read was not
-its own, rebuilds from rather than reads again). A view of a ticket
+`Changes.Details`, from which the issue's open ticket builds its view
+rather than read again). A view of a ticket
 shows the record's card, its URL included (Linear's is a stored card
 field; Jira's is the site and the key, `jiraprovider.IssueURL`), with its
 body, and says when the body is of an older version than the card
-(`DetailView.BodyBehind`). An issue the mirror does not keep shows the
-read's own card, and its pump holds its document. A record card older than
+(`DetailView.BodyBehind`). An issue the mirror does not keep (a direct
+read's) shows the read's own card and document. A record card older than
 the document (a board read of an earlier answer that stored the issue's
 first keep after a direct read of it) is not rendered: the document's own
 card is, so a view never shows a card older than its body. The mark is judged once,
@@ -415,7 +415,7 @@ read. The detail is read and stored instead when there is no body to
 check, when the record's card is already newer than the body, when the
 body's read began more than 30 minutes ago (its moves and field metadata
 come from the workflow and screens, which move no update time), on a
-person's refresh (`RefreshIssueDetail`), and where the update time does
+person's refresh, and where the update time does
 not move with the detail. An open ticket due a read because another read
 stored its card is read in full when that card is newer than its body,
 with no cards read, and checked otherwise. No body is written outside
@@ -424,13 +424,9 @@ issue's key, title and status from the mirror's cards, read with the
 issue's own card in one `ListMirrorCards`. A linked issue the mirror
 keeps no card of shows as the body holds it, at most 30 minutes old; a
 parent it keeps no card of shows its ID alone. A failed check leaves the
-stored body as it is. `MirroredDetail` returns the stored body with its
-record's card and when its read began, with no tracker call, for a first
-paint before the check answers, and records the opening only while the
-record still holds that body with no sweep since
-(`store.ConfirmMirrorBody`); a body another read rewrote between its read
-and its opening is read again, so it answers not mirrored only when the
-mirror holds none.
+stored body as it is. An open ticket's first paint is its view built
+from the record with no tracker call, before its first read answers; it
+records no opening, which the read's keep and write do.
 
 An issue stays while it is on a listed board, a thread this computer owns
 links it on that connection's site, or its ticket is open
@@ -474,9 +470,9 @@ no body, and the reopened ticket's first read stores its own. A bind names
 its issue and its root; a write of one issue under another's bind fails.
 A read no open ticket made (`IssueDetail`'s) carries no bind, is ordered
 by (version, read) alone and records its own opening, never a bind's; its
-body is the shared cached body: a first paint or a Jira prior check may
-show it as the cached body, and confirms it as a direct opening
-(`store.ConfirmMirrorBody`), and a higher provider version from a direct
+body is the shared cached body: an open ticket's view may show it, and a
+Jira check confirms it only while the check's own write finds the record
+still holding it, and a higher provider version from a direct
 read begun earlier than an open ticket's read wins over that read's. The
 pump's goroutine deletes the row as it returns, and every pump's goroutine
 runs, one stopped before its launch included (a write's refresh may have
@@ -842,8 +838,9 @@ pumps use the same package, so there is one implementation.
 
 Each open ticket has a pump with a goroutine and no timer. It makes the
 reads a person waits on, the ticket's first read and a refresh (always a
-full read), which alone record an opening, and rebuilds the ticket's view
-with no tracker call when an input of it other than the document moved.
+full read), which alone record an opening, and builds the ticket's view
+from the record with no tracker call when the change funnel tells it an
+input of the view moved and no read of it is in flight.
 Every other read of a connection's tickets is its round's
 (`trackerapp/ticket_round.go`): one goroutine and one timer per
 connection, running while one of its tickets is shown, ended before
@@ -870,31 +867,43 @@ a read that was not final is read again a round after its settle margin.
 No history being due costs no statement: the sync state the read takes
 says so.
 
-A ticket's view is built from its document and from what the mirror
-holds of other things: the mirror's card of the issue and its status
-time, the cards of the issues the view shows (its parent, the issues it
-links) and whether the mirror keeps them, and the connection's users and
-statuses. Reads settle documents in the order they began; the funnel
-orders changes to the other inputs. A view is installed only when it was
-built from the document the pump holds now, after the last change to the
-other inputs; one that misses that is built again, so a delayed read or
-build never replaces a newer view. Whether the view is loaded is part of
-what is told: a ticket whose content neither the mirror nor the pump
-holds any more is told not loaded and read at once, and told loaded when
-the read holds it again, the same content included. A subscriber answered
-not loaded is told the same way; finding it not loaded again leaves the
-read in flight standing. When another read stores the issue's document in
-the mirror while the pump holds one, the view is rebuilt from whichever
-read began later, and the pump lets go of an older one; while a read of
-the ticket is in flight, that read settles the document with its outcome
-and the view is rebuilt when it ends, so no view shows a document with
-the failure of the read that stored it. A read succeeds only once the tracker
-answered and the document it checked is confirmed where its check says
-(the mirror's copy of the same read, or the pump's while the mirror holds
-none); one the cap dropped or the cleanup swept meanwhile is read in
-full. A read of several tickets settles each with its own outcome: a
-ticket whose check confirmed its document, whose document was stored or
-held, or that the tracker left out is settled so whatever happened to the
+A ticket's view has one source, the issue's record in the mirror: its
+card and status time, its body, the cards of the issues the view shows
+(its parent, the issues it links) and whether the mirror keeps them, and
+the connection's users and statuses (`trackerapp/ticket_view.go`). A
+read stores what it found and settles its outcome; every view a
+subscriber is told is built from the record, and `TicketDetail` returns
+the view last built with no store call. The change funnel tells each
+pump of a stored change to an input of its view once the store call that
+made it returned, so after its commit. A pump counts the tells; a build
+counts them before its first statement and installs its view only when
+no tell came since, and builds again otherwise. While a build is in
+flight every card, row and keep change of the connection counts, since
+the view it builds may show an issue the installed view does not. A
+late or repeated tell costs a build, never a view older than the record.
+One build reads the bodies of up to 16 tickets in one statement
+(`store.ListMirrorBodies`) and the cards and names of their views in one
+more each. Whether the view is loaded is part of what is told.
+
+A change told while a read of the ticket is in flight is left to that
+read: its settlement builds the view as it settles the outcome, so one
+event carries both and no view shows a document with the failure of the
+read that stored it. A write's refresh is such a read from its start. A
+hidden ticket's view is built when it is shown again. A view whose body
+is behind its card makes the ticket due a read at once, once per card
+version, so a tracker whose documents lag its cards costs one read, not
+a loop; a ticket whose last read failed is left to the retry schedule. A
+record that holds no body leaves the view as it was told (not loaded
+when it showed none); a build on a change then makes the ticket due a
+read at once, and a read whose body the mirror does not keep (the cap
+dropped it in the same write, past 200 open tickets) is the ticket's
+failure outside the tracker. A body shows only while its issue is kept,
+so a body left for the cleanup to sweep is never shown. A read succeeds
+only once the tracker answered and the document it checked is confirmed
+by the receipt of the check's own write; one the cap dropped or the
+cleanup swept meanwhile is read in full. A read of several tickets settles each with its own outcome: a
+ticket whose check confirmed its document, whose document was stored,
+or that the tracker left out is settled so whatever happened to the
 others, and the read's failure is told only to the tickets it did not
 answer, the ones a rate limit holds due when it lifts. A failure is told
 to each ticket once and cleared by its next success.
@@ -925,13 +934,13 @@ structure read for. A ticket that changed adds its own full read.
 
 | Round of 50 tickets, 10 changed | Requests | Store calls | Statements | Rows written |
 |---|---|---|---|---|
-| Jira | 21 | 5 | 27 | 60 issue rows (50 read times, then the 10 read in full), 10 bodies, 8 users and 6 statuses (read times, stamped by each of the two writes) |
-| Linear | 5 | 4 | 20 | 60 issue rows, 10 bodies, 4 users and 3 statuses (read times) |
+| Jira | 21 | 6 | 28 | 60 issue rows (50 read times, then the 10 read in full), 10 bodies, 8 users and 6 statuses (read times, stamped by each of the two writes) |
+| Linear | 5 | 5 | 21 | 60 issue rows, 10 bodies, 4 users and 3 statuses (read times) |
 
 On Jira the 20 requests past the check are each changed issue and its
 comments; Linear's 5 details reads read the changed tickets already,
-cards and bodies in one write. Both rounds' store calls include the cards
-and catalog read that builds the 10 changed views. The table is of
+cards and bodies in one write. Both rounds' store calls include the
+bodies, cards and catalog reads that build the 10 changed views. The table is of
 tickets whose boards no one shows; a shown board of the connection adds
 the change funnel's lookup of the changed cards' boards, one more store
 call per write that changed any (`ListMirrorIssueBoards`, derived from
@@ -1119,8 +1128,8 @@ remaining cards are read by page.
   board the project does not list, a connection turned off, removed or
   Tempo, and past 64 board handles.
 - `SubscribeTicket(connection, issue)` answers the same way with the
-  ticket's detail when the mirror or the ticket's pump holds one; at most
-  64 ticket handles.
+  ticket's view built from the record, or the view its subscribers were
+  last told when its pump runs already; at most 64 ticket handles.
 - Both answers carry the failure the subscribers were last told, the
   tracker's or one outside it, so a subscriber that joins while reads fail
   shows the failure.
@@ -1133,7 +1142,7 @@ remaining cards are read by page.
   ticket view that could not be built, a store error), the read's stop, or
   `ErrSubscriptionEnded` when the subscription ends first.
 - `TicketDetail(handle)` is the ticket as its subscribers were last told:
-  its failure, and its view or not loaded.
+  its failure, and its view or not loaded, from memory.
 - `BoardPatch(scope, sections, issues, held)` is the patch read below;
   `held` names the totals the client holds.
 - `StartLinkedSync` arms the linked-issues loop. `New` starts nothing.
@@ -1182,8 +1191,8 @@ funnel (`trackerapp/funnel.go`):
 - An open ticket whose card changed is due a read at once, with its
   round. One whose view depends on another input that moved (its history,
   its row, the mirror's copy of its document, a card or row of an issue
-  its view shows, the users and statuses) rebuilds its view with no
-  tracker call. A ticket detail read outside a subscription
+  its view shows, the users and statuses) builds its view from the record
+  with no tracker call. A ticket detail read outside a subscription
   (`IssueDetail`) publishes what it stored too.
 - Each store write of a run is published as it returns (`run.told`),
   before any later call of the run can wait or fail: a tick's pages,

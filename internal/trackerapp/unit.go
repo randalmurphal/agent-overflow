@@ -58,9 +58,8 @@ type run struct {
 	// own board's from state.
 	lifetimes map[tracker.BoardID]int64
 	// origin is the pump the run's changes are for (tickOrigin): a tick's
-	// pump, or the open tickets a read or a write's refresh settles; nil
-	// for none. tell, when set, collects what each write stored, which
-	// told has published already.
+	// pump; nil for none. tell, when set, collects what each write stored,
+	// which told has published already.
 	origin *tickOrigin
 	tell   func(Changes)
 	stop   func()

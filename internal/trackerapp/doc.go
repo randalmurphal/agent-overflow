@@ -19,8 +19,7 @@
 // bounded amount of work, under a lock per scope, and returns, starting
 // no goroutine; views*.go are the pane's reads as the DTOs the app
 // binds. Those read the mirror alone, except IssueDetail: a stored detail
-// is current only when the tracker says so in that call, and
-// MirroredDetail is the stored copy for a first paint. Turning a
+// is current only when the tracker says so in that call. Turning a
 // connection off detaches its mirror, and a tick that outlives its mirror,
 // or names a board no project lists, stores nothing and ends (unit.go);
 // the cleanup drains what a detach, an unlisted board or an unlinked issue
@@ -29,12 +28,14 @@
 // Clients subscribe (subscriptions.go): each subscribed board has one
 // pump, a goroutine that ticks on Cadence while a handle shows it
 // (pump_board.go). Each open ticket has a pump goroutine with no timer for
-// the reads a person waits on (its first read and a refresh) and its view
-// rebuilds (pump_ticket.go); every other read of a connection's tickets
-// is its round's, one goroutine and timer per connection reading the
-// shown tickets due together (ticket_round.go), in one verified read
-// (ticket_read.go), whose outcome settles into each pump under one rule
-// (ticket_settle.go). What every
+// the reads a person waits on (its first read and a refresh)
+// (pump_ticket.go); every other read of a connection's tickets is its
+// round's, one goroutine and timer per connection reading the shown
+// tickets due together (ticket_round.go), in one verified read
+// (ticket_read.go), whose outcome settles into each pump
+// (ticket_settle.go). A ticket's view is built from the mirror's record
+// alone, as a read settles it or when the funnel tells it an input moved
+// (ticket_view.go). What every
 // tick and ticket read stores passes through one change funnel
 // (funnel.go), which turns it into the events and nudges each
 // subscription needs, sent through Deps callbacks; a client patches the

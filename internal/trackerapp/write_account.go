@@ -41,12 +41,12 @@ type refreshed struct {
 	// ch is everything it stored, each write told as it returned
 	// (run.told).
 	ch Changes
-	// pumps are the open tickets whose detail it read, began the read's
+	// pumps are the open tickets whose detail it reads, began the read's
 	// place among those settled into ticket pumps, and reads their reads
 	// in the order of pumps, then those of the details only the mirror
-	// holds; all set together when the details read begins, and nil when
-	// the refresh stopped before it. details and detailsErr are how that
-	// read ended.
+	// holds: the pumps' reads begin with the refresh of the mirror, the
+	// others' with the details read. details and detailsErr are how that
+	// read ended, detailsErr why the refresh stopped before it.
 	pumps      []*ticketPump
 	began      uint64
 	reads      []*ticketRead

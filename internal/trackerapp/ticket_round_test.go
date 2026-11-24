@@ -72,7 +72,7 @@ func TestAnIdleRoundOfAdvancingAnswersRewritesNothing(t *testing.T) {
 	bodies := func() []string {
 		out := make([]string, len(issues))
 		for i, id := range issues {
-			d, ok, err := m.st.GetMirrorBody(m.root(), string(id))
+			d, ok, err := getMirrorBody(m.st, m.root(), string(id))
 			if err != nil || !ok {
 				t.Fatalf("the body of %s: %v, %v", id, ok, err)
 			}

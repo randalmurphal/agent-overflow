@@ -259,11 +259,9 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 
 // tickOrigin is the pump a tick runs for, which emits what the tick
 // changed of its own scope together with its failure, and what the
-// tick's record left of the scope's sync state; or the ticket pumps a
-// read of tickets settles itself.
+// tick's record left of the scope's sync state.
 type tickOrigin struct {
-	board   *boardPump
-	tickets []*ticketPump
+	board *boardPump
 	// sync is the scope's sync view after the tick's record, set when
 	// recorded.
 	sync     SyncView

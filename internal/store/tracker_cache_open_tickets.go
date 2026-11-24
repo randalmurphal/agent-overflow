@@ -31,9 +31,7 @@ import (
 // looked up once per ticket in the write's transaction: a write that
 // passed the lookup commits though the ticket closed after it, and every
 // write whose lookup follows the end is refused. A read no open ticket
-// made carries no bind, and a person's opening confirmed on the cached
-// body (ConfirmMirrorBody) records that read's own opening: neither ever
-// records a bind's.
+// made carries no bind and records its own opening alone, never a bind's.
 
 // MirrorBind is one bind of an open ticket, which the store issues
 // (KeepMirrorTicket): the root and the issue it names, a number no other

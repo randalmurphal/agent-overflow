@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -57,33 +56,14 @@ func modelView(s *Service, v TicketView) (bool, uint64) {
 	return true, s.digestOf(*v.Detail)
 }
 
-// heldView is tp's view as TicketDetail answers it, read with no side
-// effect: the view the pump holds, else one built from the mirror's copy,
-// not loaded when neither holds one.
-func heldView(t *testing.T, s *Service, tp *ticketPump) (bool, uint64) {
-	s.subMu.Lock()
-	held := tp.held
-	s.subMu.Unlock()
-	if held != nil {
-		return true, s.digestOf(held.view)
-	}
-	root, err := s.readRoot(tp.key.connection)
+// modelRecordView is tp's view as a build from the record would make it now,
+// read with no side effect: what the view told last is once the pumps
+// are quiet.
+func modelRecordView(t *testing.T, s *Service, tp *ticketPump) (bool, uint64) {
+	v, _, err := s.mirroredDetail(tp.key.connection, tp.key.issue)
 	if errors.Is(err, ErrNotMirrored) {
 		return false, 0
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.leave()
-	_, d, ok, err := s.storedDetail(root, tp.key.issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok {
-		return false, 0
-	}
-	row := must[store.TrackerConnection](t)(s.viewRow(tp.key.connection))
-	v, _, err := s.detailView(root, row, d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,8 +158,8 @@ func subscriptionModel(t *testing.T, r *rand.Rand) {
 		}
 	}
 	// current compares, once the pumps are quiet, what each subscriber of
-	// a shown ticket applied with what TicketDetail would answer now
-	// (heldView), asked with no side effect.
+	// a shown ticket applied with the view a build from the record makes
+	// now (modelRecordView): the record is the view's one source.
 	current := func(step int) {
 		quiet(t, m.svc)
 		apply()
@@ -194,7 +174,7 @@ func subscriptionModel(t *testing.T, r *rand.Rand) {
 			if !shown {
 				continue
 			}
-			loaded, digest := heldView(t, m.svc, tp)
+			loaded, digest := modelRecordView(t, m.svc, tp)
 			if loaded != s.loaded || digest != s.digest {
 				t.Fatalf("step %d, ticket %s: the subscriber holds a view loaded %v (%x); the service holds loaded %v (%x)", step, s.ticket, s.loaded, s.digest, loaded, digest)
 			}

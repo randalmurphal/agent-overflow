@@ -349,8 +349,8 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		if err := syncState(""); err != nil {
 			return err
 		}
-		if _, ok, err := s.GetMirrorBody(root, tickets[0]); err != nil || !ok {
-			return fmt.Errorf("body held %v: %v", ok, err)
+		if bodies, err := s.ListMirrorBodies(root, tickets[:1]); err != nil || len(bodies) != 1 {
+			return fmt.Errorf("bodies held %d: %v", len(bodies), err)
 		}
 		if _, err := s.GetMirrorCatalog(root, []string{"acc-user1"}, []string{"1"}); err != nil {
 			return err

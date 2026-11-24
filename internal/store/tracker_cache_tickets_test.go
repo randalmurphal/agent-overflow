@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -143,61 +144,74 @@ func TestTheBodyCapKeepsTheOpenTicketsAndTheMostRecentlyOpened(t *testing.T) {
 	checkBodiesHeld(t, s, "the cap")
 }
 
-// A confirmation records a person's opening of the body GetMirrorBody read
-// while the record holds it: not once a later read replaced it, the cap
-// or a sweep dropped it, or its issue is no longer kept. Refused, it
-// writes nothing.
-func TestConfirmMirrorBody(t *testing.T) {
-	t.Parallel()
+// heldBody is the body the record of issue holds, failing when it holds
+// none.
+func heldBody(t *testing.T, s *Store, root int64, issue string) MirrorBody {
+	t.Helper()
+	bodies, err := s.ListMirrorBodies(root, []string{issue})
+	if err != nil || len(bodies) != 1 {
+		t.Fatalf("the record of %s holds %d bodies: %v", issue, len(bodies), err)
+	}
+	return bodies[0]
+}
+
+// ListMirrorBodies reads, in one statement, the bodies the records of the
+// issues asked hold, each with its record's card and bookkeeping: not an
+// issue whose record holds none, nor one the mirror no longer keeps, nor
+// one the cleanup swept. A read of more than MirrorMaxBodies is refused.
+func TestListMirrorBodies(t *testing.T) {
 	s, _, root := newMirror(t)
-	writeMirrorBoard(t, s, root, "10", mirrorRows(10000, 2, "a"))
-	read := func(issue string) MirrorBody {
-		t.Helper()
-		b, ok, err := s.GetMirrorBody(root, issue)
-		if err != nil || !ok {
-			t.Fatalf("body of %s: %v, %v", issue, ok, err)
-		}
-		return b
-	}
-	confirm := func(what string, b MirrorBody, openedAt int64, want bool) {
-		t.Helper()
-		if got, err := s.ConfirmMirrorBody(root, b, mirrorReadAt(openedAt)); err != nil || got != want {
-			t.Fatalf("%s: %v, %v; want %v", what, got, err, want)
+	writeMirrorBoard(t, s, root, "10", mirrorRows(10000, 3, "a"))
+	for i, issue := range []string{"10000", "10001"} {
+		if _, err := storeTicket(t, s, root, currentSweep(s, root), issue, 100, int64(100+i), []byte(`{"v":"`+issue+`"}`)); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if _, err := storeTicket(t, s, root, currentSweep(s, root), "10000", 100, 100, []byte(`{"v":"1"}`)); err != nil {
-		t.Fatal(err)
+	describe := func(bodies []MirrorBody) string {
+		var out []string
+		for _, b := range bodies {
+			out = append(out, fmt.Sprintf("%s %d %d %d %d %s %s", b.IssueID, b.UpdatedAt, b.ReadAt, b.Wall, b.OpenedAt, b.Card.IssueID, b.Data))
+		}
+		return strings.Join(out, "; ")
 	}
-	b := read("10000")
-	if b.UpdatedAt != 5 || b.ReadAt != 100 || b.Wall != 100 || string(b.Data) != `{"v":"1"}` {
-		t.Fatalf("the body read: %+v", b)
+	var bodies []MirrorBody
+	n := countMirrorStatements(t, func() {
+		var err error
+		if bodies, err = s.ListMirrorBodies(root, []string{"10002", "10001", "10000", "10001"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	want := `10000 5 100 100 100 10000 {"v":"10000"}; 10001 5 101 101 100 10001 {"v":"10001"}`
+	if got := describe(bodies); got != want || n != 1 {
+		t.Fatalf("the bodies: %s in %d statements; want %s in one", got, n, want)
 	}
-	confirm("an opening", b, 150, true)
-	confirm("an earlier opening", b, 120, true)
-	if got := bodyOf(t, s, root, "10000"); got != "5 100 150 1" {
-		t.Fatalf("after the openings: %s", got)
-	}
-	if _, err := storeTicket(t, s, root, currentSweep(s, root), "10000", 0, 200, []byte(`{"v":"3"}`)); err != nil {
-		t.Fatal(err)
-	}
-	confirm("a replaced body", b, 300, false)
-	if got := bodyOf(t, s, root, "10000"); got != "5 200 150 3" {
-		t.Fatalf("after a refused confirmation: %s", got)
-	}
-	b = read("10000")
 	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10000"}, ReadAt: mirrorReadAt(2)})); err != nil {
 		t.Fatal(err)
 	}
-	confirm("an unkept issue", b, 400, false)
+	read := func(ids ...string) string {
+		t.Helper()
+		bodies, err := s.ListMirrorBodies(root, ids)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return describe(bodies)
+	}
+	if got := read("10000", "10001"); got != want[strings.Index(want, "; ")+2:] {
+		t.Fatalf("with 10000 unkept: %s; want 10001's alone", got)
+	}
 	if err := s.FinishMirrorCleanup(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	confirm("a body from before a sweep", b, 500, false)
+	if got := read("10000"); got != "" {
+		t.Fatalf("after the sweep: %s; want none", got)
+	}
 	checkBodiesHeld(t, s, "the sweep")
-	for name, b := range map[string]MirrorBody{"no body read": {}, "a body built by hand": {IssueID: "10001", ReadAt: 1}} {
-		if _, err := s.ConfirmMirrorBody(root, b, mirrorReadAt(1)); !errors.Is(err, ErrInvalidTrackerCache) {
-			t.Errorf("%s: %v", name, err)
-		}
+	var many []string
+	for i := range MirrorMaxBodies + 1 {
+		many = append(many, fmt.Sprint(20000+i))
+	}
+	if _, err := s.ListMirrorBodies(root, many); !errors.Is(err, ErrInvalidTrackerCache) {
+		t.Fatalf("a read of %d bodies: %v; want it refused", MirrorMaxBodies+1, err)
 	}
 }
 

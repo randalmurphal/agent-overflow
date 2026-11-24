@@ -123,14 +123,14 @@ func genCrossing(t *testing.T, tick, rename bool) {
 	}
 	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
 	f.svc.subMu.Lock()
-	inputs, nudged := tp.inputs, tp.nudged
+	dirty := tp.dirty
 	f.svc.subMu.Unlock()
 	boards, _, _ := f.events.snapshot()
 	before := len(boards)
 	close(release)
 	<-done
 	f.svc.subMu.Lock()
-	moved := tp.inputs != inputs || tp.nudged != nudged
+	moved := tp.dirty != dirty
 	f.svc.subMu.Unlock()
 	boards, _, _ = f.events.snapshot()
 	var told []BoardEvent
@@ -185,7 +185,7 @@ func TestAChangeToldUnderAnEarlierGenerationReachesNoLaterPump(t *testing.T) {
 		boards, _, _ := f.events.snapshot()
 		before := len(boards)
 		f.svc.subMu.Lock()
-		inputs, nudged := tp.inputs, tp.nudged
+		dirty := tp.dirty
 		f.svc.subMu.Unlock()
 		ch := Changes{Cards: ids("10001")}
 		f.svc.publish(root, gen, f.conn.ID, ch, ownOf(f.scope(), ch), nil)
@@ -195,7 +195,7 @@ func TestAChangeToldUnderAnEarlierGenerationReachesNoLaterPump(t *testing.T) {
 		defer f.svc.subMu.Unlock()
 		return slices.ContainsFunc(boards[before:], func(e BoardEvent) bool {
 			return slices.Contains(e.Changed, "10001") || e.ReadAgain
-		}), tp.inputs != inputs || tp.nudged != nudged
+		}), tp.dirty != dirty
 	}
 	if board, ticket := tell(oldRoot, oldGen); board || ticket {
 		t.Fatalf("a change told under the earlier generation reached the board %v, the ticket %v", board, ticket)

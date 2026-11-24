@@ -1,13 +1,13 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -127,9 +127,9 @@ func TestAWriteReachesTheFunnelOnce(t *testing.T) {
 }
 
 // A refresh that could not read an open ticket tells the ticket the
-// failure, then its view with the card the refresh stored over the body
-// it held, and the connection's round retries the read on its schedule
-// with no round due: the ticket recovers on its own.
+// failure together with its view with the card the refresh stored over
+// the body it held, in one event, and the connection's round retries the
+// read on its schedule with no round due: the ticket recovers on its own.
 func TestAFailedRefreshOfAnOpenTicketIsRetried(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
@@ -153,80 +153,61 @@ func TestAFailedRefreshOfAnOpenTicketIsRetried(t *testing.T) {
 	if _, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"New"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	got := f.events.issueEvents(t, 4)[1:]
-	if got[0].Failure == nil || got[0].Failure.Kind != string(FailureTransient) || got[0].Changed ||
-		got[1].Failure == nil || !got[1].Changed || got[2].Failure != nil || !got[2].Changed {
+	got := f.events.issueEvents(t, 3)[1:]
+	if got[0].Failure == nil || got[0].Failure.Kind != string(FailureTransient) || !got[0].Changed ||
+		got[1].Failure != nil || !got[1].Changed {
 		t.Fatalf("events %+v", got)
 	}
-}
-
-// crossingStore holds a ticket's view rebuild and the round's read that
-// crosses it: once armed, the rebuild's read of the mirror's copy waits for
-// the round's read to store its document, and that read, once stored,
-// waits for release before it settles.
-type crossingStore struct {
-	*store.Store
-	armed   atomic.Bool
-	stored  chan struct{}
-	release chan struct{}
-}
-
-func (s *crossingStore) GetMirrorBody(root int64, issue string) (store.MirrorBody, bool, error) {
-	if s.armed.Load() {
-		<-s.stored
+	f.settledTickets(t)
+	quiet(t, f.svc)
+	if _, issues, _ := f.events.snapshot(); len(issues) != 3 {
+		t.Fatalf("events %+v; want the opening's, the refresh's and the retry's", issues)
 	}
-	return s.Store.GetMirrorBody(root, issue)
 }
 
-func (s *crossingStore) StoreMirrorTickets(root, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog, opened, read store.MirrorRead) (store.MirrorTicketsWrite, error) {
-	out, err := s.Store.StoreMirrorTickets(root, sweep, tickets, catalog, opened, read)
-	if s.armed.Load() && slices.ContainsFunc(tickets, func(t store.MirrorTicket) bool { return t.Body != nil }) {
-		close(s.stored)
-		<-s.release
-	}
-	return out, err
-}
-
-// A write's refresh that failed to read an open ticket leaves its view
-// behind the card the refresh stored, and the round's retry reads the
-// ticket while that view is rebuilt. The rebuild leaves the retry's
-// document to the retry, so the ticket is never told the new document with
-// the failure the retry ended: it is told the failure, then the new
-// document with none.
-func TestARebuildLeavesTheDocumentToTheReadInFlight(t *testing.T) {
+// A write's refresh of an open ticket is the ticket's read from its start:
+// the card its first board's rows read stores reaches the ticket only as
+// the refresh settles, in one event with its outcome, though the pump took
+// the change's nudge while the second board's rows were read.
+func TestARefreshTellsAnOpenTicketOnceWhenItSettles(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
-	f.svc.cadence.RetryBase = time.Millisecond
-	cs := &crossingStore{Store: f.st, stored: make(chan struct{}), release: make(chan struct{})}
-	f.svc.store = cs
 	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001"))
 	f.events.issueEvents(t, 1)
 	f.settledTickets(t)
-	var failing atomic.Bool
-	failing.Store(true)
-	f.p.set(func(p *scripted) {
-		detail := p.detail
-		p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
-			if failing.CompareAndSwap(true, false) {
-				return tracker.Detail{}, &trackerapi.TransientError{Err: errors.New("reset")}
-			}
-			return detail(id)
-		}
-	})
+	quiet(t, f.svc)
 	f.answer(appliedEdit)
 	f.state.set(testBoard, writeRow("10001", 1, "a"))
-	cs.armed.Store(true)
-	// The write settles its ticket and rebuilds its view before it returns.
-	if _, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"New"}}}}); err != nil {
+	f.state.set("2", writeRow("10001", 1, "m"))
+	events := f.issueEventCount()
+	call := holdNth(f.p, "BoardRows", 2)
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.svc.Edit(context.Background(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"New"}}}})
+		done <- err
+	}()
+	waitClosed(t, "the held call", call.arrived)
+	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(time.Millisecond) {
+		f.svc.subMu.Lock()
+		idle := len(tp.viewChanged) == 0 && tp.building == 0
+		told := tp.dirty != tp.built
+		f.svc.subMu.Unlock()
+		if idle && told {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first board's card was not told to the ticket")
+		}
+	}
+	if got := f.issueEventsSince(events); len(got) != 0 {
+		t.Fatalf("the ticket was told %+v before the refresh settled", got)
+	}
+	close(call.release)
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	close(cs.release)
-	f.events.waitFor(t, "the retry's event", func(_ []BoardEvent, i []IssueEvent, _ []error) bool {
-		return len(i) > 2 && i[len(i)-1].Failure == nil
-	})
-	quiet(t, f.svc)
-	_, got, _ := f.events.snapshot()
-	if got = got[1:]; len(got) != 2 || got[0].Failure == nil || got[0].Changed || got[1].Failure != nil || !got[1].Changed {
-		t.Fatalf("events %+v", got)
+	if got := f.issueEventsSince(events); len(got) != 1 || !got[0].Changed || got[0].Failure != nil {
+		t.Fatalf("the refresh told %+v; want one event with its view", got)
 	}
 }

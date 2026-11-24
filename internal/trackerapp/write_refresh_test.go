@@ -83,7 +83,7 @@ func TestARefreshReadsEveryResourceKind(t *testing.T) {
 	}
 	stored := cs.take()
 	wantStore := map[string]int{"ReadMirrorRefreshTargets": 1, "ReplaceMirrorStructure": 1, "WriteMirrorRows": 2,
-		"UpsertMirrorCards": 1, "StoreMirrorTickets": 1, "ReplaceMirrorWorklogs": 2, "ListMirrorCards": 1, "GetMirrorCatalog": 1}
+		"UpsertMirrorCards": 1, "StoreMirrorTickets": 1, "ReplaceMirrorWorklogs": 2, "ListMirrorBodies": 1, "ListMirrorCards": 1, "GetMirrorCatalog": 1}
 	if !maps.Equal(stored, wantStore) {
 		t.Errorf("store calls %s, want %s", describeCounts(stored), describeCounts(wantStore))
 	}
@@ -234,7 +234,7 @@ func TestWriteCosts(t *testing.T) {
 				return f.svc.AddComment(ctx, id, CommentRequest{Issue: "10003", Markdown: "New comment"})
 			}),
 			costOf{map[string]int{"AddComment": 1, "Details": 1},
-				map[string]int{"ReadMirrorRefreshTargets": 1, "StoreMirrorTickets": 1, "ListMirrorCards": 1, "GetMirrorCatalog": 1}}},
+				map[string]int{"ReadMirrorRefreshTargets": 1, "StoreMirrorTickets": 1, "ListMirrorBodies": 1, "ListMirrorCards": 1, "GetMirrorCatalog": 1}}},
 		{"comment on an issue neither open nor cached", write(tracker.Result{Parts: []tracker.Part{appliedPart("10001", tracker.StepComment, tracker.DetailOf("10001"))}}, nil,
 			func() (WriteView, error) {
 				return f.svc.AddComment(ctx, id, CommentRequest{Issue: "10001", Markdown: "New comment"})

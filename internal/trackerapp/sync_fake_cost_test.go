@@ -189,7 +189,7 @@ func (s *fakeScenario) detailCosts(t *testing.T, conn Connection, scope Scope, o
 		tc("detail, none stored", func(t *testing.T) { open(t) }),
 		tc("detail, verified unchanged", func(t *testing.T) { open(t) }),
 		tc("detail, the mirror's copy", func(t *testing.T) {
-			if _, _, err := s.svc.MirroredDetail(conn.ID, one); err != nil {
+			if _, _, err := s.svc.mirroredDetail(conn.ID, one); err != nil {
 				t.Fatal(err)
 			}
 		}),
@@ -238,7 +238,7 @@ func (s *fakeScenario) detailCosts(t *testing.T, conn Connection, scope Scope, o
 	s.measureTicks(t, []tickCost{
 		tc("detail, older than the age bound", func(t *testing.T) { open(t) }),
 		tc("detail, forced refresh", func(t *testing.T) {
-			if _, _, err := s.svc.RefreshIssueDetail(t.Context(), conn.ID, one, Interactive); err != nil {
+			if _, _, err := s.svc.issueDetail(t.Context(), conn.ID, one, Interactive, true); err != nil {
 				t.Fatal(err)
 			}
 		}),
@@ -268,7 +268,7 @@ func TestFakeJiraRequestCosts(t *testing.T) {
 	// detail with no check.
 	s.detailCosts(t, conn, scope, "10102", "10000", "10002", "10000", map[string][2]int{
 		"detail, none stored": {2, 5}, "detail, verified unchanged": {1, 5},
-		"detail, the mirror's copy": {0, 5}, "detail, verified unchanged with 3 links": {1, 5},
+		"detail, the mirror's copy": {0, 4}, "detail, verified unchanged with 3 links": {1, 5},
 		"detail, after a comment": {3, 6}, "detail, the mirror already newer": {2, 5},
 		"detail, older than the age bound": {2, 5}, "detail, forced refresh": {2, 4},
 	})
@@ -294,7 +294,7 @@ func TestFakeLinearRequestCosts(t *testing.T) {
 	// the detail, in one request, and reads no stored detail first.
 	s.detailCosts(t, conn, scope, tracker.IssueID(lid(61)), tracker.ProjectID(lid(10)), "", "related", map[string][2]int{
 		"detail, none stored": {1, 4}, "detail, verified unchanged": {1, 4},
-		"detail, the mirror's copy": {0, 5}, "detail, verified unchanged with 3 links": {1, 4},
+		"detail, the mirror's copy": {0, 4}, "detail, verified unchanged with 3 links": {1, 4},
 		"detail, after a comment": {1, 4}, "detail, the mirror already newer": {1, 4},
 		"detail, older than the age bound": {1, 4}, "detail, forced refresh": {1, 4},
 	})

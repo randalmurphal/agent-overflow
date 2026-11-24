@@ -236,7 +236,7 @@ func TestARefreshOfAChangedOpenTicketReadsItOnce(t *testing.T) {
 			quiet(t, m.svc)
 			details, cards := m.p.count("Details"), m.p.count("Cards")
 			st.edit(issues[0], func(c *tracker.Card) { c.Title = "Renamed" })
-			if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, issues[0], Interactive); err != nil {
+			if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, issues[0], Interactive, true); err != nil {
 				t.Fatal(err)
 			}
 			quiet(t, m.svc)

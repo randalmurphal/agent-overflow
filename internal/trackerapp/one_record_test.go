@@ -147,7 +147,7 @@ func TestALateOlderReadNeverReplacesANewerTicket(t *testing.T) {
 	})
 	refreshed := make(chan error, 1)
 	go func() {
-		v, _, err := m.svc.RefreshIssueDetail(context.Background(), m.conn.ID, issue, Interactive)
+		v, _, err := m.svc.issueDetail(context.Background(), m.conn.ID, issue, Interactive, true)
 		if err == nil && v.Card.Title != "Third" {
 			err = fmt.Errorf("the refresh shows %q", v.Card.Title)
 		}
@@ -169,7 +169,7 @@ func TestALateOlderReadNeverReplacesANewerTicket(t *testing.T) {
 	if v := m.ticketView(t, subs[0].ID); v.Detail == nil || v.Detail.Card.Title != "Third" {
 		t.Fatalf("after the late older read the open ticket shows %+v; want Third", v.Detail.Card)
 	}
-	if v, _, err := m.svc.MirroredDetail(m.conn.ID, issue); err != nil || v.Card.Title != "Third" {
+	if v, _, err := m.svc.mirroredDetail(m.conn.ID, issue); err != nil || v.Card.Title != "Third" {
 		t.Fatalf("after the late older read the mirror's copy shows %q, %v; want Third", v.Card.Title, err)
 	}
 }
@@ -344,7 +344,7 @@ func TestATicketWithoutACardAtItsOpeningIsStoredByALaterRound(t *testing.T) {
 	cardsKnown = true
 	answer.Unlock()
 	m.round(t)
-	if _, ok, err := m.st.GetMirrorBody(m.root(), "10009"); err != nil || !ok {
+	if _, ok, err := getMirrorBody(m.st, m.root(), "10009"); err != nil || !ok {
 		t.Fatalf("after a round the mirror holds the body: %v, %v", ok, err)
 	}
 }
@@ -372,7 +372,7 @@ func TestAFailedKeepIsARetryableFailure(t *testing.T) {
 	if v := m.ticketView(t, sub.ID); v.Failure != nil || !v.Loaded {
 		t.Fatalf("after the store accepted the keep the ticket shows %+v", v)
 	}
-	if _, ok, err := m.st.GetMirrorBody(m.root(), "10009"); err != nil || !ok {
+	if _, ok, err := getMirrorBody(m.st, m.root(), "10009"); err != nil || !ok {
 		t.Fatalf("after the store accepted the keep the mirror holds the body: %v, %v", ok, err)
 	}
 }
@@ -743,9 +743,9 @@ func TestATicketsReadNamesOnlyItsCardsUsersAndStatusInTheSharedCatalog(t *testin
 // the ticket shows, landing after the board's): the check's write finds
 // the record of another version than the body (its receipt), so the same
 // read reads the ticket in full and shows that version's body with
-// nothing behind. The board's write told the ticket its card changed after
-// the read began, so the ticket stays due at once (readNowLocked,
-// dueLocked) and its next read is a check, which finds the body current.
+// nothing behind. The board's write, told while the read was in flight, is
+// built into the view the read's settlement builds from the record, which
+// is current: no further read follows.
 func TestAJiraCheckRacingABoardWriteReadsTheTicketInFull(t *testing.T) {
 	t.Parallel()
 	m, st, issues, subs := newRoundFixture(t, 1, true)
@@ -777,8 +777,8 @@ func TestAJiraCheckRacingABoardWriteReadsTheTicketInFull(t *testing.T) {
 	if v.Detail == nil || v.Detail.Card.Title != "Renamed" || v.Detail.BodyBehind || len(v.Detail.Comments) == 0 || v.Detail.Comments[0].Body != "Second" {
 		t.Fatalf("after the check raced the board write the ticket shows %+v", v.Detail)
 	}
-	if d, c := m.p.count("Details")-details, m.p.count("Cards")-cards; d != 1 || c != 2 {
-		t.Fatalf("the rounds made %d full reads and %d cards reads; want 1 and 2: the check and its full read, then the check the board's write asked", d, c)
+	if d, c := m.p.count("Details")-details, m.p.count("Cards")-cards; d != 1 || c != 1 {
+		t.Fatalf("the rounds made %d full reads and %d cards reads; want 1 and 1: the check and its full read", d, c)
 	}
 }
 
