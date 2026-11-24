@@ -760,7 +760,7 @@ export class PromptRoute {
  *   - "unauthenticated" — binary is present and new enough but has no logged-in
  *     account (Claude: ProbeAccount returned a zero-value AccountInfo).
  *   - "error"           — the version check itself failed (binary exited non-zero,
- *     garbled output, etc.), or Codex printed a version that cannot be read.
+ *     garbled output, etc.).
  */
 export class ProviderStatus {
     "provider": string;
