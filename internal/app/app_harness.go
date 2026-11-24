@@ -511,20 +511,30 @@ func (h *harnessHost) PublishStoreIdentity(identity store.Identity) {
 	h.app.storeIdentity.Store(&identity)
 }
 
-// Send reads the completion sequence before the send, so a completion of
-// the turn the message opens is always above it.
+// Send answers, for a send admitted only at rest, the completion floor.
+//
+// The floor is read under the thread action lock once placement admits the
+// send and before the provider opens its turn, so that turn's completion is
+// above it. A completion above it for the same index is an earlier turn's
+// only if a revert cut that turn and freed the index; the revert's
+// replacement settles through the thread's provider event queue, whose one
+// worker finishes each event, emit included, before the next, so the cut
+// turn's completion was published before admission could find the thread
+// at rest. A send failure settled outside the queue is not ordered with it.
 func (h *harnessHost) Send(ctx context.Context, threadID, text string, atRestOnly bool) (harnessrpc.HarnessSendResult, error) {
 	admission := admitQueueing
+	var completionsAfter uint64
+	var onPlaced func()
 	if atRestOnly {
 		admission = admitAtRest
+		onPlaced = func() { completionsAfter = h.app.eventSequence(eventchan.ProviderTurnCompleted) }
 	}
-	completionsAfter := h.app.eventSequence(eventchan.ProviderTurnCompleted)
-	item, err := h.app.sendClientMessage(ctx, threadID, text, pageSendOptions(uuid.NewString()), admission)
+	item, err := h.app.sendClientMessage(ctx, threadID, text, pageSendOptions(uuid.NewString()), admission, onPlaced)
 	if err != nil {
 		return harnessrpc.HarnessSendResult{}, err
 	}
 	if item.ID == "" {
-		return harnessrpc.HarnessSendResult{Queued: true, CompletionsAfter: completionsAfter}, nil
+		return harnessrpc.HarnessSendResult{Queued: true}, nil
 	}
 	return harnessrpc.HarnessSendResult{TurnIndex: item.TurnIndex, CompletionsAfter: completionsAfter}, nil
 }

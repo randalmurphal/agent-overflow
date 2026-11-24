@@ -36,7 +36,7 @@ func (a *App) StopSession(threadID string) error {
 //
 //ao:scope threads:operate
 func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
-	if _, err := a.sendClientMessage(ctx, threadID, content, opts, admitQueueing); err != nil {
+	if _, err := a.sendClientMessage(ctx, threadID, content, opts, admitQueueing, nil); err != nil {
 		return store.Thread{}, err
 	}
 	return a.store.GetThread(threadID)
@@ -45,12 +45,12 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 // sendClientMessage is the send of a message a client typed or wrote:
 // the page's composer through SendMessageWithOptions, and the harness's
 // HarnessSend. It answers the user row, or the zero item when the message
-// was queued.
+// was queued. onPlaced is sendMessageOptions.onPlaced.
 //
 // A client finds its row by send id. A window older than v0.0.15 does not
 // say so, and predicts its row as user:<nextTurn>: it is refused before
 // anything else, a repeat of a send it made before an upgrade included.
-func (a *App) sendClientMessage(ctx context.Context, threadID string, content string, opts SendMessageOptions, admission sendAdmission) (store.Item, error) {
+func (a *App) sendClientMessage(ctx context.Context, threadID string, content string, opts SendMessageOptions, admission sendAdmission, onPlaced func()) (store.Item, error) {
 	if !opts.ReconcileBySendID {
 		return store.Item{}, errors.New(dispatchrefusal.Unreadable)
 	}
@@ -86,6 +86,7 @@ func (a *App) sendClientMessage(ctx context.Context, threadID string, content st
 		SendID:                       opts.SendID,
 		ConsumeDraft:                 opts.ConsumeDraft,
 		Admission:                    admission,
+		onPlaced:                     onPlaced,
 		// Wire entry: this text was typed into a composer (D31).
 		ExpandComposerCommands: true,
 	})

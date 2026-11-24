@@ -437,7 +437,7 @@ const defaultSendWaitTimeout = 30 * time.Second
 func runSend(e *env, args []string) error {
 	flags := e.newFlagSet("send --thread <id|#N|last|title-prefix> <text...>")
 	thread := flags.String("thread", "", "thread selector: id, #N from `threads`, `last`, or a unique title prefix")
-	wait := flags.Bool("wait", false, "block until the turn the message opens completes instead of returning once it is accepted; refuses a thread that is working")
+	wait := flags.Bool("wait", false, "block until the turn the message is placed in completes instead of returning once it is accepted; refuses a thread that is working")
 	items := flags.Bool("items", false, "with --wait: print the thread's items once the turn completes")
 	timeout := flags.Duration("timeout", defaultSendWaitTimeout, "how long --wait blocks")
 	rest, err := e.parse(flags, args)

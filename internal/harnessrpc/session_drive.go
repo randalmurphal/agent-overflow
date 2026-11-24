@@ -23,12 +23,15 @@ type HarnessSendResult struct {
 	// Queued is whether the message waits behind the thread's work. It is
 	// never set for a send admitted only at rest.
 	Queued bool `json:"queued"`
-	// TurnIndex is the turn the message opened. Zero when Queued.
+	// TurnIndex is the turn the message's row was placed in. Zero when
+	// Queued.
 	TurnIndex int `json:"turnIndex"`
-	// CompletionsAfter is the provider:turn_completed sequence read before
-	// the send: a completion of the turn the message opened is sequenced
-	// after it, so a wait for that completion skips anything at or below it.
-	CompletionsAfter uint64 `json:"completionsAfter"`
+	// CompletionsAfter is set only for a send admitted only at rest: the
+	// provider:turn_completed sequence read under the thread's action lock
+	// once the send was admitted (harnessHost.Send in internal/app holds the
+	// contract). A wait for the turn's completion skips anything at or
+	// below it.
+	CompletionsAfter uint64 `json:"completionsAfter,omitempty"`
 }
 
 // HarnessSend sends text as the page's default send does, for the harness
@@ -36,8 +39,8 @@ type HarnessSendResult struct {
 // turn open, a message waiting for its turn to start, or a queued message
 // not yet written) refuses the send and nothing is recorded, decided under
 // the thread's action lock with the admission every send passes; the
-// answer then names the turn the message opened. Without it the message
-// queues behind that work, as the composer's does.
+// answer then names the turn the message's row was placed in. Without it
+// the message queues behind that work, as the composer's does.
 func (h *Harness) HarnessSend(ctx context.Context, threadID, text string, atRestOnly bool) (HarnessSendResult, error) {
 	if h.config.Host == nil {
 		return HarnessSendResult{}, fmt.Errorf("harness host unavailable")

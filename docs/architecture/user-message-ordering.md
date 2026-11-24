@@ -11,7 +11,7 @@ observed activity state.
 composer sends inspect backend activity under the thread action lock. Active
 or starting work sends through the existing durable queue. The harness's
 awaited send (`HarnessSend` with `atRestOnly`) is refused there instead,
-recording nothing, so the turn an accepted one opens is known. Internal
+recording nothing, so an accepted one's row is placed in a turn of its own. Internal
 turn-opening sends retain their explicit behavior, including workflow and
 edit/resend flows.
 An unconsumed correlation marker is not proof of activity: a completed turn can

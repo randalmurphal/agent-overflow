@@ -88,6 +88,10 @@ type sendMessageOptions struct {
 	// token of the session the message was written to, empty when it was
 	// restored instead.
 	onDurable func(session string)
+	// onPlaced runs under the thread action lock once placement admits a send
+	// that opens a turn, before the session starts and the provider is
+	// written.
+	onPlaced func()
 	// onSessionDispatch runs on the idle path immediately before the provider
 	// write, with the token of the session the message is written to: the
 	// session the returned item went to, which the thread's live session may
@@ -114,8 +118,8 @@ const (
 	// admitQueueing queues behind the work: a composer, an agent's request
 	// and a shell command's output.
 	admitQueueing
-	// admitAtRest refuses, recording nothing, so the turn the message opens
-	// is known when it is accepted: the harness's awaited send.
+	// admitAtRest refuses, recording nothing, so an accepted message's row
+	// is placed in a turn of its own: the harness's awaited send.
 	admitAtRest
 )
 
@@ -607,6 +611,9 @@ func (a *App) sendMessageLocked(
 	placement, err := a.resolveUserMessagePlacement(thread, intent)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: placement: %w", err)
+	}
+	if !placement.queue && opts.onPlaced != nil {
+		opts.onPlaced()
 	}
 	if a.sendStageFn != nil && !placement.queue {
 		a.sendStageFn(threadID, "placed")
