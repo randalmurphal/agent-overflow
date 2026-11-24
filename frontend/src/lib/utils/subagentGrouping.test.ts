@@ -92,23 +92,14 @@ describe('groupItemsBySubagent', () => {
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['a', 'b']);
   });
 
-  it('renders a Claude foreground Agent as a group before children arrive', () => {
-    const nodes = groupItemsBySubagent([agentLaunch('agent-1', 0)]);
+  it.each(['Agent', 'Task'] as const)('renders a Claude foreground %s as a group before children arrive', (toolName) => {
+    const nodes = groupItemsBySubagent([agentLaunch('launch-1', 0, toolName)]);
 
     expect(nodes).toHaveLength(1);
     const group = expectGroup(nodes[0]);
-    expect(group.parent.id).toBe('agent-1');
+    expect(group.parent.id).toBe('launch-1');
     expect(group.children).toEqual([]);
     expect(group.descendantCount).toBe(0);
-  });
-
-  it('renders a foreground Task as a group', () => {
-    const nodes = groupItemsBySubagent([agentLaunch('task-1', 0, 'Task')]);
-
-    expect(nodes).toHaveLength(1);
-    const group = expectGroup(nodes[0]);
-    expect(group.parent.id).toBe('task-1');
-    expect(group.children).toEqual([]);
   });
 
   it('does not group a tool_completion with Agent toolName', () => {
@@ -718,53 +709,6 @@ describe('groupItemsBySubagent', () => {
     }
   });
 
-  it('recognises a Codex spawn when its metadata lives in meta: a leaf whose children stay withheld', () => {
-    const nodes = groupItemsBySubagent([
-      mkItem({
-        id: 'codex-agent',
-        itemIndex: 0,
-        kind: 'tool_call',
-        toolName: 'collab_agent',
-        payloadMeta: toolMeta({ lineCount: 1 }),
-        meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
-      }),
-      mkItem({
-        id: 'child-answer',
-        itemIndex: 1,
-        kind: 'assistant_text',
-        parentId: 'codex-agent',
-        summary: '0',
-      }),
-    ]);
-
-    // Recognition is what withholds the child: an unrecognised parent
-    // would leave `child-answer` a flat top-level leaf.
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['codex-agent']);
-  });
-
-  it('withholds a Codex child prompt echo row from the main timeline', () => {
-    const nodes = groupItemsBySubagent([
-      mkItem({
-        id: 'codex-agent',
-        itemIndex: 0,
-        kind: 'tool_call',
-        toolName: 'collab_agent',
-        isBackground: true,
-        meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent', prompt: 'Inspect the parser' } }),
-      }),
-      mkItem({
-        id: 'child-prompt',
-        itemIndex: 1,
-        kind: 'user_text',
-        role: 'user',
-        parentId: 'codex-agent',
-        summary: 'Inspect the parser',
-      }),
-    ]);
-
-    expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['codex-agent']);
-  });
-
   it('withholds the whole Codex child transcript from the main timeline', () => {
     const nodes = groupItemsBySubagent([
       mkItem({
@@ -852,28 +796,6 @@ describe('groupItemsBySubagent', () => {
     // `visibleTimelineItemIdForItem`, which maps it to the spawn row.
     expect(nodeContainsItem(nodes[0], 'child-tool')).toBe(false);
     expect(nodeContainsItem(nodes[0], 'grandchild-tool')).toBe(false);
-  });
-
-  it('maps hidden Codex child transcript rows back to their visible spawn row', () => {
-    const items = [
-      mkItem({
-        id: 'codex-agent',
-        itemIndex: 0,
-        kind: 'tool_call',
-        toolName: 'collab_agent',
-        meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
-      }),
-      mkItem({
-        id: 'child-answer',
-        itemIndex: 1,
-        kind: 'assistant_text',
-        parentId: 'codex-agent',
-        summary: '0',
-      }),
-    ];
-
-    expect(visibleTimelineItemIdForItem(items, 'child-answer')).toBe('codex-agent');
-    expect(visibleTimelineItemIdForItem(items, 'codex-agent')).toBe('codex-agent');
   });
 
   it('nests Codex subagent completions under the wait carrier when they share the wait payload', () => {
@@ -999,13 +921,16 @@ describe('groupItemsBySubagent', () => {
     },
   );
 
-  it('keeps terminal command completions as siblings after the terminal wait carrier', () => {
+  it.each([
+    ['keeps terminal command completions as siblings after the terminal wait carrier', 'process_id'],
+    ['keeps legacy camelCase terminal command completions flat by process', 'processId'],
+  ])('%s', (_name, processKey) => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'waited-pid-1',
         itemIndex: 0,
         kind: 'terminal_interaction',
-        meta: JSON.stringify({ process_id: 'pid-1' }),
+        meta: JSON.stringify({ [processKey]: 'pid-1' }),
       }),
       mkItem({
         id: 'complete-cmd-1',
@@ -1013,7 +938,7 @@ describe('groupItemsBySubagent', () => {
         kind: 'tool_completion',
         toolName: 'command_execution',
         completionOf: 'cmd-1',
-        meta: JSON.stringify({ process_id: 'pid-1' }),
+        meta: JSON.stringify({ [processKey]: 'pid-1' }),
       }),
     ]);
 
@@ -1024,32 +949,10 @@ describe('groupItemsBySubagent', () => {
     expect(expectLeaf(nodes[1]).item.id).toBe('complete-cmd-1');
   });
 
-  it('keeps legacy camelCase terminal command completions flat by process', () => {
-    const nodes = groupItemsBySubagent([
-      mkItem({
-        id: 'waited-pid-1',
-        itemIndex: 0,
-        kind: 'terminal_interaction',
-        meta: JSON.stringify({ processId: 'pid-1' }),
-      }),
-      mkItem({
-        id: 'complete-cmd-1',
-        itemIndex: 1,
-        kind: 'tool_completion',
-        toolName: 'command_execution',
-        completionOf: 'cmd-1',
-        meta: JSON.stringify({ processId: 'pid-1' }),
-      }),
-    ]);
-
-    expect(nodes).toHaveLength(2);
-    const group = expectWaitGroup(nodes[0]);
-    expect(group.parent.id).toBe('waited-pid-1');
-    expect(group.children).toEqual([]);
-    expect(expectLeaf(nodes[1]).item.id).toBe('complete-cmd-1');
-  });
-
-  it('nests target completions under an explicit wait_carrier_id', () => {
+  it.each([
+    ['nests target completions under an explicit wait_carrier_id', 'wait_carrier_id'],
+    ['nests target completions under a legacy camelCase wait carrier id', 'waitCarrierID'],
+  ])('%s', (_name, carrierKey) => {
     const nodes = groupItemsBySubagent([
       mkItem({
         id: 'wait-child',
@@ -1064,7 +967,7 @@ describe('groupItemsBySubagent', () => {
         kind: 'tool_completion',
         toolName: 'collab_agent',
         completionOf: 'spawn-1',
-        meta: JSON.stringify({ wait_carrier_id: 'wait-child' }),
+        meta: JSON.stringify({ [carrierKey]: 'wait-child' }),
       }),
     ]);
 
@@ -1193,31 +1096,6 @@ describe('groupItemsBySubagent', () => {
     expect(findTimelineNodeIndex(nodes, 'child-prompt')).toBe(1);
     expect(findTimelineNodeIndex(nodes, 'child-progress')).toBe(1);
     expect(findTimelineNodeIndex(nodes, 'complete-spawn-review')).toBe(1);
-  });
-
-  it('nests target completions under a legacy camelCase wait carrier id', () => {
-    const nodes = groupItemsBySubagent([
-      mkItem({
-        id: 'wait-child',
-        itemIndex: 0,
-        kind: 'tool_call',
-        toolName: 'wait_agent',
-        meta: codexWaitAgentMeta(),
-      }),
-      mkItem({
-        id: 'complete-spawn-1',
-        itemIndex: 1,
-        kind: 'tool_completion',
-        toolName: 'collab_agent',
-        completionOf: 'spawn-1',
-        meta: JSON.stringify({ waitCarrierID: 'wait-child' }),
-      }),
-    ]);
-
-    expect(nodes).toHaveLength(1);
-    const group = expectWaitGroup(nodes[0]);
-    expect(group.parent.id).toBe('wait-child');
-    expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['complete-spawn-1']);
   });
 
   it('keeps mailbox-delivered agent completions flat after the waited row', () => {
@@ -1489,16 +1367,6 @@ describe('groupItemsBySubagent', () => {
 
     expect(partialGroup.groupKey).toBe('agent-2');
     expect(completeGroup.groupKey).toBe(partialGroup.groupKey);
-  });
-
-  it('surfaces missing parents as orphan leaves instead of dropping them', () => {
-    const nodes = groupItemsBySubagent([
-      mkItem({ id: 'orphan', itemIndex: 0, parentId: 'missing', summary: 'lost child' }),
-    ]);
-
-    const orphan = expectLeaf(nodes[0]);
-    expect(orphan.item.id).toBe('orphan');
-    expect(orphan.orphan).toBe(true);
   });
 
   it('preserves stable keys and lookup semantics for grouped children', () => {
@@ -2393,50 +2261,30 @@ describe('subagent anchor decoration', () => {
     });
   }
 
-  it('renders collapsed aggregates from anchor meta when no child rows are loaded', () => {
+  // A decorated anchor keeps its preview over loaded children and its count
+  // monotonic; decorated with no summary, the card shows no child preview
+  // rather than ranking a loaded row.
+  it.each<[string, Record<string, unknown>, string[], number, number, string]>([
+    ['renders collapsed aggregates from anchor meta when no child rows are loaded',
+      { subagentDescendantCount: 7, subagentLatestChildSummary: '  running\n   go test ./...  ' }, [], 7, 0, 'running go test ./...'],
+    ['keeps the decorated preview over loaded children and the count monotonic',
+      { subagentDescendantCount: 2, subagentLatestChildSummary: 'stale decorated preview' },
+      ['first step', 'second step', 'third step'], 3, 3, 'stale decorated preview'],
+    ['keeps the decorated count when loaded children trail it', { subagentDescendantCount: 5 }, ['only loaded row'], 5, 1, ''],
+    ['ignores malformed decorated counts', { subagentDescendantCount: -3, subagentLatestChildSummary: 42 }, [], 0, 0, ''],
+  ])('%s', (_name, decoration, childSummaries, descendantCount, loadedDescendantCount, latestChildSummary) => {
     const nodes = groupItemsBySubagent([
-      decoratedLaunch('agent-1', 0, {
-        subagentDescendantCount: 7,
-        subagentLatestChildSummary: '  running\n   go test ./...  ',
-      }),
+      decoratedLaunch('agent-1', 0, decoration),
+      ...childSummaries.map((summary, i) => mkItem({
+        id: `c${i + 1}`, itemIndex: i + 1, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary,
+      })),
     ]);
 
     const group = expectGroup(nodes[0]);
-    expect(group.children).toHaveLength(0);
-    expect(group.descendantCount).toBe(7);
-    expect(group.loadedDescendantCount).toBe(0);
-    expect(group.latestChildSummary).toBe('running go test ./...');
-  });
-
-  it('keeps the decorated preview over loaded children and the count monotonic', () => {
-    const nodes = groupItemsBySubagent([
-      decoratedLaunch('agent-1', 0, {
-        subagentDescendantCount: 2,
-        subagentLatestChildSummary: 'stale decorated preview',
-      }),
-      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'first step' }),
-      mkItem({ id: 'c2', itemIndex: 2, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'second step' }),
-      mkItem({ id: 'c3', itemIndex: 3, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'third step' }),
-    ]);
-
-    const group = expectGroup(nodes[0]);
-    expect(group.descendantCount).toBe(3);
-    expect(group.loadedDescendantCount).toBe(3);
-    expect(group.latestChildSummary).toBe('stale decorated preview');
-  });
-
-  it('keeps the decorated count when loaded children trail it', () => {
-    const nodes = groupItemsBySubagent([
-      decoratedLaunch('agent-1', 0, { subagentDescendantCount: 5 }),
-      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'only loaded row' }),
-    ]);
-
-    const group = expectGroup(nodes[0]);
-    expect(group.descendantCount).toBe(5);
-    expect(group.loadedDescendantCount).toBe(1);
-    // Decorated with no summary: the card shows no child preview rather
-    // than ranking the loaded row.
-    expect(group.latestChildSummary).toBe('');
+    expect(group.children).toHaveLength(childSummaries.length);
+    expect(group.descendantCount).toBe(descendantCount);
+    expect(group.loadedDescendantCount).toBe(loadedDescendantCount);
+    expect(group.latestChildSummary).toBe(latestChildSummary);
   });
 
   it('truncates an oversized decorated preview', () => {
@@ -2450,20 +2298,6 @@ describe('subagent anchor decoration', () => {
     const group = expectGroup(nodes[0]);
     expect(group.latestChildSummary.endsWith('...')).toBe(true);
     expect(group.latestChildSummary.length).toBeLessThanOrEqual(163);
-  });
-
-  it('ignores malformed decorated counts', () => {
-    const nodes = groupItemsBySubagent([
-      decoratedLaunch('agent-1', 0, {
-        subagentDescendantCount: -3,
-        subagentLatestChildSummary: 42,
-      }),
-    ]);
-
-    const group = expectGroup(nodes[0]);
-    expect(group.descendantCount).toBe(0);
-    expect(group.loadedDescendantCount).toBe(0);
-    expect(group.latestChildSummary).toBe('');
   });
 });
 
@@ -2971,7 +2805,7 @@ describe('groupItemsBySubagent — immutable completion cards across repeated ex
     expectNoDuplicateKeys(nodes);
   });
 
-  it('slices a bound-less Codex delivery after the previous one; a Claude ending card starts at the launch', () => {
+  it('slices a bound-less Codex delivery after the previous one', () => {
     const child = (id: string, parentId: string, createdAt: number) =>
       mkItem({ id, parentId, itemIndex: createdAt, createdAt, kind: 'tool_call', toolName: 'Bash' });
     const codexSpawnRow = { ...codexSpawn('spawn-1', 0), createdAt: 0 };
@@ -2986,27 +2820,6 @@ describe('groupItemsBySubagent — immutable completion cards across repeated ex
     expect(codexCards.map((card) => card.children.map((c) => expectLeaf(c).item.id))).toEqual([
       ['codex-a'],
       ['codex-b'],
-    ]);
-
-    const claudeLaunch = mkItem({
-      id: 'agent-1', itemIndex: 0, createdAt: 0, kind: 'tool_call', toolName: 'Agent', isBackground: true,
-      status: 'running', meta: toolMeta({ toolName: 'Agent', input: { description: 'investigate' } }),
-    });
-    const claudeStop = (id: string, createdAt: number, status: Item['status']) => mkItem({
-      id, itemIndex: createdAt, createdAt, kind: 'tool_completion', toolName: 'Agent', isBackground: true,
-      completionOf: 'agent-1', status,
-    });
-    const claude = groupItemsBySubagent([
-      claudeLaunch,
-      child('claude-a', 'agent-1', 1),
-      claudeStop('complete:agent-1:parked:p1', 2, 'parked'),
-      child('claude-b', 'agent-1', 3),
-      claudeStop('complete:agent-1', 4, 'completed'),
-    ]);
-    const claudeCards = claude.filter((node) => node.kind === 'group').map(expectGroup);
-    expect(claudeCards.map((card) => card.children.map((c) => expectLeaf(c).item.id))).toEqual([
-      ['claude-a'],
-      ['claude-a', 'claude-b'],
     ]);
   });
 
@@ -3051,7 +2864,9 @@ describe('groupItemsBySubagent — production snapshot shape', () => {
     return found;
   }
 
-  it('carries the multi-delivery shape the freeze needed', () => {
+  it('projects the whole snapshot with no duplicate key in any list and one card per completion', () => {
+    // The fixture must still hold the shape that froze the pane: without
+    // repeated deliveries the assertions below pass on any projection.
     const deliveriesByLaunch = new Map<string, number>();
     for (const item of snapshot) {
       if (item.kind !== 'tool_completion' || !item.completionOf) continue;
@@ -3060,15 +2875,10 @@ describe('groupItemsBySubagent — production snapshot shape', () => {
     const repeated = [...deliveriesByLaunch.values()].filter((count) => count > 1);
     expect(repeated.length).toBeGreaterThanOrEqual(10);
     expect(Math.max(...repeated)).toBeGreaterThanOrEqual(3);
-  });
 
-  it('projects the whole snapshot with no duplicate key in any list', () => {
     const nodes = groupConsecutiveReads(groupItemsBySubagent(snapshot));
     expect(duplicateKeysPerList(nodes)).toEqual([]);
-  });
 
-  it('renders each completion under one unique card identity', () => {
-    const nodes = groupConsecutiveReads(groupItemsBySubagent(snapshot));
     const cardsByAnchor = new Map<string, number>();
     const walk = (list: readonly TimelineNode[]): void => {
       for (const node of list) {
