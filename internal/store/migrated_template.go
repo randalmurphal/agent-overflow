@@ -35,17 +35,13 @@ func NewScratchFromTemplate(ctx context.Context, path string) (*Store, error) {
 	return processTemplate.open(ctx, path)
 }
 
-// PrimeMigratedTemplate builds the process's migrated image in a temporary
-// directory under parent when no earlier call has, and does nothing else:
-// it clones and opens no database. A caller that must not pay the build
-// inside a later wait, such as a test fixture, calls it first. A failed
-// build is returned and the next call builds again.
+// PrimeMigratedTemplate builds the process's migrated image, in a temporary
+// directory under parent, when no earlier call has. It opens no clone and
+// leaves no file behind. A caller that must not pay the build inside a later
+// wait, such as a test fixture, calls it first. A failed or cancelled build
+// is returned and the next call builds again.
 func PrimeMigratedTemplate(ctx context.Context, parent string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	_, err := processTemplate.load(ctx, parent)
-	return err
+	return processTemplate.prime(ctx, parent)
 }
 
 // migratedTemplate builds a migrated image on first use and copies it.
@@ -59,6 +55,15 @@ type migratedTemplate struct {
 
 func newMigratedTemplate(build func(context.Context, string) ([]byte, error)) *migratedTemplate {
 	return &migratedTemplate{lock: make(chan struct{}, 1), build: build}
+}
+
+// prime builds the image when none is kept and does nothing else.
+func (t *migratedTemplate) prime(ctx context.Context, parent string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, err := t.load(ctx, parent)
+	return err
 }
 
 func (t *migratedTemplate) open(ctx context.Context, path string) (*Store, error) {

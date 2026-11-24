@@ -18,6 +18,7 @@ export function draftProjectTransferFlow(): void {
     try {
       source = await launchHarness();
       target = await launchHarness();
+      await primeTransferRecipient(target);
       const from = await source.rpc<Seed>('HarnessSeed', { projects: [{ name: 'Draft home project', repo: { commits: [{ files: { 'README.md': 'Source repository' } }] } }] });
       const to = await target.rpc<Seed>('HarnessSeed', { projects: [{ name: 'Draft remote project', repo: { commits: [{ files: { 'README.md': 'Destination repository' } }] } }] });
       const original = await source.rpc<Thread>('CreateThread', { projectId: from.projects[0].projectId, title: 'Moving draft', provider: 'claude', model: 'claude-sonnet-4-6', mode: 'plan', runtimeMode: 'read-only' });
@@ -31,7 +32,6 @@ export function draftProjectTransferFlow(): void {
       }
       const prompt = 'A draft for the other project [Image #1]';
       await source.rpc('SaveDraft', original.id, prompt, ids, [{ id: 'capture', label: 'shell', preview: 'captured', content: 'captured output', createdAt: 1 }], null);
-      await primeTransferRecipient(target);
       await source.open(page);
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await page.getByRole('tab', { name: 'Connect to a computer', exact: true }).click();

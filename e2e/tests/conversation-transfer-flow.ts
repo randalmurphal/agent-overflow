@@ -67,6 +67,7 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
     for (const provider of providers) {
       test(`${provider}: copies independently, then moves the original with its image and workspace`, async ({ page }, info) => {
         test.setTimeout(120_000);
+        await primeTransferRecipient(destination);
         const portable = `Portable ${provider} conversation`;
         const independent = `Independent ${provider} copy`;
         const errors: string[] = [];
@@ -96,7 +97,6 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
           const upload = await fetch(new URL(uploadURL, source.url), { method: 'PUT', body: PNG_BYTES });
           expect(upload.status, await upload.text()).toBe(200);
           await writeFile(join(original.projects[0].path, 'untracked.txt'), 'Unsaved workspace change');
-          await primeTransferRecipient(destination);
           await source.open(page);
 
           for (const kind of ['copy', 'move']) {
@@ -149,6 +149,7 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
     // stop ended the process that held it.
     test('names the recurring job a transfer ends, then copies and moves the conversation', async ({ page }, info) => {
       test.setTimeout(150_000);
+      await primeTransferRecipient(destination);
       const title = 'Looping Claude conversation';
       const reply = 'Checking the deploy every five minutes.';
       const errors: string[] = [];
@@ -189,7 +190,6 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
           expect(mockId, 'the session holding the job runs on a mock').toBeTruthy();
           expect(await recurringJobs()).toEqual([{ id: '5f0c1a2b', cron: '*/5 * * * *' }]);
 
-          await primeTransferRecipient(destination);
           await source.open(page);
           const row = page.getByTestId('thread-row-title').filter({ hasText: new RegExp(`^${title}$`) }).first();
           await expect(row).toBeVisible();

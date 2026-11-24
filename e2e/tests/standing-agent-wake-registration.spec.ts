@@ -797,6 +797,7 @@ test.describe('an assistant copied to another computer', () => {
   for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
     test(`${provider}: the dialog offers only a copy, which keeps the assistant, and a move is refused`, async ({ page }) => {
       test.setTimeout(180_000);
+      await primeTransferRecipient(destination);
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
       const title = `Release agent ${provider}`;
@@ -863,7 +864,6 @@ test.describe('an assistant copied to another computer', () => {
       ];
       expect(dbWakes(sourceDir, thread)).toEqual(live);
 
-      await primeTransferRecipient(destination);
       await source.open(page);
       const name = page.getByTestId('thread-row-title').filter({ hasText: new RegExp(`^${title}$`) });
       await expect(name).toHaveCount(1);

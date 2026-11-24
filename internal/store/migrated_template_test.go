@@ -379,41 +379,90 @@ func TestNewScratchFromTemplateRemovesADatabaseThatFailsToOpen(t *testing.T) {
 	}
 }
 
-// PrimeMigratedTemplate builds the process image and opens no database: the
-// parent directory holds nothing afterward, and a later clone reuses the image.
-func TestPrimeMigratedTemplateBuildsTheImageAndLeavesNothing(t *testing.T) {
+// Priming builds the image once and opens no clone; a later prime or open
+// reuses it without building again.
+func TestPrimeBuildsTheImageOnceAndLeavesNothing(t *testing.T) {
+	var builds atomic.Int32
+	tmpl := newMigratedTemplate(func(ctx context.Context, dir string) ([]byte, error) {
+		builds.Add(1)
+		return sharedImage(ctx, dir)
+	})
 	dir := t.TempDir()
-	if err := PrimeMigratedTemplate(context.Background(), dir); err != nil {
+	if err := tmpl.prime(context.Background(), dir); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(dir)
+	if builds.Load() != 1 || tmpl.image == nil {
+		t.Fatalf("after priming: %d builds, image kept %v; want 1 build and a kept image", builds.Load(), tmpl.image != nil)
+	}
+	if names := dirNames(t, dir); len(names) != 0 {
+		t.Fatalf("priming left %v", names)
+	}
+	// An unusable parent cannot fail a call that builds nothing.
+	if err := tmpl.prime(context.Background(), filepath.Join(dir, "missing")); err != nil {
+		t.Fatalf("a primed template needed its parent directory: %v", err)
+	}
+	s, err := tmpl.open(context.Background(), filepath.Join(dir, "clone.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("priming left %d entries in %s", len(entries), dir)
-	}
-	// A second call builds nothing, so an unusable parent cannot fail it.
-	if err := PrimeMigratedTemplate(context.Background(), filepath.Join(dir, "missing")); err != nil {
-		t.Fatalf("a primed template needed its parent directory: %v", err)
+	closeTemplateStore(t, s)
+	if got := builds.Load(); got != 1 {
+		t.Fatalf("built %d times, want 1", got)
 	}
 }
 
-// A failed build is returned by the priming call and the next call builds again.
-func TestPrimeFailureIsReturnedAndRetried(t *testing.T) {
-	fail := errors.New("build failed")
-	failing := true
+// A failed build is returned by priming and the next call builds again.
+func TestPrimeReturnsAFailedBuildAndRetries(t *testing.T) {
+	var builds atomic.Int32
+	buildErr := errors.New("disk full")
 	tmpl := newMigratedTemplate(func(ctx context.Context, dir string) ([]byte, error) {
-		if failing {
-			return nil, fail
+		if builds.Add(1) == 1 {
+			return nil, buildErr
 		}
 		return sharedImage(ctx, dir)
 	})
-	if _, err := tmpl.load(context.Background(), t.TempDir()); !errors.Is(err, fail) {
-		t.Fatalf("first load = %v, want the build error", err)
+	if err := tmpl.prime(context.Background(), t.TempDir()); !errors.Is(err, buildErr) {
+		t.Fatalf("first prime = %v, want the build error", err)
 	}
-	failing = false
-	if _, err := tmpl.load(context.Background(), t.TempDir()); err != nil {
-		t.Fatalf("retry after a failed build: %v", err)
+	if err := tmpl.prime(context.Background(), t.TempDir()); err != nil {
+		t.Fatalf("second prime: %v", err)
+	}
+	if got := builds.Load(); got != 2 {
+		t.Fatalf("built %d times, want 2", got)
+	}
+}
+
+// A build in progress ends with the caller's context, which is how a stopped
+// backend releases a prime that is waiting on a migration.
+func TestPrimeCancelledBuildIsReleasedAndRetried(t *testing.T) {
+	started := make(chan struct{})
+	var builds atomic.Int32
+	tmpl := newMigratedTemplate(func(ctx context.Context, dir string) ([]byte, error) {
+		if builds.Add(1) == 1 {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return sharedImage(ctx, dir)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- tmpl.prime(ctx, t.TempDir()) }()
+	select {
+	case <-started:
+	case err := <-result:
+		t.Fatalf("prime returned %v without running the build", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the build never started")
+	}
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled prime = %v, want context.Canceled", err)
+	}
+	if err := tmpl.prime(context.Background(), t.TempDir()); err != nil {
+		t.Fatalf("prime after a cancelled build: %v", err)
+	}
+	if got := builds.Load(); got != 2 {
+		t.Fatalf("built %d times, want 2", got)
 	}
 }

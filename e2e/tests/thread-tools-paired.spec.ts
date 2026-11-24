@@ -2192,6 +2192,7 @@ test('a nested row on the other computer names the wake row its answer reached t
 
 test('a thread moved to the other computer resolves there by its bare id', async () => {
   test.setTimeout(180_000);
+  await primeTransferRecipient(remote);
   const caller = await seed(home, 'remote-moved-caller', ['Moved caller']);
   const landing = await seed(remote, 'remote-moved-landing', []);
 
@@ -2244,7 +2245,6 @@ test('a thread moved to the other computer resolves there by its bare id', async
   const backend = (await home.rpc<Array<{ id: string; backendId: string }>>('ListBackends')).find(
     (row) => row.id === remoteID,
   )!;
-  await primeTransferRecipient(remote);
   const operation = randomUUID();
   const intent = await home.rpc<Record<string, unknown>>(
     'BeginThreadTransfer',

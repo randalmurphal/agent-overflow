@@ -54,6 +54,7 @@ for (const renamed of [false, true]) test(`one repository at different paths mer
   page.on('pageerror', (error) => errors.push(error.message));
   try {
     [home, remote] = await startTogether(launchHarness(), launchHarness());
+    await primeTransferRecipient(remote);
     const seeded = await home.rpc<Seed>('HarnessSeed', {
       projects: ['picker-app', 'import-app', 'other-app'].map((name) => ({
         name, repo: { commits: [{ message: `init ${name}`, files: { 'README.md': `${name}\n` } }] },
@@ -134,7 +135,6 @@ for (const renamed of [false, true]) test(`one repository at different paths mer
     // The bounded failure cache expires and verification can recover.
     await expect.poll(async () => (await remote!.rpc<{ repositoryID?: string }>('InspectProjectFolder', pickerClone)).repositoryID, { timeout: 15_000 }).toBe('github:github.com:101');
 
-    await primeTransferRecipient(remote);
     await pathInput.fill(pickerClone);
     await expect(add).toBeEnabled();
     await add.click();
