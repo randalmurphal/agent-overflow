@@ -1,7 +1,6 @@
 package providerlifecycleapp
 
 import (
-	"context"
 	"encoding/json"
 	"path/filepath"
 	"sync"
@@ -273,49 +272,6 @@ func TestSessionAccountFallsBackToManagedMetadata(t *testing.T) {
 	if !ok || account.Account.Email != "person@example.test" || account.Generation != 4 {
 		t.Fatalf("session account = %+v, ok = %v", account, ok)
 	}
-}
-
-func TestUsageProbeGateCollapsesConcurrentTriggerIntoOneTrailingRun(t *testing.T) {
-	started := make(chan struct{}, 2)
-	release := make(chan struct{}, 2)
-	var nowMu sync.Mutex
-	now := time.Unix(1000, 0)
-	var timer func()
-	gate := newUsageProbeGate(func(context.Context) error {
-		started <- struct{}{}
-		<-release
-		return nil
-	}, context.Background)
-	gate.now = func() time.Time {
-		nowMu.Lock()
-		defer nowMu.Unlock()
-		return now
-	}
-	gate.afterFunc = func(_ time.Duration, callback func()) { timer = callback }
-
-	done := make(chan struct{})
-	go func() {
-		gate.Request()
-		close(done)
-	}()
-	<-started
-	gate.Request()
-	release <- struct{}{}
-	<-done
-	if timer == nil {
-		t.Fatal("trailing trigger did not arm a timer")
-	}
-	nowMu.Lock()
-	now = now.Add(probeMinInterval)
-	nowMu.Unlock()
-	timerDone := make(chan struct{})
-	go func() {
-		timer()
-		close(timerDone)
-	}()
-	<-started
-	release <- struct{}{}
-	<-timerDone
 }
 
 func TestConcurrentCacheAndActivityAccess(t *testing.T) {

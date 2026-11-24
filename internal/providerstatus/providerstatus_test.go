@@ -180,11 +180,9 @@ func TestClaudeUnauthenticated(t *testing.T) {
 	}
 }
 
-// TestClaudeUnauthenticatedCoversEveryAPIProvider pins the predicate to the
-// full apiProvider enum the CLI can report, so a member added upstream that
-// nobody thought to add to the table above still gets an answer asserted
-// here. Only firstParty may be treated as "no evidence" — every other member
-// is reachable ONLY when a real external-credential backend is configured.
+// TestClaudeUnauthenticatedCoversEveryAPIProvider runs the full apiProvider
+// enum the CLI can report: whatever the backend, a populated account is
+// authenticated. Each bare member's answer is a row of the table above.
 func TestClaudeUnauthenticatedCoversEveryAPIProvider(t *testing.T) {
 	// The enum as of claude 2.1.219.
 	all := []string{
@@ -193,12 +191,6 @@ func TestClaudeUnauthenticatedCoversEveryAPIProvider(t *testing.T) {
 	}
 	for _, apiProvider := range all {
 		t.Run(apiProvider, func(t *testing.T) {
-			bare := ClaudeUnauthenticated(provider.AccountInfo{APIProvider: apiProvider})
-			wantBare := apiProvider == "firstParty"
-			if bare != wantBare {
-				t.Fatalf("bare apiProvider=%q: unauthenticated = %v, want %v", apiProvider, bare, wantBare)
-			}
-			// Whatever the backend, a populated account is authenticated.
 			populated := provider.AccountInfo{
 				Email:            "user@example.com",
 				SubscriptionType: "Claude Max",

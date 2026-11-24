@@ -39,6 +39,19 @@ func TestARunThatInstallsTheUpdateSucceeds(t *testing.T) {
 	if status.Run != want {
 		t.Fatalf("run = %+v, want %+v", status.Run, want)
 	}
+	frames := r.allFrames()
+	if len(frames) < 4 {
+		t.Fatalf("frames = %d, want two checks, running and the outcome at least", len(frames))
+	}
+	for i, frame := range frames {
+		if len(frame) != 3 || frame[0].Provider != ProviderClaude || frame[1].Provider != ProviderCodex || frame[2].Provider != ProviderAgy {
+			t.Fatalf("frame %d = %+v, want claude, codex, then agy", i, frame)
+		}
+	}
+	// The codex half of a claude frame is codex's own state, not a blank.
+	if last := frames[len(frames)-1]; last[1].LatestVersion != "0.169.0" {
+		t.Errorf("codex in the last frame = %+v", last[1])
+	}
 	// The outcome frame already carries the re-check of the new binary.
 	if status.InstalledVersion != "2.1.325" || status.Available || status.LatestVersion != "2.1.325" {
 		t.Errorf("status = %+v, want the installed update and nothing more to offer", status)
@@ -333,32 +346,6 @@ func TestOutputTailIsBoundedOnARuneBoundary(t *testing.T) {
 	tail := outputTail(long)
 	if len(tail) > runOutputLimit || !utf8.ValidString(tail) || !strings.HasSuffix(tail, "the end") {
 		t.Fatalf("tail is %d bytes, valid=%v, ends %q", len(tail), utf8.ValidString(tail), tail[max(0, len(tail)-10):])
-	}
-}
-
-func TestEveryFrameCarriesEveryProvider(t *testing.T) {
-	t.Parallel()
-	r := newRig(t)
-	r.check()
-	r.runner.on("update", r.updateTo("2.1.325", Output{}))
-	mark := r.mark()
-	if err := r.svc.Run(ProviderClaude); err != nil {
-		t.Fatal(err)
-	}
-	r.waitRunSettled(mark, ProviderClaude)
-	frames := r.allFrames()
-	if len(frames) < 4 {
-		t.Fatalf("frames = %d, want two checks, running and the outcome at least", len(frames))
-	}
-	for i, frame := range frames {
-		if len(frame) != 3 || frame[0].Provider != ProviderClaude || frame[1].Provider != ProviderCodex || frame[2].Provider != ProviderAgy {
-			t.Fatalf("frame %d = %+v, want claude, codex, then agy", i, frame)
-		}
-	}
-	// The codex half of a claude frame is codex's own state, not a blank.
-	last := frames[len(frames)-1]
-	if last[1].LatestVersion != "0.169.0" {
-		t.Errorf("codex in the last frame = %+v", last[1])
 	}
 }
 
