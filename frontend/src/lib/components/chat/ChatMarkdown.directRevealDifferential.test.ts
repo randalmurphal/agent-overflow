@@ -261,9 +261,13 @@ beforeEach(() => {
 // wedged-runtime tripwire, not a perf assertion — every lap is a bounded
 // loop that cannot spin forever on its own.
 describe('direct markdown reveal differential', () => {
-  it('matches authoritative markdown after every character', async () => {
-    const count = await assertEveryAppend(RICH_MARKDOWN, Array.from(RICH_MARKDOWN));
-    expect(count).toBeGreaterThan(100);
+  it.each([
+    { name: 'matches authoritative markdown after every character', corpus: [RICH_MARKDOWN] },
+    { name: 'matches authoritative output across parser transitions after every character', corpus: PARSER_TRANSITION_CORPUS },
+  ])('$name', async ({ corpus }) => {
+    let directAppends = 0;
+    for (const source of corpus) directAppends += await assertEveryAppend(source, Array.from(source));
+    expect(directAppends).toBeGreaterThan(100);
   });
 
   it('matches provider-shaped split words, links, tables, and delimiters', async () => {
@@ -293,14 +297,6 @@ describe('direct markdown reveal differential', () => {
       '|\n',
     ];
     expect(await assertEveryAppend(chunks.join(''), chunks)).toBe(1);
-  });
-
-  it('matches authoritative output across parser transitions after every character', async () => {
-    let directAppends = 0;
-    for (const source of PARSER_TRANSITION_CORPUS) {
-      directAppends += await assertEveryAppend(source, Array.from(source));
-    }
-    expect(directAppends).toBeGreaterThan(100);
   });
 
   it('matches authoritative output across mixed provider chunk boundaries', async () => {

@@ -155,40 +155,131 @@ describe('<AskUserQuestionCard>', () => {
     expect(getByTestId('row-error')).toBeInTheDocument();
   });
 
-  it('expands to show check/X marks per option', async () => {
+  it.each([
+    {
+      name: 'expands to show check/X marks per option',
+      questions: [{
+        id: 'framework', header: 'Framework', question: 'Which framework?',
+        options: [
+          { label: 'React', description: 'A React app' },
+          { label: 'Svelte', description: 'A Svelte app' },
+          { label: 'Vue', description: 'A Vue app' },
+        ],
+      }],
+      answers: { framework: 'Svelte' },
+      selected: ['false', 'true', 'false'],
+    },
+    {
+      name: 'renders multiple selected options for multi-select answers',
+      questions: [{
+        id: 'features', header: 'Features', question: 'Which features?', multiSelect: true,
+        options: [
+          { label: 'Markdown' }, { label: 'Code highlighting' },
+          { label: 'Attachments' }, { label: 'Slash commands' },
+        ],
+      }],
+      answers: { features: ['Markdown', 'Attachments'] },
+      selected: ['true', 'false', 'true', 'false'],
+    },
+    {
+      name: 'parses Claude AskUserQuestion tool-result sentences keyed by question text',
+      questions: [{
+        id: 'features', header: 'Features', question: 'Which features?', multiSelect: true,
+        options: [{ label: 'Markdown' }, { label: 'Code highlighting' }, { label: 'Attachments' }],
+      }],
+      toolResultContent:
+        'User has answered your questions: "Which features?"="Markdown, Attachments". You can now continue with the task.',
+      selected: ['true', 'false', 'true'],
+    },
+    {
+      name: 'keeps comma-containing option labels intact when parsing Claude multi-select answers',
+      questions: [{
+        id: 'platforms', header: 'Platforms', question: 'Which platforms?', multiSelect: true,
+        options: [{ label: 'Web, mobile' }, { label: 'API' }, { label: 'Desktop' }],
+      }],
+      toolResultContent:
+        'User has answered your questions: "Which platforms?"="Web, mobile, API". You can now continue with the task.',
+      selected: ['true', 'true', 'false'],
+    },
+    {
+      name: 'reads Codex request_user_input answers from item metadata',
+      toolName: 'request_user_input',
+      questions: [{
+        id: 'scope', header: 'Scope', question: 'Choose a scope',
+        options: [{ label: 'turn' }, { label: 'session' }],
+      }],
+      directAnswers: { scope: 'session' },
+      selected: ['false', 'true'],
+    },
+    {
+      // Triage merges the resolved answers onto the AskUserQuestion launch row
+      // as meta.answers. Claude questions carry no id, so the answer is keyed
+      // by the question header.
+      name: 'renders the selected option from persisted meta.answers keyed by header (Claude)',
+      questions: [{
+        header: 'Retention fix', question: 'Which approach?',
+        options: [
+          { label: 'SECURITY DEFINER fn', description: 'recommended' },
+          { label: 'Minimal degrade-only', description: 'defer' },
+        ],
+      }],
+      directAnswers: { 'Retention fix': 'SECURITY DEFINER fn' },
+      selected: ['true', 'false'],
+    },
+    {
+      name: 'renders multiple selected options from persisted meta.answers (Claude multi-select)',
+      questions: [{
+        header: 'Features', question: 'Which features?', multiSelect: true,
+        options: [{ label: 'Markdown' }, { label: 'Code highlighting' }, { label: 'Attachments' }],
+      }],
+      directAnswers: { Features: ['Markdown', 'Attachments'] },
+      selected: ['true', 'false', 'true'],
+    },
+    {
+      // meta.answers is exactly what was sent to the agent; the tool_result
+      // echo is free-form text that may parse to something stale or wrong.
+      name: 'prefers persisted meta.answers over a conflicting tool_result echo',
+      questions: [{
+        header: 'Retention fix', question: 'Which approach?',
+        options: [
+          { label: 'SECURITY DEFINER fn', description: 'recommended' },
+          { label: 'Minimal degrade-only', description: 'defer' },
+        ],
+      }],
+      directAnswers: { 'Retention fix': 'SECURITY DEFINER fn' },
+      toolResultContent: JSON.stringify({ answers: { 'Retention fix': 'Minimal degrade-only' } }),
+      selected: ['true', 'false'],
+    },
+    {
+      // Option labels are model-authored, so nothing upstream promises they
+      // are distinct. Keyed on the label, a repeat throws `each_key_duplicate`
+      // out of the update flush, which aborts the batch and freezes the pane.
+      name: 'renders every option when two of them carry the same label',
+      questions: [{
+        id: 'approach', header: 'Approach', question: 'Which approach?',
+        options: [
+          { label: 'Rewrite', description: 'From scratch' },
+          { label: 'Rewrite', description: 'Keep the tests' },
+          { label: 'Patch', description: 'Smallest diff' },
+        ],
+      }],
+      answers: { approach: 'Patch' },
+      selected: ['false', 'false', 'true'],
+    },
+  ])('$name', async ({ name: _name, toolName = 'AskUserQuestion', selected, ...parts }) => {
     const item = makeItem({
       kind: 'tool_call',
       status: 'completed',
-      toolName: 'AskUserQuestion',
-      meta: buildMeta({
-        questions: [
-          {
-            id: 'framework',
-            header: 'Framework',
-            question: 'Which framework?',
-            options: [
-              { label: 'React', description: 'A React app' },
-              { label: 'Svelte', description: 'A Svelte app' },
-              { label: 'Vue', description: 'A Vue app' },
-            ],
-          },
-        ],
-        answers: { framework: 'Svelte' },
-      }),
+      toolName,
+      meta: buildMeta({ ...parts, toolName }),
     });
-
-    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
-      props: { item },
-    });
+    const { getByTestId, getAllByTestId, queryByText } = render(AskUserQuestionCard, { props: { item } });
 
     await fireEvent.click(getByTestId('ask-user-question-toggle'));
 
-    const options = getAllByTestId('ask-user-question-option');
-    expect(options).toHaveLength(3);
-    // React, Svelte, Vue — only Svelte should be marked selected.
-    expect(options[0].getAttribute('data-selected')).toBe('false');
-    expect(options[1].getAttribute('data-selected')).toBe('true');
-    expect(options[2].getAttribute('data-selected')).toBe('false');
+    expect(queryByText('No answer recorded.')).toBeNull();
+    expect(getAllByTestId('ask-user-question-option').map((o) => o.getAttribute('data-selected')))
+      .toEqual(selected);
   });
 
   it('renders a "Custom: <text>" row for free-typed answers', async () => {
@@ -228,219 +319,6 @@ describe('<AskUserQuestionCard>', () => {
     const custom = getByTestId('ask-user-question-custom');
     expect(custom.textContent).toContain('Custom:');
     expect(custom.textContent).toContain('Solid');
-  });
-
-  it('renders multiple selected options for multi-select answers', async () => {
-    const item = makeItem({
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'AskUserQuestion',
-      meta: buildMeta({
-        questions: [
-          {
-            id: 'features',
-            header: 'Features',
-            question: 'Which features?',
-            multiSelect: true,
-            options: [
-              { label: 'Markdown', description: '' },
-              { label: 'Code highlighting', description: '' },
-              { label: 'Attachments', description: '' },
-              { label: 'Slash commands', description: '' },
-            ],
-          },
-        ],
-        answers: { features: ['Markdown', 'Attachments'] },
-      }),
-    });
-
-    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
-      props: { item },
-    });
-
-    await fireEvent.click(getByTestId('ask-user-question-toggle'));
-
-    const options = getAllByTestId('ask-user-question-option');
-    expect(options[0].getAttribute('data-selected')).toBe('true'); // Markdown
-    expect(options[1].getAttribute('data-selected')).toBe('false'); // Code highlighting
-    expect(options[2].getAttribute('data-selected')).toBe('true'); // Attachments
-    expect(options[3].getAttribute('data-selected')).toBe('false'); // Slash commands
-  });
-
-  it('parses Claude AskUserQuestion tool-result sentences keyed by question text', async () => {
-    const item = makeItem({
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'AskUserQuestion',
-      meta: buildMeta({
-        questions: [
-          {
-            id: 'features',
-            header: 'Features',
-            question: 'Which features?',
-            multiSelect: true,
-            options: [
-              { label: 'Markdown', description: '' },
-              { label: 'Code highlighting', description: '' },
-              { label: 'Attachments', description: '' },
-            ],
-          },
-        ],
-        toolResultContent:
-          'User has answered your questions: "Which features?"="Markdown, Attachments". You can now continue with the task.',
-      }),
-    });
-
-    const { getByTestId, getAllByTestId, queryByText } = render(AskUserQuestionCard, {
-      props: { item },
-    });
-
-    await fireEvent.click(getByTestId('ask-user-question-toggle'));
-
-    expect(queryByText('No answer recorded.')).toBeNull();
-    const options = getAllByTestId('ask-user-question-option');
-    expect(options[0].getAttribute('data-selected')).toBe('true');
-    expect(options[1].getAttribute('data-selected')).toBe('false');
-    expect(options[2].getAttribute('data-selected')).toBe('true');
-  });
-
-  it('keeps comma-containing option labels intact when parsing Claude multi-select answers', async () => {
-    const item = makeItem({
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'AskUserQuestion',
-      meta: buildMeta({
-        questions: [
-          {
-            id: 'platforms',
-            header: 'Platforms',
-            question: 'Which platforms?',
-            multiSelect: true,
-            options: [
-              { label: 'Web, mobile', description: '' },
-              { label: 'API', description: '' },
-              { label: 'Desktop', description: '' },
-            ],
-          },
-        ],
-        toolResultContent:
-          'User has answered your questions: "Which platforms?"="Web, mobile, API". You can now continue with the task.',
-      }),
-    });
-
-    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
-      props: { item },
-    });
-
-    await fireEvent.click(getByTestId('ask-user-question-toggle'));
-
-    const options = getAllByTestId('ask-user-question-option');
-    expect(options[0].getAttribute('data-selected')).toBe('true');
-    expect(options[1].getAttribute('data-selected')).toBe('true');
-    expect(options[2].getAttribute('data-selected')).toBe('false');
-  });
-
-  it('reads Codex request_user_input answers from item metadata', async () => {
-    const item = makeItem({
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'request_user_input',
-      meta: buildMeta({
-        toolName: 'request_user_input',
-        questions: [
-          {
-            id: 'scope',
-            header: 'Scope',
-            question: 'Choose a scope',
-            options: [
-              { label: 'turn', description: '' },
-              { label: 'session', description: '' },
-            ],
-          },
-        ],
-        directAnswers: { scope: 'session' },
-      }),
-    });
-
-    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
-      props: { item },
-    });
-
-    await fireEvent.click(getByTestId('ask-user-question-toggle'));
-
-    const options = getAllByTestId('ask-user-question-option');
-    expect(options[0].getAttribute('data-selected')).toBe('false');
-    expect(options[1].getAttribute('data-selected')).toBe('true');
-  });
-
-  it('renders the selected option from persisted meta.answers keyed by header (Claude)', async () => {
-    // The fix: triage merges the resolved answers onto the AskUserQuestion
-    // launch row as meta.answers. Claude questions carry no id, so the answer
-    // is keyed by the question header. Without the fix the card shows
-    // "No answer recorded." even though the agent received the choice.
-    const item = makeItem({
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'AskUserQuestion',
-      meta: buildMeta({
-        questions: [
-          {
-            header: 'Retention fix',
-            question: 'Which approach?',
-            options: [
-              { label: 'SECURITY DEFINER fn', description: 'recommended' },
-              { label: 'Minimal degrade-only', description: 'defer' },
-            ],
-          },
-        ],
-        directAnswers: { 'Retention fix': 'SECURITY DEFINER fn' },
-      }),
-    });
-
-    const { getByTestId, getAllByTestId, queryByText } = render(AskUserQuestionCard, {
-      props: { item },
-    });
-
-    await fireEvent.click(getByTestId('ask-user-question-toggle'));
-
-    expect(queryByText('No answer recorded.')).toBeNull();
-    const options = getAllByTestId('ask-user-question-option');
-    expect(options[0].getAttribute('data-selected')).toBe('true'); // SECURITY DEFINER fn
-    expect(options[1].getAttribute('data-selected')).toBe('false');
-  });
-
-  it('renders multiple selected options from persisted meta.answers (Claude multi-select)', async () => {
-    const item = makeItem({
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'AskUserQuestion',
-      meta: buildMeta({
-        questions: [
-          {
-            header: 'Features',
-            question: 'Which features?',
-            multiSelect: true,
-            options: [
-              { label: 'Markdown', description: '' },
-              { label: 'Code highlighting', description: '' },
-              { label: 'Attachments', description: '' },
-            ],
-          },
-        ],
-        directAnswers: { Features: ['Markdown', 'Attachments'] },
-      }),
-    });
-
-    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
-      props: { item },
-    });
-
-    await fireEvent.click(getByTestId('ask-user-question-toggle'));
-
-    const options = getAllByTestId('ask-user-question-option');
-    expect(options[0].getAttribute('data-selected')).toBe('true'); // Markdown
-    expect(options[1].getAttribute('data-selected')).toBe('false'); // Code highlighting
-    expect(options[2].getAttribute('data-selected')).toBe('true'); // Attachments
   });
 
   it('renders matched options AND a custom value from one coexistence array (multi-select)', async () => {
@@ -484,43 +362,6 @@ describe('<AskUserQuestionCard>', () => {
     const custom = getByTestId('ask-user-question-custom');
     expect(custom.textContent).toContain('Custom:');
     expect(custom.textContent).toContain('Voice notes');
-  });
-
-  it('prefers persisted meta.answers over a conflicting tool_result echo', async () => {
-    // meta.answers is exactly what was sent to the agent; the tool_result
-    // echo is free-form text that may parse to something stale or wrong.
-    // The card must let the authoritative meta.answers win.
-    const item = makeItem({
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'AskUserQuestion',
-      meta: buildMeta({
-        questions: [
-          {
-            header: 'Retention fix',
-            question: 'Which approach?',
-            options: [
-              { label: 'SECURITY DEFINER fn', description: 'recommended' },
-              { label: 'Minimal degrade-only', description: 'defer' },
-            ],
-          },
-        ],
-        directAnswers: { 'Retention fix': 'SECURITY DEFINER fn' },
-        toolResultContent: JSON.stringify({
-          answers: { 'Retention fix': 'Minimal degrade-only' },
-        }),
-      }),
-    });
-
-    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, {
-      props: { item },
-    });
-
-    await fireEvent.click(getByTestId('ask-user-question-toggle'));
-
-    const options = getAllByTestId('ask-user-question-option');
-    expect(options[0].getAttribute('data-selected')).toBe('true'); // meta.answers wins
-    expect(options[1].getAttribute('data-selected')).toBe('false'); // not the echo's choice
   });
 
   it('disambiguates duplicate headers by question id (Claude normalized ids)', async () => {
@@ -614,40 +455,6 @@ describe('<AskUserQuestionCard>', () => {
     expect(getByTestId('ask-user-question-title').textContent).toContain(
       'Question: 2 questions',
     );
-  });
-
-  // Option labels are model-authored, so nothing upstream promises they are
-  // distinct. Keyed on the label, a repeat throws `each_key_duplicate` out of
-  // the update flush, which aborts the batch and freezes the pane (incident
-  // 2026-08-29). Every option must still render.
-  it('renders every option when two of them carry the same label', async () => {
-    const item = makeItem({
-      kind: 'tool_call',
-      status: 'completed',
-      toolName: 'AskUserQuestion',
-      meta: buildMeta({
-        questions: [
-          {
-            id: 'approach',
-            header: 'Approach',
-            question: 'Which approach?',
-            options: [
-              { label: 'Rewrite', description: 'From scratch' },
-              { label: 'Rewrite', description: 'Keep the tests' },
-              { label: 'Patch', description: 'Smallest diff' },
-            ],
-          },
-        ],
-        answers: { approach: 'Patch' },
-      }),
-    });
-
-    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, { props: { item } });
-    await fireEvent.click(getByTestId('ask-user-question-toggle'));
-
-    const options = getAllByTestId('ask-user-question-option');
-    expect(options).toHaveLength(3);
-    expect(options.map((o) => o.getAttribute('data-selected'))).toEqual(['false', 'false', 'true']);
   });
 
   it('renders duplicate labels across two questions independently', async () => {

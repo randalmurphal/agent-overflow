@@ -116,11 +116,13 @@ describe('<ChatMarkdown> code-block spans', () => {
     const { container } = render(ChatMarkdown, {
       props: { source: '```python\n' + SOURCE + '\n```', pathRefs: [] },
     });
-    const markdown = await waitFor(() => {
+    const { markdown, liveRoot } = await waitFor(() => {
       const found = container.querySelector('.md-committed');
+      const host = container.querySelector<HTMLElement>('.streamdown-code-host');
       expect(found).not.toBeNull();
-      expect(container.querySelector('.streamdown-code-host')).not.toBeNull();
-      return found!;
+      expect(host).not.toBeNull();
+      expect(host?.querySelector('.syntax-keyword')).toBeNull();
+      return { markdown: found!, liveRoot: host! };
     });
     const commentCount = (): number => {
       const walker = document.createTreeWalker(markdown, NodeFilter.SHOW_COMMENT);
@@ -131,55 +133,8 @@ describe('<ChatMarkdown> code-block spans', () => {
     const mountedComments = commentCount();
     expect(mountedComments).toBeGreaterThan(2);
 
-    await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
-    resolveHighlight(keywordSpans());
-    await waitFor(() => expect(container.querySelector('.syntax-keyword')).not.toBeNull());
-    await waitFor(() => expect(commentCount()).toBeLessThan(mountedComments / 2));
-
-    expect(container.querySelector('[data-code-source] code')?.textContent).toBe(SOURCE);
-  });
-
-  it('does not force a live Selection read while retiring a cacheable code island', async () => {
-    let resolveHighlight!: (value: ReturnType<typeof keywordSpans>) => void;
-    setBindingMock(
-      'HighlightCode',
-      () => new Promise((resolve) => {
-        resolveHighlight = resolve;
-      }),
-    );
-    const { container } = render(ChatMarkdown, {
-      props: { source: '```python\n' + SOURCE + '\n```', pathRefs: [] },
-    });
-    await waitFor(() => expect(container.querySelector('.streamdown-code-host')).not.toBeNull());
-
-    const getSelection = vi.spyOn(document, 'getSelection');
-    try {
-      await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
-      resolveHighlight(keywordSpans());
-      await waitFor(() => expect(container.querySelector('.syntax-keyword')).not.toBeNull());
-      expect(getSelection).not.toHaveBeenCalled();
-    } finally {
-      getSelection.mockRestore();
-    }
-  });
-
-  it('retires completed code without building the syntax-span DOM twice', async () => {
-    let resolveHighlight!: (value: ReturnType<typeof keywordSpans>) => void;
-    setBindingMock(
-      'HighlightCode',
-      () => new Promise((resolve) => {
-        resolveHighlight = resolve;
-      }),
-    );
-    const { container } = render(ChatMarkdown, {
-      props: { source: '```python\n' + SOURCE + '\n```', pathRefs: [] },
-    });
-    const liveRoot = await waitFor(() => {
-      const found = container.querySelector<HTMLElement>('.streamdown-code-host');
-      expect(found).not.toBeNull();
-      expect(found?.querySelector('.syntax-keyword')).toBeNull();
-      return found!;
-    });
+    // Retiring a cacheable island must neither force a live Selection read
+    // nor build the syntax-span DOM reactively before the static copy does.
     let reactiveSyntaxInsertion = false;
     const inspect = (records: MutationRecord[]): void => {
       for (const record of records) {
@@ -194,6 +149,7 @@ describe('<ChatMarkdown> code-block spans', () => {
     };
     const observer = new MutationObserver(inspect);
     observer.observe(liveRoot, { subtree: true, childList: true });
+    const getSelection = vi.spyOn(document, 'getSelection');
     try {
       await waitFor(() => expect(resolveHighlight).toBeTypeOf('function'));
       resolveHighlight(keywordSpans());
@@ -203,9 +159,14 @@ describe('<ChatMarkdown> code-block spans', () => {
       });
       inspect(observer.takeRecords());
       expect(reactiveSyntaxInsertion).toBe(false);
+      expect(getSelection).not.toHaveBeenCalled();
+      await waitFor(() => expect(commentCount()).toBeLessThan(mountedComments / 2));
     } finally {
       observer.disconnect();
+      getSelection.mockRestore();
     }
+
+    expect(container.querySelector('[data-code-source] code')?.textContent).toBe(SOURCE);
   });
 
   it('retires at most one completed code island per coordinated frame', async () => {
@@ -1154,11 +1115,16 @@ describe('<ChatMarkdown> code-block spans', () => {
     await waitFor(() => expect(settled).toHaveBeenCalled());
   });
 
-  it('paints a streaming block from pushed spans without any RPC', async () => {
+  it.each([
+    { name: 'paints a streaming block from pushed spans without any RPC', info: 'python' },
+    // The backend follows fences under the first info-string word; the host
+    // looks them up under the same identity.
+    { name: 'matches pushed spans against an attributed fence', info: 'python title=demo' },
+  ])('$name', async ({ info }) => {
     const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
     await pushLive(SOURCE, [{ r: [3, 1] }, {}]);
     const { container } = render(ChatMarkdown, {
-      props: { source: '```python\n' + SOURCE, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
+      props: { source: '```' + info + '\n' + SOURCE, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
     });
     await waitFor(() => expect(keywordText(container)).toEqual(['def']));
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -1364,20 +1330,6 @@ describe('<ChatMarkdown> code-block spans', () => {
     expect(container.querySelector('[data-code-lang]')?.getAttribute('data-code-lang')).toBe(
       'python title=demo',
     );
-  });
-
-  it('matches pushed spans against an attributed fence', async () => {
-    // The backend follows fences under the first info-string word; the
-    // host looks them up under the same identity.
-    const rpc = setBindingMock('HighlightCode', async () => keywordSpans());
-    await pushLive(SOURCE, [{ r: [3, 1] }, {}]);
-
-    const { container } = render(ChatMarkdown, {
-      props: { source: '```python title=demo\n' + SOURCE, streaming: true, pathRefs: [], liveCodeRow: LIVE_ROW },
-    });
-    await waitFor(() => expect(keywordText(container)).toEqual(['def']));
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(rpc).not.toHaveBeenCalled();
   });
 
   it('does not memoize empty span sets for remount seeding', async () => {

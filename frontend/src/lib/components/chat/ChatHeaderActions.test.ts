@@ -223,41 +223,26 @@ describe('<ChatHeaderActions> subscription effect', () => {
     expect(getBindingMock('GitStatusUnsubscribe')).not.toHaveBeenCalled();
   });
 
-  it('does NOT re-subscribe when the pane switches threads inside one workspace', async () => {
+  it('subscribes on the CHECKOUT, and a thread swap inside it does not resubscribe', async () => {
     // The entity is the WORKSPACE. Switching which thread a pane shows says
     // nothing about the checkout, so a release + re-attach here would bounce
     // the backend refcount through zero: the fs watcher torn down and
-    // rebuilt, and every badge in the header blanked, for nothing.
-    const thread = makeThread({ id: 'thread-a', workspacePath: WORKSPACE });
-    const pane = await buildPane(thread);
+    // rebuilt, and every badge in the header blanked, for nothing. The ref
+    // is derived off the two primitive strings, so its identity does not move
+    // either — an identity churn here would re-source on every streamed token.
+    const pane = await buildPane(makeThread({ id: 'thread-a', workspacePath: WORKSPACE }));
     const { subscribeFn } = installSubscribeMock(status({ insertions: 3 }));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();
     expect(subscribeFn).toHaveBeenCalledTimes(1);
-
-    pane.replaceThread(makeThread({ id: 'thread-b', workspacePath: WORKSPACE }));
-    await flush();
-
-    expect(subscribeFn).toHaveBeenCalledTimes(1);
-    expect(getBindingMock('GitStatusUnsubscribe')).not.toHaveBeenCalled();
-    // And the observation is still there — no blank frame on the switch.
-    expect(getByTestId('workspace-diff-counts').textContent).toContain('+3');
-  });
-
-  it('subscribes on the CHECKOUT, and a thread swap inside it does not resubscribe', async () => {
-    // The subject is the directory, not the row: swapping which conversation
-    // the pane shows inside one worktree is not a different watcher. The ref
-    // is derived off the two primitive strings, so its identity does not move
-    // either — an identity churn here would re-source on every streamed token.
-    const pane = await buildPane(makeThread({ id: 'thread-a', workspacePath: WORKSPACE }));
-    const { subscribeFn } = installSubscribeMock(status());
-    render(ChatHeaderActions, { props: { pane } });
-    await flush();
     expect(subscribeFn).toHaveBeenCalledWith(WS);
 
     pane.replaceThread(makeThread({ id: 'thread-b', workspacePath: WORKSPACE }));
     await flush();
     expect(subscribeFn).toHaveBeenCalledTimes(1);
+    expect(getBindingMock('GitStatusUnsubscribe')).not.toHaveBeenCalled();
+    // And the observation is still there — no blank frame on the switch.
+    expect(getByTestId('workspace-diff-counts').textContent).toContain('+3');
 
     // A reconnect re-acquires every key; the store asks the ctx again, and
     // gets the ref the pane holds NOW.
@@ -495,24 +480,25 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
     resetToLocalPage();
   });
 
-  it('disables New Thread, Same Assistant without threads:autonomy, which the next thread rides', async () => {
+  it.each([
+    {
+      name: 'disables New Thread, Same Assistant without threads:autonomy, which the next thread rides',
+      thread: { agentId: 'agent-1' },
+      testId: 'chat-header-next-thread',
+    },
+    {
+      name: 'disables the desktop take-control button with the reason',
+      thread: { provider: 'claude-tui' as const },
+      testId: 'take-control-toggle',
+    },
+  ])('$name', async ({ thread, testId }) => {
     installSubscribeMock(status({}));
-    const pane = await buildPane(makeThread({ agentId: 'agent-1' }));
+    const pane = await buildPane(makeThread(thread));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();
-    const next = getByTestId('chat-header-next-thread') as HTMLButtonElement;
-    expect(next.disabled).toBe(true);
-    expect(next.title).toBe(INERT);
-  });
-
-  it('disables the desktop take-control button with the reason', async () => {
-    installSubscribeMock(status({}));
-    const pane = await buildPane(makeThread({ provider: 'claude-tui' }));
-    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
-    await flush();
-    const take = getByTestId('take-control-toggle') as HTMLButtonElement;
-    expect(take.disabled).toBe(true);
-    expect(take.title).toBe(INERT);
+    const control = getByTestId(testId) as HTMLButtonElement;
+    expect(control.disabled).toBe(true);
+    expect(control.title).toBe(INERT);
   });
 
   it('renders the compact terminal and Take control rows inert with the reason', async () => {
