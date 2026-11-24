@@ -10,7 +10,9 @@ soak instance. It is the Go counterpart of `e2e/src/harness.ts` and underpins
 Keep this package independent of App and transport-server code. It may observe
 only the bootstrap line, files written under the selected data root, the
 authenticated WebSocket, and processes it started. `internal/transport` is a
-test-only dependency used to check the hand-written client frame shapes.
+test-only dependency used to check the hand-written client frame shapes, and
+`internal/testutil/reporoot` a test-only one that reads the page's default
+send (`frontend/src/test/fixtures/pageDefaultSend.json`).
 
 Detached launches use their own process group, write stdout and stderr to owned
 files, and poll stdout for the bootstrap line. Do not replace this with

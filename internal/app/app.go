@@ -1295,10 +1295,10 @@ func (a *App) backendIdentity() (backendID, replicaGeneration string) {
 
 // --- Item operations ---
 
-// listThreadItems returns every item persisted for a thread in chronological
-// order, for the harness's HarnessListItems. Unwindowed, so it carries the
-// byte backstop the same way the paged loads do; panes use the bounded
-// slice surface instead.
+// listThreadItems returns a thread's items in chronological order for the
+// harness's HarnessListItems: the newest rows that fit the response budget
+// (projectItemSlice), projected as the paged loads project them; panes use
+// the bounded slice surface instead.
 func (a *App) listThreadItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
 	if err := a.readyThreadHistory(threadID); err != nil {
 		return nil, err

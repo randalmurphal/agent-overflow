@@ -1,18 +1,21 @@
-// `ao-harness bench` end to end, driven the way a human drives it: the
+// The ao-harness CLI end to end, driven the way a human drives it: the
 // real CLI binary as a subprocess, pointed at this worker's harness, with
-// a Playwright page attached so the frontend bridge can answer.
+// a Playwright page attached where the frontend bridge has to answer.
 //
 // The arithmetic already has unit coverage (cmd/ao-harness/bench_report_test.go)
 // and the bridge has its own spec. What only this level can prove is the
 // join: that a CLI outside the app can reset an instance, reload the page
 // it is holding, seed a fixture, arm the meters, drive a scenario to turn
-// completion, and land a report with numbers a real browser produced.
+// completion, and land a report with numbers a real browser produced; and
+// that `send --wait` names the turn its own message opened from the rows
+// and completions the backend really publishes.
 import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import type { HarnessApp } from '../src/harness.js';
 import { execProduct, productBinary } from '../src/product-process.js';
-import { test, expect } from './fixtures.js';
+import { test, expect, type SeedResult } from './fixtures.js';
+import { advanceGate, awaitGate, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 
 interface BenchAggregate {
   runs: number;
@@ -150,4 +153,62 @@ test('health rolls up the same instance and exits ok', async ({ harness, page })
   // A healthy instance must not report a renderer fault; that section is
   // the one the whole rollup exists to surface.
   expect(stdout).not.toMatch(/red\s+frontend-errors/);
+});
+
+test('send --wait reports the turn its own message opened and refuses a working thread', async ({ harness }) => {
+  test.setTimeout(90_000);
+  const gate = 'cli-send-wait-held';
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'CLI send', repo: {}, threads: [{ title: 'CLI send thread', provider: 'claude' }] }],
+  });
+  const cwd = seed.projects[0].path;
+  const threadId = seed.projects[0].threadIds[0];
+  await setScenario(harness, cwd, threadToolsScenario({
+    name: 'cli-send-wait',
+    provider: 'claude',
+    turns: [{ text: 'The first answer.' }, { steps: [{ gate }], text: 'The held answer.' }],
+  }));
+  const cli = (...args: string[]) =>
+    execProduct(productBinary('ao-harness'), ['--instance', harness.bootstrap.dataRoot, '-o', 'json', ...args], { timeout: 60_000 });
+  const userRows = async (text: string) =>
+    (await harness.items<{ kind: string; summary: string; turnIndex: number }>(threadId, false))
+      .filter((item) => item.kind === 'user_text' && item.summary === text);
+
+  // At rest: the completion reported is the one for the turn of the row
+  // the CLI's message wrote.
+  const { stdout } = await cli('send', '--thread', threadId, '--wait', 'first message');
+  const reported = JSON.parse(stdout) as { completed: { threadId: string; turnIndex: number } };
+  const [first] = await userRows('first message');
+  expect(first, 'the first message has its row').toBeTruthy();
+  expect(reported.completed).toMatchObject({ threadId, turnIndex: first!.turnIndex });
+
+  // Working: a second `send --wait` is refused before it sends. Were it
+  // sent, it would queue behind the held turn and report that turn's end.
+  const parked = awaitGate(harness, gate, cwd);
+  await harness.send(threadId, 'held message');
+  const { mockId } = await parked;
+  let settled = false;
+  const second = cli('send', '--thread', threadId, '--wait', 'second message').then(
+    () => ({ code: 0, stderr: '' }),
+    (error: { code?: number; stderr?: string }) => ({ code: error.code ?? -1, stderr: error.stderr ?? '' }),
+  ).finally(() => {
+    settled = true;
+  });
+  await expect
+    .poll(() => settled || harness.countEvents<{ threadId: string; items: unknown[] }>(
+      'provider:queue_state_changed',
+      (event) => event.threadId === threadId && event.items.length > 0,
+    ) > 0, { timeout: 30_000 })
+    .toBe(true);
+  await advanceGate(harness, mockId, gate);
+  const outcome = await second;
+  expect(outcome.code, 'send --wait to a working thread must fail').toBe(1);
+  expect(outcome.stderr).toContain('is working (a turn is open');
+
+  // The barrier for the absence: once the thread rests, a message the CLI
+  // had sent would have run, and has its row.
+  await expect
+    .poll(async () => (await harness.rpc<unknown[]>('HarnessThreadsWorking', [threadId])).length, { timeout: 30_000 })
+    .toBe(0);
+  expect(await userRows('second message')).toEqual([]);
 });

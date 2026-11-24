@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harnessclient"
 )
 
@@ -371,6 +370,9 @@ func runItems(e *env, args []string) error {
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{listItemsMethod}}); err != nil {
+			return err
+		}
 		// Resolve FIRST. A garbage selector used to reach HarnessListItems, come
 		// back empty, and print "no items" — which reads as "that thread is
 		// empty" rather than "that thread does not exist".
@@ -382,11 +384,15 @@ func runItems(e *env, args []string) error {
 	})
 }
 
+// listItemsMethod is the harness read `items` and `send --wait --items`
+// print from.
+const listItemsMethod = "HarnessListItems"
+
 func (e *env) printItems(ctx context.Context, client *harnessclient.Client, threadID string, turn int) error {
 	// true: ask for inline previews so the printed rows carry the complete
 	// payload metadata rather than the wire projection's elided copy
 	// (internal/itemwire) — this is an inspection tool, not a renderer.
-	raw, err := client.Call(ctx, "HarnessListItems", threadID, true)
+	raw, err := client.Call(ctx, listItemsMethod, threadID, true)
 	if err != nil {
 		return err
 	}
@@ -434,7 +440,7 @@ const defaultSendWaitTimeout = 30 * time.Second
 func runSend(e *env, args []string) error {
 	flags := e.newFlagSet("send --thread <id|#N|last|title-prefix> <text...>")
 	thread := flags.String("thread", "", "thread selector: id, #N from `threads`, `last`, or a unique title prefix")
-	wait := flags.Bool("wait", false, "block until the turn completes instead of returning once the message is accepted")
+	wait := flags.Bool("wait", false, "block until the turn the message opens completes instead of returning once it is accepted; refuses a thread that is working")
 	items := flags.Bool("items", false, "with --wait: print the thread's items once the turn completes")
 	timeout := flags.Duration("timeout", defaultSendWaitTimeout, "how long --wait blocks")
 	rest, err := e.parse(flags, args)
@@ -459,7 +465,7 @@ func runSend(e *env, args []string) error {
 		ctx = waitCtx
 	}
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
-		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{harnessclient.SendMethod}}); err != nil {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: sendMethods(*wait, *items)}); err != nil {
 			return err
 		}
 		row, err := resolveThreadSelector(ctx, client, *thread)
@@ -480,43 +486,28 @@ func runSend(e *env, args []string) error {
 	})
 }
 
-// awaitTurnAfterSend sends one message and blocks until the app closes
-// that thread's turn. The order is the whole point: subscribe, PARK the
-// wait, and only then send. A mock can finish a scripted turn inside the
-// send round trip, so a wait registered after the RPC returns is a
-// wait for the NEXT turn.
-//
-// Shared by `send --wait` and `profile`, which need the identical
-// sequence and must not grow two spellings of it — the parked-before-send
-// rule is the sort of thing a second copy quietly gets wrong.
-func awaitTurnAfterSend(ctx context.Context, client *harnessclient.Client, threadID, text string) (harnessclient.Event, error) {
-	channel := string(eventchan.ProviderTurnCompleted)
-	if err := client.Subscribe(ctx, channel); err != nil {
-		return harnessclient.Event{}, err
+// sendMethods is every call `send` makes with these flags, all checked
+// before the send: an instance that lacks the read a command ends with
+// would otherwise take the message and then fail, and a retry would send
+// it again under a fresh send id.
+func sendMethods(wait, items bool) []string {
+	methods := []string{harnessclient.SendMethod}
+	if wait {
+		methods = append(methods, harnessclient.ThreadWorkMethod)
 	}
-	awaiting := client.Await(channel, func(ev harnessclient.Event) bool {
-		if ev.Gap {
-			return false
-		}
-		var payload struct {
-			ThreadID string `json:"threadId"`
-		}
-		return json.Unmarshal(ev.Data, &payload) == nil && payload.ThreadID == threadID
-	})
-	if err := client.Send(ctx, threadID, text); err != nil {
-		awaiting.Close()
-		return harnessclient.Event{}, err
+	if items {
+		methods = append(methods, listItemsMethod)
 	}
-	event, err := awaiting.Wait(ctx)
-	if err != nil {
-		return harnessclient.Event{}, fmt.Errorf("the turn on %s never completed: %w", threadID, err)
-	}
-	return event, nil
+	return methods
 }
 
 // sendAndWait is the single-command observe-a-turn path.
 func (e *env) sendAndWait(ctx context.Context, client *harnessclient.Client, row threadRow, text string, withItems bool) error {
-	event, err := awaitTurnAfterSend(ctx, client, row.ID, text)
+	resting, err := client.ThreadAtRest(ctx, row.ID)
+	if err != nil {
+		return err
+	}
+	event, err := resting.SendAndAwaitTurn(ctx, text)
 	if err != nil {
 		return err
 	}

@@ -61,7 +61,6 @@ type testHost struct {
 	// work started. Exhausted, it reports none.
 	stopped         []string
 	liveAfterStop   [][]string
-	started         []string
 	mergedPRPauses  int
 	mergedPRResumes int
 	mergedPRPolled  time.Time
@@ -202,17 +201,12 @@ func (h *testHost) MakeAssistant(threadID string) (store.StandingAgent, error) {
 func (h *testHost) BroadcastThreadRow(threadID string) {
 	h.broadcastRows = append(h.broadcastRows, threadID)
 }
-func (h *testHost) StartSession(threadID string) error {
-	h.started = append(h.started, threadID)
-	return nil
-}
+func (h *testHost) StartSession(string) error { return nil }
 func (h *testHost) StopSession(threadID string) error {
 	h.stopped = append(h.stopped, threadID)
 	return nil
 }
-func (h *testHost) ListItems(threadID string, _ bool) ([]store.Item, error) {
-	return h.store.ListItems(threadID)
-}
+func (h *testHost) ListItems(string, bool) ([]store.Item, error) { return nil, nil }
 func (h *testHost) AwaitSessionEndWork() []string {
 	if len(h.liveAfterStop) == 0 {
 		return nil

@@ -69,8 +69,8 @@ type Host interface {
 	// start does. A send starts one by itself.
 	StartSession(threadID string) error
 	StopSession(threadID string) error
-	// ListItems is every item of the thread in order, with the byte
-	// backstop the paged loads apply.
+	// ListItems is the thread's items in order: the newest rows that fit
+	// the response budget, projected as the paged loads project them.
 	ListItems(threadID string, inlinePreviews bool) ([]store.Item, error)
 	// AwaitSessionEndWork waits for the work stopped sessions set off (a
 	// request a stop settled, the wake that answer owes another thread, and

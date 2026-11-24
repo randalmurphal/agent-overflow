@@ -17,11 +17,13 @@ func (h *Harness) HarnessStartSession(threadID string) error {
 	return h.config.Host.StartSession(threadID)
 }
 
-// HarnessListItems answers every item of a thread in order: the assertion
-// read for a spec or `ao-harness items`. A page reads bounded slices
+// HarnessListItems answers a thread's items in order, the assertion read
+// for a spec or `ao-harness items`: the newest rows that fit the response
+// budget, projected as the paged loads project them, so a long thread
+// answers its tail only. A page reads bounded slices
 // (ListThreadSliceAround, ListItemsBeforeCursor, ListItemsAfterCursor)
-// instead. inlinePreviews asks for complete payload metadata rather than
-// the wire projection's elided copy.
+// instead. inlinePreviews keeps payload previews inline where the
+// projection's bounds allow.
 func (h *Harness) HarnessListItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
 	if h.config.Host == nil {
 		return nil, fmt.Errorf("harness host unavailable")

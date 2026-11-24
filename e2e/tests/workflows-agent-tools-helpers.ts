@@ -362,15 +362,10 @@ export async function startAndWatchFromThread(
   // turn 2 ends first.
   await setPhaseScenario(harness, phaseProvider, `${phaseProvider}-phases-held`, [{ gate: HELD_PHASE_GATE }], { complete: true });
   const second = 'Now start the migration and let me know when it is done.';
-  // A wake for the importer's rest would have started a turn of its own
-  // after turn 1, and the send would be refused as the thread is working.
-  const refused = await harness.send(project.threadId, second).then(
-    () => undefined,
-    (error: Error) => error.message,
-  );
-  expect(refused, 'the thread was busy after turn 1: the importer rest the wait returned also woke it').toBeUndefined();
+  await harness.send(project.threadId, second);
   // The barrier for the absence below: a wake for the importer's rest would
-  // have been queued during turn 1, ahead of this message.
+  // have been queued during turn 1, so the thread takes it in before this
+  // message or with it.
   await harness.waitForEvent<MockInput>(
     'harness:mock',
     (event) =>
@@ -379,6 +374,10 @@ export async function startAndWatchFromThread(
       (event.report.input ?? '').includes(second),
     60_000,
   );
+  // Counted over the whole event log rather than a watch: the importer's
+  // run id is known only once its wait answered, and a wake could be taken
+  // in before that answer reached this spec.
+  expect(inputsNaming(harness, provider, rested.value!.start.itemId), 'the importer rest the wait returned also woke the thread').toBe(0);
   const backgrounded = await awaitWorkflowAnswer<StartAnswer>(harness, 'run_start', { cwd: project.path, timeoutMs: 60_000 });
   expect(backgrounded.isError, backgrounded.text).toBe(false);
   await awaitTurnCompleted(harness, project.threadId);

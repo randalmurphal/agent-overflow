@@ -40,9 +40,6 @@ test('a worker finishes for its spawner in both directions with the released thr
           wait_seconds: 60,
         } } }], text: 'Received the answer.' }],
       }));
-      // The released binary starts a session only through its own StartSession.
-      if (source === released) await source.rpc('StartSession', caller.threadIds[0]);
-      else await source.startSession(caller.threadIds[0]);
       await source.send(caller.threadIds[0], 'Run the worker.');
       const result = await awaitToolAnswer<{ state: string }>(source, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 90_000 });
       expect(result.isError, result.text).toBe(false);

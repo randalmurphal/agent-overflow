@@ -46,7 +46,6 @@ test('the build without remote access hides and refuses remote access and keeps 
       projects: [{ name: 'Local project', repo: {}, threads: [{ title: 'Local conversation' }] }],
     });
     const threadId = seed.projects[0].threadIds[0];
-    await host.startSession(threadId);
     await host.send(threadId, 'local turn');
     await host.waitForEvent('provider:turn_completed');
     await page.getByTestId('thread-row').filter({ hasText: 'Local conversation' }).click();
