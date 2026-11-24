@@ -138,36 +138,34 @@ func TestFindUserTextItemBySendIDRefusesAnEmptyQuestion(t *testing.T) {
 	}
 }
 
+// Each send identity lookup reads a pair of sparse partial indexes, one per
+// timeline arm, and never scans message history. The joined lookup runs only
+// when the `$.sendId` fast path misses.
 func TestSendIdentityLookupUsesBothSparseIndexes(t *testing.T) {
 	s := newTestStore(t)
-	query, args, err := sendIdentityQuery(s.db, "thread", "send-id")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, err := s.db.Query("EXPLAIN QUERY PLAN "+query, args...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var plan strings.Builder
-	for rows.Next() {
-		var id, parent, unused int
-		var detail string
-		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
-			t.Fatal(err)
-		}
-		plan.WriteString(detail + "\n")
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	for _, index := range []string{"idx_items_send_id", "idx_import_history_items_send_id"} {
-		if !strings.Contains(plan.String(), index) {
-			t.Fatalf("missing %s in plan:\n%s", index, plan.String())
-		}
-	}
-	if strings.Contains(plan.String(), "SCAN items") {
-		t.Fatalf("scanned message history:\n%s", plan.String())
+	for _, tc := range []struct {
+		name    string
+		query   func(sqlQueryer, string, string) (string, []any, error)
+		indexes []string
+	}{
+		{"sendId", sendIdentityQuery, []string{"idx_items_send_id", "idx_import_history_items_send_id"}},
+		{"joinedSendIds", joinedSendIdentityQuery, []string{"idx_items_joined_send_ids", "idx_import_history_items_joined_send_ids"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			query, args, err := tc.query(s.db, "thread", "send-id")
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+query, args...)
+			for _, index := range tc.indexes {
+				if !strings.Contains(plan, index) {
+					t.Fatalf("missing %s in plan:\n%s", index, plan)
+				}
+			}
+			if strings.Contains(plan, "SCAN items") {
+				t.Fatalf("scanned message history:\n%s", plan)
+			}
+		})
 	}
 }
 
@@ -283,41 +281,5 @@ func TestFindUserTextItemBySendIDResolvesJoinedMembers(t *testing.T) {
 	}
 	if _, found, err := s.FindUserTextItemBySendID("t-join", "send-d"); err != nil || found {
 		t.Fatalf("unknown send id matched: found=%v err=%v", found, err)
-	}
-}
-
-// The joined lookup is a second query over a second pair of sparse partial
-// indexes. It runs only when the `$.sendId` fast path misses, and it must not
-// scan message history on either timeline arm.
-func TestJoinedSendIdentityLookupUsesBothSparseIndexes(t *testing.T) {
-	s := newTestStore(t)
-	query, args, err := joinedSendIdentityQuery(s.db, "thread", "send-id")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, err := s.db.Query("EXPLAIN QUERY PLAN "+query, args...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var plan strings.Builder
-	for rows.Next() {
-		var id, parent, unused int
-		var detail string
-		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
-			t.Fatal(err)
-		}
-		plan.WriteString(detail + "\n")
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	for _, index := range []string{"idx_items_joined_send_ids", "idx_import_history_items_joined_send_ids"} {
-		if !strings.Contains(plan.String(), index) {
-			t.Fatalf("missing %s in plan:\n%s", index, plan.String())
-		}
-	}
-	if strings.Contains(plan.String(), "SCAN items") {
-		t.Fatalf("scanned message history:\n%s", plan.String())
 	}
 }

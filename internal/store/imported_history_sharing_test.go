@@ -218,23 +218,6 @@ func TestImportedHistoryCutsKeepSharedPrefix(t *testing.T) {
 	}
 }
 
-func TestImportedHistoryForkCopiesPayloadOverrides(t *testing.T) {
-	s := newTestStore(t)
-	importedHistoryFixture(t, s, "source", 3)
-	// Payload mutation can create a private overlay without localizing its item.
-	if err := s.ReplacePayloadData("source", "item-000", []byte("new bytes"), `{"new":true}`, 2); err != nil {
-		t.Fatal(err)
-	}
-	mustPointerFork(t, s, "source", "fork", ForkCut{})
-	data, err := s.GetPayloadData("fork", "item-000")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "new bytes" {
-		t.Fatalf("fork ignored private payload override: %q", data)
-	}
-}
-
 func TestImportedHistorySnapshotRestoreWithPrivateOverride(t *testing.T) {
 	s := newTestStore(t)
 	importedHistoryFixture(t, s, "source", 80)
@@ -398,10 +381,14 @@ func TestHolderSplitOfImportedChildrenStampsTheirParent(t *testing.T) {
 func TestImportedHistoryCutCollectsPrivatePayloadOverrides(t *testing.T) {
 	s := newTestStore(t)
 	importedHistoryFixture(t, s, "source", 12)
+	// Payload mutation can create a private overlay without localizing its item.
 	if err := s.ReplacePayloadData("source", "item-011", []byte("private override"), "{}", 3); err != nil {
 		t.Fatal(err)
 	}
 	mustPointerFork(t, s, "source", "fork", ForkCut{})
+	if data, err := s.GetPayloadData("fork", "item-011"); err != nil || string(data) != "private override" {
+		t.Fatalf("fork ignored private payload override: %q %v", data, err)
+	}
 	if _, _, err := s.DeleteConversationFromItem("source", "item-011"); err != nil {
 		t.Fatal(err)
 	}

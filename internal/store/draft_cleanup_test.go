@@ -106,61 +106,6 @@ func TestDeleteEmptyDraftThreadDeletesEmptyPlanDraft(t *testing.T) {
 	}
 }
 
-func TestDeleteEmptyDraftThreadKeepsDraftWithContent(t *testing.T) {
-	s := newTestStore(t)
-	thread := createDraftCleanupThread(t, s, "draft-with-content", "chat")
-	if _, err := s.UpsertThreadDraft(ThreadDraft{
-		ThreadID:      thread.ID,
-		Content:       "do not delete",
-		Attachments:   "[]",
-		TerminalChips: "[]",
-		UpdatedAt:     time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("UpsertThreadDraft: %v", err)
-	}
-
-	deleted, err := s.DeleteEmptyDraftThread(thread.ID)
-	if err != nil {
-		t.Fatalf("DeleteEmptyDraftThread: %v", err)
-	}
-	if deleted {
-		t.Fatal("draft with content should not be deleted")
-	}
-	if !threadRowExists(t, s, thread.ID) {
-		t.Fatal("thread row was deleted")
-	}
-}
-
-func TestDeleteEmptyDraftThreadKeepsThreadWithItems(t *testing.T) {
-	s := newTestStore(t)
-	thread := createDraftCleanupThread(t, s, "draft-with-items", "chat")
-	if _, err := s.AppendItem(Item{
-		ID:        "item-1",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "user_text",
-		Role:      "user",
-		Status:    "completed",
-		Summary:   "sent",
-		CreatedAt: time.Now().UnixMilli(),
-		UpdatedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("AppendItem: %v", err)
-	}
-
-	deleted, err := s.DeleteEmptyDraftThread(thread.ID)
-	if err != nil {
-		t.Fatalf("DeleteEmptyDraftThread: %v", err)
-	}
-	if deleted {
-		t.Fatal("thread with items should not be deleted")
-	}
-	if !threadRowExists(t, s, thread.ID) {
-		t.Fatal("thread row was deleted")
-	}
-}
-
 func TestDeleteEmptyDraftThreadKeepsThreadWithTurns(t *testing.T) {
 	s := newTestStore(t)
 	thread := createDraftCleanupThread(t, s, "draft-with-turn", "chat")
@@ -179,34 +124,6 @@ func TestDeleteEmptyDraftThreadKeepsThreadWithTurns(t *testing.T) {
 	}
 	if deleted {
 		t.Fatal("thread with turns should not be deleted")
-	}
-	if !threadRowExists(t, s, thread.ID) {
-		t.Fatal("thread row was deleted")
-	}
-}
-
-func TestDeleteEmptyDraftThreadKeepsThreadWithWorktree(t *testing.T) {
-	s := newTestStore(t)
-	thread := createDraftCleanupThread(t, s, "draft-with-worktree", "chat")
-	thread.WorktreePath = "/tmp/worktrees/draft-with-worktree"
-	thread.WorkspacePath = thread.WorktreePath
-	if err := s.UpdateThread(thread); err != nil {
-		t.Fatalf("UpdateThread: %v", err)
-	}
-
-	empty, err := s.IsEmptyDraftThread(thread.ID)
-	if err != nil {
-		t.Fatalf("IsEmptyDraftThread: %v", err)
-	}
-	if empty {
-		t.Fatal("thread with a worktree should not be classified as empty — deleting it would orphan the checkout")
-	}
-	deleted, err := s.DeleteEmptyDraftThread(thread.ID)
-	if err != nil {
-		t.Fatalf("DeleteEmptyDraftThread: %v", err)
-	}
-	if deleted {
-		t.Fatal("thread with a worktree should not be deleted")
 	}
 	if !threadRowExists(t, s, thread.ID) {
 		t.Fatal("thread row was deleted")

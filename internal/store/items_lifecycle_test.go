@@ -42,55 +42,55 @@ func TestItemsTableHasLifecycleColumns(t *testing.T) {
 	}
 }
 
-func TestItemsStatusCheckRejectsBogusValue(t *testing.T) {
+// The v15 CHECK constraints on items: an out-of-enum value is refused on
+// insert and on update, and every legal value inserts. Triage and the
+// frontend depend on decision's set to prune impossible states at the store
+// boundary (an invalid decision reaching the frontend would quietly break
+// ToolDecisionChip branching).
+func TestItemsCheckConstraintsRejectBogusValues(t *testing.T) {
 	s := newTestStore(t)
-
 	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
 		VALUES ('t', ?, 'T', 'claude', '/tmp', '', 1, 1)`, defaultTestProjectID); err != nil {
 		t.Fatalf("seed thread: %v", err)
 	}
-
-	// Raw INSERT with a status value outside the allowed enum must fail.
-	_, err := s.db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status, is_background, completion_of, created_at, updated_at)
-		VALUES ('i', 't', 0, 0, 'assistant_text', 'assistant', '', '', 'weird', 0, '', 1, 1)`)
-	if err == nil {
-		t.Fatal("INSERT with bogus status must violate CHECK constraint")
+	index := 0
+	insert := func(column string, value any) error {
+		index++
+		row := map[string]any{"status": "completed", "is_background": 0, "decision": ""}
+		row[column] = value
+		_, err := s.db.Exec(`INSERT INTO items
+			(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status,
+			 is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+			VALUES (?, 't', 0, ?, 'tool_call', 'assistant', '', '', ?, ?, '', '', ?, '{}', 1, 1)`,
+			fmt.Sprintf("%s-%d", column, index), index, row["status"], row["is_background"], row["decision"])
+		return err
 	}
-	if !strings.Contains(err.Error(), "CHECK") && !strings.Contains(err.Error(), "constraint") {
-		t.Errorf("error = %v, want CHECK constraint violation", err)
-	}
-
-	// Sanity: every allowed value succeeds.
-	for i, status := range []string{"running", "completed", "errored", "declined"} {
-		id := fmt.Sprintf("ok-%d", i)
-		if _, err := s.db.Exec(`INSERT INTO items
-			(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status, is_background, completion_of, created_at, updated_at)
-			VALUES (?, 't', 0, ?, 'assistant_text', 'assistant', '', '', ?, 0, '', 1, 1)`,
-			id, i, status); err != nil {
-			t.Errorf("INSERT with status=%q: %v", status, err)
-		}
-	}
-
-	// UPDATE to a bogus value must also fail.
-	if _, err := s.db.Exec(`UPDATE items SET status = 'nope' WHERE id = 'ok-0'`); err == nil {
-		t.Error("UPDATE to bogus status must fail")
-	}
-}
-
-func TestItemsIsBackgroundCheckRejectsBogusValue(t *testing.T) {
-	s := newTestStore(t)
-
-	if _, err := s.db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at)
-		VALUES ('t', ?, 'T', 'claude', '/tmp', '', 1, 1)`, defaultTestProjectID); err != nil {
-		t.Fatalf("seed thread: %v", err)
-	}
-
-	// Only 0 and 1 are allowed; 2 must fail.
-	if _, err := s.db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status, is_background, completion_of, created_at, updated_at)
-		VALUES ('i', 't', 0, 0, 'assistant_text', 'assistant', '', '', 'completed', 2, '', 1, 1)`); err == nil {
-		t.Fatal("INSERT with is_background=2 must violate CHECK constraint")
+	for _, tc := range []struct {
+		column string
+		bogus  any
+		legal  []any
+	}{
+		{"status", "weird", []any{"running", "completed", "errored", "declined"}},
+		{"is_background", 2, []any{0, 1}},
+		{"decision", "maybe", []any{"", "approved", "declined", "amended", "lost"}},
+	} {
+		t.Run(tc.column, func(t *testing.T) {
+			err := insert(tc.column, tc.bogus)
+			if err == nil {
+				t.Fatalf("INSERT with %s=%v must violate CHECK constraint", tc.column, tc.bogus)
+			}
+			if !strings.Contains(err.Error(), "CHECK") && !strings.Contains(err.Error(), "constraint") {
+				t.Errorf("error = %v, want CHECK constraint violation", err)
+			}
+			for _, value := range tc.legal {
+				if err := insert(tc.column, value); err != nil {
+					t.Errorf("INSERT with %s=%v: %v", tc.column, value, err)
+				}
+			}
+			if _, err := s.db.Exec(`UPDATE items SET `+tc.column+` = ? WHERE id = ?`, tc.bogus, fmt.Sprintf("%s-%d", tc.column, index)); err == nil {
+				t.Errorf("UPDATE to bogus %s must fail", tc.column)
+			}
+		})
 	}
 }
 
@@ -620,14 +620,6 @@ func TestAppendItemSummaryConcatenatesInPlace(t *testing.T) {
 	}
 }
 
-func TestAppendItemSummaryErrorsOnMissingItem(t *testing.T) {
-	s := newTestStore(t)
-	_, err := s.AppendItemSummary("t", "nonexistent", "x", 100)
-	if err == nil {
-		t.Fatal("expected error for missing item")
-	}
-}
-
 func TestAppendItemSummaryZeroRowSemantics(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1120,15 +1112,13 @@ func TestReplacePayloadDataReplacesInPlace(t *testing.T) {
 	}
 }
 
-// TestGetPayloadChunkPrefixSliceInsideSQLite covers the substr-based read
-// of a payload's head. Large payloads must never cross into Go memory
-// past the requested head size.
-func TestGetPayloadChunkPrefixSliceInsideSQLite(t *testing.T) {
+// TestGetPayloadChunkSliceInsideSQLite covers the substr-based read of a
+// payload's head and of a window past it. Large payloads must never cross
+// into Go memory past the requested window.
+func TestGetPayloadChunkSliceInsideSQLite(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t")
-	// 64 KiB payload; preview should only pull the first 4 KiB.
 	const total = 64 * 1024
-	const maxBytes = 4 * 1024
 	full := make([]byte, total)
 	for i := range full {
 		full[i] = byte('A' + (i % 26))
@@ -1140,96 +1130,36 @@ func TestGetPayloadChunkPrefixSliceInsideSQLite(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	head, totalSize, complete, err := s.GetPayloadChunk("t", "p-big", 0, maxBytes)
-	if err != nil {
-		t.Fatalf("preview: %v", err)
-	}
-	if totalSize != total {
-		t.Errorf("totalSize = %d, want %d", totalSize, total)
-	}
-	if complete {
-		t.Error("complete flag should be false when head < total")
-	}
-	if len(head) != maxBytes {
-		t.Errorf("len(head) = %d, want %d", len(head), maxBytes)
-	}
-	for i := 0; i < maxBytes; i++ {
-		if head[i] != full[i] {
-			t.Fatalf("head[%d] = %v, want %v", i, head[i], full[i])
-		}
-	}
-
-	// Fully-contained request returns the whole blob and complete=true.
-	head2, total2, complete2, err := s.GetPayloadChunk("t", "p-big", 0, total*2)
-	if err != nil {
-		t.Fatalf("preview2: %v", err)
-	}
-	if total2 != total {
-		t.Errorf("total2 = %d, want %d", total2, total)
-	}
-	if !complete2 {
-		t.Error("complete flag should be true when maxBytes >= total")
-	}
-	if len(head2) != total {
-		t.Errorf("full read length = %d, want %d", len(head2), total)
-	}
-}
-
-func TestGetPayloadChunkSliceInsideSQLite(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThread(t, s, "t")
-	const total = 32 * 1024
-	const first = 3 * 1024
-	const second = 5 * 1024
-
-	full := make([]byte, total)
-	for i := range full {
-		full[i] = byte('a' + (i % 26))
-	}
-	if err := seedPayloadRow(s, "t", Payload{
-		ID: "p-chunk", Kind: "command_output", Meta: "{}",
-		Data: full, CreatedAt: 1,
-	}); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-
-	chunk1, total1, complete1, err := s.GetPayloadChunk("t", "p-chunk", 0, first)
-	if err != nil {
-		t.Fatalf("chunk1: %v", err)
-	}
-	if total1 != total {
-		t.Fatalf("total1 = %d, want %d", total1, total)
-	}
-	if complete1 {
-		t.Fatal("chunk1 should not complete the payload")
-	}
-	if len(chunk1) != first {
-		t.Fatalf("len(chunk1) = %d, want %d", len(chunk1), first)
-	}
-	for i := range chunk1 {
-		if chunk1[i] != full[i] {
-			t.Fatalf("chunk1[%d] = %v, want %v", i, chunk1[i], full[i])
-		}
-	}
-
-	chunk2, total2, complete2, err := s.GetPayloadChunk("t", "p-chunk", len(chunk1), second)
-	if err != nil {
-		t.Fatalf("chunk2: %v", err)
-	}
-	if total2 != total {
-		t.Fatalf("total2 = %d, want %d", total2, total)
-	}
-	if complete2 {
-		t.Fatal("chunk2 should not complete the payload")
-	}
-	if len(chunk2) != second {
-		t.Fatalf("len(chunk2) = %d, want %d", len(chunk2), second)
-	}
-	for i := range chunk2 {
-		want := full[len(chunk1)+i]
-		if chunk2[i] != want {
-			t.Fatalf("chunk2[%d] = %v, want %v", i, chunk2[i], want)
-		}
+	for _, tc := range []struct {
+		name             string
+		offset, maxBytes int
+		wantLen          int
+		wantComplete     bool
+	}{
+		{"head", 0, 4 * 1024, 4 * 1024, false},
+		{"window past the head", 3 * 1024, 5 * 1024, 5 * 1024, false},
+		{"whole blob", 0, total * 2, total, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chunk, totalSize, complete, err := s.GetPayloadChunk("t", "p-big", tc.offset, tc.maxBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if totalSize != total {
+				t.Errorf("totalSize = %d, want %d", totalSize, total)
+			}
+			if complete != tc.wantComplete {
+				t.Errorf("complete = %v, want %v", complete, tc.wantComplete)
+			}
+			if len(chunk) != tc.wantLen {
+				t.Fatalf("len(chunk) = %d, want %d", len(chunk), tc.wantLen)
+			}
+			for i := range chunk {
+				if chunk[i] != full[tc.offset+i] {
+					t.Fatalf("chunk[%d] = %v, want %v", i, chunk[i], full[tc.offset+i])
+				}
+			}
+		})
 	}
 }
 
@@ -1542,67 +1472,6 @@ func TestGetThreadItemByPayloadIDResolvesInputPayloadID(t *testing.T) {
 	}
 	if foundOther {
 		t.Fatal("input payload should not be visible from a non-owning thread")
-	}
-}
-
-// TestItemsDecisionCHECKRejectsBogusValue pins the v15 CHECK constraint
-// on items.decision. Only the enumerated set is legal at the SQL layer;
-// triage and the frontend depend on this to prune impossible states at
-// the store boundary (an invalid decision reaching the frontend would
-// quietly break ToolDecisionChip branching).
-func TestItemsDecisionCHECKRejectsBogusValue(t *testing.T) {
-	s := newTestStore(t)
-	now := int64(1)
-	if err := s.CreateThread(Thread{
-		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("create thread: %v", err)
-	}
-
-	// Bogus decision must trigger the CHECK constraint.
-	_, err := s.db.Exec(`INSERT INTO items
-		(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status,
-		 is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
-		VALUES ('bogus', 't', 0, 0, 'tool_call', 'assistant', '', '', 'completed',
-		 0, '', '', 'maybe', '{}', 1, 1)`)
-	if err == nil {
-		t.Fatal("INSERT with decision='maybe' must violate CHECK constraint")
-	}
-	if !strings.Contains(err.Error(), "CHECK") && !strings.Contains(err.Error(), "constraint") {
-		t.Errorf("error = %v, want CHECK constraint violation", err)
-	}
-
-	// Every legal decision inserts successfully. Table-driven so a future
-	// addition fails obviously (and reminds the dev to update the test).
-	cases := []struct {
-		name     string
-		decision string
-	}{
-		{name: "empty", decision: ""},
-		{name: "approved", decision: "approved"},
-		{name: "declined", decision: "declined"},
-		{name: "amended", decision: "amended"},
-		{name: "lost", decision: "lost"},
-	}
-	for i, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			id := fmt.Sprintf("ok-decision-%d", i)
-			if _, err := s.db.Exec(`INSERT INTO items
-				(id, thread_id, turn_index, item_index, kind, role, summary, parent_id, status,
-				 is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
-				VALUES (?, 't', 0, ?, 'tool_call', 'assistant', '', '', 'completed',
-				 0, '', '', ?, '{}', 1, 1)`, id, i, tc.decision); err != nil {
-				t.Errorf("INSERT decision=%q: %v", tc.decision, err)
-			}
-		})
-	}
-
-	// UPDATE to a bogus value must also fail — covers the case where
-	// runtime Go code accidentally writes a new invalid decision onto
-	// an existing row.
-	if _, err := s.db.Exec(`UPDATE items SET decision = 'banana' WHERE id = 'ok-decision-0'`); err == nil {
-		t.Error("UPDATE to bogus decision must fail")
 	}
 }
 
