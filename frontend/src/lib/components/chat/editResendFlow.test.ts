@@ -1303,14 +1303,11 @@ describe('edit-and-resend flow — intercepted commands', () => {
     expect(claude.view.queryByTestId('user-message-edit-error')).toBeNull();
   });
 
-  it('sends an AO command word — the backend expands those on the wire', async () => {
-    const { view, resend } = await submitEdited(seedThread(), '/workflow start');
-    await waitFor(() => expect(resend).toHaveBeenCalledTimes(1));
-    expect(view.queryByTestId('user-message-edit-error')).toBeNull();
-  });
-
-  it('sends an intercepted name that is not at position 0', async () => {
-    const { view, resend } = await submitEdited(seedThread(), 'see /model docs');
+  it.each([
+    ['an AO command word — the backend expands those on the wire', '/workflow start'],
+    ['an intercepted name that is not at position 0', 'see /model docs'],
+  ])('sends %s', async (_, text) => {
+    const { view, resend } = await submitEdited(seedThread(), text);
     await waitFor(() => expect(resend).toHaveBeenCalledTimes(1));
     expect(view.queryByTestId('user-message-edit-error')).toBeNull();
   });

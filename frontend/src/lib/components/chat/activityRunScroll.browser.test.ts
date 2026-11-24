@@ -446,17 +446,19 @@ describe('activity run — the tail window slides', () => {
     return built;
   }
 
-  it('holds the rows already on screen when an appended row slides it', async () => {
+  it('holds the rows on screen and glides over each appended row', async () => {
     const { pane, scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
     const run = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
     // The LIVE run: the one whose growth the reader is watching arrive, and the
     // only one whose window slides.
     expect(run.dataset.live).toBe('true');
     const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    const bottomGap = () => clip.scrollHeight - clip.scrollTop - clip.clientHeight;
     // Vacuity guards: the window must already be past its head (or nothing
     // drops), and the clip must be scrollable (or nothing can displace).
     expect(run.querySelector('[data-testid="activity-run-earlier"]')).not.toBeNull();
     expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
+    expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
 
     const anchor = `a${RUN_ROWS - 1}`;
     const anchorBefore = offsetInClip(clip, anchor);
@@ -473,9 +475,7 @@ describe('activity run — the tail window slides', () => {
     // it has jumped up by the dropped row's height, and no spring covers it
     // because the content barely changed size.
     expect(Math.abs(offsetInClip(clip, anchor) - anchorBefore)).toBeLessThanOrEqual(DRIFT_PX);
-  });
 
-  it('glides over the appended row instead of arriving at it', async () => {
     // The other half of the same fix, and the half the reader actually
     // reported. Holding the anchor is what removes the jump; it also opens a
     // gap at the clip's bottom exactly one row tall, and NOTHING in the
@@ -483,16 +483,7 @@ describe('activity run — the tail window slides', () => {
     // changed, so a delta-driven follow has nothing to chase and the run would
     // simply sit a row short of its newest activity, further short on every
     // append after that.
-    const { pane, scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
-    const run = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
-    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
-    expect(run.querySelector('[data-testid="activity-run-earlier"]')).not.toBeNull();
-    const bottomGap = () => clip.scrollHeight - clip.scrollTop - clip.clientHeight;
-    expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
-
-    pane.upsertItem(tool(`a${RUN_ROWS}`, RUN_ROWS + 1, THREAD_ID));
-    await tick();
-
+    //
     // The gap the compensation opened: a whole row, not a rounding error. This
     // is what proves the samples below are a glide over real distance.
     const opened = bottomGap();
@@ -514,20 +505,14 @@ describe('activity run — the tail window slides', () => {
     for (let i = 1; i < gaps.length; i += 1) {
       expect(gaps[i]).toBeLessThanOrEqual(gaps[i - 1] + DRIFT_PX);
     }
-  });
+    expect(run.querySelector('[data-testid="activity-run-earlier"]')).not.toBeNull();
 
-  it('does the same for every row after the first', async () => {
     // The compensation carries state across flushes — the head it last saw, and
     // the measurement it hands from the pre-flush half to the post-flush one. A
     // run streams dozens of rows, so the second append matters as much as the
     // first: a handoff left set, or a head left stale, shows up here and not in
     // a single-append test.
-    const { pane, scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
-    const run = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
-    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
-    const bottomGap = () => clip.scrollHeight - clip.scrollTop - clip.clientHeight;
-
-    for (let n = 0; n < 4; n += 1) {
+    for (let n = 1; n < 4; n += 1) {
       const anchor = `a${RUN_ROWS + n - 1}`;
       const anchorBefore = offsetInClip(clip, anchor);
 

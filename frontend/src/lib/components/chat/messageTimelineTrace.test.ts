@@ -22,16 +22,12 @@ import { makeItem } from '../../../test/helpers/chat';
 // the pristine happy-dom environment (matching ThinkingBlock.test.ts).
 describe('REASONING_TAIL_SELECTOR drift guard', () => {
 
-  it('matches the body ThinkingBlock renders', () => {
-    const { container } = render(ThinkingBlock, {
-      props: { item: makeItem({ kind: 'thinking', summary: 'reasoning' }) },
-    });
-    expect(container.querySelector(REASONING_TAIL_SELECTOR)).not.toBeNull();
-  });
-
-  it('matches the body CompactionReasoning renders', () => {
-    const { container } = render(CompactionReasoning, {
-      props: { item: makeItem({ kind: 'compaction_reasoning', summary: 'reasoning' }) },
+  it.each([
+    { name: 'ThinkingBlock', component: ThinkingBlock, kind: 'thinking' },
+    { name: 'CompactionReasoning', component: CompactionReasoning, kind: 'compaction_reasoning' },
+  ])('matches the body $name renders', ({ component, kind }) => {
+    const { container } = render(component, {
+      props: { item: makeItem({ kind, summary: 'reasoning' }) },
     });
     expect(container.querySelector(REASONING_TAIL_SELECTOR)).not.toBeNull();
   });

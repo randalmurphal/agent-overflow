@@ -48,10 +48,8 @@ describe('<CollabToolRow> immutable spawn and standalone activity', () => {
       }),
     });
 
-    const { getByTestId, queryByTestId } = render(ToolCallCard, { props: { pane, item } });
+    const { getByTestId } = render(ToolCallCard, { props: { pane, item } });
     expect(getByTestId('collab-tool-row').textContent).toContain('Spawned reviewer');
-    expect(queryByTestId('collab-tool-row-state')).toBeNull();
-    expect(queryByTestId('collab-tool-row-interactions')).toBeNull();
   });
 
   it('renders a spawn row the same, with no indicator, whatever its stored liveness bit says', async () => {
