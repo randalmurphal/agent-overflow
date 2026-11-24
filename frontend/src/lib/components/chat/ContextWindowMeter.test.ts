@@ -183,99 +183,11 @@ describe('<ContextWindowMeter>', () => {
   // The exact breakdown costs a control round-trip to the live CLI, so
   // hovering must not trigger it — only the explicit click does.
   describe('exact breakdown affordance', () => {
-    it('does not read the live session on hover alone', async () => {
-      const mock = setBindingMock('GetThreadContextUsage', () => Promise.resolve({}));
-
-      render(ContextWindowMeter, {
-        props: {
-          data: { usedTokens: 24028, maxTokens: 1000000, usedPercentage: 2.4 },
-          thread: claudeThread,
-          threadId: claudeThread.id,
-        },
-      });
-
-      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
-      expect(await screen.findByText('Show exact breakdown')).toBeTruthy();
-      expect(mock).not.toHaveBeenCalled();
-    });
-
-    it('reads the live session when the user asks for it', async () => {
-      const mock = setBindingMock('GetThreadContextUsage', () =>
-        Promise.resolve({
-          available: true,
-          totalTokens: 24028,
-          maxTokens: 1000000,
-          percentage: 2,
-          categories: [{ name: 'System prompt', tokens: 4027 }],
-        }),
-      );
-
-      render(ContextWindowMeter, {
-        props: {
-          data: { usedTokens: 24028, maxTokens: 1000000, usedPercentage: 2.4 },
-          thread: claudeThread,
-          threadId: claudeThread.id,
-        },
-      });
-
-      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
-      await fireEvent.click(await screen.findByText('Show exact breakdown'));
-
-      expect(await screen.findByText('System prompt')).toBeTruthy();
-      expect(mock).toHaveBeenCalledTimes(1);
-      expect(mock).toHaveBeenCalledWith('thread-claude');
-    });
-
-    // Codex reports a running token count with no categories, so offering
-    // the affordance there would only ever produce an "unavailable" answer.
-    it('is not offered on a Codex thread', async () => {
-      render(ContextWindowMeter, {
-        props: {
-          data: { usedTokens: 650, maxTokens: 2000, usedPercentage: 32.5 },
-          thread: { ...claudeThread, provider: 'codex', model: 'gpt-5.5' },
-          threadId: claudeThread.id,
-        },
-      });
-
-      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
-      expect(await screen.findByText('33% used')).toBeTruthy();
-      expect(screen.queryByText('Show exact breakdown')).toBeNull();
-    });
-
-    // A draft placeholder has no session to break down; its seeded meter
-    // still reads out.
-    it('is not offered before the thread materializes', async () => {
-      const mock = setBindingMock('GetThreadContextUsage', () => Promise.resolve({}));
-      render(ContextWindowMeter, {
-        props: {
-          data: { usedTokens: 0, maxTokens: 1000000, usedPercentage: 0 },
-          thread: claudeThread,
-          threadId: null,
-        },
-      });
-
-      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
-      expect(await screen.findByText('0% used')).toBeTruthy();
-      expect(screen.getByLabelText('Context settings')).toBeTruthy();
-      expect(screen.queryByText('Show exact breakdown')).toBeNull();
-      expect(mock).not.toHaveBeenCalled();
-    });
-
-    it('is not offered when the meter has no thread', async () => {
-      render(ContextWindowMeter, {
-        props: { data: { usedTokens: 500, maxTokens: 2000, usedPercentage: 25 } },
-      });
-
-      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
-      expect(await screen.findByText('25% used')).toBeTruthy();
-      expect(screen.queryByText('Show exact breakdown')).toBeNull();
-    });
-
     // Closing the popover unmounts the breakdown — that is what keeps the
     // exact reading from outliving the moment it was taken. Reopening must
     // land back on the collapsed affordance, not on stale numbers.
-    it('collapses again when the popover closes', async () => {
-      setBindingMock('GetThreadContextUsage', () =>
+    it('reads the live session only when the user asks for it, and collapses again when the popover closes', async () => {
+      const mock = setBindingMock('GetThreadContextUsage', () =>
         Promise.resolve({
           available: true,
           totalTokens: 24028,
@@ -295,8 +207,13 @@ describe('<ContextWindowMeter>', () => {
 
       const button = screen.getByLabelText(/Context Window/);
       await fireEvent.mouseEnter(button);
-      await fireEvent.click(await screen.findByText('Show exact breakdown'));
+      const affordance = await screen.findByText('Show exact breakdown');
+      expect(mock).not.toHaveBeenCalled();
+
+      await fireEvent.click(affordance);
       expect(await screen.findByText('System prompt')).toBeTruthy();
+      expect(mock).toHaveBeenCalledTimes(1);
+      expect(mock).toHaveBeenCalledWith('thread-claude');
 
       await fireEvent.mouseLeave(button);
       await new Promise((resolve) => setTimeout(resolve, 200));
@@ -304,6 +221,28 @@ describe('<ContextWindowMeter>', () => {
 
       await fireEvent.mouseEnter(button);
       expect(await screen.findByText('Show exact breakdown')).toBeTruthy();
+    });
+
+    // Codex reports a running token count with no categories, so offering
+    // the affordance there would only ever produce an "unavailable" answer.
+    // A draft placeholder has no session to break down; its seeded meter
+    // still reads out.
+    it.each([
+      ['on a Codex thread', { usedTokens: 650, maxTokens: 2000, usedPercentage: 32.5 },
+        { ...claudeThread, provider: 'codex', model: 'gpt-5.5' }, claudeThread.id, '33% used', true],
+      ['before the thread materializes', { usedTokens: 0, maxTokens: 1000000, usedPercentage: 0 },
+        claudeThread, null, '0% used', true],
+      ['when the meter has no thread', { usedTokens: 500, maxTokens: 2000, usedPercentage: 25 },
+        undefined, undefined, '25% used', false],
+    ] as const)('is not offered %s', async (_name, data, thread, threadId, usedLine, hasSettings) => {
+      const mock = setBindingMock('GetThreadContextUsage', () => Promise.resolve({}));
+      render(ContextWindowMeter, { props: { data, thread, threadId } });
+
+      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
+      expect(await screen.findByText(usedLine)).toBeTruthy();
+      expect(screen.queryByLabelText('Context settings') !== null).toBe(hasSettings);
+      expect(screen.queryByText('Show exact breakdown')).toBeNull();
+      expect(mock).not.toHaveBeenCalled();
     });
   });
 });

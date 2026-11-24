@@ -499,18 +499,6 @@ describe('<CommandOutput>', () => {
     expect(status.querySelector('[data-testid="indicator"]')?.getAttribute('aria-label')).toBe('Running');
   });
 
-  it('keeps the running status slot stable', () => {
-    const { getByTestId } = render(CommandOutput, {
-      props: {
-        item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
-        meta: commandMeta({ command: 'pnpm test' }),
-      },
-    });
-
-    expect(getByTestId('command-output-status-slot').className).toContain('min-w-');
-    expect(getByTestId('indicator').getAttribute('aria-label')).toBe('Running');
-  });
-
   it('keeps the same status slot when a foreground command completes', async () => {
     const running = makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' });
     const completed = makeItem({ ...running, status: 'completed', updatedAt: running.updatedAt + 1 });
@@ -632,7 +620,10 @@ describe('<CommandOutput>', () => {
     expect(getByTestId('row-error-msg').textContent).toBe('Tool call stopped');
   });
 
-  it('shows no duration for a completed command under 3 seconds', () => {
+  it.each([
+    ['no duration for a completed command under 3 seconds', 2_000, ''],
+    ['duration for a completed command that took >= 3 seconds', 5_000, '5.0s'],
+  ])('shows %s', (_name, elapsedMs, expected) => {
     const now = Date.now();
     const { getByTestId } = render(CommandOutput, {
       props: {
@@ -640,32 +631,14 @@ describe('<CommandOutput>', () => {
           id: 'tool-cmd',
           kind: 'tool_completion',
           status: 'completed',
-          createdAt: now - 2_000,
+          createdAt: now - elapsedMs,
           updatedAt: now,
         }),
         meta: commandMeta({ command: 'ls', exitCode: 0 }),
       },
     });
 
-    expect(getByTestId('command-output-duration').textContent?.trim()).toBe('');
-  });
-
-  it('shows duration for a completed command that took >= 3 seconds', () => {
-    const now = Date.now();
-    const { getByTestId } = render(CommandOutput, {
-      props: {
-        item: makeItem({
-          id: 'tool-cmd',
-          kind: 'tool_completion',
-          status: 'completed',
-          createdAt: now - 5_000,
-          updatedAt: now,
-        }),
-        meta: commandMeta({ command: 'pnpm test', exitCode: 0 }),
-      },
-    });
-
-    expect(getByTestId('command-output-duration').textContent?.trim()).toBe('5.0s');
+    expect(getByTestId('command-output-duration').textContent?.trim()).toBe(expected);
   });
 
   it('prefers caller-provided durationLabel over computed duration', () => {
@@ -836,7 +809,10 @@ describe('<CommandOutput>', () => {
         );
       });
 
-      it('offers nothing when that machine sees no listener on the port', async () => {
+      it.each([
+        ['that machine sees no listener on the port', { port: 5173, allowed: true, source: 'allowed', listening: false }],
+        ['the port is live but not shared', { port: 5173, allowed: false, source: 'seen', listening: true }],
+      ] as const)('offers nothing when %s', async (_name, server) => {
         const { queryByTestId } = render(CommandOutput, {
           props: {
             pane: laptopPane(),
@@ -845,34 +821,7 @@ describe('<CommandOutput>', () => {
           },
         });
 
-        emitWailsEvent(
-          'devserver:list',
-          laptopFrame({
-            servers: [{ port: 5173, allowed: true, source: 'allowed', listening: false }],
-          }),
-          REMOTE_BACKEND_UUID,
-        );
-
-        await waitFor(() => expect(queryByTestId('command-output-command')).not.toBeNull());
-        expect(queryByTestId('dev-server-chip')).toBeNull();
-      });
-
-      it('offers nothing when the port is live but not shared', async () => {
-        const { queryByTestId } = render(CommandOutput, {
-          props: {
-            pane: laptopPane(),
-            item: makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' }),
-            meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
-          },
-        });
-
-        emitWailsEvent(
-          'devserver:list',
-          laptopFrame({
-            servers: [{ port: 5173, allowed: false, source: 'seen', listening: true }],
-          }),
-          REMOTE_BACKEND_UUID,
-        );
+        emitWailsEvent('devserver:list', laptopFrame({ servers: [server] }), REMOTE_BACKEND_UUID);
 
         await waitFor(() => expect(queryByTestId('command-output-command')).not.toBeNull());
         expect(queryByTestId('dev-server-chip')).toBeNull();

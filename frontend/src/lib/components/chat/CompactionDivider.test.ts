@@ -30,7 +30,7 @@ describe('<CompactionDivider>', () => {
     expect(dataMock).not.toHaveBeenCalled();
   });
 
-  it('lazy-loads the committed summary on expand', async () => {
+  it('lazy-loads the committed summary on expand and collapses it on a second toggle', async () => {
     // Payload data is the raw summary text (same shape as a thinking payload),
     // not a JSON wrapper — the summarizer's reasoning streamed as its own row.
     const summary = 'The user asked to fix compaction grouping under one row.';
@@ -68,26 +68,6 @@ describe('<CompactionDivider>', () => {
     expect(getByTestId('compaction-detail').className).toContain('overflow-y-auto');
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(dataMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('collapses the detail again on a second toggle', async () => {
-    setBindingMock('GetPayloadData', async () => ({ data: 'a committed summary' }));
-    const { getByTestId, queryByTestId } = render(CompactionDivider, {
-      props: {
-        item: compactionItem({
-          payloadId: 'compaction-payload',
-          payloadKind: 'compaction',
-        }),
-      },
-    });
-
-    const toggle = getByTestId('compaction-toggle');
-    await fireEvent.click(toggle);
-    await waitFor(() =>
-      expect(getByTestId('compaction-summary').textContent).toContain(
-        'a committed summary',
-      ),
-    );
 
     await fireEvent.click(toggle);
     await tick();

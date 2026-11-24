@@ -54,16 +54,22 @@ describe('<DiagramInteractionHost> copy actions', () => {
     vi.mocked(copyAsPNG).mockReset().mockResolvedValue(undefined);
     vi.mocked(copyAsSVG).mockReset().mockResolvedValue(undefined);
     vi.mocked(copySource).mockReset().mockResolvedValue(undefined);
-    for (const t of [...getToasts()]) removeToast(t.id);
+    for (const id of getToasts().map((t) => t.id)) removeToast(id);
     document.body.innerHTML = '';
   });
 
-  it('routes each row to its own entry point and confirms with a toast', async () => {
+  it('routes each row to its own entry point synchronously with the click and confirms with a toast', async () => {
     render(DiagramInteractionHost);
     const svg = mountDiagram('graph TD\nA-->B');
 
     await openMenuOn(svg);
-    await pick('Copy as PNG');
+    // Nothing may be awaited between the click and the clipboard call:
+    // WebKit drops the user gesture across an await and Chromium's
+    // transient activation can expire. `pick` dispatches the click before
+    // its first await, so the call must already have happened here.
+    const picked = pick('Copy as PNG');
+    expect(copyAsPNG).toHaveBeenCalledTimes(1);
+    await picked;
     expect(copyAsPNG).toHaveBeenCalledWith(svg);
     expect(toastMessages()).toEqual(['success: Diagram copied as PNG']);
 
@@ -110,20 +116,5 @@ describe('<DiagramInteractionHost> copy actions', () => {
     expect(copySource).not.toHaveBeenCalled();
     expect(copyAsSVG).toHaveBeenCalledTimes(1);
     expect(toastMessages()).toEqual(['success: Diagram copied as SVG']);
-  });
-
-  it('calls the clipboard entry point synchronously with the click', async () => {
-    // Nothing may be awaited between the click and the clipboard call:
-    // WebKit drops the user gesture across an await and Chromium's
-    // transient activation can expire.
-    render(DiagramInteractionHost);
-    const svg = mountDiagram('graph TD');
-    await openMenuOn(svg);
-
-    const item = Array.from(document.querySelectorAll('[role="menuitem"]')).find(
-      (el) => el.textContent?.trim() === 'Copy as PNG',
-    ) as HTMLElement;
-    item.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(copyAsPNG).toHaveBeenCalledTimes(1);
   });
 });

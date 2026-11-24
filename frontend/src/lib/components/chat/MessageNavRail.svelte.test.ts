@@ -79,21 +79,14 @@ function renderRail(props: Record<string, unknown> = {}, baseline: unknown[] = [
 }
 
 describe('MessageNavRail', () => {
-  it('renders a tick per reader-authored user message', () => {
-    const { getByTestId } = renderRail();
-    const rail = getByTestId('message-nav-rail');
-    expect(rail).toBeTruthy();
-    // 3 user messages → 3 ticks (the current flag is the marker attribute).
-    expect(rail.querySelectorAll('[data-current]').length).toBe(3);
-  });
-
   it('hides entirely for a lone fully-loaded message', () => {
     const { queryByTestId } = renderRail({ nodes: [leaf({ id: 'u1', summary: 'only' })] });
     expect(queryByTestId('message-nav-rail')).toBeNull();
   });
 
-  it('a resting tick carries its width in its box and no inline transform', () => {
+  it('renders a tick per reader-authored user message, each resting with its width in its box and no inline transform', () => {
     const { getByTestId } = renderRail({ pane: makePane(), nodes: threeMessageNodes });
+    // 3 user messages → 3 ticks (the current flag is the marker attribute).
     const ticks = getByTestId('message-nav-rail').querySelectorAll<HTMLElement>('[data-current]');
     expect(ticks.length).toBe(3);
     for (const el of ticks) {

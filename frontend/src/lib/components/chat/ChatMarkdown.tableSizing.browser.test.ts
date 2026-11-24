@@ -69,7 +69,7 @@ beforeEach(() => {
 });
 
 describe.each(PATHS)('markdown table sizing, %s', (_name, streaming) => {
-  it('keeps short inline code whole in a squeezed column', async () => {
+  it('holds a squeezed table to the column width and keeps short inline code whole', async () => {
     const { wrapper, table } = await mountTable(SQUEEZED_TABLE, streaming);
 
     // The table is squeezed (prose wraps) yet fits: nothing pans.
@@ -77,6 +77,7 @@ describe.each(PATHS)('markdown table sizing, %s', (_name, streaming) => {
       table.rows.length * table.rows[0].getBoundingClientRect().height,
     );
     expect(wrapper.scrollWidth).toBe(wrapper.clientWidth);
+    expect(Math.round(table.getBoundingClientRect().width)).toBe(wrapper.clientWidth);
     for (const text of ['onNoMatch', 'protectedFields', 'matchFields', 'create', 'stage']) {
       expect(lineCount(codeByText(table, text)), text).toBe(1);
     }
@@ -105,11 +106,5 @@ describe.each(PATHS)('markdown table sizing, %s', (_name, streaming) => {
 
     expect(table.getBoundingClientRect().width).toBeLessThan(COLUMN_PX / 4);
     expect(wrapper.scrollWidth).toBe(wrapper.clientWidth);
-  });
-
-  it('holds a table with more content than room to the column width', async () => {
-    const { wrapper, table } = await mountTable(SQUEEZED_TABLE, streaming);
-
-    expect(Math.round(table.getBoundingClientRect().width)).toBe(wrapper.clientWidth);
   });
 });

@@ -299,9 +299,14 @@ describe('<DiffFileBlock>', () => {
     const { queryByTestId, getByTestId } = render(DiffFileBlock, {
       props: { file, threadId: 'thread-1', toolName: 'Edit' },
     });
-    // Header still renders (stable outer shell across the upgrade).
-    expect(getByTestId('diff-file-label')).toBeInTheDocument();
-    expect(getByTestId('diff-file-path')).toBeInTheDocument();
+    // Outer shell: header is always rendered with the same testids,
+    // regardless of body presence. This pins the "stable transcript
+    // rows" invariant: header structure does not change on the
+    // summary→exact upgrade.
+    expect(getByTestId('diff-file-block')).toBeInTheDocument();
+    expect(getByTestId('diff-file-header')).toBeInTheDocument();
+    expect(getByTestId('diff-file-label').textContent).toBe('edit');
+    expect(getByTestId('diff-file-path').textContent).toBe('src/loading.ts');
     // No body, fade, or CTA — header-only state until lines arrive.
     expect(queryByTestId('diff-file-body')).toBeNull();
     expect(queryByTestId('diff-file-fade')).toBeNull();
@@ -423,29 +428,6 @@ describe('<DiffFileBlock>', () => {
     // pattern shared with the review diff rows.
     expect(body.querySelectorAll('.bg-success\\/12').length).toBeGreaterThan(0);
     expect(body.querySelectorAll('.bg-error\\/12').length).toBeGreaterThan(0);
-  });
-
-  it('keeps the outer shell stable when lines are empty (loading state)', () => {
-    const file: PatchFile = {
-      path: 'src/loading.ts',
-      kind: 'modified',
-      additions: 0,
-      deletions: 0,
-      lines: [],
-    };
-    const { getByTestId, queryByTestId } = render(DiffFileBlock, {
-      props: { file, threadId: 'thread-1', toolName: 'Edit' },
-    });
-    // Outer shell: header is always rendered with the same testids,
-    // regardless of body presence. This pins the "stable transcript
-    // rows" invariant: header structure does not change on the
-    // summary→exact upgrade.
-    expect(getByTestId('diff-file-block')).toBeInTheDocument();
-    expect(getByTestId('diff-file-header')).toBeInTheDocument();
-    expect(getByTestId('diff-file-label').textContent).toBe('edit');
-    expect(getByTestId('diff-file-path').textContent).toBe('src/loading.ts');
-    // Body region absent until lines arrive.
-    expect(queryByTestId('diff-file-body')).toBeNull();
   });
 
   it('renders the clock time last in the header actions when createdAt is provided', () => {

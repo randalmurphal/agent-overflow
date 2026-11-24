@@ -150,26 +150,19 @@ describe('<ContextBreakdown>', () => {
     expect(await screen.findByText(/context analysis failed/)).toBeTruthy();
   });
 
+  // Nothing is cached across popover opens: a second mount re-reads rather
+  // than replaying a stale breakdown.
   it('reads once per mount — it is user-initiated, never polled', async () => {
     const mock = setBindingMock('GetThreadContextUsage', () => Promise.resolve(fixture()));
 
-    render(ContextBreakdown, { props: { threadId: 'thread-7' } });
+    const first = render(ContextBreakdown, { props: { threadId: 'thread-7' } });
     await screen.findByText(/Exact:/);
 
     expect(mock).toHaveBeenCalledTimes(1);
     expect(mock).toHaveBeenCalledWith('thread-7');
-  });
-
-  // Nothing is cached across popover opens: a second mount re-reads rather
-  // than replaying a stale breakdown.
-  it('re-reads on every mount', async () => {
-    const mock = setBindingMock('GetThreadContextUsage', () => Promise.resolve(fixture()));
-
-    const first = render(ContextBreakdown, { props: { threadId: 'thread-1' } });
-    await screen.findByText(/Exact:/);
     first.unmount();
 
-    render(ContextBreakdown, { props: { threadId: 'thread-1' } });
+    render(ContextBreakdown, { props: { threadId: 'thread-7' } });
     await screen.findByText(/Exact:/);
 
     expect(mock).toHaveBeenCalledTimes(2);
