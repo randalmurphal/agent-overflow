@@ -351,6 +351,10 @@ func TestProofParseRefusesEveryMalformedShape(t *testing.T) {
 			base64.RawURLEncoding.EncodeToString(make([]byte, 63))},
 		{"oversized", parts[0] + "." + parts[1] + "." +
 			base64.RawURLEncoding.EncodeToString(make([]byte, maxDeviceProofBytes))},
+		// Keeps the replay guard's memory a function of the request rate
+		// rather than of what a client puts in one field.
+		{"oversized jti", signer.proof(t, "POST", "/auth/ticket",
+			strings.Repeat("j", maxDeviceProofJTIBytes+1), time.Now()).Value},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -358,17 +362,6 @@ func TestProofParseRefusesEveryMalformedShape(t *testing.T) {
 				t.Fatalf("= %s, want malformed_proof", reason)
 			}
 		})
-	}
-}
-
-// TestOversizedJTIIsRefused keeps the replay guard's memory a function of
-// the request rate rather than of what a client puts in one field.
-func TestOversizedJTIIsRefused(t *testing.T) {
-	signer := newSigningDevice(t)
-	proof := signer.proof(t, "POST", "/auth/ticket",
-		strings.Repeat("j", maxDeviceProofJTIBytes+1), time.Now())
-	if _, reason := parseDeviceProof(proof.Value); reason != ReasonMalformedProof {
-		t.Fatalf("= %s, want malformed_proof", reason)
 	}
 }
 

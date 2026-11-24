@@ -24,42 +24,6 @@ func pairedDevice(t *testing.T, s *Sessions, owner store.User, thumbprint string
 	return device, redemption.Tokens
 }
 
-func TestRefreshRotatesAndKeepsTheSession(t *testing.T) {
-	sessions, _, c, owner, _ := newFixture(t)
-	_, first := pairedDevice(t, sessions, owner, "thumb-phone")
-	if first.RefreshSecret == "" {
-		t.Fatal("a device-bound issuance carried no refresh secret")
-	}
-
-	c.advance(time.Minute)
-	second, reason := sessions.Refresh(RefreshRequest{
-		Secret: first.RefreshSecret, Proof: bearerProof("thumb-phone"),
-	})
-	if reason.Refused() {
-		t.Fatalf("Refresh: %s", reason)
-	}
-	if second.SessionID != first.SessionID {
-		t.Fatalf("renewal moved the session id %q -> %q; the live-connection registry keys on it",
-			first.SessionID, second.SessionID)
-	}
-	if second.RefreshSecret == first.RefreshSecret {
-		t.Fatal("renewal re-issued the same refresh secret")
-	}
-	if second.ExpiresAtMillis <= first.ExpiresAtMillis {
-		t.Fatalf("renewal did not move the access window forward: %d -> %d",
-			first.ExpiresAtMillis, second.ExpiresAtMillis)
-	}
-	if _, refused := sessions.Verify(second.Credential); refused.Refused() {
-		t.Fatalf("the renewed credential does not verify: %s", refused)
-	}
-	// The predecessor is spent the moment its successor exists.
-	if _, refused := sessions.Refresh(RefreshRequest{
-		Secret: first.RefreshSecret, Proof: bearerProof("thumb-phone"),
-	}); refused != ReasonRevokedSession {
-		t.Fatalf("replayed predecessor = %s, want revoked_session", refused)
-	}
-}
-
 func TestRefreshAfterIdleAndBackendRestart(t *testing.T) {
 	for _, mode := range []string{"expired-access", "restart", "prune"} {
 		t.Run(mode, func(t *testing.T) {
@@ -133,14 +97,18 @@ func TestIdleRenewalStillRequiresAnAdmittedDeviceAndProof(t *testing.T) {
 	}
 }
 
-// TestRefreshReuseRevokesTheWholeFamily is the leaked-copy detector. A
-// spent secret presented again must end the session, every socket carrying
+// TestRefreshRotatesAndReuseRevokesTheWholeFamily: a renewal keeps the
+// session and spends its predecessor. That spent secret presented again is
+// the leaked-copy detector: it must end the session, every socket carrying
 // it, and every outstanding secret in the chain.
-func TestRefreshReuseRevokesTheWholeFamily(t *testing.T) {
+func TestRefreshRotatesAndReuseRevokesTheWholeFamily(t *testing.T) {
 	sessions, st, c, owner, _ := newFixture(t)
 	conns := &recordingConns{}
 	sessions.AttachConns(conns)
 	_, first := pairedDevice(t, sessions, owner, "thumb-phone")
+	if first.RefreshSecret == "" {
+		t.Fatal("a device-bound issuance carried no refresh secret")
+	}
 
 	c.advance(time.Minute)
 	second, reason := sessions.Refresh(RefreshRequest{
@@ -149,8 +117,23 @@ func TestRefreshReuseRevokesTheWholeFamily(t *testing.T) {
 	if reason.Refused() {
 		t.Fatalf("Refresh: %s", reason)
 	}
+	if second.SessionID != first.SessionID {
+		t.Fatalf("renewal moved the session id %q -> %q; the live-connection registry keys on it",
+			first.SessionID, second.SessionID)
+	}
+	if second.RefreshSecret == first.RefreshSecret {
+		t.Fatal("renewal re-issued the same refresh secret")
+	}
+	if second.ExpiresAtMillis <= first.ExpiresAtMillis {
+		t.Fatalf("renewal did not move the access window forward: %d -> %d",
+			first.ExpiresAtMillis, second.ExpiresAtMillis)
+	}
+	if _, refused := sessions.Verify(second.Credential); refused.Refused() {
+		t.Fatalf("the renewed credential does not verify: %s", refused)
+	}
 
-	// The spent predecessor, presented again.
+	// The predecessor is spent the moment its successor exists; presented
+	// again, it is a reuse.
 	if _, refused := sessions.Refresh(RefreshRequest{
 		Secret: first.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	}); refused != ReasonRevokedSession {
@@ -247,19 +230,6 @@ func TestRefreshRefusesALapsedSecret(t *testing.T) {
 		Secret: tokens.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	}); reason != ReasonExpiredSession {
 		t.Fatalf("lapsed refresh = %s, want expired_session", reason)
-	}
-}
-
-func TestRefreshRefusesARevokedDevice(t *testing.T) {
-	sessions, _, _, owner, _ := newFixture(t)
-	device, tokens := pairedDevice(t, sessions, owner, "thumb-phone")
-	if _, err := sessions.RevokeDevice(device.ID); err != nil {
-		t.Fatalf("RevokeDevice: %v", err)
-	}
-	if _, reason := sessions.Refresh(RefreshRequest{
-		Secret: tokens.RefreshSecret, Proof: bearerProof("thumb-phone"),
-	}); !reason.Refused() {
-		t.Fatal("a revoked device renewed its credential")
 	}
 }
 

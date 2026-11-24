@@ -28,6 +28,8 @@ func listenOn(t *testing.T, host string) (net.Listener, string) {
 func TestDialerDialsOnlyThisMachine(t *testing.T) {
 	_, port := listenOn(t, "127.0.0.1")
 
+	// A dev server bound to 127.0.0.1 only is still reached, which is the
+	// reason both literals are tried rather than one being picked.
 	dial := Dialer(2 * time.Second)
 	conn, err := dial(context.Background(), "tcp", net.JoinHostPort("localhost", port))
 	if err != nil {
@@ -84,18 +86,6 @@ func TestAuthority(t *testing.T) {
 			t.Fatalf("Authority(%v) = %q, want %q", tc.addr, got, tc.want)
 		}
 	}
-}
-
-// A dev server bound to 127.0.0.1 only is still reached, which is the
-// reason both literals are tried rather than one being picked.
-func TestDialerFallsBackToTheOtherAddressFamily(t *testing.T) {
-	_, port := listenOn(t, "127.0.0.1")
-
-	conn, err := Dialer(2*time.Second)(context.Background(), "tcp", net.JoinHostPort("localhost", port))
-	if err != nil {
-		t.Fatalf("dial an IPv6-only listener: %v", err)
-	}
-	_ = conn.Close()
 }
 
 // An address with no port is the caller's bug and is refused, not
