@@ -30,13 +30,19 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 	reconcileMu := m.reconcileMutex(providerName)
 	reconcileMu.Lock()
 	defer reconcileMu.Unlock()
-	// Removing the selected account moves the selection: its uses end
-	// before the check below reads the canonical credential.
-	if active, ok := m.store.Active(providerName, time.Now()); ok && active.ID == accountID {
-		m.selectionChanging(providerName)
-	}
+	// As a switch does, the removal checks the reconciled canonical state
+	// before it ends anything, so a refused check stops nothing. Removing
+	// the selected account moves the selection: its uses end, and since a
+	// use may write a refreshed login as it exits, the removal reconciles
+	// again from what they left before it reads the canonical credential.
 	if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
 		return fmt.Errorf("check current %s account before removal: %w", providerName, err)
+	}
+	if active, ok := m.store.Active(providerName, time.Now()); ok && active.ID == accountID {
+		m.selectionChanging(providerName)
+		if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
+			return fmt.Errorf("check current %s account before removal: %w", providerName, err)
+		}
 	}
 
 	m.mu.Lock()
