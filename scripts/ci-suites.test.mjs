@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { e2eGrepInvert, grepInvert, harnessTestPackages, jobs, plan, skippedSpecs, suites, toolingSpecs, verdict } from './ci-suites.mjs';
+import { e2eGrepInvert, grepInvert, harnessTestPackages, jobs, plan, skippedSpecs, suites, toolingSpecs, verdict, vitestCheckRuns, vitestChecks } from './ci-suites.mjs';
+import { PROJECT_INPUTS, READERS, TRIGGERS } from '../frontend/scripts/vitest-changed.check.mjs';
 
 const harness = harnessTestPackages('# packages\nE2E_TEST_PACKAGES := ./internal/frontendclient ./internal/store\n');
 const run = paths => suites(paths, harness);
@@ -118,6 +119,82 @@ test('the skip pattern matches the skipped files in the title Playwright greps, 
   assert.equal(e2eGrepInvert('pull_request', ['Makefile'], harness), '');
   assert.equal(e2eGrepInvert('push', undefined, harness), '');
   assert.equal(e2eGrepInvert('workflow_dispatch', undefined, harness), '');
+});
+
+// Where each Vitest tooling check runs, and the package script a person
+// runs it with.
+const vitestCheckSteps = {
+  'test-selection': { leg: 'unit', script: 'check:test-selection', file: 'frontend/scripts/vitest-changed.check.mjs' },
+  'stall-watchdog': { leg: 'browser', script: 'check:stall-watchdog', file: 'frontend/scripts/check-stalled-page-watchdog.mjs' },
+};
+const checksRun = paths => vitestCheckRuns('pull_request', paths, harness);
+const selects = (check, path) => checksRun(['frontend/src/lib/x.ts', path])[check];
+
+test('the Vitest tooling checks are the ones the table names, and every run but a pull request runs them all', () => {
+  assert.deepEqual(Object.keys(vitestChecks).sort(), Object.keys(vitestCheckSteps).sort());
+  for (const event of ['push', 'workflow_dispatch']) {
+    assert.deepEqual(vitestCheckRuns(event, undefined, harness), { 'test-selection': true, 'stall-watchdog': true }, event);
+  }
+  const printed = execFileSync('node', ['scripts/ci-suites.mjs', 'plan', 'push'], { cwd: new URL('..', import.meta.url), encoding: 'utf8' });
+  assert.match(printed, /^vitest-checks=\{"test-selection":true,"stall-watchdog":true\}$/m);
+});
+
+test('each path that can change the affected-test selection check runs it', () => {
+  // The check's tables name its readers, the files they read, and the
+  // inputs every file or every file of a project reads.
+  const named = [...READERS.flatMap(({ changed, reader }) => [changed, reader]), ...PROJECT_INPUTS.map(({ changed }) => changed),
+    ...TRIGGERS.filter(({ all }) => all).map(({ changed }) => changed)];
+  assert.ok(named.includes('../internal/stringsx/findfold_table.go'));
+  for (const path of [...named.map(path => path.startsWith('../') ? path.slice(3) : `frontend/${path}`),
+    'frontend/scripts/vitest-changed.mjs', 'frontend/scripts/vitest-changed.check.mjs', 'frontend/tsconfig.json', 'frontend/tsconfig.node.json',
+    'frontend/src/test/config/rawImportsPlugin.ts', 'Makefile', 'build/test-inputs.mk', '.github/workflows/ci.yml']) {
+    assert.equal(selects('test-selection', path), true, path);
+  }
+});
+
+test('each path that can change the stalled-page watchdog check runs it', () => {
+  for (const path of ['frontend/scripts/check-stalled-page-watchdog.mjs', 'frontend/src/test/stalledPageWatchdog.ts',
+    'frontend/src/test/stalledPage/blocked-test.fixture.ts', 'frontend/src/test/stalledPage/vitest.config.ts', 'frontend/vitest.config.ts',
+    'frontend/package.json', 'frontend/pnpm-lock.yaml', 'frontend/tsconfig.json', 'build/test-inputs.mk', 'scripts/playwright-browsers.sh',
+    'ci/Dockerfile', '.github/actions/setup/action.yml']) {
+    assert.equal(selects('stall-watchdog', path), true, path);
+  }
+});
+
+test('a pull request skips a Vitest tooling check when no path it changes can change the check', () => {
+  const none = { 'test-selection': false, 'stall-watchdog': false };
+  for (const path of ['frontend/src/test/mocks/bindings-app.ts', 'frontend/src/test/helpers/nodeWorkload.ts', 'frontend/src/test/setup.ts',
+    'frontend/vite.config.ts', 'frontend/src/lib/a.test.ts', 'frontend/scripts/bundleId.ts', 'internal/app/app.go', 'internal/stringsx/findfold.go']) {
+    assert.deepEqual(checksRun(['frontend/src/lib/x.ts', path]), none, path);
+  }
+  assert.equal(selects('stall-watchdog', 'frontend/src/test/config/rawImportsPlugin.ts'), false);
+  assert.equal(selects('test-selection', 'frontend/src/test/stalledPage/quick.fixture.ts'), false);
+  // A change the vitest job does not run for runs none of its checks.
+  for (const paths of [['docs/x.md'], ['internal/app/app_test.go'], ['e2e/package.json']]) assert.deepEqual(checksRun(paths), none, paths.join(' '));
+});
+
+test('the vitest job runs each tooling check in its leg, as the plan says, with the package script the check names', () => {
+  const found = ciJobs();
+  assert.match(found.toolchain.outputs, /^      vitest-checks: \$\{\{ steps\.plan\.outputs\.vitest-checks \}\}$/m);
+  const scripts = JSON.parse(readFileSync(new URL('../frontend/package.json', import.meta.url), 'utf8')).scripts;
+  for (const [check, { leg, script, file }] of Object.entries(vitestCheckSteps)) {
+    const steps = found.vitest.steps.filter(step => step.includes(`pnpm run ${script}`));
+    assert.equal(steps.length, 1, `the vitest job runs ${script} once`);
+    assert.match(steps[0], new RegExp(`^        if: matrix\\.project == '${leg}' && fromJSON\\(needs\\.toolchain\\.outputs\\.vitest-checks\\)\\['${check}'\\]$`, 'm'), check);
+    assert.match(steps[0], new RegExp(`^        working-directory: frontend\\n        run: \\.\\./bin/ao-netns pnpm run ${script}$`, 'm'), check);
+    assert.equal(scripts[script], `node scripts/${file.slice('frontend/scripts/'.length)}`, script);
+    assert.ok(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8').includes(`../bin/ao-netns pnpm run ${script}\n`), `${file} names ${script}`);
+  }
+  for (const [id, job] of Object.entries(found)) {
+    if (id !== 'vitest' && id !== 'toolchain') assert.doesNotMatch(job.steps.join('\n') + job.env, /vitest-checks/, id);
+  }
+});
+
+test('the affected-test selection check loads with node: builtins alone, as the toolchain job imports it', () => {
+  const source = readFileSync(new URL('../frontend/scripts/vitest-changed.check.mjs', import.meta.url), 'utf8');
+  const imports = [...source.matchAll(/^(?:import\b[^'";]*?|export\b[^'";=]*?\bfrom\s*)['"]([^'"]+)['"]/gm)].map(([, specifier]) => specifier);
+  assert.ok(imports.length > 0);
+  assert.deepEqual(imports.filter(specifier => !specifier.startsWith('node:')), []);
 });
 
 const all = Object.fromEntries(Object.keys(jobs).map(job => [job, true]));

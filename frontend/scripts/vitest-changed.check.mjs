@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Loads with node: builtins alone: scripts/ci-suites.mjs imports its tables
+// in a CI job that has no node_modules.
+//
 // Checks that a change selects the tests that read it, the way
 // `pnpm run test:affected <ref>` selects them:
 //   - a change to a file selects its readers of each kind (a raw import of
@@ -10,17 +13,19 @@
 //     projects whole exactly when a test can read the removed path, through
 //     the entry point the package script runs.
 //
-//   cd frontend
-//   ../bin/ao-netns node scripts/vitest-changed.check.mjs
+//   cd frontend && ../bin/ao-netns pnpm run check:test-selection
+//
+// The paths the tables below name are inputs of the check, and CI runs it
+// on a pull request that changes one (scripts/ci-suites.mjs).
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { createVitest } from 'vitest/node';
+import { fileURLToPath } from 'node:url';
 
 const FRONTEND = resolve(import.meta.dirname, '..');
 
-const READERS = [
+export const READERS = [
   { kind: 'raw import of a file that is not a module', changed: 'index.html', reader: 'src/indexHtmlNoInlineScript.test.ts' },
   { kind: 'glob', changed: 'src/styles/syntax.css', reader: 'src/lib/styleInvalidation.test.ts' },
   { kind: 'file outside frontend/', changed: '../internal/stringsx/findfold_table.go', reader: 'src/lib/utils/findMatch.test.ts' },
@@ -30,7 +35,7 @@ const READERS = [
 
 // Inputs every file of one project reads: its runner and what the runner
 // imports. Vitest follows a project's runner itself.
-const PROJECT_INPUTS = [
+export const PROJECT_INPUTS = [
   { changed: 'src/test/sharedWorkerRunner.ts', project: 'unit' },
   { changed: 'src/test/sharedWorker.ts', project: 'unit' },
   { changed: 'src/test/sharedGlobals.ts', project: 'unit' },
@@ -38,7 +43,7 @@ const PROJECT_INPUTS = [
 
 // Inputs every test file reads without an import: a change to the
 // frontend's own runs every file, and another package's runs none.
-const TRIGGERS = [
+export const TRIGGERS = [
   { changed: 'package.json', all: true },
   { changed: 'pnpm-lock.yaml', all: true },
   { changed: 'tsconfig.json', all: true },
@@ -82,75 +87,80 @@ const DELETIONS = [
   { kind: 'an unstaged deletion a glob reads', unstaged: ['scripts/perfprobe/ab.mjs'], whole: true },
 ];
 
-const failures = [];
-const started = performance.now();
-
 function git(repo, ...args) {
   return execFileSync('git', ['-C', repo, '-c', 'user.name=check', '-c', 'user.email=check@example.invalid', ...args], { encoding: 'utf8' });
 }
 
-const scratch = mkdtempSync(join(tmpdir(), 'vitest-changed-check-'));
-try {
-  for (const [path, text] of Object.entries(FILES)) {
-    mkdirSync(dirname(join(scratch, path)), { recursive: true });
-    writeFileSync(join(scratch, path), text);
-  }
-  cpSync(join(FRONTEND, 'scripts/vitest-changed.mjs'), join(scratch, 'frontend/scripts/vitest-changed.mjs'));
-  git(scratch, 'init', '-q', '-b', 'main');
-  git(scratch, 'add', '-A');
-  git(scratch, 'commit', '-q', '-m', 'base');
-  for (const { kind, committed, staged, unstaged, renamed, whole } of DELETIONS) {
-    git(scratch, 'checkout', '-q', '-B', 'change', 'main');
-    if (committed) git(scratch, 'rm', '-q', ...committed);
-    if (renamed) git(scratch, 'mv', ...renamed);
-    if (committed || renamed) git(scratch, 'commit', '-q', '-m', kind);
-    if (staged) git(scratch, 'rm', '-q', ...staged);
-    if (unstaged) for (const path of unstaged) rmSync(join(scratch, path));
-    const printed = execFileSync('node', ['frontend/scripts/vitest-changed.mjs', 'unit', 'main', '--print'], { cwd: scratch, encoding: 'utf8' }).trim();
-    const ranWhole = !printed.includes('--changed main');
-    console.log(`${kind}: ${printed.split('\n').join(' / ')}`);
-    if (ranWhole !== whole) failures.push(`${kind}: expected ${whole ? 'a whole run' : 'a --changed selection'}`);
-    git(scratch, 'reset', '-q', '--hard', 'main');
-  }
-} finally {
-  rmSync(scratch, { recursive: true, force: true });
-}
+async function main() {
+  const failures = [];
+  const started = performance.now();
 
-const vitest = await createVitest('test', { watch: false, project: ['unit', 'unit-isolated'] }, {}, {});
-try {
-  for (const { kind, changed, reader } of READERS) {
-    // The list `--changed` hands the resolver (VitestSpecifications.filterTestsBySource).
-    vitest.config.related = [resolve(FRONTEND, changed)];
-    const selected = (await vitest.getRelevantTestSpecifications()).map((spec) => spec.moduleId);
-    const found = selected.includes(resolve(FRONTEND, reader));
-    console.log(`${kind}: a change to ${changed} selects ${selected.length} files, ${found ? 'including' : 'NOT including'} ${reader}`);
-    if (!found) failures.push(`${kind}: a change to ${changed} does not select ${reader}`);
-  }
-  vitest.config.related = undefined;
-  const everySpec = await vitest.getRelevantTestSpecifications();
-  const total = everySpec.length;
-  for (const { changed, project } of PROJECT_INPUTS) {
-    const projectTotal = everySpec.filter((spec) => spec.project.name === project).length;
-    vitest.config.related = [resolve(FRONTEND, changed)];
-    const selected = (await vitest.getRelevantTestSpecifications()).filter((spec) => spec.project.name === project).length;
-    console.log(`a change to ${changed} selects ${selected} of the ${projectTotal} ${project} files`);
-    if (selected !== projectTotal) failures.push(`a change to ${changed} selects ${selected} of the ${projectTotal} ${project} files, expected all`);
-  }
-  vitest.config.related = undefined;
-  for (const { changed, all } of TRIGGERS) {
-    vitest.config.related = [resolve(FRONTEND, changed)];
-    const selected = (await vitest.getRelevantTestSpecifications()).length;
-    console.log(`a change to ${changed} selects ${selected} of ${total} files`);
-    if ((selected === total) !== all || (!all && selected !== 0)) {
-      failures.push(`a change to ${changed} selects ${selected} of ${total} files, expected ${all ? 'all' : 'none'}`);
+  const scratch = mkdtempSync(join(tmpdir(), 'vitest-changed-check-'));
+  try {
+    for (const [path, text] of Object.entries(FILES)) {
+      mkdirSync(dirname(join(scratch, path)), { recursive: true });
+      writeFileSync(join(scratch, path), text);
     }
+    cpSync(join(FRONTEND, 'scripts/vitest-changed.mjs'), join(scratch, 'frontend/scripts/vitest-changed.mjs'));
+    git(scratch, 'init', '-q', '-b', 'main');
+    git(scratch, 'add', '-A');
+    git(scratch, 'commit', '-q', '-m', 'base');
+    for (const { kind, committed, staged, unstaged, renamed, whole } of DELETIONS) {
+      git(scratch, 'checkout', '-q', '-B', 'change', 'main');
+      if (committed) git(scratch, 'rm', '-q', ...committed);
+      if (renamed) git(scratch, 'mv', ...renamed);
+      if (committed || renamed) git(scratch, 'commit', '-q', '-m', kind);
+      if (staged) git(scratch, 'rm', '-q', ...staged);
+      if (unstaged) for (const path of unstaged) rmSync(join(scratch, path));
+      const printed = execFileSync('node', ['frontend/scripts/vitest-changed.mjs', 'unit', 'main', '--print'], { cwd: scratch, encoding: 'utf8' }).trim();
+      const ranWhole = !printed.includes('--changed main');
+      console.log(`${kind}: ${printed.split('\n').join(' / ')}`);
+      if (ranWhole !== whole) failures.push(`${kind}: expected ${whole ? 'a whole run' : 'a --changed selection'}`);
+      git(scratch, 'reset', '-q', '--hard', 'main');
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
-} finally {
-  await vitest.close();
+
+  const { createVitest } = await import('vitest/node');
+  const vitest = await createVitest('test', { watch: false, project: ['unit', 'unit-isolated'] }, {}, {});
+  try {
+    for (const { kind, changed, reader } of READERS) {
+      // The list `--changed` hands the resolver (VitestSpecifications.filterTestsBySource).
+      vitest.config.related = [resolve(FRONTEND, changed)];
+      const selected = (await vitest.getRelevantTestSpecifications()).map((spec) => spec.moduleId);
+      const found = selected.includes(resolve(FRONTEND, reader));
+      console.log(`${kind}: a change to ${changed} selects ${selected.length} files, ${found ? 'including' : 'NOT including'} ${reader}`);
+      if (!found) failures.push(`${kind}: a change to ${changed} does not select ${reader}`);
+    }
+    vitest.config.related = undefined;
+    const everySpec = await vitest.getRelevantTestSpecifications();
+    const total = everySpec.length;
+    for (const { changed, project } of PROJECT_INPUTS) {
+      const projectTotal = everySpec.filter((spec) => spec.project.name === project).length;
+      vitest.config.related = [resolve(FRONTEND, changed)];
+      const selected = (await vitest.getRelevantTestSpecifications()).filter((spec) => spec.project.name === project).length;
+      console.log(`a change to ${changed} selects ${selected} of the ${projectTotal} ${project} files`);
+      if (selected !== projectTotal) failures.push(`a change to ${changed} selects ${selected} of the ${projectTotal} ${project} files, expected all`);
+    }
+    vitest.config.related = undefined;
+    for (const { changed, all } of TRIGGERS) {
+      vitest.config.related = [resolve(FRONTEND, changed)];
+      const selected = (await vitest.getRelevantTestSpecifications()).length;
+      console.log(`a change to ${changed} selects ${selected} of ${total} files`);
+      if ((selected === total) !== all || (!all && selected !== 0)) {
+        failures.push(`a change to ${changed} selects ${selected} of ${total} files, expected ${all ? 'all' : 'none'}`);
+      }
+    }
+  } finally {
+    await vitest.close();
+  }
+
+  console.log(`checked in ${((performance.now() - started) / 1000).toFixed(1)} s`);
+  if (failures.length > 0) {
+    console.error(failures.join('\n'));
+    process.exit(1);
+  }
 }
 
-console.log(`checked in ${((performance.now() - started) / 1000).toFixed(1)} s`);
-if (failures.length > 0) {
-  console.error(failures.join('\n'));
-  process.exit(1);
-}
+if (process.argv[1] === fileURLToPath(import.meta.url)) await main();
