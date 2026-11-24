@@ -203,6 +203,13 @@ describe('attachment transfer boundaries', () => {
     '/attachments/%2e%2e/auth/refresh?ticket=x',
     '/attachments/a%2fb/c?ticket=x',
     '/attachments/upload#secret',
+    // Forge and image paths outside the route shape.
+    '/attachments/forge?ticket=x',
+    '/attachments/forge/a/b?ticket=x',
+    '/attachments/forge/bad.id?ticket=x',
+    '/attachments/image?ticket=x',
+    '/attachments/image/a/b?ticket=x',
+    '/attachments/image/bad.id?ticket=x',
   ])('rejects a minted path outside the transfer routes: %s', (path) => {
     expect(() => backendTransferUrl(path, 'gpu')).toThrow();
   });
@@ -218,16 +225,5 @@ describe('attachment transfer boundaries', () => {
     '/attachments/image/Ab9_-x?ticket=x',
   ])('carries a minted transfer path onto the backend relay: %s', (path) => {
     expect(backendTransferUrl(path, 'gpu')).toBe(`/backend/gpu${path}`);
-  });
-
-  it.each([
-    '/attachments/forge?ticket=x',
-    '/attachments/forge/a/b?ticket=x',
-    '/attachments/forge/bad.id?ticket=x',
-    '/attachments/image?ticket=x',
-    '/attachments/image/a/b?ticket=x',
-    '/attachments/image/bad.id?ticket=x',
-  ])('rejects a forge or image transfer path outside the route shape: %s', (path) => {
-    expect(() => backendTransferUrl(path, 'gpu')).toThrow();
   });
 });

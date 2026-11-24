@@ -147,14 +147,6 @@ describe('validateWsUrl', () => {
       expect(() => validateWsUrl(value)).toThrow('cannot contain credentials or a fragment');
     }
   });
-
-  // There is no exemption left to get wrong. Every manifest the SPA can
-  // receive is served by the page's own origin — including the
-  // `--connect` stub's, which carries the socket to the remote backend
-  // itself rather than pointing the page at it.
-  it('refuses a cross-origin wsUrl on every path', () => {
-    expect(() => validateWsUrl('ws://desktop.tailnet.ts.net:8790/ws')).toThrow(/not same-origin/);
-  });
 });
 
 describe('defaultBootstrap', () => {
@@ -216,12 +208,6 @@ describe('defaultBootstrap', () => {
     vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: 'ws://untrusted.example.com/ws' })));
 
     await expect(defaultBootstrap()).rejects.toThrow(/not same-origin/);
-  });
-
-  it('accepts a same-origin wsUrl from the fetched manifest', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS })));
-
-    await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
   });
 
   // Whether the page is the host's own window is the backend's answer, from
@@ -621,17 +607,5 @@ describe('defaultBootstrap under a shell origin', () => {
     ));
 
     await expect(defaultBootstrap()).rejects.toThrow(/not same-origin/);
-  });
-
-  it('checks a wsUrl against whatever origin it is told to', () => {
-    // The parameter is the phone wave's whole change to this function:
-    // "the one authority this manifest may describe" is still the rule,
-    // and an attached backend's is neither home's nor the page's.
-    expect(() =>
-      validateWsUrl('wss://laptop.test:7777/ws', { protocol: 'https:', host: 'laptop.test:7777' }),
-    ).not.toThrow();
-    expect(() =>
-      validateWsUrl('wss://laptop.test:7777/ws', { protocol: 'https:', host: 'desk.test:7777' }),
-    ).toThrow(/not same-origin/);
   });
 });

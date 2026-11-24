@@ -25,15 +25,21 @@ describe('runMode', () => {
     setPageMode(undefined);
   });
 
-  it('defaults to local when the URL carries no mode', () => {
-    expect(runMode()).toBe('local');
-    expect(isClientMode()).toBe(false);
-  });
-
-  it('returns "client" for mode=client', () => {
-    setPageMode('client');
-    expect(runMode()).toBe('client');
-    expect(isClientMode()).toBe(true);
+  // Forward-compat for the unknown mode: a future shell that stamps a mode
+  // the SPA doesn't recognise should not crash. The worst case is a panel
+  // that should hide stays visible — strictly less harmful than a black
+  // screen.
+  it.each([
+    ['defaults to local when the URL carries no mode', undefined, 'local', false],
+    ['returns "client" for mode=client', 'client', 'client', true],
+    ['returns "headless" for mode=headless', 'headless', 'headless', false],
+    ['returns "local" for explicit mode=local', 'local', 'local', false],
+    ['falls back to local for unknown mode strings', 'something-else', 'local', false],
+    ['falls back to local for an empty mode parameter', '', 'local', false],
+  ])('%s', (_name, mode, expected, client) => {
+    setPageMode(mode);
+    expect(runMode()).toBe(expected);
+    expect(isClientMode()).toBe(client);
   });
 
   it('identifies a frontend controller separately from a legacy relay', () => {
@@ -45,32 +51,6 @@ describe('runMode', () => {
     setPageMode('client&computer=ignored');
     expect(isFrontendOnly()).toBe(false);
     expect(initialComputer()).toBe('');
-  });
-
-  it('returns "headless" for mode=headless', () => {
-    setPageMode('headless');
-    expect(runMode()).toBe('headless');
-    expect(isClientMode()).toBe(false);
-  });
-
-  it('returns "local" for explicit mode=local', () => {
-    setPageMode('local');
-    expect(runMode()).toBe('local');
-    expect(isClientMode()).toBe(false);
-  });
-
-  it('falls back to local for unknown mode strings', () => {
-    // Forward-compat: a future shell that stamps a mode the SPA doesn't
-    // recognise should not crash. The worst case is a panel that should
-    // hide stays visible — strictly less harmful than a black screen.
-    setPageMode('something-else');
-    expect(runMode()).toBe('local');
-    expect(isClientMode()).toBe(false);
-  });
-
-  it('falls back to local for an empty mode parameter', () => {
-    setPageMode('');
-    expect(runMode()).toBe('local');
   });
 
   it('memoises the first read until __resetRunModeForTest', () => {

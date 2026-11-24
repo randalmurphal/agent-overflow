@@ -33,23 +33,15 @@ const LIST_TERMINALS = 2445206506;
 const WRITE_TERMINAL = 146795716;
 
 describe('the id-family route table', () => {
-  it('names only methods the generated route table still knows', () => {
-    const declared = Object.keys(ROUTE_BY_ID_FAMILY).map(Number);
-    for (const id of declared) {
-      expect(METHOD_ROUTES[id], `id ${id} is not a bound method any more`).toBeDefined();
-    }
-  });
-
   it('covers only methods the generator parked on home', () => {
     // That is the whole reason this table exists. A method the generator
     // routes to a thread or a project needs no family, and shadowing one
-    // here would be two answers to one question.
+    // here would be two answers to one question. An id the generated table
+    // no longer has at all is a method that is not bound any more.
     for (const id of Object.keys(ROUTE_BY_ID_FAMILY).map(Number)) {
-      expect(METHOD_ROUTES[id], `id ${id} is not parked on home`).toBe('home');
+      expect(METHOD_ROUTES[id], `id ${id} is not a bound method parked on home`).toBe('home');
     }
   });
-
-
 });
 
 describe('familyBackend', () => {

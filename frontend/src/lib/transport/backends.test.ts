@@ -252,11 +252,14 @@ describe('the registry', () => {
     expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['thread-unplaced'], []);
   });
 
-  it('states the watched set on a backend attached afterwards', () => {
+  it.each<[string, string[], { threadId: string; scopeRootId: string }[]]>([
+    ['the watched set', ['thread-laptop'], []],
+    ['a scope-only watched set', [], [{ threadId: 'thread-laptop', scopeRootId: 'agent-1' }]],
+  ])('states %s on a backend attached afterwards', (_name, threads, scopes) => {
     noteThread('thread-laptop', 'laptop');
-    setWatchedThreadsEverywhere(['thread-laptop'], []);
+    setWatchedThreadsEverywhere(threads, scopes);
     const { client } = attachFake();
-    expect(client.setWatchedThreads).toHaveBeenCalledWith(['thread-laptop'], []);
+    expect(client.setWatchedThreads).toHaveBeenCalledWith(threads, scopes);
   });
 
   it('tells a backend that owns none of the watched threads so', () => {
@@ -299,13 +302,6 @@ describe('the registry', () => {
     expect(client.setWatchedThreads).toHaveBeenLastCalledWith([], [scope]);
   });
 
-  it('states a scope-only watched set on a backend attached afterwards', () => {
-    noteThread('thread-laptop', 'laptop');
-    const scope = { threadId: 'thread-laptop', scopeRootId: 'agent-1' };
-    setWatchedThreadsEverywhere([], [scope]);
-    const { client } = attachFake();
-    expect(client.setWatchedThreads).toHaveBeenCalledWith([], [scope]);
-  });
 
   it("publishes the home backend's clock from its hello", () => {
     homeClient.getHello.mockReturnValue({ clockSkewMs: 90_000 } as never);
@@ -390,28 +386,15 @@ describe('the fan-out merges by shape', () => {
     return callEveryBackend(METHOD, []);
   }
 
-  it('concatenates arrays in attach order', async () => {
-    await expect(shares([1, 2], [3])).resolves.toEqual([1, 2, 3]);
-  });
-
-  it('shallow-merges id-keyed objects, later backends winning', async () => {
-    await expect(shares({ a: '1' }, { b: '2', a: '3' })).resolves.toEqual({ a: '3', b: '2' });
-  });
-
-  it('falls back to the home share for a scalar', async () => {
-    await expect(shares(7, 9)).resolves.toBe(7);
-  });
-
-  it('falls back to the home share for a mixed set', async () => {
-    await expect(shares([1], { a: '1' })).resolves.toEqual([1]);
-  });
-
-  it('drops null and undefined shares before judging the shape', async () => {
-    await expect(shares(null, [1], undefined, [2])).resolves.toEqual([1, 2]);
-  });
-
-  it('answers the home share when every share is nothing', async () => {
-    await expect(shares(null, undefined)).resolves.toBeNull();
+  it.each<[string, unknown, unknown[], unknown]>([
+    ['concatenates arrays in attach order', [1, 2], [[3]], [1, 2, 3]],
+    ['shallow-merges id-keyed objects, later backends winning', { a: '1' }, [{ b: '2', a: '3' }], { a: '3', b: '2' }],
+    ['falls back to the home share for a scalar', 7, [9], 7],
+    ['falls back to the home share for a mixed set', [1], [{ a: '1' }], [1]],
+    ['drops null and undefined shares before judging the shape', null, [[1], undefined, [2]], [1, 2]],
+    ['answers the home share when every share is nothing', null, [undefined], null],
+  ])('%s', async (_name, home, remotes, merged) => {
+    await expect(shares(home, ...remotes)).resolves.toEqual(merged);
   });
 });
 

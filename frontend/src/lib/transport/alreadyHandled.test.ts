@@ -5,15 +5,12 @@ import { ignoringAlreadyHandled, isAlreadyHandled } from './alreadyHandled';
 const alreadyHandled = () => new TransportError('already_handled', 'approval req-1: already handled');
 
 describe('isAlreadyHandled', () => {
-  it('recognizes the code', () => {
-    expect(isAlreadyHandled(alreadyHandled())).toBe(true);
-  });
-
   // The whole point of a code is that it survives the transport's redaction of
   // method-error TEXT for anything that is not the loopback caller. A remote
   // client sees "method failed (id: ...)" and nothing else, so a check that
   // reads the message would answer false there and true on the desktop.
   it('does not depend on the message', () => {
+    expect(isAlreadyHandled(alreadyHandled())).toBe(true);
     expect(isAlreadyHandled(new TransportError('already_handled', 'method failed (id: abc123)')))
       .toBe(true);
   });
