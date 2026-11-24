@@ -119,13 +119,6 @@ describe('<GitActionsControl> consumer rendering', () => {
     expect(container.querySelector('button[aria-label="More git actions"]')).toBeNull();
   });
 
-  it('shows the retry affordance when the slot reports an error', async () => {
-    const pane = await buildPane();
-    __seedGitStatusErrorForTest(WORKSPACE, 'git busy');
-    const { findByTestId } = render(GitActionsControl, { props: { pane } });
-    expect(await findByTestId('git-actions-error')).toBeInTheDocument();
-  });
-
   it('retry button asks the slot to refresh', async () => {
     const pane = await buildPane();
     __seedGitStatusErrorForTest(WORKSPACE, 'git busy');
@@ -148,15 +141,6 @@ describe('<GitActionsControl> consumer rendering', () => {
     expect(await findByRole('menuitem', { name: 'Commit' })).toBeInTheDocument();
     const labels = getAllByRole('menuitem').map((item) => item.textContent?.trim());
     expect(labels).toEqual(['Commit', 'Push', 'Pull', 'Create PR']);
-  });
-
-  it('opens the Create PR dialog from the menu item', async () => {
-    const pane = await buildPane();
-    __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', isDefaultBranch: false }));
-    const { findByLabelText, findByRole, findByText } = render(GitActionsControl, { props: { pane } });
-    await fireEvent.click(await findByLabelText('More git actions'));
-    await fireEvent.click(await findByRole('menuitem', { name: 'Create PR' }));
-    expect(await findByText('Create Pull Request')).toBeInTheDocument();
   });
 
   it('refreshes status when the Create PR dialog closes', async () => {
@@ -724,15 +708,6 @@ describe('<GitActionsControl> forge labels', () => {
     setBindingMock('GetSettings', async () => null);
     setBindingMock('GetProviderStatuses', async () => []);
     await loadSettings();
-  });
-
-  it('renders "Create PR" for github forge', async () => {
-    const pane = await buildPane();
-    __seedGitStatusForTest(WORKSPACE, status({ forge: 'github', branch: 'feature', isDefaultBranch: false }));
-    const { findByLabelText, getByText } = render(GitActionsControl, { props: { pane } });
-    await fireEvent.click(await findByLabelText('More git actions'));
-    await flush();
-    expect(getByText('Create PR')).toBeTruthy();
   });
 
   it('renders "Create MR" for gitlab forge', async () => {

@@ -33,40 +33,16 @@ describe('<WorkspaceDiffBadge>', () => {
     expect(btn.getAttribute('title')).toBe('Toggle Review Pane (Ctrl+Shift+G)');
   });
 
-  it('shows +0 -0 when no status has been observed yet', () => {
-    const { getByTestId } = render(WorkspaceDiffBadge, {
-      props: { ...baseProps, status: null },
-    });
+  it.each([
+    ['shows +0 -0 when no status has been observed yet', null, '+0', '-0'],
+    ['shows +0 -0 when the workspace is not a git repo', status({ isRepo: false }), '+0', '-0'],
+    ['renders +insertions and -deletions for a dirty repo', status({ insertions: 12, deletions: 3 }), '+12', '-3'],
+    ['renders +0 -0 for a clean repo (visible even with no changes)', status({ insertions: 0, deletions: 0 }), '+0', '-0'],
+  ])('%s', (_name, observed, insertions, deletions) => {
+    const { getByTestId } = render(WorkspaceDiffBadge, { props: { ...baseProps, status: observed } });
     const counts = getByTestId('workspace-diff-counts');
-    expect(counts.textContent).toContain('+0');
-    expect(counts.textContent).toContain('-0');
-  });
-
-  it('shows +0 -0 when the workspace is not a git repo', () => {
-    const { getByTestId } = render(WorkspaceDiffBadge, {
-      props: { ...baseProps, status: status({ isRepo: false }) },
-    });
-    const counts = getByTestId('workspace-diff-counts');
-    expect(counts.textContent).toContain('+0');
-    expect(counts.textContent).toContain('-0');
-  });
-
-  it('renders +insertions and -deletions for a dirty repo', () => {
-    const { getByTestId } = render(WorkspaceDiffBadge, {
-      props: { ...baseProps, status: status({ insertions: 12, deletions: 3 }) },
-    });
-    const counts = getByTestId('workspace-diff-counts');
-    expect(counts.textContent).toContain('+12');
-    expect(counts.textContent).toContain('-3');
-  });
-
-  it('renders +0 -0 for a clean repo (visible even with no changes)', () => {
-    const { getByTestId } = render(WorkspaceDiffBadge, {
-      props: { ...baseProps, status: status({ insertions: 0, deletions: 0 }) },
-    });
-    const counts = getByTestId('workspace-diff-counts');
-    expect(counts.textContent).toContain('+0');
-    expect(counts.textContent).toContain('-0');
+    expect(counts.textContent).toContain(insertions);
+    expect(counts.textContent).toContain(deletions);
   });
 
   it('reflects the pressed (panel-open) state via aria-pressed', () => {
