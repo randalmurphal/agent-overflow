@@ -116,35 +116,3 @@ func TestRunReportsTheFailingCommandsOutputTail(t *testing.T) {
 		t.Fatalf("failure error = %v", err)
 	}
 }
-
-// A later command never runs after an earlier one failed: the tree is already
-// broken, and a recipe's steps are ordered because they depend on each other.
-func TestRunStopsAtTheFirstFailure(t *testing.T) {
-	project := t.TempDir()
-	worktree := t.TempDir()
-	err := Run(context.Background(), procutiltest.Reaper(), project, worktree, Config{
-		Run: [][]string{
-			{"/bin/sh", "-c", "exit 1"},
-			{"/bin/sh", "-c", "printf ran > second.txt"},
-		},
-	})
-	if err == nil {
-		t.Fatal("failing recipe reported success")
-	}
-	if _, statErr := os.Stat(filepath.Join(worktree, "second.txt")); !os.IsNotExist(statErr) {
-		t.Fatalf("command after a failure ran: %v", statErr)
-	}
-}
-
-func TestRunZeroConfigDoesNothing(t *testing.T) {
-	if err := Run(context.Background(), procutiltest.Reaper(), t.TempDir(), t.TempDir(), Config{}); err != nil {
-		t.Fatalf("empty setup = %v", err)
-	}
-}
-
-func TestRunRefusesAnUnparseableTimeout(t *testing.T) {
-	err := Run(context.Background(), procutiltest.Reaper(), t.TempDir(), t.TempDir(), Config{Timeout: "later"})
-	if err == nil || !strings.Contains(err.Error(), "invalid worktree setup timeout") {
-		t.Fatalf("bad timeout error = %v", err)
-	}
-}

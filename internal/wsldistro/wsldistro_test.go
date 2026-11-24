@@ -63,9 +63,10 @@ func TestLoad_EmptyDirErrors(t *testing.T) {
 func TestSave_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{
-		Distro:          "Debian",
-		InstalledVer:    "v1.0.0",
-		InstalledDistro: "Debian",
+		Distro:           "Debian",
+		InstalledVer:     "v1.0.0",
+		InstalledDistro:  "Debian",
+		InstalledBinPath: "/home/alice/.local/bin/agent-overflow",
 	}
 	if err := Save(dir, cfg); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -76,18 +77,6 @@ func TestSave_RoundTrip(t *testing.T) {
 	}
 	if got == nil || *got != *cfg {
 		t.Fatalf("round-trip mismatch: got=%+v want=%+v", got, cfg)
-	}
-}
-
-func TestSave_CreatesParentDir(t *testing.T) {
-	parent := t.TempDir()
-	dir := filepath.Join(parent, "agent-overflow") // doesn't exist yet
-	cfg := &Config{Distro: "Ubuntu-22.04"}
-	if err := Save(dir, cfg); err != nil {
-		t.Fatalf("Save into missing dir: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, FileName)); err != nil {
-		t.Fatalf("file not created: %v", err)
 	}
 }
 
@@ -126,19 +115,20 @@ func TestLoad_PassesThroughOtherIOErrors(t *testing.T) {
 // per-user launcher state and must be 0o600 so a multi-user host
 // doesn't expose another user's distro choice (and any future field on
 // Config that ends up sensitive). The dir mode bound is 0o700 for the
-// same reason.
+// same reason. Save creates the missing parent directory on every
+// platform; only the mode checks are skipped on NTFS.
 func TestSave_FileMode(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("file mode bits don't translate cleanly on NTFS")
-	}
 	parent := t.TempDir()
-	dir := filepath.Join(parent, "agent-overflow")
+	dir := filepath.Join(parent, "agent-overflow") // doesn't exist yet
 	if err := Save(dir, &Config{Distro: "Ubuntu"}); err != nil {
-		t.Fatalf("Save: %v", err)
+		t.Fatalf("Save into missing dir: %v", err)
 	}
 	fi, err := os.Stat(filepath.Join(dir, FileName))
 	if err != nil {
-		t.Fatalf("stat file: %v", err)
+		t.Fatalf("file not created: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		return // file mode bits don't translate cleanly on NTFS
 	}
 	if got := fi.Mode().Perm(); got != 0o600 {
 		t.Errorf("file mode = %o, want 0o600", got)
@@ -208,24 +198,6 @@ func TestSave_RewriteIsAtomic(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Errorf("rewrite left stray temp files: %v", names)
-	}
-}
-
-func TestConfigRoundTripsInstalledBinPath(t *testing.T) {
-	dir := t.TempDir()
-	want := &Config{
-		Distro: "Ubuntu", InstalledVer: "v1.2.3", InstalledDistro: "Ubuntu",
-		InstalledBinPath: "/home/alice/.local/bin/agent-overflow",
-	}
-	if err := Save(dir, want); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	got, err := Load(dir)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if got == nil || got.InstalledBinPath != want.InstalledBinPath {
-		t.Fatalf("InstalledBinPath = %+v, want %q", got, want.InstalledBinPath)
 	}
 }
 

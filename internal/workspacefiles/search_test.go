@@ -354,19 +354,16 @@ func TestRankEntriesMatchesFullSortRandomized(t *testing.T) {
 	}
 }
 
-func TestSearchMissingRootErrors(t *testing.T) {
-	searcher := NewSearcher(Config{})
-	_, _, err := searcher.Search("/no/such/path/for/test", "", 10)
-	if err == nil {
-		t.Fatal("expected error for missing root")
-	}
-}
-
 func TestSearchRequiresRoot(t *testing.T) {
-	searcher := NewSearcher(Config{})
-	_, _, err := searcher.Search("", "foo", 10)
-	if err == nil {
-		t.Fatal("expected error for empty root")
+	for _, tc := range []struct{ name, root, query string }{
+		{"missing root", "/no/such/path/for/test", ""},
+		{"empty root", "", "foo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := NewSearcher(Config{}).Search(tc.root, tc.query, 10); err == nil {
+				t.Fatalf("Search(%q) succeeded, want an error", tc.root)
+			}
+		})
 	}
 }
 
