@@ -166,3 +166,25 @@ func TestASaveSaysTheReadyingFailed(t *testing.T) {
 		t.Fatalf("the list after a failed readying = %+v, %v", got, err)
 	}
 }
+
+// A save answers the list as ProjectBoards reads it: each board named as
+// the picker showed it until this computer reads the board, with its
+// connection; a read needs its project.
+func TestProjectBoardsAreNamedAsTheyWereChosen(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	boards := []ProjectBoard{{Connection: m.conn.ID, Board: string(testBoard), OpensFirst: true, Name: "WEB board", TrackerProject: "WEB"}}
+	want := []BoardChoice{{
+		Project: m.project(), Connection: m.conn.ID, ConnectionKind: m.conn.Kind, ConnectionLabel: m.conn.Label, ConnectionEnabled: true,
+		VerifiedAccount: m.conn.VerifiedAccountID, Board: string(testBoard), Name: "WEB board", TrackerProject: "WEB", OpensFirst: true,
+	}}
+	if got, err := m.svc.SetProjectBoards(m.project(), boards); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("SetProjectBoards = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := m.svc.ProjectBoards(m.project()); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("ProjectBoards = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := m.svc.ProjectBoards(""); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("ProjectBoards of no project = %+v, %v; want ErrProjectNotFound", got, err)
+	}
+}

@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/pump"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
@@ -78,10 +79,11 @@ func trackerCatalogError(ctx context.Context, err error) error {
 }
 
 // ProjectTrackerBoards lists the boards a project's board picker shows, in
-// its order, and which opens first.
+// its order, and which opens first, each named and with its connection's
+// kind, label and state.
 //
 //ao:scope tracker:read
-func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]trackerapp.ProjectBoard, error) {
+func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]trackerapp.BoardChoice, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return nil, err
@@ -91,12 +93,14 @@ func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]tra
 }
 
 // SetProjectTrackerBoards makes boards, in order, the boards a project's
-// picker shows, and answers the list stored. A board it leaves out that
+// picker shows, each with the name and tracker project the picker showed,
+// and answers the list stored as ProjectTrackerBoards reads it. A board it
+// leaves out that
 // no other project lists stops being kept on this computer, and its open
 // views end.
 //
 //ao:scope tracker:operate
-func (a *App) SetProjectTrackerBoards(ctx context.Context, projectID string, boards []trackerapp.ProjectBoard) ([]trackerapp.ProjectBoard, error) {
+func (a *App) SetProjectTrackerBoards(ctx context.Context, projectID string, boards []trackerapp.ProjectBoard) ([]trackerapp.BoardChoice, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return nil, err
@@ -281,9 +285,14 @@ func trackerError(err error) error {
 // trackerRefusal is err's code and sentence, none for an error that is no
 // refusal of the trackers'.
 func trackerRefusal(err error) (code, message string) {
+	var invalid *trackerapp.InvalidError
 	switch {
 	case err == nil:
 		return "", ""
+	case errors.As(err, &invalid):
+		return "tracker_connection_invalid", invalid.Reason
+	case errors.Is(err, store.ErrTrackerConnectionExists):
+		return "tracker_connection_exists", "this computer already has that connection (the same Jira site and email, the same Linear workspace, or Tempo for that Jira connection); use the one listed"
 	case errors.Is(err, trackerapp.ErrUnknownSubscription):
 		return "tracker_subscription_unknown", "this board view is no longer open on this computer (released, or its connection or board went away); open the board again"
 	case errors.Is(err, trackerapp.ErrSubscriptionEnded):

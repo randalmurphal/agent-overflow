@@ -3886,7 +3886,8 @@ export class NewThreadDefaultsUpdate {
 
 /**
  * NewTrackerConnection is what AddTrackerConnection takes. Site is the
- * Jira site (with or without https://), a Tempo API base URL, or the
+ * Jira site (with or without https://), a Tempo API base URL (empty for
+ * the one that serves every region), or the
  * Linear workspace's URL key or address; Account is the Jira account's
  * email; ParentID is the Jira connection a Tempo connection belongs to.
  */

@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"unicode/utf8"
 )
 
 // ErrInvalidTrackerBoards is returned by ReplaceProjectTrackerBoards for a
 // list the table refuses: an empty connection or board ID, a board listed
-// twice, more than one board that opens first, or a connection that does
-// not exist or has no boards (Tempo).
+// twice, more than one board that opens first, a name or tracker project
+// that is not text or is longer than maxTrackerBoardTextRunes, or a
+// connection that does not exist or has no boards (Tempo).
 var ErrInvalidTrackerBoards = errors.New("store: invalid tracker board list")
 
 // TrackerBoardRef names one board: the tracker's own board ID within a
@@ -24,19 +26,28 @@ type TrackerBoardRef struct {
 
 // ProjectTrackerBoard is one board an app project lists (migration v162).
 // A project's list is ordered as its board picker shows it, and at most
-// one board opens first.
+// one board opens first. Name and TrackerProject are what the picker
+// showed when the board was chosen (v166).
 type ProjectTrackerBoard struct {
-	ConnectionID string
-	BoardID      string
-	OpensFirst   bool
+	ConnectionID   string
+	BoardID        string
+	OpensFirst     bool
+	Name           string
+	TrackerProject string
 }
+
+// maxTrackerBoardTextRunes bounds a listing's name and tracker project,
+// as the columns' CHECKs do (migration v166).
+const maxTrackerBoardTextRunes = 255
 
 // trackerBoardRow is one board of ReplaceProjectTrackerBoards' JSON list;
 // its index in the list is its position.
 type trackerBoardRow struct {
-	ConnectionID string `json:"c"`
-	BoardID      string `json:"b"`
-	OpensFirst   int    `json:"f"`
+	ConnectionID   string `json:"c"`
+	BoardID        string `json:"b"`
+	OpensFirst     int    `json:"f"`
+	Name           string `json:"n,omitempty"`
+	TrackerProject string `json:"p,omitempty"`
 }
 
 func validateProjectTrackerBoards(boards []ProjectTrackerBoard) error {
@@ -49,6 +60,11 @@ func validateProjectTrackerBoards(boards []ProjectTrackerBoard) error {
 			return fmt.Errorf("%w: a board needs its connection and board ID", ErrInvalidTrackerBoards)
 		case seen[ref]:
 			return fmt.Errorf("%w: board %s of connection %s is listed twice", ErrInvalidTrackerBoards, ref.BoardID, ref.ConnectionID)
+		}
+		for _, text := range [...]struct{ what, value string }{{"name", board.Name}, {"tracker project", board.TrackerProject}} {
+			if !utf8.ValidString(text.value) || utf8.RuneCountInString(text.value) > maxTrackerBoardTextRunes {
+				return fmt.Errorf("%w: the %s of board %s is not text of at most %d characters", ErrInvalidTrackerBoards, text.what, ref.BoardID, maxTrackerBoardTextRunes)
+			}
 		}
 		seen[ref] = true
 		if board.OpensFirst {
@@ -86,7 +102,10 @@ func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTr
 	rows := make([]trackerBoardRow, 0, len(boards))
 	connections := make([]string, 0, len(boards))
 	for _, board := range boards {
-		rows = append(rows, trackerBoardRow{ConnectionID: board.ConnectionID, BoardID: board.BoardID, OpensFirst: boolToInt(board.OpensFirst)})
+		rows = append(rows, trackerBoardRow{
+			ConnectionID: board.ConnectionID, BoardID: board.BoardID, OpensFirst: boolToInt(board.OpensFirst),
+			Name: board.Name, TrackerProject: board.TrackerProject,
+		})
 		connections = append(connections, board.ConnectionID)
 	}
 	encodedRows, err := json.Marshal(rows)
@@ -135,9 +154,11 @@ func (s *Store) ReplaceProjectTrackerBoards(projectID string, boards []ProjectTr
 	}{
 		{"move aside", `UPDATE project_tracker_boards SET position = position + ?2, opens_first = 0 WHERE project_id = ?1`,
 			[]any{projectID, len(current) + len(boards)}},
-		{"place", `INSERT INTO project_tracker_boards(project_id, connection_id, board_id, position, opens_first)
-			SELECT ?1, value ->> 'c', value ->> 'b', key, value ->> 'f' FROM json_each(?2) WHERE true
-			ON CONFLICT(project_id, connection_id, board_id) DO UPDATE SET position = excluded.position, opens_first = excluded.opens_first`,
+		{"place", `INSERT INTO project_tracker_boards(project_id, connection_id, board_id, position, opens_first, name, tracker_project)
+			SELECT ?1, value ->> 'c', value ->> 'b', key, value ->> 'f', COALESCE(value ->> 'n', ''), COALESCE(value ->> 'p', '')
+			FROM json_each(?2) WHERE true
+			ON CONFLICT(project_id, connection_id, board_id) DO UPDATE SET position = excluded.position, opens_first = excluded.opens_first,
+			 name = excluded.name, tracker_project = excluded.tracker_project`,
 			[]any{projectID, string(encodedRows)}},
 	} {
 		if _, err := tx.Exec(step.query, step.args...); err != nil {
@@ -227,7 +248,7 @@ func (s *Store) ListProjectTrackerBoards(projectID string) ([]ProjectTrackerBoar
 }
 
 func listProjectTrackerBoards(q sqlQueryer, projectID string) ([]ProjectTrackerBoard, error) {
-	rows, err := q.Query(`SELECT connection_id, board_id, opens_first FROM project_tracker_boards
+	rows, err := q.Query(`SELECT connection_id, board_id, opens_first, name, tracker_project FROM project_tracker_boards
 		WHERE project_id = ? ORDER BY position`, projectID)
 	if err != nil {
 		return nil, err
@@ -235,12 +256,71 @@ func listProjectTrackerBoards(q sqlQueryer, projectID string) ([]ProjectTrackerB
 	var out []ProjectTrackerBoard
 	for rows.Next() {
 		var board ProjectTrackerBoard
-		if err := rows.Scan(&board.ConnectionID, &board.BoardID, &board.OpensFirst); err != nil {
+		if err := rows.Scan(&board.ConnectionID, &board.BoardID, &board.OpensFirst, &board.Name, &board.TrackerProject); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		out = append(out, board)
 	}
 	return out, errors.Join(rows.Err(), rows.Close())
+}
+
+// TrackerBoardChoice is one board a project lists, as a board picker shows
+// it: the listing, its connection's kind, label, state and verified
+// account, and the board's name, which is this computer's copy of the
+// board's name once the board has been read and the name the listing
+// stored until then (or when the copy is detached or retired).
+type TrackerBoardChoice struct {
+	ProjectID                 string
+	ConnectionID              string
+	ConnectionKind            string
+	ConnectionLabel           string
+	ConnectionEnabled         bool
+	ConnectionVerifiedAccount string
+	BoardID                   string
+	BoardName                 string
+	TrackerProject            string
+	OpensFirst                bool
+}
+
+// trackerBoardChoicesSQL reads listings with their connection and the
+// name of the board's live copy in the connection's mirror: a detached
+// root names no connection and a retired copy is skipped, so neither
+// names a board. The UNIQUE (root_id, board_id) of tracker_cache_boards
+// and the UNIQUE connection_id of tracker_cache_roots make each listing
+// one row.
+const trackerBoardChoicesSQL = `SELECT p.project_id, p.connection_id, c.kind, c.label, c.enabled, c.verified_account_id,
+	p.board_id, COALESCE(NULLIF(b.name, ''), p.name), p.tracker_project, p.opens_first
+	FROM project_tracker_boards p
+	JOIN tracker_connections c ON c.id = p.connection_id
+	LEFT JOIN tracker_cache_roots r ON r.connection_id = p.connection_id
+	LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = p.board_id AND b.retired = 0`
+
+// ListTrackerBoardChoices lists the boards projectID lists in picker
+// order, or with projectID empty the boards every project lists, by
+// project name, then project ID, then picker order; none for a project
+// that lists none or does not exist.
+func (s *Store) ListTrackerBoardChoices(projectID string) ([]TrackerBoardChoice, error) {
+	query, args := trackerBoardChoicesSQL+` WHERE p.project_id = ? ORDER BY p.position`, []any{projectID}
+	if projectID == "" {
+		query, args = trackerBoardChoicesSQL+` JOIN projects j ON j.id = p.project_id ORDER BY j.name, j.id, p.position`, nil
+	}
+	rows, err := s.reader().Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list tracker board choices of project %q: %w", projectID, err)
+	}
+	var out []TrackerBoardChoice
+	for rows.Next() {
+		var c TrackerBoardChoice
+		if err := rows.Scan(&c.ProjectID, &c.ConnectionID, &c.ConnectionKind, &c.ConnectionLabel, &c.ConnectionEnabled,
+			&c.ConnectionVerifiedAccount, &c.BoardID, &c.BoardName, &c.TrackerProject, &c.OpensFirst); err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan tracker board choice: %w", err), rows.Close())
+		}
+		out = append(out, c)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: list tracker board choices of project %q: %w", projectID, err)
+	}
+	return out, nil
 }
 
 // ListTrackerBoardsListedByProjects lists every board some app project

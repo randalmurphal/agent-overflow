@@ -52,6 +52,11 @@ func TestReplaceProjectTrackerBoards(t *testing.T) {
 	replace(p, moved, true)
 	none := []ProjectTrackerBoard{list[0], {ConnectionID: jira.ID, BoardID: "10"}, {ConnectionID: jira.ID, BoardID: "11"}}
 	replace(p, none, true)
+	// A name or tracker project alone is a change, and an empty one clears it.
+	named := []ProjectTrackerBoard{none[0], {ConnectionID: jira.ID, BoardID: "10", Name: "WEB board", TrackerProject: "WEB"}, none[2]}
+	replace(p, named, true)
+	replace(p, named, false)
+	replace(p, none, true)
 	replace(q, []ProjectTrackerBoard{{ConnectionID: jira.ID, BoardID: "10", OpensFirst: true}, {ConnectionID: jira.ID, BoardID: "30"}}, true)
 
 	listed, err := s.ListTrackerBoardsListedByProjects()
@@ -106,6 +111,9 @@ func TestReplaceProjectTrackerBoardsRefusals(t *testing.T) {
 		"no connection":      {{BoardID: "11"}},
 		"missing connection": {{ConnectionID: "missing", BoardID: "11"}},
 		"tempo connection":   {{ConnectionID: tempo.ID, BoardID: "11"}},
+		"long name":          {{ConnectionID: jira.ID, BoardID: "11", Name: strings.Repeat("x", maxTrackerBoardTextRunes+1)}},
+		"long project":       {{ConnectionID: jira.ID, BoardID: "11", TrackerProject: strings.Repeat("x", maxTrackerBoardTextRunes+1)}},
+		"name not text":      {{ConnectionID: jira.ID, BoardID: "11", Name: "\xff"}},
 	} {
 		if _, _, err := s.ReplaceProjectTrackerBoards(p, boards); !errors.Is(err, ErrInvalidTrackerBoards) {
 			t.Errorf("%s: %v; want ErrInvalidTrackerBoards", name, err)
@@ -244,4 +252,75 @@ func TestAnOvertakenDrainKeepsTheBoardsNewRows(t *testing.T) {
 		|| ':' || (SELECT count(*) FROM tracker_cache_board_columns WHERE root_id = b.root_id AND board_id = '12')
 		|| ':' || (SELECT count(*) FROM tracker_cache_sprints WHERE root_id = b.root_id AND board_id = '12')
 		FROM tracker_cache_boards b WHERE root_id = `+fmt.Sprint(root)+` AND board_id = '12'`, "1:2:0:0")
+}
+
+// A board choice names its board by the copy of the board this computer
+// read once there is one, and by the name its listing stored until then
+// or while the copy is retired or detached; the every-project form orders
+// by project name, then project ID, then picker order.
+func TestListTrackerBoardChoices(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, p := range []Project{{ID: "p", Name: "zeta"}, {ID: "q", Name: "alpha"}, {ID: "r", Name: "alpha"}} {
+		p.Path, p.CreatedAt, p.UpdatedAt = "/projects/"+p.ID, 1, 1
+		if _, err := s.CreateProject(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jira := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindJira, Site: "https://example.atlassian.net", Account: "user1@example.com", Label: "Work", CreatedAt: 1})
+	if _, _, err := s.RecordTrackerConnectionVerification(jira.ID, TrackerVerification{AccountID: "acc-user1", Name: "User 1", VerifiedAt: 2}); err != nil {
+		t.Fatal(err)
+	}
+	linear := mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindLinear, Site: "workspace-a", CreatedAt: 1})
+	if _, _, err := s.SetTrackerConnectionEnabled(linear.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	for project, boards := range map[string][]ProjectTrackerBoard{
+		"p": {{ConnectionID: jira.ID, BoardID: "10", OpensFirst: true, Name: "Stored ten", TrackerProject: "WEB"}, {ConnectionID: linear.ID, BoardID: "team-a", Name: "Team A", TrackerProject: "TA"}},
+		"q": {{ConnectionID: jira.ID, BoardID: "11", Name: "Stored eleven", TrackerProject: "WEB"}},
+		"r": {{ConnectionID: jira.ID, BoardID: "10", Name: "Ten as r chose it"}},
+	} {
+		if _, _, err := s.ReplaceProjectTrackerBoards(project, boards); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ten := TrackerBoardChoice{ProjectID: "p", ConnectionID: jira.ID, ConnectionKind: TrackerKindJira, ConnectionLabel: "Work", ConnectionEnabled: true,
+		ConnectionVerifiedAccount: "acc-user1", BoardID: "10", BoardName: "Stored ten", TrackerProject: "WEB", OpensFirst: true}
+	team := TrackerBoardChoice{ProjectID: "p", ConnectionID: linear.ID, ConnectionKind: TrackerKindLinear, BoardID: "team-a", BoardName: "Team A", TrackerProject: "TA"}
+	eleven := TrackerBoardChoice{ProjectID: "q", ConnectionID: jira.ID, ConnectionKind: TrackerKindJira, ConnectionLabel: "Work", ConnectionEnabled: true,
+		ConnectionVerifiedAccount: "acc-user1", BoardID: "11", BoardName: "Stored eleven", TrackerProject: "WEB"}
+	tenOfR := TrackerBoardChoice{ProjectID: "r", ConnectionID: jira.ID, ConnectionKind: TrackerKindJira, ConnectionLabel: "Work", ConnectionEnabled: true,
+		ConnectionVerifiedAccount: "acc-user1", BoardID: "10", BoardName: "Ten as r chose it"}
+	check := func(when, project string, want ...TrackerBoardChoice) {
+		t.Helper()
+		got, err := s.ListTrackerBoardChoices(project)
+		if err != nil || !slices.Equal(got, want) {
+			t.Fatalf("%s: choices of %q = %+v, %v; want %+v", when, project, got, err, want)
+		}
+	}
+	check("before any read", "p", ten, team)
+	check("before any read", "", eleven, tenOfR, ten, team)
+	check("a project that lists none", "missing")
+
+	// Board 10 is read: its copy names it for every project that lists it.
+	if _, _, err := s.GetOrCreateMirrorRoot(jira.ID); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.db, `UPDATE tracker_cache_boards SET name = 'Read ten' WHERE board_id = '10'`)
+	readTen, readTenOfR := ten, tenOfR
+	readTen.BoardName, readTenOfR.BoardName = "Read ten", "Read ten"
+	check("board 10 read", "p", readTen, team)
+	check("board 10 read", "", eleven, readTenOfR, readTen, team)
+
+	// A retired copy names nothing.
+	mustExec(t, s.db, `UPDATE tracker_cache_boards SET retired = 1 WHERE board_id = '10'`)
+	check("board 10 retired", "p", ten, team)
+	mustExec(t, s.db, `UPDATE tracker_cache_boards SET retired = 0 WHERE board_id = '10'`)
+	check("board 10 back", "p", readTen, team)
+
+	// A detached copy names nothing.
+	if detached, err := s.DetachMirror(jira.ID); err != nil || !detached {
+		t.Fatalf("detach = %v, %v", detached, err)
+	}
+	check("the mirror detached", "", eleven, tenOfR, ten, team)
 }
