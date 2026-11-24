@@ -48,12 +48,10 @@ export const frontendWorkspace = async (): Promise<Workspace> => ({
   entry: [
     // The package scripts run the other scripts/*.mjs, which knip reads
     // from package.json. These are run by hand, each as its header says:
-    // the generator of src/lib/utils/forgeEmojiTable.ts, the generator of
-    // the corpus src/lib/markdown/freezeReplay.manual.ts replays, and the
-    // check of the affected-test selection (scripts/vitest-changed.mjs).
+    // the generator of src/lib/utils/forgeEmojiTable.ts and the generator
+    // of the corpus src/lib/markdown/freezeReplay.manual.ts replays.
     'scripts/generate-forge-emoji.mjs',
     'scripts/generate-freeze-replay-fixture.mjs',
-    'scripts/vitest-changed.check.mjs',
     ...(await childVitestIncludes()),
     ...vitestProjectFiles(),
   ],
