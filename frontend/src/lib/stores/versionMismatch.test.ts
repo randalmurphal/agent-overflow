@@ -215,9 +215,10 @@ describe('a refused call as every surface reads it', () => {
     expect(userFacingError(err)).toBe(`${message} ${FORWARDED_ADVICE}`);
     expect(err.cause).toBe(message);
     const arguments_ = new TransportError('bad_params', message.replace('method not registered', 'main.App.RemoteCommandReadLog: expected 3 params, got 4'));
-    expect(arguments_.forwardedRefusal).toBe('unreadable');
+    expect(arguments_.forwardedRefusal).toBe(true);
     const other = new TransportError('method_not_found', message.replace('method not registered', 'not a git repository'));
     expect(userFacingError(other)).not.toContain(FORWARDED_ADVICE);
+    expect(other.forwardedRefusal).toBe(false);
   });
 
   // Stop All holds one rejection while others settle; by the time its

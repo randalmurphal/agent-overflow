@@ -41,10 +41,9 @@ export function userFacingError(err: unknown, fallback = 'Something went wrong.'
   // computer's name in it may hold a colon or an id the trimming below
   // would cut.
   if (err instanceof TransportError && err.dispatchRefusal !== undefined) return err.message;
-  // An older computer passing on another computer's dispatcher refusal: its
-  // message names that computer and carries the advice its release could
-  // not give, so it is shown whole.
-  if (err instanceof TransportError && err.forwardedRefusal !== undefined) return err.message;
+  // A computer passing on another computer's refusal: its message names
+  // that computer and says what to do, so it is shown whole.
+  if (err instanceof TransportError && err.forwardedRefusal) return err.message;
   let raw = '';
   if (err instanceof Error) {
     raw = err.message;

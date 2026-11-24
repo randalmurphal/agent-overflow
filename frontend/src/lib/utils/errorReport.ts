@@ -41,14 +41,24 @@ export interface ErrorReportContext {
 
 const MAX_CAUSE_DEPTH = 8;
 
+/**
+ * The reason a computer's refusal of the call gives (`ErrorReport.refusal`),
+ * or undefined when `err` is no such refusal: the connected computer's
+ * dispatcher refused it, or a computer passed on another computer's
+ * refusal (transport/dispatchRefusal.ts).
+ */
+export function refusalReason(err: unknown): string | undefined {
+  const refused = err instanceof TransportError && (err.dispatchRefusal !== undefined || err.forwardedRefusal);
+  return refused ? userFacingError(err) : undefined;
+}
+
 export function errorReport(err: unknown, { context, facts = [] }: ErrorReportContext = {}): ErrorReport {
   const detail = err instanceof TransportError ? err.detail : undefined;
   const reason = userFacingError(err);
-  const refused = err instanceof TransportError && (err.dispatchRefusal !== undefined || err.forwardedRefusal !== undefined);
   return {
     context: context?.trim() || undefined,
     reason,
-    refusal: refused ? reason : undefined,
+    refusal: refusalReason(err),
     code: err instanceof TransportError ? err.code : undefined,
     detail,
     chain: detail && detail.chain.length > 0 ? [] : causeChain(err),

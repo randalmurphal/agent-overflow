@@ -6,7 +6,7 @@ import {
   dispatchRefusalKind,
   dispatchRefusalMessage,
   FORWARDED_ADVICE,
-  forwardedRefusalKind,
+  forwardedRefusal,
   parseDispatchMark,
   UNREADABLE_SENTENCE,
   UNSUPPORTED_SENTENCE,
@@ -520,10 +520,11 @@ export class TransportError extends Error {
   // before any method ran (./dispatchRefusal.ts): the one place a surface
   // reads that from.
   dispatchRefusal?: DispatchRefusalKind;
-  // forwardedRefusal is set when a computer on v0.0.15 to v0.0.19 passed on
-  // another computer's dispatcher refusal: its message is the one sent,
-  // with FORWARDED_ADVICE after it.
-  forwardedRefusal?: DispatchRefusalKind;
+  // forwardedRefusal is true when a computer passed on another computer's
+  // refusal of the call (./dispatchRefusal.ts's forwardedRefusal): its
+  // message names that computer and says what to do, so a surface shows it
+  // whole, the one place a surface reads that from.
+  forwardedRefusal = false;
   constructor(code: string, message: string, fields: TransportErrorFields = {}) {
     const { reason, scope, transfer, backgroundAgents, reserve, resumeAt, detail, dispatch, backend = HOME_BACKEND } = fields;
     const parsedDetail = parseErrorDetail(detail, backend);
@@ -551,16 +552,16 @@ export class TransportError extends Error {
       });
       this.dispatchRefusal = refusal;
     } else {
-      // An older computer passing on another computer's dispatcher refusal
-      // keeps its message, which names that computer, and gains the advice
-      // its release could not give; the wire text stays as the cause.
-      const forwarded = forwardedRefusalKind(code, message, mark);
-      if (forwarded !== null) {
+      // A computer passing on another computer's refusal keeps its message,
+      // which names that computer. An older one's gains the advice its
+      // release could not give, and its wire text stays as the cause.
+      const forwarded = forwardedRefusal(code, message, mark);
+      if (forwarded === 'legacy') {
         super(`${message} ${FORWARDED_ADVICE}`, { cause: message });
-        this.forwardedRefusal = forwarded;
       } else {
         super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
       }
+      this.forwardedRefusal = forwarded !== null;
     }
     this.name = 'TransportError';
     this.code = code;

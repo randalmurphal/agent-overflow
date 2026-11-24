@@ -1,9 +1,11 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import Toast from './Toast.svelte';
-import { addErrorToast, addToast, getToasts, resetToastsForTest } from '../../stores/toast.svelte';
+import { addErrorToast, addToast, getToasts, removeToast, resetToastsForTest } from '../../stores/toast.svelte';
 import { resetErrorReportsForTest } from '../../stores/errorReports.svelte';
-import { TransportError } from '../../transport/wsClient';
+import { TransportError, transportErrorFromFrame } from '../../transport/wsClient';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import forwardedFrames from '../../../test/fixtures/forwardedRefusalFrames.json';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
 
@@ -62,6 +64,46 @@ describe('<Toast> error reports', () => {
     expect(getByTestId('toast-message').textContent).toBe(refusal.message);
     expect(getByTestId('toast-message').className).not.toContain('line-clamp');
     expect(queryByTestId('toast-refusal')).toBeNull();
+  });
+
+  // A current computer passing on the refusal of the computer it called,
+  // as the Go forwarder sends it (internal/app's
+  // TestAForwardedRefusalIsNotThisComputersOwn writes these frames).
+  it.each(forwardedFrames.map((frame) => [frame.name, frame] as const))(
+    'shows a refusal forwarded by a current computer (%s) beside the headline and keeps it up',
+    async (_name, frame) => {
+      vi.useFakeTimers();
+      const forwarded = transportErrorFromFrame({ ...frame, detail: { ref: 'ref-1', at: 1, ...frame.detail } }, HOME_BACKEND);
+      addErrorToast('Could not read remote log', forwarded);
+      const { getByTestId } = render(Toast);
+      expect(getByTestId('toast-message').textContent).toBe('Could not read remote log');
+      expect(getByTestId('toast-refusal').textContent).toBe(frame.message);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getToasts()).toHaveLength(1);
+    },
+  );
+
+  // It stays until dismissed, so a caller that reports the same refusal
+  // again (a retry, a refresh that fails each time) must not stack it.
+  it('shows the same refusal under the same headline once, until it is dismissed', () => {
+    const refusal = () => new TransportError('bad_params', 'bad parameter 3');
+    const first = addErrorToast('Failed to load older messages', refusal());
+    expect(addErrorToast('Failed to load older messages', refusal())).toBe(first);
+    expect(getToasts()).toHaveLength(1);
+    addErrorToast('Failed to load newer messages', refusal());
+    addErrorToast('Failed to load older messages', new TransportError('method_not_found', 'method not registered'));
+    expect(getToasts()).toHaveLength(3);
+    removeToast(first);
+    const again = addErrorToast('Failed to load older messages', refusal());
+    expect(again).not.toBe(first);
+    expect(getToasts()).toHaveLength(3);
+  });
+
+  it('shows every other failure each time it is reported', () => {
+    const failure = () => new TransportError('bad_params', 'Choose at least one project for the assistant, or all projects.');
+    addErrorToast('Could not save', failure());
+    addErrorToast('Could not save', failure());
+    expect(getToasts()).toHaveLength(2);
   });
 
   it('keeps its usual delay and adds nothing for any other failure', async () => {

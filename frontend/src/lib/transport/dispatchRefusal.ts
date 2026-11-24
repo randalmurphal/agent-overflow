@@ -6,12 +6,12 @@
 // Who refused is never inferred from the code. A current dispatcher marks
 // its own refusal with the frame's `dispatch` field (internal/
 // dispatchrefusal's Refusal); a failure a method returned never carries it,
-// whatever its code. A frame without the field comes from a release before
-// it (v0.0.14 to v0.0.19) and is that release's dispatcher speaking only
-// when its whole message is one of `LEGACY_DISPATCH_REFUSALS`. Such a
-// release forwarding another computer's dispatcher refusal is recognized
-// by the same texts inside its forwarding sentence (`forwardedRefusalKind`),
-// and keeps its message with advice added after it. Anything else is
+// whatever its code. A field whose kind this page does not know reads as
+// no field. A frame without the field comes from a release before it
+// (v0.0.14 to v0.0.19) and is that release's dispatcher speaking only when
+// its whole message is one of `LEGACY_DISPATCH_REFUSALS`. A computer
+// passing on another computer's refusal (`forwardedRefusal`) keeps its
+// message, and an older release's gains advice after it. Anything else is
 // shown as it was sent.
 //
 // Every RPC refusal becomes a `TransportError` (./wsClient.ts). For a
@@ -109,19 +109,32 @@ const FORWARDED_LEAD = ': The destination could not complete the request. Its re
 const FORWARDED_TAIL = '. If it is running an older AO build, update it for detailed command errors.';
 
 /**
- * Which dispatcher refusal a computer on v0.0.15 to v0.0.19 forwarded from
- * the computer it called, recognized by an older release's exact text
- * inside its forwarding sentence, or null.
+ * The code a computer answers when the computer it called for this page
+ * refused the call (internal/app/app_remote_errors.go,
+ * internal/attachedbackends/agent.go). Its message names that computer and
+ * says what to do.
  */
-export function forwardedRefusalKind(code: unknown, message: string, mark: DispatchMark | undefined): DispatchRefusalKind | null {
-  if (mark !== undefined || !message.endsWith(FORWARDED_TAIL)) return null;
+export const REMOTE_UNSUPPORTED_CODE = 'remote_unsupported';
+
+/**
+ * Whether a frame without the `dispatch` mark is a computer passing on
+ * another computer's refusal of the call, and in which form: `current` is
+ * REMOTE_UNSUPPORTED_CODE, whose message is whole; `legacy` is a computer
+ * on v0.0.15 to v0.0.19 passing on a dispatcher refusal it could not word,
+ * recognized by an older release's exact text inside its forwarding
+ * sentence, which FORWARDED_ADVICE follows. Null for anything else.
+ */
+export function forwardedRefusal(code: unknown, message: string, mark: DispatchMark | undefined): 'current' | 'legacy' | null {
+  if (mark !== undefined) return null;
+  if (code === REMOTE_UNSUPPORTED_CODE) return 'current';
+  if (!message.endsWith(FORWARDED_TAIL)) return null;
   const lead = message.lastIndexOf(FORWARDED_LEAD);
   if (lead <= 0) return null;
   const reported = message.slice(lead + FORWARDED_LEAD.length, message.length - FORWARDED_TAIL.length);
-  return dispatchRefusalKind(code, reported, undefined);
+  return dispatchRefusalKind(code, reported, undefined) === null ? null : 'legacy';
 }
 
-/** What follows a forwarded refusal from an older release (`forwardedRefusalKind`). */
+/** What follows a forwarded refusal from an older release (`forwardedRefusal`). */
 export const FORWARDED_ADVICE =
   'This can happen when the computers involved run different versions of Agent Overflow. If so, update the older one.';
 

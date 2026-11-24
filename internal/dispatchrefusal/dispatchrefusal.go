@@ -5,8 +5,9 @@
 // different release.
 //
 // The dispatcher marks its own refusal with the frame's "dispatch" field
-// (Refusal), which every reader takes as the answer: a failure a method
-// returned never carries it, whatever its code. A frame from a release
+// (Refusal), which every reader takes as the answer when it knows the
+// field's kind: a failure a method returned never carries it, whatever its
+// code. A kind from a later release reads as no field. A frame from a release
 // before the field (v0.0.14 to v0.0.19) is matched against those releases'
 // exact dispatcher texts (Legacy), and anything else is a method's own
 // failure, shown as it was sent.
@@ -185,14 +186,28 @@ func Legacy(code, message string) (kind string, ok bool) {
 	return "", false
 }
 
+// known is the field when its kind is one this release knows, or nil: a
+// kind from a later release reads as no field, so the frame's message is
+// the sender's own, and it is never taken for a call this computer lacks.
+// The frontend's parseDispatchMark reads it the same way.
+func known(field *Refusal) *Refusal {
+	if field == nil {
+		return nil
+	}
+	switch field.Kind {
+	case KindUnsupported:
+		return UnsupportedRefusal()
+	case KindUnreadable:
+		return field
+	}
+	return nil
+}
+
 // Read is the dispatcher refusal a frame carries: its field, else what an
 // older release's exact text says, else nil for a method's own failure.
 func Read(code, message string, field *Refusal) *Refusal {
-	if field != nil {
-		if field.Kind != KindUnreadable {
-			return UnsupportedRefusal()
-		}
-		return field
+	if marked := known(field); marked != nil {
+		return marked
 	}
 	if kind, ok := Legacy(code, message); ok {
 		return &Refusal{Kind: kind}
@@ -210,7 +225,7 @@ func Message(code, message string, field *Refusal) string {
 		return message
 	}
 	diagnostic := refusal.Diagnostic()
-	if field == nil && refusal.Kind == KindUnreadable {
+	if known(field) == nil && refusal.Kind == KindUnreadable {
 		// An older release's text is what did not fit: "main.App.GitPush:
 		// expected 1 params, got 2".
 		diagnostic = message

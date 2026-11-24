@@ -137,3 +137,36 @@ func TestTheFrontendHasTheSameLegacyTable(t *testing.T) {
 		}
 	}
 }
+
+// Both sides read every frame shape to the same refusal, or to none: the
+// frontend runs the same cases (frontend/src/lib/transport/dispatchRefusal.test.ts).
+func TestTheFrontendReadsEveryFrameAsThisPackageDoes(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "frontend", "src", "test", "fixtures", "dispatchRefusalFrames.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name     string   `json:"name"`
+		Code     string   `json:"code"`
+		Message  string   `json:"message"`
+		Dispatch *Refusal `json:"dispatch"`
+		Kind     *string  `json:"kind"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) == 0 {
+		t.Fatal("no cases")
+	}
+	for _, tc := range cases {
+		got := Read(tc.Code, tc.Message, tc.Dispatch)
+		switch {
+		case tc.Kind == nil && got != nil:
+			t.Errorf("%s: read as %q, want a method's own failure", tc.Name, got.Kind)
+		case tc.Kind != nil && (got == nil || got.Kind != *tc.Kind):
+			t.Errorf("%s: read as %+v, want %q", tc.Name, got, *tc.Kind)
+		case tc.Kind == nil && Message(tc.Code, tc.Message, tc.Dispatch) != tc.Message:
+			t.Errorf("%s: shown as %q, want the message as sent", tc.Name, Message(tc.Code, tc.Message, tc.Dispatch))
+		}
+	}
+}

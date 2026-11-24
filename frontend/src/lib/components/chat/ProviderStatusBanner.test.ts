@@ -11,7 +11,9 @@ import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { emitWailsEvent, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
-import { TransportError } from '../../transport/wsClient';
+import { TransportError, transportErrorFromFrame } from '../../transport/wsClient';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import forwardedFrames from '../../../test/fixtures/forwardedRefusalFrames.json';
 
 beforeAll(installAnimateShim);
 
@@ -596,6 +598,16 @@ describe('<ProviderStatusBanner>', () => {
     expect(row.querySelector('.line-clamp-2')).toBeNull();
     expect(queryByTestId('pane-error-refusal')).toBeNull();
   });
+
+  it.each(forwardedFrames.map((frame) => [frame.name, frame] as const))(
+    'shows a refusal forwarded by a current computer (%s) beside the headline',
+    async (_name, frame) => {
+      const pane = await buildPane();
+      pane.setGeneralError('Could not read remote log', transportErrorFromFrame({ ...frame, detail: { ref: 'ref-1', at: 1, ...frame.detail } }, HOME_BACKEND));
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      expect(getByTestId('pane-error-refusal').textContent).toBe(frame.message);
+    },
+  );
 
   it('shows nothing beside the headline for any other failure', async () => {
     const pane = await buildPane();

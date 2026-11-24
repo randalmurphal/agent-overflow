@@ -67,6 +67,7 @@ func TestADispatcherRefusalReadsAsTheSentence(t *testing.T) {
 		{"v0.0.17, an argument that did not decode", &transport.FrameError{Code: transport.ErrCodeBadParams, Message: "bad parameter 2", Detail: detail}, dispatchrefusal.Unreadable + " (bad parameter 2)", "unreadable"},
 		{"v0.0.16, a method's failure forwarded under the same code", &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "Could not read the log on Nexus."}, "Could not read the log on Nexus.", ""},
 		{"a method's own refusal of its arguments", &transport.FrameError{Code: transport.ErrCodeBadParams, Message: "Choose at least one project.", Detail: detail}, "Choose at least one project.", ""},
+		{"a later release's kind of refusal", &transport.FrameError{Code: transport.ErrCodeMethodNotFound, Message: "A later release says this.", Dispatch: &dispatchrefusal.Refusal{Kind: "unforeseen"}}, "A later release says this.", ""},
 		{"any other refusal", &transport.FrameError{Code: transport.ErrCodeMethodError, Message: "disk full", Detail: detail}, "disk full", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

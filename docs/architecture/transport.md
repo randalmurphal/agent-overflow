@@ -244,7 +244,7 @@ arguments do not fit the method answers `bad_params`. Either way the call
 did not run, and the caller was usually built from a different release.
 Only the dispatcher sets the frame's `dispatch` field
 (`dispatchrefusal.Refusal`), and every reader takes it as the answer to who
-refused. `{"refusal":"unsupported"}` names nothing. An `unreadable`
+refused. A kind the reader does not know reads as no field. `{"refusal":"unsupported"}` names nothing. An `unreadable`
 refusal names the method, the 1-based argument that did not decode, and a
 `problem` built only from argument counts or from a JSON type mismatch's
 expected Go type and received JSON kind. Any other decoder error, which can
@@ -273,8 +273,8 @@ says what the page knows about the two versions (the page's own
 the refusal arrived). It gives the remedy that knowledge supports
 (`frontend/src/lib/stores/versionMismatch.ts`). What did not fit, or an
 older release's own text, is the error's `cause`. The shared error surfaces
-show the refusal whole beside the caller's headline, and its toast stays
-until dismissed. A computer that forwards another computer's dispatcher
+show the refusal, or a forwarded one, whole beside the caller's headline;
+its toast stays until dismissed and is not shown twice under one headline. A computer that forwards another computer's dispatcher
 refusal answers `remote_unsupported` without the field. Its message names
 the destination and keeps the refusal's kind, and its `detail` keeps what
 did not fit.
