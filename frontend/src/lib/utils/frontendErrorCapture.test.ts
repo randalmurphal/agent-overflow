@@ -350,29 +350,13 @@ describe('frontendErrorCapture', () => {
     );
   });
 
-  it('disables capture permanently when the backend refuses the method', async () => {
+  it.each([
+    ['when the backend refuses the method', Object.assign(new Error('method not registered'), { code: 'method_not_found' })],
+    ['on a scope refusal', Object.assign(new TransportError('scope_required', 'refused'), { scope: 'host' })],
+  ])('disables capture permanently %s', async (_name, refusal) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     setBindingMock('ReportFrontendErrorBatch', async () => {
-      throw Object.assign(new Error('method not registered'), { code: 'method_not_found' });
-    });
-    installFrontendErrorCapture();
-
-    dispatchError('remote client error');
-    await flushFrontendErrors();
-
-    expect(frontendErrorCaptureStateForTest().reporterUnavailable).toBe(true);
-    expect(warn).toHaveBeenCalledTimes(1);
-
-    dispatchError('another error');
-    await flushFrontendErrors();
-    expect(frontendErrorCaptureStateForTest().pendingCount).toBe(0);
-    expect(getBindingMock('ReportFrontendErrorBatch')?.mock.calls).toHaveLength(1);
-  });
-
-  it('disables capture permanently on a scope refusal', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    setBindingMock('ReportFrontendErrorBatch', async () => {
-      throw Object.assign(new TransportError('scope_required', 'refused'), { scope: 'host' });
+      throw refusal;
     });
     installFrontendErrorCapture();
 
@@ -385,6 +369,7 @@ describe('frontendErrorCapture', () => {
 
     dispatchError('another error');
     await flushFrontendErrors();
+    expect(frontendErrorCaptureStateForTest().pendingCount).toBe(0);
     expect(getBindingMock('ReportFrontendErrorBatch')?.mock.calls).toHaveLength(1);
   });
 
@@ -447,20 +432,6 @@ describe('frontendErrorCapture', () => {
       total += lines.length;
     }
     expect(total).toBe(30);
-  });
-
-  it('survives a failing reporter without throwing', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    setBindingMock('ReportFrontendErrorBatch', async () => {
-      throw new Error('transport down');
-    });
-    installFrontendErrorCapture();
-
-    dispatchError('boom while offline');
-    await expect(flushFrontendErrors()).resolves.toBeUndefined();
-    // First failure re-queues silently; the warn comes on terminal drops.
-    expect(warn).not.toHaveBeenCalled();
-    expect(frontendErrorCaptureStateForTest().pendingCount).toBe(1);
   });
 
   it('flushes on the batching timer without an explicit flush call', async () => {

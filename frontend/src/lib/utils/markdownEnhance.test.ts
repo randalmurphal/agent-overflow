@@ -5,7 +5,7 @@ import {
   ensurePathLinkClickDelegate,
 } from './markdownEnhance';
 import { buildPathLinkHref } from './pathLinkExtension';
-import { setBindingMock, getBindingMock } from '../../test/mocks/bindings-app';
+import { setBindingMock } from '../../test/mocks/bindings-app';
 import { setPageGrantsFromBootstrap } from '../transport/scopes';
 
 describe('ensurePathLinkClickDelegate', () => {
@@ -27,29 +27,17 @@ describe('ensurePathLinkClickDelegate', () => {
     return a;
   }
 
-  it('forwards clicks on agent-overflow:open anchors to OpenInEditor', async () => {
+  it.each([
+    ['clicks on agent-overflow:open anchors to OpenInEditor', buildPathLinkHref('src/foo.ts', 42, 7, '/repo'), ['src/foo.ts', 42, 7, '/repo', '']],
+    ['line=0/col=0 when the href omits them', buildPathLinkHref('a.ts', undefined, undefined, ''), ['a.ts', 0, 0, '', '']],
+  ])('forwards %s', async (_name, href, want) => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     ensurePathLinkClickDelegate();
-    const link = mountAnchor(buildPathLinkHref('src/foo.ts', 42, 7, '/repo'));
 
-    link.click();
-
-    await waitFor(() => {
-      expect(mock).toHaveBeenCalledTimes(1);
-    });
-    expect(mock.mock.calls[0]).toEqual(['src/foo.ts', 42, 7, '/repo', '']);
-    void getBindingMock; // helper kept reachable for future cases
-  });
-
-  it('forwards line=0/col=0 when the href omits them', async () => {
-    const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    ensurePathLinkClickDelegate();
-    const link = mountAnchor(buildPathLinkHref('a.ts', undefined, undefined, ''));
-
-    link.click();
+    mountAnchor(href).click();
 
     await waitFor(() => expect(mock).toHaveBeenCalledTimes(1));
-    expect(mock.mock.calls[0]).toEqual(['a.ts', 0, 0, '', '']);
+    expect(mock.mock.calls[0]).toEqual(want);
   });
 
   it('prevents default so the browser does not navigate to the custom scheme', () => {

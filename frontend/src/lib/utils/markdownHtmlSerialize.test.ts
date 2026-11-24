@@ -248,20 +248,12 @@ describe('markdownToClipboardHtml — hostile input', () => {
     expect(html).not.toContain('<img');
   });
 
-  it('renders a javascript: link as plain text', () => {
-    const html = markdownToClipboardHtml('[click](javascript:alert(1))');
-    expect(html).toBe('<p>click</p>');
-    expect(html).not.toContain('href');
-  });
-
-  it('renders a data: link as plain text', () => {
-    expect(markdownToClipboardHtml('[x](data:text/html;base64,PHNjcmlwdD4=)')).toBe(
-      '<p>x</p>',
-    );
-  });
-
-  it('renders a vbscript: link as plain text', () => {
-    expect(markdownToClipboardHtml('[x](vbscript:msgbox)')).toBe('<p>x</p>');
+  it.each([
+    ['javascript:', '[click](javascript:alert(1))', '<p>click</p>'],
+    ['data:', '[x](data:text/html;base64,PHNjcmlwdD4=)', '<p>x</p>'],
+    ['vbscript:', '[x](vbscript:msgbox)', '<p>x</p>'],
+  ])('renders a %s link as plain text', (_scheme, source, want) => {
+    expect(markdownToClipboardHtml(source)).toBe(want);
   });
 
   it('never produces an href for a scheme obfuscated with control characters', () => {

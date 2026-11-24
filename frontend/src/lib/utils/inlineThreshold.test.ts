@@ -12,35 +12,22 @@ describe('inlineThreshold', () => {
   });
 
   describe('shouldLazyLoad', () => {
-    it('returns false for an empty string', () => {
-      expect(shouldLazyLoad('')).toBe(false);
-    });
-
-    it('returns false when preview length is under the threshold', () => {
-      expect(shouldLazyLoad('a'.repeat(100))).toBe(false);
-    });
-
-    it('returns false at the exact threshold boundary (inclusive)', () => {
-      expect(shouldLazyLoad('a'.repeat(MAX_INLINE_BYTES))).toBe(false);
-    });
-
-    it('returns true one character over the threshold', () => {
-      expect(shouldLazyLoad('a'.repeat(MAX_INLINE_BYTES + 1))).toBe(true);
-    });
-
-    it('returns true for a large preview', () => {
-      expect(shouldLazyLoad('x'.repeat(100_000))).toBe(true);
+    it.each([
+      ['returns false for an empty string', '', false],
+      ['returns false when preview length is under the threshold', 'a'.repeat(100), false],
+      ['returns false at the exact threshold boundary (inclusive)', 'a'.repeat(MAX_INLINE_BYTES), false],
+      ['returns true one character over the threshold', 'a'.repeat(MAX_INLINE_BYTES + 1), true],
+      ['returns true for a large preview', 'x'.repeat(100_000), true],
+    ])('%s', (_name, preview, want) => {
+      expect(shouldLazyLoad(preview)).toBe(want);
     });
   });
 
   describe('truncateForPreview', () => {
-    it('returns the original text unchanged when it is under the threshold', () => {
-      const input = 'short preview';
-      expect(truncateForPreview(input)).toBe(input);
-    });
-
-    it('returns the original text unchanged at the exact boundary', () => {
-      const input = 'a'.repeat(MAX_INLINE_BYTES);
+    it.each([
+      ['returns the original text unchanged when it is under the threshold', 'short preview'],
+      ['returns the original text unchanged at the exact boundary', 'a'.repeat(MAX_INLINE_BYTES)],
+    ])('%s', (_name, input) => {
       expect(truncateForPreview(input)).toBe(input);
     });
 
