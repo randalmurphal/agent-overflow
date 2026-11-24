@@ -150,7 +150,7 @@ type Cache struct {
 	now      func() time.Time
 	entries  map[string]entry
 	inflight map[string]*load
-	// generation is bumped by every Invalidate/Reset. A load that started
+	// generation is bumped by every Reset. A load that started
 	// under an older generation still answers its waiters — that is the
 	// answer they asked for — but does not populate the cache, so an
 	// invalidation racing an in-flight read can never be undone by it.
@@ -277,14 +277,6 @@ func (c *Cache) run(key string, l *load, startedAt uint64, fetch Fetch) {
 	delete(c.inflight, key)
 	c.mu.Unlock()
 	close(l.done)
-}
-
-// Invalidate drops the cached entry for one key so the next Get refetches.
-func (c *Cache) Invalidate(key string) {
-	c.mu.Lock()
-	delete(c.entries, strings.TrimSpace(key))
-	c.generation++
-	c.mu.Unlock()
 }
 
 // Reset drops every cached entry. This is what `skills/changed` maps to:
