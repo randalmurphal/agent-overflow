@@ -3,10 +3,15 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"agent-overflow/internal/deviceclient"
+	"agent-overflow/internal/servercert"
 )
 
 // What `--connect` was handed decides which of three shapes it is, and the
@@ -96,6 +101,28 @@ func TestResolveConnectionReportsAnUnreadablePairingLink(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "is not a pairing link") {
 		t.Fatalf("a failed link decode fell through to the unknown-name refusal: %v", err)
+	}
+}
+
+// A computer that limits pairing attempts answers before it judges the link,
+// and `--connect` tells the person to wait for the time it named.
+func TestResolveConnectionSaysToWaitWhenTheComputerLimitsPairing(t *testing.T) {
+	previous := dataDirRoot
+	dataDirRoot = t.TempDir()
+	t.Cleanup(func() { dataDirRoot = previous })
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+	}))
+	t.Cleanup(server.Close)
+	encoded, err := json.Marshal(deviceclient.Link{Version: deviceclient.LinkVersion, BackendID: "backend-a",
+		Endpoint: server.URL, CertFingerprint: servercert.Fingerprint(server.Certificate().Raw), Token: "pairing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = resolveConnection(t.Context(), t.TempDir(), server.URL+"/#"+deviceclient.LinkFragmentPrefix+base64.RawURLEncoding.EncodeToString(encoded))
+	if want := "this computer is limiting pairing attempts; wait 2 minutes, then try again"; err == nil || err.Error() != want {
+		t.Fatalf("--connect against a computer that limits pairing = %v, want %q", err, want)
 	}
 }
 

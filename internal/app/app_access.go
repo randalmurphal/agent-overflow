@@ -315,7 +315,9 @@ func (a *App) ConfirmDevicePairing(linkID string) error {
 	case errors.Is(err, identity.ErrPairingAlreadyConfirmed):
 		err = errorsx.Public("pairing_already_allowed", "this device is already allowed", err)
 	case errors.Is(err, identity.ErrPairingAccessEnded):
-		err = errorsx.Public("pairing_access_ended", "this device was allowed, and its access has since been removed or expired; pair it again", err)
+		err = errorsx.Public("pairing_access_ended", "this device was allowed, and its access has since ended or expired; pair it again", err)
+	case errors.Is(err, identity.ErrPairingDeviceRemoved):
+		err = errorsx.Public("pairing_device_removed", "this device was allowed, and has since been removed in Devices; choose Restore or Forget on it there, then pair it again", err)
 	case errors.Is(err, identity.ErrPairingRefused):
 		err = errorsx.Public("pairing_closed", "this pairing is no longer open; start pairing again", err)
 	case errors.Is(err, identity.ErrPairingNotCompleted):
@@ -687,10 +689,8 @@ func (a *App) pairedDeviceLabel(link store.PairingLink) string {
 // still pending: there is nothing to approve yet.
 func pairingState(link store.PairingLink, access store.PairingAccess, now int64, standing pairbootstrap.Standing) string {
 	switch {
-	case link.ConfirmedAt != 0 && access == store.PairingUsable:
-		return pairingStateConfirmed
 	case link.ConfirmedAt != 0:
-		return pairingStateAccessEnded
+		return confirmedPairingState(access)
 	case link.CanceledAt != 0 || standing.Refuses(link.ID):
 		return pairingStateCanceled
 	case link.Ready():
@@ -703,6 +703,18 @@ func pairingState(link store.PairingLink, access store.PairingAccess, now int64,
 	default:
 		return pairingStatePending
 	}
+}
+
+// confirmedPairingState names a confirmed link by its device's access.
+func confirmedPairingState(access store.PairingAccess) string {
+	switch access {
+	case store.PairingUsable:
+		return pairingStateConfirmed
+	case store.PairingDeviceRemoved:
+		return pairingStateDeviceRemoved
+	case store.PairingNotConfirmed, store.PairingAccessEnded:
+	}
+	return pairingStateAccessEnded
 }
 
 // pairingDeadline is when a link stops being actionable, which is not

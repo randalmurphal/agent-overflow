@@ -266,7 +266,11 @@ func TestConfirmRedeemedPairingRequiresAnAttachedRedemptionAndHappensOnce(t *tes
 // its access at that moment, by its access or by renewal: allowed while
 // either has time left and its renewal is unspent, ended once both expired,
 // its renewal was spent, or its session was revoked. Nothing is written.
-func TestARepeatConfirmationAnswersFromWhetherTheDeviceCanUseItsAccess(t *testing.T) {
+// seedConfirmedPairing writes link-1, redeemed at 2000 by a device whose
+// session holds the refresh secret refresh (created at 2000, renewing until
+// 50000) and confirmed at 2500 with access until 10000.
+func seedConfirmedPairing(t *testing.T, refresh []byte) (*Store, Device, Session) {
+	t.Helper()
 	s, owner, device := seedOwnerDevice(t)
 	key := seedSigningKey(t, s)
 	seedPairingLink(t, s, owner, []byte("hash-1"), 9000)
@@ -279,9 +283,8 @@ func TestARepeatConfirmationAnswersFromWhetherTheDeviceCanUseItsAccess(t *testin
 	}
 	pending := newTestSession("sess-pending", owner, device, key, 9000)
 	pending.ActivatedAt, pending.Scopes = 0, []string{"threads:read", "files:read"}
-	// Access until 10000 once confirmed; renewal until 50000.
-	refresh := RefreshGrant{Hash: []byte("refresh-1"), CreatedAt: 2000, ExpiresAt: 50000}
-	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: "link-1", DeviceSession: DeviceSession{Device: device, Session: pending, Refresh: refresh}}); err != nil {
+	grant := RefreshGrant{Hash: refresh, CreatedAt: 2000, ExpiresAt: 50000}
+	if err := s.CompletePairingRedemption(PairingRedemption{LinkID: "link-1", DeviceSession: DeviceSession{Device: device, Session: pending, Refresh: grant}}); err != nil {
 		t.Fatal(err)
 	}
 	if access, err := s.PairingAccessOf("link-1", 2400); err != nil || access != PairingNotConfirmed {
@@ -290,14 +293,51 @@ func TestARepeatConfirmationAnswersFromWhetherTheDeviceCanUseItsAccess(t *testin
 	if _, err := s.ConfirmRedeemedPairing("link-1", 2500, accessUntil(10000)); err != nil {
 		t.Fatal(err)
 	}
+	return s, device, pending
+}
+
+// requirePairingAccess checks what link-1's access reads at at, and what a
+// repeat confirmation of it answers.
+func requirePairingAccess(t *testing.T, s *Store, at int64, wantAccess PairingAccess, wantErr error, when string) {
+	t.Helper()
+	if access, err := s.PairingAccessOf("link-1", at); err != nil || access != wantAccess {
+		t.Fatalf("%s: the access = %v (%v), want %v", when, access, err, wantAccess)
+	}
+	if _, err := s.ConfirmRedeemedPairing("link-1", at, accessUntil(at+10000)); !errors.Is(err, wantErr) {
+		t.Fatalf("%s: a repeat confirmation = %v, want %v", when, err, wantErr)
+	}
+}
+
+// A renewal after the clock was set back writes its unspent successor with
+// an earlier creation time than the predecessor it spent; the device can
+// still renew. Removing the device reads as removed, and Restore leaves its
+// session ended.
+func TestAConfirmedPairingRenewsWhateverOrderItsSecretsWereWrittenIn(t *testing.T) {
+	first, next := sha256.Sum256([]byte("refresh-1")), sha256.Sum256([]byte("refresh-2"))
+	s, device, session := seedConfirmedPairing(t, first[:])
+	if _, err := s.RotateRefreshSecret(context.Background(), RefreshRotation{
+		SessionID: session.ID, DeviceID: device.ID, OldHash: first[:], NextHash: next[:],
+		Now: 1500, AccessUntil: 1600, RefreshUntil: 50000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requirePairingAccess(t, s, 20000, PairingUsable, ErrPairingAlreadyConfirmed, "past its access, its successor written before its predecessor")
+	if _, err := s.RevokeDevice(device.ID, 21000); err != nil {
+		t.Fatal(err)
+	}
+	requirePairingAccess(t, s, 22000, PairingDeviceRemoved, ErrPairingDeviceRemoved, "after its device was removed")
+	if _, err := s.RestoreDevice(device.ID); err != nil {
+		t.Fatal(err)
+	}
+	requirePairingAccess(t, s, 23000, PairingAccessEnded, ErrPairingAccessEnded, "after its device was restored")
+}
+
+func TestARepeatConfirmationAnswersFromWhetherTheDeviceCanUseItsAccess(t *testing.T) {
+	// Access until 10000 once confirmed; renewal until 50000.
+	s, _, pending := seedConfirmedPairing(t, []byte("refresh-1"))
 	repeat := func(at int64, wantAccess PairingAccess, wantErr error, when string) {
 		t.Helper()
-		if access, err := s.PairingAccessOf("link-1", at); err != nil || access != wantAccess {
-			t.Fatalf("%s: the access = %v (%v), want %v", when, access, err, wantAccess)
-		}
-		if _, err := s.ConfirmRedeemedPairing("link-1", at, accessUntil(at+10000)); !errors.Is(err, wantErr) {
-			t.Fatalf("%s: a repeat confirmation = %v, want %v", when, err, wantErr)
-		}
+		requirePairingAccess(t, s, at, wantAccess, wantErr, when)
 	}
 	repeat(5000, PairingUsable, ErrPairingAlreadyConfirmed, "inside its access")
 	repeat(20000, PairingUsable, ErrPairingAlreadyConfirmed, "past its access, inside its renewal")

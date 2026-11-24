@@ -139,11 +139,10 @@ func (s Session) Live(now int64) bool {
 
 // Usable reports whether this row lets its device in at now by either way
 // a device has: presenting its access (Live), or, once that access ran
-// out, renewing it with the refresh secret it holds (renewal.Renews), which
-// is how identity's renewal decides. renewal is the newest secret of the
-// session's chain, or the zero value when it has none.
-func (s Session) Usable(renewal RefreshSecret, now int64) bool {
-	return s.Live(now) || (s.admitted() && renewal.Renews(now))
+// out, renewing it, which renewable says the session can (an unspent,
+// unexpired refresh secret, the secret identity's renewal rotates).
+func (s Session) Usable(renewable bool, now int64) bool {
+	return s.Live(now) || (s.admitted() && renewable)
 }
 
 // admitted is Live without the expiry: activated, and neither the session

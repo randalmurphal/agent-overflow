@@ -74,14 +74,19 @@ func TestPairingConsoleMachineStreamHasExplicitConfirmationBoundary(t *testing.T
 // An invitation another owner view approved whose access has since ended is
 // never reported as paired, and the console says why it stopped.
 func TestPairingConsoleSaysAnApprovalWhoseAccessEndedIsNotPaired(t *testing.T) {
-	script := &pairingScript{states: []string{"accessEnded"}}
-	var output bytes.Buffer
-	err := runPairingConsole(t.Context(), script, "desktop", false, false, strings.NewReader(""), &output, time.Millisecond)
-	if err == nil || err.Error() != "this device was allowed, and its access has since been removed or expired; run agent-overflow pair to pair it again" {
-		t.Fatalf("the console's answer = %v", err)
-	}
-	if strings.Contains(output.String(), "Device connected") || script.confirmed {
-		t.Fatalf("the console reported or confirmed a pairing whose access ended: %q, %+v", output.String(), script)
+	for state, want := range map[string]string{
+		"accessEnded":   "this device was allowed, and its access has since ended or expired; run agent-overflow pair to pair it again",
+		"deviceRemoved": "this device was allowed, and has since been removed in Devices; choose Restore or Forget on it there, then run agent-overflow pair again",
+	} {
+		script := &pairingScript{states: []string{state}}
+		var output bytes.Buffer
+		err := runPairingConsole(t.Context(), script, "desktop", false, false, strings.NewReader(""), &output, time.Millisecond)
+		if err == nil || err.Error() != want {
+			t.Fatalf("%s: the console's answer = %v", state, err)
+		}
+		if strings.Contains(output.String(), "Device connected") || script.confirmed {
+			t.Fatalf("%s: the console reported or confirmed a pairing whose access ended: %q, %+v", state, output.String(), script)
+		}
 	}
 }
 

@@ -45,7 +45,7 @@
   import ComputerPairingWindow from './ComputerPairingWindow.svelte';
   import { INPUT_CLASS } from './styles';
   import { pairingAlreadyAllowed, pairingTurns, type PairingTurn } from './pairingTurns';
-  import { foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
+  import { accessLostText, foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
 
   interface Props {
     open: boolean;
@@ -82,13 +82,14 @@
       case 'confirmed': return 'done';
       case 'lapsed':
       case 'ended':
-      case 'accessEnded': return 'ended';
+      case 'accessEnded':
+      case 'deviceRemoved': return 'ended';
     }
   }
 
   // Why a followed link ended.
   function endedNote(held: PairingHeld): string {
-    if (held.phase === 'accessEnded') return 'This device was allowed, and its access has since been removed or expired. Choose New link to pair it again.';
+    if (held.phase === 'accessEnded' || held.phase === 'deviceRemoved') return accessLostText(held.phase, 'This device', 'New link');
     if (held.redeemed) return 'The pairing did not complete.';
     if (held.ending === 'canceled') return 'The link was canceled.';
     return 'The link ran out before a device opened it.';
@@ -101,7 +102,8 @@
       case 'pending': return { phase: 'waiting', ...seen };
       case 'redeemed': return { phase: 'ready', ...seen };
       case 'confirmed': return { phase: 'confirmed', ...seen };
-      case 'accessEnded': return { phase: 'accessEnded' };
+      case 'accessEnded':
+      case 'deviceRemoved': return { phase: status.state };
       case 'canceled': return { phase: 'ended', ending: 'canceled' };
       case 'expired': return { phase: 'ended', ending: 'deadline' };
       default: return { phase: 'ended', ending: '' };
@@ -491,7 +493,7 @@
   {:else if link}
     <div class="flex flex-col items-center gap-2 py-2 text-center">
       <p class="text-[0.8125rem] font-medium text-fg">{endedNote(link.held)}</p>
-      {#if link.held.phase !== 'accessEnded'}
+      {#if link.held.phase !== 'accessEnded' && link.held.phase !== 'deviceRemoved'}
         <p class="text-[0.75rem] leading-snug text-fg-muted">
           Nothing was enrolled. Mint a fresh link to try again.
         </p>

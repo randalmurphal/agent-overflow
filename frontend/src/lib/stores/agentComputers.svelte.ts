@@ -11,6 +11,7 @@ import { ListAgentComputers, SetAgentComputerEnabled, PairAgentComputer, MintDev
 import type { AgentComputer } from '../../../bindings/agent-overflow/internal/app/models';
 import { errString } from '../utils/errors';
 import { pairingAlreadyAllowed } from '../components/settings/pairingTurns';
+import { accessLostText } from '../components/settings/pairingProgress';
 
 export function createAgentComputers(backend: BackendKey) {
   const call = <T>(issue: () => PromiseLike<T>) => withBackendTarget(backend, issue);
@@ -69,6 +70,9 @@ export function createAgentComputers(backend: BackendKey) {
       invitation = invite.linkId;
       const peer = await call(() => PairAgentComputer(invite.url));
       const status = await withBackendTarget(destinationKey, () => DevicePairingStatus(invite.linkId));
+      // A pairing that lost its access says how to pair again, never only
+      // that it could not be verified.
+      if (status.state === 'accessEnded' || status.state === 'deviceRemoved') throw new Error(accessLostText(status.state, 'This computer', 'Connect again'));
       if (peer.id !== destinationID || !status.verificationNumber || peer.verificationNumber !== status.verificationNumber) throw new Error('The computer pairing could not be verified. Try again.');
       try { await withBackendTarget(destinationKey, () => ConfirmDevicePairing(invite.linkId)); }
       catch (err) {

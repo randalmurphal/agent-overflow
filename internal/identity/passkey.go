@@ -508,6 +508,13 @@ func (s *Sessions) FinishPasskeySignIn(req PasskeySignInRequest) (PasskeySignIn,
 	// commit together, so a failed sign-in adds or renames no device and
 	// leaves no session.
 	if err := s.store.CreateDeviceSession(written); err != nil {
+		// The device can be removed between its check above and this write,
+		// which refuses it (store.ErrDeviceRevoked); only any other failure
+		// is this computer's to retry.
+		if errors.Is(err, store.ErrDeviceRevoked) {
+			s.auditPasskeyRefusal(ReasonRevokedDevice, req.Peer, verified.row.ID)
+			return PasskeySignIn{}, ReasonRevokedDevice
+		}
 		log.Printf("identity: write passkey session for %s: %v", device.ID, err)
 		return PasskeySignIn{}, ReasonTemporarilyUnavailable
 	}

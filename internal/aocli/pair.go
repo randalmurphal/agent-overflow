@@ -188,7 +188,9 @@ func runPairingConsole(ctx context.Context, client pairingCaller, class string, 
 			confirmed = true
 			return output("paired", "Device connected. The backend keeps running when this console closes.", nil)
 		case "accessEnded":
-			return errors.New("this device was allowed, and its access has since been removed or expired; run agent-overflow pair to pair it again")
+			return errors.New("this device was allowed, and its access has since ended or expired; run agent-overflow pair to pair it again")
+		case "deviceRemoved":
+			return errors.New("this device was allowed, and has since been removed in Devices; choose Restore or Forget on it there, then run agent-overflow pair again")
 		case "pending":
 		default:
 			return fmt.Errorf("the pairing is %s; run agent-overflow pair to try again", status.State)

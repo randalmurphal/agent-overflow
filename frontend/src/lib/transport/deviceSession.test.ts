@@ -240,10 +240,12 @@ describe('redeemPairing', () => {
       .rejects.toThrow(/^This computer is limiting pairing attempts\. Wait a moment, then try again\.$/);
   });
 
-  it('reads a pairing the computer could not save as that, not as a sign-in renewal', async () => {
-    const unsaved = async () => new Response(JSON.stringify({ reason: 'temporarily_unavailable' }), { status: 503 });
-    await expect(redeemPairing(PAYLOAD, 'My phone', unsaved as unknown as typeof fetch))
-      .rejects.toThrow(/^This computer could not save this pairing\. Try again in a moment\.$/);
+  // The computer answers temporarily_unavailable only while the link is
+  // still unspent, so the same link is the remedy.
+  it('reads a pairing the computer could not process as that, not as a sign-in renewal', async () => {
+    const unprocessed = async () => new Response(JSON.stringify({ reason: 'temporarily_unavailable' }), { status: 503 });
+    await expect(redeemPairing(PAYLOAD, 'My phone', unprocessed as unknown as typeof fetch))
+      .rejects.toThrow(/^This computer could not process this pairing link\. Try the same link again in a moment\.$/);
   });
 });
 

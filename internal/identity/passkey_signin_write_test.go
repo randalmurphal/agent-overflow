@@ -133,6 +133,27 @@ func TestAPasskeySignInThatFailsAtAnyWriteLeavesNothing(t *testing.T) {
 	}
 }
 
+// A device removed after the sign-in checked it and before its session is
+// written is refused as the removed device it is, not told to retry.
+func TestAPasskeySignInOnADeviceRemovedBeforeItsSessionIsWrittenIsRefused(t *testing.T) {
+	sessions, raw, auth, _ := passkeyWriteFixture(t)
+	if _, reason := signInAs(t, sessions, auth, "thumb-laptop", "Laptop browser", "linux"); reason.Refused() {
+		t.Fatalf("first sign-in: %s", reason)
+	}
+	// The relabel runs after the device check and before the session write.
+	if _, err := raw.Exec(`CREATE TRIGGER remove_device AFTER UPDATE OF label ON devices
+		BEGIN UPDATE devices SET revoked_at = 1 WHERE id = NEW.id; END`); err != nil {
+		t.Fatalf("install the removal: %v", err)
+	}
+	before := countSignInWrites(t, raw)
+	if _, reason := signInAs(t, sessions, auth, "thumb-laptop", "Renamed browser", "windows"); reason != ReasonRevokedDevice {
+		t.Fatalf("a sign-in whose device was removed before its session was written = %s, want %s", reason, ReasonRevokedDevice)
+	}
+	if after := countSignInWrites(t, raw); after.sessions != before.sessions {
+		t.Fatalf("the refused sign-in left %d sessions, want %d", after.sessions, before.sessions)
+	}
+}
+
 // A sign-in that succeeds writes the device's new name with a live,
 // renewable session, and records the mint and the sign-in.
 func TestAPasskeySignInWritesItsDeviceSessionAndAudit(t *testing.T) {

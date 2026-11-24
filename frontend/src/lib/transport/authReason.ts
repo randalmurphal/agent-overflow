@@ -250,7 +250,7 @@ export function presentRefusal(operation: RefusedOperation, status: number, reas
   }
   if (reason === 'temporarily_unavailable') {
     return pairing
-      ? { title: 'This computer could not save this pairing.', hint: 'Try again in a moment.', retryable: true }
+      ? { title: 'This computer could not process this pairing link.', hint: 'Try the same link again in a moment.', retryable: true }
       : { title: 'This computer could not save your sign-in.', hint: 'Try signing in again in a moment.', retryable: true };
   }
   if (reason) return presentAuthReason(reason);

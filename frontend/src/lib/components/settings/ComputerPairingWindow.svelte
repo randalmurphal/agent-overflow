@@ -11,7 +11,7 @@
   import { backendNow } from '../../transport/backendClock';
   import { settingsComputer } from './settingsComputer';
   import { pairingAlreadyAllowed, pairingDecisionSettled, pairingTurns, recordPairingDecision, type PairingTurn } from './pairingTurns';
-  import { foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
+  import { accessLostText, foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
 
   let { networkChoice, access, ownEnroll, onChanged, onClose }: {
     networkChoice: string;
@@ -49,7 +49,7 @@
   // (ComputerPairingView.Ended). A window this dialog saw pass its deadline
   // without the host naming another ending expired.
   const endedText = $derived.by(() => {
-    if (held?.phase === 'accessEnded') return 'This computer was paired, and its access has since been removed or expired. Choose Try again to pair it again.';
+    if (held?.phase === 'accessEnded' || held?.phase === 'deviceRemoved') return accessLostText(held.phase, 'This computer', 'Try again');
     const ended = held?.phase === 'ended' ? held.ending : 'deadline';
     switch (ended) {
       case 'deadline': return 'Pairing expired.';
@@ -82,7 +82,9 @@
       case 'verifying': return { phase: 'verifying', ...seen };
       case 'ready': return { phase: 'ready', ...seen };
       case 'confirmed': return { phase: 'confirmed', ...seen };
-      case 'expired': return view.ended === 'accessEnded' ? { phase: 'accessEnded' } : { phase: 'ended', ending: view.ended };
+      case 'expired':
+        if (view.ended === 'accessEnded' || view.ended === 'deviceRemoved') return { phase: view.ended };
+        return { phase: 'ended', ending: view.ended };
       default: return { phase: 'ended', ending: '' };
     }
   }

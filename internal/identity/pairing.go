@@ -95,6 +95,12 @@ var ErrPairingAlreadyConfirmed = errors.New("identity: the device is already all
 // (store.ErrPairingAccessEnded): only a new pairing admits it again.
 var ErrPairingAccessEnded = errors.New("identity: the device was allowed and its access has ended")
 
+// ErrPairingDeviceRemoved answers a confirmation of a link an earlier
+// confirmation admitted whose device the owner removed
+// (store.ErrPairingDeviceRemoved): the device pairs again only once the
+// owner restores or forgets it.
+var ErrPairingDeviceRemoved = errors.New("identity: the device was allowed and has since been removed")
+
 // PairingPayload is what the minting surface hands to the new device: the
 // contents of the URL fragment behind a pairing link, and the same fields a
 // QR code or a typed code carries.
@@ -344,10 +350,17 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 	}
 	digest := hashPairingToken(req.Token)
 	now := s.now().UnixMilli()
+	// Until the link is spent (redeemSpending), a failure to read or write
+	// it leaves it as it was: the device is told to present the same link
+	// again. A refusal of the link keeps its own answer.
 	checked, err := s.store.PairingLinkByTokenHash(digest[:])
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
 		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, "")
 		return Redemption{}, ReasonUnknownCredential
+	}
+	if err != nil {
+		log.Printf("identity: read pairing link: %v", err)
+		return Redemption{}, ReasonTemporarilyUnavailable
 	}
 	if checked.Purpose != "" && enrollment.kind != ProofSignedKey {
 		s.auditPairingRefusal(ReasonMissingProof, req.Peer, checked.ID)
@@ -367,7 +380,7 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 	number, err := s.VerificationNumber(checked.ID, enrollment.thumbprint)
 	if err != nil {
 		log.Printf("identity: derive verification number for %s: %v", checked.ID, err)
-		return Redemption{}, ReasonUnknownCredential
+		return Redemption{}, ReasonTemporarilyUnavailable
 	}
 
 	// The spend and everything it produces run inside the pairing gate, from
@@ -386,7 +399,7 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 	}
 	if err != nil {
 		log.Printf("identity: redeem pairing link %s: %v", checked.ID, err)
-		return Redemption{}, ReasonUnknownCredential
+		return Redemption{}, ReasonTemporarilyUnavailable
 	}
 	if reason.Refused() {
 		return Redemption{}, reason
@@ -409,8 +422,9 @@ func (s *Sessions) redeemSpending(req RedemptionRequest, digest []byte, enrollme
 		return Redemption{}, ReasonUnknownCredential
 	}
 	if err != nil {
+		// One statement: a failure spent nothing.
 		log.Printf("identity: redeem pairing link: %v", err)
-		return Redemption{}, ReasonUnknownCredential
+		return Redemption{}, ReasonTemporarilyUnavailable
 	}
 
 	device, newDevice, reason := s.resolveDevice(pending.UserID, DeviceClass(pending.DeviceClass), req.Label, req.Platform, enrollment)
@@ -662,8 +676,9 @@ func (s *Sessions) ConfirmPairing(linkID string) (store.PairingLink, error) {
 // inside the pairing gate, and a link the gate refuses answers
 // ErrPairingRefused with nothing written. A link an earlier confirmation
 // admitted answers ErrPairingAlreadyConfirmed while its device can use its
-// access and ErrPairingAccessEnded once it cannot, as the store decides
-// (store.PairingAccessOf); a gate refusal asks the store the same question.
+// access, and ErrPairingAccessEnded or ErrPairingDeviceRemoved once it
+// cannot, as the store decides (store.PairingAccessOf); a gate refusal asks
+// the store the same question.
 func (s *Sessions) confirmPairing(linkID string) (store.PairingLink, error) {
 	var confirmation store.PairingConfirmation
 	// The mark is written at mint and never changes, so it is read here,
@@ -686,21 +701,28 @@ func (s *Sessions) confirmPairing(linkID string) (store.PairingLink, error) {
 			return store.PairingLink{}, gated
 		}
 		access, err := s.store.PairingAccessOf(linkID, s.now().UnixMilli())
-		switch {
-		case err != nil:
+		if err != nil {
 			return store.PairingLink{}, err
-		case access == store.PairingUsable:
-			return store.PairingLink{}, ErrPairingAlreadyConfirmed
-		case access == store.PairingAccessEnded:
-			return store.PairingLink{}, ErrPairingAccessEnded
 		}
-		return store.PairingLink{}, gated
+		switch access {
+		case store.PairingNotConfirmed:
+			return store.PairingLink{}, gated
+		case store.PairingUsable:
+			return store.PairingLink{}, ErrPairingAlreadyConfirmed
+		case store.PairingAccessEnded:
+			return store.PairingLink{}, ErrPairingAccessEnded
+		case store.PairingDeviceRemoved:
+			return store.PairingLink{}, ErrPairingDeviceRemoved
+		}
+		return store.PairingLink{}, fmt.Errorf("identity: unknown pairing access %d", access)
 	}
 	switch {
 	case errors.Is(err, store.ErrPairingAlreadyConfirmed):
 		return store.PairingLink{}, ErrPairingAlreadyConfirmed
 	case errors.Is(err, store.ErrPairingAccessEnded):
 		return store.PairingLink{}, ErrPairingAccessEnded
+	case errors.Is(err, store.ErrPairingDeviceRemoved):
+		return store.PairingLink{}, ErrPairingDeviceRemoved
 	case errors.Is(err, sql.ErrNoRows):
 		return store.PairingLink{}, ErrPairingRefused
 	case errors.Is(err, store.ErrPairingIncomplete):

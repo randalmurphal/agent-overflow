@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -772,6 +774,9 @@ func (c *Client) exchange(ctx context.Context, hc *http.Client, path string, bod
 	if err := decodeBody(resp.Body, &answered); err != nil && resp.StatusCode == http.StatusOK {
 		return grant{}, err
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return grant{}, &RateLimited{pairing: step == stepPair, RetryAfter: retryAfter(resp.Header)}
+	}
 	if err := temporaryHTTPFailure(resp.StatusCode); err != nil {
 		return grant{}, err
 	}
@@ -783,6 +788,53 @@ func (c *Client) exchange(ctx context.Context, hc *http.Client, path string, bod
 	}
 	answered.refreshRecovery = resp.Header.Get(RefreshRecoveryHeader) == "1"
 	return answered, nil
+}
+
+// RateLimited is the backend's auth rate limit answering a redemption or a
+// renewal before any credential was judged (HTTP 429). It is temporary, as
+// every answer but an authentication verdict is, and it tells a person to
+// wait: RetryAfter is the backend's Retry-After, 0 when it named none.
+type RateLimited struct {
+	pairing    bool
+	RetryAfter time.Duration
+}
+
+func (e *RateLimited) Error() string {
+	what := "sign-in renewals"
+	if e.pairing {
+		what = "pairing attempts"
+	}
+	wait := "wait a moment"
+	switch seconds := int(e.RetryAfter / time.Second); {
+	case seconds <= 0:
+	case seconds == 1:
+		wait = "wait 1 second"
+	case seconds < 60:
+		wait = fmt.Sprintf("wait %d seconds", seconds)
+	default:
+		minutes := (seconds + 59) / 60
+		wait = fmt.Sprintf("wait %d minute", minutes)
+		if minutes > 1 {
+			wait += "s"
+		}
+	}
+	return fmt.Sprintf("this computer is limiting %s; %s, then try again", what, wait)
+}
+
+// PublicDetails makes the sentence what a person is shown wherever the
+// error reaches a caller (errorsx.Detailed).
+func (e *RateLimited) PublicDetails() (code, message string) {
+	return "rate_limited", e.Error()
+}
+
+// retryAfter reads a Retry-After header's whole seconds, the form the
+// backend's rate limiter writes; 0 for anything else.
+func retryAfter(h http.Header) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(h.Get("Retry-After")))
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // Only an authentication verdict can end a stored pairing. A busy backend,

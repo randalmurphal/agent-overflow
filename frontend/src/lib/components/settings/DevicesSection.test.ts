@@ -228,13 +228,13 @@ describe('<DevicesSection>', () => {
     };
     setBindingMock('GetAccessOverview', async () => overview({ pendingPairings: [pending] }));
     setBindingMock('ConfirmDevicePairing', async () => {
-      throw new TransportError('pairing_access_ended', 'this device was allowed, and its access has since been removed or expired; pair it again');
+      throw new TransportError('pairing_access_ended', 'this device was allowed, and its access has since ended or expired; pair it again');
     });
     resetToastsForTest();
     const { findByRole } = render(DevicesSection);
     await fireEvent.click(await findByRole('button', { name: 'It matches — allow' }));
     await waitFor(() => expect(getToasts().map((toast) => [toast.type, toast.message])).toContainEqual(
-      ['error', 'Failed to allow the device: this device was allowed, and its access has since been removed or expired; pair it again'],
+      ['error', 'Failed to allow the device: this device was allowed, and its access has since ended or expired; pair it again'],
     ));
     expect(getToasts().filter((toast) => toast.type === 'info')).toHaveLength(0);
   });

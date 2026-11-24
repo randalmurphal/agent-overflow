@@ -105,10 +105,6 @@ func (r RefreshSecret) Spent() bool { return r.ConsumedAt != 0 }
 // Expired reports whether this secret's renewal lifetime has run out at now.
 func (r RefreshSecret) Expired(now int64) bool { return r.ExpiresAt <= now }
 
-// Renews reports whether a renewal presenting this secret at now could
-// rotate it: it exists, is unspent and has not expired.
-func (r RefreshSecret) Renews(now int64) bool { return r.ID != "" && !r.Spent() && !r.Expired(now) }
-
 const pairingLinkColumns = `id, user_id, scopes, binding_class, device_class,
 	cert_fingerprint, created_at, expires_at, redeemed_at, device_id,
 	key_thumbprint, session_id, confirmed_at, canceled_at, purpose, expected_key, member_generation, sponsor_key, bootstrap`
@@ -423,10 +419,16 @@ var ErrPairingIncomplete = errors.New("store: the pairing could not be completed
 var ErrPairingAlreadyConfirmed = errors.New("store: the pairing is already confirmed")
 
 // ErrPairingAccessEnded answers a confirmation of a link that was already
-// confirmed and whose device can no longer use its access
-// (PairingAccessEnded): nothing was written, and only a new pairing admits
-// the device again.
+// confirmed and whose session no longer lets its device in
+// (PairingAccessEnded): nothing was written, and a new pairing admits the
+// device again.
 var ErrPairingAccessEnded = errors.New("store: the pairing was confirmed and its access has ended")
+
+// ErrPairingDeviceRemoved answers a confirmation of a link that was already
+// confirmed and whose device the owner removed (PairingDeviceRemoved):
+// nothing was written, and the device pairs again only once the owner
+// restores or forgets it.
+var ErrPairingDeviceRemoved = errors.New("store: the pairing was confirmed and its device was removed")
 
 // PairingAccess is where a pairing link's device stands, as PairingAccessOf
 // reads it.
@@ -439,13 +441,18 @@ const (
 	// in now (Session.Usable).
 	PairingUsable
 	// PairingAccessEnded: the link was confirmed and its session no longer
-	// lets the device in: the session or its device was revoked, the
-	// session is gone, or its access and its renewal both expired.
+	// lets the device in: the session was revoked or is gone, or its access
+	// and its renewal both expired.
 	PairingAccessEnded
+	// PairingDeviceRemoved: the link was confirmed and the owner removed its
+	// device, which refuses every new pairing of that device until the owner
+	// restores or forgets it.
+	PairingDeviceRemoved
 )
 
 // PairingAccessOf reads whether link id was confirmed and, if it was,
-// whether its device can use its access at now (Session.Usable).
+// whether its device was removed, or else whether it can use its access at
+// now (Session.Usable).
 func (s *Store) PairingAccessOf(id string, now int64) (PairingAccess, error) {
 	return pairingAccessOf(s.reader(), id, now)
 }
@@ -469,17 +476,37 @@ func pairingAccessOf(db sqlQueryer, id string, now int64) (PairingAccess, error)
 	case err != nil:
 		return 0, fmt.Errorf("store: read the session of pairing %s: %w", id, err)
 	}
-	// The newest secret of the session's chain is the one its device holds;
-	// every earlier one is spent, and a family a reuse ended is all spent.
-	renewal, err := scanRefreshSecret(db.QueryRow(`SELECT `+refreshSecretColumns+` FROM refresh_secrets
-		  WHERE session_id = ? ORDER BY created_at DESC, consumed_at IS NULL DESC LIMIT 1`, sessionID))
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if session.DeviceRevokedAt != 0 {
+		return PairingDeviceRemoved, nil
+	}
+	// Any unspent, unexpired secret renews, whatever order the secrets were
+	// written in: a clock set back writes a successor older than its
+	// predecessor.
+	var renewable bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM refresh_secrets
+		  WHERE session_id = ? AND consumed_at IS NULL AND expires_at > ?)`, sessionID, now).Scan(&renewable); err != nil {
 		return 0, fmt.Errorf("store: read the renewal of pairing %s: %w", id, err)
 	}
-	if session.Usable(renewal, now) {
+	if session.Usable(renewable, now) {
 		return PairingUsable, nil
 	}
 	return PairingAccessEnded, nil
+}
+
+// confirmedAccessError is what a repeat confirmation of a link answers for
+// access, nil for a link that was never confirmed.
+func confirmedAccessError(access PairingAccess) error {
+	switch access {
+	case PairingNotConfirmed:
+		return nil
+	case PairingUsable:
+		return ErrPairingAlreadyConfirmed
+	case PairingAccessEnded:
+		return ErrPairingAccessEnded
+	case PairingDeviceRemoved:
+		return ErrPairingDeviceRemoved
+	}
+	return fmt.Errorf("store: unknown pairing access %d", access)
 }
 
 // PairingConfirmation is what one ConfirmRedeemedPairing settled.
@@ -496,8 +523,8 @@ type PairingConfirmation struct {
 // membership admitted, or none of it is. Scoped to a redeemed link that
 // names its session and is unsettled; ErrPairingAlreadyConfirmed when it
 // was already confirmed and its device can use its access at `at`,
-// ErrPairingAccessEnded when it was confirmed and cannot (PairingAccessOf);
-// sql.ErrNoRows otherwise.
+// ErrPairingAccessEnded or ErrPairingDeviceRemoved when it was confirmed and
+// cannot (PairingAccessOf); sql.ErrNoRows otherwise.
 //
 // A session that can no longer be activated (revoked, lapsed, or its device
 // revoked) or a membership that is no longer admissible cannot be completed
@@ -555,9 +582,8 @@ func (s *Store) ConfirmRedeemedPairing(id string, at int64, accessUntil func(dev
 
 // readConfirmableLink settles a personal pairing's member generation and
 // reads the link if it is redeemed, names its session and is unsettled;
-// for a link already confirmed, ErrPairingAlreadyConfirmed or
-// ErrPairingAccessEnded as PairingAccessOf reads it at now; sql.ErrNoRows
-// otherwise.
+// for a link already confirmed, its confirmedAccessError as PairingAccessOf
+// reads it at now; sql.ErrNoRows otherwise.
 func readConfirmableLink(tx *sql.Tx, id string, now int64) (PairingLink, error) {
 	if err := prepareOwnPairing(tx, id); err != nil {
 		return PairingLink{}, err
@@ -571,10 +597,9 @@ func readConfirmableLink(tx *sql.Tx, id string, now int64) (PairingLink, error) 
 		switch {
 		case readErr != nil:
 			return PairingLink{}, readErr
-		case access == PairingUsable:
-			return PairingLink{}, ErrPairingAlreadyConfirmed
-		case access == PairingAccessEnded:
-			return PairingLink{}, ErrPairingAccessEnded
+		}
+		if confirmed := confirmedAccessError(access); confirmed != nil {
+			return PairingLink{}, confirmed
 		}
 		return PairingLink{}, err
 	}

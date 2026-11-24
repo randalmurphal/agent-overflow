@@ -73,6 +73,33 @@ it('refuses a mismatched pairing and cancels its invitation', async () => {
   expect(view.getByRole('alert').textContent).toContain('could not be verified');
 });
 
+// A pairing whose access was lost by the time of the comparison says why and
+// how to pair again, never that it could not be verified.
+it.each([
+  ['accessEnded', 'This computer was paired, and its access has since ended or expired. Choose Connect again to pair it again.'],
+  ['deviceRemoved', 'This computer was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose Connect again.'],
+])('says the pairing is %s and offers to connect again', async (state, text) => {
+  stageBackend({ id: gpu, backendId: gpu, name: 'GPU', hello: hello(gpu) });
+  await grantBackendScopes(gpu, ['terminal:operate', 'access:admin']);
+  setBindingMock('ListAgentComputers', async () => []);
+  setBindingMock('MintDevicePairing', async () => ({ linkId: 'invite', url: 'private', expiresAtMs: Date.now() + 60_000 }));
+  setBindingMock('PairAgentComputer', async () => ({ id: gpu, verificationNumber: '123456' }));
+  setBindingMock('DevicePairingStatus', async () => ({ linkId: 'invite', state }));
+  const confirm = setBindingMock('ConfirmDevicePairing', async () => {});
+  const enable = setBindingMock('SetAgentComputerEnabled', async () => {});
+  const cancel = setBindingMock('CancelDevicePairing', async () => {});
+  const view = render(AgentComputersSection);
+  await tick();
+  const select = view.getByRole('combobox') as HTMLSelectElement;
+  for (const option of select.options) option.selected = option.value === gpu;
+  await fireEvent.change(select);
+  await fireEvent.click(view.getByRole('button', { name: 'Enable tools' }));
+  await waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+  expect(confirm).not.toHaveBeenCalled(); expect(enable).not.toHaveBeenCalled();
+  expect(view.getByRole('alert').textContent).toContain(text);
+  expect(view.getByRole('button', { name: 'Connect again' })).toBeTruthy();
+});
+
 it('keeps configuration writes on the settings computer', async () => {
   stageBackend({ id: gpu, backendId: gpu, name: 'GPU', hello: hello(gpu) });
   await grantBackendScopes(gpu, ['terminal:operate', 'access:admin']);

@@ -2,6 +2,7 @@ package identity
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -93,7 +94,8 @@ func TestAnOwnIntroductionWhoseConfirmationFailsLeavesNothing(t *testing.T) {
 
 // A redemption derives its verification number before it writes anything,
 // so a failure to derive it leaves the link unspent and nothing written,
-// and a redemption that commits is never then refused.
+// and a redemption that commits is never then refused. The device is told
+// to present the same link again.
 func TestARedemptionThatCannotDeriveItsNumberSpendsNothing(t *testing.T) {
 	s, st, raw, owner, _ := stragglerFixture(t)
 	link := mustMintLink(t, s, owner)
@@ -108,8 +110,8 @@ func TestARedemptionThatCannotDeriveItsNumberSpendsNothing(t *testing.T) {
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	if _, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: bearerProof("thumb-number")}); reason != ReasonUnknownCredential {
-		t.Fatalf("a redemption that cannot derive its number = %s, want %s", reason, ReasonUnknownCredential)
+	if _, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: bearerProof("thumb-number")}); reason != ReasonTemporarilyUnavailable {
+		t.Fatalf("a redemption that cannot derive its number = %s, want %s", reason, ReasonTemporarilyUnavailable)
 	}
 	if stored, err := st.GetPairingLink(link.Link.ID); err != nil || stored.RedeemedAt != 0 || stored.Settled() {
 		t.Fatalf("the link after the failure = %+v (%v), want unspent", stored, err)
@@ -122,6 +124,81 @@ func TestARedemptionThatCannotDeriveItsNumberSpendsNothing(t *testing.T) {
 	}
 	if _, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: bearerProof("thumb-number")}); reason.Refused() {
 		t.Fatalf("the retry after the key recovered = %s", reason)
+	}
+}
+
+// A storage failure before the link is spent, reading the link or spending
+// it, leaves the link as it was: the device is told to present the same link
+// again, and that presentation redeems it.
+func TestARedemptionThatFailsBeforeTheSpendSaysToTryTheSameLinkAgain(t *testing.T) {
+	for _, failing := range []struct{ name, inject, recover string }{
+		{"the link's read", `ALTER TABLE pairing_links RENAME COLUMN token_hash TO token_hash_moved`,
+			`ALTER TABLE pairing_links RENAME COLUMN token_hash_moved TO token_hash`},
+		{"the spend", `CREATE TRIGGER fail_spend BEFORE UPDATE OF redeemed_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'injected spend failure'); END`,
+			`DROP TRIGGER fail_spend`},
+	} {
+		t.Run(failing.name, func(t *testing.T) {
+			s, st, raw, owner, _ := stragglerFixture(t)
+			link := mustMintLink(t, s, owner)
+			if _, err := raw.Exec(failing.inject); err != nil {
+				t.Fatalf("install the failure: %v", err)
+			}
+			if _, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: bearerProof("thumb-retry")}); reason != ReasonTemporarilyUnavailable {
+				t.Fatalf("a redemption whose %s failed = %s, want %s", failing.name, reason, ReasonTemporarilyUnavailable)
+			}
+			if _, err := raw.Exec(failing.recover); err != nil {
+				t.Fatalf("remove the failure: %v", err)
+			}
+			if stored, err := st.GetPairingLink(link.Link.ID); err != nil || stored.RedeemedAt != 0 || stored.Settled() {
+				t.Fatalf("the link after the failure = %+v (%v), want unspent", stored, err)
+			}
+			if _, reason := s.RedeemPairing(RedemptionRequest{Token: link.Token, Proof: bearerProof("thumb-retry")}); reason.Refused() {
+				t.Fatalf("the same link presented again = %s", reason)
+			}
+		})
+	}
+}
+
+// refusingGate refuses every link, as the computer pairing book refuses an
+// invitation whose window is gone.
+type refusingGate struct{}
+
+func (refusingGate) Admit(string, bool, func() error) error { return ErrPairingRefused }
+
+// failingGate fails to decide, which refuses nothing.
+type failingGate struct{}
+
+func (failingGate) Admit(string, bool, func() error) error {
+	return errors.New("injected gate failure")
+}
+
+// A link that admits nothing keeps its refusal: never "try the same link
+// again", which could not work. Only a gate that fails to decide is this
+// computer's to retry.
+func TestARefusedRedemptionIsNeverToldToTryTheSameLinkAgain(t *testing.T) {
+	s, _, _, owner, _ := stragglerFixture(t)
+	redeem := func(token string) Reason {
+		_, reason := s.RedeemPairing(RedemptionRequest{Token: token, Proof: bearerProof("thumb-refused")})
+		return reason
+	}
+	if reason := redeem("no-such-link"); reason != ReasonUnknownCredential {
+		t.Fatalf("an unknown link = %s, want %s", reason, ReasonUnknownCredential)
+	}
+	spent := mustMintLink(t, s, owner)
+	if reason := redeem(spent.Token); reason.Refused() {
+		t.Fatal(reason)
+	}
+	if reason := redeem(spent.Token); reason != ReasonUnknownCredential {
+		t.Fatalf("a spent link = %s, want %s", reason, ReasonUnknownCredential)
+	}
+	gated := mustMintLink(t, s, owner)
+	s.SetPairingGate(refusingGate{})
+	if reason := redeem(gated.Token); reason != ReasonUnknownCredential {
+		t.Fatalf("a link the gate refuses = %s, want %s", reason, ReasonUnknownCredential)
+	}
+	s.SetPairingGate(failingGate{})
+	if reason := redeem(gated.Token); reason != ReasonTemporarilyUnavailable {
+		t.Fatalf("a link the gate failed to decide = %s, want %s", reason, ReasonTemporarilyUnavailable)
 	}
 }
 

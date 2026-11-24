@@ -22,8 +22,14 @@
  *   row before the window's ending, so a `confirmed` answer is never older
  *   than a true cancel. An approval admitted before the deadline whose
  *   write lands after it does follow a deadline ending.
- * - accessEnded: the device was allowed and has since lost that access. A
- *   revoked session never becomes usable again, so it outranks confirmed.
+ * - accessEnded, deviceRemoved: the device was allowed and has since lost
+ *   that access, its session ended or expired, or the owner removed the
+ *   device. A revoked session never becomes usable again, so both outrank
+ *   confirmed. They share a tier because the host moves between them in
+ *   either order: Restore turns a removed device's pairing into an ended
+ *   one (its session stays revoked), and removing a device whose session
+ *   already ended turns an ended one into a removed one. Within the tier
+ *   the first held stays; the dialog has stopped polling by then.
  */
 export const PAIRING_TIERS = [
   ['waiting'],
@@ -32,7 +38,7 @@ export const PAIRING_TIERS = [
   ['lapsed'],
   ['ended'],
   ['confirmed'],
-  ['accessEnded'],
+  ['accessEnded', 'deviceRemoved'],
 ] as const;
 
 export type PairingPhase = (typeof PAIRING_TIERS)[number][number];
@@ -55,6 +61,22 @@ export interface PairingAnswer {
 export interface PairingHeld extends PairingAnswer {
   /** Whether a device ever redeemed the link (a `ready` answer was held). */
   redeemed: boolean;
+}
+
+/** A pairing that was allowed and has since lost its access. */
+export type AccessLost = Extract<PairingPhase, 'accessEnded' | 'deviceRemoved'>;
+
+/**
+ * What a surface tells a person about a pairing that lost its access, with
+ * the remedy that works: a removed device is refused every new pairing
+ * until the owner restores or forgets it, in the Devices screen's words.
+ * `subject` is the device, `retry` the control that pairs again.
+ */
+export function accessLostText(phase: AccessLost, subject: string, retry: string): string {
+  switch (phase) {
+    case 'accessEnded': return `${subject} was paired, and its access has since ended or expired. Choose ${retry} to pair it again.`;
+    case 'deviceRemoved': return `${subject} was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose ${retry}.`;
+  }
 }
 
 export function pairingTier(phase: PairingPhase): number {

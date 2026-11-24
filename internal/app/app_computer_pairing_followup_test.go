@@ -75,8 +75,10 @@ func TestComputerPairingCancelOfAnApprovedWindowInvitationIsRefused(t *testing.T
 // A window approved on one surface and then canceled from another (the
 // store refuses the cancel) reads confirmed in its own dialog even once a
 // newer window opened: the status answers from the invitation's row, not
-// from the ending the cancel recorded. Once the device is revoked, the same
-// window reads that its access ended, not confirmed and not canceled.
+// from the ending the cancel recorded. Once the device is removed, the same
+// window reads that its device was removed, not confirmed and not
+// canceled, and the modal's poll says the same; Restore leaves its session
+// ended.
 func TestComputerPairingAnApprovedWindowReadsConfirmedAfterARefusedCancelAndANewerWindow(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -101,21 +103,44 @@ func TestComputerPairingAnApprovedWindowReadsConfirmedAfterARefusedCancelAndANew
 	if _, err := a.RevokeAccessDevice(link.DeviceID); err != nil {
 		t.Fatal(err)
 	}
-	requireAccessEnded(t, a, window.ID, invite.LinkID, "the window before the newer one, after its device was revoked")
+	requireAccessLost(t, a, window.ID, invite.LinkID, deviceRemoved, "the window before the newer one, after its device was removed")
+	if err := a.RestoreAccessDevice(link.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	requireAccessLost(t, a, window.ID, invite.LinkID, accessEnded, "the window before the newer one, after its device was restored")
 }
 
-// requireAccessEnded checks that the dialog of an approved window whose
-// device lost its access reads that ending, and that a stale Allow on it is
-// refused with words that say so.
-func requireAccessEnded(t *testing.T, a *App, windowID, linkID, when string) {
+// accessLost is one way an approved pairing lost its device's access, as
+// each surface reads it.
+type accessLost struct {
+	err     error
+	message string
+	ending  string
+}
+
+var (
+	accessEnded = accessLost{identity.ErrPairingAccessEnded,
+		"this device was allowed, and its access has since ended or expired; pair it again", "accessEnded"}
+	deviceRemoved = accessLost{identity.ErrPairingDeviceRemoved,
+		"this device was allowed, and has since been removed in Devices; choose Restore or Forget on it there, then pair it again", "deviceRemoved"}
+)
+
+// requireAccessLost checks that the dialog of an approved window whose
+// device lost its access reads that ending, that the ordinary modal's poll
+// of its invitation does, and that a stale Allow on it is refused with
+// words that say so.
+func requireAccessLost(t *testing.T, a *App, windowID, linkID string, lost accessLost, when string) {
 	t.Helper()
 	err := a.ConfirmDevicePairing(linkID)
-	if !errors.Is(err, identity.ErrPairingAccessEnded) {
-		t.Fatalf("%s: a stale approval = %v, want identity.ErrPairingAccessEnded", when, err)
+	if !errors.Is(err, lost.err) {
+		t.Fatalf("%s: a stale approval = %v, want %v", when, err, lost.err)
 	}
-	requirePersonSees(t, err, "this device was allowed, and its access has since been removed or expired; pair it again")
-	if status, err := a.ComputerPairingStatus(windowID); err != nil || status.State != "expired" || status.Ended != "accessEnded" {
-		t.Fatalf("%s: the dialog's status read = %+v (%v), want expired with Ended accessEnded", when, status, err)
+	requirePersonSees(t, err, lost.message)
+	if status, err := a.ComputerPairingStatus(windowID); err != nil || status.State != "expired" || status.Ended != lost.ending {
+		t.Fatalf("%s: the dialog's status read = %+v (%v), want expired with Ended %s", when, status, err, lost.ending)
+	}
+	if status, err := a.DevicePairingStatus(linkID); err != nil || status.State != lost.ending || !status.Settled() || status.Confirmed() {
+		t.Fatalf("%s: the modal's poll = %+v (%v), want %s, settled and not confirmed", when, status, err, lost.ending)
 	}
 }
 
@@ -145,7 +170,7 @@ func TestComputerPairingAnApprovedWindowWhoseSessionEndedReadsAccessEnded(t *tes
 	if !a.computerPairingBook().Snapshot(window.ID).Open {
 		t.Fatal("the approved window closed; this sequence needs it open")
 	}
-	requireAccessEnded(t, a, window.ID, invite.LinkID, "the open window, after its session ended")
+	requireAccessLost(t, a, window.ID, invite.LinkID, accessEnded, "the open window, after its session ended")
 	status, err := a.DevicePairingStatus(invite.LinkID)
 	if err != nil || status.State != "accessEnded" || !status.Settled() || status.Confirmed() {
 		t.Fatalf("the modal's poll after the session ended = %+v (%v), want accessEnded, settled and not confirmed", status, err)
@@ -185,7 +210,7 @@ func TestComputerPairingASecondApprovalSaysTheDeviceIsAlreadyAllowed(t *testing.
 	if err := a.RevokeAccessSession(link.SessionID); err != nil {
 		t.Fatal(err)
 	}
-	requireAccessEnded(t, a, window.ID, invite.LinkID, "after the device's session was revoked")
+	requireAccessLost(t, a, window.ID, invite.LinkID, accessEnded, "after the device's session was revoked")
 }
 
 // A publication that retires a window the book is still admitting, between

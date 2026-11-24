@@ -314,7 +314,8 @@ describe('computer pairing window decisions', () => {
     ['replaced', 'A newer pairing was started on this computer, which ended this one.'],
     ['closed', 'Pairing was closed.'],
     ['stopped', 'Pairing stopped because this computer shut down.'],
-    ['accessEnded', 'This computer was paired, and its access has since been removed or expired. Choose Try again to pair it again.'],
+    ['accessEnded', 'This computer was paired, and its access has since ended or expired. Choose Try again to pair it again.'],
+    ['deviceRemoved', 'This computer was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose Try again.'],
     ['', 'Pairing ended.'],
   ])('says why the window ended: %s', async (ended, text) => {
     setBindingMock('OpenComputerPairing', async () => WINDOW);
@@ -358,13 +359,13 @@ describe('computer pairing window decisions', () => {
     const poll = setBindingMock('ComputerPairingStatus', async () => READY);
     setBindingMock('ConfirmDevicePairing', async () => {
       poll.mockResolvedValue({ ...WAITING, state: 'expired', ended: 'accessEnded' });
-      throw new TransportError('pairing_access_ended', 'this device was allowed, and its access has since been removed or expired; pair it again');
+      throw new TransportError('pairing_access_ended', 'this device was allowed, and its access has since ended or expired; pair it again');
     });
     const view = show();
     await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
     await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
-    await vi.waitFor(() => expect(view.getByText(/its access has since been removed or expired. Choose Try again/)).toBeTruthy());
-    expect(view.getByRole('alert')).toHaveTextContent('Could not allow this computer: this device was allowed, and its access has since been removed or expired; pair it again');
+    await vi.waitFor(() => expect(view.getByText(/its access has since ended or expired. Choose Try again/)).toBeTruthy());
+    expect(view.getByRole('alert')).toHaveTextContent('Could not allow this computer: this device was allowed, and its access has since ended or expired; pair it again');
     expect(view.queryByText('Computer paired')).toBeNull();
     expect(view.getByRole('button', { name: 'Try again' })).toBeEnabled();
   });
@@ -406,17 +407,17 @@ describe('computer pairing window decisions', () => {
     let late!: (value: unknown) => void;
     const answers: Array<() => Promise<unknown>> = [async () => READY, () => new Promise((done) => { late = done; })];
     const status = setBindingMock('ComputerPairingStatus', () => (answers.shift() ?? (async () => ACCESS_ENDED))());
-    setBindingMock('ConfirmDevicePairing', async () => { throw new TransportError('pairing_access_ended', 'this device was allowed, and its access has since been removed or expired; pair it again'); });
+    setBindingMock('ConfirmDevicePairing', async () => { throw new TransportError('pairing_access_ended', 'this device was allowed, and its access has since ended or expired; pair it again'); });
     const view = show();
     await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
     await vi.advanceTimersByTimeAsync(2_000);
     expect(status).toHaveBeenCalledTimes(2);
     await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
-    await vi.waitFor(() => expect(view.getByText(/its access has since been removed or expired\. Choose Try again/)).toBeTruthy());
+    await vi.waitFor(() => expect(view.getByText(/its access has since ended or expired\. Choose Try again/)).toBeTruthy());
     late({ ...READY, state: 'confirmed' });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(view.queryByText('Computer paired')).toBeNull();
-    expect(view.getByText(/its access has since been removed or expired\. Choose Try again/)).toBeTruthy();
+    expect(view.getByText(/its access has since ended or expired\. Choose Try again/)).toBeTruthy();
   });
 
   it('shows the access ended when a read in flight finds it after the approval was confirmed', async () => {
@@ -433,7 +434,7 @@ describe('computer pairing window decisions', () => {
     approve();
     await vi.waitFor(() => expect(view.getByText('Computer paired')).toBeTruthy());
     late({ ...WAITING, state: 'expired', ended: 'accessEnded' });
-    await vi.waitFor(() => expect(view.getByText(/its access has since been removed or expired\. Choose Try again/)).toBeTruthy());
+    await vi.waitFor(() => expect(view.getByText(/its access has since ended or expired\. Choose Try again/)).toBeTruthy());
     expect(view.queryByText('Computer paired')).toBeNull();
   });
 
@@ -464,7 +465,7 @@ describe('computer pairing window decisions', () => {
     await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
     poll.mockResolvedValue({ ...WAITING, state: 'expired', ended: 'accessEnded' });
     await vi.advanceTimersByTimeAsync(2_000);
-    await vi.waitFor(() => expect(view.getByText(/its access has since been removed or expired\. Choose Try again/)).toBeTruthy());
+    await vi.waitFor(() => expect(view.getByText(/its access has since ended or expired\. Choose Try again/)).toBeTruthy());
     approve();
     await vi.advanceTimersByTimeAsync(10_000);
     expect(view.queryByText('Computer paired')).toBeNull();

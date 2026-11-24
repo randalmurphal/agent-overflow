@@ -37,8 +37,9 @@ type ComputerPairingView struct {
 	// Ended says why a window in state "expired" is no longer open, one of
 	// pairbootstrap's Ending values: "deadline", "closed", "canceled",
 	// "replaced", "networkChanged", "disconnected" or "stopped"; or
-	// "accessEnded" for a window whose invitation was approved and whose
-	// device can no longer use that access, open or not. Otherwise empty
+	// "accessEnded" or "deviceRemoved" for a window whose invitation was
+	// approved and whose device can no longer use that access, open or not
+	// (PairingStatusView.State). Otherwise empty
 	// while the window is open, and when nothing records why it ended: a
 	// window from before this process started or older than the one before
 	// the last, or an invitation the store settled while its window was
@@ -401,8 +402,8 @@ func (a *App) computerPairingOpen() bool {
 // whose approval reply was lost reaches the durable result, and a confirmed
 // pairing never reads as ended. Confirmed holds only while the device can
 // use its access (store.PairingAccessOf); an approved invitation whose
-// access has since ended reads expired with Ended "accessEnded", open
-// window or not.
+// access has since ended reads expired with Ended "accessEnded" or
+// "deviceRemoved", open window or not.
 //
 //ao:scope access:admin
 //ao:route home
@@ -434,11 +435,11 @@ func (a *App) ComputerPairingStatus(id string) (ComputerPairingView, error) {
 		return ComputerPairingView{}, err
 	}
 	if !view.Open || view.WindowID != id {
-		switch pairingState(link, access, now, standing) {
+		switch state := pairingState(link, access, now, standing); state {
 		case pairingStateConfirmed:
 			return ComputerPairingView{State: "confirmed", LinkID: link.ID, DeviceLabel: a.pairedDeviceLabel(link)}, nil
-		case pairingStateAccessEnded:
-			return ComputerPairingView{State: "expired", Ended: pairingStateAccessEnded}, nil
+		case pairingStateAccessEnded, pairingStateDeviceRemoved:
+			return ComputerPairingView{State: "expired", Ended: state}, nil
 		}
 		return ComputerPairingView{State: "expired", Ended: string(standing.EndingOf(id))}, nil
 	}
@@ -450,11 +451,11 @@ func (a *App) ComputerPairingStatus(id string) (ComputerPairingView, error) {
 		if out.VerificationNumber, err = ownerPairingNumber(link, standing, sessions); err != nil {
 			return ComputerPairingView{}, err
 		}
-		switch pairingState(link, access, now, standing) {
+		switch state := pairingState(link, access, now, standing); state {
 		case "confirmed":
 			out.State = "confirmed"
-		case pairingStateAccessEnded:
-			out.State, out.Ended = "expired", pairingStateAccessEnded
+		case pairingStateAccessEnded, pairingStateDeviceRemoved:
+			out.State, out.Ended = "expired", state
 		case "redeemed":
 			out.State = "ready"
 		case "expired", "canceled":

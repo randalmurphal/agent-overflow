@@ -349,16 +349,20 @@ describe('<PairDeviceModal> across a reopen', () => {
     await view.findByText('Device paired');
   });
 
-  it('says the access ended, not paired, when the poll finds an approval whose access was removed', async () => {
+  it.each([
+    ['accessEnded', 'This device was paired, and its access has since ended or expired. Choose New link to pair it again.'],
+    ['deviceRemoved', 'This device was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose New link.'],
+  ])('says the access was lost, not paired, when the poll finds an approval that is %s', async (state, text) => {
     vi.useFakeTimers();
     setBindingMock('MintDevicePairing', async () => INVITE);
     const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
     const view = renderModal();
     await verifyStage(view);
-    poll.mockResolvedValue({ state: 'accessEnded', expiresAtMs: INVITE.expiresAtMs });
+    poll.mockResolvedValue({ state, expiresAtMs: INVITE.expiresAtMs });
     await vi.advanceTimersByTimeAsync(2_100);
-    await view.findByText('This device was allowed, and its access has since been removed or expired. Choose New link to pair it again.');
+    await view.findByText(text);
     expect(view.queryByText('Device paired')).toBeNull();
+    expect(view.queryByText(/Nothing was enrolled/)).toBeNull();
     expect(view.getByRole('button', { name: 'New link' })).toBeEnabled();
   });
 
@@ -381,7 +385,7 @@ describe('<PairDeviceModal> across a reopen', () => {
     await vi.advanceTimersByTimeAsync(2_000);
     poll.mockResolvedValue({ state: 'accessEnded', expiresAtMs: INVITE.expiresAtMs });
     await vi.advanceTimersByTimeAsync(2_000);
-    const ended = 'This device was allowed, and its access has since been removed or expired. Choose New link to pair it again.';
+    const ended = 'This device was paired, and its access has since ended or expired. Choose New link to pair it again.';
     await view.findByText(ended);
     late({ state: 'confirmed', expiresAtMs: INVITE.expiresAtMs });
     approve();
@@ -393,7 +397,8 @@ describe('<PairDeviceModal> across a reopen', () => {
   // The share stage follows every answer, not only a redemption.
   it.each([
     ['confirmed', 'Device paired'],
-    ['accessEnded', 'This device was allowed, and its access has since been removed or expired. Choose New link to pair it again.'],
+    ['accessEnded', 'This device was paired, and its access has since ended or expired. Choose New link to pair it again.'],
+    ['deviceRemoved', 'This device was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose New link.'],
   ])('leaves the shared link when the poll says %s', async (state, text) => {
     vi.useFakeTimers();
     setBindingMock('MintDevicePairing', async () => INVITE);

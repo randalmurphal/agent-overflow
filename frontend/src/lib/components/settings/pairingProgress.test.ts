@@ -47,6 +47,8 @@ describe('foldPairing', () => {
   it('orders the ends as the host does', () => {
     const order: PairingPhase[] = ['ready', 'lapsed', 'ended', 'confirmed', 'accessEnded'];
     for (let i = 1; i < order.length; i++) expect(pairingTier(order[i])).toBeGreaterThan(pairingTier(order[i - 1]));
+    // Restore and Remove turn either into the other, so neither outranks it.
+    expect(pairingTier('deviceRemoved')).toBe(pairingTier('accessEnded'));
   });
 
   it('settles on every end and on nothing before it', () => {

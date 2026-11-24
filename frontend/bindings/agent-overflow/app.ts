@@ -872,8 +872,8 @@ export function CompactCodexThread(threadID: string): $CancellablePromise<void> 
  * whose approval reply was lost reaches the durable result, and a confirmed
  * pairing never reads as ended. Confirmed holds only while the device can
  * use its access (store.PairingAccessOf); an approved invitation whose
- * access has since ended reads expired with Ended "accessEnded", open
- * window or not.
+ * access has since ended reads expired with Ended "accessEnded" or
+ * "deviceRemoved", open window or not.
  */
 export function ComputerPairingStatus(id: string): $CancellablePromise<app$0.ComputerPairingView> {
     return $Call.ByID(2151872702, id).then(($result: any) => {
