@@ -1003,8 +1003,8 @@ func (a *App) sendMessageLocked(
 }
 
 // errWorkflowRunning refuses a send admitted only at rest to the thread of a
-// workflow phase or fan-out unit the engine is running.
-var errWorkflowRunning = errors.New("the workflow run on this thread is running: an awaited send does not take it over; a send without waiting takes the run over, stopping the phase's agent or detaching the unit")
+// workflow phase or fan-out unit the engine is starting or running.
+var errWorkflowRunning = errors.New("the workflow run on this thread is starting or running and an awaited send does not take it over; a send without waiting asks to take it over once it has started, which stops the phase's agent or detaches the unit")
 
 // prepareWorkflowTakeoverSend detaches a workflow run for user steering.
 // It MUST NOT run while holding the thread's action lock: TakeOver

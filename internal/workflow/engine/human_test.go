@@ -432,39 +432,63 @@ func TestTakeOverParkedRefusesAStartingItem(t *testing.T) {
 	requireItemState(t, h.store, item.ID, StateRunning, "")
 }
 
-// A refused parked-only takeover changed nothing, so it runs no scheduler
-// pass: a run waiting for capacity raised in the profile since the last pass
-// is not started by it.
-func TestRefusedTakeOverParkedStartsNoWaitingRun(t *testing.T) {
-	workflow := onePhaseWorkflow("writer", []string{"writer"}, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{}, map[string]def.Workflow{"writer": workflow}, []string{"project"}, nil)
+// A parked-only takeover frees no capacity, refused or not, so it runs no
+// scheduler pass: a run waiting for capacity raised in the profile since the
+// last pass is not started by it.
+func TestTakeOverParkedStartsNoWaitingRun(t *testing.T) {
+	writer := onePhaseWorkflow("writer", []string{"writer"}, []def.Route{{To: "done"}})
+	question := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{}, map[string]def.Workflow{"writer": writer, "question": question}, []string{"project"}, nil)
+	parked := testItem("parked", "project", "question", 0)
+	if err := h.engine.StartItem(parked); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, parked.ID, Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, parked.ID, StateNeedsHuman, ReasonQuestion)
+
 	h.profiles.setCapacity("project", "writer", 1)
-	running := testItem("running", "project", "writer", 0)
-	waiting := testItem("waiting", "project", "writer", 1)
+	running := testItem("running", "project", "writer", 1)
+	waiting := testItem("waiting", "project", "writer", 2)
 	for _, item := range []store.WorkItem{running, waiting} {
 		if err := h.engine.StartItem(item); err != nil {
 			t.Fatal(err)
 		}
 	}
-	startedItems := func() []string {
-		var ids []string
+	waitingStarted := func() bool {
 		for _, start := range h.runner.started() {
-			ids = append(ids, start.Key.ItemID)
+			if start.Key.ItemID == waiting.ID {
+				return true
+			}
 		}
-		return ids
+		return false
 	}
-	if ids := startedItems(); len(ids) != 1 || ids[0] != running.ID {
-		t.Fatalf("started runs = %v, want the first run alone", ids)
+	if waitingStarted() {
+		t.Fatal("the second writer started past a capacity of one")
 	}
 	h.profiles.setCapacity("project", "writer", 2)
+
 	if err := h.engine.TakeOverParked(running.ID); !errors.Is(err, ErrRunActive) {
 		t.Fatalf("TakeOverParked of a running item = %v, want ErrRunActive", err)
 	}
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	if ids := startedItems(); len(ids) != 1 {
-		t.Fatalf("started runs after a refused parked-only takeover = %v, want the first run alone", ids)
+	if waitingStarted() {
+		t.Fatal("a refused parked-only takeover started the waiting run")
+	}
+
+	if err := h.engine.TakeOverParked(parked.ID); err != nil {
+		t.Fatalf("TakeOverParked of a parked item: %v", err)
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, parked.ID, StateNeedsHuman, ReasonTakenOver)
+	if waitingStarted() {
+		t.Fatal("a parked-only takeover of a parked item started the waiting run")
 	}
 }
 
