@@ -320,6 +320,7 @@ var harnessTimers = []harnessTimer{
 	{name: "usage-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.UsagePollInterval }},
 	{name: "wake-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadWakeRetryBase }, max: appservice.MaxThreadWakeRetryBase},
 	{name: "agent-settled-window", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentSettledWindow }},
+	{name: "tracker-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.TrackerPollInterval }},
 	// Page timers: how long a computer stays unreachable before the screen
 	// says so, and how long a settled Agents row stays.
 	{name: "unreachable-settle", max: pageTimerMax, unit: time.Millisecond},
