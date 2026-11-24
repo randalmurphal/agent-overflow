@@ -366,27 +366,6 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isAtBottom).toBe(false);
     });
 
-    it('wheel-up escape blocks same-frame content growth even when the chat scroller never moves', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-
-      fireWheel(scrollEl, -50, scrollEl);
-      geom.scrollHeight = 1200;
-      geom.contentHeight = 1000;
-      ro.fire(contentEl, 1000);
-
-      // Escape is synchronous, so the streaming/contentRO growth that
-      // lands in the same frame must not pin.
-      expect(geom.scrollTop).toBe(400);
-      expect(controller.escapedFromLock).toBe(true);
-
-      await waitRealMs(180);
-
-      expect(controller.escapedFromLock).toBe(true);
-      expect(geom.scrollTop).toBe(400);
-      expect(controller.isSticky).toBe(false);
-    });
-
     it('keeps bottom lock when a resize-correlated upward jump has no user scroll movement', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
@@ -657,13 +636,6 @@ describe('createUseStickToBottomController', () => {
   });
 
   describe('content ResizeObserver', () => {
-    it('first fire (previousHeight undefined) snaps synchronously without scheduling rAF', () => {
-      const ro = getRO();
-      // No prior height; this is the initial fire.
-      ro.fire(contentEl, 800);
-      expect(geom.scrollTop).toBe(400); // snapped to target
-    });
-
     it('positive delta + sticky sync-pins scrollTop to the new target in the same callback', async () => {
       // Sync pin: contentEl growing AND scrollTop catching up happen in
       // the same paint frame. No rAF gap, no perceptible motion.
@@ -679,21 +651,6 @@ describe('createUseStickToBottomController', () => {
       const after = geom.scrollTop;
       for (let i = 0; i < 5; i++) await nextFrame();
       expect(geom.scrollTop).toBe(after);
-    });
-
-    it('positive delta + escaped does NOT sync-pin', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800); // initial
-
-      controller.markEscaped();
-      expect(controller.escapedFromLock).toBe(true);
-
-      const before = geom.scrollTop;
-      geom.scrollHeight = 1500; // grow
-      geom.contentHeight = 1300;
-      ro.fire(contentEl, 1300);
-      for (let i = 0; i < 5; i++) await nextFrame();
-      expect(geom.scrollTop).toBe(before);
     });
 
     it('escaped thinking-style grow, same-height, shrink, and grow updates do not re-stick', async () => {
@@ -862,22 +819,6 @@ describe('createUseStickToBottomController', () => {
       ro.fire(contentEl, 700);
       expect(geom.scrollTop).toBe(500);
       release();
-    });
-
-    it('clears resizeDifference after rAF + 1ms', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800); // initial, sets previousHeight
-      geom.scrollHeight = 1100;
-      geom.contentHeight = 900;
-      ro.fire(contentEl, 900);
-      // resizeDifference is private — exercise the consequence: a scroll
-      // event during the window is ignored, after the window the scroll
-      // handler runs normally. Tested in the scroll handler section.
-      await nextTimer();
-      await nextFrame();
-      // Should not throw or leak; nothing observable here, but the timer
-      // must run cleanly.
-      expect(true).toBe(true);
     });
 
     it('stops re-pinning an idle sub-pixel oscillation at the bottom (settle-vibration deadband)', () => {
@@ -1269,13 +1210,17 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isAtBottom).toBe(false);
     });
 
-    it('a small wheel-up that lands within the geometric near-bottom band but outside the auto-follow epsilon stays escaped', async () => {
-      // Regression: STICK_TO_BOTTOM_OFFSET_PX (70) is used for button
-      // visibility / negative-delta repin. The scroll handler's re-stick
-      // path uses an actual-bottom epsilon. With the old code, a
-      // wheel-up of 30px on a sticky session would set escape and then
-      // the same scroll event would observe distance=30 ≤ 70 and
-      // immediately re-stick — undoing the user's gesture.
+    // Regressions for "scroll up one notch yanks back to bottom while
+    // streaming". STICK_TO_BOTTOM_OFFSET_PX (70) is used for button
+    // visibility / negative-delta repin; the scroll handler's re-stick
+    // path uses an actual-bottom epsilon. With the old code, a small
+    // wheel-up on a sticky session would set escape and then the same
+    // scroll event would observe distance ≤ 70 and immediately re-stick,
+    // undoing the user's gesture. Distance from bottom is 31 and 1 px.
+    it.each([
+      ['a small wheel-up that lands within the geometric near-bottom band but outside the auto-follow epsilon stays escaped', -30, 369],
+      ['wheel-up gesture is NOT undone by its own scroll event landing near bottom', -1, 399],
+    ])('%s', async (_name, deltaY, landedTop) => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial, geom.scrollTop=400 (target=400, distance=0)
       // First scroll event consumes the programmatic-write tag.
@@ -1284,31 +1229,8 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isSticky).toBe(true);
       expect(controller.escapedFromLock).toBe(false);
 
-      // User wheels up by ~30px. distance from bottom is now 31 — well
-      // inside isNearBottomState's 70px band, but outside re-stick's
-      // small band, so the escape must persist.
-      fireWheel(scrollEl, -30, scrollEl);
-      geom.scrollTop = 369; // distance = 1000 - 369 - 600 = 31
-      fireScroll(scrollEl);
-      await nextTimer();
-
-      expect(controller.escapedFromLock).toBe(true);
-      expect(controller.isSticky).toBe(false);
-    });
-
-    it('wheel-up gesture is NOT undone by its own scroll event landing near bottom', async () => {
-      // Regression for "scroll up one notch yanks back to bottom while
-      // streaming". A sticky user who wheels up by exactly 1px should
-      // break auto-follow and surface the chip even inside the old
-      // near-bottom visual band.
-      const ro = getRO();
-      ro.fire(contentEl, 800); // initial, scrollTop=400, sticky
-      fireScroll(scrollEl); // consumes tag
-      await nextTimer();
-      expect(controller.isSticky).toBe(true);
-
-      fireWheel(scrollEl, -1, scrollEl);
-      geom.scrollTop = 399;
+      fireWheel(scrollEl, deltaY, scrollEl);
+      geom.scrollTop = landedTop;
       fireScroll(scrollEl);
       await nextTimer();
 
@@ -1961,27 +1883,18 @@ describe('createUseStickToBottomController', () => {
     // change reintroduces a bare "scrollTop direction" inference, these
     // tests fail.
 
-    it('mutating scrollTop without firing any event never flips escapedFromLock', () => {
+    // Pure geometry mutation: no scroll, wheel, key, touch, or RO
+    // callback fires. The controller doesn't poll geometry on a timer;
+    // it observes signals.
+    it.each([
+      ['mutating scrollTop without firing any event never flips escapedFromLock', 'scrollTop', 50],
+      ['mutating scrollHeight without firing any event never flips escapedFromLock', 'scrollHeight', 5000],
+    ] as const)('%s', (_name, property, value) => {
       // Start sticky + at-bottom.
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
 
-      // Pure geometry mutation: change scrollTop directly. No scroll
-      // event, no wheel event, no key, no touch.
-      geom.scrollTop = 50;
-      // (no fireScroll / fireWheel / fireKey / fireTouchMove here)
-
-      expect(controller.escapedFromLock).toBe(false);
-      expect(controller.isSticky).toBe(true);
-    });
-
-    it('mutating scrollHeight without firing any event never flips escapedFromLock', () => {
-      expect(controller.escapedFromLock).toBe(false);
-
-      // Pure geometry mutation: content extended, but no RO callback,
-      // no scroll event triggered. The controller doesn't poll
-      // geometry on a timer; it observes signals.
-      geom.scrollHeight = 5000;
+      geom[property] = value;
 
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
@@ -2317,23 +2230,6 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(400);
     });
 
-    it('contentRO positive-delta does not pin after scrollbar pointer escape', async () => {
-      stubScrollbarGutter(scrollEl);
-
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-
-      scrollEl.dispatchEvent(
-        new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
-      );
-
-      geom.scrollHeight = 1200;
-      geom.contentHeight = 1000;
-      ro.fire(contentEl, 1000);
-      expect(controller.escapedFromLock).toBe(true);
-      expect(geom.scrollTop).toBe(400);
-    });
-
     it("observe('content') does not pin after scrollbar pointer escape", async () => {
       stubScrollbarGutter(scrollEl);
 
@@ -2395,13 +2291,18 @@ describe('createUseStickToBottomController', () => {
 
       fireWheel(scrollEl, -50, scrollEl);
 
+      // Escape is synchronous, so the streaming/contentRO growth that
+      // lands in the same frame must not pin, even though the chat
+      // scroller never moves.
       geom.scrollHeight = 1100;
       geom.contentHeight = 900;
       ro.fire(contentEl, 900);
       expect(geom.scrollTop).toBe(400);
+      expect(controller.escapedFromLock).toBe(true);
 
       await waitRealMs(180);
       expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
       expect(geom.scrollTop).toBe(400);
 
       geom.scrollHeight = 1200;
@@ -2926,19 +2827,27 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(600);
     });
 
-    it('exposes isWarm=false during warm-up, isWarm=true after quiet timer fires', async () => {
+    it('exposes isWarm=false during warm-up, isWarm=true after quiet timer fires, and detach resets both', async () => {
       // Consumers (chat's MessageTimeline) read isWarm to hide
       // contentEl during the measurement cascade on uncached loads.
       // The signal must be false at attach and after forceStick, and
       // must flip true exactly when the controller decides
-      // measurements have settled.
+      // measurements have settled. warmReason reports which transition
+      // opened the gate.
       expect(controller.isWarm).toBe(false);
+      expect(controller.warmReason).toBeNull();
       const ro = getRO();
       ro.fire(contentEl, 800);
-      // Still warming — quiet timer not yet fired.
+      // Still warming — quiet timer armed but not yet fired.
       expect(controller.isWarm).toBe(false);
+      expect(controller.warmReason).toBeNull();
       await waitMs(150);
       expect(controller.isWarm).toBe(true);
+      expect(controller.warmReason).toBe('quiet');
+
+      controller.detach();
+      expect(controller.isWarm).toBe(false);
+      expect(controller.warmReason).toBeNull();
     });
 
     it('user forceStick keeps already-warm content visible', async () => {
@@ -2967,16 +2876,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 810);
       await waitMs(150);
       expect(controller.isWarm).toBe(true);
-    });
-
-    it('detach resets isWarm', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-      expect(controller.isWarm).toBe(true);
-
-      controller.detach();
-      expect(controller.isWarm).toBe(false);
     });
 
     it('armWarmup() flips isWarm back to false WITHOUT writing scrollTop or clearing escape', async () => {
@@ -3037,26 +2936,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 800);
       await waitMs(150);
       expect(controller.isWarm).toBe(true);
-    });
-
-    it('beginWarmup with no contentRO activity keeps isWarm=false until FAILSAFE_MS', async () => {
-      // Regression: the original "half-screen-high" symptom on uncached
-      // long-thread re-entry. Sequence: $effect.pre armWarmup arms the
-      // gate; slice fetch is in flight, MessageTimeline renders the
-      // loading-spinner / empty branch so contentEl is not yet mounted
-      // and no RO can fire. Before the slice arrives, the old
-      // beginWarmup armed quietTimer eagerly — it would fire at t=100ms,
-      // warm=true, hideContentForWarmup=false. Once items finally
-      // arrived and contentEl mounted, the cascade was visible and
-      // scrollTop landed at the estimated bottom (not the measured
-      // bottom). The fix: beginWarmup only arms the failsafe; quietTimer
-      // is gated on actual RO evidence.
-      controller.armWarmup();
-      // 150ms with no RO — would have flipped warm under the old policy.
-      await waitMs(150);
-      expect(controller.isWarm).toBe(false);
-      // The failsafe is still in place; we don't wait the full 2.5s here,
-      // we just confirm the gate held through the original QUIET_MS window.
     });
 
     it('quiescence: warms after QUIET_MS of no contentRO fires', async () => {
@@ -3159,23 +3038,8 @@ describe('createUseStickToBottomController — spring chase', () => {
     // Reporting-only counterpart to isWarm — mechanical coverage of the
     // four transitions observers.ts drives it through. No timing or
     // decision assertions belong here; those live in the isWarm tests
-    // above.
-    it('is null before warm-up resolves', () => {
-      expect(controller.warmReason).toBeNull();
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      // Quiet timer armed but not yet fired.
-      expect(controller.warmReason).toBeNull();
-    });
-
-    it("is 'quiet' once the quiet timer fires", async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-      expect(controller.isWarm).toBe(true);
-      expect(controller.warmReason).toBe('quiet');
-    });
-
+    // above. Null before warm-up, 'quiet', and the detach reset are
+    // asserted in the warm-up gate's isWarm scenario.
     it("is 'failsafe' once the failsafe ceiling fires", async () => {
       // Fake timers make this deterministic: the isWarm-only sibling
       // failsafe test above (real timers, resets every 80ms) actually
@@ -3230,16 +3094,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 800);
       await waitMs(150);
       expect(controller.warmReason).toBe('quiet');
-    });
-
-    it('resets to null on detach()', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-      expect(controller.warmReason).toBe('quiet');
-
-      controller.detach();
-      expect(controller.warmReason).toBeNull();
     });
 
     it("is 'skip' after skipWarmup() forces the gate open", () => {
@@ -3441,22 +3295,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Flip signal; notify arms the quiet timer. Only the first (baseline)
       // fire has happened, so geometry is still unknown — the conservative
       // QUIET_MS window applies, not the shortened one.
-      settled = true;
-      localController.notifyQuietContextSignalChanged();
-      await waitMs(120);
-      expect(localController.isWarm).toBe(true);
-    });
-
-    it('notifyQuietContextSignalChanged arms timer after RO evidence', async () => {
-      // RO fires while signal is false → no timer. Settled fires later
-      // → notify arms the quiet timer from that moment. Only the baseline
-      // fire happened, so geometry is unknown → conservative QUIET_MS.
-      buildLocalController({ signal: () => settled });
-      const ro = getLocalRO();
-      ro.fire(localContentEl, 800);
-      await waitMs(50);
-      expect(localController.isWarm).toBe(false);
-
       settled = true;
       localController.notifyQuietContextSignalChanged();
       await waitMs(120);
@@ -3777,17 +3615,27 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(600);
     });
 
-    it("observe('live-content') spring-chases when warm AND mode=spring", async () => {
+    // The 'composer-geometry' rows pin the observe() kind→path mapping
+    // itself: ChatView reports composer growth with this kind precisely
+    // so active output can spring through an activity-rail height change
+    // (chat AGENTS.md operational rule). Remapping the kind to the
+    // instant path would pass every component-level test (they assert
+    // only the kind string at the pane adapter) but break that behavior;
+    // these rows fail instead.
+    it.each([
+      ["observe('live-content') spring-chases when warm AND mode=spring", 'live-content'],
+      ["observe('composer-geometry') spring-chases when warm AND mode=spring", 'composer-geometry'],
+    ] as const)('%s', async (_name, kind) => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
-      controller.observe('live-content');
+      controller.observe(kind);
 
-      // Live-content nudge should not sync-pin to the new target. It uses
-      // the same spring policy as contentRO positive deltas.
+      // The nudge should not sync-pin to the new target. It uses the
+      // same spring policy as contentRO positive deltas.
       expect(geom.scrollTop).toBe(400);
 
       for (let i = 0; i < 3; i++) await nextFrame();
@@ -3795,53 +3643,24 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBeLessThan(800);
     });
 
-    it("observe('live-content') sync-pins when animation mode is instant", async () => {
+    // Live kinds sync-pin once nothing reports live output. 'content' and
+    // 'host-layout' stay instant even with live output: MessageTimeline's
+    // pane adapter intercepts 'host-layout' before it reaches the
+    // controller, so its row pins the controller's own terminal mapping.
+    it.each([
+      ["observe('live-content') sync-pins when animation mode is instant", 'live-content', false],
+      ["observe('composer-geometry') sync-pins when animation mode is instant", 'composer-geometry', false],
+      ["observe('content') remains an instant layout nudge even in spring mode", 'content', true],
+      ["observe('host-layout') sync-pins even in spring mode (raw-controller mapping)", 'host-layout', true],
+    ] as const)('%s', async (_name, kind, live) => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
-      liveContent = false;
+      liveContent = live;
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
-      controller.observe('live-content');
-
-      expect(geom.scrollTop).toBe(800);
-      for (let i = 0; i < 3; i++) await nextFrame();
-      expect(geom.scrollTop).toBe(800);
-    });
-
-    // The two 'composer-geometry' tests pin the observe() kind→path
-    // mapping itself: ChatView reports composer growth with this kind
-    // precisely so active output can spring through an activity-rail
-    // height change (chat AGENTS.md operational rule). Remapping the
-    // kind to the instant path would pass every component-level test
-    // (they assert only the kind string at the pane adapter) but break
-    // that behavior — these fail instead.
-    it("observe('composer-geometry') spring-chases when warm AND mode=spring", async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      controller.observe('composer-geometry');
-
-      expect(geom.scrollTop).toBe(400);
-
-      for (let i = 0; i < 3; i++) await nextFrame();
-      expect(geom.scrollTop).toBeGreaterThan(400);
-      expect(geom.scrollTop).toBeLessThan(800);
-    });
-
-    it("observe('composer-geometry') sync-pins when animation mode is instant", async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-      liveContent = false;
-
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      controller.observe('composer-geometry');
+      controller.observe(kind);
 
       expect(geom.scrollTop).toBe(800);
       for (let i = 0; i < 3; i++) await nextFrame();
@@ -4106,37 +3925,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(400);
       for (let i = 0; i < 3; i++) await nextFrame();
       expect(geom.scrollTop).toBe(400);
-    });
-
-    it("observe('content') remains an instant layout nudge even in spring mode", async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      controller.observe('content');
-
-      expect(geom.scrollTop).toBe(800);
-      for (let i = 0; i < 3; i++) await nextFrame();
-      expect(geom.scrollTop).toBe(800);
-    });
-
-    it("observe('host-layout') sync-pins even in spring mode (raw-controller mapping)", async () => {
-      // MessageTimeline's pane adapter intercepts 'host-layout' before
-      // it reaches the controller; this pins the controller's own
-      // terminal mapping (instant path, not the spring).
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      controller.observe('host-layout');
-
-      expect(geom.scrollTop).toBe(800);
-      for (let i = 0; i < 3; i++) await nextFrame();
-      expect(geom.scrollTop).toBe(800);
     });
 
     describe('stuck spring from instant pin during active chase', () => {
@@ -4737,27 +4525,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(afterEscape);
     });
 
-    it('markEscaped() cancels in-flight spring', async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      ro.fire(contentEl, 1200);
-      await nextFrame();
-      const midScrollTop = geom.scrollTop;
-
-      controller.markEscaped();
-
-      const afterStop = geom.scrollTop;
-      for (let i = 0; i < 20; i++) await nextFrame();
-      expect(geom.scrollTop).toBe(afterStop);
-      expect(geom.scrollTop).toBeLessThan(800); // didn't arrive after stop
-      // Suppress unused-var lint
-      expect(midScrollTop).toBeGreaterThanOrEqual(400);
-    });
-
     it('detach cancels in-flight spring and clears warm state', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
@@ -4823,7 +4590,15 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(600); // and no glide follows
     });
 
-    it('a live-content stamp retires the cold-load window for good', async () => {
+    it('keeps gliding when liveness lapses mid-settle', async () => {
+      // The post-turn drain symptom, as a transition rather than a
+      // state: streaming glides, the turn ends, the liveness hold
+      // lapses, and the tail keeps growing as markdown / highlight
+      // spans settle. Under the retired mode latch that lapse flipped
+      // the physics mid-settle, so the drain alternated glide and
+      // teleport ("it keeps jumping until the text settles"). It also
+      // pins that a live-content stamp retires the cold-load window for
+      // good: the unstamped growth after the lapse still glides.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // warm; cold-load window open
@@ -4835,33 +4610,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
       expect(geom.scrollTop).toBe(400);
-      await advanceUntil(() => geom.scrollTop === 600);
-
-      // Liveness lapses (turn ended). Later unstamped growth still
-      // glides — the window did not come back.
-      liveContent = false;
-      geom.scrollHeight = 1300;
-      geom.contentHeight = 1100;
-      ro.fire(contentEl, 1100);
-      expect(geom.scrollTop).toBe(600);
-      await advanceUntil(() => geom.scrollTop === 700);
-    });
-
-    it('keeps gliding when liveness lapses mid-settle', async () => {
-      // The post-turn drain symptom, as a transition rather than a
-      // state: streaming glides, the turn ends, the liveness hold
-      // lapses, and the tail keeps growing as markdown / highlight
-      // spans settle. Under the retired mode latch that lapse flipped
-      // the physics mid-settle, so the drain alternated glide and
-      // teleport ("it keeps jumping until the text settles").
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150); // warm
-
-      liveContent = true;
-      geom.scrollHeight = 1200;
-      geom.contentHeight = 1000;
-      ro.fire(contentEl, 1000);
       await advanceUntil(() => geom.scrollTop === 600);
 
       // Turn ends; nothing stamps live content any more.
@@ -5146,8 +4894,9 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // Spring canceled — scrollTop stops.
       const afterEscape = geom.scrollTop;
-      for (let i = 0; i < 5; i++) await nextFrame();
+      for (let i = 0; i < 20; i++) await nextFrame();
       expect(geom.scrollTop).toBe(afterEscape);
+      expect(geom.scrollTop).toBeLessThan(800); // didn't arrive after stop
     });
   });
 
@@ -5501,59 +5250,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(beforeChunk);
     });
 
-    it('composer-RO after scrollbar pointer escape does not pin', async () => {
-      stubScrollbarGutter(scrollEl);
-
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      scrollEl.dispatchEvent(
-        new PointerEvent('pointerdown', { bubbles: true, isPrimary: true, clientX: 195, clientY: 300 }),
-      );
-
-      geom.scrollHeight = 1100;
-      controller.observe('content');
-      expect(controller.escapedFromLock).toBe(true);
-      expect(geom.scrollTop).toBe(400);
-    });
-
-    it('two wheel-down steps across native scrollend use fresh down intent and re-stick', async () => {
-      // User wheel-down lands near-bottom but outside the 4px epsilon,
-      // then a later wheel-down reaches the actual bottom. Re-stick is
-      // driven by the second wheel's fresh down intent plus downward
-      // scroll movement from the controller-scope baseline.
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      // Escape.
-      fireWheel(scrollEl, -50, scrollEl);
-      geom.scrollTop = 100;
-      fireScroll(scrollEl);
-      await nextTimer();
-      expect(controller.escapedFromLock).toBe(true);
-
-      // Wheel #1: down by 100. Land at 200 (200px from bottom).
-      fireWheel(scrollEl, 100, scrollEl);
-      geom.scrollTop = 200;
-      fireScroll(scrollEl);
-      await nextTimer();
-      expect(controller.escapedFromLock).toBe(true);
-
-      // Scrollend fires after wheel #1's scroll settles.
-      fireScrollEnd(scrollEl);
-
-      // Wheel #2: down by 200. Land at 400 (at bottom).
-      fireWheel(scrollEl, 200, scrollEl);
-      geom.scrollTop = 400;
-      fireScroll(scrollEl);
-      await nextTimer();
-
-      // Should re-stick.
-      expect(controller.escapedFromLock).toBe(false);
-      expect(controller.isSticky).toBe(true);
-    });
   });
 
   describe('user-reported regression — re-stick invariants across production-like flows', () => {
@@ -5825,27 +5521,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.isSticky).toBe(true);
     });
 
-    it('wheel-down stops short of bottom by AUTO_FOLLOW_BOTTOM_EPSILON_PX (4px tolerance)', async () => {
-      // Browser scrollTop rounding can land the user 1-3 px short of
-      // the absolute max. The widened epsilon must tolerate this.
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      fireWheel(scrollEl, -50, scrollEl);
-      geom.scrollTop = 100;
-      fireScroll(scrollEl);
-      await nextTimer();
-
-      fireWheel(scrollEl, 300, scrollEl);
-      geom.scrollTop = 397; // 3 px short of max (400). Within 4 px epsilon.
-      fireScroll(scrollEl);
-      await nextTimer();
-
-      expect(controller.escapedFromLock).toBe(false);
-      expect(controller.isSticky).toBe(true);
-    });
-
     it('thread-switch-style reset (armWarmup + armRestoreSnap + forceStick(restore)) clears stuck escape', async () => {
       // What thread-switch does that chip click does NOT do. If this
       // path uniquely unblocks the user, the chip-click path is missing
@@ -5933,55 +5608,37 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.isSticky).toBe(false);
     });
 
-    it('wheel-down at distFromBottom=0 + escaped re-sticks without a follow-up scroll event (clamp-then-wheel lockout)', async () => {
+    it('wheel-down at distFromBottom=0 + escaped re-sticks AND a subsequent streaming chunk pins', async () => {
       // Bug #2 (bug-report-20260520T010930Z, seq 4953-5317). A content
       // shrink clamped scrollTop to the new max — the clamp's scroll
       // event fired BEFORE the contentRO microtask, so `resizeDifference`
       // was still 0 in handleScroll and there was no recent down intent.
       // User landed at distFromBottom=0 but escaped. They then wheeled
       // down to re-engage — but the browser refused to scroll past the
-      // absolute bottom, so ZERO scroll events fired. 180 wheel events
-      // could not reach the scroll-handler re-stick path. User stranded.
+      // absolute bottom, so ZERO scroll events fired. User stranded.
       //
       // Fix: handleWheel detects wheel-down + escaped + at-bottom and
       // re-sticks synchronously. The wheel itself is the explicit user
       // consent — no scroll event needed.
+      //
+      // After the wheel-handler re-stick, ordinary streaming must follow.
+      // Confirms isAtBottomState + springStopRequested are correctly reset
+      // so the next contentRO positive delta engages the spring
+      // (mode='spring' in this describe block) — the user-visible signal
+      // that re-stick "worked."
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
 
-      // Simulate the trapped state directly. Reproducing the full
-      // clamp-from-shrink-then-no-bailRO trap requires precise event
-      // ordering between scroll + contentRO that happy-dom doesn't model;
-      // the bug from the wheel-handler's perspective is exactly: escape
-      // is true and the user is at distFromBottom <= 4.
-      controller.markEscaped();
-      // geom.scrollTop is already 400 (per beforeEach). distFromBottom =
+      // Simulate the trapped state directly: happy-dom doesn't model the
+      // scroll/contentRO ordering of the clamp. distFromBottom =
       // 1000 - 400 - 600 = 0.
+      controller.markEscaped();
       expect(controller.escapedFromLock).toBe(true);
       expect(geom.scrollTop).toBe(400);
 
-      // Wheel down. Browser would refuse to scroll past max → no scroll
-      // event will fire. Re-stick MUST happen from the wheel handler.
-      fireWheel(scrollEl, 100, scrollEl);
-
-      expect(controller.escapedFromLock).toBe(false);
-      expect(controller.isSticky).toBe(true);
-    });
-
-    it('wheel-down at distFromBottom=0 + escaped re-sticks AND a subsequent streaming chunk pins', async () => {
-      // Bug #2 continuation: after the wheel-handler re-stick, ordinary
-      // streaming must follow. Confirms isAtBottomState + springStopRequested
-      // are correctly reset so the next contentRO positive delta engages
-      // the spring (mode='spring' in this describe block) — the user-visible
-      // signal that re-stick "worked."
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      controller.markEscaped();
-      expect(controller.escapedFromLock).toBe(true);
-
+      // Browser would refuse to scroll past max → no scroll event fires.
+      // Re-stick MUST happen from the wheel handler.
       fireWheel(scrollEl, 100, scrollEl);
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
@@ -7194,7 +6851,7 @@ describe('createUseStickToBottomController — spring chase', () => {
   });
 
   describe("observe('live-content') during sentinel — pane structural nudges", () => {
-    it('does not restart spring when scrollTop equals target', async () => {
+    it("multiple observe('live-content') calls during sentinel do not cause visible scroll motion", async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -7207,30 +6864,12 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // Sentinel running. scrollTop === target === 500.
       const scrollTopBefore = geom.scrollTop;
-      controller.observe('live-content');
-
-      // Should not move scrollTop — already at bottom, nothing grew.
-      expect(geom.scrollTop).toBe(scrollTopBefore);
-      for (let i = 0; i < 10; i++) await nextFrame();
-      expect(geom.scrollTop).toBe(scrollTopBefore);
-    });
-
-    it("multiple observe('live-content') calls during sentinel do not cause visible scroll motion", async () => {
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150);
-
-      geom.scrollHeight = 1100;
-      geom.contentHeight = 900;
-      ro.fire(contentEl, 900);
-      await advanceUntil(() => geom.scrollTop === 500);
-      while (mockNow < 520) await nextFrame();
-
-      const scrollTopBefore = geom.scrollTop;
       // Simulate 4 back-to-back pane structural nudges (armStructuralSpring
-      // post-flush observes for an append-heavy burst).
+      // post-flush observes for an append-heavy burst). None restarts the
+      // spring: already at bottom, nothing grew.
       for (let i = 0; i < 4; i++) {
         controller.observe('live-content');
+        expect(geom.scrollTop).toBe(scrollTopBefore);
         await nextFrame();
         await nextFrame();
       }
@@ -7572,20 +7211,15 @@ describe('createUseStickToBottomController — external content-geometry source'
   });
 
   describe('warm-up gate — settled fast-path', () => {
-    it('reveals immediately on settle evidence when no quietContextSignal option exists', () => {
+    it.each([
+      ['reveals immediately on settle evidence when no quietContextSignal option exists', undefined, 0],
+      ['reveals immediately on settle evidence once the typesetting signal is settled', true, 2],
+    ] as const)('%s', (_name, signalValue, correctionPx) => {
+      signal = signalValue;
       deliver(800); // first sample: window not yet measured
       expect(controller.isWarm).toBe(false);
       expect(controller.warmReason).toBeNull();
-      deliver(800, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 0 });
-      expect(controller.isWarm).toBe(true);
-      expect(controller.warmReason).toBe('settled');
-    });
-
-    it('reveals immediately on settle evidence once the typesetting signal is settled', () => {
-      signal = true;
-      deliver(800);
-      expect(controller.isWarm).toBe(false);
-      deliver(800, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: 2 });
+      deliver(800, 800, { windowMeasured: true, maxFirstMeasureCorrectionPx: correctionPx });
       expect(controller.isWarm).toBe(true);
       expect(controller.warmReason).toBe('settled');
     });
@@ -7669,21 +7303,15 @@ describe('createUseStickToBottomController — external content-geometry source'
   // application (PaneScrollController.armWarmup) is what closes it again
   // for the mount it exists for.
   describe('warm-up gate — cold-load re-arm', () => {
-    it('opens against the empty pane while the slice is in flight', async () => {
+    it('re-arming as the slice lands hides the cascade and reveals once it quiets', async () => {
       controller.armWarmup();
-      // The empty mount window: totalSize 0, nothing measured.
+      // The empty mount window (totalSize 0, nothing measured) opens the
+      // gate while the slice is in flight.
       deliver(0, 800);
       expect(controller.isWarm).toBe(false);
       await waitMs(150);
       expect(controller.isWarm).toBe(true);
       expect(controller.warmReason).toBe('quiet');
-    });
-
-    it('re-arming as the slice lands hides the cascade and reveals once it quiets', async () => {
-      controller.armWarmup();
-      deliver(0, 800);
-      await waitMs(150);
-      expect(controller.isWarm).toBe(true);
 
       // Initial slice applied: the pane re-arms synchronously with the
       // item mutation, before the flush that mounts those rows.
