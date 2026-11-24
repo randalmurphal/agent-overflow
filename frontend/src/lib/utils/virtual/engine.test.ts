@@ -323,8 +323,6 @@ describe('applyLength', () => {
   it.each([
     ['head prepend emits head-splice compensation', 300, 12, 2,
       [3, 10], 1200, { kind: 'head-splice', delta: 200, target: 500 }],
-    ['head removal emits negative head-splice compensation', 300, 8, -2,
-      [0, 6], 800, { kind: 'head-splice', delta: -200, target: 100 }],
     ['clamps the compensation target at 0', 100, 8, -2,
       [0, 5], 800, { kind: 'head-splice', delta: -200, target: 0 }],
     ['handles a head splice and tail change in one batch', 300, 11, 2,
@@ -362,6 +360,28 @@ describe('applyLength', () => {
     // prependHead computes offsets for the 2 new head rows via estimate
     // at their post-splice indices 0 and 1.
     expect(seen).toEqual([0, 1]);
+  });
+
+  it('head removal takes the offsets-memo path and consults no estimate at all', () => {
+    const seen: number[] = [];
+    const indexedEstimate: RowEstimate = {
+      at(index) {
+        seen.push(index);
+        return 100;
+      },
+    };
+    const engine = mountedEngine({ estimate: indexedEstimate });
+    engine.applyScroll(300); // seeds the full offsets memo
+    seen.length = 0;
+
+    expect(engine.applyLength(8, -2)).toEqual({
+      window: [0, 6],
+      totalSize: 800,
+      compensation: { kind: 'head-splice', delta: -200, target: 100 },
+    });
+    // Seeding computed the full offsets memo, so the removal reads the
+    // memo's already-known removed size instead of calling estimate.
+    expect(seen).toEqual([]);
   });
 
   it('shrinks to empty and regrows from estimates', () => {
