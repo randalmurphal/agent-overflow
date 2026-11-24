@@ -31,6 +31,7 @@ import {
   sendMigration,
   setPhaseScenario,
   threadScenario,
+  type Migration,
   type MockInput,
   type StartAnswer,
 } from './workflows-agent-tools-helpers.js';
@@ -107,14 +108,14 @@ for (const provider of PROVIDERS) {
     const restedOutput = await awaitWorkflowAnswer(harness, 'run_output', { cwd: project.path });
     expect(restedOutput.isError, restedOutput.text).toBe(false);
     await awaitTurnCompleted(harness, project.threadId);
-    // The barrier: a wake for the importer's rest would have been queued
-    // during turn 1, so the thread takes it in before the next message or
-    // with it.
-    await importerWake.expectNoneThrough(
-      () => sendMigration(harness, provider, project),
-      'the importer rest the wait returned also woke the thread',
-    );
-    const migration = await finishMigration(harness, provider, project);
+    // The barrier is the whole migrator flow: a wake for the importer's
+    // rest would reach the thread with the next message, during its turn,
+    // or beside the migrator's own wake.
+    let migration!: Migration;
+    await importerWake.expectNoneThrough(async () => {
+      await sendMigration(harness, provider, project);
+      migration = await finishMigration(harness, provider, project);
+    }, 'the importer rest the wait returned also woke the thread');
 
     // An interactive thread in a project holds every tool, and its guide
     // is the one the server built for it.

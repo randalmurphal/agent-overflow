@@ -184,8 +184,9 @@ echo "the only report"
           afterTurns: 'silent',
         }),
       );
-      // After the provider's exit, the send alone does not reach a session
-      // here; this start does.
+      // The app reconnects by itself after the provider's exit, before the
+      // scenario above is set. This start replaces that session, so the
+      // mock that takes the send registered under the scenario above.
       await harness.startSession(thread);
       await harness.send(thread, 'what did you miss?');
       const status = await awaitToolAnswer<{ wakes?: (WakeRow & { last_output?: string; undelivered?: string })[] }>(
