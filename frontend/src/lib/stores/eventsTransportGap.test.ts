@@ -586,7 +586,10 @@ describe('transport gap — computer membership', () => {
 });
 
 describe('transport gap — the Pull requests channels', () => {
-  it('holds the computer\'s recovery until the list\'s re-subscribe settles', async () => {
+  it.each([
+    ["the list's re-subscribe settles", 'pulls:updated', 'pullsGap'],
+    ["the pipelines' re-subscribes settle", 'ci:pipeline_updated', 'pipelinesGap'],
+  ] as const)('holds the computer\'s recovery until %s', async (_name, channel, gap) => {
     const laptop = stageBackend();
     const phases: string[] = [];
     const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
@@ -594,34 +597,10 @@ describe('transport gap — the Pull requests channels', () => {
     const resync = new Promise<void>((resolve) => {
       done = resolve;
     });
-    const remove = setPullsReceiver({ pullsGap: () => resync });
+    const remove = setPullsReceiver({ [gap]: () => resync });
     try {
       laptop.replay('start');
-      applyTransportGap({ channel: 'pulls:updated', seq: 3 }, { backendId: backendById('laptop')!.backendId });
-      laptop.replay('complete');
-      for (let i = 0; i < 6; i += 1) await Promise.resolve();
-      expect(phases).toEqual(['laptop:start']);
-      done();
-      await vi.waitFor(() => expect(phases).toEqual(['laptop:start', 'laptop:complete']));
-    } finally {
-      remove();
-      off();
-      resetStagedBackends();
-    }
-  });
-
-  it('holds the computer\'s recovery until the pipelines\' re-subscribes settle', async () => {
-    const laptop = stageBackend();
-    const phases: string[] = [];
-    const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
-    let done!: () => void;
-    const resync = new Promise<void>((resolve) => {
-      done = resolve;
-    });
-    const remove = setPullsReceiver({ pipelinesGap: () => resync });
-    try {
-      laptop.replay('start');
-      applyTransportGap({ channel: 'ci:pipeline_updated', seq: 3 }, { backendId: backendById('laptop')!.backendId });
+      applyTransportGap({ channel, seq: 3 }, { backendId: backendById('laptop')!.backendId });
       laptop.replay('complete');
       for (let i = 0; i < 6; i += 1) await Promise.resolve();
       expect(phases).toEqual(['laptop:start']);
