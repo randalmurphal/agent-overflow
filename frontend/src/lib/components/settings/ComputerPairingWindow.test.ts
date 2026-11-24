@@ -471,6 +471,32 @@ describe('computer pairing window decisions', () => {
     expect(view.queryByText('Computer paired')).toBeNull();
   });
 
+  // Another owner view approves while this Allow is in flight, a poll reads
+  // it confirmed, the computer then loses its access, and the status read
+  // fails: the Allow's refusal names the loss, and the dialog shows it.
+  it.each([
+    ['pairing_access_ended', 'This computer was paired, and its access has since ended or expired. Choose Try again to pair it again.'],
+    ['pairing_device_removed', 'This computer was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose Try again.'],
+  ])('shows the lost access an approval names after a poll said confirmed and the status is unreachable: %s', async (code, text) => {
+    setBindingMock('OpenComputerPairing', async () => WINDOW);
+    const poll = setBindingMock('ComputerPairingStatus', async () => READY);
+    let refuse!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((_, reject) => {
+      refuse = () => reject(new TransportError(code, 'this device was allowed, and has since lost its access'));
+    }));
+    const view = show();
+    await vi.waitFor(() => expect(view.getByLabelText('Verification number')).toBeTruthy());
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    poll.mockResolvedValue({ ...READY, state: 'confirmed' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.waitFor(() => expect(view.getByText('Computer paired')).toBeTruthy());
+    poll.mockRejectedValue(new Error('connection lost'));
+    refuse();
+    await vi.waitFor(() => expect(view.getByText(text)).toBeTruthy());
+    expect(view.getByRole('alert')).toHaveTextContent('Could not allow this computer: this device was allowed, and has since lost its access');
+    expect(view.queryByText('Computer paired')).toBeNull();
+  });
+
   it('shows a computer another owner view already approved as paired', async () => {
     setBindingMock('OpenComputerPairing', async () => WINDOW);
     setBindingMock('ComputerPairingStatus', async () => READY);

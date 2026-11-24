@@ -10,8 +10,8 @@
   import { TransportError } from '../../transport/wsClient';
   import { backendNow } from '../../transport/backendClock';
   import { settingsComputer } from './settingsComputer';
-  import { pairingAlreadyAllowed, pairingDecisionSettled, pairingTurns, recordPairingDecision, type PairingTurn } from './pairingTurns';
-  import { accessLostText, foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
+  import { pairingDecisionSettled, pairingTurns, recordPairingDecision, type PairingTurn } from './pairingTurns';
+  import { accessLostText, approvalAnswer, foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
 
   let { networkChoice, access, ownEnroll, onChanged, onClose }: {
     networkChoice: string;
@@ -187,17 +187,24 @@
       await call(() => ConfirmDevicePairing(linkId));
       adopt(at, { phase: 'confirmed' });
     } catch (err) {
-      // Another owner view approved it first: the computer is paired.
-      if (pairingAlreadyAllowed(err)) {
-        adopt(at, { phase: 'confirmed' });
+      // A result that names the link's state is folded as it arrives:
+      // already allowed is paired, and a lost access is that ending beside
+      // the refusal, whatever the dialog already held.
+      const named = approvalAnswer(err);
+      if (named?.phase === 'confirmed') {
+        adopt(at, named);
         return;
       }
-      // The approval may have committed with its reply lost; the host's
-      // status of this window is the decision's durable result. A window
-      // that ended meanwhile says why, beside the refusal.
-      const after = await call(() => ComputerPairingStatus(windowId)).then(answerOf, () => null);
-      if (after) adopt(at, after);
-      if (at.current ? held?.phase === 'confirmed' : after?.phase === 'confirmed') return;
+      if (named) {
+        adopt(at, named);
+      } else {
+        // The approval may have committed with its reply lost; the host's
+        // status of this window is the decision's durable result. A window
+        // that ended meanwhile says why, beside the refusal.
+        const after = await call(() => ComputerPairingStatus(windowId)).then(answerOf, () => null);
+        if (after) adopt(at, after);
+        if (at.current ? held?.phase === 'confirmed' : after?.phase === 'confirmed') return;
+      }
       const message = `Could not allow this computer: ${errString(err)}`;
       // A dismissed dialog has nowhere to show it, so the failure is a toast.
       if (at.current) error = message;

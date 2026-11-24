@@ -368,6 +368,31 @@ describe('<PairDeviceModal> across a reopen', () => {
 
   // Answers can arrive out of the host's order; what the modal shows never
   // moves backward. A confirmation that lost its access stays ended.
+  // Another owner view approves while this Allow is in flight, a poll reads
+  // it confirmed, and the device then loses its access: the Allow's refusal
+  // names that, and the modal shows it, not "Device paired".
+  it.each([
+    ['pairing_access_ended', 'This device was paired, and its access has since ended or expired. Choose New link to pair it again.'],
+    ['pairing_device_removed', 'This device was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose New link.'],
+  ])('shows the lost access an approval names after a poll said confirmed: %s', async (code, text) => {
+    vi.useFakeTimers();
+    setBindingMock('MintDevicePairing', async () => INVITE);
+    const poll = setBindingMock('DevicePairingStatus', async () => ({ state: 'redeemed', verificationNumber: '135 791', expiresAtMs: INVITE.expiresAtMs }));
+    let refuse!: () => void;
+    setBindingMock('ConfirmDevicePairing', () => new Promise<void>((_, reject) => {
+      refuse = () => reject(new TransportError(code, 'this device was allowed, and has since lost its access'));
+    }));
+    const view = renderModal();
+    await verifyStage(view);
+    await fireEvent.click(view.getByRole('button', { name: 'It matches — allow' }));
+    poll.mockResolvedValue({ state: 'confirmed', expiresAtMs: INVITE.expiresAtMs });
+    await vi.advanceTimersByTimeAsync(2_100);
+    await view.findByText('Device paired');
+    refuse();
+    await view.findByText(text);
+    expect(view.queryByText('Device paired')).toBeNull();
+  });
+
   it('keeps the ended access when a late poll or a late approval reply says confirmed', async () => {
     vi.useFakeTimers();
     setBindingMock('MintDevicePairing', async () => INVITE);

@@ -6,6 +6,9 @@
 // arrive in any order; the held value never moves backward in the host's
 // own order.
 
+import { TransportError } from '../../transport/wsClient';
+import { pairingAlreadyAllowed } from './pairingTurns';
+
 /**
  * The phases a link moves through, as tiers in the host's own order, lowest
  * first. An answer of a higher tier replaces the held one; a lower one
@@ -76,6 +79,23 @@ export function accessLostText(phase: AccessLost, subject: string, retry: string
   switch (phase) {
     case 'accessEnded': return `${subject} was paired, and its access has since ended or expired. Choose ${retry} to pair it again.`;
     case 'deviceRemoved': return `${subject} was paired, and its access was removed in Devices. Choose Restore or Forget on it in Devices, then choose ${retry}.`;
+  }
+}
+
+/**
+ * The link's state an approval's result names (ConfirmDevicePairing):
+ * already allowed is confirmed, and a refusal that names how an earlier
+ * approval's access was lost is that phase. Null for a result that names no
+ * state (a transport failure, or any other refusal), which only the host's
+ * status can settle.
+ */
+export function approvalAnswer(err: unknown): PairingAnswer | null {
+  if (pairingAlreadyAllowed(err)) return { phase: 'confirmed' };
+  if (!(err instanceof TransportError)) return null;
+  switch (err.code) {
+    case 'pairing_access_ended': return { phase: 'accessEnded' };
+    case 'pairing_device_removed': return { phase: 'deviceRemoved' };
+    default: return null;
   }
 }
 

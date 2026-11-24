@@ -44,8 +44,8 @@
   import SettingsCallout from './SettingsCallout.svelte';
   import ComputerPairingWindow from './ComputerPairingWindow.svelte';
   import { INPUT_CLASS } from './styles';
-  import { pairingAlreadyAllowed, pairingTurns, type PairingTurn } from './pairingTurns';
-  import { accessLostText, foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
+  import { pairingTurns, type PairingTurn } from './pairingTurns';
+  import { accessLostText, approvalAnswer, foldPairing, pairingSettled, type PairingAnswer, type PairingHeld } from './pairingProgress';
 
   interface Props {
     open: boolean;
@@ -291,15 +291,20 @@
     const linkId = link.invite.linkId;
     deciding = true;
     try {
+      let answer: PairingAnswer = { phase: 'confirmed' };
       try {
         await call(() => ConfirmDevicePairing(linkId));
       } catch (err) {
-        // Another owner view approved it first: the device is allowed.
-        if (!pairingAlreadyAllowed(err)) throw err;
+        // A result that names the link's state (already allowed, or its
+        // access since lost) is folded like any answer, and the modal shows
+        // it; any other refusal is a failure, and the polls answer next.
+        const named = approvalAnswer(err);
+        if (!named) throw err;
+        answer = named;
       }
       // The approval changed what the surfaces behind the modal show,
       // whatever this modal still holds.
-      if (!adopt(at, { phase: 'confirmed' })) onChanged();
+      if (!adopt(at, answer)) onChanged();
     } catch (err) {
       addErrorToast(`Failed to allow the device: ${errString(err)}`, err);
     } finally {
