@@ -88,48 +88,32 @@ func peerSteps(t *testing.T, logs *testutil.SyncLogBuffer, p *stalledPeer) []tes
 	return testutil.CheckedSlowSteps(t, logs.String(), slowStepComponent, "socket-ticket", "credential", p.id, p.Listener.Addr().String())
 }
 
-func TestSlowStep_PeerDialPastThresholdLogsItsDuration(t *testing.T) {
-	testutil.LowerSlowStepThreshold(t, 20*time.Millisecond)
-	m, p := newStalledPeer(t, &stalledPeer{dial: peerStall})
-	logs := testutil.CaptureLogOutput(t)
+// Each step of a call to a paired computer that runs past the threshold logs
+// its duration and outcome once; a call's step names the method.
+func TestSlowStep_PeerStepPastThresholdLogsItsDuration(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		peer    stalledPeer
+		refused bool
+		step    string
+		outcome string
+	}{
+		{"dial", stalledPeer{dial: peerStall}, false, stepPeerDial, "ok"},
+		{"refused dial", stalledPeer{dial: peerStall, refuseUpgrade: true}, true, stepPeerDial, "refused"},
+		{"hello", stalledPeer{hello: peerStall}, false, stepPeerHello, "ok"},
+		{"call", stalledPeer{call: peerStall}, false, stepPeerCall + ".ListOwnDevices", "ok"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.LowerSlowStepThreshold(t, 20*time.Millisecond)
+			m, p := newStalledPeer(t, &tc.peer)
+			logs := testutil.CaptureLogOutput(t)
 
-	if err := listOwnDevices(t, m, p.id); err != nil {
-		t.Fatalf("CallOwnDevice: %v", err)
+			if err := listOwnDevices(t, m, p.id); (err != nil) != tc.refused {
+				t.Fatalf("CallOwnDevice = %v, want refused %t", err, tc.refused)
+			}
+			testutil.ExpectOneSlowStep(t, peerSteps(t, logs, p), tc.step, tc.outcome, peerStall)
+		})
 	}
-	testutil.ExpectOneSlowStep(t, peerSteps(t, logs, p), stepPeerDial, "ok", peerStall)
-}
-
-func TestSlowStep_RefusedPeerDialReportsTheRefusal(t *testing.T) {
-	testutil.LowerSlowStepThreshold(t, 20*time.Millisecond)
-	m, p := newStalledPeer(t, &stalledPeer{dial: peerStall, refuseUpgrade: true})
-	logs := testutil.CaptureLogOutput(t)
-
-	if err := listOwnDevices(t, m, p.id); err == nil {
-		t.Fatal("a refused upgrade answered the call")
-	}
-	testutil.ExpectOneSlowStep(t, peerSteps(t, logs, p), stepPeerDial, "refused", peerStall)
-}
-
-func TestSlowStep_PeerHelloPastThresholdLogsItsDuration(t *testing.T) {
-	testutil.LowerSlowStepThreshold(t, 20*time.Millisecond)
-	m, p := newStalledPeer(t, &stalledPeer{hello: peerStall})
-	logs := testutil.CaptureLogOutput(t)
-
-	if err := listOwnDevices(t, m, p.id); err != nil {
-		t.Fatalf("CallOwnDevice: %v", err)
-	}
-	testutil.ExpectOneSlowStep(t, peerSteps(t, logs, p), stepPeerHello, "ok", peerStall)
-}
-
-func TestSlowStep_PeerCallPastThresholdNamesTheMethod(t *testing.T) {
-	testutil.LowerSlowStepThreshold(t, 20*time.Millisecond)
-	m, p := newStalledPeer(t, &stalledPeer{call: peerStall})
-	logs := testutil.CaptureLogOutput(t)
-
-	if err := listOwnDevices(t, m, p.id); err != nil {
-		t.Fatalf("CallOwnDevice: %v", err)
-	}
-	testutil.ExpectOneSlowStep(t, peerSteps(t, logs, p), stepPeerCall+".ListOwnDevices", "ok", peerStall)
 }
 
 func TestSlowStep_FastPeerStepsLogNothing(t *testing.T) {

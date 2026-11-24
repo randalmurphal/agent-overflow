@@ -18,19 +18,12 @@ import (
 // test holds ForkLock exclusively, as a fork does. It reports whether the
 // copy waited for the lock: the copy either finishes or parks acquiring it,
 // and the goroutine dump says which, so the answer does not depend on how
-// long anything takes. The lock is released before it returns and the copy
-// has finished.
+// long anything takes. When the copy was found waiting, it also reports
+// whether the copied file was already in place: the copy wrote it before it
+// waited. The lock is released before it returns and the copy has finished.
 //
 // Callers are not parallel: no other test may take the lock meanwhile.
-func copyWhileAForkHoldsTheLock(t *testing.T, mode os.FileMode) (waited bool, worktree string) {
-	waited, _, worktree = copyWhileAForkHoldsTheLockWritten(t, mode)
-	return waited, worktree
-}
-
-// copyWhileAForkHoldsTheLockWritten is copyWhileAForkHoldsTheLock that also
-// reports whether, when the copy was found waiting, the copied file was
-// already in place: the copy wrote it before it waited.
-func copyWhileAForkHoldsTheLockWritten(t *testing.T, mode os.FileMode) (waited, writtenFirst bool, worktree string) {
+func copyWhileAForkHoldsTheLock(t *testing.T, mode os.FileMode) (waited, writtenFirst bool, worktree string) {
 	t.Helper()
 	project := t.TempDir()
 	worktree = t.TempDir()
@@ -78,11 +71,17 @@ func copyParkedOnForkLock(stacks []byte) bool {
 // A setup command can run a copied executable right after the copy. A
 // process started while the file was open for writing would keep it busy
 // and the command would fail with "text file busy", so the copy holds
-// process starts off.
+// process starts off. On Linux it must not hold every process start in the
+// app for the whole copy: Go's fork holds the lock until its child execs,
+// so the copy writes the file first and only then waits for the starts in
+// progress, after which none of them holds it open.
 func TestCopyWritesAnExecutableWithForksHeldOff(t *testing.T) {
-	waited, worktree := copyWhileAForkHoldsTheLock(t, 0o755)
+	waited, writtenFirst, worktree := copyWhileAForkHoldsTheLock(t, 0o755)
 	if !waited {
 		t.Fatal("an executable was copied while a fork held ForkLock")
+	}
+	if runtime.GOOS == "linux" && !writtenFirst {
+		t.Fatal("the copy held process starts off before it wrote the file")
 	}
 	info, err := os.Stat(filepath.Join(worktree, "tool"))
 	if err != nil {
@@ -95,7 +94,7 @@ func TestCopyWritesAnExecutableWithForksHeldOff(t *testing.T) {
 
 // A file nothing can execute is copied without making process starts wait.
 func TestCopyWritesOtherFilesWithoutHoldingForks(t *testing.T) {
-	if waited, _ := copyWhileAForkHoldsTheLock(t, 0o644); waited {
+	if waited, _, _ := copyWhileAForkHoldsTheLock(t, 0o644); waited {
 		t.Fatal("a non-executable copy waited for ForkLock")
 	}
 }

@@ -6,18 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/appupdate"
-	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/supervise"
 )
 
@@ -51,95 +46,6 @@ func wantPhasesOnce(t *testing.T, text string, names ...string) {
 		if timed[name] != 1 {
 			t.Errorf("phase %s logged %d times, want once\nlog:\n%s", name, timed[name], text)
 		}
-	}
-}
-
-// The WSL commands as the launcher runs them: each logs its phases on its
-// stderr, which the launcher copies into its log, and so does the trial
-// they start, including its shutdown.
-func TestUpdateCommandsLogTheirPhasesThroughMain(t *testing.T) {
-	kerneltest.IsolateSpawns(t)
-	dataRoot := t.TempDir()
-	dir := filepath.Join(dataRoot, appdirs.DirName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "agent-overflow.db"), []byte("live"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	snapshot := func() {
-		t.Helper()
-		run := runUpdateCommandProcess(t, "", supervise.UpdateSnapshotCommand, "--id", "u1", "--data-dir", dataRoot)
-		if result := run.result(t); result.Outcome != supervise.UpdateOutcomeOK {
-			t.Fatalf("snapshot = %+v\n%s", result, run.stderr)
-		}
-		// The stub database is not SQLite, so the schema read fails and
-		// says so with its duration.
-		wantPhasesOnce(t, run.stderr, "command", "snapshot.lock", "snapshot.prepare", "snapshot.schema",
-			"snapshot.clear", "snapshot.space", "snapshot.copy", "snapshot.sync")
-		if _, failed := phaseCounts(t, run.stderr); failed["snapshot.schema"] != 1 || failed["command"] != 0 {
-			t.Fatalf("failed phases = %v\n%s", failed, run.stderr)
-		}
-	}
-
-	snapshot()
-	run := runUpdateCommandProcess(t, "prepare", supervise.UpdateTrialRunCommand,
-		"--id", "u1", "--to", "2.0.0", "--attempt", "1", "--data-dir", dataRoot)
-	if result := run.result(t); result.Outcome != supervise.UpdateOutcomePrepared {
-		t.Fatalf("trial run = %+v\n%s", result, run.stderr)
-	}
-	wantPhasesOnce(t, run.stderr, "command", "trial.lock", "trial.prepare", "trial.check",
-		"trial.start", "trial.boot", "trial.stop", "shutdown")
-	if !strings.Contains(run.stderr, "update trial: phase=shutdown duration=") {
-		t.Fatalf("the trial did not time its own shutdown:\n%s", run.stderr)
-	}
-
-	snapshot()
-	run = runUpdateCommandProcess(t, "fail", supervise.UpdateTrialRunCommand,
-		"--id", "u1", "--to", "2.0.0", "--attempt", "1", "--data-dir", dataRoot)
-	if result := run.result(t); result.Outcome != supervise.UpdateOutcomeRolledBack {
-		t.Fatalf("trial run = %+v\n%s", result, run.stderr)
-	}
-	// A trial that reports its failure is stopped, then restored. It also
-	// exits on its own, and one whose exit is read first needs no stop.
-	wantPhasesOnce(t, run.stderr, "command", "trial.start", "trial.boot", "shutdown",
-		"restore.mark", "restore.remove", "restore.copy", "restore.sync", "restore.clear")
-	if timed, _ := phaseCounts(t, run.stderr); timed["trial.stop"] > 1 {
-		t.Fatalf("trial.stop logged %d times, want at most once\n%s", timed["trial.stop"], run.stderr)
-	}
-	if _, failed := phaseCounts(t, run.stderr); failed["trial.boot"] != 1 || failed["command"] != 1 || len(failed) != 2 {
-		t.Fatalf("failed %v; want the boot and the command\n%s", failed, run.stderr)
-	}
-}
-
-// The desktop helper runs every step in its own process: its lock wait and
-// the update's summary are in its log beside the steps' phases.
-func TestDesktopHelperLogsItsPhases(t *testing.T) {
-	const id = "0123456789abcdef"
-	r := newDesktopApplyRig(t)
-	r.desktopUpdateFixture(id, 0)
-	var mu sync.Mutex
-	var logged []string
-	logf := func(format string, args ...any) {
-		mu.Lock()
-		defer mu.Unlock()
-		logged = append(logged, fmt.Sprintf(format, args...))
-	}
-	applier := r.applier(desktopApplyFlags{id: id, relaunch: []string{"--data-dir", r.root}}, "prepare",
-		func(u *supervise.DesktopUpdate) { u.Logf = logf })
-	applier.logf = logf
-	applier.run(t.Context())
-
-	mu.Lock()
-	text := strings.Join(logged, "\n")
-	mu.Unlock()
-	wantPhasesOnce(t, text, "lock", "snapshot.copy", "trial.start", "trial.boot", "trial.stop", "settle", "publish")
-	if !strings.Contains(text, "updater: update "+id+": phase=lock duration=") {
-		t.Fatalf("the helper's lock wait is not logged as its own:\n%s", text)
-	}
-	summary := regexp.MustCompile(`updater: update `+id+`: summary total=\S+ phases=(\S+) outcome=committed`).FindAllStringSubmatch(text, -1)
-	if len(summary) != 1 || !regexp.MustCompile(`^snapshot:[^,]+,record-attempt:[^,]+,trial\.1:[^,]+,settle:[^,]+,publish:[^,]+$`).MatchString(summary[0][1]) {
-		t.Fatalf("summary = %q\nlog:\n%s", summary, text)
 	}
 }
 

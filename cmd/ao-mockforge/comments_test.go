@@ -135,7 +135,7 @@ func TestCommentActionsThroughTheAppsForgeCode(t *testing.T) {
 			if c := onLine.Comments[0]; c.AuthorLogin != "alice" || !c.ViewerCanEdit || !c.ViewerCanDelete || c.ID == "" {
 				t.Fatalf("the viewer's comment = %+v", c)
 			}
-			if got := threadByBody(read, "theirs"); len(got.Comments) != 2 || got.Comments[1].Body != "a reply" || !got.Comments[1].ViewerCanEdit {
+			if got := threadByBody(read, "theirs"); len(got.Comments) != 2 || got.Comments[1].Body != "a reply" || got.Comments[1].AuthorLogin != "alice" || !got.Comments[1].ViewerCanEdit {
 				t.Fatalf("thread after the reply = %+v", got.Comments)
 			}
 
