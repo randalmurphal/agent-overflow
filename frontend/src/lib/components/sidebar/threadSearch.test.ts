@@ -19,22 +19,18 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 }
 
 describe('threadMatchesQuery', () => {
-  it('matches everything when the query is empty (no filter)', () => {
-    expect(threadMatchesQuery(makeThread(), '')).toBe(true);
-  });
-
-  it('matches on a title substring', () => {
-    expect(threadMatchesQuery(makeThread({ title: 'Deploy Script' }), 'deploy')).toBe(true);
-  });
-
-  it('matches on a workspace-path substring', () => {
-    expect(threadMatchesQuery(makeThread({ workspacePath: '/var/logs/app' }), 'logs')).toBe(true);
-  });
-
-  it('returns false when neither title nor path contains the query', () => {
-    expect(threadMatchesQuery(makeThread({ title: 'abc', workspacePath: '/x/y' }), 'zzz')).toBe(
+  it.each([
+    ['matches everything when the query is empty (no filter)', {}, '', true],
+    ['matches on a title substring', { title: 'Deploy Script' }, 'deploy', true],
+    ['matches on a workspace-path substring', { workspacePath: '/var/logs/app' }, 'logs', true],
+    [
+      'returns false when neither title nor path contains the query',
+      { title: 'abc', workspacePath: '/x/y' },
+      'zzz',
       false,
-    );
+    ],
+  ] as const)('%s', (_name, overrides, query, expected) => {
+    expect(threadMatchesQuery(makeThread(overrides), query)).toBe(expected);
   });
 
   it('expects a pre-lowercased query — it lowercases the haystack, not the query', () => {
