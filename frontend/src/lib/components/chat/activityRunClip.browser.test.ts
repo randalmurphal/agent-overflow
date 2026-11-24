@@ -220,10 +220,16 @@ describe('activity run clip — the cap', () => {
     stop();
   });
 
-  it('subtracts a declared line clamp from a body mounted already expanded', async () => {
-    // A reasoning row remounting already-expanded from its lease never
-    // renders its collapsed clamp, so there is nothing to measure — the
-    // body's `data-collapsed-lines` declaration carries the baseline.
+  // A reasoning row remounting already-expanded from its lease never renders
+  // its collapsed clamp, so there is nothing to measure: the body's
+  // `data-collapsed-lines` declaration carries the baseline. The zero case is
+  // the reported defect: expanding a think block whose full text already fit
+  // under the 3-line clamp added no height to the row, yet grew the run by
+  // three lines of cap.
+  it.each([
+    ['subtracts a declared line clamp from a body mounted already expanded', { heightPx: 220, lift: 220 - 3 * 20 }],
+    ['reports zero for an expanded body no taller than its declared clamp', { heightPx: 40, lift: 0 }],
+  ])('%s', async (_, { heightPx, lift }) => {
     const { clip, content } = mountColumn();
     rows(content, 40);
     const trigger = document.createElement('button');
@@ -232,35 +238,13 @@ describe('activity run clip — the cap', () => {
     const body = document.createElement('div');
     body.id = 'body-1';
     body.setAttribute('data-collapsed-lines', '3');
-    body.style.cssText = 'height: 220px; line-height: 20px;';
+    body.style.cssText = `height: ${heightPx}px; line-height: 20px;`;
     content.append(trigger, body);
 
     const stop = observeActivityRunExpansion(clip);
     await afterDelivery();
 
-    expect(activityRunClipLiftPx(clip)).toBe(220 - 3 * 20);
-    stop();
-  });
-
-  it('reports zero for an expanded body no taller than its declared clamp', async () => {
-    // The reported defect: expanding a think block whose full text already
-    // fit under the 3-line clamp added no height to the row, yet grew the
-    // run by three lines of cap.
-    const { clip, content } = mountColumn();
-    rows(content, 40);
-    const trigger = document.createElement('button');
-    trigger.setAttribute('aria-expanded', 'true');
-    trigger.setAttribute('aria-controls', 'body-1');
-    const body = document.createElement('div');
-    body.id = 'body-1';
-    body.setAttribute('data-collapsed-lines', '3');
-    body.style.cssText = 'height: 40px; line-height: 20px;';
-    content.append(trigger, body);
-
-    const stop = observeActivityRunExpansion(clip);
-    await afterDelivery();
-
-    expect(activityRunClipLiftPx(clip)).toBe(0);
+    expect(activityRunClipLiftPx(clip)).toBe(lift);
     stop();
   });
 

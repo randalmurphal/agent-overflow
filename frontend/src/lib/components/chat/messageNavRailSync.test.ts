@@ -134,190 +134,127 @@ describe('messageNavRailSync single position claim', () => {
     expect(currents()).toEqual(['false', 'false', 'false']);
   });
 
-  it('messages on screen: only the nearest-to-center lights and the dot yields', () => {
-    // Tall viewport seeing both u1 (node 0) and u2 (node 5): rebuild
-    // with viewport 700 via a fresh sync instance.
+  // One claim per row, decided by nearest-to-center or an edge override; a
+  // lit tick hides the dot. Each node is 100px, so a row's center is
+  // node·100 + 50 and the band center is offset + (centerY || viewport / 2).
+  it.each([
+    // Viewport 50..749 sees u1 and u2, off the thread-top override.
+    // Center 400: u1's 50 is 350 away, u2's 550 is 150 away.
+    [
+      'messages on screen: only the nearest-to-center lights and the dot yields',
+      {
+        ticks: merged, viewport: 700, total: 1100, centerY: 0, offset: 50,
+        lit: ['false', 'true', 'false'],
+      },
+    ],
+    // Same geometry, but a composer eats the bottom: the visible band's
+    // center is y=200 → absolute 250. u1's 50 is 200 away, u2's 550 is
+    // 300 away (the raw center 400 would pick u2).
+    [
+      'the visible-band center decides, not the raw viewport center',
+      {
+        ticks: merged, viewport: 700, total: 1100, centerY: 200, offset: 50,
+        lit: ['true', 'false', 'false'],
+      },
+    ],
+    // The center favors u2, but scrollTop 0 with the thread's first
+    // message loaded (loadedStart 0) is the top of the CONVERSATION.
+    [
+      'at the very top of the thread the first tick lights regardless of center',
+      {
+        ticks: merged, viewport: 700, total: 1100, centerY: 0, offset: 0,
+        lit: ['true', 'false', 'false'],
+      },
+    ],
+    // Unloaded history above: scrollTop 0 is a transient paging edge.
+    // Center 350: u2's 50 is 300 away, u3's 550 is 200 away.
+    [
+      'the top override does not fire at the top of a mid-history loaded window',
+      {
+        ticks: {
+          ticks: [
+            { id: 'old', turnIndex: 0, itemIndex: 0, nodeIndex: null },
+            { id: 'u2', turnIndex: 1, itemIndex: 0, nodeIndex: 0 },
+            { id: 'u3', turnIndex: 2, itemIndex: 0, nodeIndex: 5 },
+          ],
+          loadedStart: 1,
+          loadedEnd: 2,
+        },
+        viewport: 700, total: 1100, centerY: 0, offset: 0,
+        lit: ['false', 'false', 'true'],
+      },
+    ],
+    // Max offset 400 sees u2 and u3. Center 750: u2's 550 is 200 away,
+    // u3's 1050 is 300 away, but loadedEnd is the final tick: the bottom
+    // of the CONVERSATION.
+    [
+      'at the very bottom of the thread the last tick lights regardless of center',
+      {
+        ticks: merged, viewport: 700, total: 1100, centerY: 0, offset: 400,
+        lit: ['false', 'false', 'true'],
+      },
+    ],
+    // Unloaded suffix: the loaded window's bottom is a paging seam. Max
+    // offset 100 sees u1 and u2; center 450 is exactly u1's.
+    [
+      'the bottom override does not fire when newer messages are unloaded',
+      {
+        ticks: {
+          ticks: [
+            { id: 'u1', turnIndex: 0, itemIndex: 0, nodeIndex: 4 },
+            { id: 'u2', turnIndex: 1, itemIndex: 0, nodeIndex: 7 },
+            { id: 'newer', turnIndex: 2, itemIndex: 0, nodeIndex: null },
+          ],
+          loadedStart: 0,
+          loadedEnd: 1,
+        },
+        viewport: 700, total: 800, centerY: 0, offset: 100,
+        lit: ['true', 'false', 'false'],
+      },
+    ],
+    // Everything fits one screen: both edges hold at once, so
+    // nearest-to-center decides (the top override would answer u1).
+    // Center 150 is exactly u2's.
+    [
+      'an unscrollable thread ignores the edge overrides',
+      {
+        ticks: {
+          ticks: [
+            { id: 'u1', turnIndex: 0, itemIndex: 0, nodeIndex: 0 },
+            { id: 'u2', turnIndex: 1, itemIndex: 0, nodeIndex: 1 },
+          ],
+          loadedStart: 0,
+          loadedEnd: 1,
+        },
+        viewport: 300, total: 300, centerY: 0, offset: 0,
+        lit: ['false', 'true', 'false'],
+      },
+    ],
+  ] satisfies Array<[string, {
+    ticks: MergedNavTicks;
+    viewport: number;
+    total: number;
+    centerY: number;
+    offset: number;
+    lit: string[];
+  }]>)('%s', (_, { ticks, viewport, total, centerY, offset, lit }) => {
     const list = {
       getScrollOffset: () => scrollOffset,
-      getViewportSize: () => 700,
-      findItemIndex: (offset: number) => Math.floor(offset / 100),
+      getViewportSize: () => viewport,
+      findItemIndex: (at: number) => Math.floor(at / 100),
       getItemOffset: (nodeIndex: number) => nodeIndex * 100,
       sizeAt: () => 100,
-      getTotalSize: () => 1100,
+      getTotalSize: () => total,
     } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync(ctxFor(list, merged));
-    tickEls.forEach((el, i) => wide.registerTick(el, i));
-    // Offset 50 (off the top, so the thread-top override stays out of
-    // it) → viewport 50..749 sees nodes 0..7 (both u1 and u2). Center
-    // 400: u1's row center 50 is 350 away, u2's 550 is 150 away → u2 is
-    // current, u1 stays off, dot hidden.
-    scrollOffset = 50;
-    wide.schedule();
+    const rowSync = createNavRailViewportSync(ctxFor(list, ticks));
+    ticks.ticks.forEach((_tick, i) => rowSync.registerTick(tickEls[i], i));
+    visibleCenterY = centerY;
+    scrollOffset = offset;
+    rowSync.schedule();
     drainFrames();
-    expect(currents()).toEqual(['false', 'true', 'false']);
+    expect(currents()).toEqual(lit);
     expect(marker.style.visibility).toBe('hidden');
-    wide.cancel();
-  });
-
-  it('the visible-band center decides, not the raw viewport center', () => {
-    const list = {
-      getScrollOffset: () => scrollOffset,
-      getViewportSize: () => 700,
-      findItemIndex: (offset: number) => Math.floor(offset / 100),
-      getItemOffset: (nodeIndex: number) => nodeIndex * 100,
-      sizeAt: () => 100,
-      getTotalSize: () => 1100,
-    } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync(ctxFor(list, merged));
-    tickEls.forEach((el, i) => wide.registerTick(el, i));
-    // Same geometry as above (offset 50, off the thread-top override),
-    // but a composer eats the bottom: the visible band's center is at
-    // y=200 → absolute 250. u1's row center 50 is 200 away, u2's 550 is
-    // 300 away → u1 is current now (the raw center 400 would pick u2).
-    visibleCenterY = 200;
-    scrollOffset = 50;
-    wide.schedule();
-    drainFrames();
-    expect(currents()).toEqual(['true', 'false', 'false']);
-    expect(marker.style.visibility).toBe('hidden');
-    wide.cancel();
-  });
-
-  it('at the very top of the thread the first tick lights regardless of center', () => {
-    const list = {
-      getScrollOffset: () => scrollOffset,
-      getViewportSize: () => 700,
-      findItemIndex: (offset: number) => Math.floor(offset / 100),
-      getItemOffset: (nodeIndex: number) => nodeIndex * 100,
-      sizeAt: () => 100,
-      getTotalSize: () => 1100,
-    } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync(ctxFor(list, merged));
-    tickEls.forEach((el, i) => wide.registerTick(el, i));
-    // Same geometry as the nearest-to-center test: at offset 0 the
-    // center favors u2, but scrollTop 0 with the thread's first message
-    // loaded (loadedStart 0) is the top of the CONVERSATION — u1 wins.
-    scrollOffset = 0;
-    wide.schedule();
-    drainFrames();
-    expect(currents()).toEqual(['true', 'false', 'false']);
-    wide.cancel();
-  });
-
-  it('the top override does not fire at the top of a mid-history loaded window', () => {
-    // Unloaded history above: tick 0 is baseline-only, loaded ticks
-    // start at index 1. scrollTop 0 here is a transient paging edge,
-    // so nearest-to-center still decides.
-    const withHistory: MergedNavTicks = {
-      ticks: [
-        { id: 'old', turnIndex: 0, itemIndex: 0, nodeIndex: null },
-        { id: 'u2', turnIndex: 1, itemIndex: 0, nodeIndex: 0 },
-        { id: 'u3', turnIndex: 2, itemIndex: 0, nodeIndex: 5 },
-      ],
-      loadedStart: 1,
-      loadedEnd: 2,
-    };
-    const list = {
-      getScrollOffset: () => scrollOffset,
-      getViewportSize: () => 700,
-      findItemIndex: (offset: number) => Math.floor(offset / 100),
-      getItemOffset: (nodeIndex: number) => nodeIndex * 100,
-      sizeAt: () => 100,
-      getTotalSize: () => 1100,
-    } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync(ctxFor(list, withHistory));
-    tickEls.forEach((el, i) => wide.registerTick(el, i));
-    // Center 350: u2's row center 50 is 300 away, u3's 550 is 200 away
-    // → u3 stays current even at scrollTop 0.
-    scrollOffset = 0;
-    wide.schedule();
-    drainFrames();
-    expect(currents()).toEqual(['false', 'false', 'true']);
-    wide.cancel();
-  });
-
-  it('at the very bottom of the thread the last tick lights regardless of center', () => {
-    const list = {
-      getScrollOffset: () => scrollOffset,
-      getViewportSize: () => 700,
-      findItemIndex: (offset: number) => Math.floor(offset / 100),
-      getItemOffset: (nodeIndex: number) => nodeIndex * 100,
-      sizeAt: () => 100,
-      getTotalSize: () => 1100,
-    } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync(ctxFor(list, merged));
-    tickEls.forEach((el, i) => wide.registerTick(el, i));
-    // Max offset 400 → viewport 400..1099 sees u2 and u3. Center 750:
-    // u2's row center 550 is 200 away, u3's 1050 is 300 away — nearest
-    // says u2, but this is the bottom of the CONVERSATION (loadedEnd is
-    // the final tick) → u3 wins.
-    scrollOffset = 400;
-    wide.schedule();
-    drainFrames();
-    expect(currents()).toEqual(['false', 'false', 'true']);
-    wide.cancel();
-  });
-
-  it('the bottom override does not fire when newer messages are unloaded', () => {
-    // Unloaded suffix: the loaded window's bottom is a paging seam, so
-    // nearest-to-center still decides at max scroll.
-    const withNewer: MergedNavTicks = {
-      ticks: [
-        { id: 'u1', turnIndex: 0, itemIndex: 0, nodeIndex: 4 },
-        { id: 'u2', turnIndex: 1, itemIndex: 0, nodeIndex: 7 },
-        { id: 'newer', turnIndex: 2, itemIndex: 0, nodeIndex: null },
-      ],
-      loadedStart: 0,
-      loadedEnd: 1,
-    };
-    const list = {
-      getScrollOffset: () => scrollOffset,
-      getViewportSize: () => 700,
-      findItemIndex: (offset: number) => Math.floor(offset / 100),
-      getItemOffset: (nodeIndex: number) => nodeIndex * 100,
-      sizeAt: () => 100,
-      getTotalSize: () => 800,
-    } as unknown as TimelineVirtualizerHandle;
-    const wide = createNavRailViewportSync(ctxFor(list, withNewer));
-    tickEls.forEach((el, i) => wide.registerTick(el, i));
-    // Max offset 100 → viewport 100..799 sees u1 and u2. Center 450 is
-    // exactly u1's row center → u1, not the override's u2.
-    scrollOffset = 100;
-    wide.schedule();
-    drainFrames();
-    expect(currents()).toEqual(['true', 'false', 'false']);
-    wide.cancel();
-  });
-
-  it('an unscrollable thread ignores the edge overrides', () => {
-    // Everything fits one screen: no scroll position exists, both edges
-    // hold at once, so nearest-to-center decides (the top override
-    // would have answered u1).
-    const tiny: MergedNavTicks = {
-      ticks: [
-        { id: 'u1', turnIndex: 0, itemIndex: 0, nodeIndex: 0 },
-        { id: 'u2', turnIndex: 1, itemIndex: 0, nodeIndex: 1 },
-      ],
-      loadedStart: 0,
-      loadedEnd: 1,
-    };
-    const list = {
-      getScrollOffset: () => scrollOffset,
-      getViewportSize: () => 300,
-      findItemIndex: (offset: number) => Math.floor(offset / 100),
-      getItemOffset: (nodeIndex: number) => nodeIndex * 100,
-      sizeAt: () => 100,
-      getTotalSize: () => 300,
-    } as unknown as TimelineVirtualizerHandle;
-    const small = createNavRailViewportSync(ctxFor(list, tiny));
-    small.registerTick(tickEls[0], 0);
-    small.registerTick(tickEls[1], 1);
-    // Center 150 is u2's row center exactly → u2.
-    scrollOffset = 0;
-    small.schedule();
-    drainFrames();
-    expect(currents()).toEqual(['false', 'true', 'false']);
-    small.cancel();
+    rowSync.cancel();
   });
 
   it('leaving the message re-shows the dot in the next gap', () => {

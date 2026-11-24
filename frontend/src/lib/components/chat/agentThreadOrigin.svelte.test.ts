@@ -132,30 +132,23 @@ describe('openAgentThreadOrigin', () => {
   // The row this client does not hold is read, and a frame for it that
   // lands during the read reaches no list or pane: the pane ends on the
   // newer row, not the read's.
-  it('keeps a row a frame brought during the read over the older read', async () => {
-    const read = makeThread({ id: 'thread-9', title: 'Auth rewrite' });
-    const renamed = { ...read, title: 'Renamed meanwhile' };
-    setBindingMock('SwitchThread', async () => read);
-    let reads = 0;
-    setBindingMock('GetThread', async () => {
-      reads += 1;
-      if (reads > 1) return renamed;
-      applyThreadUpdated({ action: 'full', thread: renamed });
-      return read;
-    });
-    await openAgentThreadOrigin(origin(), HOME_BACKEND, (thread) => openThreadInPane(thread, 'main'));
-    expect(getPane('main')?.thread?.title).toBe('Renamed meanwhile');
-    expect(reads).toBe(2);
-  });
-
-  it('keeps a renamed title a patch brought during the read over the older read', async () => {
+  it.each([
+    [
+      'keeps a row a frame brought during the read over the older read',
+      { action: 'full', thread: makeThread({ id: 'thread-9', title: 'Renamed meanwhile' }) },
+    ],
+    [
+      'keeps a renamed title a patch brought during the read over the older read',
+      { action: 'patch', id: 'thread-9', title: 'Renamed meanwhile' },
+    ],
+  ] as const)('%s', async (_, frame) => {
     const read = makeThread({ id: 'thread-9', title: 'Auth rewrite' });
     setBindingMock('SwitchThread', async () => read);
     let reads = 0;
     setBindingMock('GetThread', async () => {
       reads += 1;
       if (reads > 1) return { ...read, title: 'Renamed meanwhile' };
-      applyThreadUpdated({ action: 'patch', id: 'thread-9', title: 'Renamed meanwhile' });
+      applyThreadUpdated(frame);
       return read;
     });
     await openAgentThreadOrigin(origin(), HOME_BACKEND, (thread) => openThreadInPane(thread, 'main'));

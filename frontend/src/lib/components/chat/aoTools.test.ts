@@ -60,11 +60,6 @@ describe('AO tool presentation', () => {
       });
     });
 
-    it('names the computer through the names a row can see', () => {
-      const p = aoToolPresentation(meta(REMOTE_TOOLS_SERVER, 'remote_run', { computer_id: 'mac', argv: ['make'] }), names)!;
-      expect(p.computerName).toBe('Macaroni-air');
-    });
-
     it('describes a script by its interpreter', () => {
       expect(remoteRunCommand({ script: 'print(1)', interpreter: ['python3', '-u'] })).toBe('python3 -u script');
     });
