@@ -39,7 +39,7 @@ type agentPeerPair struct {
 
 func newAgentPeerPair(t *testing.T, serve func(*testing.T, *App) *pairedBackend) *agentPeerPair {
 	t.Helper()
-	return newAgentPeerPairListingWithin(t, serve, 0)
+	return newAgentPeerPairOn(t, newReachPairServedBy(t, serve))
 }
 
 // newAgentPeerPairListingWithin is newAgentPeerPair whose forwarded
@@ -47,9 +47,13 @@ func newAgentPeerPair(t *testing.T, serve func(*testing.T, *App) *pairedBackend)
 // the spawn, so no listing reads it while it changes.
 func newAgentPeerPairListingWithin(t *testing.T, serve func(*testing.T, *App) *pairedBackend, listBound time.Duration) *agentPeerPair {
 	t.Helper()
-	remotetest.Require(t)
 	pair := newReachPairServedBy(t, serve)
 	pair.source.threadAgentPeerListOverride = listBound
+	return newAgentPeerPairOn(t, pair)
+}
+
+func newAgentPeerPairOn(t *testing.T, pair *reachPair) *agentPeerPair {
+	t.Helper()
 	// Every turn there holds open and answers an interrupt, so the spawns
 	// stay open until a Stop ends them.
 	// The caller here takes the user-cancelled wake a Stop sends it.
@@ -340,10 +344,8 @@ func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeer
 // did not answer once its call gives up, and a Stop works from the ledger.
 func TestThreadAgentRowsDoNotWaitOnAComputerThatDoesNotAnswer(t *testing.T) {
 	// Serial: it times a read to 100 ms, which parallel tests would load.
-	// The listing's bound is under test; a Stop that waited on a listing
-	// would take that long.
-	const listBound = time.Second
-	pair := newAgentPeerPairListingWithin(t, serveStalledAgentsPeer(nil), listBound)
+	// The listing's bound is under test, set small so the row says so soon.
+	pair := newAgentPeerPairListingWithin(t, serveStalledAgentsPeer(nil), time.Second)
 	start := time.Now()
 	listing := pair.listRows(t)
 	if took := time.Since(start); took > 100*time.Millisecond {
@@ -365,7 +367,7 @@ func TestThreadAgentRowsDoNotWaitOnAComputerThatDoesNotAnswer(t *testing.T) {
 	if err != nil || stop.Outcome != threadAgentStopped {
 		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
 	}
-	if took := time.Since(start); took >= listBound {
+	if took := time.Since(start); took >= threadAgentPeerListTimeout {
 		t.Fatalf("the Stop took %v: it waited on a listing", took)
 	}
 }

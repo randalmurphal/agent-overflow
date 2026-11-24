@@ -917,20 +917,36 @@ func TestADoorWhoseWaitRunsOutLeavesItsOperationToTheSweep(t *testing.T) {
 	}
 }
 
-// A door waits five seconds for what it owes before it reports, unless a
-// test sets another bound. An App a test did not set reads the test
-// process's patience (giveUpBound), so the product value is read with none.
-func TestOwnerOpReachIsFiveSecondsUnlessATestSetsIt(t *testing.T) {
+// An App nothing configured waits for another party as the product does: a
+// door five seconds for what it owes, a forwarded listing five seconds and
+// the listing it reads from a computer further on half that, and a session
+// stop five seconds for its event worker. An App a fixture builds waits the
+// test's budget (waitOutOtherParties), and a set listing bound halves for
+// the listing further on.
+func TestTheLimitsOnOtherPartiesKeepTheirProductValues(t *testing.T) {
 	t.Parallel()
-	unset := &App{}
-	if got := giveUpBoundWith(unset.ownerOpReachOverride, 0, threadAgentPeerListTimeout); got != 5*time.Second {
-		t.Fatalf("ownerOpReach in production = %v, want 5s", got)
-	}
-	if got := unset.ownerOpReach(); got != giveUpPatience {
-		t.Fatalf("ownerOpReach unset in a test = %v, want the patience %v", got, giveUpPatience)
-	}
-	if got := (&App{ownerOpReachOverride: 250 * time.Millisecond}).ownerOpReach(); got != 250*time.Millisecond {
-		t.Fatalf("ownerOpReach with an override = %v, want 250ms", got)
+	product := &App{}
+	fixture := newTestApp(t)
+	set := &App{threadAgentPeerListOverride: 300 * time.Millisecond, ownerOpReachOverride: 250 * time.Millisecond}
+	for _, c := range []struct {
+		name                  string
+		read                  func(*App) time.Duration
+		product, fixture, set time.Duration
+	}{
+		{"ownerOpReach", (*App).ownerOpReach, 5 * time.Second, 0, 250 * time.Millisecond},
+		{"threadAgentPeerListBound", (*App).threadAgentPeerListBound, 5 * time.Second, 0, 300 * time.Millisecond},
+		{"threadAgentPeerServeBound", (*App).threadAgentPeerServeBound, 2500 * time.Millisecond, 0, 150 * time.Millisecond},
+		{"drainStallBound", func(a *App) time.Duration { return a.providerEvents.drainStallBound() }, 5 * time.Second, 0, 5 * time.Second},
+	} {
+		if got := c.read(product); got != c.product {
+			t.Errorf("%s of an unconfigured App = %v, want %v", c.name, got, c.product)
+		}
+		if got := c.read(fixture); got <= c.product {
+			t.Errorf("%s of a fixture's App = %v, want the test's budget, past the product %v", c.name, got, c.product)
+		}
+		if got := c.read(set); got != c.set {
+			t.Errorf("%s with a bound set = %v, want %v", c.name, got, c.set)
+		}
 	}
 }
 

@@ -994,11 +994,11 @@ type App struct {
 	transferPendingRetry time.Duration
 	// ownerOpReachOverride replaces the bound on a door's attempt at what
 	// it owes paired computers (ownerOpReach) for a test. Zero keeps the
-	// product bound (giveUpBound).
+	// product bound.
 	ownerOpReachOverride time.Duration
 	// threadAgentPeerListOverride replaces threadAgentPeerListTimeout, the
 	// bound on a forwarded Agents listing (threadAgentPeerListBound), for a
-	// test. Zero keeps the product bound (giveUpBound).
+	// test. Zero keeps the product bound.
 	threadAgentPeerListOverride time.Duration
 	// ownerOpsOmitted answers agent_owner_op as a build before owner
 	// operations does (IsolationConfig.OmitOwnerOps). False serves them.

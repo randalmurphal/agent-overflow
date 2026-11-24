@@ -10,7 +10,22 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil"
 )
+
+// waitOutOtherParties gives app the test's budget (testutil.WaitBudget)
+// for each limit after which it stops waiting for another goroutine,
+// process or computer, in place of its product value: those parties run in
+// this test process, where a crowded machine can hold one past that value.
+// An App a fixture builds waits that long; a test of a limit sets the limit
+// itself after it builds the fixture.
+func waitOutOtherParties(t *testing.T, app *App) {
+	t.Helper()
+	budget := testutil.WaitBudget(t)
+	app.threadAgentPeerListOverride = budget
+	app.ownerOpReachOverride = budget
+	app.providerEvents.drainStall = budget
+}
 
 // defaultTestProjectID is the stable project id that test-only helpers
 // seed into every test store so inline `store.Thread{}` literals satisfy

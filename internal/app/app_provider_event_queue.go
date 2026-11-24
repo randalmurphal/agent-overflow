@@ -79,8 +79,7 @@ const (
 type providerEventQueues struct {
 	mu     sync.Mutex
 	queues map[string]*providerEventQueue
-	// drainStall overrides providerEventDrainStall when non-zero
-	// (giveUpBound).
+	// drainStall overrides providerEventDrainStall when non-zero.
 	drainStall time.Duration
 	// stalls holds the release of each thread whose worker a harness spec
 	// stalled (app_provider_event_stall.go). Guarded by mu.
@@ -216,7 +215,10 @@ func (qs *providerEventQueues) retireWhenIdle(threadID string) {
 }
 
 func (qs *providerEventQueues) drainStallBound() time.Duration {
-	return giveUpBound(qs.drainStall, providerEventDrainStall)
+	if qs.drainStall > 0 {
+		return qs.drainStall
+	}
+	return providerEventDrainStall
 }
 
 func (qs *providerEventQueues) queueFor(threadID string) *providerEventQueue {
