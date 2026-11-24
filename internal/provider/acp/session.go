@@ -112,6 +112,18 @@ type chunkBuffer struct {
 	timer *time.Timer
 }
 
+type pendingBackgroundCommand struct {
+	ownerSessionID    string
+	rawToolCallID     string
+	parentToolUseID   string
+	turnID            string
+	startedAt         time.Time
+	initialCheckAfter time.Time
+	nextCheckAt       time.Time
+	retryCount        int
+	interveningOutput bool
+}
+
 // Session represents one ACP conversation multiplexed onto a *Conn.
 // Implements provider.Session.
 type Session struct {
@@ -137,6 +149,12 @@ type Session struct {
 	// coalesce timer, and finishPrompt/Interrupt goroutines. Always acquired
 	// BEFORE s.mu and never while holding s.mu.
 	chunkEmitMu sync.Mutex
+
+	// bgCmdEmitMu serializes background-command promotion (EventToolStart with
+	// meta_update_only) against command completion (EventBackgroundTaskTerminal /
+	// EventToolComplete) so promotion never races after completion. Always
+	// acquired BEFORE s.mu and never while holding s.mu or chunkEmitMu.
+	bgCmdEmitMu sync.Mutex
 
 	mu                       sync.Mutex
 	sessionID                string
@@ -181,9 +199,14 @@ type Session struct {
 	activeSubagentWatchers   int
 	pendingPerms             map[string]pendingPermission
 	pendingToolQuestions     map[string]pendingToolQuestion
+	pendingBgCommands        map[string]pendingBackgroundCommand
+	bgCmdWatcherRunning      bool
+	bgCmdForceCheck          bool
+	bgCmdWakeCh              chan struct{}
 	chunk                    chunkBuffer
 	promptWG                 sync.WaitGroup
 	subagentWG               sync.WaitGroup
+	bgCmdWG                  sync.WaitGroup
 
 	sessionCtx      context.Context
 	sessionCancel   context.CancelFunc
@@ -260,6 +283,8 @@ func (c *Conn) open(
 		trackedSubagents:     make(map[string]SubagentLaunchContext),
 		pendingPerms:         make(map[string]pendingPermission),
 		pendingToolQuestions: make(map[string]pendingToolQuestion),
+		pendingBgCommands:    make(map[string]pendingBackgroundCommand),
+		bgCmdWakeCh:          make(chan struct{}, 1),
 		sessionCtx:           sessionCtx,
 		sessionCancel:        sessionCancel,
 		readDone:             make(chan struct{}),
@@ -1702,6 +1727,7 @@ func (s *Session) Close() error {
 	}
 	s.promptWG.Wait()
 	s.subagentWG.Wait()
+	s.bgCmdWG.Wait()
 	s.emitTeardownOnce(nil, true)
 	s.finishReadDone()
 	s.releasePoolRef()
@@ -1897,6 +1923,7 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.confirmArmedPrompt()
 		s.ensureSpontaneousTurnOpen()
 		s.checkPendingCompaction()
+		s.noteParentOutputForPendingBgCommands()
 		s.bufferChunk(provider.EventThinking, block.Text)
 
 	case "agent_message_chunk":
@@ -1907,6 +1934,7 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.confirmArmedPrompt()
 		s.ensureSpontaneousTurnOpen()
 		s.checkPendingCompaction()
+		s.noteParentOutputForPendingBgCommands()
 		s.mu.Lock()
 		if s.turnHasOutputSchema {
 			s.turnLastAssistantText.WriteString(block.Text)
@@ -2353,6 +2381,24 @@ func (s *Session) handleToolCallStart(tc *ToolCallUpdate, parentToolUseID string
 		s.childToolUses[parentToolUseID]++
 		childToolUses = s.childToolUses[parentToolUseID]
 	}
+	var startBgWatch bool
+	if norm.ItemType == "command_execution" && s.flavor.CanLookupBackgroundCommands(ownerSessionID) {
+		now := time.Now()
+		checkAfter := computeBgCommandCheckAfter(now, norm)
+		if s.pendingBgCommands == nil {
+			s.pendingBgCommands = make(map[string]pendingBackgroundCommand)
+		}
+		s.pendingBgCommands[tc.ToolCallID] = pendingBackgroundCommand{
+			ownerSessionID:    ownerSessionID,
+			rawToolCallID:     rawLaunchCallID,
+			parentToolUseID:   parentToolUseID,
+			turnID:            turnID,
+			startedAt:         now,
+			initialCheckAfter: checkAfter,
+			nextCheckAt:       checkAfter,
+		}
+		startBgWatch = s.armBgCmdWatcherLocked()
+	}
 	s.mu.Unlock()
 
 	meta := buildToolStartMeta(norm)
@@ -2366,6 +2412,9 @@ func (s *Session) handleToolCallStart(tc *ToolCallUpdate, parentToolUseID string
 		Meta:            meta,
 		Timestamp:       time.Now(),
 	})
+	if startBgWatch {
+		go s.runBgCmdWatcher()
+	}
 
 	if parentToolUseID != "" && childToolUses > 0 {
 		progMeta, _ := json.Marshal(provider.SubagentProgressMeta{
@@ -2407,62 +2456,10 @@ func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate, parentToolUseID s
 	}
 	norm := s.flavor.NormalizeToolComplete(tc, started)
 	if norm.IsBackground {
-		var emitBgMeta bool
-		s.mu.Lock()
-		var cur NormalizedToolStart
-		var exists bool
-		if parentToolUseID == "" {
-			cur, exists = s.startedTools[tc.ToolCallID]
-		} else {
-			cur, exists = s.childStartedTools[tc.ToolCallID]
-		}
-		if exists {
-			prevOut, _ := cur.ExtraMeta["output_file"].(string)
-			prevTask, _ := cur.ExtraMeta["task_id"].(string)
-			if !cur.IsBackground || (norm.OutputFile != "" && prevOut == "") || (norm.BackgroundTaskID != "" && prevTask == "") {
-				cur.IsBackground = true
-				if cur.ExtraMeta == nil {
-					cur.ExtraMeta = map[string]any{}
-				}
-				if norm.OutputFile != "" && prevOut == "" {
-					cur.ExtraMeta["output_file"] = norm.OutputFile
-				}
-				if norm.BackgroundTaskID != "" && prevTask == "" {
-					cur.ExtraMeta["task_id"] = norm.BackgroundTaskID
-				}
-				if parentToolUseID == "" {
-					s.startedTools[tc.ToolCallID] = cur
-				} else {
-					s.childStartedTools[tc.ToolCallID] = cur
-				}
-				emitBgMeta = true
-			}
-		}
-		s.mu.Unlock()
-		if emitBgMeta {
-			bgFields := map[string]any{
-				"meta_update_only": true,
-				"is_background":    true,
-			}
-			if norm.BackgroundTaskID != "" {
-				bgFields["task_id"] = norm.BackgroundTaskID
-			}
-			if norm.OutputFile != "" {
-				bgFields["output_file"] = norm.OutputFile
-			}
-			bgMeta, _ := json.Marshal(bgFields)
-			// Omit ItemType on meta_update_only so triage preserves the
-			// existing Bash command summary instead of rewriting it.
-			s.emitEvent(provider.ProviderEvent{
-				Kind:            provider.EventToolStart,
-				ThreadID:        s.threadID,
-				TurnID:          turnID,
-				ItemID:          tc.ToolCallID,
-				ParentToolUseID: parentToolUseID,
-				Meta:            bgMeta,
-				Timestamp:       time.Now(),
-			})
-		}
+		s.promoteBackgroundCommand(tc.ToolCallID, parentToolUseID, turnID, BackgroundCommandInfo{
+			TaskID:     norm.BackgroundTaskID,
+			OutputFile: norm.OutputFile,
+		})
 		// Keep the launch row header-only once backgrounded with a task log
 		// (matching Claude's background Bash launch row); live output tails in
 		// the tray and final output lands on the completion sibling.
@@ -2489,6 +2486,232 @@ func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate, parentToolUseID s
 		Replace:         true,
 		Timestamp:       time.Now(),
 	})
+}
+
+func computeBgCommandCheckAfter(now time.Time, norm NormalizedToolStart) time.Time {
+	if norm.IsBackground {
+		return now.Add(100 * time.Millisecond)
+	}
+	if len(norm.Input) > 0 {
+		var in struct {
+			Timeout int `json:"timeout"`
+		}
+		if json.Unmarshal(norm.Input, &in) == nil && in.Timeout > 0 {
+			return now.Add(time.Duration(in.Timeout)*time.Millisecond + 100*time.Millisecond)
+		}
+	}
+	return now.Add(500 * time.Millisecond)
+}
+
+func (s *Session) armBgCmdWatcherLocked() bool {
+	if s.closing.Load() {
+		return false
+	}
+	if !s.bgCmdWatcherRunning {
+		s.bgCmdWatcherRunning = true
+		s.bgCmdWG.Add(1)
+		return true
+	}
+	s.nudgeBgCmdWatcherLocked()
+	return false
+}
+
+func (s *Session) nudgeBgCmdWatcherLocked() {
+	if s.bgCmdWakeCh == nil {
+		return
+	}
+	select {
+	case s.bgCmdWakeCh <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Session) noteParentOutputForPendingBgCommands() {
+	s.mu.Lock()
+	if len(s.pendingBgCommands) > 0 {
+		for id, p := range s.pendingBgCommands {
+			if p.parentToolUseID == "" && !p.interveningOutput {
+				p.interveningOutput = true
+				s.pendingBgCommands[id] = p
+			}
+		}
+		s.bgCmdForceCheck = true
+		s.nudgeBgCmdWatcherLocked()
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) emitBackgroundPromotion(toolCallID, parentToolUseID, turnID string, info BackgroundCommandInfo) {
+	bgFields := map[string]any{
+		"meta_update_only": true,
+		"is_background":    true,
+	}
+	if info.TaskID != "" {
+		bgFields["task_id"] = info.TaskID
+	}
+	if info.OutputFile != "" {
+		bgFields["output_file"] = info.OutputFile
+	}
+	bgMeta, _ := json.Marshal(bgFields)
+	// Omit ItemType on meta_update_only so triage preserves the existing Bash
+	// command summary instead of rewriting it.
+	s.emitEvent(provider.ProviderEvent{
+		Kind:            provider.EventToolStart,
+		ThreadID:        s.threadID,
+		TurnID:          turnID,
+		ItemID:          toolCallID,
+		ParentToolUseID: parentToolUseID,
+		Meta:            bgMeta,
+		Timestamp:       time.Now(),
+	})
+}
+
+func (s *Session) promoteBackgroundCommand(toolCallID, parentToolUseID, turnID string, info BackgroundCommandInfo) {
+	s.bgCmdEmitMu.Lock()
+	defer s.bgCmdEmitMu.Unlock()
+
+	var emitBgMeta bool
+	s.mu.Lock()
+	var cur NormalizedToolStart
+	var exists bool
+	if parentToolUseID == "" {
+		cur, exists = s.startedTools[toolCallID]
+	} else {
+		cur, exists = s.childStartedTools[toolCallID]
+	}
+	if exists {
+		prevOut, _ := cur.ExtraMeta["output_file"].(string)
+		prevTask, _ := cur.ExtraMeta["task_id"].(string)
+		if !cur.IsBackground || (info.OutputFile != "" && prevOut == "") || (info.TaskID != "" && prevTask == "") {
+			cur.IsBackground = true
+			if cur.ExtraMeta == nil {
+				cur.ExtraMeta = map[string]any{}
+			}
+			if info.OutputFile != "" && prevOut == "" {
+				cur.ExtraMeta["output_file"] = info.OutputFile
+			}
+			if info.TaskID != "" && prevTask == "" {
+				cur.ExtraMeta["task_id"] = info.TaskID
+			}
+			if parentToolUseID == "" {
+				s.startedTools[toolCallID] = cur
+			} else {
+				s.childStartedTools[toolCallID] = cur
+			}
+			emitBgMeta = true
+		}
+		if curOut, _ := cur.ExtraMeta["output_file"].(string); curOut != "" {
+			delete(s.pendingBgCommands, toolCallID)
+		}
+	} else {
+		delete(s.pendingBgCommands, toolCallID)
+	}
+	s.mu.Unlock()
+
+	if emitBgMeta && !s.closing.Load() {
+		s.emitBackgroundPromotion(toolCallID, parentToolUseID, turnID, info)
+	}
+}
+
+func (s *Session) runBgCmdWatcher() {
+	defer s.bgCmdWG.Done()
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	defer timer.Stop()
+
+	for {
+		s.mu.Lock()
+		if s.closing.Load() || len(s.pendingBgCommands) == 0 {
+			s.bgCmdWatcherRunning = false
+			s.bgCmdForceCheck = false
+			s.mu.Unlock()
+			return
+		}
+		now := time.Now()
+		force := s.bgCmdForceCheck
+		s.bgCmdForceCheck = false
+
+		type dueEntry struct {
+			toolCallID string
+			pending    pendingBackgroundCommand
+		}
+		var due []dueEntry
+		var nextWake time.Time
+		for id, p := range s.pendingBgCommands {
+			if force || !now.Before(p.nextCheckAt) {
+				due = append(due, dueEntry{toolCallID: id, pending: p})
+				continue
+			}
+			if nextWake.IsZero() || p.nextCheckAt.Before(nextWake) {
+				nextWake = p.nextCheckAt
+			}
+		}
+		s.mu.Unlock()
+
+		if len(due) > 0 {
+			bySession := make(map[string][]dueEntry)
+			for _, d := range due {
+				bySession[d.pending.ownerSessionID] = append(bySession[d.pending.ownerSessionID], d)
+			}
+			for ownerSID, group := range bySession {
+				rawIDs := make([]string, 0, len(group))
+				for _, d := range group {
+					rawIDs = append(rawIDs, d.pending.rawToolCallID)
+				}
+				found := s.flavor.LookupBackgroundCommands(s.sessionCtx, ownerSID, rawIDs, false)
+				for _, d := range group {
+					if info, ok := found[d.pending.rawToolCallID]; ok {
+						s.promoteBackgroundCommand(d.toolCallID, d.pending.parentToolUseID, d.pending.turnID, info)
+						if info.OutputFile != "" {
+							continue
+						}
+					}
+					// Back off next check while the command has not backgrounded yet.
+					s.mu.Lock()
+					if cur, stillPending := s.pendingBgCommands[d.toolCallID]; stillPending {
+						cur.retryCount++
+						delay := 250 * time.Millisecond
+						if cur.retryCount >= 6 {
+							delay = time.Second
+						} else if cur.retryCount >= 2 {
+							delay = 500 * time.Millisecond
+						}
+						cur.nextCheckAt = time.Now().Add(delay)
+						s.pendingBgCommands[d.toolCallID] = cur
+					}
+					s.mu.Unlock()
+				}
+			}
+			continue
+		}
+
+		wait := time.Until(nextWake)
+		if wait <= 0 {
+			continue
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(wait)
+
+		select {
+		case <-s.sessionCtx.Done():
+			s.mu.Lock()
+			s.bgCmdWatcherRunning = false
+			s.mu.Unlock()
+			return
+		case <-s.bgCmdWakeCh:
+		case <-timer.C:
+		}
+	}
 }
 
 func (s *Session) handleToolCallPending(tc *ToolCallUpdate, parentToolUseID string) {
@@ -2556,6 +2779,11 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 	if tc.ToolCallID == "" {
 		return
 	}
+	// Serialize command_execution completion with background-command promotion
+	// so the watcher cannot emit a meta_update_only after completion.
+	s.bgCmdEmitMu.Lock()
+	defer s.bgCmdEmitMu.Unlock()
+
 	s.mu.Lock()
 	var started NormalizedToolStart
 	var trackedLaunch SubagentLaunchContext
@@ -2571,6 +2799,11 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 		started = s.childStartedTools[tc.ToolCallID]
 		delete(s.childStartedTools, tc.ToolCallID)
 	}
+	pendingBg, hadPendingBg := s.pendingBgCommands[tc.ToolCallID]
+	if hadPendingBg {
+		delete(s.pendingBgCommands, tc.ToolCallID)
+		s.nudgeBgCmdWatcherLocked()
+	}
 	trackedLaunch, wasTracked = s.trackedSubagents[tc.ToolCallID]
 	delete(s.trackedSubagents, tc.ToolCallID)
 	watchSubagent = wasTracked && tc.Status == "completed" && !s.closing.Load()
@@ -2581,6 +2814,29 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 	s.mu.Unlock()
 
 	norm := s.flavor.NormalizeToolComplete(tc, started)
+	// Fallback check for a backgrounded command that finished between watcher
+	// ticks: if WaitMsBeforeAsync elapsed or intervening model output arrived,
+	// check the provider's step state once so it still gets promoted and emits
+	// its completion sibling instead of mutating the old launch row in place.
+	if hadPendingBg && started.ItemType == "command_execution" && !started.IsBackground && !norm.IsBackground && !s.closing.Load() {
+		if pendingBg.interveningOutput || !time.Now().Before(pendingBg.initialCheckAfter) {
+			if found := s.flavor.LookupBackgroundCommands(s.sessionCtx, pendingBg.ownerSessionID, []string{pendingBg.rawToolCallID}, true); len(found) > 0 {
+				if info, ok := found[pendingBg.rawToolCallID]; ok {
+					started.IsBackground = true
+					if started.ExtraMeta == nil {
+						started.ExtraMeta = map[string]any{}
+					}
+					if info.TaskID != "" {
+						started.ExtraMeta["task_id"] = info.TaskID
+					}
+					if info.OutputFile != "" {
+						started.ExtraMeta["output_file"] = info.OutputFile
+					}
+					s.emitBackgroundPromotion(tc.ToolCallID, parentToolUseID, pendingBg.turnID, info)
+				}
+			}
+		}
+	}
 	if watchSubagent {
 		if norm.ExtraMeta == nil {
 			norm.ExtraMeta = map[string]any{}

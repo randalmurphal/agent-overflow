@@ -525,6 +525,34 @@ func TestWaitsAreBounded(t *testing.T) {
 	if err == nil || len(app.calls) != 0 {
 		t.Fatalf("an over-limit wait reached the app: err=%v calls=%v", err, app.calls)
 	}
+
+	// Provider-imposed MCP ceiling (e.g. agy's 150s cap below its 180s client timeout)
+	// caps schemas, instructions, and accepted wait_seconds.
+	capped := interactive
+	capped.MaxWaitSeconds = 150
+	for _, tool := range server.Tools(capped) {
+		name, _ := tool["name"].(string)
+		if name != "run_start" && name != "run_status" && name != "run_watch" {
+			continue
+		}
+		props := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		if got := props["wait_seconds"].(map[string]any)["maximum"]; got != 150 {
+			t.Errorf("%s wait_seconds maximum = %v, want 150", name, got)
+		}
+	}
+	if guide := server.Instructions(capped); !strings.Contains(guide, "(at most 150)") {
+		t.Errorf("instructions missing 150s cap: %q", guide)
+	}
+	for tool, args := range map[string]string{
+		"run_status": `{"run_id":"r","wait_seconds":151}`,
+		"run_watch":  `{"run_id":"r","wait_seconds":151}`,
+		"run_start":  `{"workflow_id":"w","wait_seconds":151}`,
+	} {
+		_, err := server.Call(context.Background(), capped, tool, json.RawMessage(args))
+		if code, _ := publicCode(t, err); code != CodeInvalidRequest {
+			t.Errorf("%s accepted a wait past capped 150s: %v", tool, err)
+		}
+	}
 }
 
 // Once StartRun commits, run_start answers with the run whatever fails after:

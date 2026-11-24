@@ -55,7 +55,7 @@ func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 				t.Errorf("row %q names %q, which is not a tool", row.left, name)
 				continue
 			}
-			properties := spec.schema()["inputSchema"].(map[string]any)["properties"].(map[string]any)
+			properties := spec.schema(MaxWaitSeconds)["inputSchema"].(map[string]any)["properties"].(map[string]any)
 			for _, param := range strings.Split(strings.TrimSuffix(params, ")"), ",") {
 				param = strings.TrimSuffix(strings.TrimSpace(param), "?")
 				if param == "" {

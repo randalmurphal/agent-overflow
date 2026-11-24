@@ -112,9 +112,24 @@ type Capabilities struct {
 	// SupportsOwnMemory reports whether the provider has a native memory
 	// feature that AO can toggle off for assistants.
 	SupportsOwnMemory bool
+	// MaxMCPWaitSeconds caps wait_seconds on AO's built-in MCP tools when the
+	// provider enforces a shorter per-call timeout that AO cannot raise via
+	// session config (for example, agy 1.5.16's hardcoded 180s MCP call
+	// timeout with no ACP timeoutSeconds field). Zero means no cap below the
+	// tool's own maximum.
+	MaxMCPWaitSeconds int
 	// RollbackGranularity reports whether and at what granularity the provider
 	// supports anchored conversation rollback.
 	RollbackGranularity RollbackGranularity
+}
+
+// EffectiveMaxMCPWaitSeconds returns defaultMax bounded by this provider's
+// MaxMCPWaitSeconds cap when one is configured.
+func (c Capabilities) EffectiveMaxMCPWaitSeconds(defaultMax int) int {
+	if c.MaxMCPWaitSeconds > 0 && c.MaxMCPWaitSeconds < defaultMax {
+		return c.MaxMCPWaitSeconds
+	}
+	return defaultMax
 }
 
 // SupportsConversationRollback reports whether the provider supports anchored
@@ -185,7 +200,11 @@ func CapabilitiesForProvider(providerName string) Capabilities {
 			SupportsAppManagedMCP:      true,
 			SupportsWorkflowMCP:        true,
 			SupportsAppendSystemPrompt: true,
-			RollbackGranularity:        RollbackItem,
+			// agy 1.5.16 hardcodes a 180s MCP tool call timeout when ACP
+			// session/new has no timeoutSeconds override; keep 30s headroom
+			// so AO returns a backgrounded receipt before agy aborts the call.
+			MaxMCPWaitSeconds:   150,
+			RollbackGranularity: RollbackItem,
 		}
 	default:
 		return Capabilities{}

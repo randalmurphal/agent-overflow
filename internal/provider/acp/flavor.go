@@ -122,6 +122,14 @@ type SubagentLaunchContext struct {
 	OnChildDiscovered   func(childConversationID string)
 }
 
+// BackgroundCommandInfo describes an in-flight command_execution step that the
+// provider transitioned into a detached background task (with its task id and
+// live log file path).
+type BackgroundCommandInfo struct {
+	TaskID     string
+	OutputFile string
+}
+
 // Flavor isolates provider-specific ACP conventions (metadata extensions,
 // usage math, mode names, tool shapes, and out-of-band error detection) from
 // the spec-standard ACP v1 client.
@@ -140,6 +148,8 @@ type Flavor interface {
 	CanTrackSubagent(sessionID string) bool
 	WatchSubagent(ctx context.Context, launch SubagentLaunchContext)
 	ResolveSubagentLaunch(ctx context.Context, sessionID, childConversationID string) (string, bool)
+	CanLookupBackgroundCommands(sessionID string) bool
+	LookupBackgroundCommands(ctx context.Context, sessionID string, toolCallIDs []string, includeCompleted bool) map[string]BackgroundCommandInfo
 	InitCompactionCursor(ctx context.Context, sessionID string) int
 	DetectCompaction(ctx context.Context, sessionID string, afterIdx int) (nextIdx int, ev *CompactionEvent)
 }
@@ -630,6 +640,14 @@ func (DefaultFlavor) WatchSubagent(context.Context, SubagentLaunchContext) {}
 
 func (DefaultFlavor) ResolveSubagentLaunch(context.Context, string, string) (string, bool) {
 	return "", false
+}
+
+func (DefaultFlavor) CanLookupBackgroundCommands(string) bool {
+	return false
+}
+
+func (DefaultFlavor) LookupBackgroundCommands(context.Context, string, []string, bool) map[string]BackgroundCommandInfo {
+	return nil
 }
 
 func (DefaultFlavor) InitCompactionCursor(context.Context, string) int {

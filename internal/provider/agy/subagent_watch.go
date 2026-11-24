@@ -187,42 +187,9 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 	}
 	f.emitSubagentIdentityMeta(launch, childID, baseModel, effort)
 
-	type fileSig struct {
-		dbMod  int64
-		dbSize int64
-		walMod int64
-		walSz  int64
-		valid  bool
-	}
-	readChildDBSig := func() fileSig {
-		dbPath, err := conversationDBPath(f.AppDataDir, childID)
-		if err != nil {
-			return fileSig{}
-		}
-		var sig fileSig
-		if info, err := os.Stat(dbPath); err == nil {
-			sig.dbMod = info.ModTime().UnixNano()
-			sig.dbSize = info.Size()
-			sig.valid = true
-		}
-		if info, err := os.Stat(dbPath + "-wal"); err == nil {
-			sig.walMod = info.ModTime().UnixNano()
-			sig.walSz = info.Size()
-			sig.valid = true
-		}
-		return sig
-	}
-
-	var lastSig fileSig
-	var pendingTerminal *childDBTerminalState
 	idleTicks := 0
 	for {
-		if report, systemStopped, ok := f.scanParentInbox(launch.SessionID, childID, launchTime); ok {
-			status := "completed"
-			if systemStopped {
-				status = "killed"
-				report = ""
-			}
+		if status, report, ok := f.scanParentInbox(launch.SessionID, childID, launchTime); ok {
 			f.emitSubagentSettlement(launch, childID, status, report, provider.SubagentProgressMeta{
 				TaskID:     childID,
 				DurationMs: max(time.Since(launchTime).Milliseconds(), 1),
@@ -237,26 +204,6 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 				AgentType:  launch.Started.SubagentType,
 			})
 			return
-		}
-		// Stat-gated check of the child's own conversation DB: only opens SQLite
-		// when the DB/WAL changed or we are confirming a previously observed
-		// terminal error/cancel step on a second consecutive tick.
-		if curSig := readChildDBSig(); curSig.valid && (curSig != lastSig || pendingTerminal != nil) {
-			lastSig = curSig
-			if term, ok := inspectChildTerminalState(f.AppDataDir, childID); ok {
-				if pendingTerminal != nil && pendingTerminal.stepIdx == term.stepIdx && pendingTerminal.status == term.status {
-					f.emitSubagentSettlement(launch, childID, term.status, term.summary, provider.SubagentProgressMeta{
-						TaskID:     childID,
-						DurationMs: max(time.Since(launchTime).Milliseconds(), 1),
-						AgentType:  launch.Started.SubagentType,
-					})
-					return
-				}
-				copied := term
-				pendingTerminal = &copied
-			} else {
-				pendingTerminal = nil
-			}
 		}
 
 		idleTicks++
@@ -378,16 +325,26 @@ func (f *Flavor) readSubagentRecord(parentSessionID, childID string) (subagentRe
 }
 
 // scanParentInbox inspects `<parent>/.system_generated/messages/` in a single
-// pass for either a report from childID (preferred) or a system notice after
-// since reporting that all subagents were stopped (e.g. server restart / force
-// cancellation).
-func (f *Flavor) scanParentInbox(parentSessionID, childID string, since time.Time) (report string, systemStopped bool, found bool) {
+// pass for agy's own parent-inbox signals for childID:
+//   - a direct report from childID (`sender == childID`) -> "completed"
+//   - agy's subagent execution error notice (`sender == "system"`,
+//     `with id "<childID>" encountered an error`) -> "failed"
+//   - agy's idle-subagent guard notice (`sender == "system"`, mentioning
+//     childID going idle) -> "completed"
+//   - a post-launch broadcast stop notice (`sender == "system"`,
+//     "All your subagents and background tasks have been stopped") -> "killed"
+func (f *Flavor) scanParentInbox(parentSessionID, childID string, since time.Time) (status string, report string, found bool) {
 	brainDir := filepath.Join(f.AppDataDir, "brain")
 	msgDir := filepath.Join(brainDir, parentSessionID, ".system_generated", "messages")
 	entries, err := os.ReadDir(msgDir)
 	if err != nil || len(entries) == 0 {
-		return "", false, false
+		return "", "", false
 	}
+	childErrNeedle := `with id "` + childID + `" encountered an error`
+	childIdleNeedle1 := "Subagent " + childID + " has gone idle"
+	childIdleNeedle2 := "Subagent " + childID + " went idle without reporting"
+
+	var systemStopped bool
 	// Scan in reverse so newly written messages are inspected first in long sessions.
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
@@ -404,20 +361,29 @@ func (f *Flavor) scanParentInbox(parentSessionID, childID string, since time.Tim
 			continue
 		}
 		if msg.Sender == childID {
-			return strings.TrimSpace(msg.Content), false, true
+			return "completed", strings.TrimSpace(msg.Content), true
 		}
-		if !systemStopped && msg.Sender == "system" && strings.Contains(msg.Content, "All your subagents and background tasks have been stopped") {
-			if ts, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(msg.Timestamp)); err == nil {
-				if !ts.Before(since.Add(-1 * time.Second)) {
-					systemStopped = true
+		if msg.Sender == "system" {
+			content := strings.TrimSpace(msg.Content)
+			if strings.Contains(content, childErrNeedle) {
+				return "failed", content, true
+			}
+			if strings.Contains(content, childIdleNeedle1) || strings.Contains(content, childIdleNeedle2) {
+				return "completed", content, true
+			}
+			if !systemStopped && strings.Contains(content, "All your subagents and background tasks have been stopped") {
+				if ts, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(msg.Timestamp)); err == nil {
+					if !ts.Before(since.Add(-1 * time.Second)) {
+						systemStopped = true
+					}
 				}
 			}
 		}
 	}
 	if systemStopped {
-		return "", true, true
+		return "killed", "", true
 	}
-	return "", false, false
+	return "", "", false
 }
 
 func (f *Flavor) emitSubagentIdentityMeta(launch acp.SubagentLaunchContext, childID, baseModel, effort string) {

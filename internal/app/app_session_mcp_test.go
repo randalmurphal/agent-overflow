@@ -19,7 +19,7 @@ func sessionToolURLs(t *testing.T, a *App, thread store.Thread, token string) ma
 	if err != nil {
 		t.Fatal(err)
 	}
-	remote, err := a.remoteMCPServer().RegisterThread(thread.ID, token, remoteMCPAccess{thread.ID, token})
+	remote, err := a.remoteMCPServer().RegisterThread(thread.ID, token, remoteMCPAccess{ThreadID: thread.ID, SessionToken: token})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -84,9 +84,12 @@ type waitArgs struct {
 	Notify      bool `json:"notify"`
 }
 
-func (w waitArgs) validate() error {
-	if w.WaitSeconds < 0 || w.WaitSeconds > MaxWaitSeconds {
-		return invalidf("wait_seconds must be between 0 and %d.", MaxWaitSeconds)
+func (w waitArgs) validate(maxWait int) error {
+	if maxWait <= 0 || maxWait > MaxWaitSeconds {
+		maxWait = MaxWaitSeconds
+	}
+	if w.WaitSeconds < 0 || w.WaitSeconds > maxWait {
+		return invalidf("wait_seconds must be between 0 and %d.", maxWait)
 	}
 	return nil
 }
@@ -147,7 +150,7 @@ func (c *call) runStart(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	// Everything is checked before the start: once StartRun commits, the run
 	// exists, and the answer must name it whatever happens after.
-	if err := args.validate(); err != nil {
+	if err := args.validate(c.caller.maxWaitSeconds()); err != nil {
 		return nil, err
 	}
 	started, err := c.app.StartRun(ctx, StartInput{
@@ -202,7 +205,7 @@ func (c *call) runStatus(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err := required("run_id", args.RunID); err != nil {
 		return nil, err
 	}
-	if err := args.validate(); err != nil {
+	if err := args.validate(c.caller.maxWaitSeconds()); err != nil {
 		return nil, err
 	}
 	runID := strings.TrimSpace(args.RunID)
@@ -311,12 +314,13 @@ func (c *call) runWatch(ctx context.Context, raw json.RawMessage) (any, error) {
 	if args.Cursor < 0 {
 		return nil, invalidf("cursor must not be negative.")
 	}
-	waitSeconds := 60
+	maxWait := c.caller.maxWaitSeconds()
+	waitSeconds := min(60, maxWait)
 	if args.WaitSeconds != nil {
 		waitSeconds = *args.WaitSeconds
 	}
-	if waitSeconds < 0 || waitSeconds > MaxWaitSeconds {
-		return nil, invalidf("wait_seconds must be between 0 and %d.", MaxWaitSeconds)
+	if waitSeconds < 0 || waitSeconds > maxWait {
+		return nil, invalidf("wait_seconds must be between 0 and %d.", maxWait)
 	}
 	deadline := c.clock().Add(time.Duration(waitSeconds) * time.Second)
 	input := WatchInput{RunID: strings.TrimSpace(args.RunID), Cursor: args.Cursor, Tree: args.Tree}

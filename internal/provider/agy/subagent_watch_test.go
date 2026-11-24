@@ -324,7 +324,7 @@ func TestWatchSubagentWorksPast256InboxFiles(t *testing.T) {
 	t.Fatalf("expected settlement past 256 inbox files, got %+v", events)
 }
 
-func TestWatchSubagentSettlesOnChildDBError(t *testing.T) {
+func TestWatchSubagentSettlesOnParentInboxSystemError(t *testing.T) {
 	t.Parallel()
 	appDataDir := t.TempDir()
 	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
@@ -343,17 +343,12 @@ func TestWatchSubagentSettlesOnChildDBError(t *testing.T) {
 			},
 		},
 	})
-	db := createTestConvDB(t, appDataDir, childID)
-	defer func() { _ = db.Close() }()
-	if _, err := db.Exec(`ALTER TABLE steps ADD COLUMN status INTEGER NOT NULL DEFAULT 3`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(
-		`INSERT INTO steps (idx, step_type, status, error_details, step_payload) VALUES (1, ?, ?, ?, X'')`,
-		cortexStepTypeErrorMessage, cortexStepStatusError, []byte("RESOURCE_EXHAUSTED: subagent quota hit"),
-	); err != nil {
-		t.Fatal(err)
-	}
+	errMsg := `The subagent research with id "` + childID + `" encountered an error and has either stopped or failed to start execution: RESOURCE_EXHAUSTED`
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages", "0002_err.json"), map[string]any{
+		"sender":    "system",
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"content":   errMsg,
+	})
 
 	flavor := NewFlavor(appDataDir)
 	flavor.subagentPollInterval = 10 * time.Millisecond
@@ -372,12 +367,116 @@ func TestWatchSubagentSettlesOnChildDBError(t *testing.T) {
 		if ev.Kind == provider.EventBackgroundTaskNotification {
 			var m map[string]any
 			_ = json.Unmarshal(ev.Meta, &m)
-			if m["status"] == "failed" && ev.Content == "RESOURCE_EXHAUSTED: subagent quota hit" {
+			if m["status"] == "failed" && ev.Content == errMsg {
 				return
 			}
 		}
 	}
-	t.Fatalf("expected failed settlement from child DB error step, got %+v", events)
+	t.Fatalf("expected failed settlement from parent inbox system error, got %+v", events)
+}
+
+func TestWatchSubagentSettlesOnParentInboxIdleGuard(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	parentID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+	childID := "55555555-5555-5555-5555-555555555555"
+
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "subagents", childID+".json"), map[string]any{
+		"conversationId": childID,
+		"state":          "SUBAGENT_STATE_ALIVE",
+	})
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", childID, ".system_generated", "messages", "0001.json"), map[string]any{
+		"sender": parentID,
+		"sourceMetadata": map[string]any{
+			"tool": map[string]any{
+				"conversationId": parentID,
+				"toolCall":       map[string]any{"id": "call_idle", "name": "invoke_subagent"},
+			},
+		},
+	})
+	idleMsg := "Subagent " + childID + " has gone idle. This was the subagent's most recent response: done"
+	writeJSONFile(t, filepath.Join(appDataDir, "brain", parentID, ".system_generated", "messages", "0002_idle.json"), map[string]any{
+		"sender":    "system",
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"content":   idleMsg,
+	})
+
+	flavor := NewFlavor(appDataDir)
+	flavor.subagentPollInterval = 10 * time.Millisecond
+	var events []provider.ProviderEvent
+	flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
+		SessionID:  parentID,
+		ThreadID:   "t1",
+		TurnID:     "turn-1",
+		ToolCallID: "call_idle",
+		Started:    acp.NormalizedToolStart{SubagentType: "research"},
+		Emit: func(evt provider.ProviderEvent) {
+			events = append(events, evt)
+		},
+	})
+	for _, ev := range events {
+		if ev.Kind == provider.EventBackgroundTaskNotification {
+			var m map[string]any
+			_ = json.Unmarshal(ev.Meta, &m)
+			if m["status"] == "completed" && ev.Content == idleMsg {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected completed settlement from parent inbox idle guard, got %+v", events)
+}
+
+func TestLookupBackgroundCommandsCorrelatesConcurrentCommands(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	sessionID := "4d5f2b49-97b2-49e7-a214-7aff00575443"
+
+	db := createTestConvDB(t, appDataDir, sessionID)
+	defer func() { _ = db.Close() }()
+	for _, stmt := range []string{
+		`ALTER TABLE steps ADD COLUMN status INTEGER NOT NULL DEFAULT 3`,
+		`ALTER TABLE steps ADD COLUMN metadata BLOB`,
+		`ALTER TABLE steps ADD COLUMN task_details BLOB`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	logPath := filepath.Join(appDataDir, "brain", sessionID, ".system_generated", "tasks", "task-12.log")
+	taskBlob := []byte("\x0a." + sessionID + "/task-12\x12|file://" + filepath.ToSlash(logPath) + "\x1a\x04logs")
+	// Step 11: inline running command (no task_details).
+	if _, err := db.Exec(
+		`INSERT INTO steps (idx, step_type, status, metadata, task_details, error_details, step_payload) VALUES (11, 132, ?, ?, NULL, X'', X'')`,
+		cortexStepStatusRunning, []byte("\x0a\x09call_1234\x12\x0brun_command"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	// Step 12: backgrounded running command (task_details populated).
+	if _, err := db.Exec(
+		`INSERT INTO steps (idx, step_type, status, metadata, task_details, error_details, step_payload) VALUES (12, 132, ?, ?, ?, X'', X'')`,
+		cortexStepStatusRunning, []byte("\x0a\x08call_123\x12\x0brun_command"), taskBlob,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	flavor := NewFlavor(appDataDir)
+	// Querying call_12 (prefix of call_123), call_123 (backgrounded), and call_1234 (inline):
+	// ONLY call_123 must match!
+	got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_12", "call_123", "call_1234"}, false)
+	if len(got) != 1 {
+		t.Fatalf("LookupBackgroundCommands = %+v, want only call_123", got)
+	}
+	info, ok := got["call_123"]
+	if !ok {
+		t.Fatalf("missing call_123 in %+v", got)
+	}
+	if info.TaskID != sessionID+"/task-12" {
+		t.Fatalf("TaskID = %q, want %q", info.TaskID, sessionID+"/task-12")
+	}
+	if info.OutputFile != filepath.Clean(logPath) {
+		t.Fatalf("OutputFile = %q, want %q", info.OutputFile, filepath.Clean(logPath))
+	}
 }
 
 func TestWatchSubagentSettlesOnParentSystemStopNoticeAfterLaunch(t *testing.T) {

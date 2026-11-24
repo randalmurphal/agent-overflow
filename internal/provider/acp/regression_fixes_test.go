@@ -817,3 +817,155 @@ func TestACPNestedSubagentRoutesGrandchildToChildLaunch(t *testing.T) {
 		t.Fatalf("expected grandchild tool_call routed to childA:call-launch-B, got %+v", events)
 	}
 }
+
+type lookupBgFlavor struct {
+	DefaultFlavor
+	mu   sync.Mutex
+	byID map[string]BackgroundCommandInfo
+}
+
+func (f *lookupBgFlavor) NormalizeToolStart(u *ToolCallUpdate) NormalizedToolStart {
+	return NormalizedToolStart{
+		ToolName: "Bash",
+		ItemType: "command_execution",
+		Input:    u.EffectiveInput(),
+	}
+}
+
+func (f *lookupBgFlavor) NormalizeToolComplete(u *ToolCallUpdate, started NormalizedToolStart) NormalizedToolComplete {
+	zero := 0
+	return NormalizedToolComplete{
+		ToolName:   "Bash",
+		ItemType:   "command_execution",
+		ItemStatus: "completed",
+		ExitCode:   &zero,
+		CommandOut: "output for " + u.ToolCallID,
+	}
+}
+
+func (f *lookupBgFlavor) CanLookupBackgroundCommands(sessionID string) bool { return sessionID != "" }
+
+func (f *lookupBgFlavor) LookupBackgroundCommands(_ context.Context, _ string, toolCallIDs []string, _ bool) map[string]BackgroundCommandInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]BackgroundCommandInfo)
+	for _, id := range toolCallIDs {
+		if info, ok := f.byID[id]; ok {
+			out[id] = info
+		}
+	}
+	return out
+}
+
+func TestACPConcurrentRunCommandsPromoteOnlyTimedOutCommand(t *testing.T) {
+	t.Parallel()
+	fl := &lookupBgFlavor{
+		DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+		byID:          map[string]BackgroundCommandInfo{},
+	}
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(fl, &events, &mu)
+	s.sessionID = "sess-concurrent"
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+	s.pendingBgCommands = make(map[string]pendingBackgroundCommand)
+	s.bgCmdWakeCh = make(chan struct{}, 1)
+	defer func() {
+		s.closing.Store(true)
+		s.sessionCancel()
+		s.bgCmdWG.Wait()
+	}()
+
+	// Launch two concurrent commands: cmd-fast finishes inline, cmd-slow backgrounds after 50ms.
+	s.handleToolCallStart(&ToolCallUpdate{
+		ToolCallID: "cmd-fast",
+		Name:       "run_command",
+		Kind:       "execute",
+		Status:     "in_progress",
+		RawInput:   json.RawMessage(`{"timeout":5000}`),
+	}, "")
+	s.handleToolCallStart(&ToolCallUpdate{
+		ToolCallID: "cmd-slow",
+		Name:       "run_command",
+		Kind:       "execute",
+		Status:     "in_progress",
+		RawInput:   json.RawMessage(`{"timeout":50}`),
+	}, "")
+
+	// cmd-fast finishes synchronously before timeout -> must stay inline (EventToolComplete).
+	s.handleToolCallComplete(&ToolCallUpdate{
+		ToolCallID: "cmd-fast",
+		Name:       "run_command",
+		Kind:       "execute",
+		Status:     "completed",
+	}, "")
+
+	// Simulate agy backgrounding cmd-slow (populating task_details on disk, zero in_progress wire output).
+	fl.mu.Lock()
+	fl.byID["cmd-slow"] = BackgroundCommandInfo{
+		TaskID:     "sess-concurrent/task-42",
+		OutputFile: "/tmp/task-42.log",
+	}
+	fl.mu.Unlock()
+
+	// Wait for the per-command watcher to promote cmd-slow after its 50ms timeout + 100ms grace.
+	deadline := time.Now().Add(2 * time.Second)
+	promoted := false
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		for _, ev := range events {
+			if ev.Kind == provider.EventToolStart && ev.ItemID == "cmd-slow" {
+				var m map[string]any
+				_ = json.Unmarshal(ev.Meta, &m)
+				if m["meta_update_only"] == true && m["is_background"] == true && m["task_id"] == "sess-concurrent/task-42" && m["output_file"] == "/tmp/task-42.log" {
+					promoted = true
+					break
+				}
+			}
+		}
+		mu.Unlock()
+		if promoted {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if !promoted {
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("cmd-slow was not promoted to background via LookupBackgroundCommands; events=%+v", events)
+	}
+
+	// Now cmd-slow completes -> must emit EventBackgroundTaskTerminal, NOT EventToolComplete.
+	s.handleToolCallComplete(&ToolCallUpdate{
+		ToolCallID: "cmd-slow",
+		Name:       "run_command",
+		Kind:       "execute",
+		Status:     "completed",
+	}, "")
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawFastComplete, sawSlowTerminal bool
+	for _, ev := range events {
+		if ev.ItemID == "cmd-fast" {
+			if ev.Kind == provider.EventBackgroundTaskTerminal {
+				t.Fatalf("inline cmd-fast must not emit EventBackgroundTaskTerminal: %+v", events)
+			}
+			if ev.Kind == provider.EventToolComplete {
+				sawFastComplete = true
+			}
+		}
+		if ev.ItemID == "cmd-slow" {
+			if ev.Kind == provider.EventToolComplete {
+				t.Fatalf("backgrounded cmd-slow must emit EventBackgroundTaskTerminal, not EventToolComplete: %+v", events)
+			}
+			if ev.Kind == provider.EventBackgroundTaskTerminal {
+				sawSlowTerminal = true
+			}
+		}
+	}
+	if !sawFastComplete || !sawSlowTerminal {
+		t.Fatalf("expected fast EventToolComplete (%v) and slow EventBackgroundTaskTerminal (%v); events=%+v", sawFastComplete, sawSlowTerminal, events)
+	}
+}

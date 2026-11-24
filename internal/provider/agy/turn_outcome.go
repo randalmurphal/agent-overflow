@@ -1,6 +1,8 @@
 package agy
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -21,11 +23,10 @@ const (
 	cortexStepTypePlannerResponse = 15
 	cortexStepTypeErrorMessage    = 17
 	cortexStepTypeCheckpoint      = 23
-	cortexStepStatusPending       = 1
 	cortexStepStatusRunning       = 2
+	cortexStepStatusDone          = 3
 	cortexStepStatusCanceled      = 6
 	cortexStepStatusError         = 7
-	cortexStepStatusWaiting       = 9
 	maxErrorPayloadScanBytes      = 64 * 1024
 )
 
@@ -261,59 +262,152 @@ func isProtobufMetadataToken(s string) bool {
 	return strings.Contains(s, ".") && (strings.Contains(s, "/") || strings.Count(s, ".") >= 2)
 }
 
-// childDBTerminalState reports whether a subagent's own conversation DB ended
-// in a terminal error or cancellation with no active steps remaining.
-type childDBTerminalState struct {
-	stepIdx int
-	status  string // "failed" or "killed"
-	summary string
+// CanLookupBackgroundCommands reports whether this flavor can inspect agy's
+// conversation DB for run_command steps that transitioned to background tasks.
+func (f *Flavor) CanLookupBackgroundCommands(sessionID string) bool {
+	return strings.TrimSpace(f.AppDataDir) != "" && validateConversationSessionID(sessionID) == nil
 }
 
-// inspectChildTerminalState checks conversations/<childID>.db for an error or
-// canceled final step when no PENDING/RUNNING/WAITING steps exist. Callers gate
-// invocations on DB/WAL stat changes so steady-state polling does zero SQLite I/O.
-func inspectChildTerminalState(appDataDir, childID string) (childDBTerminalState, bool) {
-	dbPath, err := conversationDBPath(appDataDir, childID)
+// LookupBackgroundCommands checks conversations/<sessionID>.db for any of
+// toolCallIDs whose step has task_details populated (agy's marker for a
+// run_command that exceeded WaitMsBeforeAsync or launched as a daemon).
+// agy 1.5.16's ACP server omits toolOutput on in_progress tool_call_updates, so
+// task_details is the authoritative signal for background promotion and log
+// file correlation.
+func (f *Flavor) LookupBackgroundCommands(_ context.Context, sessionID string, toolCallIDs []string, includeCompleted bool) map[string]acp.BackgroundCommandInfo {
+	if !f.CanLookupBackgroundCommands(sessionID) || len(toolCallIDs) == 0 {
+		return nil
+	}
+	dbPath, err := conversationDBPath(f.AppDataDir, sessionID)
 	if err != nil {
-		return childDBTerminalState{}, false
+		return nil
 	}
 	db, err := openConversationDBReadOnly(dbPath)
 	if err != nil {
-		return childDBTerminalState{}, false
+		return nil
 	}
 	defer func() { _ = db.Close() }()
 
-	var hasActive int
-	if err := db.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM steps WHERE status IN (?, ?, ?))`,
-		cortexStepStatusPending, cortexStepStatusRunning, cortexStepStatusWaiting,
-	).Scan(&hasActive); err != nil || hasActive != 0 {
-		return childDBTerminalState{}, false
+	var rows *sql.Rows
+	if includeCompleted {
+		rows, err = db.Query(
+			`SELECT idx, COALESCE(metadata, X''), task_details FROM steps WHERE status IN (?, ?, ?, ?) AND task_details IS NOT NULL AND length(task_details) > 0 ORDER BY idx DESC`,
+			cortexStepStatusRunning, cortexStepStatusDone, cortexStepStatusCanceled, cortexStepStatusError,
+		)
+	} else {
+		rows, err = db.Query(
+			`SELECT idx, COALESCE(metadata, X''), task_details FROM steps WHERE status = ? AND task_details IS NOT NULL AND length(task_details) > 0 ORDER BY idx DESC`,
+			cortexStepStatusRunning,
+		)
+	}
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	remaining := make(map[string]struct{}, len(toolCallIDs))
+	for _, id := range toolCallIDs {
+		if id != "" {
+			remaining[id] = struct{}{}
+		}
+	}
+	if len(remaining) == 0 {
+		return nil
 	}
 
-	var idx, stepType, stepStatus int
-	var errDetails, stepPayload []byte
-	if err := db.QueryRow(
-		`SELECT idx, step_type, status, COALESCE(error_details, X''), COALESCE(step_payload, X'') FROM steps ORDER BY idx DESC LIMIT 1`,
-	).Scan(&idx, &stepType, &stepStatus, &errDetails, &stepPayload); err != nil {
-		return childDBTerminalState{}, false
+	found := make(map[string]acp.BackgroundCommandInfo)
+	for rows.Next() && len(remaining) > 0 {
+		var idx int
+		var metaBlob, taskBlob []byte
+		if err := rows.Scan(&idx, &metaBlob, &taskBlob); err != nil {
+			continue
+		}
+		matchedID := ""
+		for id := range remaining {
+			if containsToolCallIDToken(metaBlob, id) {
+				matchedID = id
+				break
+			}
+		}
+		if matchedID == "" {
+			continue
+		}
+		info := parseTaskDetailsBlob(f.AppDataDir, sessionID, idx, taskBlob)
+		found[matchedID] = info
+		delete(remaining, matchedID)
 	}
+	if len(found) == 0 {
+		return nil
+	}
+	return found
+}
 
-	if stepType == cortexStepTypeErrorMessage || stepStatus == cortexStepStatusError {
-		raw := errDetails
-		if len(raw) == 0 {
-			raw = stepPayload
-		}
-		summary := extractReadableErrorText(raw)
-		if summary == "" {
-			summary = "Subagent failed with an upstream error"
-		}
-		return childDBTerminalState{stepIdx: idx, status: "failed", summary: summary}, true
+// containsToolCallIDToken reports whether callID appears in a protobuf metadata
+// blob bounded by non-identifier bytes (so "call_123" never matches "call_1234").
+func containsToolCallIDToken(blob []byte, callID string) bool {
+	if len(blob) == 0 || callID == "" {
+		return false
 	}
-	if stepStatus == cortexStepStatusCanceled {
-		return childDBTerminalState{stepIdx: idx, status: "killed"}, true
+	needle := []byte(callID)
+	offset := 0
+	for {
+		pos := bytes.Index(blob[offset:], needle)
+		if pos < 0 {
+			return false
+		}
+		start := offset + pos
+		end := start + len(needle)
+		leftOK := start == 0 || !isCallIDByte(blob[start-1])
+		rightOK := end == len(blob) || !isCallIDByte(blob[end])
+		if leftOK && rightOK {
+			return true
+		}
+		offset = start + 1
 	}
-	return childDBTerminalState{}, false
+}
+
+func isCallIDByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '-'
+}
+
+func parseTaskDetailsBlob(appDataDir, sessionID string, stepIdx int, taskBlob []byte) acp.BackgroundCommandInfo {
+	info := acp.BackgroundCommandInfo{
+		TaskID: fmt.Sprintf("%s/task-%d", sessionID, stepIdx),
+	}
+	if len(taskBlob) > 0 {
+		if rawURI := extractFileURI(taskBlob); rawURI != "" {
+			if resolved := resolveTranscriptURI(rawURI, ""); resolved != "" && filepath.IsAbs(resolved) {
+				info.OutputFile = filepath.Clean(resolved)
+			}
+		}
+	}
+	if info.OutputFile == "" && appDataDir != "" {
+		candidate := filepath.Join(appDataDir, "brain", sessionID, ".system_generated", "tasks", fmt.Sprintf("task-%d.log", stepIdx))
+		if st, err := os.Stat(candidate); err == nil && st.Mode().IsRegular() {
+			info.OutputFile = candidate
+		}
+	}
+	return info
+}
+
+func extractFileURI(blob []byte) string {
+	const prefix = "file://"
+	idx := bytes.Index(blob, []byte(prefix))
+	if idx < 0 {
+		return ""
+	}
+	end := idx + len(prefix)
+	for end < len(blob) {
+		b := blob[end]
+		if b < 0x20 || b >= 0x7f || b == '"' || b == '\'' || b == ' ' || b == '\t' || b == '\r' || b == '\n' {
+			break
+		}
+		end++
+	}
+	if end <= idx+len(prefix) {
+		return ""
+	}
+	return string(blob[idx:end])
 }
 
 // extractReadableErrorText pulls printable UTF-8/ASCII segments from either

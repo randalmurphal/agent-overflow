@@ -1,6 +1,7 @@
 package threadtools
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -281,5 +282,46 @@ func TestSpawnWorktreeIsABranchName(t *testing.T) {
 		if _, present := properties["branch"]; present {
 			t.Errorf("paired=%v: thread_spawn still carries a separate branch parameter", shape.Paired())
 		}
+	}
+}
+
+func TestProviderMaxWaitSecondsCapInSchemasInstructionsAndCalls(t *testing.T) {
+	shape := soloShape()
+	shape.MaxWaitSeconds = 150
+	byName := toolsByName(t, shape)
+	for _, name := range []string{"thread_spawn", "thread_send", "thread_ask", "thread_status"} {
+		prop := schemaProperties(t, byName[name])["wait_seconds"].(map[string]any)
+		if got := prop["maximum"]; got != 150 {
+			t.Errorf("%s wait_seconds maximum = %v, want 150", name, got)
+		}
+	}
+	askProp := schemaProperties(t, byName["thread_ask"])["wait_seconds"].(map[string]any)
+	if got := askProp["default"]; got != 150 {
+		t.Errorf("thread_ask default wait_seconds = %v, want 150", got)
+	}
+	askDesc, _ := byName["thread_ask"]["description"].(string)
+	if !strings.Contains(askDesc, "Waits 150 seconds by default.") {
+		t.Errorf("thread_ask description = %q, want capped default", askDesc)
+	}
+	guide := New(newFakeApp("laptop")).Instructions(shape)
+	if !strings.Contains(guide, "up to 150); ask waits 150 seconds") {
+		t.Errorf("instructions did not reflect 150s cap: %q", guide)
+	}
+
+	app := newFakeApp("laptop")
+	app.threads["t-other"] = Thread{ID: "t-other", Title: "Other"}
+	server := New(app)
+	caller := Caller{ThreadID: "t-self", MaxWaitSeconds: 150}
+	if _, err := server.Call(context.Background(), caller, "thread_send", json.RawMessage(`{"thread_id":"t-other","message":"hi","wait_seconds":151}`)); err == nil {
+		t.Fatal("thread_send accepted wait_seconds above caller MaxWaitSeconds")
+	}
+	if _, err := server.Call(context.Background(), caller, "thread_status", json.RawMessage(`{"tokens":["tok-1"],"wait_seconds":151}`)); err == nil {
+		t.Fatal("thread_status accepted wait_seconds above caller MaxWaitSeconds")
+	}
+	if _, err := server.Call(context.Background(), caller, "thread_ask", json.RawMessage(`{"thread_id":"t-other","question":"q?"}`)); err != nil {
+		t.Fatalf("thread_ask default wait failed under 150s cap: %v", err)
+	}
+	if len(app.asks) != 1 || app.asks[0].WaitSeconds != 150 {
+		t.Fatalf("thread_ask defaulted to %+v, want WaitSeconds=150", app.asks)
 	}
 }
