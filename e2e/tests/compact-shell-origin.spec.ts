@@ -392,30 +392,32 @@ test.describe.serial('the SPA served from its own origin', () => {
   // against the same running server the case above drove, which
   // is what makes this an integration check rather than a second copy of
   // the Go unit test.
-  for (const { route, method, headers } of [
-    { route: '/attachments/upload', method: 'PUT', headers: 'content-type, x-ao-session' },
-    { route: '/bundle/manifest.json', method: 'GET', headers: 'x-ao-session, x-ao-device-key' },
-    { route: '/bundle/archive.zip', method: 'GET', headers: 'x-ao-session, x-ao-device-key' },
-  ]) {
-    test(`the preflight ${method} ${route} needs is answered by the running server`, async () => {
-      const preflight = await fetch(backendOrigin + route, {
-        method: 'OPTIONS',
-        headers: {
-          origin: bundle.origin,
-          'access-control-request-method': method,
-          'access-control-request-headers': headers,
-        },
+  test('the preflight each cross-origin route needs is answered by the running server', async () => {
+    for (const { route, method, headers } of [
+      { route: '/attachments/upload', method: 'PUT', headers: 'content-type, x-ao-session' },
+      { route: '/bundle/manifest.json', method: 'GET', headers: 'x-ao-session, x-ao-device-key' },
+      { route: '/bundle/archive.zip', method: 'GET', headers: 'x-ao-session, x-ao-device-key' },
+    ]) {
+      await test.step(`${method} ${route}`, async () => {
+        const preflight = await fetch(backendOrigin + route, {
+          method: 'OPTIONS',
+          headers: {
+            origin: bundle.origin,
+            'access-control-request-method': method,
+            'access-control-request-headers': headers,
+          },
+        });
+        expect(preflight.status).toBe(204);
+        expect(preflight.headers.get('access-control-allow-origin')).toBe(bundle.origin);
+        expect(preflight.headers.get('access-control-allow-methods')).toContain(method);
+        expect((preflight.headers.get('access-control-allow-headers') ?? '').toLowerCase())
+          .toContain('x-ao-session');
+        // The two rules that keep this one door narrow.
+        expect(preflight.headers.get('access-control-allow-credentials')).toBeNull();
+        expect(preflight.headers.get('vary')?.toLowerCase()).toContain('origin');
       });
-      expect(preflight.status).toBe(204);
-      expect(preflight.headers.get('access-control-allow-origin')).toBe(bundle.origin);
-      expect(preflight.headers.get('access-control-allow-methods')).toContain(method);
-      expect((preflight.headers.get('access-control-allow-headers') ?? '').toLowerCase())
-        .toContain('x-ao-session');
-      // The two rules that keep this one door narrow.
-      expect(preflight.headers.get('access-control-allow-credentials')).toBeNull();
-      expect(preflight.headers.get('vary')?.toLowerCase()).toContain('origin');
-    });
-  }
+    }
+  });
 
   test('a paired page downloads this backend\'s bundle and the archive matches its manifest', async ({
     browser,
