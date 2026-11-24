@@ -2174,8 +2174,8 @@ const queueMaxMessageBytes = 512 * 1024 // 512 KiB
 
 func maxQueueMessageBytes() int { return queueMaxMessageBytes }
 
-// nextFlushUserItemID is the flush-scope wrapper around
-// nextSequencedUserItemID. Format: `user:<turnIndex>:flush:<n>`.
+// nextFlushUserItemID formats the next flush-scope user item id
+// (nextFlushSequenceForTurn). Format: `user:<turnIndex>:flush:<n>`.
 // Sortable; never collides with the seed `user:<turnIndex>` row or
 // with `:steer:<n>` rows. Reads existing rows so a session reopen
 // sees the right next sequence even after a restart.

@@ -4,20 +4,8 @@
 export {
   getReplicaWindow,
   initReplica,
-  purgeReplicaDatabases,
   putReplicaWindow,
   removeReplicaWindow,
-  replicaToken,
-  type ReplicaPurgeResult,
   __resetReplicaForTest,
 } from './session';
-export {
-  MAX_ENVELOPE_CHARS,
-  MAX_ENVELOPE_ITEMS,
-  MAX_REPLICA_CHARS,
-  MAX_REPLICA_THREADS,
-  REPLICA_ENVELOPE_VERSION,
-  REPLICA_SCHEMA_VERSION,
-  type ReplicaBody,
-  type ReplicaEnvelope,
-} from './envelope';
+export type { ReplicaBody } from './envelope';

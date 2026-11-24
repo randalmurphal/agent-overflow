@@ -106,11 +106,8 @@ export {
 } from './threadPaneShared';
 export type {
   DraftPlaceholderDefaults,
-  DraftPlaceholderMode,
-  DraftThreadPlaceholder,
   LoadOlderResult,
   LoadUntilItemResult,
-  PaneErrorKind,
   PaneScrollController,
   PreserveViewportBottomOptions,
 } from './threadPaneShared';

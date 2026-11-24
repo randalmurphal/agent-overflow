@@ -95,7 +95,6 @@ export type {
   ScrollObservationKind,
   UseStickToBottomController,
   UseStickToBottomOptions,
-  WarmReason,
 } from './types';
 
 // Three-band geometry — see docs/architecture/frontend-scroll.md for

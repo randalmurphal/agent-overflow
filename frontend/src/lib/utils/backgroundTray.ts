@@ -18,7 +18,6 @@ import {
 } from './subagentLaunch';
 
 export { extractClaudeTaskID } from './claudeTaskMeta';
-export { extractCodexProcessID } from './codexProcessMeta';
 
 export interface TrayTask {
   /** Stable id used for the row key and scroll-to-item request. */

@@ -40,8 +40,6 @@ func captureDraftBroadcasts(t *testing.T, app *App) *draftBroadcasts {
 	return recorder
 }
 
-func (r *draftBroadcasts) reset() { r.events = nil }
-
 func (r *draftBroadcasts) expectOne(what string) DraftUpdatedEvent {
 	r.t.Helper()
 	if len(r.events) != 1 {

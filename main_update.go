@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -296,10 +297,6 @@ func acquireUpdateLock(ctx context.Context, wait time.Duration) (*os.File, func(
 	}, nil
 }
 
-// heldTrialLock keeps the inherited lock's descriptor open for the trial's
-// life. A collected *os.File closes it.
-var heldTrialLock *os.File
-
 // trialBackend is the boot a trial proves: start runs until prepared or
 // failure, and shutdown is the ordered teardown after the supervisor asks
 // the trial to stop.
@@ -347,7 +344,9 @@ func runTrialProtocol(newBackend func(observe func(startupprogress.Progress)) tr
 	if lock == nil {
 		return fail("the trial was started without the data root's lock")
 	}
-	heldTrialLock = lock
+	// The inherited lock's descriptor stays open for the trial's life: a
+	// collected *os.File closes it.
+	defer runtime.KeepAlive(lock)
 	if err := conn.Send(supervise.Message{
 		Type: supervise.MsgHello, ProtocolVersion: supervise.ProtocolVersion,
 		Version: version, ReportsProgress: true,

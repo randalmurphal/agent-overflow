@@ -11,7 +11,6 @@ export type {
   DeleteDependents,
   DeleteThreadResult,
   NativeMemoryStatus,
-  ProviderMemory,
   WorkerFailure,
 } from '../../../bindings/agent-overflow/internal/app/models';
 

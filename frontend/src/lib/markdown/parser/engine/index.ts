@@ -9,12 +9,10 @@
  */
 export { Lexer } from './Lexer';
 export { Tokenizer } from './Tokenizer';
-export { block, inline, other } from './rules';
-export type { Rules } from './rules';
+export { block, inline } from './rules';
 export type {
   LexerOptions,
   TokenizerThis,
-  TokenizerExtensionFunction,
   TokenizerStartFunction,
 } from './options';
 export type { Links, MarkedToken, Token, Tokens, TokensList } from './tokens';

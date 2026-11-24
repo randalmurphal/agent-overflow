@@ -1342,10 +1342,8 @@ func appendFileAttachmentLines(providerContent string, fileLines []string) strin
 }
 
 // nextSequenceForScope returns the next available sequence number for
-// `user:<turnIndex>:<scope>:<n>` ids on the given thread/turn. Used
-// by both the steer (`:steer:<n>`) and flush (`:flush:<n>`) paths to
-// allocate non-colliding mid-turn user-message ids without each
-// repeating the same MAX-by-suffix scan.
+// `user:<turnIndex>:<scope>:<n>` ids on the given thread/turn: the
+// flush path's count when no triage owns it (nextFlushSequenceForTurn).
 //
 // Returns 1 on an empty turn (highest+1 with highest=0). Unparsable
 // suffixes are skipped so a future id-format extension doesn't crash
@@ -1367,18 +1365,6 @@ func (a *App) nextSequenceForScope(threadID string, turnIndex int, scope string)
 		}
 	}
 	return highest + 1, nil
-}
-
-// nextSequencedUserItemID formats the next sequenced id for the given
-// scope (`steer` or `flush`). Wrapper around nextSequenceForScope so
-// callers that want the formatted id don't have to do their own
-// Sprintf.
-func (a *App) nextSequencedUserItemID(threadID string, turnIndex int, scope string) (string, error) {
-	seq, err := a.nextSequenceForScope(threadID, turnIndex, scope)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("user:%d:%s:%d", turnIndex, scope, seq), nil
 }
 
 // refusePRDraftSource refuses a send through the thread bindings that names

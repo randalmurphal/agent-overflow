@@ -34,7 +34,6 @@ import {
   DisallowPreviewPort,
   GetDevServers,
   MintPreviewURL,
-  type DevServer,
   type DevServerList,
 } from './bindings';
 import { wailsEventOn } from './wailsEvents';
@@ -58,7 +57,7 @@ import { handleExternalURL, installPreviewLinkActions } from '../utils/externalL
 import { parsePreviewTarget } from '../utils/previewLinkExtension';
 import { userFacingError } from '../utils/userFacingError';
 
-export type { DevServer, DevServerList };
+export type { DevServerList };
 
 /** Everything this page knows about one machine's shareable ports. */
 export interface MachineDevServers {

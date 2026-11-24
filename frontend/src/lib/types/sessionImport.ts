@@ -16,10 +16,7 @@
 export type {
   ImportProviderStatus,
   ImportRunHandle,
-  ImportScanRequest,
   ImportScanResult,
-  ImportSessionsRequest,
-  ImportUpdateResult,
   ImportUpdateStatus,
   ImportableSession,
 } from '../../../bindings/agent-overflow/internal/app/models';
