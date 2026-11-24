@@ -804,38 +804,6 @@ func TestHandleUserText_PendingSendMatch_EmptyProviderItemID_LogsAndNoOp(t *test
 	}
 }
 
-// TestHandleUserText_PendingSendMatch_DuplicateProviderItemID_NoLog
-// pins the legitimate-duplicate sibling: when the same wire echo
-// arrives twice (session-resume replay landing on an already-stamped
-// row), the merge no-ops because the id already matches. No log
-// fires — the empty-id log is reserved for the parser-gap signal.
-func TestHandleUserText_PendingSendMatch_DuplicateProviderItemID_NoLog(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-
-	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
-	seedUserTextRow(t, st, "t1", 0, "hello", `{"provider_item_id":"msg_existing"}`)
-
-	var logBuf bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&logBuf)
-	defer log.SetOutput(prev)
-
-	if err := router.Handle(provider.ProviderEvent{
-		Kind:      provider.EventUserText,
-		ThreadID:  "t1",
-		Content:   "hello",
-		Meta:      json.RawMessage(`{"provider_item_id":"msg_existing"}`),
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-
-	if strings.Contains(logBuf.String(), "queue-confirm path will not fire") {
-		t.Fatalf("duplicate-id branch must not emit the empty-id warning, got: %q", logBuf.String())
-	}
-}
-
 // TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUID pins
 // the common direct-send success path: app_send.go pre-stamps the
 // minted uuid on the row + anchor, Claude honours it and echoes

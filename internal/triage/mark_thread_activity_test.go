@@ -70,180 +70,6 @@ func TestUserTextPersistBumpsThreadActivity(t *testing.T) {
 	}
 }
 
-// TestNonUserTextPersistDoesNotBumpThreadActivity confirms persistence
-// of any other item kind (assistant_text, thinking, tool_call, etc.)
-// leaves activity alone.
-func TestNonUserTextPersistDoesNotBumpThreadActivity(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	before := readThreadUpdatedAt(t, st, "t1")
-
-	now := before + 5_000
-	if err := router.PersistItem(store.Item{
-		ID:        "asst:0:0",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "assistant_text",
-		Role:      "assistant",
-		Status:    "completed",
-		Summary:   "ok",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, nil); err != nil {
-		t.Fatalf("persist assistant_text: %v", err)
-	}
-
-	after := readThreadUpdatedAt(t, st, "t1")
-	if after != before {
-		t.Fatalf("threads.updated_at moved across assistant_text persist: before=%d after=%d", before, after)
-	}
-}
-
-func TestWireOnlyUserTextDoesNotBumpThreadActivity(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	before := readThreadUpdatedAt(t, st, "t1")
-
-	now := before + 5_000
-	if err := router.PersistItem(store.Item{
-		ID:        "user:wire:child_prompt_1",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "user_text",
-		Role:      "user",
-		Status:    "completed",
-		Summary:   "subagent prompt",
-		Meta:      `{"provider_item_id":"child_prompt_1","wire_only":true}`,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, nil); err != nil {
-		t.Fatalf("persist wire-only user_text: %v", err)
-	}
-
-	after := readThreadUpdatedAt(t, st, "t1")
-	if after != before {
-		t.Fatalf("threads.updated_at moved across wire-only user_text: before=%d after=%d", before, after)
-	}
-}
-
-func TestParentedUserTextDoesNotBumpThreadActivity(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	before := readThreadUpdatedAt(t, st, "t1")
-
-	now := before + 5_000
-	if err := router.PersistItem(store.Item{
-		ID:        "spawn-1",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "tool_call",
-		Role:      "assistant",
-		Status:    "running",
-		Summary:   "Spawn subagent",
-		CreatedAt: now - 1,
-		UpdatedAt: now - 1,
-	}, nil); err != nil {
-		t.Fatalf("persist parent tool_call: %v", err)
-	}
-	if err := router.PersistItem(store.Item{
-		ID:        "user:wire:child_prompt_2",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "user_text",
-		Role:      "user",
-		Status:    "completed",
-		Summary:   "subagent prompt",
-		ParentID:  "spawn-1",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, nil); err != nil {
-		t.Fatalf("persist parented user_text: %v", err)
-	}
-
-	after := readThreadUpdatedAt(t, st, "t1")
-	if after != before {
-		t.Fatalf("threads.updated_at moved across parented user_text: before=%d after=%d", before, after)
-	}
-}
-
-func TestInvalidParentedUserTextDoesNotBumpThreadActivity(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	before := readThreadUpdatedAt(t, st, "t1")
-
-	now := before + 5_000
-	if err := router.PersistItem(store.Item{
-		ID:        "user:wire:child_prompt_3",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		ItemIndex: 0,
-		Kind:      "user_text",
-		Role:      "user",
-		Status:    "completed",
-		Summary:   "subagent prompt with missing parent",
-		ParentID:  "missing-spawn",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, nil); err != nil {
-		t.Fatalf("persist invalid-parent user_text: %v", err)
-	}
-
-	after := readThreadUpdatedAt(t, st, "t1")
-	if after != before {
-		t.Fatalf("threads.updated_at moved across invalid-parent user_text: before=%d after=%d", before, after)
-	}
-}
-
-// TestTurnCompleteBumpsThreadActivity covers the second sidebar-bump
-// boundary: a settled turn (clean or errored) advances activity. The
-// router's settleTurnRow path is the one production caller of
-// UpdateTurnCompleted.
-func TestTurnCompleteBumpsThreadActivity(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	before := readThreadUpdatedAt(t, st, "t1")
-
-	if err := st.InsertTurn(store.Turn{
-		TurnID:    "turn-1",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		StartedAt: before,
-	}); err != nil {
-		t.Fatalf("insert turn: %v", err)
-	}
-
-	startEvt := provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		Timestamp: time.Unix(0, before*int64(time.Millisecond)),
-	}
-	if err := router.Handle(startEvt); err != nil {
-		t.Fatalf("handle turn start: %v", err)
-	}
-
-	completeAt := before + 10_000
-	completeEvt := provider.ProviderEvent{
-		Kind:         provider.EventTurnComplete,
-		ThreadID:     "t1",
-		TurnID:       "turn-1",
-		TurnComplete: normalTurnCompleteMeta(),
-		Timestamp:    time.Unix(0, completeAt*int64(time.Millisecond)),
-	}
-	if err := router.Handle(completeEvt); err != nil {
-		t.Fatalf("handle turn complete: %v", err)
-	}
-
-	after := readThreadUpdatedAt(t, st, "t1")
-	if after != completeAt {
-		t.Fatalf("threads.updated_at after turn complete = %d, want %d", after, completeAt)
-	}
-}
-
 func TestNestedTurnCompleteDoesNotBumpThreadActivity(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -277,203 +103,105 @@ func TestNestedTurnCompleteDoesNotBumpThreadActivity(t *testing.T) {
 	}
 }
 
-func TestWhitespaceParentTurnCompleteBumpsThreadActivity(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	before := readThreadUpdatedAt(t, st, "t1")
-
-	if err := st.InsertTurn(store.Turn{
-		TurnID:    "turn-1",
-		ThreadID:  "t1",
-		TurnIndex: 0,
-		StartedAt: before,
-	}); err != nil {
-		t.Fatalf("insert turn: %v", err)
-	}
-
-	startEvt := provider.ProviderEvent{
-		Kind:      provider.EventTurnStart,
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		Timestamp: time.Unix(0, before*int64(time.Millisecond)),
-	}
-	if err := router.Handle(startEvt); err != nil {
-		t.Fatalf("handle turn start: %v", err)
-	}
-
-	completeAt := before + 10_000
-	completeEvt := provider.ProviderEvent{
-		Kind:            provider.EventTurnComplete,
-		ThreadID:        "t1",
-		TurnID:          "turn-1",
-		ParentToolUseID: "   ",
-		TurnComplete:    normalTurnCompleteMeta(),
-		Timestamp:       time.Unix(0, completeAt*int64(time.Millisecond)),
-	}
-	if err := router.Handle(completeEvt); err != nil {
-		t.Fatalf("handle whitespace-parent turn complete: %v", err)
-	}
-
-	after := readThreadUpdatedAt(t, st, "t1")
-	if after != completeAt {
-		t.Fatalf("threads.updated_at after whitespace-parent turn complete = %d, want %d", after, completeAt)
-	}
-}
-
 // TestApprovalRequestBumpsThreadActivity covers the third sidebar-bump
-// boundary: an approval request indicates the agent is paused waiting
-// on the user — the thread should surface to the top of the sidebar.
+// boundary: an approval or structured user-input request indicates the
+// agent is paused waiting on the user, so the thread surfaces to the top
+// of the sidebar.
 func TestApprovalRequestBumpsThreadActivity(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	before := readThreadUpdatedAt(t, st, "t1")
+	for _, tc := range []struct {
+		name    string
+		kind    provider.EventKind
+		itemID  string
+		request any
+	}{
+		{
+			name: "approval", kind: provider.EventApprovalRequest, itemID: "approval-1",
+			request: provider.ApprovalRequest{
+				RequestID: "approval-1", ThreadID: "t1", TurnID: "turn-1",
+				ToolName: "Bash", Description: "Run command",
+			},
+		},
+		{
+			name: "user input", kind: provider.EventUserInputRequest, itemID: "input-1",
+			request: provider.UserInputRequest{
+				RequestID: "input-1", ThreadID: "t1", TurnID: "turn-1",
+				ToolName: "user_input", Title: "Pick one",
+				Questions: []provider.UserInputQuestion{{
+					ID: "scope", Question: "Choose",
+					Options: []provider.UserInputQuestionOption{{Label: "turn", Description: "this turn"}},
+				}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			before := readThreadUpdatedAt(t, st, "t1")
 
-	requestMeta, err := json.Marshal(provider.ApprovalRequest{
-		RequestID:   "approval-1",
-		ThreadID:    "t1",
-		TurnID:      "turn-1",
-		ToolName:    "Bash",
-		Description: "Run command",
-	})
-	if err != nil {
-		t.Fatalf("marshal approval: %v", err)
-	}
+			requestMeta, err := json.Marshal(tc.request)
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			requestAt := before + 2_000
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: tc.kind, ThreadID: "t1", TurnID: "turn-1", ItemID: tc.itemID,
+				Meta: requestMeta, Timestamp: time.Unix(0, requestAt*int64(time.Millisecond)),
+			}); err != nil {
+				t.Fatalf("handle request: %v", err)
+			}
 
-	requestAt := before + 2_000
-	evt := provider.ProviderEvent{
-		Kind:      provider.EventApprovalRequest,
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		ItemID:    "approval-1",
-		Meta:      requestMeta,
-		Timestamp: time.Unix(0, requestAt*int64(time.Millisecond)),
-	}
-	if err := router.Handle(evt); err != nil {
-		t.Fatalf("handle approval request: %v", err)
-	}
-
-	after := readThreadUpdatedAt(t, st, "t1")
-	if after <= before {
-		t.Fatalf("threads.updated_at did not advance on approval request: before=%d after=%d", before, after)
+			after := readThreadUpdatedAt(t, st, "t1")
+			if after <= before {
+				t.Fatalf("threads.updated_at did not advance on %s request: before=%d after=%d", tc.name, before, after)
+			}
+		})
 	}
 }
 
-// TestApprovalResolveDoesNotBumpThreadActivity — answering an approval
-// is the user-text path, not a separate bump. This guards against
-// double-bumping when the user replies.
+// TestApprovalResolveDoesNotBumpThreadActivity: answering an approval or
+// a structured user-input request is the user-text path, not a separate
+// bump. This guards against double-bumping when the user replies.
 func TestApprovalResolveDoesNotBumpThreadActivity(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	// Manually drive activity forward so we can detect a regression
-	// that bumps it again on resolve.
-	if err := st.MarkThreadActivity("t1", time.Now().UnixMilli()); err != nil {
-		t.Fatalf("seed activity: %v", err)
-	}
-	before := readThreadUpdatedAt(t, st, "t1")
+	for _, tc := range []struct {
+		name    string
+		kind    provider.EventKind
+		itemID  string
+		resolve map[string]any
+	}{
+		{
+			name: "approval", kind: provider.EventApprovalResolved, itemID: "approval-1",
+			resolve: map[string]any{"requestId": "approval-1", "decision": "approved"},
+		},
+		{
+			name: "user input", kind: provider.EventUserInputResolved, itemID: "input-1",
+			resolve: map[string]any{"requestId": "input-1", "decision": "answered", "answers": map[string]string{"scope": "turn"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			// Manually drive activity forward so we can detect a regression
+			// that bumps it again on resolve.
+			if err := st.MarkThreadActivity("t1", time.Now().UnixMilli()); err != nil {
+				t.Fatalf("seed activity: %v", err)
+			}
+			before := readThreadUpdatedAt(t, st, "t1")
 
-	resolveMeta, err := json.Marshal(map[string]any{
-		"requestId": "approval-1",
-		"decision":  "approved",
-	})
-	if err != nil {
-		t.Fatalf("marshal resolve: %v", err)
-	}
-	evt := provider.ProviderEvent{
-		Kind:      provider.EventApprovalResolved,
-		ThreadID:  "t1",
-		ItemID:    "approval-1",
-		Meta:      resolveMeta,
-		Timestamp: time.Now(),
-	}
-	if err := router.Handle(evt); err != nil {
-		t.Fatalf("handle approval resolved: %v", err)
-	}
+			resolveMeta, err := json.Marshal(tc.resolve)
+			if err != nil {
+				t.Fatalf("marshal resolve: %v", err)
+			}
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: tc.kind, ThreadID: "t1", ItemID: tc.itemID, Meta: resolveMeta, Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("handle %s resolved: %v", tc.name, err)
+			}
 
-	after := readThreadUpdatedAt(t, st, "t1")
-	if after != before {
-		t.Fatalf("approval resolve unexpectedly bumped activity: before=%d after=%d", before, after)
-	}
-}
-
-// TestUserInputResolveDoesNotBumpThreadActivity is the negative twin
-// of TestApprovalResolveDoesNotBumpThreadActivity for the structured
-// user-input flavor. Submitting an answer is the user-text path, not
-// a separate bump.
-func TestUserInputResolveDoesNotBumpThreadActivity(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	if err := st.MarkThreadActivity("t1", time.Now().UnixMilli()); err != nil {
-		t.Fatalf("seed activity: %v", err)
-	}
-	before := readThreadUpdatedAt(t, st, "t1")
-
-	resolveMeta, err := json.Marshal(map[string]any{
-		"requestId": "input-1",
-		"decision":  "answered",
-		"answers":   map[string]string{"scope": "turn"},
-	})
-	if err != nil {
-		t.Fatalf("marshal resolve: %v", err)
-	}
-	evt := provider.ProviderEvent{
-		Kind:      provider.EventUserInputResolved,
-		ThreadID:  "t1",
-		ItemID:    "input-1",
-		Meta:      resolveMeta,
-		Timestamp: time.Now(),
-	}
-	if err := router.Handle(evt); err != nil {
-		t.Fatalf("handle user-input resolved: %v", err)
-	}
-
-	after := readThreadUpdatedAt(t, st, "t1")
-	if after != before {
-		t.Fatalf("user-input resolve unexpectedly bumped activity: before=%d after=%d", before, after)
-	}
-}
-
-// TestUserInputRequestBumpsThreadActivity mirrors the approval-request
-// coverage for the structured user-input request flavor.
-func TestUserInputRequestBumpsThreadActivity(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	before := readThreadUpdatedAt(t, st, "t1")
-
-	requestMeta, err := json.Marshal(provider.UserInputRequest{
-		RequestID: "input-1",
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		ToolName:  "user_input",
-		Title:     "Pick one",
-		Questions: []provider.UserInputQuestion{{
-			ID:       "scope",
-			Question: "Choose",
-			Options: []provider.UserInputQuestionOption{{
-				Label:       "turn",
-				Description: "this turn",
-			}},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("marshal user-input request: %v", err)
-	}
-
-	requestAt := before + 2_000
-	evt := provider.ProviderEvent{
-		Kind:      provider.EventUserInputRequest,
-		ThreadID:  "t1",
-		TurnID:    "turn-1",
-		ItemID:    "input-1",
-		Meta:      requestMeta,
-		Timestamp: time.Unix(0, requestAt*int64(time.Millisecond)),
-	}
-	if err := router.Handle(evt); err != nil {
-		t.Fatalf("handle user-input request: %v", err)
-	}
-
-	after := readThreadUpdatedAt(t, st, "t1")
-	if after <= before {
-		t.Fatalf("threads.updated_at did not advance on user-input request: before=%d after=%d", before, after)
+			after := readThreadUpdatedAt(t, st, "t1")
+			if after != before {
+				t.Fatalf("%s resolve unexpectedly bumped activity: before=%d after=%d", tc.name, before, after)
+			}
+		})
 	}
 }
 
@@ -482,7 +210,8 @@ func TestUserInputRequestBumpsThreadActivity(t *testing.T) {
 // in SQLite is only half the fact: since provider:item_event was narrowed
 // to the threads a client watches, a client that is not watching learns
 // about a user_text bump ONLY from the thread:updated patch below. The
-// tests above pin the column; these pin the frame.
+// tests above pin the column; these pin the frame, and the column too
+// where one fixture serves both.
 
 // threadActivityPatches returns the thread:updated PATCH emissions that
 // carry an activity bump. The patch is deliberately field-free otherwise
@@ -572,7 +301,11 @@ func TestQuietUserTextPersistStillEmitsActivityPatch(t *testing.T) {
 	}
 }
 
-func TestNonActivityUserTextEmitsNoActivityPatch(t *testing.T) {
+// Persisting any row other than a user-typed message (assistant text, a
+// wire-only or parented subagent prompt, or a prompt naming a missing
+// parent) leaves activity alone: the column does not move and no
+// activity patch reaches the wire.
+func TestNonActivityPersistDoesNotBumpThreadActivity(t *testing.T) {
 	cases := []struct {
 		name string
 		item store.Item
@@ -595,6 +328,14 @@ func TestNonActivityUserTextEmitsNoActivityPatch(t *testing.T) {
 			},
 		},
 		{
+			name: "invalid parent",
+			item: store.Item{
+				ID:   "user:wire:child_prompt_3",
+				Kind: "user_text", Role: "user", Status: "completed",
+				Summary: "subagent prompt with missing parent", ParentID: "missing-spawn",
+			},
+		},
+		{
 			name: "assistant text",
 			item: store.Item{
 				ID:   "asst:0:0",
@@ -608,7 +349,8 @@ func TestNonActivityUserTextEmitsNoActivityPatch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			router, st, emissions := newTestRouter(t)
 			createTestThread(t, st, "t1")
-			now := readThreadUpdatedAt(t, st, "t1") + 5_000
+			before := readThreadUpdatedAt(t, st, "t1")
+			now := before + 5_000
 			if err := router.PersistItem(store.Item{
 				ID: "spawn-1", ThreadID: "t1", Kind: "tool_call", Role: "assistant",
 				Status: "running", Summary: "Spawn subagent",
@@ -626,6 +368,9 @@ func TestNonActivityUserTextEmitsNoActivityPatch(t *testing.T) {
 				t.Fatalf("persist %s: %v", tc.name, err)
 			}
 
+			if after := readThreadUpdatedAt(t, st, "t1"); after != before {
+				t.Fatalf("threads.updated_at moved across %s persist: before=%d after=%d", tc.name, before, after)
+			}
 			if patches := threadActivityPatches(t, emissions.snapshot()); len(patches) != 0 {
 				t.Fatalf("%s emitted %d activity patches, want 0", tc.name, len(patches))
 			}
@@ -633,41 +378,55 @@ func TestNonActivityUserTextEmitsNoActivityPatch(t *testing.T) {
 	}
 }
 
-// Turn completion moves threads.updated_at too, but it reaches every
-// client on provider:turn_completed — which is wildcard and which the
-// sidebar already reads. A second carrier for the same fact would
-// double-apply it.
-func TestTurnCompleteEmitsNoActivityPatch(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	before := readThreadUpdatedAt(t, st, "t1")
-	if err := st.InsertTurn(store.Turn{
-		TurnID: "turn-1", ThreadID: "t1", TurnIndex: 0, StartedAt: before,
-	}); err != nil {
-		t.Fatalf("insert turn: %v", err)
-	}
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnStart, ThreadID: "t1", TurnID: "turn-1",
-		Timestamp: time.Unix(0, before*int64(time.Millisecond)),
-	}); err != nil {
-		t.Fatalf("handle turn start: %v", err)
-	}
-	emissions.reset()
+// TestTurnCompleteBumpsThreadActivity covers the second sidebar-bump
+// boundary: a settled top-level turn (no parent, or a blank one) advances
+// activity. The router's settleTurnRow path is the one production caller
+// of UpdateTurnCompleted. The bump reaches every client on
+// provider:turn_completed, which is wildcard and which the sidebar
+// already reads, so it emits no activity patch: a second carrier for the
+// same fact would double-apply it.
+func TestTurnCompleteBumpsThreadActivity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		parent string
+	}{
+		{"no parent", ""},
+		{"whitespace parent", "   "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router, st, emissions := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			before := readThreadUpdatedAt(t, st, "t1")
+			if err := st.InsertTurn(store.Turn{
+				TurnID: "turn-1", ThreadID: "t1", TurnIndex: 0, StartedAt: before,
+			}); err != nil {
+				t.Fatalf("insert turn: %v", err)
+			}
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventTurnStart, ThreadID: "t1", TurnID: "turn-1",
+				Timestamp: time.Unix(0, before*int64(time.Millisecond)),
+			}); err != nil {
+				t.Fatalf("handle turn start: %v", err)
+			}
+			emissions.reset()
 
-	completeAt := before + 10_000
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventTurnComplete, ThreadID: "t1", TurnID: "turn-1",
-		TurnComplete: normalTurnCompleteMeta(),
-		Timestamp:    time.Unix(0, completeAt*int64(time.Millisecond)),
-	}); err != nil {
-		t.Fatalf("handle turn complete: %v", err)
-	}
+			completeAt := before + 10_000
+			if err := router.Handle(provider.ProviderEvent{
+				Kind: provider.EventTurnComplete, ThreadID: "t1", TurnID: "turn-1",
+				ParentToolUseID: tc.parent,
+				TurnComplete:    normalTurnCompleteMeta(),
+				Timestamp:       time.Unix(0, completeAt*int64(time.Millisecond)),
+			}); err != nil {
+				t.Fatalf("handle turn complete: %v", err)
+			}
 
-	if readThreadUpdatedAt(t, st, "t1") != completeAt {
-		t.Fatal("precondition: turn completion did not bump activity")
-	}
-	if patches := threadActivityPatches(t, emissions.snapshot()); len(patches) != 0 {
-		t.Fatalf("turn completion emitted %d activity patches, want 0", len(patches))
+			if after := readThreadUpdatedAt(t, st, "t1"); after != completeAt {
+				t.Fatalf("threads.updated_at after turn complete = %d, want %d", after, completeAt)
+			}
+			if patches := threadActivityPatches(t, emissions.snapshot()); len(patches) != 0 {
+				t.Fatalf("turn completion emitted %d activity patches, want 0", len(patches))
+			}
+		})
 	}
 }
 
