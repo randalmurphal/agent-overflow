@@ -29,27 +29,20 @@ describe('<PerformanceSettings>', () => {
     setBindingMock('IsWSL', async () => false);
   });
 
-  it('dispatches lowPowerMode patch when the toggle is clicked', async () => {
+  it.each([
+    ['Low Power Mode', 'lowPowerMode', false],
+    ['Streaming', 'streamingEnabled', true],
+    ['Keep-Awake Screen', 'keepAwakeScreen', true],
+  ] as const)('dispatches the patch for %s from its default state', async (label, key, on) => {
     const { getByRole } = render(PerformanceSettings);
-    const toggle = getByRole('switch', { name: 'Toggle Low Power Mode' });
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    const toggle = getByRole('switch', { name: `Toggle ${label}` });
+    expect(toggle.getAttribute('aria-checked')).toBe(String(on));
 
     await fireEvent.click(toggle);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ lowPowerMode: true });
-  });
-
-  it('dispatches streamingEnabled patch from its default-on state', async () => {
-    const { getByRole } = render(PerformanceSettings);
-    const toggle = getByRole('switch', { name: 'Toggle Streaming' });
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
-
-    await fireEvent.click(toggle);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock!.mock.calls[0][0]).toEqual({ streamingEnabled: false });
+    expect(mock!.mock.calls[0][0]).toEqual({ [key]: !on });
   });
 
   it('renders keep-awake inert, saying why, off the host while the device keys stay live', async () => {
@@ -85,17 +78,5 @@ describe('<PerformanceSettings>', () => {
       setPageGrantsFromBootstrap(false);
       resetStagedBackends();
     }
-  });
-
-  it('dispatches keepAwakeScreen patch from its default-on state', async () => {
-    const { getByRole } = render(PerformanceSettings);
-    const toggle = getByRole('switch', { name: 'Toggle Keep-Awake Screen' });
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
-
-    await fireEvent.click(toggle);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ keepAwakeScreen: false });
   });
 });

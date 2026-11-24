@@ -52,25 +52,20 @@ afterEach(() => resetProviderAccounts());
 
 describe('<ProviderAccountResets>', () => {
   it('shows no button for an account with nothing to show, and keeps its box', () => {
-    // A computer on an older release sends neither usageResets nor
-    // pendingReset, so this is also what its cards show.
-    const bare = renderResets(account({ id: 'codex-a', provider: 'codex' }));
-    expect(bare.queryByTestId('provider-account-resets-codex-a')).toBeNull();
-    expect(bare.queryByTestId('provider-account-resets-box-codex-a')).not.toBeNull();
-    bare.unmount();
     const empty = renderResets(withResets([]));
     expect(empty.queryByTestId('provider-account-resets-codex-a')).toBeNull();
-  });
+    empty.unmount();
 
-  // v0.0.19 has neither reset method and its listing carries neither field:
-  // its card offers nothing, so neither method is ever called there.
-  it('offers nothing on a computer on an older release', async () => {
+    // v0.0.19 has neither reset method and its listing carries neither
+    // usageResets nor pendingReset: its bare card offers nothing, so
+    // neither method is ever called there.
     answerAsV0019();
     const card = account({ id: 'codex-a', provider: 'codex', email: 'a@example.com' });
     expect('usageResets' in card || 'pendingReset' in card).toBe(false);
-    const { queryByTestId, queryByRole } = renderResets(card);
-    expect(queryByTestId('provider-account-resets-codex-a')).toBeNull();
-    expect(queryByRole('button', { name: /Use a|Finish the/ })).toBeNull();
+    const bare = renderResets(card);
+    expect(bare.queryByTestId('provider-account-resets-codex-a')).toBeNull();
+    expect(bare.queryByTestId('provider-account-resets-box-codex-a')).not.toBeNull();
+    expect(bare.queryByRole('button', { name: /Use a|Finish the/ })).toBeNull();
     expect(getBindingMock('SpendProviderAccountReset')).not.toHaveBeenCalled();
     expect(getBindingMock('FinishProviderAccountReset')).not.toHaveBeenCalled();
   });

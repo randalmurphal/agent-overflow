@@ -115,15 +115,19 @@ describe('<SystemsSection>', () => {
     await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
   });
 
-  it('carries the abandon the host asked for when agent thread requests are open', async () => {
+  it.each([
+    ['agent thread requests are open', 'thread_requests_open', 'spawn tok-1 is still open there. Confirm to forget it anyway', /still open there/],
+    [
+      'forgetting discards completions held for archived conversations',
+      'remote_completions_held',
+      '1 finished job held for an archived conversation will be discarded. Confirm to forget the computer anyway.',
+      /1 finished job held for an archived conversation will be discarded/,
+    ],
+  ])('carries the abandon the host asked for when %s', async (_case, code, message, toast) => {
     stageBackend();
     setBindingMock('ListBackends', async () => [LAPTOP]);
     const remove = setBindingMock('RemoveBackend', async (_id: string, abandon: boolean) => {
-      if (!abandon) {
-        throw Object.assign(new Error('spawn tok-1 is still open there. Confirm to forget it anyway'), {
-          code: 'thread_requests_open',
-        });
-      }
+      if (!abandon) throw Object.assign(new Error(message), { code });
     });
     const { getByText, findByTestId, queryByTestId } = render(SystemsSection);
     await fireEvent.click(within(await findByTestId('attached-system')).getByText('Remove'));
@@ -131,28 +135,7 @@ describe('<SystemsSection>', () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', false));
     // The refusal is shown and the button asks for the confirmation the
     // host named instead of repeating the call that cannot succeed.
-    await waitFor(() => expect(getToasts()[0]?.message).toMatch(/still open there/));
-    await fireEvent.click(await findByTestId('attached-system').then(() => getByText('Forget anyway')));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', true));
-    await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
-  });
-
-  it('carries the abandon when forgetting discards completions held for archived conversations', async () => {
-    stageBackend();
-    setBindingMock('ListBackends', async () => [LAPTOP]);
-    const remove = setBindingMock('RemoveBackend', async (_id: string, abandon: boolean) => {
-      if (!abandon) {
-        throw Object.assign(
-          new Error('1 finished job held for an archived conversation will be discarded. Confirm to forget the computer anyway.'),
-          { code: 'remote_completions_held' },
-        );
-      }
-    });
-    const { getByText, findByTestId, queryByTestId } = render(SystemsSection);
-    await fireEvent.click(within(await findByTestId('attached-system')).getByText('Remove'));
-    await fireEvent.click(getByText('Confirm remove'));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', false));
-    await waitFor(() => expect(getToasts()[0]?.message).toMatch(/1 finished job held for an archived conversation will be discarded/));
+    await waitFor(() => expect(getToasts()[0]?.message).toMatch(toast));
     await fireEvent.click(getByText('Forget anyway'));
     await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', true));
     await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());

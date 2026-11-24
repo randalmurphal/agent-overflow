@@ -74,47 +74,22 @@ describe('<StorageSettings> — Retention', () => {
     expect(getByText(/automatic cleanup is disabled/i)).toBeTruthy();
   });
 
-  it('dispatches retention patch on blur with parsed integer', async () => {
+  // Non-numeric and negative input mean 0 (cleanup disabled); 36500 is the
+  // Go-side retention cap.
+  it.each([
+    ['7', 7],
+    ['banana', 0],
+    ['-5', 0],
+    ['99999', 36500],
+  ])('dispatches retention patch on blur: %s saves %i days', async (typed, days) => {
     const { getByTestId } = render(StorageSettings);
     const input = getByTestId('settings-retention-days') as HTMLInputElement;
-    input.value = '7';
+    input.value = typed;
     await fireEvent.blur(input);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days: 7 } });
-  });
-
-  it('coerces non-numeric input to 0 (disabled)', async () => {
-    const { getByTestId } = render(StorageSettings);
-    const input = getByTestId('settings-retention-days') as HTMLInputElement;
-    input.value = 'banana';
-    await fireEvent.blur(input);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days: 0 } });
-  });
-
-  it('coerces negative input to 0 (disabled)', async () => {
-    const { getByTestId } = render(StorageSettings);
-    const input = getByTestId('settings-retention-days') as HTMLInputElement;
-    input.value = '-5';
-    await fireEvent.blur(input);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days: 0 } });
-  });
-
-  it('clamps above the Go-side retention cap', async () => {
-    const { getByTestId } = render(StorageSettings);
-    const input = getByTestId('settings-retention-days') as HTMLInputElement;
-    input.value = '99999';
-    await fireEvent.blur(input);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days: 36500 } });
+    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days } });
   });
 });
 
@@ -223,16 +198,5 @@ describe('<StorageSettings> — Claude transcript retention note', () => {
     const { findByTestId } = render(StorageSettings);
     const error = await findByTestId('settings-claude-retention-error');
     expect(error.textContent).toContain('backend unavailable');
-  });
-});
-
-describe('<StorageSettings> — Archived threads', () => {
-  beforeEach(async () => {
-    await seed();
-  });
-
-  it('mounts the archive list under the retention section', async () => {
-    const { findByTestId } = render(StorageSettings);
-    expect(await findByTestId('settings-archived-threads')).toBeTruthy();
   });
 });

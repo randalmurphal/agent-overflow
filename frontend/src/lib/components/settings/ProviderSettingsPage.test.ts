@@ -68,31 +68,20 @@ describe("provider page — model visibility toggles", () => {
 		expect(chip.textContent?.trim()).toBe("GPT 5.6 Sol");
 	});
 
-  it("hides a model on this frontend when clicking its chip", async () => {
-    await seed();
+  it.each([
+    ["hides", [], ["claude-opus-4-8"]],
+    ["unhides", ["claude-opus-4-8"], []],
+  ])("%s a model on this frontend when clicking its chip", async (_verb, before, after) => {
+    await seed({ claudeHiddenModels: before });
     setBindingMock("GetModelsForProvider", async () => modelCatalog(CLAUDE_CATALOG));
     const { findByTestId } = render(ClaudeSettings);
 
     const chip = await findByTestId("settings-model-toggle-claude-claude-opus-4-8");
-    expect(chip.getAttribute("data-hidden")).toBe("false");
+    expect(chip.getAttribute("data-hidden")).toBe(String(before.length > 0));
     await fireEvent.click(chip);
 
-    expect(getSettings().claudeHiddenModels).toEqual(["claude-opus-4-8"]);
-    expect(chip.getAttribute("data-hidden")).toBe("true");
-    expect(getBindingMock("UpdateSettings")).not.toHaveBeenCalled();
-  });
-
-  it("unhides a model on this frontend when clicking its chip", async () => {
-    await seed({ claudeHiddenModels: ["claude-opus-4-8"] });
-    setBindingMock("GetModelsForProvider", async () => modelCatalog(CLAUDE_CATALOG));
-    const { findByTestId } = render(ClaudeSettings);
-
-    const chip = await findByTestId("settings-model-toggle-claude-claude-opus-4-8");
-    expect(chip.getAttribute("data-hidden")).toBe("true");
-    await fireEvent.click(chip);
-
-    expect(getSettings().claudeHiddenModels).toEqual([]);
-    expect(chip.getAttribute("data-hidden")).toBe("false");
+    expect(getSettings().claudeHiddenModels).toEqual(after);
+    expect(chip.getAttribute("data-hidden")).toBe(String(after.length > 0));
     expect(getBindingMock("UpdateSettings")).not.toHaveBeenCalled();
   });
 
@@ -140,24 +129,15 @@ describe("provider page — Claude TUI visibility toggle", () => {
     ).toBeNull();
   });
 
-  it("writes claudeTuiEnabled — and only that key — when switched on", async () => {
-    await seed();
-    const { container } = render(ClaudeSettings);
-    await fireEvent.click(tuiToggle(container));
-
-    const mock = getBindingMock("UpdateSettings");
-    expect(mock!.mock.calls.at(-1)![0]).toEqual({ claudeTuiEnabled: true });
-  });
-
-  it("reflects an enabled flag and writes false to turn it back off", async () => {
-    await seed({ claudeTuiEnabled: true });
+  it.each([false, true])("reflects claudeTuiEnabled %s and writes only that key, flipped", async (enabled) => {
+    await seed({ claudeTuiEnabled: enabled });
     const { container } = render(ClaudeSettings);
 
     const toggle = tuiToggle(container);
-    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(toggle.getAttribute("aria-checked")).toBe(String(enabled));
     await fireEvent.click(toggle);
     expect(getBindingMock("UpdateSettings")!.mock.calls.at(-1)![0]).toEqual({
-      claudeTuiEnabled: false,
+      claudeTuiEnabled: !enabled,
     });
   });
 

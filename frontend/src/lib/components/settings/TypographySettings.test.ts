@@ -33,15 +33,18 @@ describe('<TypographySettings> — Interface scale', () => {
     expect(labels).toHaveLength(11);
   });
 
-  it('dispatches the pixel size behind the picked percentage', async () => {
+  it.each([
+    ['the pixel size behind the picked percentage', '16', 16],
+    ['the default when the select carries no value', '', 13],
+  ])('dispatches %s', async (_case, value, fontSize) => {
     const { getByTestId } = render(TypographySettings);
     const select = getByTestId('settings-font-size') as HTMLSelectElement;
-    select.value = '16';
+    select.value = value;
     await fireEvent.change(select);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 16 });
+    expect(mock!.mock.calls[0][0]).toEqual({ fontSize });
   });
 
   it('reflects a chord-stepped size that is not a round percentage', async () => {
@@ -52,15 +55,6 @@ describe('<TypographySettings> — Interface scale', () => {
     expect(select.selectedOptions[0].textContent).toBe('131%');
   });
 
-  it('falls back to the default when the select carries no value', async () => {
-    const { getByTestId } = render(TypographySettings);
-    const select = getByTestId('settings-font-size') as HTMLSelectElement;
-    select.value = '';
-    await fireEvent.change(select);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock!.mock.calls[0][0]).toEqual({ fontSize: 13 });
-  });
 });
 describe('<TypographySettings> — Font selectors', () => {
   beforeEach(async () => {
@@ -79,25 +73,17 @@ describe('<TypographySettings> — Font selectors', () => {
     expect(monoSelect.querySelector('option[value="system"]')).toBeTruthy();
   });
 
-  it('dispatches sansFont patch on change', async () => {
+  it.each([
+    ['sansFont', 'settings-sans-font', 'hack-nerd'],
+    ['monoFont', 'settings-mono-font', 'system'],
+  ])('dispatches %s patch on change', async (key, testId, value) => {
     const { getByTestId } = render(TypographySettings);
-    const select = getByTestId('settings-sans-font') as HTMLSelectElement;
-    select.value = 'hack-nerd';
+    const select = getByTestId(testId) as HTMLSelectElement;
+    select.value = value;
     await fireEvent.change(select);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ sansFont: 'hack-nerd' });
-  });
-
-  it('dispatches monoFont patch on change', async () => {
-    const { getByTestId } = render(TypographySettings);
-    const select = getByTestId('settings-mono-font') as HTMLSelectElement;
-    select.value = 'system';
-    await fireEvent.change(select);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ monoFont: 'system' });
+    expect(mock!.mock.calls[0][0]).toEqual({ [key]: value });
   });
 });

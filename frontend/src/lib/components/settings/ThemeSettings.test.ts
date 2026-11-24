@@ -246,7 +246,7 @@ describe('<ThemeSettings> — broken files', () => {
     expect(items.filter((item) => item.textContent?.includes('srface1'))).toHaveLength(1);
   });
 
-  it("attributes the applier's own warnings to the file that caused them", async () => {
+  it("attributes the applier's own warnings to the file that caused them, and says which axis fell back", async () => {
     await loadAppearance();
     // happy-dom cannot run the applier's color check, so drive the resolver's
     // own refusal instead: a selection naming a theme that is not there.
@@ -256,19 +256,8 @@ describe('<ThemeSettings> — broken files', () => {
       themes: [],
       revision: 1,
     });
-    const { getByTestId } = render(ThemeSettings);
+    const { container, getByTestId } = render(ThemeSettings);
     expect(getByTestId('settings-theme-warnings').textContent).toContain('ghost');
-  });
-
-  it('says which axis fell back', async () => {
-    await loadAppearance();
-    applyTheme({
-      mode: 'dark',
-      appearance: { uiTheme: 'ghost', codeTheme: 'github' },
-      themes: [],
-      revision: 1,
-    });
-    const { container } = render(ThemeSettings);
     expect(container.textContent).toContain('interface theme fell back');
   });
 });
