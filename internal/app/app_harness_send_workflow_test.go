@@ -42,8 +42,8 @@ func TestHarnessSendAtRestOnlyLeavesALivePhaseRunning(t *testing.T) {
 	}
 	threadID := waitForRunningWorkflowThread(t, app, item.ID)
 
-	if _, err := (&harnessHost{app: app}).Send(context.Background(), threadID, "probe", true); !errors.Is(err, errThreadWorking) {
-		t.Fatalf("at-rest send to a live phase = %v, want the working-thread refusal", err)
+	if _, err := (&harnessHost{app: app}).Send(context.Background(), threadID, "probe", true); !errors.Is(err, errWorkflowRunning) {
+		t.Fatalf("at-rest send to a live phase = %v, want the running-workflow refusal", err)
 	}
 	if err := app.workflowApplication().Engine().Sync(); err != nil {
 		t.Fatal(err)
@@ -89,8 +89,8 @@ reliability:
 	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true) })
 	threadID := waitForRunningWorkflowUnitThread(t, app, item.ID, "beta")
 
-	if _, err := (&harnessHost{app: app}).Send(context.Background(), threadID, "probe", true); !errors.Is(err, errThreadWorking) {
-		t.Fatalf("at-rest send to a live unit = %v, want the working-thread refusal", err)
+	if _, err := (&harnessHost{app: app}).Send(context.Background(), threadID, "probe", true); !errors.Is(err, errWorkflowRunning) {
+		t.Fatalf("at-rest send to a live unit = %v, want the running-workflow refusal", err)
 	}
 	if err := app.workflowApplication().Engine().Sync(); err != nil {
 		t.Fatal(err)

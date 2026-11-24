@@ -368,7 +368,12 @@ func (e *Engine) loop() {
 			e.commandStarts = nil
 			command.reply <- response{err: guideErr}
 		case takeoverCommand:
-			err = errors.Join(e.takeOver(command.itemID, command.parkedOnly), e.startWaiting())
+			// A refused parked-only takeover changed nothing and frees no
+			// capacity, so it runs no scheduler pass.
+			err = e.takeOver(command.itemID, command.parkedOnly)
+			if !command.parkedOnly || !errors.Is(err, ErrRunActive) {
+				err = errors.Join(err, e.startWaiting())
+			}
 			e.commandStarts = nil
 			command.reply <- response{err: err}
 		case completeTakeoverCommand:

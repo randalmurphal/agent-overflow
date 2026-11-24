@@ -22,6 +22,9 @@ func (e *Engine) takeOver(itemID string, parkedOnly bool) error {
 		if State(item.item.State) != StateRunning {
 			return fmt.Errorf("take over item %q: invalid state %s", itemID, item.item.State)
 		}
+		if parkedOnly {
+			return fmt.Errorf("take over item %q: %w", itemID, ErrRunActive)
+		}
 	} else {
 		var err error
 		item, err = e.loadParked(itemID)
@@ -36,9 +39,6 @@ func (e *Engine) takeOver(itemID string, parkedOnly bool) error {
 	if tracked {
 		if item.runnerStarting {
 			return fmt.Errorf("take over item %q: phase runner is still starting", itemID)
-		}
-		if parkedOnly {
-			return fmt.Errorf("take over item %q: %w", itemID, ErrRunActive)
 		}
 		if item.runnerActive {
 			var stopErr error
