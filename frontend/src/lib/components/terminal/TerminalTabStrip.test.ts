@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalTabStrip from './TerminalTabStrip.svelte';
 import {
@@ -38,7 +38,7 @@ function handleWithTabs(...ids: string[]): ThreadTerminalStateHandle {
 
 const noop = () => {};
 
-describe('TerminalTabStrip refresh affordance', () => {
+describe('TerminalTabStrip refresh and find affordances', () => {
   it('renders the refresh button and invokes onRefresh on click when a terminal is open', async () => {
     const onRefresh = vi.fn();
     const { getByTestId } = render(TerminalTabStrip, { backend: '',
@@ -53,31 +53,23 @@ describe('TerminalTabStrip refresh affordance', () => {
     expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
-  it('hides the refresh button when there are no tabs to refresh', () => {
+  it.each([
+    ['hides the refresh button when there are no tabs to refresh', 'terminal-refresh', [], { onRefresh: noop }],
+    ['hides the refresh button when the host does not wire onRefresh', 'terminal-refresh', ['t1'], {}],
+    ['hides the find button with no tabs', 'terminal-find', [], { onFind: noop }],
+    ['hides the find button when the host does not wire onFind', 'terminal-find', ['t1'], {}],
+  ])('%s', (_name, testId, tabs, wired) => {
     const { queryByTestId } = render(TerminalTabStrip, { backend: '',
-      handle: handleWithTabs(),
+      handle: handleWithTabs(...tabs),
       onOpen: noop,
       onClose: noop,
       onSelect: noop,
-      onRefresh: vi.fn(),
+      ...wired,
     });
 
-    expect(queryByTestId('terminal-refresh')).toBeNull();
+    expect(queryByTestId(testId)).toBeNull();
   });
 
-  it('hides the refresh button when the host does not wire onRefresh', () => {
-    const { queryByTestId } = render(TerminalTabStrip, { backend: '',
-      handle: handleWithTabs('t1'),
-      onOpen: noop,
-      onClose: noop,
-      onSelect: noop,
-    });
-
-    expect(queryByTestId('terminal-refresh')).toBeNull();
-  });
-});
-
-describe('TerminalTabStrip find affordance', () => {
   it('renders a labeled find button with a tooltip that invokes onFind', async () => {
     const onFind = vi.fn();
     const { getByTestId } = render(TerminalTabStrip, { backend: '',
@@ -95,25 +87,6 @@ describe('TerminalTabStrip find affordance', () => {
     expect(button.hasAttribute('data-icon-button')).toBe(true);
     await fireEvent.click(button);
     expect(onFind).toHaveBeenCalledTimes(1);
-  });
-
-  it('hides the find button with no tabs, or when the host does not wire onFind', () => {
-    const empty = render(TerminalTabStrip, { backend: '',
-      handle: handleWithTabs(),
-      onOpen: noop,
-      onClose: noop,
-      onSelect: noop,
-      onFind: vi.fn(),
-    });
-    expect(empty.queryByTestId('terminal-find')).toBeNull();
-    cleanup();
-    const unwired = render(TerminalTabStrip, { backend: '',
-      handle: handleWithTabs('t1'),
-      onOpen: noop,
-      onClose: noop,
-      onSelect: noop,
-    });
-    expect(unwired.queryByTestId('terminal-find')).toBeNull();
   });
 });
 
@@ -188,7 +161,11 @@ describe('TerminalTabStrip close affordances', () => {
     expect((baseElement as HTMLElement).querySelector('[role="menu"]')).toBeNull();
   });
 
-  it('closes every other tab from Close Others', async () => {
+  it.each([
+    ['closes every other tab from Close Others', 'Close Others', 't2', ['t1', 't3']],
+    ['closes only the tabs after the target from Close to the Right', 'Close to the Right', 't2', ['t3']],
+    ['closes all tabs from Close All, whichever tab was right-clicked', 'Close All', 't3', ['t1', 't2', 't3']],
+  ])('%s', async (_name, label, target, closed) => {
     const onClose = vi.fn();
     const { getByTestId, baseElement } = render(TerminalTabStrip, { backend: '',
       handle: handleWithTabs('t1', 't2', 't3'),
@@ -197,40 +174,10 @@ describe('TerminalTabStrip close affordances', () => {
       onSelect: noop,
     });
 
-    await openMenuOn(getByTestId('terminal-tab-t2'));
-    await fireEvent.click(menuItem(baseElement as HTMLElement, 'Close Others'));
+    await openMenuOn(getByTestId(`terminal-tab-${target}`));
+    await fireEvent.click(menuItem(baseElement as HTMLElement, label));
 
-    expect(onClose.mock.calls.map(([id]) => id)).toEqual(['t1', 't3']);
-  });
-
-  it('closes only the tabs after the target from Close to the Right', async () => {
-    const onClose = vi.fn();
-    const { getByTestId, baseElement } = render(TerminalTabStrip, { backend: '',
-      handle: handleWithTabs('t1', 't2', 't3'),
-      onOpen: noop,
-      onClose,
-      onSelect: noop,
-    });
-
-    await openMenuOn(getByTestId('terminal-tab-t2'));
-    await fireEvent.click(menuItem(baseElement as HTMLElement, 'Close to the Right'));
-
-    expect(onClose.mock.calls.map(([id]) => id)).toEqual(['t3']);
-  });
-
-  it('closes all tabs from Close All, whichever tab was right-clicked', async () => {
-    const onClose = vi.fn();
-    const { getByTestId, baseElement } = render(TerminalTabStrip, { backend: '',
-      handle: handleWithTabs('t1', 't2', 't3'),
-      onOpen: noop,
-      onClose,
-      onSelect: noop,
-    });
-
-    await openMenuOn(getByTestId('terminal-tab-t3'));
-    await fireEvent.click(menuItem(baseElement as HTMLElement, 'Close All'));
-
-    expect(onClose.mock.calls.map(([id]) => id)).toEqual(['t1', 't2', 't3']);
+    expect(onClose.mock.calls.map(([id]) => id)).toEqual(closed);
   });
 
   it('disables the rows that would close nothing', async () => {

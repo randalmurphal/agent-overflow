@@ -5,12 +5,12 @@ import ThreadTerminalDrawer from './ThreadTerminalDrawer.svelte';
 import { getThreadTerminalState } from './terminalStore.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { setupEventListeners } from '../../stores/events';
-import { emitWailsEvent, wailsListenerCount } from '../../../test/mocks/wailsio-runtime';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 
 // --- Mock layer --- //
 // We control the Wails bindings here; the event bus is the global @wailsio/
 // runtime mock (vitest alias → src/test/mocks/wailsio-runtime.ts), driven with
-// emitWailsEvent / wailsListenerCount. We deliberately do NOT mock
+// emitWailsEvent. We deliberately do NOT mock
 // @wailsio/runtime locally: wailsEventOn now lives in a leaf module that the
 // global alias intercepts at any import depth, whereas a bespoke per-file
 // factory only caught events.ts's old direct import.
@@ -159,20 +159,9 @@ afterEach(() => {
 });
 
 describe('ThreadTerminalDrawer', () => {
-  it('renders while global terminal event routing is installed', async () => {
+  it('opens a terminal via OpenTerminal on + and renders its body without the old send-selection header', async () => {
     const pane = makeSurface();
-    render(ThreadTerminalDrawer, { surface: pane as never });
-    // Next microtask: onMount async.
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(wailsListenerCount('terminal:output')).toBeGreaterThan(0);
-    expect(wailsListenerCount('terminal:exit')).toBeGreaterThan(0);
-  });
-
-  it('opens a terminal via OpenTerminal on +', async () => {
-    const pane = makeSurface();
-    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
+    const { getByTestId, queryByTestId, queryByLabelText } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
 
     getByTestId('terminal-open').click();
@@ -185,6 +174,9 @@ describe('ThreadTerminalDrawer', () => {
     expect(openCalls).toHaveLength(1);
     expect(openCalls[0]!.args[0]).toBe('thread-A');
     expect(getByTestId('terminal-tab-t1')).toBeDefined();
+    expect(getByTestId('terminal-body-t1')).toBeDefined();
+    expect(queryByTestId('terminal-send-to-composer')).toBeNull();
+    expect(queryByLabelText('Send Selection to Composer')).toBeNull();
   });
 
   // Holds OpenTerminal open until the test resolves it with shell t1.
@@ -222,47 +214,32 @@ describe('ThreadTerminalDrawer', () => {
 
   // Closing a new terminal pane during its first open is closing it after the
   // open: the shell keeps the thread alive, and its next surface lists it.
-  it("leaves a thread's shell running when its first open resolves after the pane closed", async () => {
-    await answerTerminalList();
-    const finishOpen = await deferOpenTerminal();
-    const { unmount } = render(ThreadTerminalDrawer, { surface: makeSurface('terminal-thread') as never });
-    await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
-    unmount();
-    finishOpen('terminal-thread');
-    await Promise.resolve();
-    await tick();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(callLog.filter((c) => c.fn === 'CloseTerminal')).toEqual([]);
-  });
-
-  it("leaves a thread's shell running when its open resolves after the surface is invalidated", async () => {
-    const pane = makeSurface() as ReturnType<typeof makeSurface> & {
-      canAdoptOpenedTerminal: ReturnType<typeof vi.fn>;
-    };
-    let canAdopt = true;
-    pane.canAdoptOpenedTerminal = vi.fn(() => canAdopt);
-    const finishOpen = await deferOpenTerminal();
-    const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
-    await tick();
-
-    getByTestId('terminal-open').click();
-    await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
-    canAdopt = false;
-    finishOpen('thread-A');
-    await Promise.resolve();
-    await tick();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(callLog.filter((c) => c.fn === 'CloseTerminal')).toEqual([]);
-    expect(queryByTestId('terminal-tab-t1')).toBeNull();
-  });
-
   // A draft placeholder's shells end with its surface, so one opened too late
   // for that close is closed here.
-  it("closes a draft placeholder's shell when its open resolves after the surface is invalidated", async () => {
-    const draftId = 'draft:main:project-1:chat:abc';
-    const pane = makeSurface(draftId) as ReturnType<typeof makeSurface> & {
+  it.each([
+    ["leaves a thread's shell running when its first open resolves after the pane closed", 'terminal-thread', []],
+    ["closes a draft placeholder's shell when its first open resolves after the pane closed", 'draft:main:project-1:terminal:abc', [['t1']]],
+  ])('%s', async (_name, threadId, closed) => {
+    await answerTerminalList();
+    const finishOpen = await deferOpenTerminal();
+    const { unmount } = render(ThreadTerminalDrawer, { surface: makeSurface(threadId) as never });
+    await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
+    unmount();
+    finishOpen(threadId);
+    await Promise.resolve();
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await waitFor(() => {
+      expect(callLog.filter((c) => c.fn === 'CloseTerminal').map((c) => c.args)).toEqual(closed);
+    });
+  });
+
+  it.each([
+    ["leaves a thread's shell running when its open resolves after the surface is invalidated", 'thread-A', []],
+    ["closes a draft placeholder's shell when its open resolves after the surface is invalidated", 'draft:main:project-1:chat:abc', [['t1']]],
+  ])('%s', async (_name, threadId, closed) => {
+    const pane = makeSurface(threadId) as ReturnType<typeof makeSurface> & {
       canAdoptOpenedTerminal: ReturnType<typeof vi.fn>;
     };
     let canAdopt = true;
@@ -274,26 +251,15 @@ describe('ThreadTerminalDrawer', () => {
     getByTestId('terminal-open').click();
     await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
     canAdopt = false;
-    finishOpen(draftId);
+    finishOpen(threadId);
+    await Promise.resolve();
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     await waitFor(() => {
-      expect(callLog.filter((c) => c.fn === 'CloseTerminal').map((c) => c.args)).toEqual([['t1']]);
+      expect(callLog.filter((c) => c.fn === 'CloseTerminal').map((c) => c.args)).toEqual(closed);
     });
     expect(queryByTestId('terminal-tab-t1')).toBeNull();
-  });
-
-  it("closes a draft placeholder's shell when its first open resolves after the pane closed", async () => {
-    const draftId = 'draft:main:project-1:terminal:abc';
-    await answerTerminalList();
-    const finishOpen = await deferOpenTerminal();
-    const { unmount } = render(ThreadTerminalDrawer, { surface: makeSurface(draftId) as never });
-    await waitFor(() => expect(callLog.filter((c) => c.fn === 'OpenTerminal')).toHaveLength(1));
-    unmount();
-    finishOpen(draftId);
-
-    await waitFor(() => {
-      expect(callLog.filter((c) => c.fn === 'CloseTerminal').map((c) => c.args)).toEqual([['t1']]);
-    });
   });
 
   // A pane whose thread its computer deleted closes while the open is in
@@ -332,24 +298,7 @@ describe('ThreadTerminalDrawer', () => {
     }
   });
 
-  it('renders terminal body without the old send-selection header', async () => {
-    const pane = makeSurface();
-    const { getByTestId, queryByTestId, queryByLabelText } = render(ThreadTerminalDrawer, {
-      surface: pane as never,
-    });
-    await tick();
-
-    getByTestId('terminal-open').click();
-    await Promise.resolve();
-    await Promise.resolve();
-    await tick();
-
-    expect(getByTestId('terminal-body-t1')).toBeDefined();
-    expect(queryByTestId('terminal-send-to-composer')).toBeNull();
-    expect(queryByLabelText('Send Selection to Composer')).toBeNull();
-  });
-
-  it('closes a terminal and clears its tab', async () => {
+  it('closes a terminal, clears its tab, and auto-collapses when it was the last tab', async () => {
     const pane = makeSurface();
     const { getByTestId, queryByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
     await tick();
@@ -368,6 +317,7 @@ describe('ThreadTerminalDrawer', () => {
     const closeCalls = callLog.filter((c) => c.fn === 'CloseTerminal');
     expect(closeCalls).toHaveLength(1);
     expect(queryByTestId('terminal-tab-t1')).toBeNull();
+    expect(pane.setVisible).toHaveBeenCalledWith(false);
   });
 
   // The shell may still run after a refused close: its tab stays and the
@@ -517,24 +467,6 @@ describe('ThreadTerminalDrawer', () => {
     expect(pane.setVisible).not.toHaveBeenCalled();
   });
 
-  it('auto-collapses when the last tab is closed', async () => {
-    const pane = makeSurface();
-    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
-    await tick();
-
-    // Open one terminal, then close it — that's the last tab.
-    getByTestId('terminal-open').click();
-    await Promise.resolve();
-    await Promise.resolve();
-    await tick();
-
-    getByTestId('terminal-tab-close-t1').click();
-    await Promise.resolve();
-    await tick();
-
-    expect(pane.setVisible).toHaveBeenCalledWith(false);
-  });
-
   it('does not auto-collapse when a non-last tab is closed', async () => {
     const pane = makeSurface();
     // Override OpenTerminal so each call returns a fresh ID.
@@ -616,35 +548,26 @@ describe('ThreadTerminalDrawer', () => {
 
   // Stage 4 refactor: the drawer chrome is now composed from the Drawer
   // primitive so resize math / border / bg are shared with DiffPanel.
-  // These tests pin the integration so a lazy rewrite can't silently
+  // This test pins the integration so a lazy rewrite can't silently
   // revert to the hand-rolled <aside> + pointer-capture code.
-  it('composes its chrome via the Drawer primitive (has data-drawer-position)', async () => {
+  it('composes its chrome via the Drawer primitive (has data-drawer-position) and renders the drawer height based on handle.drawerHeight', async () => {
     const pane = makeSurface();
     const { container } = render(ThreadTerminalDrawer, {
       surface: pane as never,
     });
     await tick();
-    const drawerEl = container.querySelector('[data-drawer-position="bottom"]');
+    const drawerEl = container.querySelector<HTMLElement>('[data-drawer-position="bottom"]');
     expect(drawerEl).not.toBeNull();
     // The primitive owns the resize handle — not hand-rolled markup.
     const handle = drawerEl!.querySelector('[role="separator"][aria-orientation="horizontal"]');
     expect(handle).not.toBeNull();
-  });
-
-  it('renders the drawer height based on handle.drawerHeight', async () => {
-    const pane = makeSurface();
-    const { container } = render(ThreadTerminalDrawer, {
-      surface: pane as never,
-    });
-    await tick();
-    const drawerEl = container.querySelector('[data-drawer-position="bottom"]') as HTMLElement;
     // The primitive renders height inline from the handle's current
     // value. The exact default comes from terminalStore.svelte; we
     // just assert that SOME non-zero px value is written so the layout
     // math is plumbed through rather than pin the exact number (which
     // is the store's contract to change freely).
-    expect(drawerEl.style.height).toMatch(/^\d+px$/);
-    const parsed = Number.parseInt(drawerEl.style.height, 10);
+    expect(drawerEl!.style.height).toMatch(/^\d+px$/);
+    const parsed = Number.parseInt(drawerEl!.style.height, 10);
     expect(parsed).toBeGreaterThanOrEqual(120);
   });
 

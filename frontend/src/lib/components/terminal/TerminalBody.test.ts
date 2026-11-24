@@ -722,7 +722,7 @@ describe('TerminalBody copy/paste', () => {
     expect(vi.mocked(eventEscapesTerminalToCommand)).not.toHaveBeenCalled();
   });
 
-  it('toasts when the copy fails (clipboard unavailable)', async () => {
+  it('toasts when the copy fails (clipboard unavailable) and keeps the highlight so the user can retry', async () => {
     vi.mocked(copyToClipboard).mockResolvedValue(false);
     const { term, handler } = await handlerFor('t-copy-fail');
     term.selection = 'hello world';
@@ -736,6 +736,7 @@ describe('TerminalBody copy/paste', () => {
       'error',
       expect.stringContaining('Copy failed'),
     );
+    expect(term.selection).toBe('hello world');
   });
 
   it('consumes Ctrl+Shift+C with no selection but copies nothing', async () => {
@@ -773,16 +774,6 @@ describe('TerminalBody copy/paste', () => {
     expect(term.selection).toBe('');
     const again = clip({ key: 'c', ctrlKey: true, shiftKey: false });
     expect(handler(again)).toBe(true);
-  });
-
-  it('keeps the highlight when the copy fails so the user can retry', async () => {
-    vi.mocked(copyToClipboard).mockResolvedValue(false);
-    const { term, handler } = await handlerFor('t-copy-keeps-sel');
-    term.selection = 'picked';
-    expect(handler(clip({ key: 'c', ctrlKey: true, shiftKey: true }))).toBe(false);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(term.selection).toBe('picked');
   });
 
   it('Ctrl+Insert copies and Shift+Insert pastes', async () => {
@@ -876,17 +867,6 @@ describe('TerminalBody copy/paste', () => {
       return event.defaultPrevented;
     }
 
-    it('with a selection copies it, clears the highlight and suppresses the menu', async () => {
-      const { term } = await handlerFor('t-rc-copy');
-      term.selection = 'chosen';
-      expect(rightClick(mountFor('t-rc-copy'))).toBe(true);
-      expect(vi.mocked(copyToClipboard)).toHaveBeenCalledWith('chosen');
-      expect(readText).not.toHaveBeenCalled();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(term.selection).toBe('');
-    });
-
     it('without a selection pastes the clipboard', async () => {
       readText.mockResolvedValue('from clipboard');
       const { term } = await handlerFor('t-rc-paste');
@@ -897,14 +877,17 @@ describe('TerminalBody copy/paste', () => {
       expect(term.pastes).toEqual(['from clipboard']);
     });
 
-    it('copy then a second right-click pastes (the highlight is gone)', async () => {
+    it('with a selection copies it, clears the highlight and suppresses the menu, so a second right-click pastes', async () => {
       readText.mockResolvedValue('next');
       const { term } = await handlerFor('t-rc-twice');
       const mount = mountFor('t-rc-twice');
       term.selection = 'first';
-      rightClick(mount);
+      expect(rightClick(mount)).toBe(true);
+      expect(vi.mocked(copyToClipboard)).toHaveBeenCalledWith('first');
+      expect(readText).not.toHaveBeenCalled();
       await Promise.resolve();
       await Promise.resolve();
+      expect(term.selection).toBe('');
       rightClick(mount);
       await Promise.resolve();
       await Promise.resolve();

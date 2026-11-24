@@ -76,22 +76,16 @@ describe('clipboardChordFor', () => {
 });
 
 describe('controlCodeFor', () => {
-  it('maps the full lower-case alphabet to \\x01..\\x1a', () => {
-    for (let i = 0; i < 26; i++) {
-      const letter = String.fromCharCode(0x61 + i);
-      expect(controlCodeFor(letter)).toBe(String.fromCharCode(i + 1));
+  it('maps the full lower-case alphabet to \\x01..\\x1a, and the upper-case one identically (shifted soft-keyboard glyphs)', () => {
+    for (const base of [0x61, 0x41]) {
+      for (let i = 0; i < 26; i++) {
+        expect(controlCodeFor(String.fromCharCode(base + i))).toBe(String.fromCharCode(i + 1));
+      }
     }
     // Spot-check the ones a terminal user actually reaches for.
     expect(controlCodeFor('c')).toBe('\x03'); // SIGINT
     expect(controlCodeFor('d')).toBe('\x04'); // EOF
     expect(controlCodeFor('z')).toBe('\x1a'); // suspend
-  });
-
-  it('maps the upper-case alphabet identically (shifted soft-keyboard glyphs)', () => {
-    for (let i = 0; i < 26; i++) {
-      const letter = String.fromCharCode(0x41 + i);
-      expect(controlCodeFor(letter)).toBe(String.fromCharCode(i + 1));
-    }
   });
 
   it('maps the punctuation control codes', () => {

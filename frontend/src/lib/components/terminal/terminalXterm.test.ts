@@ -74,20 +74,15 @@ describe('buildTerminal web links', () => {
     resetRunMode();
   });
 
-  it('routes a clicked link through the OpenExternalURL binding', async () => {
+  it.each([
+    ['routes a clicked link through the OpenExternalURL binding', 'http://localhost:5173/'],
+    ['routes non-loopback links through the same wrapper', 'https://svelte.dev/docs'],
+  ])('%s', async (_name, url) => {
     const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
 
-    buildAndTakeLinkHandler()(new MouseEvent('click'), 'http://localhost:5173/');
+    buildAndTakeLinkHandler()(new MouseEvent('click'), url);
 
-    await vi.waitFor(() => expect(open).toHaveBeenCalledWith('http://localhost:5173/'));
-  });
-
-  it('routes non-loopback links through the same wrapper', async () => {
-    const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
-
-    buildAndTakeLinkHandler()(new MouseEvent('click'), 'https://svelte.dev/docs');
-
-    await vi.waitFor(() => expect(open).toHaveBeenCalledWith('https://svelte.dev/docs'));
+    await vi.waitFor(() => expect(open).toHaveBeenCalledWith(url));
   });
 
   it('uses window.open instead of the binding in a remote client session', async () => {

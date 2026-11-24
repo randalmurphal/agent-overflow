@@ -289,26 +289,17 @@ describe('createTerminalFind and the find bar', () => {
   const BAR: TerminalObscured = { rows: 2, from: 40, to: 79 };
   const lines = (match: string, at: number) => Array.from({ length: 41 }, (_, i) => (i === at ? match : 'filler'));
 
-  it('a match under the bar scrolls clear of it, one beside it on the same rows does not', () => {
-    const under = setup(lines(`${' '.repeat(42)}needle`, 20), 10);
-    under.fake.cover(BAR);
-    under.fake.view(20);
-    under.find.search('needle');
-    // Row 20 to the middle of the rows below the bar.
-    expect(under.fake.scrolls).toEqual([-6]);
-    const beside = setup(lines('needle', 20), 10);
-    beside.fake.cover(BAR);
-    beside.fake.view(20);
-    beside.find.search('needle');
-    expect(beside.fake.scrolls).toEqual([]);
-  });
-
-  it('a match the bar covers by any cell counts as covered', () => {
-    const { fake, find } = setup(lines(`${' '.repeat(36)}needle`, 20), 10);
+  // A covered match scrolls row 20 to the middle of the rows below the bar.
+  it.each([
+    ['a match under the bar scrolls clear of it', 42, [-6]],
+    ['a match beside the bar on the same rows does not scroll', 0, []],
+    ['a match the bar covers by any cell counts as covered', 36, [-6]],
+  ])('%s', (_name, column, scrolls) => {
+    const { fake, find } = setup(lines(`${' '.repeat(column)}needle`, 20), 10);
     fake.cover(BAR);
     fake.view(20);
     find.search('needle');
-    expect(fake.scrolls).toEqual([-6]);
+    expect(fake.scrolls).toEqual(scrolls);
   });
 
   it('when the bar comes to cover the active match it moves clear, and only then', () => {
@@ -395,21 +386,14 @@ describe('createTerminalFind re-search', () => {
     expect(find.result.count).toBe(4);
   });
 
-  it('a clear cancels a scheduled re-search', async () => {
+  it.each([
+    ['a clear cancels a scheduled re-search', 'clear'],
+    ['dispose cancels a scheduled re-search', 'dispose'],
+  ] as const)('%s', async (_name, cancel) => {
     const { fake, find } = setup();
     find.search('needle');
     fake.changed();
-    find.clear();
-    const painted = fake.paintedCount();
-    await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_MAX_WAIT_MS);
-    expect(fake.paintedCount()).toBe(painted);
-  });
-
-  it('dispose cancels a scheduled re-search', async () => {
-    const { fake, find } = setup();
-    find.search('needle');
-    fake.changed();
-    find.dispose();
+    find[cancel]();
     const painted = fake.paintedCount();
     await vi.advanceTimersByTimeAsync(TERMINAL_FIND_REFRESH_MAX_WAIT_MS);
     expect(fake.paintedCount()).toBe(painted);
