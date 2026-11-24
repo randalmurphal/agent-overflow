@@ -79,14 +79,23 @@ func TestDraftWritesBroadcastAndCarryTheWriter(t *testing.T) {
 	t.Parallel()
 	phone := transport.ClientIdentity{DeviceID: "device-phone", ConnectionID: "conn-phone-1"}
 
+	// Content never rides the channel: GetDraft takes `threads:operate` for
+	// the disclosure reason, and a push carrying the text would be the way
+	// around the grant that read enforces. Receivers re-read instead.
 	t.Run("a save announces the thread and the writer", func(t *testing.T) {
 		app := draftTestApp(t, "thr-1")
 		broadcasts := captureDraftBroadcasts(t, app)
 
-		if err := app.SaveDraft(ctxFromClient(phone), "thr-1", "hello", nil, nil, nil); err != nil {
+		const typed = "the-secret-sentence-the-user-typed"
+		if err := app.SaveDraft(ctxFromClient(phone), "thr-1", typed, nil, nil, nil); err != nil {
 			t.Fatalf("SaveDraft: %v", err)
 		}
 		evt := broadcasts.expectOne("a first save")
+		for _, field := range []string{evt.ThreadID, evt.DeviceID, evt.ConnectionID} {
+			if strings.Contains(field, typed) {
+				t.Fatalf("frame carried the draft text: %+v", evt)
+			}
+		}
 		if evt.ThreadID != "thr-1" {
 			t.Errorf("frame = %+v, want a frame for thr-1", evt)
 		}
@@ -124,24 +133,6 @@ func TestDraftWritesBroadcastAndCarryTheWriter(t *testing.T) {
 		}
 		if evt := broadcasts.expectOne("an unattributed save"); evt.DeviceID != "" || evt.ConnectionID != "" {
 			t.Errorf("frame = %+v, want no identity", evt)
-		}
-	})
-
-	// Content never rides the channel: GetDraft takes `threads:operate` for
-	// the disclosure reason, and a push carrying the text would be the way
-	// around the grant that read enforces. Receivers re-read instead.
-	t.Run("the frame carries no draft text", func(t *testing.T) {
-		app := draftTestApp(t, "thr-1")
-		broadcasts := captureDraftBroadcasts(t, app)
-		const typed = "the-secret-sentence-the-user-typed"
-		if err := app.SaveDraft(ctxFromClient(phone), "thr-1", typed, nil, nil, nil); err != nil {
-			t.Fatalf("SaveDraft: %v", err)
-		}
-		evt := broadcasts.expectOne("a save")
-		for _, field := range []string{evt.ThreadID, evt.DeviceID, evt.ConnectionID} {
-			if strings.Contains(field, typed) {
-				t.Fatalf("frame carried the draft text: %+v", evt)
-			}
 		}
 	})
 }

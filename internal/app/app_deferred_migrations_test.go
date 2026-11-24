@@ -78,9 +78,13 @@ func sealedRowFolded(t *testing.T, app *App, threadID string) bool {
 	return item.Rev >= 0
 }
 
+// A run finishes the pending repair in the background, and a clean run with
+// no earlier failure raises nothing.
 func TestDeferredMigrationsFinishInTheBackground(t *testing.T) {
 	t.Parallel()
 	app, dbPath := newTestAppWithStorePath(t)
+	recorder := &recordingNotificationSender{}
+	app.osNotifications = recorder
 	app.maintenance.chunkPause = time.Millisecond
 	seedPendingHistoryRepair(t, app, dbPath, "sealed")
 	if sealedRowFolded(t, app, "sealed") {
@@ -101,6 +105,9 @@ func TestDeferredMigrationsFinishInTheBackground(t *testing.T) {
 	}
 	if _, err := app.store.GetPayloadData("sealed", "orphan"); err == nil {
 		t.Fatal("the orphan payload survived the deferred migration")
+	}
+	if sends := recorder.snapshot(); len(sends) != 0 {
+		t.Fatalf("a clean run sent %#v", sends)
 	}
 }
 
@@ -277,24 +284,6 @@ func TestDeferredMigrationFailureNoticesAndTheNextStartRetries(t *testing.T) {
 	}
 	if len(sends) != 2 || sends[1] != (notify.Send{ID: deferredMigrationNoticeID, Kind: notify.KindAppUpdate, Retract: true}) {
 		t.Fatalf("sends after the retry = %#v, want the notice retracted", sends)
-	}
-}
-
-// A clean run with no earlier failure raises nothing.
-func TestDeferredMigrationsCleanRunIsSilent(t *testing.T) {
-	t.Parallel()
-	app, dbPath := newTestAppWithStorePath(t)
-	recorder := &recordingNotificationSender{}
-	app.osNotifications = recorder
-	app.maintenance.chunkPause = time.Millisecond
-	seedPendingHistoryRepair(t, app, dbPath, "sealed")
-
-	releaseFirstReads(app)
-	app.startDeferredMigrations()
-	waitFor(t, "the deferred migrations", func() bool { return !deferredMigrationsPending(t, app) })
-	app.stopDeferredMigrations()
-	if sends := recorder.snapshot(); len(sends) != 0 {
-		t.Fatalf("a clean run sent %#v", sends)
 	}
 }
 

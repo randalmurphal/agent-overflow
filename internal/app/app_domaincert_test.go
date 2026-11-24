@@ -82,7 +82,9 @@ func domainCertApp(t *testing.T) (*App, string) {
 }
 
 // The escape hatch, end to end: the user's own certificate is loaded,
-// published for the canonical domain, and reported as external.
+// published for the canonical domain, and reported as external. The second
+// look at unchanged files does not re-read them, and a file the user's
+// renewal tool rewrote does.
 func TestAnExternalPairIsServedForTheCanonicalDomain(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -95,14 +97,16 @@ func TestAnExternalPairIsServedForTheCanonicalDomain(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetNetwork: %v", err)
 	}
+	cfg := app.settings.Get().Network
 	source := &recordingSource{}
 
-	if wait := app.reconcileExternalCertificate(app.settings.Get().Network, source); wait != domainCertCheckInterval {
+	if wait := app.reconcileExternalCertificate(cfg, source); wait != domainCertCheckInterval {
 		t.Fatalf("next check in %s, want the quiet cadence", wait)
 	}
 	if source.name != "backend.example" || source.cert == nil {
 		t.Fatalf("published %q / %v, want the certificate under the canonical domain", source.name, source.cert)
 	}
+	first := source.cert
 
 	status := app.domainCertStatus()
 	if status.Serving != network.TLSServingExternal {
@@ -113,6 +117,24 @@ func TestAnExternalPairIsServedForTheCanonicalDomain(t *testing.T) {
 	}
 	if status.LastError != "" {
 		t.Fatalf("last error = %q, want none", status.LastError)
+	}
+
+	source.cert = nil
+	app.reconcileExternalCertificate(cfg, source)
+	if source.cert != nil {
+		t.Fatal("unchanged files were re-read and re-published")
+	}
+
+	// A renewal by an outside tool: same paths, different bytes.
+	replacement, replacementKey := writeExternalPair(t, t.TempDir(), "backend.example", 30*24*time.Hour)
+	copyFile(t, replacement, certFile)
+	copyFile(t, replacementKey, keyFile)
+	app.reconcileExternalCertificate(cfg, source)
+	if source.cert == nil {
+		t.Fatal("a rewritten certificate was not picked up")
+	}
+	if source.cert.Leaf.NotAfter.Equal(first.Leaf.NotAfter) {
+		t.Fatal("the reloaded certificate is the old one")
 	}
 }
 
@@ -143,48 +165,6 @@ func TestAnExternalPairForAnotherNameIsRefusedAndReported(t *testing.T) {
 	}
 	if !strings.Contains(status.LastError, "not valid for backend.example") {
 		t.Fatalf("last error = %q, want it to name the mismatch", status.LastError)
-	}
-}
-
-// The second look at unchanged files does not re-read them, and a file
-// the user's renewal tool rewrote does.
-func TestAnExternalPairIsRereadOnlyWhenItChanges(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
-	app, dir := domainCertApp(t)
-	certFile, keyFile := writeExternalPair(t, dir, "backend.example", 90*24*time.Hour)
-	if _, err := app.settings.SetNetwork(settings.NetworkSettings{
-		CanonicalDomain:  "backend.example",
-		ExternalCertFile: certFile,
-		ExternalKeyFile:  keyFile,
-	}); err != nil {
-		t.Fatalf("SetNetwork: %v", err)
-	}
-	cfg := app.settings.Get().Network
-	source := &recordingSource{}
-
-	app.reconcileExternalCertificate(cfg, source)
-	first := source.cert
-	if first == nil {
-		t.Fatal("nothing was published on the first pass")
-	}
-
-	source.cert = nil
-	app.reconcileExternalCertificate(cfg, source)
-	if source.cert != nil {
-		t.Fatal("unchanged files were re-read and re-published")
-	}
-
-	// A renewal by an outside tool: same paths, different bytes.
-	replacement, replacementKey := writeExternalPair(t, t.TempDir(), "backend.example", 30*24*time.Hour)
-	copyFile(t, replacement, certFile)
-	copyFile(t, replacementKey, keyFile)
-	app.reconcileExternalCertificate(cfg, source)
-	if source.cert == nil {
-		t.Fatal("a rewritten certificate was not picked up")
-	}
-	if source.cert.Leaf.NotAfter.Equal(first.Leaf.NotAfter) {
-		t.Fatal("the reloaded certificate is the old one")
 	}
 }
 

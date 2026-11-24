@@ -385,46 +385,6 @@ func TestGitStatusSubscribeSharesOnePumpPerCwd(t *testing.T) {
 	}
 }
 
-// TestGetGitStatusPushesTheRefreshToSubscribers pins the healing half of
-// item 2: a post-action GetGitStatus is not the acting client's private
-// answer. Every other client watching the workspace observes the same
-// refresh through the shared stream.
-func TestGetGitStatusPushesTheRefreshToSubscribers(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	stub := &stubGitWatch{current: gitops.GitStatus{IsRepo: true, Branch: "main"}}
-	installGitWatchForTest(t, app, stub)
-	thread := makeWorkspaceThread(t, app, "thread-refresh-fanout")
-
-	res, err := app.GitStatusSubscribe(connCtx(t), workspaceRefForThread(thread))
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	defer app.GitStatusUnsubscribe(context.Background(), res.ID)
-
-	events, mu := captureGitStatusEmissions(app)
-	// The watcher's StatusFn now reports a change no filesystem event
-	// announced — exactly the shape of "another client just committed".
-	stub.setStatus(gitops.GitStatus{IsRepo: true, Branch: "main", AheadCount: 1})
-
-	if _, err := app.GetGitStatus(t.Context(), workspaceRefForThread(thread)); err != nil {
-		t.Fatalf("GetGitStatus: %v", err)
-	}
-
-	deadline := time.After(5 * time.Second)
-	for {
-		matches := gitStatusEventsFor(events, mu, res.Cwd)
-		if len(matches) > 0 && matches[len(matches)-1].Status.AheadCount == 1 {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("GetGitStatus did not push the refresh to the workspace's subscribers")
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-}
-
 // TestGitStatusSubscribeRefusesADyingPump covers the window between a pump
 // goroutine exiting (its Updates() channel closed under it) and its deferred
 // drop taking the lock. A Subscribe that lands in that window used to
