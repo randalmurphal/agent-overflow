@@ -25,41 +25,19 @@ function bashApproval(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest
 }
 
 describe('<ToolApprovalPanel>', () => {
-  it('renders the command preview for a Bash approval', () => {
+  it.each([
+    ['renders the command preview for a Bash approval', {}, ['ls -la', 'Command']],
+    ['renders legacy raw-string command input without treating it as an object', { toolName: 'command', input: 'git status' }, ['git status']],
+    ['renders a file path preview for a Read approval', { toolName: 'Read', input: { file_path: '/etc/hosts' } }, ['/etc/hosts', 'File']],
+    // ACP run_command and file tools: previews from native input keys.
+    ['renders an ACP run_command preview', { kind: 'command', toolName: 'run_command', input: { CommandLine: 'pnpm test' } }, ['pnpm test', 'Command']],
+    ['renders an ACP file tool preview', { kind: 'file-change', toolName: 'replace_file_content', input: { TargetFile: '/repo/src/app.ts' } }, ['/repo/src/app.ts', 'File']],
+    ['renders an ACP diff preview', { kind: 'file-change', toolName: 'Edit', input: { path: '/repo/src/app.ts', diff: '@@ -1 +1 @@\n-old\n+new' } }, ['Diff · /repo/src/app.ts', /-old/, /\+new/]],
+  ] as [string, Partial<ApprovalRequest>, (string | RegExp)[]][])('%s', (_case, overrides, texts) => {
     const { getByText } = render(ToolApprovalPanel, {
-      props: {
-        approval: bashApproval(),
-        onResolve: makeResolver(),
-        onError: vi.fn(),
-      },
+      props: { approval: bashApproval(overrides), onResolve: makeResolver() },
     });
-    expect(getByText('ls -la')).toBeInTheDocument();
-    expect(getByText('Command')).toBeInTheDocument();
-  });
-
-  it('renders legacy raw-string command input without treating it as an object', () => {
-    const { getByText } = render(ToolApprovalPanel, {
-      props: {
-        approval: bashApproval({ toolName: 'command', input: 'git status' }),
-        onResolve: makeResolver(),
-      },
-    });
-    expect(getByText('git status')).toBeInTheDocument();
-  });
-
-  it('renders a file path preview for a Read approval', () => {
-    const { getByText } = render(ToolApprovalPanel, {
-      props: {
-        approval: bashApproval({
-          toolName: 'Read',
-          input: { file_path: '/etc/hosts' },
-        }),
-        onResolve: makeResolver(),
-        onError: vi.fn(),
-      },
-    });
-    expect(getByText('/etc/hosts')).toBeInTheDocument();
-    expect(getByText('File')).toBeInTheDocument();
+    for (const text of texts) expect(getByText(text)).toBeInTheDocument();
   });
 
   it('Approve once sends decision=accept with no updatedInput', async () => {
@@ -226,48 +204,6 @@ describe('<ToolApprovalPanel>', () => {
     const response = onResolve.mock.calls[0][0] as ApprovalResponse & { decisionValue?: unknown };
     expect(response.decision).toBe('');
     expect(response.decisionValue).toEqual(decision);
-  });
-
-  it('renders ACP run_command and file tool previews from native input keys', () => {
-    const cmdView = render(ToolApprovalPanel, {
-      props: {
-        approval: bashApproval({
-          kind: 'command',
-          toolName: 'run_command',
-          input: { CommandLine: 'pnpm test' },
-        }),
-        onResolve: makeResolver(),
-      },
-    });
-    expect(cmdView.getByText('pnpm test')).toBeInTheDocument();
-    expect(cmdView.getByText('Command')).toBeInTheDocument();
-
-    const fileView = render(ToolApprovalPanel, {
-      props: {
-        approval: bashApproval({
-          kind: 'file-change',
-          toolName: 'replace_file_content',
-          input: { TargetFile: '/repo/src/app.ts' },
-        }),
-        onResolve: makeResolver(),
-      },
-    });
-    expect(fileView.getByText('/repo/src/app.ts')).toBeInTheDocument();
-    expect(fileView.getByText('File')).toBeInTheDocument();
-
-    const diffView = render(ToolApprovalPanel, {
-      props: {
-        approval: bashApproval({
-          kind: 'file-change',
-          toolName: 'Edit',
-          input: { path: '/repo/src/app.ts', diff: '@@ -1 +1 @@\n-old\n+new' },
-        }),
-        onResolve: makeResolver(),
-      },
-    });
-    expect(diffView.getByText('Diff · /repo/src/app.ts')).toBeInTheDocument();
-    expect(diffView.getByText(/-old/)).toBeInTheDocument();
-    expect(diffView.getByText(/\+new/)).toBeInTheDocument();
   });
 
   it('renders write-stdin details and never offers input editing', () => {

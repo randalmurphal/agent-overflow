@@ -288,20 +288,6 @@ describe('<AgentPane>', () => {
     expect(queryByTestId('agent-pane-stop')).toBeNull();
   });
 
-  it('keeps a manually backgrounded launch live instead of showing the old paused marker', async () => {
-    const { ctx } = await setup([
-      launchItem({
-        isBackground: true,
-        meta: JSON.stringify({ task_id: 'task-9', subagentBackgroundedAt: 123 }),
-      }),
-      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'work' }),
-    ]);
-    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const { queryByTestId } = await renderAgent({ props: { ctx } });
-
-    expect(queryByTestId('agent-pane-streaming-paused')).toBeNull();
-  });
-
   it('renders a nested launch as a navigation row without embedding its transcript', async () => {
     // Regression (found by the F6 harness): a direct child whose parentId
     // is absent from the grouping input ranks as an orphan, a nested

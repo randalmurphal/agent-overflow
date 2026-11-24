@@ -35,17 +35,11 @@ describe('index.html carries no inline script', () => {
     expect(withoutSrc).toEqual([]);
   });
 
-  it('leaves every script element empty', () => {
-    // A `<script src=…>` is allowed to have a body, and that body would be
-    // inline script the CSP refuses just the same.
-    const bodies = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) =>
-      m[1].trim(),
-    );
-    expect(bodies).toEqual(bodies.map(() => ''));
-  });
-
-  it('leaves every style element empty', () => {
-    const bodies = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1].trim());
+  // A `<script src=…>` is allowed to have a body, and that body would be
+  // inline script the CSP refuses just the same.
+  it.each(['script', 'style'])('leaves every %s element empty', (tag) => {
+    const element = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'gi');
+    const bodies = [...html.matchAll(element)].map((m) => m[1].trim());
     expect(bodies).toEqual(bodies.map(() => ''));
   });
 

@@ -11,7 +11,7 @@ describe('<EditorLink>', () => {
     // The toast registry is a module-level singleton; drain it so a
     // toast left by a sibling describe block can't satisfy a "find
     // this error" assertion below.
-    for (const toast of [...getToasts()]) {
+    for (const toast of getToasts()) {
       removeToast(toast.id);
     }
   });
@@ -42,26 +42,17 @@ describe('<EditorLink>', () => {
     expect(btn.tagName).toBe('BUTTON');
   });
 
-  it('invokes OpenInEditor with path/line/col/workspacePath on click', async () => {
+  it.each([
+    ['invokes OpenInEditor with path/line/col/workspacePath on click', { path: 'src/foo.ts', line: 12, col: 4, workspacePath: '/work' }, ['src/foo.ts', 12, 4, '/work', '']],
+    ['defaults line/col/workspacePath when not supplied', { path: 'README.md' }, ['README.md', 0, 0, '', '']],
+  ])('%s', async (_case, props, args) => {
     const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    const { getByTestId } = render(EditorLink, {
-      props: { backend: '', path: 'src/foo.ts', line: 12, col: 4, workspacePath: '/work' },
-    });
+    const { getByTestId } = render(EditorLink, { props: { backend: '', ...props } });
     await fireEvent.click(getByTestId('editor-link'));
     await waitFor(() => {
       expect(mock).toHaveBeenCalledTimes(1);
     });
-    expect(mock.mock.calls[0]).toEqual(['src/foo.ts', 12, 4, '/work', '']);
-  });
-
-  it('defaults line/col/workspacePath when not supplied', async () => {
-    const mock = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    const { getByTestId } = render(EditorLink, { props: { backend: '', path: 'README.md' } });
-    await fireEvent.click(getByTestId('editor-link'));
-    await waitFor(() => {
-      expect(mock).toHaveBeenCalledTimes(1);
-    });
-    expect(mock.mock.calls[0]).toEqual(['README.md', 0, 0, '', '']);
+    expect(mock.mock.calls[0]).toEqual(args);
   });
 
   it('toasts the binding error message verbatim', async () => {
@@ -77,34 +68,21 @@ describe('<EditorLink>', () => {
     });
   });
 
-  it('stops propagation when stopPropagation=true so a wrapping click does not fire', async () => {
+  it.each([
+    ['stops propagation when stopPropagation=true so a wrapping click does not fire', { stopPropagation: true }, 0],
+    ['lets the click bubble when stopPropagation=false (default)', {}, 1],
+  ])('%s', async (_case, props, parentClicks) => {
     setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const parentClick = vi.fn();
     const { getByTestId } = render(EditorLink, {
-      props: { backend: '', path: 'a.ts', asIcon: true, stopPropagation: true },
+      props: { backend: '', path: 'a.ts', asIcon: true, ...props },
     });
     // Listen on document.body so the event has to bubble through the
-    // testing-library container to reach us. The button's
-    // stopPropagation should prevent that.
+    // testing-library container to reach us.
     document.body.addEventListener('click', parentClick);
     try {
       await fireEvent.click(getByTestId('editor-link-icon'));
-      expect(parentClick).not.toHaveBeenCalled();
-    } finally {
-      document.body.removeEventListener('click', parentClick);
-    }
-  });
-
-  it('lets the click bubble when stopPropagation=false (default)', async () => {
-    setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    const parentClick = vi.fn();
-    const { getByTestId } = render(EditorLink, {
-      props: { backend: '', path: 'a.ts', asIcon: true },
-    });
-    document.body.addEventListener('click', parentClick);
-    try {
-      await fireEvent.click(getByTestId('editor-link-icon'));
-      expect(parentClick).toHaveBeenCalledTimes(1);
+      expect(parentClick).toHaveBeenCalledTimes(parentClicks);
     } finally {
       document.body.removeEventListener('click', parentClick);
     }
