@@ -17,11 +17,20 @@ func TestSleep_CompletesOnTimer(t *testing.T) {
 	}
 }
 
+// TestSleep_ReturnsFalseOnCanceledCtx covers every duration. The zero and
+// negative rows are the regression that motivated extraction: the prior
+// codex helper returned true unconditionally for d<=0, ignoring an
+// already-canceled ctx, so a loop over a list of intervals could continue
+// after cancellation if any interval was zero.
 func TestSleep_ReturnsFalseOnCanceledCtx(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if Sleep(ctx, 200*time.Millisecond) {
-		t.Fatal("Sleep returned true on canceled ctx, want false")
+	for _, d := range []time.Duration{200 * time.Millisecond, 0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if Sleep(ctx, d) {
+				t.Fatalf("Sleep(canceled, %v) returned true, want false", d)
+			}
+		})
 	}
 }
 
@@ -32,29 +41,6 @@ func TestSleep_ZeroDurationReturnsImmediately(t *testing.T) {
 	}
 	if d := time.Since(start); d > 50*time.Millisecond {
 		t.Errorf("Sleep took too long: %v", d)
-	}
-}
-
-// TestSleep_ZeroDurationHonorsCanceledCtx is the safer-semantics
-// regression test that motivated extraction: the prior codex helper
-// returned true unconditionally for d<=0, ignoring an already-canceled
-// ctx. Loops calling Sleep with a list of intervals can therefore
-// continue post-cancellation if any interval is zero.
-func TestSleep_ZeroDurationHonorsCanceledCtx(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if Sleep(ctx, 0) {
-		t.Error("Sleep(canceled, 0) returned true; want false")
-	}
-}
-
-// TestSleep_NegativeDurationHonorsCanceledCtx mirrors the zero-
-// duration case for the d<0 path.
-func TestSleep_NegativeDurationHonorsCanceledCtx(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if Sleep(ctx, -time.Second) {
-		t.Error("Sleep(canceled, -1s) returned true; want false")
 	}
 }
 

@@ -6,44 +6,35 @@ import (
 	"agent-overflow/internal/store"
 )
 
-func TestBuildPromptRendersFileAndLineAnchors(t *testing.T) {
-	prompt := BuildPrompt([]store.DiffReviewComment{
-		{
-			FilePath: "app.ts",
-			Side:     "new",
-			NewLine:  42,
-			Body:     "Extract this into a named helper.",
-		},
-		{
-			FilePath: "legacy.ts",
-			Side:     "old",
-			OldLine:  17,
-			Body:     "Why is this still here?",
-		},
-		{
-			FilePath: "README.md",
-			Side:     "file",
-			Body:     "Mention the new flag here too.",
-		},
-	})
-
-	want := "app.ts:42:\ncomment: Extract this into a named helper.\n\n" +
-		"legacy.ts:17:\ncomment: Why is this still here?\n\n" +
-		"README.md:\ncomment: Mention the new flag here too."
-	if prompt != want {
-		t.Fatalf("prompt mismatch\n  got:\n%s\n  want:\n%s", prompt, want)
-	}
-}
-
-func TestBuildPromptSkipsBlankBodies(t *testing.T) {
-	prompt := BuildPrompt([]store.DiffReviewComment{
-		{FilePath: "a.ts", Side: "new", NewLine: 1, Body: "  \n"},
-		{FilePath: "b.ts", Side: "new", NewLine: 5, Body: "real"},
-	})
-
-	want := "b.ts:5:\ncomment: real"
-	if prompt != want {
-		t.Fatalf("prompt mismatch\n  got:\n%s\n  want:\n%s", prompt, want)
+func TestBuildPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		comments []store.DiffReviewComment
+		want     string
+	}{
+		{"renders file and line anchors", []store.DiffReviewComment{
+			{FilePath: "app.ts", Side: "new", NewLine: 42, Body: "Extract this into a named helper."},
+			{FilePath: "legacy.ts", Side: "old", OldLine: 17, Body: "Why is this still here?"},
+			{FilePath: "README.md", Side: "file", Body: "Mention the new flag here too."},
+		}, "app.ts:42:\ncomment: Extract this into a named helper.\n\n" +
+			"legacy.ts:17:\ncomment: Why is this still here?\n\n" +
+			"README.md:\ncomment: Mention the new flag here too."},
+		{"skips blank bodies", []store.DiffReviewComment{
+			{FilePath: "a.ts", Side: "new", NewLine: 1, Body: "  \n"},
+			{FilePath: "b.ts", Side: "new", NewLine: 5, Body: "real"},
+		}, "b.ts:5:\ncomment: real"},
+		// A range names its first and last line on the half both are on.
+		{"renders ranges", []store.DiffReviewComment{
+			{FilePath: "app.ts", Side: "new", NewLine: 18, StartNewLine: 12, Body: "Split this block."},
+			{FilePath: "old.ts", Side: "context", OldLine: 9, NewLine: 11, StartOldLine: 4, Body: "From the removed lines."},
+		}, "app.ts:12-18:\ncomment: Split this block.\n\n" +
+			"old.ts:4-9:\ncomment: From the removed lines."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if prompt := BuildPrompt(tc.comments); prompt != tc.want {
+				t.Fatalf("prompt mismatch\n  got:\n%s\n  want:\n%s", prompt, tc.want)
+			}
+		})
 	}
 }
 
@@ -83,19 +74,6 @@ func TestCommentLinePrefersNewThenOld(t *testing.T) {
 				t.Fatalf("CommentLine = %d, want %d", got, tt.want)
 			}
 		})
-	}
-}
-
-// A range names its first and last line on the half both are on.
-func TestBuildPromptRendersRanges(t *testing.T) {
-	prompt := BuildPrompt([]store.DiffReviewComment{
-		{FilePath: "app.ts", Side: "new", NewLine: 18, StartNewLine: 12, Body: "Split this block."},
-		{FilePath: "old.ts", Side: "context", OldLine: 9, NewLine: 11, StartOldLine: 4, Body: "From the removed lines."},
-	})
-	want := "app.ts:12-18:\ncomment: Split this block.\n\n" +
-		"old.ts:4-9:\ncomment: From the removed lines."
-	if prompt != want {
-		t.Fatalf("prompt mismatch\n  got:\n%s\n  want:\n%s", prompt, want)
 	}
 }
 

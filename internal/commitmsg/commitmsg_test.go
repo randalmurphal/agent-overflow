@@ -8,38 +8,28 @@ import (
 
 // ---- SanitizeSubject ----
 
-func TestSanitizeSubject_StripsQuotesAndPunctuation(t *testing.T) {
+func TestSanitizeSubject(t *testing.T) {
 	cases := []struct {
-		in, want string
+		name, in, want string
 	}{
-		{`"Add login flow."`, `Add login flow`},
-		{"'Fix typo'", `Fix typo`},
-		{"`Refactor auth`", `Refactor auth`},
-		{`Add login flow.`, `Add login flow`},
-		{`  Leading and trailing  `, `Leading and trailing`},
+		{"double quotes and period", `"Add login flow."`, `Add login flow`},
+		{"single quotes", "'Fix typo'", `Fix typo`},
+		{"backticks", "`Refactor auth`", `Refactor auth`},
+		{"trailing period", `Add login flow.`, `Add login flow`},
+		{"surrounding spaces", `  Leading and trailing  `, `Leading and trailing`},
+		{"keeps only first line", "Add login flow\nExtra body line that should not leak into subject", "Add login flow"},
+		{"collapses internal whitespace", "Add    login\t flow", "Add login flow"},
+		{"empty", "", ""},
+		{"blank", "   ", ""},
+		{"newlines only", "\n\n", ""},
+		{"empty quotes", `""`, ""},
 	}
 	for _, tc := range cases {
-		t.Run(tc.in, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			if got := SanitizeSubject(tc.in); got != tc.want {
 				t.Errorf("SanitizeSubject(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestSanitizeSubject_KeepsOnlyFirstLine(t *testing.T) {
-	in := "Add login flow\nExtra body line that should not leak into subject"
-	want := "Add login flow"
-	if got := SanitizeSubject(in); got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestSanitizeSubject_CollapsesInternalWhitespace(t *testing.T) {
-	in := "Add    login\t flow"
-	want := "Add login flow"
-	if got := SanitizeSubject(in); got != want {
-		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -54,14 +44,6 @@ func TestSanitizeSubject_TruncatesWithEllipsis(t *testing.T) {
 	}
 }
 
-func TestSanitizeSubject_EmptyInputYieldsEmpty(t *testing.T) {
-	for _, s := range []string{"", "   ", "\n\n", `""`} {
-		if got := SanitizeSubject(s); got != "" {
-			t.Errorf("SanitizeSubject(%q) = %q, want empty", s, got)
-		}
-	}
-}
-
 func TestSanitizeSubject_UnicodeAtBoundary(t *testing.T) {
 	in := strings.Repeat("日", 80)
 	got := SanitizeSubject(in)
@@ -72,24 +54,19 @@ func TestSanitizeSubject_UnicodeAtBoundary(t *testing.T) {
 
 // ---- SanitizeBody ----
 
-func TestSanitizeBody_CollapsesBlankRuns(t *testing.T) {
-	in := "First paragraph.\n\n\n\nSecond paragraph."
-	want := "First paragraph.\n\nSecond paragraph."
-	if got := SanitizeBody(in); got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestSanitizeBody_EmptyIsEmpty(t *testing.T) {
-	if got := SanitizeBody("   \n\n "); got != "" {
-		t.Errorf("expected empty for whitespace-only body, got %q", got)
-	}
-}
-
-func TestSanitizeBody_PreservesSingleNewlines(t *testing.T) {
-	in := "Line one.\nLine two.\n\nParagraph break."
-	if got := SanitizeBody(in); got != in {
-		t.Errorf("expected no change, got %q", got)
+func TestSanitizeBody(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{"collapses blank runs", "First paragraph.\n\n\n\nSecond paragraph.", "First paragraph.\n\nSecond paragraph."},
+		{"whitespace only is empty", "   \n\n ", ""},
+		{"preserves single newlines", "Line one.\nLine two.\n\nParagraph break.", "Line one.\nLine two.\n\nParagraph break."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SanitizeBody(tc.in); got != tc.want {
+				t.Errorf("SanitizeBody(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -187,55 +164,45 @@ func TestBuildPrompt_RepoStyleCapsSubjectCount(t *testing.T) {
 // ---- DecodeClaude ----
 
 func TestDecodeClaude_ExtractsStructuredOutput(t *testing.T) {
-	stdout := []byte(`{"session_id":"abc"}
-{"structured_output":{"subject":"Add login flow","body":"Supports SSO."}}`)
-	subject, body, err := DecodeClaude(stdout)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if subject != "Add login flow" {
-		t.Errorf("subject: got %q", subject)
-	}
-	if body != "Supports SSO." {
-		t.Errorf("body: got %q", body)
-	}
-}
-
-func TestDecodeClaude_EmptyOutputErrors(t *testing.T) {
-	if _, _, err := DecodeClaude(nil); err == nil {
-		t.Error("expected error for empty output")
-	}
-	if _, _, err := DecodeClaude([]byte("\n\n\n")); err == nil {
-		t.Error("expected error for whitespace-only output")
-	}
-}
-
-func TestDecodeClaude_MissingSubjectErrors(t *testing.T) {
-	stdout := []byte(`{"structured_output":{"body":"orphaned body"}}`)
-	if _, _, err := DecodeClaude(stdout); err == nil {
-		t.Error("expected error when subject is missing")
-	}
-}
-
-func TestDecodeClaude_MalformedJSONErrors(t *testing.T) {
-	if _, _, err := DecodeClaude([]byte("not json")); err == nil {
-		t.Error("expected error for malformed JSON")
-	}
-}
-
-func TestDecodeClaude_HandlesMultilineEnvelope(t *testing.T) {
-	stdout := []byte(`first log line
+	for _, tc := range []struct {
+		name, stdout, subject, body string
+	}{
+		{"after a session line", `{"session_id":"abc"}
+{"structured_output":{"subject":"Add login flow","body":"Supports SSO."}}`, "Add login flow", "Supports SSO."},
+		{"multiline envelope", `first log line
 {"structured_output":{"subject":"Fix race in readLoop","body":""}}
-`)
-	subject, body, err := DecodeClaude(stdout)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
+`, "Fix race in readLoop", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			subject, body, err := DecodeClaude([]byte(tc.stdout))
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if subject != tc.subject {
+				t.Errorf("subject: got %q, want %q", subject, tc.subject)
+			}
+			if body != tc.body {
+				t.Errorf("body: got %q, want %q", body, tc.body)
+			}
+		})
 	}
-	if subject != "Fix race in readLoop" {
-		t.Errorf("subject: got %q", subject)
-	}
-	if body != "" {
-		t.Errorf("body: got %q, want empty", body)
+}
+
+func TestDecodeClaude_RejectsWhatItCannotRead(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stdout []byte
+	}{
+		{"empty output", nil},
+		{"whitespace-only output", []byte("\n\n\n")},
+		{"missing subject", []byte(`{"structured_output":{"body":"orphaned body"}}`)},
+		{"malformed JSON", []byte("not json")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := DecodeClaude(tc.stdout); err == nil {
+				t.Errorf("DecodeClaude(%q) returned no error", tc.stdout)
+			}
+		})
 	}
 }
 

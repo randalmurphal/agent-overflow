@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 
@@ -176,11 +175,8 @@ enabled = false
 	}
 }
 
+// ListServers sorts by name: the file lists the servers out of order.
 func TestSortedNamesStable(t *testing.T) {
-	// Defensive: sort behaviour can drift across Go versions when
-	// values include equal-precedence strings. Codex names are
-	// distinct in our package — just verify the sort path is
-	// stable order for the public list method.
 	store := newStoreWithFile(t, `[mcp_servers.beta]
 command = "/b"
 
@@ -195,11 +191,6 @@ command = "/c"
 	want := []string{"alpha", "beta", "charlie"}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("order = %v, want %v", names, want)
-	}
-	// Reverse-sanity: confirm sort.Strings agrees.
-	sort.Strings(names)
-	if !reflect.DeepEqual(names, want) {
-		t.Errorf("post-sort order = %v, want %v", names, want)
 	}
 }
 

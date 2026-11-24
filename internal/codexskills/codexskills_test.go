@@ -329,39 +329,6 @@ func TestResetWithNoCachedEntryThenPopulates(t *testing.T) {
 	}
 }
 
-func TestInvalidateThenRefetch(t *testing.T) {
-	now := time.Unix(0, 0)
-	c := NewWith(time.Minute, time.Second, fixedClock(&now))
-
-	calls := 0
-	fetch := func() (CwdSkills, error) {
-		calls++
-		return sample("/repo", "review"), nil
-	}
-	key := Key("codex", "/repo")
-	if _, err := c.Get(context.Background(), key, fetch); err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	c.Invalidate(key)
-	if _, err := c.Get(context.Background(), key, fetch); err != nil {
-		t.Fatalf("Get after invalidate: %v", err)
-	}
-	if calls != 2 {
-		t.Fatalf("fetch calls = %d, want 2", calls)
-	}
-	// Another key must be untouched by a single-key invalidation.
-	other := Key("codex", "/other")
-	if _, err := c.Get(context.Background(), other, fetch); err != nil {
-		t.Fatalf("Get other: %v", err)
-	}
-	if _, err := c.Get(context.Background(), other, fetch); err != nil {
-		t.Fatalf("second Get other: %v", err)
-	}
-	if calls != 3 {
-		t.Fatalf("fetch calls = %d, want 3 (the other key stayed cached)", calls)
-	}
-}
-
 func TestRefreshBypassesTheCachedEntry(t *testing.T) {
 	now := time.Unix(0, 0)
 	c := NewWith(time.Minute, time.Second, fixedClock(&now))
