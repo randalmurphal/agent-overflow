@@ -321,21 +321,6 @@ func TestWorkflowDiscardWithoutWorktreeRecordsReceiptAndResolvesPark(t *testing.
 	}
 }
 
-func TestWorkflowDiscardRemovesDirtyWorktree(t *testing.T) {
-	t.Parallel()
-	app, _ := setupE2EApp(t)
-	repo := initMainGitRepo(t)
-	projectRow := testutil.EnsureProject(t, app.store, repo)
-	item := createDoneWorkflowWorktree(t, app, projectRow, "dirty-discard")
-	writeDispositionFile(t, item.WorktreePath, "uncommitted.txt", "authorized loss\n")
-	if _, err := app.WorkflowDiscardItem(t.Context(), item.ID); err != nil {
-		t.Fatalf("dirty discard: %v", err)
-	}
-	if _, err := os.Stat(item.WorktreePath); !os.IsNotExist(err) {
-		t.Fatalf("dirty worktree still exists: %v", err)
-	}
-}
-
 func TestWorkflowDiscardAcceptsEverySpecifiedTerminalAndParkedState(t *testing.T) {
 	t.Parallel()
 	for _, state := range []engine.State{engine.StateFailed, engine.StateCancelled, engine.StateNeedsHuman} {

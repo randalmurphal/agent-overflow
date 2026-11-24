@@ -417,33 +417,6 @@ func waitOnRunFromThread(t *testing.T, h *wakeHarness, threadID, runID string, w
 	return result.(workflowtools.Wait)
 }
 
-// A wait that returns the run's rest is the delivery: the rest does not also
-// wake the thread. Here the call reads the rest from the store before the
-// engine's event has queued its wake, the order a fast rest takes.
-func TestAWaitThatReturnedTheRestSuppressesItsWake(t *testing.T) {
-	t.Parallel()
-	h := newWakeHarness(t)
-	thread := h.chatThread(t, "waiting-thread")
-	item := h.run(t, "held-run", engine.StateRunning, "")
-	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.app.store.UpdateWorkItemState(item.ID, string(engine.StateDone), "", time.Now().UnixMilli()); err != nil {
-		t.Fatal(err)
-	}
-	wait := waitOnRunFromThread(t, h, thread.ID, item.ID, 30)
-	if wait.Outcome != workflowtools.OutcomeResting {
-		t.Fatalf("wait = %+v", wait)
-	}
-	h.app.afterWorkflowStateEvent(engine.StateEvent{
-		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone,
-	})
-	h.drain()
-	if sends, queued, _, _ := h.snapshot(); len(sends)+len(queued) != 0 {
-		t.Fatalf("the rest the wait returned also woke the thread: sends=%q queued=%q", sends, queued)
-	}
-}
-
 // A wait that ends with the run still working leaves the rest to the wake:
 // it arrives once.
 func TestABackgroundedWaitLeavesExactlyOneWake(t *testing.T) {
@@ -486,7 +459,8 @@ func (f *failingWriter) Write([]byte) (int, error) { return 0, errors.New("write
 // client. One that was never written leaves the rest to wake the thread once;
 // one that was written is the delivery. Both response shapes the transport
 // writes are covered: plain JSON and the event stream both provider CLIs ask
-// for.
+// for. The call reads the rest from the store before the engine's event has
+// queued its wake, the order a fast rest takes.
 func TestARestingAnswerDeliversOnlyOnceWritten(t *testing.T) {
 	t.Parallel()
 	for _, accept := range []string{"application/json", "application/json, text/event-stream"} {

@@ -330,7 +330,11 @@ func (f *requestFixture) busyThread(t *testing.T, id string) store.Thread {
 
 // TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack pins both halves of
 // the queued path: a message waiting on a turn is not running, so nothing can
-// settle it, and cancelling the request takes the message back out.
+// settle it, and cancelling the request takes the message back out. The
+// settled request then has nothing left to stop, so cancelling it again
+// reports what it settled as rather than failing or settling it a second
+// time: an agent retrying a cancel it lost the answer to must not be able to
+// rewrite the outcome.
 func TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -377,43 +381,20 @@ func TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack(t *testing.T) {
 	if queued := f.app.triage.QueuedFlushItems(target.ID); len(queued) != 0 {
 		t.Fatalf("cancelled message is still in the live queue: %+v", queued)
 	}
-	if row := f.request(t, ack.Token); row.State != store.ThreadRequestCancelled {
-		t.Fatalf("request state = %q, want cancelled", row.State)
+	settled := f.request(t, ack.Token)
+	if settled.State != store.ThreadRequestCancelled {
+		t.Fatalf("request state = %q, want cancelled", settled.State)
 	}
 	// The caller stopped this itself and read the effect in the reply, so
 	// nothing is owed to it later.
 	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
 		t.Fatalf("cancelling own request woke the caller: %+v", rows)
 	}
-	if row := f.request(t, ack.Token); row.Notify {
+	if settled.Notify {
 		t.Error("notify survived the caller's own cancel")
 	}
-}
 
-// A request that is already settled has nothing left to stop, so cancelling
-// it again reports what it settled as rather than failing or settling it a
-// second time. An agent retrying a cancel it lost the answer to must not be
-// able to rewrite the outcome.
-func TestThreadCancelOfASettledRequestChangesNothing(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	target := f.busyThread(t, "busy-settled")
-
-	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
-		ThreadID: target.ID, Message: "take this back", Notify: true,
-	})
-	if err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	if _, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: ack.Token}); err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	settled := f.request(t, ack.Token)
-	if settled.State != store.ThreadRequestCancelled {
-		t.Fatalf("request state = %q, want cancelled", settled.State)
-	}
-
-	report, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: ack.Token})
+	report, err = f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: ack.Token})
 	if err != nil {
 		t.Fatalf("second Cancel: %v", err)
 	}
@@ -1033,7 +1014,10 @@ func (f *requestFixture) awaitRequestState(t *testing.T, token string, want ...s
 
 // TestThreadRequestWithNoWaitArrivesAsAMessage covers the other half of the
 // promise the ack makes: nobody is parked, so the answer is queued into the
-// caller's thread as a message it will read on its next turn.
+// caller's thread as a message it will read on its next turn. A wake the
+// previous process never delivered goes back to its request at boot, owed and
+// disarmed, rather than into the composer: it is not the person's to send,
+// and thread_status still returns the answer.
 func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -1099,6 +1083,18 @@ func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 	delivered := f.request(t, ack.Token)
 	if delivered.DeliveredHow != store.ThreadWakeQueued || delivered.DeliveredAt == 0 {
 		t.Errorf("delivery = %q at %d, want a queued delivery", delivered.DeliveredHow, delivered.DeliveredAt)
+	}
+
+	after := f.restart(t)
+	after.app.restoreDurableFlushQueueAtBoot()
+	if row := after.request(t, ack.Token); row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
+		t.Fatalf("delivered %q at %d, notify %v; want the answer owed and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
+	}
+	if draft, _, err := after.app.store.GetThreadDraft(f.caller.ID); err != nil || strings.Contains(draft.Content, "reversible") {
+		t.Fatalf("draft = %+v err=%v, want no answer in it", draft, err)
+	}
+	if rows := durableQueueRows(t, after.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("the returned row was left in the queue: %+v", rows)
 	}
 }
 
@@ -3179,40 +3175,6 @@ func TestThreadRequestsListAndExport(t *testing.T) {
 	}
 	if !strings.HasPrefix(export.Path, f.app.configDir) {
 		t.Errorf("export path %q is outside the data directory", export.Path)
-	}
-}
-
-// A wake the previous process never delivered goes back to its request at
-// boot, owed and disarmed, rather than into the composer: it is not the
-// person's to send, and thread_status still returns the answer.
-func TestAWakeQueuedAtQuitGoesBackToItsRequest(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	release := f.mockClaudeAfterTheAck(t, "the backup finished")
-	f.holdCallerTurn(t)
-
-	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
-		Prompt: "did the backup finish?", WaitSeconds: 0, Notify: true,
-	})
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	release(t, ack)
-	waitUntil(t, 10*time.Second, func() bool {
-		return f.request(t, ack.Token).DeliveredHow == store.ThreadWakeQueued
-	})
-
-	after := f.restart(t)
-	after.app.restoreDurableFlushQueueAtBoot()
-
-	if row := after.request(t, ack.Token); row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
-		t.Fatalf("delivered %q at %d, notify %v; want the answer owed and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
-	}
-	if draft, _, err := after.app.store.GetThreadDraft(f.caller.ID); err != nil || strings.Contains(draft.Content, "the backup finished") {
-		t.Fatalf("draft = %+v err=%v, want no answer in it", draft, err)
-	}
-	if rows := durableQueueRows(t, after.app, f.caller.ID); len(rows) != 0 {
-		t.Fatalf("the returned row was left in the queue: %+v", rows)
 	}
 }
 
