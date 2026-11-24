@@ -77,6 +77,11 @@ type activityScanRow struct {
 	// the person (agentMessageRowExpr), which groups by the read's
 	// ActivityRunRule.
 	AgentMessage bool
+	// BackgroundSettled is true for a backgrounded tool_call whose
+	// meta.live_background_active was stamped false when its ending
+	// completion landed (possibly in a later activity run after prose or
+	// a steered user message).
+	BackgroundSettled bool
 }
 
 func (r activityScanRow) cursor() TimelineCursor {
@@ -113,7 +118,12 @@ func activityScanColumns(payloadKind, payloadMeta, rev string) string {
     ` + fileChange(inlineDiffTotalFilesExpr(payloadMeta)) + `,
     ` + fileChange(inlineDiffFilesLengthExpr(payloadMeta)) + `,
     ` + fileChange(inputFilePathCountExpr("items.meta")) + `,
-    ` + agentMessageRowExpr("items.meta")
+    ` + agentMessageRowExpr("items.meta") + `,
+    ` + backgroundSettledRowExpr("items.meta")
+}
+
+func backgroundSettledRowExpr(itemMeta string) string {
+	return "CASE WHEN items.kind = 'tool_call' AND items.is_background = 1 AND json_valid(" + itemMeta + ") AND json_extract(" + itemMeta + ", '$.live_background_active') = 0 THEN 1 ELSE 0 END"
 }
 
 // agentMessageRowExpr is 1 for a user_text row the timeline renders as an
@@ -218,7 +228,7 @@ func queryActivityScanRows(
 		&row.Kind, &row.ToolName, &row.Status, &row.CompletionOf,
 		&row.Rev, &row.PayloadKind, &row.MCP,
 		&totalFiles, &diffFiles, &inputFiles,
-		&row.AgentMessage,
+		&row.AgentMessage, &row.BackgroundSettled,
 	}
 	for rows.Next() {
 		row = activityScanRow{}

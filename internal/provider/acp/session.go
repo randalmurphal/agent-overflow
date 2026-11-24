@@ -181,7 +181,8 @@ type Session struct {
 	cancelling               bool
 	inFlightZeroCh           chan struct{}
 	inFlightConfirms         []*pendingPromptConfirm
-	armedConfirm             *pendingPromptConfirm
+	armedConfirms            []*pendingPromptConfirm
+	stagedSteerConfirms      []*pendingPromptConfirm
 	turnOpen                 bool
 	spontaneousTurnOpen      bool
 	turnSeq                  int
@@ -772,29 +773,69 @@ func responseWasCancelled(rawLine []byte) bool {
 	return env.Result != nil && env.Result.StopReason == "cancelled"
 }
 
+func appendUniqueConfirmLocked(dst []*pendingPromptConfirm, c *pendingPromptConfirm) []*pendingPromptConfirm {
+	if c == nil || c.uuid == "" || c.confirmed.Load() {
+		return dst
+	}
+	for _, existing := range dst {
+		if existing == c {
+			return dst
+		}
+	}
+	return append(dst, c)
+}
+
+func removeConfirmSliceLocked(dst []*pendingPromptConfirm, c *pendingPromptConfirm) []*pendingPromptConfirm {
+	for i, existing := range dst {
+		if existing == c {
+			return append(dst[:i], dst[i+1:]...)
+		}
+	}
+	return dst
+}
+
+func (s *Session) promoteStagedSteersLocked() {
+	if len(s.stagedSteerConfirms) == 0 || s.cancelling || s.spontaneousTurnOpen {
+		return
+	}
+	if s.hasForegroundStartedToolsLocked() || s.activeBlockKind != "" {
+		return
+	}
+	for _, c := range s.stagedSteerConfirms {
+		s.armedConfirms = appendUniqueConfirmLocked(s.armedConfirms, c)
+	}
+	s.stagedSteerConfirms = nil
+}
+
 func (s *Session) rearmNextConfirmLocked(armNext bool) {
 	if !armNext || s.cancelling || s.spontaneousTurnOpen {
-		s.armedConfirm = nil
+		s.armedConfirms = nil
+		s.stagedSteerConfirms = nil
 		return
 	}
 	if len(s.inFlightConfirms) > 0 {
 		head := s.inFlightConfirms[0]
 		if head != nil && !head.confirmed.Load() {
-			s.armedConfirm = head
+			s.armedConfirms = appendUniqueConfirmLocked(s.armedConfirms, head)
 			return
 		}
 	}
-	s.armedConfirm = nil
 }
 
 func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func(rawLine []byte) {
 	var once sync.Once
 	return func(rawLine []byte) {
 		once.Do(func() {
-			if len(rawLine) > 0 {
-				// Synchronously flush and close the settling prompt's buffered
-				// content block on the read loop BEFORE arming the next steered
-				// prompt so Prompt #1's tail cannot leak below User Message #2.
+			s.mu.Lock()
+			isHead := len(s.inFlightConfirms) > 0 && s.inFlightConfirms[0] == confirm
+			s.mu.Unlock()
+			if len(rawLine) > 0 && isHead {
+				// Synchronously flush and close the settling head prompt's
+				// buffered content block on the read loop BEFORE arming the
+				// next steered prompt so Prompt #1's tail cannot leak below
+				// User Message #2. Do NOT close Prompt #1's active block when
+				// an early-returning steered Prompt #2 settles while Prompt #1
+				// is still streaming.
 				s.closeActiveContentBlock()
 			}
 			// Do not arm the next steered prompt on session/cancel (which cancels
@@ -804,14 +845,24 @@ func (s *Session) makeWirePromptSettler(confirm *pendingPromptConfirm) func(rawL
 			s.mu.Lock()
 			wasHead := len(s.inFlightConfirms) > 0 && s.inFlightConfirms[0] == confirm
 			s.removeInFlightConfirmLocked(confirm)
-			if s.armedConfirm == confirm {
-				s.armedConfirm = nil
-			}
+			s.armedConfirms = removeConfirmSliceLocked(s.armedConfirms, confirm)
+			s.stagedSteerConfirms = removeConfirmSliceLocked(s.stagedSteerConfirms, confirm)
 			if s.wireInFlightPrompts > 0 {
 				s.wireInFlightPrompts--
 			}
 			if wasHead {
 				s.rearmNextConfirmLocked(armNext)
+			} else if armNext && confirm != nil && confirm.uuid != "" && !confirm.confirmed.Load() && s.wireInFlightPrompts > 0 {
+				// agy 1.5.16 accepts a steered session/prompt into the running
+				// cascade and returns its RPC immediately while Prompt #1 keeps
+				// streaming. Keep the steered prompt staged above the composer
+				// until the running foreground tool/block finishes and the model
+				// begins its next step reacting to it.
+				if s.hasForegroundStartedToolsLocked() || s.activeBlockKind != "" {
+					s.stagedSteerConfirms = appendUniqueConfirmLocked(s.stagedSteerConfirms, confirm)
+				} else {
+					s.armedConfirms = appendUniqueConfirmLocked(s.armedConfirms, confirm)
+				}
 			}
 			s.mu.Unlock()
 		})
@@ -822,12 +873,12 @@ func (s *Session) confirmArmedPrompt() {
 	s.chunkEmitMu.Lock()
 	defer s.chunkEmitMu.Unlock()
 	s.mu.Lock()
-	c := s.armedConfirm
-	if c == nil {
+	if len(s.armedConfirms) == 0 {
 		s.mu.Unlock()
 		return
 	}
-	s.armedConfirm = nil
+	pending := s.armedConfirms
+	s.armedConfirms = nil
 	// Flush and close any still-open content block from a prior prompt before
 	// emitting EventUserText so the new user message lands after prior output.
 	flushKind, flushText, stopKind, turnID := s.drainAndCloseActiveBlockLocked()
@@ -840,7 +891,9 @@ func (s *Session) confirmArmedPrompt() {
 			s.emitContentBlockStop(stopKind, turnID)
 		}
 	}
-	s.emitPromptConfirmation(c)
+	for _, c := range pending {
+		s.emitPromptConfirmation(c)
+	}
 }
 
 func (s *Session) signalInFlightZeroLocked() {
@@ -964,12 +1017,13 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	// commands/subagents do not prevent confirming this user prompt on the
 	// first parent-scope response update.
 	if priorWireInFlight == 0 && !s.spontaneousTurnOpen && confirm.uuid != "" {
-		s.armedConfirm = confirm
+		s.armedConfirms = appendUniqueConfirmLocked(s.armedConfirms, confirm)
 	} else if priorWireInFlight > 0 {
 		// Leave any already-armed predecessor confirm intact; do not overwrite
 		// with a newly steered prompt until its predecessor resolves.
 	} else {
-		s.armedConfirm = nil
+		s.armedConfirms = nil
+		s.stagedSteerConfirms = nil
 	}
 	s.mu.Unlock()
 
@@ -1068,16 +1122,7 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 	}
 
 	closing := s.closing.Load()
-	if !closing {
-		// Fallback confirmation for prompts that completed cleanly without
-		// emitting any intermediate parent update (e.g. /compact or empty reply).
-		// Never confirm cancelled or errored prompts.
-		if confirm != nil && waitErr == nil && res.StopReason != "cancelled" {
-			s.chunkEmitMu.Lock()
-			s.emitPromptConfirmation(confirm)
-			s.chunkEmitMu.Unlock()
-		}
-	} else {
+	if closing {
 		s.stopChunkTimer()
 	}
 
@@ -1101,6 +1146,31 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 	}
 	wasCompact := confirm != nil && confirm.isCompact
 	preCompactTokens := s.preCompactUsedTokens
+	var fallbackConfirms []*pendingPromptConfirm
+	var cancelledConfirms []*pendingPromptConfirm
+	if remaining == 0 {
+		if !closing && waitErr == nil && res.StopReason != "cancelled" {
+			fallbackConfirms = append(fallbackConfirms, s.armedConfirms...)
+			fallbackConfirms = append(fallbackConfirms, s.stagedSteerConfirms...)
+			if confirm != nil {
+				fallbackConfirms = appendUniqueConfirmLocked(fallbackConfirms, confirm)
+			}
+		} else if !closing && waitErr == nil && res.StopReason == "cancelled" && !wasInterruptCancel {
+			cancelledConfirms = append(cancelledConfirms, s.armedConfirms...)
+			cancelledConfirms = append(cancelledConfirms, s.stagedSteerConfirms...)
+			if confirm != nil {
+				cancelledConfirms = appendUniqueConfirmLocked(cancelledConfirms, confirm)
+			}
+		}
+		s.armedConfirms = nil
+		s.stagedSteerConfirms = nil
+	} else if !closing && waitErr == nil && res.StopReason == "cancelled" && !wasInterruptCancel {
+		s.armedConfirms = removeConfirmSliceLocked(s.armedConfirms, confirm)
+		s.stagedSteerConfirms = removeConfirmSliceLocked(s.stagedSteerConfirms, confirm)
+		if confirm != nil && !confirm.confirmed.Load() {
+			cancelledConfirms = append(cancelledConfirms, confirm)
+		}
+	}
 	// When the server ends a prompt solely to pause for a pending ask_question
 	// tool (e.g. agy emitting tool_call(status="pending") + end_turn before the
 	// user's answer prompt), hold the logical turn open so triage keeps
@@ -1144,22 +1214,36 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 		s.closeActiveContentBlock()
 	}
 
+	// Fallback confirmation for prompts that completed cleanly without
+	// emitting any intermediate parent update (e.g. /compact or empty reply),
+	// only once the final in-flight prompt finishes. Steered prompts that
+	// returned early while Prompt #1 kept streaming stay staged until the
+	// model actually begins its next step.
+	if len(fallbackConfirms) > 0 {
+		s.chunkEmitMu.Lock()
+		for _, c := range fallbackConfirms {
+			s.emitPromptConfirmation(c)
+		}
+		s.chunkEmitMu.Unlock()
+	}
+
 	// When a prompt is cancelled outside Interrupt() (e.g. RespondToApproval
 	// with decision="cancel") before any parent update confirmed it, retire its
 	// unrun pending send cleanly so steered messages return to the composer.
-	if waitErr == nil && res.StopReason == "cancelled" && !wasInterruptCancel &&
-		confirm != nil && confirm.uuid != "" && !confirm.confirmed.Load() {
-		lcMeta, _ := json.Marshal(provider.CommandLifecycleMeta{
-			CommandUUID: confirm.uuid,
-			State:       provider.CommandCancelled,
-		})
-		s.emitEvent(provider.ProviderEvent{
-			Kind:      provider.EventCommandLifecycle,
-			ThreadID:  s.threadID,
-			TurnID:    turnID,
-			Meta:      lcMeta,
-			Timestamp: time.Now(),
-		})
+	for _, c := range cancelledConfirms {
+		if c != nil && c.uuid != "" && !c.confirmed.Load() {
+			lcMeta, _ := json.Marshal(provider.CommandLifecycleMeta{
+				CommandUUID: c.uuid,
+				State:       provider.CommandCancelled,
+			})
+			s.emitEvent(provider.ProviderEvent{
+				Kind:      provider.EventCommandLifecycle,
+				ThreadID:  s.threadID,
+				TurnID:    turnID,
+				Meta:      lcMeta,
+				Timestamp: time.Now(),
+			})
+		}
 	}
 
 	if waitErr != nil {
@@ -1337,7 +1421,8 @@ func (s *Session) Interrupt(ctx context.Context) error {
 	hasInFlight := s.inFlightPrompts > 0 || s.activeFinishers > 0
 	turnID := s.activeTurnID
 	model := s.model
-	s.armedConfirm = nil
+	s.armedConfirms = nil
+	s.stagedSteerConfirms = nil
 	var waitCh chan struct{}
 	if hasInFlight {
 		s.cancelling = true
@@ -1592,7 +1677,8 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		s.activeFinishers++
 		s.wireInFlightPrompts++
 		s.inFlightConfirms = append(s.inFlightConfirms, placeholder)
-		s.armedConfirm = nil
+		s.armedConfirms = nil
+		s.stagedSteerConfirms = nil
 		s.compactionCheckPending = true
 		if !s.turnBeforeSet {
 			s.turnBeforeToken = followUpBefore
@@ -2024,6 +2110,9 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 
 	case "usage_update":
 		s.closeActiveContentBlock()
+		s.mu.Lock()
+		s.promoteStagedSteersLocked()
+		s.mu.Unlock()
 		s.handleUsageUpdate(u.Used, u.Size)
 
 	case "available_commands_update":
@@ -2649,6 +2738,7 @@ func (s *Session) promoteBackgroundCommand(toolCallID, parentToolUseID, turnID s
 			}
 			if parentToolUseID == "" {
 				s.startedTools[toolCallID] = cur
+				s.promoteStagedSteersLocked()
 			} else {
 				s.childStartedTools[toolCallID] = cur
 			}
@@ -2875,6 +2965,7 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 		// A parent tool completion can be followed by mid-turn compaction
 		// before the next planner response.
 		s.compactionCheckPending = true
+		s.promoteStagedSteersLocked()
 	} else {
 		started = s.childStartedTools[tc.ToolCallID]
 		delete(s.childStartedTools, tc.ToolCallID)

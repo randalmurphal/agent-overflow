@@ -430,6 +430,22 @@ describe('attention state', () => {
     expect(activityRunSummary([tool('t1', 'Bash')], 'claude').runningLabel).toBeNull();
   });
 
+  it('ignores a settled background launch whose completion landed in a later activity run', () => {
+    const settledLaunch = tool('bg-1', 'Bash', {
+      status: 'running',
+      isBackground: true,
+      meta: JSON.stringify({ live_background_active: false }),
+    });
+    expect(activityRunSummary([settledLaunch], 'agy').runningLabel).toBeNull();
+
+    const activeLaunch = tool('bg-2', 'Bash', {
+      status: 'running',
+      isBackground: true,
+      meta: JSON.stringify({ live_background_active: true }),
+    });
+    expect(activityRunSummary([activeLaunch], 'agy').runningLabel).toBe('Bash');
+  });
+
   it('aliases a running Codex tool name', () => {
     const summary = activityRunSummary([
       tool('t1', 'command_execution', { status: 'running' }),

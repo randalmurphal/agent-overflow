@@ -119,7 +119,7 @@ func (r activityScanRow) isFailedStatus() bool {
 }
 
 func (r activityScanRow) isRunningStatus() bool {
-	return r.Status == "running" || r.Status == "streaming"
+	return (r.Status == "running" || r.Status == "streaming") && !r.BackgroundSettled
 }
 
 // completionOf names the launch this row completes, "" for any other row.

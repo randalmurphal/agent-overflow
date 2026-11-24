@@ -1537,3 +1537,101 @@ for raw in sys.stdin:
 		return e.Kind == provider.EventTurnComplete
 	})
 }
+
+func TestACPEarlyReturningSteerStaysStagedUntilToolCompletesAndModelReplies(t *testing.T) {
+	t.Parallel()
+	// Models real agy 1.5.16 steering: Prompt A stays open running cmd-1 while
+	// steered Prompt B returns {"stopReason":"end_turn"} immediately. Prompt B
+	// must stay unconfirmed (staged above the composer) until cmd-1 finishes and
+	// the model begins its next step reacting to Prompt B.
+	earlySteerScript := `#!/usr/bin/env python3
+import json, sys, time
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    msg = json.loads(raw)
+    mid = msg.get("id")
+    method = msg.get("method")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"agentInfo":{"name":"mock","version":"1.0"}}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"s-early-steer","modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"}]}}}), flush=True)
+    elif method == "session/prompt":
+        sid = params.get("sessionId")
+        prompt = params.get("prompt") or []
+        text = prompt[0].get("text", "") if prompt else ""
+        if text == "PROMPT_A":
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"tool_call","toolCallId":"cmd-1","title":"run_command","kind":"execute","status":"in_progress"}}}), flush=True)
+            b_msg = json.loads(sys.stdin.readline().strip())
+            b_id = b_msg.get("id")
+            # Prompt B returns immediately while cmd-1 is still running!
+            print(json.dumps({"jsonrpc":"2.0","id":b_id,"result":{"stopReason":"end_turn"}}), flush=True)
+            time.sleep(0.15)
+            # Now cmd-1 finishes, and then the model starts replying to Prompt B.
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"tool_call_update","toolCallId":"cmd-1","title":"run_command","kind":"execute","status":"completed"}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"reply-to-b"}}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn"}}), flush=True)
+    elif method == "session/close":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{}}), flush=True)
+`
+	bin := writeFakeACPServer(t, earlySteerScript)
+	conn, err := Dial(context.Background(), ConnConfig{
+		Binary:       bin,
+		WorkDir:      t.TempDir(),
+		Reaper:       procutiltest.Reaper(),
+		ProviderName: "agy",
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ev := newEventCollector()
+	sess, err := conn.Open(context.Background(), "t-early-steer", SessionConfig{
+		WorkDir:     t.TempDir(),
+		RuntimeMode: provider.RuntimeApprovalRequired,
+	}, ev.record)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.Send(context.Background(), "PROMPT_A", provider.SendOptions{UserMessageUUID: "uuid-a"}); err != nil {
+		t.Fatalf("Send PROMPT_A: %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventToolStart && e.ItemID == "cmd-1"
+	})
+
+	if err := sess.Steer(context.Background(), "PROMPT_B", provider.SendOptions{UserMessageUUID: "uuid-b"}); err != nil {
+		t.Fatalf("Steer PROMPT_B: %v", err)
+	}
+
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventTurnComplete
+	})
+
+	all := ev.all()
+	cmdCompleteIdx := -1
+	uuidBIdx := -1
+	replyBIdx := -1
+	for i, e := range all {
+		if e.Kind == provider.EventToolComplete && e.ItemID == "cmd-1" && cmdCompleteIdx < 0 {
+			cmdCompleteIdx = i
+		}
+		if e.Kind == provider.EventUserText && strings.Contains(string(e.Meta), "uuid-b") && uuidBIdx < 0 {
+			uuidBIdx = i
+		}
+		if e.Kind == provider.EventTextDelta && strings.Contains(e.Content, "reply-to-b") && replyBIdx < 0 {
+			replyBIdx = i
+		}
+	}
+	if cmdCompleteIdx < 0 || uuidBIdx < 0 || replyBIdx < 0 {
+		t.Fatalf("missing expected events: cmdComplete=%d uuidB=%d replyB=%d; all=%+v", cmdCompleteIdx, uuidBIdx, replyBIdx, all)
+	}
+	if cmdCompleteIdx >= uuidBIdx || uuidBIdx >= replyBIdx {
+		t.Fatalf("steered prompt B confirmed out of order: want cmdComplete (%d) < uuidB (%d) < replyB (%d)", cmdCompleteIdx, uuidBIdx, replyBIdx)
+	}
+}

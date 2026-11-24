@@ -371,15 +371,15 @@ func TestACPOnResponseMultiSteerArmsNextConfirmAndSkipsCancelled(t *testing.T) {
 
 	// Predecessor c0 completes with end_turn while 2 steered prompts remain -> arms c1!
 	settle0([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`))
-	if s.armedConfirm != c1 {
-		t.Fatalf("after c0 end_turn, armedConfirm = %v, want c1", s.armedConfirm)
+	if len(s.armedConfirms) != 1 || s.armedConfirms[0] != c1 {
+		t.Fatalf("after c0 end_turn, armedConfirms = %v, want [c1]", s.armedConfirms)
 	}
 	s.confirmArmedPrompt()
 
 	// Next c1 is cancelled -> must NOT arm c2!
 	settle1([]byte(`{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}`))
-	if s.armedConfirm != nil {
-		t.Fatalf("after c1 cancelled, armedConfirm = %v, want nil", s.armedConfirm)
+	if len(s.armedConfirms) != 0 {
+		t.Fatalf("after c1 cancelled, armedConfirms = %v, want empty", s.armedConfirms)
 	}
 	settle2([]byte(`{"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}}`))
 
