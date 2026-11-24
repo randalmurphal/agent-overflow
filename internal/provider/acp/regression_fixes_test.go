@@ -820,8 +820,10 @@ func TestACPNestedSubagentRoutesGrandchildToChildLaunch(t *testing.T) {
 
 type lookupBgFlavor struct {
 	DefaultFlavor
-	mu   sync.Mutex
-	byID map[string]BackgroundCommandInfo
+	mu                sync.Mutex
+	byID              map[string]BackgroundCommandInfo
+	liveCalls         int
+	includeComplCalls int
 }
 
 func (f *lookupBgFlavor) NormalizeToolStart(u *ToolCallUpdate) NormalizedToolStart {
@@ -845,9 +847,14 @@ func (f *lookupBgFlavor) NormalizeToolComplete(u *ToolCallUpdate, started Normal
 
 func (f *lookupBgFlavor) CanLookupBackgroundCommands(sessionID string) bool { return sessionID != "" }
 
-func (f *lookupBgFlavor) LookupBackgroundCommands(_ context.Context, _ string, toolCallIDs []string, _ bool) map[string]BackgroundCommandInfo {
+func (f *lookupBgFlavor) LookupBackgroundCommands(_ context.Context, _ string, toolCallIDs []string, includeCompleted bool) map[string]BackgroundCommandInfo {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if includeCompleted {
+		f.includeComplCalls++
+	} else {
+		f.liveCalls++
+	}
 	out := make(map[string]BackgroundCommandInfo)
 	for _, id := range toolCallIDs {
 		if info, ok := f.byID[id]; ok {
@@ -967,5 +974,129 @@ func TestACPConcurrentRunCommandsPromoteOnlyTimedOutCommand(t *testing.T) {
 	}
 	if !sawFastComplete || !sawSlowTerminal {
 		t.Fatalf("expected fast EventToolComplete (%v) and slow EventBackgroundTaskTerminal (%v); events=%+v", sawFastComplete, sawSlowTerminal, events)
+	}
+}
+
+func TestACPBgCmdWatcherSkipsPendingApprovalAndCatchesNearTimeoutCompletion(t *testing.T) {
+	t.Parallel()
+	fl := &lookupBgFlavor{
+		DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+		byID: map[string]BackgroundCommandInfo{
+			"cmd-gated": {TaskID: "sess-gate/task-1", OutputFile: "/tmp/task-1.log"},
+			"cmd-near":  {TaskID: "sess-gate/task-2", OutputFile: "/tmp/task-2.log"},
+		},
+	}
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(fl, &events, &mu)
+	s.sessionID = "sess-gate"
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+	s.pendingBgCommands = make(map[string]pendingBackgroundCommand)
+	s.bgCmdWakeCh = make(chan struct{}, 1)
+	defer func() {
+		s.closing.Store(true)
+		s.sessionCancel()
+		s.bgCmdWG.Wait()
+	}()
+
+	// Block cmd-gated on a pending approval before starting it so the watcher
+	// must skip lookups even after its short timeout expires.
+	s.mu.Lock()
+	s.pendingPerms["perm-1"] = pendingPermission{toolCallID: "cmd-gated"}
+	s.mu.Unlock()
+
+	s.handleToolCallStart(&ToolCallUpdate{
+		ToolCallID: "cmd-gated",
+		Name:       "run_command",
+		Kind:       "execute",
+		Status:     "in_progress",
+		RawInput:   json.RawMessage(`{"timeout":20}`),
+	}, "")
+
+	// Wait longer than 20ms + 100ms grace; while approval is pending, zero live lookups may run.
+	time.Sleep(200 * time.Millisecond)
+	fl.mu.Lock()
+	callsWhilePending := fl.liveCalls
+	fl.mu.Unlock()
+	if callsWhilePending != 0 {
+		t.Fatalf("expected 0 live lookups while approval is pending, got %d", callsWhilePending)
+	}
+
+	// Clearing the approval and resetting the command lets the watcher promote cmd-gated.
+	s.mu.Lock()
+	delete(s.pendingPerms, "perm-1")
+	s.resetBgCommandAfterApprovalLocked("cmd-gated")
+	s.mu.Unlock()
+
+	deadline := time.Now().Add(2 * time.Second)
+	promoted := false
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		for _, ev := range events {
+			if ev.Kind == provider.EventToolStart && ev.ItemID == "cmd-gated" {
+				var m map[string]any
+				_ = json.Unmarshal(ev.Meta, &m)
+				if m["meta_update_only"] == true && m["is_background"] == true {
+					promoted = true
+					break
+				}
+			}
+		}
+		mu.Unlock()
+		if promoted {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if !promoted {
+		t.Fatalf("cmd-gated was not promoted after approval resolved")
+	}
+
+	// Verify completion-boundary check catches a command that finished near its
+	// timeout (before liveCheckDelay fires) without needing prose heuristics.
+	s.handleToolCallStart(&ToolCallUpdate{
+		ToolCallID: "cmd-near",
+		Name:       "run_command",
+		Kind:       "execute",
+		Status:     "in_progress",
+		RawInput:   json.RawMessage(`{"timeout":5000}`),
+	}, "")
+	// Simulate elapsed = 4800ms (past completionCheckAfter = 4750ms, before nextCheckAt = 5100ms).
+	s.mu.Lock()
+	p := s.pendingBgCommands["cmd-near"]
+	p.completionCheckAfter = time.Now().Add(-50 * time.Millisecond)
+	p.nextCheckAt = time.Now().Add(10 * time.Second)
+	s.pendingBgCommands["cmd-near"] = p
+	s.mu.Unlock()
+
+	s.handleToolCallComplete(&ToolCallUpdate{
+		ToolCallID: "cmd-near",
+		Name:       "run_command",
+		Kind:       "execute",
+		Status:     "completed",
+	}, "")
+
+	fl.mu.Lock()
+	complCalls := fl.includeComplCalls
+	fl.mu.Unlock()
+	if complCalls != 1 {
+		t.Fatalf("expected 1 completion-boundary lookup for cmd-near, got %d", complCalls)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var sawNearTerminal bool
+	for _, ev := range events {
+		if ev.ItemID == "cmd-near" {
+			if ev.Kind == provider.EventToolComplete {
+				t.Fatalf("cmd-near must emit EventBackgroundTaskTerminal, not EventToolComplete")
+			}
+			if ev.Kind == provider.EventBackgroundTaskTerminal {
+				sawNearTerminal = true
+			}
+		}
+	}
+	if !sawNearTerminal {
+		t.Fatalf("expected EventBackgroundTaskTerminal for cmd-near, events=%+v", events)
 	}
 }

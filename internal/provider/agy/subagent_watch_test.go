@@ -479,6 +479,83 @@ func TestLookupBackgroundCommandsCorrelatesConcurrentCommands(t *testing.T) {
 	}
 }
 
+func TestLookupBackgroundCommandsStatGateSkipsUnchangedDB(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	sessionID := "5d5f2b49-97b2-49e7-a214-7aff00575444"
+
+	db := createTestConvDB(t, appDataDir, sessionID)
+	defer func() { _ = db.Close() }()
+	for _, stmt := range []string{
+		`PRAGMA journal_mode=WAL`,
+		`ALTER TABLE steps ADD COLUMN status INTEGER NOT NULL DEFAULT 3`,
+		`ALTER TABLE steps ADD COLUMN metadata BLOB`,
+		`ALTER TABLE steps ADD COLUMN task_details BLOB`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Step 1: inline running command (no task_details yet).
+	if _, err := db.Exec(
+		`INSERT INTO steps (idx, step_type, status, metadata, task_details, error_details, step_payload) VALUES (1, 132, ?, ?, NULL, X'', X'')`,
+		cortexStepStatusRunning, []byte("\x0a\x07call_bg\x12\x0brun_command"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	flavor := NewFlavor(appDataDir)
+	var opens int
+	flavor.bgLookupOpenHook = func() { opens++ }
+
+	// 1st live call: opens DB, finds nothing, caches negative result for current DB/WAL stat.
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false); len(got) != 0 {
+		t.Fatalf("1st lookup = %+v, want empty", got)
+	}
+	if opens != 1 {
+		t.Fatalf("opens after 1st call = %d, want 1", opens)
+	}
+
+	// 2nd live call with unchanged DB/WAL and same IDs: skipped without opening SQLite.
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false); len(got) != 0 {
+		t.Fatalf("2nd lookup = %+v, want empty", got)
+	}
+	if opens != 1 {
+		t.Fatalf("opens after unchanged 2nd call = %d, want 1", opens)
+	}
+
+	// 3rd live call with an unchecked ID: must open SQLite.
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg", "call_new"}, false); len(got) != 0 {
+		t.Fatalf("3rd lookup = %+v, want empty", got)
+	}
+	if opens != 2 {
+		t.Fatalf("opens after new-ID 3rd call = %d, want 2", opens)
+	}
+
+	// Completion-time check (includeCompleted=true) must always bypass the live cache.
+	if got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, true); len(got) != 0 {
+		t.Fatalf("includeCompleted lookup = %+v, want empty", got)
+	}
+	if opens != 3 {
+		t.Fatalf("opens after includeCompleted call = %d, want 3", opens)
+	}
+
+	// Writing task_details modifies the WAL/DB and invalidates the stat gate.
+	logPath := filepath.Join(appDataDir, "brain", sessionID, ".system_generated", "tasks", "task-1.log")
+	taskBlob := []byte("\x0a." + sessionID + "/task-1\x12|file://" + filepath.ToSlash(logPath) + "\x1a\x04logs")
+	if _, err := db.Exec(`UPDATE steps SET task_details = ? WHERE idx = 1`, taskBlob); err != nil {
+		t.Fatal(err)
+	}
+	got := flavor.LookupBackgroundCommands(context.Background(), sessionID, []string{"call_bg"}, false)
+	if opens != 4 {
+		t.Fatalf("opens after DB write = %d, want 4", opens)
+	}
+	info, ok := got["call_bg"]
+	if !ok || info.TaskID != sessionID+"/task-1" || info.OutputFile != filepath.Clean(logPath) {
+		t.Fatalf("lookup after DB write = %+v, want call_bg with task-1", got)
+	}
+}
+
 func TestWatchSubagentSettlesOnParentSystemStopNoticeAfterLaunch(t *testing.T) {
 	t.Parallel()
 	appDataDir := t.TempDir()

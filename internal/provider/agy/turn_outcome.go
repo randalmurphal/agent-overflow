@@ -262,6 +262,81 @@ func isProtobufMetadataToken(s string) bool {
 	return strings.Contains(s, ".") && (strings.Contains(s, "/") || strings.Count(s, ".") >= 2)
 }
 
+type dbFileSignature struct {
+	dbSize     int64
+	dbModNano  int64
+	walExists  bool
+	walSize    int64
+	walModNano int64
+}
+
+type bgLookupSnapshot struct {
+	sig        dbFileSignature
+	checkedIDs map[string]struct{}
+}
+
+func statConversationDB(dbPath string) (dbFileSignature, bool) {
+	dbInfo, err := os.Stat(dbPath)
+	if err != nil {
+		return dbFileSignature{}, false
+	}
+	sig := dbFileSignature{
+		dbSize:    dbInfo.Size(),
+		dbModNano: dbInfo.ModTime().UnixNano(),
+	}
+	if walInfo, err := os.Stat(dbPath + "-wal"); err == nil {
+		sig.walExists = true
+		sig.walSize = walInfo.Size()
+		sig.walModNano = walInfo.ModTime().UnixNano()
+	}
+	return sig, true
+}
+
+func (f *Flavor) bgLookupCacheHit(sessionID string, sig dbFileSignature, toolCallIDs []string) bool {
+	f.bgLookupMu.Lock()
+	defer f.bgLookupMu.Unlock()
+	snap, ok := f.bgLookupCache[sessionID]
+	if !ok || snap.sig != sig {
+		return false
+	}
+	for _, id := range toolCallIDs {
+		if id == "" {
+			continue
+		}
+		if _, checked := snap.checkedIDs[id]; !checked {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *Flavor) recordBgLookupMiss(sessionID string, sig dbFileSignature, toolCallIDs []string) {
+	f.bgLookupMu.Lock()
+	defer f.bgLookupMu.Unlock()
+	if f.bgLookupCache == nil || len(f.bgLookupCache) >= 64 {
+		f.bgLookupCache = make(map[string]bgLookupSnapshot)
+	}
+	snap, ok := f.bgLookupCache[sessionID]
+	if !ok || snap.sig != sig {
+		snap = bgLookupSnapshot{
+			sig:        sig,
+			checkedIDs: make(map[string]struct{}, len(toolCallIDs)),
+		}
+	}
+	for _, id := range toolCallIDs {
+		if id != "" {
+			snap.checkedIDs[id] = struct{}{}
+		}
+	}
+	f.bgLookupCache[sessionID] = snap
+}
+
+func (f *Flavor) clearBgLookupCache(sessionID string) {
+	f.bgLookupMu.Lock()
+	delete(f.bgLookupCache, sessionID)
+	f.bgLookupMu.Unlock()
+}
+
 // CanLookupBackgroundCommands reports whether this flavor can inspect agy's
 // conversation DB for run_command steps that transitioned to background tasks.
 func (f *Flavor) CanLookupBackgroundCommands(sessionID string) bool {
@@ -281,6 +356,16 @@ func (f *Flavor) LookupBackgroundCommands(_ context.Context, sessionID string, t
 	dbPath, err := conversationDBPath(f.AppDataDir, sessionID)
 	if err != nil {
 		return nil
+	}
+	sig, sigOK := statConversationDB(dbPath)
+	if !sigOK {
+		return nil
+	}
+	if !includeCompleted && f.bgLookupCacheHit(sessionID, sig, toolCallIDs) {
+		return nil
+	}
+	if f.bgLookupOpenHook != nil {
+		f.bgLookupOpenHook()
 	}
 	db, err := openConversationDBReadOnly(dbPath)
 	if err != nil {
@@ -337,8 +422,12 @@ func (f *Flavor) LookupBackgroundCommands(_ context.Context, sessionID string, t
 		delete(remaining, matchedID)
 	}
 	if len(found) == 0 {
+		if !includeCompleted {
+			f.recordBgLookupMiss(sessionID, sig, toolCallIDs)
+		}
 		return nil
 	}
+	f.clearBgLookupCache(sessionID)
 	return found
 }
 

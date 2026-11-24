@@ -40,9 +40,16 @@ type Flavor struct {
 	registeredAOMCP        map[string]bool
 	collidingThirdPartyMCP bool
 
+	// bgLookupMu guards negative stat-based caching of empty live
+	// LookupBackgroundCommands results so unchanged conversation DB/WAL files
+	// avoid redundant SQLite opens.
+	bgLookupMu    sync.Mutex
+	bgLookupCache map[string]bgLookupSnapshot
+
 	// Optional overrides for deterministic unit tests (zero uses defaults).
 	subagentPollInterval     time.Duration
 	subagentDiscoveryTimeout time.Duration
+	bgLookupOpenHook         func()
 }
 
 // NewFlavor constructs an Antigravity ACP flavor bound to appDataDir.

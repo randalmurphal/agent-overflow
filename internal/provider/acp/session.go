@@ -89,6 +89,7 @@ func PlanLiveUpdate(from, to provider.SessionOptions) (LiveUpdate, bool) {
 
 type pendingPermission struct {
 	rpcID       json.RawMessage
+	toolCallID  string
 	optionByKey map[string]string
 	isUserInput bool
 }
@@ -113,15 +114,16 @@ type chunkBuffer struct {
 }
 
 type pendingBackgroundCommand struct {
-	ownerSessionID    string
-	rawToolCallID     string
-	parentToolUseID   string
-	turnID            string
-	startedAt         time.Time
-	initialCheckAfter time.Time
-	nextCheckAt       time.Time
-	retryCount        int
-	interveningOutput bool
+	ownerSessionID       string
+	rawToolCallID        string
+	parentToolUseID      string
+	turnID               string
+	startedAt            time.Time
+	liveCheckDelay       time.Duration
+	completionCheckDelay time.Duration
+	completionCheckAfter time.Time
+	nextCheckAt          time.Time
+	retryCount           int
 }
 
 // Session represents one ACP conversation multiplexed onto a *Conn.
@@ -201,7 +203,6 @@ type Session struct {
 	pendingToolQuestions     map[string]pendingToolQuestion
 	pendingBgCommands        map[string]pendingBackgroundCommand
 	bgCmdWatcherRunning      bool
-	bgCmdForceCheck          bool
 	bgCmdWakeCh              chan struct{}
 	chunk                    chunkBuffer
 	promptWG                 sync.WaitGroup
@@ -1469,6 +1470,7 @@ func (s *Session) RespondToApproval(_ context.Context, resp provider.ApprovalRes
 	}
 	s.mu.Lock()
 	delete(s.pendingPerms, resp.RequestID)
+	s.resetBgCommandAfterApprovalLocked(pending.toolCallID)
 	s.mu.Unlock()
 	if decision == "cancel" && sessionID != "" {
 		_ = s.conn.writeNotification("session/cancel", SessionCancelParams{SessionID: sessionID})
@@ -1525,6 +1527,7 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		}
 		s.mu.Lock()
 		delete(s.pendingPerms, resp.RequestID)
+		s.resetBgCommandAfterApprovalLocked(pendingPermPeek.toolCallID)
 		s.mu.Unlock()
 		return nil
 	}
@@ -1923,7 +1926,6 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.confirmArmedPrompt()
 		s.ensureSpontaneousTurnOpen()
 		s.checkPendingCompaction()
-		s.noteParentOutputForPendingBgCommands()
 		s.bufferChunk(provider.EventThinking, block.Text)
 
 	case "agent_message_chunk":
@@ -1934,7 +1936,6 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.confirmArmedPrompt()
 		s.ensureSpontaneousTurnOpen()
 		s.checkPendingCompaction()
-		s.noteParentOutputForPendingBgCommands()
 		s.mu.Lock()
 		if s.turnHasOutputSchema {
 			s.turnLastAssistantText.WriteString(block.Text)
@@ -2384,18 +2385,20 @@ func (s *Session) handleToolCallStart(tc *ToolCallUpdate, parentToolUseID string
 	var startBgWatch bool
 	if norm.ItemType == "command_execution" && s.flavor.CanLookupBackgroundCommands(ownerSessionID) {
 		now := time.Now()
-		checkAfter := computeBgCommandCheckAfter(now, norm)
+		liveDelay, completionDelay := computeBgCommandDelays(norm)
 		if s.pendingBgCommands == nil {
 			s.pendingBgCommands = make(map[string]pendingBackgroundCommand)
 		}
 		s.pendingBgCommands[tc.ToolCallID] = pendingBackgroundCommand{
-			ownerSessionID:    ownerSessionID,
-			rawToolCallID:     rawLaunchCallID,
-			parentToolUseID:   parentToolUseID,
-			turnID:            turnID,
-			startedAt:         now,
-			initialCheckAfter: checkAfter,
-			nextCheckAt:       checkAfter,
+			ownerSessionID:       ownerSessionID,
+			rawToolCallID:        rawLaunchCallID,
+			parentToolUseID:      parentToolUseID,
+			turnID:               turnID,
+			startedAt:            now,
+			liveCheckDelay:       liveDelay,
+			completionCheckDelay: completionDelay,
+			completionCheckAfter: now.Add(completionDelay),
+			nextCheckAt:          now.Add(liveDelay),
 		}
 		startBgWatch = s.armBgCmdWatcherLocked()
 	}
@@ -2488,19 +2491,53 @@ func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate, parentToolUseID s
 	})
 }
 
-func computeBgCommandCheckAfter(now time.Time, norm NormalizedToolStart) time.Time {
+func computeBgCommandDelays(norm NormalizedToolStart) (liveDelay, completionDelay time.Duration) {
 	if norm.IsBackground {
-		return now.Add(100 * time.Millisecond)
+		return 100 * time.Millisecond, 0
 	}
+	wait := 500 * time.Millisecond
 	if len(norm.Input) > 0 {
 		var in struct {
 			Timeout int `json:"timeout"`
 		}
 		if json.Unmarshal(norm.Input, &in) == nil && in.Timeout > 0 {
-			return now.Add(time.Duration(in.Timeout)*time.Millisecond + 100*time.Millisecond)
+			wait = time.Duration(in.Timeout) * time.Millisecond
 		}
 	}
-	return now.Add(500 * time.Millisecond)
+	liveDelay = wait + 100*time.Millisecond
+	if wait > 250*time.Millisecond {
+		completionDelay = wait - 250*time.Millisecond
+	}
+	return liveDelay, completionDelay
+}
+
+func (s *Session) hasPendingPermForToolLocked(toolCallID string) bool {
+	if toolCallID == "" || len(s.pendingPerms) == 0 {
+		return false
+	}
+	for _, perm := range s.pendingPerms {
+		if perm.toolCallID == toolCallID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Session) resetBgCommandAfterApprovalLocked(toolCallID string) {
+	if toolCallID == "" {
+		return
+	}
+	cur, ok := s.pendingBgCommands[toolCallID]
+	if !ok {
+		return
+	}
+	now := time.Now()
+	cur.startedAt = now
+	cur.nextCheckAt = now.Add(cur.liveCheckDelay)
+	cur.completionCheckAfter = now.Add(cur.completionCheckDelay)
+	cur.retryCount = 0
+	s.pendingBgCommands[toolCallID] = cur
+	s.nudgeBgCmdWatcherLocked()
 }
 
 func (s *Session) armBgCmdWatcherLocked() bool {
@@ -2524,21 +2561,6 @@ func (s *Session) nudgeBgCmdWatcherLocked() {
 	case s.bgCmdWakeCh <- struct{}{}:
 	default:
 	}
-}
-
-func (s *Session) noteParentOutputForPendingBgCommands() {
-	s.mu.Lock()
-	if len(s.pendingBgCommands) > 0 {
-		for id, p := range s.pendingBgCommands {
-			if p.parentToolUseID == "" && !p.interveningOutput {
-				p.interveningOutput = true
-				s.pendingBgCommands[id] = p
-			}
-		}
-		s.bgCmdForceCheck = true
-		s.nudgeBgCmdWatcherLocked()
-	}
-	s.mu.Unlock()
 }
 
 func (s *Session) emitBackgroundPromotion(toolCallID, parentToolUseID, turnID string, info BackgroundCommandInfo) {
@@ -2628,13 +2650,10 @@ func (s *Session) runBgCmdWatcher() {
 		s.mu.Lock()
 		if s.closing.Load() || len(s.pendingBgCommands) == 0 {
 			s.bgCmdWatcherRunning = false
-			s.bgCmdForceCheck = false
 			s.mu.Unlock()
 			return
 		}
 		now := time.Now()
-		force := s.bgCmdForceCheck
-		s.bgCmdForceCheck = false
 
 		type dueEntry struct {
 			toolCallID string
@@ -2643,7 +2662,10 @@ func (s *Session) runBgCmdWatcher() {
 		var due []dueEntry
 		var nextWake time.Time
 		for id, p := range s.pendingBgCommands {
-			if force || !now.Before(p.nextCheckAt) {
+			if s.hasPendingPermForToolLocked(id) {
+				continue
+			}
+			if !now.Before(p.nextCheckAt) {
 				due = append(due, dueEntry{toolCallID: id, pending: p})
 				continue
 			}
@@ -2686,6 +2708,18 @@ func (s *Session) runBgCmdWatcher() {
 					}
 					s.mu.Unlock()
 				}
+			}
+			continue
+		}
+
+		if nextWake.IsZero() {
+			select {
+			case <-s.sessionCtx.Done():
+				s.mu.Lock()
+				s.bgCmdWatcherRunning = false
+				s.mu.Unlock()
+				return
+			case <-s.bgCmdWakeCh:
 			}
 			continue
 		}
@@ -2814,12 +2848,12 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate, parentToolUseID str
 	s.mu.Unlock()
 
 	norm := s.flavor.NormalizeToolComplete(tc, started)
-	// Fallback check for a backgrounded command that finished between watcher
-	// ticks: if WaitMsBeforeAsync elapsed or intervening model output arrived,
-	// check the provider's step state once so it still gets promoted and emits
-	// its completion sibling instead of mutating the old launch row in place.
+	// Fallback check for a backgrounded command that finished near or after
+	// WaitMsBeforeAsync before the watcher ticked: check the provider's step
+	// state once so it still gets promoted and emits its completion sibling
+	// instead of mutating the old launch row in place.
 	if hadPendingBg && started.ItemType == "command_execution" && !started.IsBackground && !norm.IsBackground && !s.closing.Load() {
-		if pendingBg.interveningOutput || !time.Now().Before(pendingBg.initialCheckAfter) {
+		if !time.Now().Before(pendingBg.completionCheckAfter) {
 			if found := s.flavor.LookupBackgroundCommands(s.sessionCtx, pendingBg.ownerSessionID, []string{pendingBg.rawToolCallID}, true); len(found) > 0 {
 				if info, ok := found[pendingBg.rawToolCallID]; ok {
 					started.IsBackground = true
@@ -3446,9 +3480,11 @@ func (s *Session) handlePermissionRequest(rpcID json.RawMessage, req RequestPerm
 		s.mu.Lock()
 		s.pendingPerms[requestID] = pendingPermission{
 			rpcID:       append(json.RawMessage(nil), rpcID...),
+			toolCallID:  req.ToolCall.ToolCallID,
 			optionByKey: cls.OptionByKey,
 			isUserInput: true,
 		}
+		s.nudgeBgCmdWatcherLocked()
 		s.mu.Unlock()
 		s.approvals.Track(requestID, provider.EventUserInputResolved, cls.UserInput.Questions)
 		meta, _ := json.Marshal(cls.UserInput)
@@ -3466,8 +3502,10 @@ func (s *Session) handlePermissionRequest(rpcID json.RawMessage, req RequestPerm
 		s.mu.Lock()
 		s.pendingPerms[requestID] = pendingPermission{
 			rpcID:       append(json.RawMessage(nil), rpcID...),
+			toolCallID:  req.ToolCall.ToolCallID,
 			optionByKey: cls.OptionByKey,
 		}
+		s.nudgeBgCmdWatcherLocked()
 		s.mu.Unlock()
 		s.approvals.Track(requestID, provider.EventApprovalResolved, nil)
 		meta, _ := json.Marshal(cls.Approval)
