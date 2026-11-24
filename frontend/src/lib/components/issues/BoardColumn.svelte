@@ -66,12 +66,22 @@
     if (last >= rows.length - NEAR_END_ROWS) onNearEnd();
   }
 
+  // The engine places its window at the tail until its first scroll
+  // input; a column opens at its top. A column shown again (a compact
+  // screen back) re-reads its viewport.
+  $effect(() => {
+    const ref = listRef;
+    const on = shown;
+    if (!ref) return;
+    untrack(() => {
+      if (on) ref.revalidate();
+      check();
+    });
+  });
   $effect(() => {
     void rows;
     void more;
     void paging;
-    void shown;
-    void listRef;
     untrack(check);
   });
   $effect(() => {

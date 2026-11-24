@@ -4,13 +4,15 @@
 // the empty pane, the compact strip, the picker and the hidden vote.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { describe, expect, it } from 'vitest';
 import type { BoardChoice, BoardView, RowView, Section, SectionPage } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import IssuesPane from './IssuesPane.svelte';
 import { applyTrackerBoardEvent } from '../../stores/trackerBoard.svelte';
-import { hiddenCardFields, lastShownBoard } from '../../stores/issuesPane.svelte';
+import { hiddenCardFields, lastShownBoard, showBoard } from '../../stores/issuesPane.svelte';
 import { openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from '../../stores/layoutMode.svelte';
+import { closeSettingsOverlay, openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -100,6 +102,20 @@ describe('the Issues pane', () => {
     expect(lastShownBoard()).toEqual({ backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '1' });
     view.unmount();
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('sub-1-1'));
+  });
+
+  it('opens the board shown last before the boards are listed, and leaves it once none lists it', async () => {
+    const mocks = install();
+    showBoard({ backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '2' });
+    let list: (rows: BoardChoice[]) => void = () => {};
+    setBindingMock('TrackerBoardChoices', () => new Promise<BoardChoice[]>((resolve) => { list = resolve; }));
+    const view = mount();
+    await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '2', []));
+    list([choice('1', { opens_first: true })]);
+    await waitFor(() => expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '1', []));
+    await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('sub-2-1'));
+    expect(lastShownBoard()?.board).toBe('1');
+    view.unmount();
   });
 
   it('shows a card its type, priority, key, parent, labels, estimate, assignee and days in status', async () => {
@@ -241,6 +257,18 @@ describe('the Issues pane', () => {
     await waitFor(() => expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '2', []));
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('sub-1-1'));
     expect(lastShownBoard()?.board).toBe('2');
+  });
+
+  it('lists the boards again when Settings closes over the pane', async () => {
+    const mocks = install();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    expect(mocks.choices).toHaveBeenCalledTimes(1);
+    openSettingsOverlay();
+    await tick();
+    expect(mocks.choices).toHaveBeenCalledTimes(1);
+    closeSettingsOverlay();
+    await waitFor(() => expect(mocks.choices).toHaveBeenCalledTimes(2));
   });
 
   it('shows one column under compact, picked from a strip, and votes hidden while another screen shows', async () => {
