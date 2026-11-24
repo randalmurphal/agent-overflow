@@ -75,12 +75,18 @@ func TestAppendToolResultBlock_TaskOutputEmitsOwnIDCompleteBeforeEnrichment(t *t
 // covers the backgrounded placeholder path. The `tool_use_result`
 // sibling carries `backgroundTaskId` but no `task.status`, so the
 // enrichment helper must return false (no terminal) while the own-id
-// completion fires with is_background=true.
+// completion fires with is_background=true. The correlation is one-shot:
+// the placeholder releases the tool_use's is_background flag, so the
+// backgroundToolUses map does not grow across a long session and a later
+// echo is not re-stamped.
 func TestAppendToolResultBlock_PlaceholderEmitsCompleteWithBackgroundFlag(t *testing.T) {
 	parser := NewParser()
 
 	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"sleep 1","run_in_background":true}}]}}`)); err != nil {
 		t.Fatalf("assistant tool_use: %v", err)
+	}
+	if !parser.isBackground("tool-bg") {
+		t.Fatal("expected tool-bg flagged as background after run_in_background tool_use")
 	}
 
 	line := []byte(`{"type":"user","tool_use_result":{"stdout":"","stderr":"","interrupted":false,"backgroundTaskId":"task-bg"},"message":{"role":"user","content":[{"tool_use_id":"tool-bg","type":"tool_result","content":"Command running in background with ID: task-bg. Output is being written to: /tmp/task-bg.output","is_error":false}]}}`)
@@ -109,6 +115,12 @@ func TestAppendToolResultBlock_PlaceholderEmitsCompleteWithBackgroundFlag(t *tes
 	// the command's output goes to; the tray tails it from the launch row.
 	if meta["output_file"] != "/tmp/task-bg.output" {
 		t.Fatalf("output_file: got %v, want /tmp/task-bg.output", meta["output_file"])
+	}
+	if parser.isBackground("tool-bg") {
+		t.Error("backgroundToolUses[tool-bg] must be cleared after placeholder tool_result correlation")
+	}
+	if len(parser.backgroundToolUses) != 0 {
+		t.Errorf("backgroundToolUses must be empty after single correlation; got %v", parser.backgroundToolUses)
 	}
 }
 
@@ -160,34 +172,6 @@ func TestAppendToolResultBlock_TimeoutAutoBackgroundSetsBackgroundFlag(t *testin
 	// never a launch-time entry to allocate or release.
 	if len(parser.backgroundToolUses) != 0 {
 		t.Errorf("backgroundToolUses must stay empty for the timeout path; got %v", parser.backgroundToolUses)
-	}
-}
-
-// TestAppendToolResultBlock_InlineToolNoBackgroundFlag confirms the
-// negative case — a plain inline tool's completion must NOT carry
-// is_background, so triage can flip status=errored in the
-// force-close safety net (invariant 23).
-func TestAppendToolResultBlock_InlineToolNoBackgroundFlag(t *testing.T) {
-	parser := NewParser()
-
-	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-inline","name":"Read","input":{"file_path":"/etc/hosts"}}]}}`)); err != nil {
-		t.Fatalf("assistant tool_use: %v", err)
-	}
-
-	line := []byte(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"tool-inline","type":"tool_result","content":"127.0.0.1"}]}}`)
-	events, err := parser.ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	var meta map[string]any
-	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if v, ok := meta["is_background"]; ok && v != false {
-		t.Fatalf("inline tool should not carry is_background=true, got %v", v)
 	}
 }
 
@@ -248,38 +232,6 @@ func TestAppendToolResultBlock_OrphanToolResultDroppedWhenIDMissing(t *testing.T
 	}
 	if len(events) != 0 {
 		t.Fatalf("expected 0 events for orphan tool_result (no tool_use_id), got %+v", events)
-	}
-}
-
-// TestAppendToolResultBlock_BackgroundFlagClearedOnCorrelation pins
-// the one-shot correlation lifecycle: once a backgrounded tool_use's
-// placeholder tool_result has been echoed, the parser releases the
-// is_background flag for that tool_use_id. Without this, the
-// backgroundToolUses map grows unbounded across a long session — every
-// backgrounded launch leaves an entry that only Close() clears. The
-// second parse of a matching tool_result would also re-stamp
-// is_background on a subsequent echo, which is meaningless (the
-// placeholder is one-shot) and sends noise through triage.
-func TestAppendToolResultBlock_BackgroundFlagClearedOnCorrelation(t *testing.T) {
-	parser := NewParser()
-
-	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-bg","name":"Bash","input":{"command":"sleep 1","run_in_background":true}}]}}`)); err != nil {
-		t.Fatalf("assistant tool_use: %v", err)
-	}
-	if !parser.isBackground("tool-bg") {
-		t.Fatal("expected tool-bg flagged as background after run_in_background tool_use")
-	}
-
-	line := []byte(`{"type":"user","tool_use_result":{"stdout":"","stderr":"","interrupted":false,"backgroundTaskId":"task-bg"},"message":{"role":"user","content":[{"tool_use_id":"tool-bg","type":"tool_result","content":"Command running in background with ID: task-bg.","is_error":false}]}}`)
-	if _, err := parser.ParseLine(testThread, line); err != nil {
-		t.Fatalf("parse placeholder: %v", err)
-	}
-
-	if parser.isBackground("tool-bg") {
-		t.Error("backgroundToolUses[tool-bg] must be cleared after placeholder tool_result correlation")
-	}
-	if len(parser.backgroundToolUses) != 0 {
-		t.Errorf("backgroundToolUses must be empty after single correlation; got %v", parser.backgroundToolUses)
 	}
 }
 

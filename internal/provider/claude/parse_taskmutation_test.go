@@ -23,7 +23,7 @@ func TestParseAssistantTaskCreateNoEventUntilResult(t *testing.T) {
 		t.Fatalf("parse use: %v", err)
 	}
 	for _, e := range events {
-		if e.Kind == provider.EventToolStart || e.Kind == provider.EventTaskCreate || e.Kind == provider.EventTodoUpdate {
+		if e.Kind == provider.EventToolStart || e.Kind == provider.EventTaskCreate || e.Kind == provider.EventTaskUpdate || e.Kind == provider.EventTodoUpdate {
 			t.Fatalf("expected no tool/task/todo event on TaskCreate use; got %+v", e)
 		}
 	}
@@ -72,99 +72,59 @@ func TestParseTaskCreateEmitsPerTaskEvent(t *testing.T) {
 	}
 }
 
-// TestParseTaskUpdateEmitsStatus covers the status-transition emit:
-// a TaskUpdate with status:"in_progress" produces an EventTaskUpdate
-// with the normalised camelCase status.
-func TestParseTaskUpdateEmitsStatus(t *testing.T) {
-	p := NewParser()
-	seedTaskCreateRoundtrip(t, p, "tu-create", "1", "Original subject")
+// TestParseTaskUpdateEmitsMutation covers each TaskUpdate emit. The
+// status row normalises to camelCase; the owner row leaves Status empty
+// (meaning "leave unchanged" — triage applies the partial mutation); the
+// terminal `deleted` status sets Deleted. No row emits a generic
+// EventToolComplete: that is the tool-lifecycle carve-out for
+// TaskCreate/TaskUpdate.
+func TestParseTaskUpdateEmitsMutation(t *testing.T) {
+	cases := []struct {
+		name, input, result string
+		want                provider.TaskUpdateMeta
+	}{
+		{"status", `{"taskId":"1","status":"in_progress"}`,
+			`{"success":true,"taskId":"1","updatedFields":["status"],"statusChange":{"from":"pending","to":"in_progress"}}`,
+			provider.TaskUpdateMeta{TaskID: "1", Status: "inProgress"}},
+		{"owner only", `{"taskId":"1","owner":"helper-agent"}`,
+			`{"success":true,"taskId":"1","updatedFields":["owner"]}`,
+			provider.TaskUpdateMeta{TaskID: "1", Owner: "helper-agent"}},
+		{"deleted", `{"taskId":"1","status":"deleted"}`,
+			`{"success":true,"taskId":"1","updatedFields":["status"],"statusChange":{"from":"pending","to":"deleted"}}`,
+			provider.TaskUpdateMeta{TaskID: "1", Deleted: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewParser()
+			seedTaskCreateRoundtrip(t, p, "tu-create", "1", "Original subject")
 
-	useLine := []byte(`{"type":"assistant","message":{"id":"msg-2","role":"assistant","content":[` +
-		`{"type":"tool_use","id":"tu-update","name":"TaskUpdate","input":{"taskId":"1","status":"in_progress"}}` +
-		`]}}`)
-	if _, err := p.ParseLine(testThread, useLine); err != nil {
-		t.Fatalf("parse update use: %v", err)
-	}
-	resultLine := []byte(`{"type":"user","message":{"role":"user","content":[` +
-		`{"type":"tool_result","tool_use_id":"tu-update","content":"Updated task #1 status"}` +
-		`]},"tool_use_result":{"success":true,"taskId":"1","updatedFields":["status"],"statusChange":{"from":"pending","to":"in_progress"}}}`)
-	events, err := p.ParseLine(testThread, resultLine)
-	if err != nil {
-		t.Fatalf("parse update result: %v", err)
-	}
+			useLine := []byte(`{"type":"assistant","message":{"id":"msg-2","role":"assistant","content":[` +
+				`{"type":"tool_use","id":"tu-update","name":"TaskUpdate","input":` + tc.input + `}` +
+				`]}}`)
+			if _, err := p.ParseLine(testThread, useLine); err != nil {
+				t.Fatalf("parse update use: %v", err)
+			}
+			resultLine := []byte(`{"type":"user","message":{"role":"user","content":[` +
+				`{"type":"tool_result","tool_use_id":"tu-update","content":"Updated task #1"}` +
+				`]},"tool_use_result":` + tc.result + `}`)
+			events, err := p.ParseLine(testThread, resultLine)
+			if err != nil {
+				t.Fatalf("parse update result: %v", err)
+			}
 
-	evt := pickEvent(t, events, provider.EventTaskUpdate)
-	var meta provider.TaskUpdateMeta
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta.TaskID != "1" || meta.Status != "inProgress" {
-		t.Errorf("meta: got %+v, want {TaskID:1 Status:inProgress}", meta)
-	}
-}
-
-// TestParseTaskUpdateEmitsOwnerOnly covers the owner-claim emit:
-// TaskUpdate({owner}) produces an EventTaskUpdate with the owner set
-// and Status empty (meaning "leave unchanged" — triage applies the
-// partial mutation).
-func TestParseTaskUpdateEmitsOwnerOnly(t *testing.T) {
-	p := NewParser()
-	seedTaskCreateRoundtrip(t, p, "tu-create", "1", "Shared task")
-
-	useLine := []byte(`{"type":"assistant","message":{"id":"msg-2","role":"assistant","content":[` +
-		`{"type":"tool_use","id":"tu-update","name":"TaskUpdate","input":{"taskId":"1","owner":"helper-agent"}}` +
-		`]}}`)
-	if _, err := p.ParseLine(testThread, useLine); err != nil {
-		t.Fatalf("parse update use: %v", err)
-	}
-	resultLine := []byte(`{"type":"user","message":{"role":"user","content":[` +
-		`{"type":"tool_result","tool_use_id":"tu-update","content":"Updated task #1 owner"}` +
-		`]},"tool_use_result":{"success":true,"taskId":"1","updatedFields":["owner"]}}`)
-	events, err := p.ParseLine(testThread, resultLine)
-	if err != nil {
-		t.Fatalf("parse update result: %v", err)
-	}
-
-	evt := pickEvent(t, events, provider.EventTaskUpdate)
-	var meta provider.TaskUpdateMeta
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if meta.Owner != "helper-agent" {
-		t.Errorf("owner: got %q, want helper-agent", meta.Owner)
-	}
-	if meta.Status != "" {
-		t.Errorf("status: got %q, want empty (leave unchanged)", meta.Status)
-	}
-}
-
-// TestParseTaskUpdateEmitsDeleted covers the terminal `deleted` status:
-// the parser emits EventTaskUpdate with Deleted:true.
-func TestParseTaskUpdateEmitsDeleted(t *testing.T) {
-	p := NewParser()
-	seedTaskCreateRoundtrip(t, p, "tu-create", "1", "Doomed task")
-
-	useLine := []byte(`{"type":"assistant","message":{"id":"msg-2","role":"assistant","content":[` +
-		`{"type":"tool_use","id":"tu-update","name":"TaskUpdate","input":{"taskId":"1","status":"deleted"}}` +
-		`]}}`)
-	if _, err := p.ParseLine(testThread, useLine); err != nil {
-		t.Fatalf("parse update use: %v", err)
-	}
-	resultLine := []byte(`{"type":"user","message":{"role":"user","content":[` +
-		`{"type":"tool_result","tool_use_id":"tu-update","content":"Updated task #1 status"}` +
-		`]},"tool_use_result":{"success":true,"taskId":"1","updatedFields":["status"],"statusChange":{"from":"pending","to":"deleted"}}}`)
-	events, err := p.ParseLine(testThread, resultLine)
-	if err != nil {
-		t.Fatalf("parse update result: %v", err)
-	}
-
-	evt := pickEvent(t, events, provider.EventTaskUpdate)
-	var meta provider.TaskUpdateMeta
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
-	}
-	if !meta.Deleted {
-		t.Errorf("Deleted: got false, want true")
+			var meta provider.TaskUpdateMeta
+			if err := json.Unmarshal(pickEvent(t, events, provider.EventTaskUpdate).Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if meta != tc.want {
+				t.Errorf("meta: got %+v, want %+v", meta, tc.want)
+			}
+			for _, e := range events {
+				if e.Kind == provider.EventToolComplete && e.ItemID == "tu-update" {
+					t.Errorf("TaskUpdate result must not emit EventToolComplete; got %+v", e)
+				}
+			}
+		})
 	}
 }
 
@@ -190,33 +150,6 @@ func TestParseTaskUpdateFailureSkipsEmit(t *testing.T) {
 	for _, e := range events {
 		if e.Kind == provider.EventTaskUpdate {
 			t.Errorf("expected no event on failed update, got %+v", e)
-		}
-	}
-}
-
-// TestParseTaskMutationResultsSuppressGenericCompletion covers the
-// universal tool-lifecycle invariant carve-out: TaskCreate/TaskUpdate
-// must not emit a generic EventToolComplete.
-func TestParseTaskMutationResultsSuppressGenericCompletion(t *testing.T) {
-	p := NewParser()
-	seedTaskCreateRoundtrip(t, p, "tu-create", "1", "Some task")
-
-	useLine := []byte(`{"type":"assistant","message":{"id":"msg-2","role":"assistant","content":[` +
-		`{"type":"tool_use","id":"tu-update","name":"TaskUpdate","input":{"taskId":"1","status":"in_progress"}}` +
-		`]}}`)
-	if _, err := p.ParseLine(testThread, useLine); err != nil {
-		t.Fatalf("use: %v", err)
-	}
-	resultLine := []byte(`{"type":"user","message":{"role":"user","content":[` +
-		`{"type":"tool_result","tool_use_id":"tu-update","content":"Updated"}` +
-		`]},"tool_use_result":{"success":true,"taskId":"1"}}`)
-	events, err := p.ParseLine(testThread, resultLine)
-	if err != nil {
-		t.Fatalf("result: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventToolComplete && e.ItemID == "tu-update" {
-			t.Errorf("TaskUpdate result must not emit EventToolComplete; got %+v", e)
 		}
 	}
 }
@@ -252,25 +185,6 @@ func TestParseTaskListAndTaskGetAreRegularToolRows(t *testing.T) {
 				t.Errorf("%s must emit EventToolStart, got %+v", tc.toolName, events)
 			}
 		})
-	}
-}
-
-// TestParseTaskCreateWithoutResultEmitsNothing pins the "wait for
-// result" guarantee: an assistant TaskCreate with no following
-// tool_result must not produce any per-task event.
-func TestParseTaskCreateWithoutResultEmitsNothing(t *testing.T) {
-	p := NewParser()
-	useLine := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[` +
-		`{"type":"tool_use","id":"tu-1","name":"TaskCreate","input":{"subject":"never confirmed"}}` +
-		`]}}`)
-	events, err := p.ParseLine(testThread, useLine)
-	if err != nil {
-		t.Fatalf("parse use: %v", err)
-	}
-	for _, e := range events {
-		if e.Kind == provider.EventTaskCreate || e.Kind == provider.EventTaskUpdate {
-			t.Errorf("expected no per-task event before tool_result; got %+v", e)
-		}
 	}
 }
 

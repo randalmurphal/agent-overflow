@@ -37,30 +37,32 @@ func findRebindStart(t *testing.T, events []provider.ProviderEvent, itemID strin
 	return nil
 }
 
-// TestReplay_LocalAgentAsyncResume_StampsTranscriptRoot pins the stamp
-// that names where a resumed agent's rows actually live. FAILS pre-fix:
-// nothing carried the original launch id past the rebind, so triage read
-// the carrier as the resumed round's transcript scope.
-func TestReplay_LocalAgentAsyncResume_StampsTranscriptRoot(t *testing.T) {
+// TestReplay_LocalAgentAsyncResume_TranscriptRootAndResumePrompt pins
+// the two facts the rebind carries. The stamp names where a resumed
+// agent's rows actually live. FAILS pre-fix: nothing carried the original
+// launch id past the rebind, so triage read the carrier as the resumed
+// round's transcript scope. The prompt row says WHAT the model asked the
+// resumed agent to do. The rebind `task_started` is the only envelope
+// carrying it (`prompt` == the SendMessage `message` text). FAILS
+// pre-fix: no row represented the resume message at all, so the resumed
+// round opened with the agent's answer and no question.
+//
+// TestReplay_LocalAgentAsyncResume pins the carrier's resumes_tool_use_id,
+// the PREVIOUS binding; transcript_root_id is the launch every round's
+// rows are parented to, and both must survive.
+func TestReplay_LocalAgentAsyncResume_TranscriptRootAndResumePrompt(t *testing.T) {
 	events := replayFixture(t, fixtureLocalAgentAsyncResume)
 
 	const (
 		originalLaunchID = "toolu_01EHRwHNH98jqRKdFVcpmLtH"
 		carrierID        = "toolu_01HNzp6MQbMMcTmoY7Yy1wdw"
+		wantPrompt       = "Apply the reviewer-synthesized single-forward-pass rework to subagentGrouping.ts and report back."
 	)
 
 	rebindMeta := findRebindStart(t, events, carrierID)
 	if rebindMeta["transcript_root_id"] != originalLaunchID {
 		t.Fatalf("rebind meta.transcript_root_id = %v, want %s (the original launch)",
 			rebindMeta["transcript_root_id"], originalLaunchID)
-	}
-	// The two stamps answer different questions and must both survive:
-	// resumes_tool_use_id is the PREVIOUS binding (a round-3 carrier
-	// names round 2's), transcript_root_id is the launch every round's
-	// rows are parented to.
-	if rebindMeta["resumes_tool_use_id"] != originalLaunchID {
-		t.Fatalf("rebind meta.resumes_tool_use_id = %v, want %s",
-			rebindMeta["resumes_tool_use_id"], originalLaunchID)
 	}
 
 	// Round 1's own meta-only task_started is not a rebind and must stay
@@ -70,21 +72,6 @@ func TestReplay_LocalAgentAsyncResume_StampsTranscriptRoot(t *testing.T) {
 	if v, ok := round1Meta["transcript_root_id"]; ok {
 		t.Fatalf("round-1 launch stamped transcript_root_id = %v", v)
 	}
-}
-
-// TestReplay_LocalAgentAsyncResume_EmitsResumePrompt pins the row that
-// says WHAT the model asked the resumed agent to do. The rebind
-// `task_started` is the only envelope carrying it (`prompt` == the
-// SendMessage `message` text). FAILS pre-fix: no row represented the
-// resume message at all, so the resumed round opened with the agent's
-// answer and no question.
-func TestReplay_LocalAgentAsyncResume_EmitsResumePrompt(t *testing.T) {
-	events := replayFixture(t, fixtureLocalAgentAsyncResume)
-
-	const (
-		carrierID  = "toolu_01HNzp6MQbMMcTmoY7Yy1wdw"
-		wantPrompt = "Apply the reviewer-synthesized single-forward-pass rework to subagentGrouping.ts and report back."
-	)
 
 	prompts := filterKinds(events, provider.EventUserText)
 	if len(prompts) != 1 {
@@ -117,7 +104,7 @@ func TestReplay_LocalAgentAsyncResume_EmitsResumePrompt(t *testing.T) {
 		// The root rides the row so triage places it without a store
 		// read — and without depending on the carrier's own row having
 		// been written first.
-		"transcript_root_id": "toolu_01EHRwHNH98jqRKdFVcpmLtH",
+		"transcript_root_id": originalLaunchID,
 	} {
 		if meta[key] != want {
 			t.Fatalf("resume prompt meta[%q] = %v, want %v", key, meta[key], want)

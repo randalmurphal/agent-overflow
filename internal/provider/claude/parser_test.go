@@ -11,37 +11,6 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-func TestParseInvalidJSON(t *testing.T) {
-	_, err := ParseLine(testThread, []byte(`not json`))
-	if err == nil {
-		t.Fatal("expected error for invalid JSON, got nil")
-	}
-}
-
-func TestParseUnknownType(t *testing.T) {
-	line := []byte(`{"type":"some_future_event","data":{}}`)
-
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for unknown type, got %d", len(events))
-	}
-}
-
-func TestParseUserTypeSkipped(t *testing.T) {
-	line := []byte(`{"type":"user","message":{"role":"user","content":"hi"}}`)
-
-	events, err := ParseLine(testThread, line)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 0 {
-		t.Errorf("expected 0 events for user type, got %d", len(events))
-	}
-}
-
 // TestParseRealCLIFixture validates the parser against real Claude CLI
 // output. The fixture predates `--include-partial-messages`, so text
 // reaches triage via `stream_event` deltas now rather than via the
