@@ -73,7 +73,7 @@ describe('<ReadAloudButton>', () => {
     expect(device.playbacks[0].from).toBe(0);
   });
 
-  it('shows the cluster in order while reading, back disabled while the first clip is fetched', async () => {
+  it('shows the cluster in order while reading, back disabled while the first clip is fetched, then moves back 10 seconds, to the next and to the previous section through an OpenAI voice', async () => {
     const v = view();
     await readOpenAI(null);
     expect(cluster(v)).toEqual([
@@ -88,15 +88,14 @@ describe('<ReadAloudButton>', () => {
     expect(button(v, '-next').disabled).toBe(false);
     expect(button(v, '-previous').getAttribute('aria-label')).toBe('Previous section');
     expect(button(v, '-next').getAttribute('aria-label')).toBe('Next section');
-  });
 
-  it('moves back 10 seconds, to the next and to the previous section through an OpenAI voice', async () => {
-    const v = view();
-    await readOpenAI(0);
+    // The first clip starts playing.
+    const playback = clips.playbacks[0];
+    playback.onPiece(0);
+    await settle();
     const back = button(v, '-back');
     expect(back.disabled).toBe(false);
     expect(back.getAttribute('aria-label')).toBe('Back 10 seconds');
-    const playback = clips.playbacks[0];
     await fireEvent.click(back);
     expect(playback.calls).toEqual(['seek 10']);
 

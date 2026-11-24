@@ -49,6 +49,8 @@ describe('<ProviderStatusBanner>', () => {
     const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
 
     expect(getByTestId('provider-status-banner').textContent).toContain('Claude CLI not found');
+    // The not-found event carries an actionUrl, so the Install button renders.
+    expect(getByTestId('provider-status-action').textContent).toMatch(/Install Claude CLI/);
   });
 
   it('renders a session-error banner from pane.generalError and can dismiss it', async () => {
@@ -72,32 +74,22 @@ describe('<ProviderStatusBanner>', () => {
     expect(queryByText('Retry')).toBeNull();
   });
 
-  it('reconnects through the binding from the session banner', async () => {
+  // A successful Reconnect must also pull the backend's current state into
+  // the pane. The backend's CleanupThread synthesizes a truncated
+  // provider:turn_completed, but events that fire during the round-trip can
+  // race the pane's reactive state — without the refresh, a user who had a
+  // stuck working indicator before reconnecting can still see stale
+  // activeTurn / streaming flags afterward.
+  it('reconnects through the binding from the session banner, then refreshes pane state from backend', async () => {
     const pane = await buildPane();
     pane.setSessionError('session exploded');
     const reconnect = setBindingMock('ReconnectSession', async () => {});
-
-    const { getByText } = render(ProviderStatusBanner, { props: { pane } });
-    await fireEvent.click(getByText('Reconnect'));
-
-    expect(reconnect).toHaveBeenCalledWith('thread-1');
-  });
-
-  // Regression: a successful Reconnect must also pull the backend's
-  // current state into the pane. The backend's CleanupThread synthesizes
-  // a truncated provider:turn_completed, but events that fire during the
-  // round-trip can race the pane's reactive state — without the refresh,
-  // a user who had a stuck working indicator before reconnecting can
-  // still see stale activeTurn / streaming flags afterward.
-  it('refreshes pane state from backend after a successful reconnect', async () => {
-    const pane = await buildPane();
-    pane.setSessionError('session exploded');
-    setBindingMock('ReconnectSession', async () => {});
     const refresh = vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue();
 
     const { getByText } = render(ProviderStatusBanner, { props: { pane } });
     await fireEvent.click(getByText('Reconnect'));
 
+    expect(reconnect).toHaveBeenCalledWith('thread-1');
     await waitFor(() => {
       expect(refresh).toHaveBeenCalledOnce();
     });
@@ -130,14 +122,6 @@ describe('<ProviderStatusBanner>', () => {
     const { queryByTestId, getByTestId } = render(ProviderStatusBanner, { props: { pane } });
     expect(getByTestId('provider-status-banner').textContent).toContain('Claude CLI not found');
     expect(queryByTestId('provider-status-action')).toBeNull();
-  });
-
-  it('still renders the Install button when actionUrl is present', async () => {
-    const pane = await buildPane();
-    emitWailsEvent('provider:status', statusEvent());
-
-    const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
-    expect(getByTestId('provider-status-action').textContent).toMatch(/Install Claude CLI/);
   });
 
   it('rechecks the matching provider account from unauthenticated banners', async () => {
@@ -206,15 +190,25 @@ describe('<ProviderStatusBanner>', () => {
 
     it('renders both versions with a restart action', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      const reconnect = setBindingMock('ReconnectSession', async () => {});
+      vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue();
       emitStale();
 
-      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
       const banner = getByTestId('provider-status-banner');
 
       expect(banner.dataset.status).toBe('binary_stale');
       expect(banner.textContent).toContain('Claude CLI updated (2.1.219 → 2.1.257)');
       expect(banner.textContent).toContain('Restart the session to use it');
       expect(getByTestId('provider-status-restart').textContent).toContain('Restart session');
+      // No install / recheck affordance leaks onto this row: the only thing
+      // to do about a stale binary is restart the session.
+      expect(queryByTestId('provider-status-recheck')).toBeNull();
+      expect(queryByTestId('provider-status-action')).toBeNull();
+
+      // Restart goes through the existing reconnect binding.
+      await fireEvent.click(getByTestId('provider-status-restart'));
+      expect(reconnect).toHaveBeenCalledWith('thread-1');
     });
 
     // The provider comes off the event, so a Codex session never reads
@@ -251,29 +245,6 @@ describe('<ProviderStatusBanner>', () => {
       expect(text).not.toContain('(');
     });
 
-    it('restarts the session through the existing reconnect binding', async () => {
-      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
-      const reconnect = setBindingMock('ReconnectSession', async () => {});
-      vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue();
-      emitStale();
-
-      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
-      await fireEvent.click(getByTestId('provider-status-restart'));
-
-      expect(reconnect).toHaveBeenCalledWith('thread-1');
-    });
-
-    // No install / recheck affordance leaks onto this row: the only thing
-    // to do about a stale binary is restart the session.
-    it('offers no other action', async () => {
-      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
-      emitStale();
-
-      const { queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
-      expect(queryByTestId('provider-status-recheck')).toBeNull();
-      expect(queryByTestId('provider-status-action')).toBeNull();
-    });
-
     it('dismisses through the backend and drops the row', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
       const dismiss = setBindingMock('DismissSessionBanner', async () => {});
@@ -304,6 +275,8 @@ describe('<ProviderStatusBanner>', () => {
 
     it('renders its own copy with a restart action', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      const reconnect = setBindingMock('ReconnectSession', async () => {});
+      vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue();
       emitPromptStale();
 
       const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
@@ -311,15 +284,8 @@ describe('<ProviderStatusBanner>', () => {
       expect(banner.dataset.kind).toBe('prompt_stale');
       expect(banner.textContent).toContain('System prompt changed. Restart the session to use it.');
       expect(getByTestId('provider-status-restart').textContent).toContain('Restart session');
-    });
 
-    it('restarts the session through the existing reconnect binding', async () => {
-      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
-      const reconnect = setBindingMock('ReconnectSession', async () => {});
-      vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue();
-      emitPromptStale();
-
-      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      // Restart goes through the existing reconnect binding.
       await fireEvent.click(getByTestId('provider-status-restart'));
       expect(reconnect).toHaveBeenCalledWith('thread-1');
     });

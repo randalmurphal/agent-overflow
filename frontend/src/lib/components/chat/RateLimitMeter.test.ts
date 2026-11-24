@@ -226,82 +226,48 @@ describe('<RateLimitMeter>', () => {
     expect(circles.length).toBe(1);
   });
 
-  it('renders the progress arc when an entry exists in the store', () => {
+  // Threshold boundary cases pin the exact `>` semantics of the
+  // palette: 80 is still subtle, 81 is warning; 95 is still warning,
+  // 96 is error. Off-by-one mistakes in this palette are easy to ship
+  // and visually invisible until the wire happens to land right on a
+  // boundary. Every row also proves an entry in the store renders the
+  // progress arc beside the background circle.
+  it.each([
+    [80, 'stroke-fg-subtle'],
+    [81, 'stroke-warning'],
+    [95, 'stroke-warning'],
+    [96, 'stroke-error'],
+  ])('draws the progress arc at %i% used with %s', (usedPercent, stroke) => {
     seedProviderEntry('claude', {
-      limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600,
+      limitId: 'five_hour', limitName: '5h', usedPercent, windowMins: 300, resetsAt: NOW_SEC + 3600,
     });
     const { container } = render(RateLimitMeter, {
       props: { windowMins: 300, provider: 'claude' as const },
     });
     const circles = container.querySelectorAll('svg circle');
     expect(circles.length).toBe(2);
+    expect(circles[1].getAttribute('class')).toContain(stroke);
   });
 
-  // Threshold boundary cases pin the exact `>` semantics of the
-  // palette: 80 is still subtle, 81 is warning; 95 is still warning,
-  // 96 is error. Off-by-one mistakes in this palette are easy to ship
-  // and visually invisible until the wire happens to land right on a
-  // boundary.
-  it('keeps the subtle stroke at exactly 80% used (boundary is exclusive)', () => {
+  // Out-of-range or non-numeric values must not break the SVG dasharray
+  // math: no negative dashoffset (which would render as a longer-than-full
+  // arc on some browsers) and no NaN. 150 clamps to 100% (error color);
+  // NaN reads as 0% (an empty ring).
+  it.each([
+    [150, 'stroke-error'],
+    [NaN, 'stroke-fg-subtle'],
+  ])('clamps usedPercent %s to [0, 100] for ring fill so a wire glitch can\'t draw past the circumference', (usedPercent, stroke) => {
     seedProviderEntry('claude', {
-      limitId: 'five_hour', limitName: '5h', usedPercent: 80, windowMins: 300, resetsAt: NOW_SEC + 3600,
-    });
-    const { container } = render(RateLimitMeter, {
-      props: { windowMins: 300, provider: 'claude' as const },
-    });
-    const arc = container.querySelectorAll('svg circle')[1];
-    expect(arc.getAttribute('class')).toContain('stroke-fg-subtle');
-  });
-
-  it('flips to warning at 81% used', () => {
-    seedProviderEntry('claude', {
-      limitId: 'five_hour', limitName: '5h', usedPercent: 81, windowMins: 300, resetsAt: NOW_SEC + 3600,
-    });
-    const { container } = render(RateLimitMeter, {
-      props: { windowMins: 300, provider: 'claude' as const },
-    });
-    const arc = container.querySelectorAll('svg circle')[1];
-    expect(arc.getAttribute('class')).toContain('stroke-warning');
-  });
-
-  it('keeps the warning stroke at exactly 95% used (boundary is exclusive)', () => {
-    seedProviderEntry('claude', {
-      limitId: 'five_hour', limitName: '5h', usedPercent: 95, windowMins: 300, resetsAt: NOW_SEC + 3600,
-    });
-    const { container } = render(RateLimitMeter, {
-      props: { windowMins: 300, provider: 'claude' as const },
-    });
-    const arc = container.querySelectorAll('svg circle')[1];
-    expect(arc.getAttribute('class')).toContain('stroke-warning');
-  });
-
-  it('flips to error at 96% used', () => {
-    seedProviderEntry('claude', {
-      limitId: 'five_hour', limitName: '5h', usedPercent: 96, windowMins: 300, resetsAt: NOW_SEC + 3600,
-    });
-    const { container } = render(RateLimitMeter, {
-      props: { windowMins: 300, provider: 'claude' as const },
-    });
-    const arc = container.querySelectorAll('svg circle')[1];
-    expect(arc.getAttribute('class')).toContain('stroke-error');
-  });
-
-  it('clamps usedPercent to [0, 100] for ring fill so a wire glitch can\'t draw past the circumference', () => {
-    seedProviderEntry('claude', {
-      // Wildly out-of-range values shouldn't break the SVG dasharray
-      // math or the clamp. Neither -50 nor 150 should produce a
-      // negative dashoffset (which would render as a longer-than-full
-      // arc on some browsers).
-      limitId: 'five_hour', limitName: '5h', usedPercent: 150, windowMins: 300, resetsAt: NOW_SEC + 3600,
+      limitId: 'five_hour', limitName: '5h', usedPercent, windowMins: 300, resetsAt: NOW_SEC + 3600,
     });
     const { container } = render(RateLimitMeter, {
       props: { windowMins: 300, provider: 'claude' as const },
     });
     const arc = container.querySelectorAll('svg circle')[1];
     const dashOffset = Number(arc.getAttribute('stroke-dashoffset'));
+    expect(Number.isFinite(dashOffset)).toBe(true);
     expect(dashOffset).toBeGreaterThanOrEqual(0);
-    // Error color at 100% (clamped from 150).
-    expect(arc.getAttribute('class')).toContain('stroke-error');
+    expect(arc.getAttribute('class')).toContain(stroke);
   });
 
   it('renders the plan label in the popover when provider + accountInfo are populated', async () => {
@@ -516,19 +482,5 @@ describe('<RateLimitMeter>', () => {
     });
     expect(container.querySelectorAll('svg circle').length).toBe(1);
     expect(getByRole('button').getAttribute('aria-label')).toBe('7-day limit: awaiting first update');
-  });
-
-  it('treats NaN usedPercent as 0% so a non-numeric wire payload renders an empty ring', () => {
-    seedProviderEntry('claude', {
-      limitId: 'five_hour', limitName: '5h', usedPercent: NaN, windowMins: 300, resetsAt: NOW_SEC + 3600,
-    });
-    const { container } = render(RateLimitMeter, {
-      props: { windowMins: 300, provider: 'claude' as const },
-    });
-    const arc = container.querySelectorAll('svg circle')[1];
-    const dashOffset = Number(arc.getAttribute('stroke-dashoffset'));
-    expect(Number.isFinite(dashOffset)).toBe(true);
-    // 0% → full circumference dashoffset = empty arc.
-    expect(arc.getAttribute('class')).toContain('stroke-fg-subtle');
   });
 });
