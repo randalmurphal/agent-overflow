@@ -92,7 +92,6 @@ echo "the only report"
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'report once');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
@@ -185,6 +184,8 @@ echo "the only report"
           afterTurns: 'silent',
         }),
       );
+      // After the provider's exit, the send alone does not reach a session
+      // here; this start does.
       await harness.startSession(thread);
       await harness.send(thread, 'what did you miss?');
       const status = await awaitToolAnswer<{ wakes?: (WakeRow & { last_output?: string; undelivered?: string })[] }>(
@@ -303,7 +304,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'watch tick');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
@@ -485,7 +485,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'report once');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);

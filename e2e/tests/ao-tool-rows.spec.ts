@@ -207,7 +207,6 @@ for (const provider of ['claude', 'codex'] as const) {
       afterTurns: 'silent',
     }));
 
-    await harness.startSession(leadId);
     await harness.send(leadId, 'send the probe');
     const probeSend = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', cwd: lead.path });
     expect(probeSend.isError, probeSend.text).toBe(false);

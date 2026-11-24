@@ -293,7 +293,6 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
       ],
       afterTurns: 'repeatLast',
     }));
-    await peer.startSession(caller);
     await peer.send(caller, 'Start all three on the other computer.');
     for (const run of ['ends', 'stays open', 'is nudged']) {
       const answer = await awaitToolAnswer<{ thread_id: string }>(peer, { tool: 'thread_spawn', cwd: callerCwd, timeoutMs: TURN_TIMEOUT_MS });

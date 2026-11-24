@@ -84,7 +84,6 @@ test("claude: settled workers and asks list under Past, page, open beside and sh
   // The asked thread runs a turn first, so its copy has a session to be
   // cut from; the copy runs in the same workspace and holds its answer.
   await setScenario(harness, peerP.path, plainScenario({ name: `${tag}-peer`, provider, texts: ['Read the changelog.'] }));
-  await harness.startSession(peer);
   await harness.send(peer, 'read the changelog');
   await awaitTurnCompleted(harness, peer);
   await setScenario(harness, peerP.path, threadToolsScenario({
@@ -112,7 +111,6 @@ test("claude: settled workers and asks list under Past, page, open beside and sh
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'split the release');
   await awaitTurnCompleted(harness, lead);
   const requests = ledgerRequests(harness, lead);
@@ -354,7 +352,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       ], text: 'Shipped to staging.' }],
       afterTurns: 'silent',
     }));
-    await harness.startSession(lead);
     await harness.send(lead, 'ship release 4.2');
     await awaitTurnCompleted(harness, lead);
     const [spawn] = ledgerRequests(harness, lead);

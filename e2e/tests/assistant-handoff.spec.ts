@@ -65,7 +65,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       turns: [{ steps: [{ call: { tool: 'thread_loop', args: { label: 'board check', note: 'look at the board', every_seconds: 3600 } } }], text: 'Scheduled.' }],
       afterTurns: 'silent',
     }));
-    await harness.startSession(first);
     await harness.send(first, 'Look at the board every hour.');
     const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd });
     expect(loop.isError, loop.text).toBe(false);

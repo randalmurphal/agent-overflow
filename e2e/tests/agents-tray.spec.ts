@@ -321,7 +321,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       name: `incoming-${provider}-peer`, provider, echoUserMessage: true,
       turns: [{ steps: [{ gate: 'peer-hold' }], text: 'The changelog is fine.' }],
     }));
-    await harness.startSession(lead);
     await harness.send(lead, 'ask the peer');
     const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', cwd: leadProject.path, timeoutMs: 60_000 });
     expect(send.isError, send.text).toBe(false);
@@ -406,7 +405,6 @@ test("claude: a rested worker's later runs: the person's is a nudge row that wak
       { steps: [{ gate: 'send-hold' }], text: 'The migration is fine.' },
     ],
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'get the change reviewed');
   const spawned = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadProject.path, timeoutMs: 60_000 });
   expect(spawned.isError, spawned.text).toBe(false);

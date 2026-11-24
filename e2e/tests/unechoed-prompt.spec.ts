@@ -164,7 +164,6 @@ test('a wake that quotes the tag reaches an idle thread and settles it', async (
 
   await harness.open(page);
   await page.getByText('Unechoed wake').click();
-  await harness.startSession(threadId);
   await harness.send(threadId, 'remind me to check the task ids');
   const remind = await awaitToolAnswer(harness, { tool: 'thread_remind', timeoutMs: 60_000 });
   expect(remind.isError, remind.text).toBe(false);

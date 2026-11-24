@@ -86,7 +86,6 @@ export async function runWorkerWaiting(harness: HarnessApp, page: Page, provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'watch the build and the board');
   const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd: loopP.path, timeoutMs: 60_000 });
   expect(loop.isError, loop.text).toBe(false);
@@ -153,7 +152,6 @@ export async function runAncestorWaiting(harness: HarnessApp, page: Page, provid
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'run the board');
   const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd: grandP.path, timeoutMs: 60_000 });
   expect(loop.isError, loop.text).toBe(false);
@@ -345,7 +343,6 @@ export async function runHeldWorkerFacts(harness: HarnessApp, page: Page, provid
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'run the build');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
@@ -481,7 +478,6 @@ export async function runReplyThenRest(harness: HarnessApp, page: Page, provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'start the deploy');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   // The reply waits for the spawn to return, so it reaches the lead as a message.
@@ -553,7 +549,6 @@ export async function runHeldThenError(harness: HarnessApp, page: Page, provider
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.startSession(lead);
   await harness.send(lead, 'watch the board');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);

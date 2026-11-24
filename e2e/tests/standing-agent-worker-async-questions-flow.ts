@@ -102,7 +102,6 @@ export async function runAsyncQuestionAnsweredBySpawner(
   }));
 
   await harness.open(page);
-  await harness.startSession(leadID);
   await harness.send(leadID, 'ship release 4.2');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
@@ -208,7 +207,6 @@ export async function runAsyncQuestionHandedBack(
   }));
 
   await harness.open(page);
-  await harness.startSession(leadID);
   await harness.send(leadID, 'rotate the logs');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);

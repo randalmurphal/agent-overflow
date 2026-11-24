@@ -96,7 +96,6 @@ for (const provider of ['claude', 'codex'] as const) {
       ],
       afterTurns: 'silent',
     }));
-    await harness.startSession(sender);
     await harness.send(sender, 'send it over');
     const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
     expect(send.isError, send.text).toBe(false);

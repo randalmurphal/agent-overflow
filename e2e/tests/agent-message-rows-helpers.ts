@@ -165,7 +165,6 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
   const busyMock = hold ? await awaitGate(harness, 'hold-busy', busyProject.path) : null;
   await busyRested;
 
-  await harness.startSession(lead);
   await harness.send(lead, LEAD_ASK);
   const spawn = await awaitToolAnswer<{ thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', timeoutMs: 60_000 });
   await releaseAfterBackgrounded(spawn, { harness, gate: 'hold-audit', cwd: auditProject.path });
@@ -484,10 +483,8 @@ export async function runQueuedRequest(harness: HarnessApp, tag: string): Promis
       afterTurns: 'silent',
     }),
   );
-  await harness.startSession(target);
   await harness.send(target, BUSY_TASK);
   const targetMock = await awaitGate(harness, 'hold-target', targetProject.path);
-  await harness.startSession(sender);
   await harness.send(sender, 'pass that on');
   const send = await awaitToolAnswer(harness, { tool: 'thread_send', timeoutMs: 60_000 });
   expect(send.isError, send.text).toBe(false);
@@ -665,7 +662,6 @@ export async function runRemoteCompletion(harness: HarnessApp, remote: HarnessAp
     }),
     claude: { holdQueuedInput: true },
   });
-  await harness.startSession(thread);
   await harness.send(thread, BUILD_ASK);
   const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
   expect(started.report.isError, started.report.result).toBeFalsy();

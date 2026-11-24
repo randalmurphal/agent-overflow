@@ -96,7 +96,6 @@ echo "the report while the start was held"
         afterTurns: 'silent',
       }),
     );
-    await harness.startSession(thread);
     await harness.send(thread, 'report once');
     const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
     expect(ack.isError, ack.text).toBe(false);
@@ -221,7 +220,6 @@ echo "the report nobody could read"
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'report once');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
@@ -366,7 +364,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'watch tick');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
@@ -612,7 +609,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'watch tick');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
@@ -760,7 +756,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'run the nightly build on the build box');
       const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
       expect(started.report.isError, started.report.result).toBeFalsy();
@@ -905,7 +900,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'run the nightly build on the build box');
       const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
       expect(started.report.isError, started.report.result).toBeFalsy();

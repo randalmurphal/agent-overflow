@@ -284,7 +284,6 @@ export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: 
     }));
 
     await harness.rpc('GetProviderStatuses');
-    await harness.startSession(leadId);
     await harness.send(leadId, 'send a scout');
 
     // The lead's thread_options lists the profile as this computer runs it.

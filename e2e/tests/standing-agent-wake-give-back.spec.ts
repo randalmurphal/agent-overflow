@@ -176,7 +176,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(caller);
       await harness.send(caller, 'ask for the release notes and run the nightly build');
       const sent = await awaitToolAnswer<{ token: string; outcome: string; notify: boolean }>(harness, {
         tool: 'thread_send',
@@ -1074,7 +1073,6 @@ test('codex: an answer queued while an archive waits behind a start goes back to
       }),
     );
     await harness.rpc('UnarchiveThread', caller);
-    await harness.startSession(caller);
     await harness.send(caller, 'did the notes come back?');
     const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string; delivered?: string }[] }>(harness, {
       tool: 'thread_status',
@@ -1162,7 +1160,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(caller);
       await harness.send(caller, 'ask for the release notes');
       const sent = await awaitToolAnswer<{ token: string; outcome: string; notify: boolean }>(harness, {
         tool: 'thread_send',
@@ -1320,7 +1317,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.startSession(thread);
       await harness.send(thread, 'run the nightly build on the build box');
       const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
       expect(started.report.isError, started.report.result).toBeFalsy();
@@ -1466,7 +1462,6 @@ async function archiveJustAfterARemoteFinish(provider: ProviderName, harness: Ha
       afterTurns: 'silent',
     }),
   );
-  await harness.startSession(thread);
   await harness.send(thread, 'run the nightly build and the soak test on the build box');
   await awaitTurnCompleted(harness, thread);
 
