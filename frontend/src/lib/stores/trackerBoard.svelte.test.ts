@@ -34,6 +34,7 @@ import { stageBackend } from '../../test/helpers/backends';
 
 const REF: TrackerBoardRef = { backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '1' };
 const SPRINT: Section = { kind: 'sprint', sprint: '8' };
+const COLUMN: Section = { kind: 'column', column: 0 };
 
 function row(id: string, order: string, title = `Issue ${id}`): RowView {
   return { order, estimate: 1, card: { id, key: `WEB-${id}`, title, status: { id: 's1' }, created: 0, updated: 0 } } as RowView;
@@ -43,11 +44,12 @@ function rows(from: number, count: number): RowView[] {
   return Array.from({ length: count }, (_, i) => row(String(from + i), `k${String(from + i).padStart(4, '0')}`));
 }
 
-/** A sprint board's view: one active sprint (8), or the sprint named. */
-function view(pages: Array<{ section: Section; rows: RowView[]; next?: boolean }>, opts: { revision?: number; sprint?: string } = {}): BoardView {
+/** A sprint board's view: one active sprint (8), or the sprint named; or
+ * with `kanban` a board of one column. */
+function view(pages: Array<{ section: Section; rows: RowView[]; next?: boolean }>, opts: { revision?: number; sprint?: string; kanban?: boolean } = {}): BoardView {
   const revision = opts.revision ?? 1;
   return {
-    id: '1', lifetime: 1, revision, totals_revision: revision, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision, totals_revision: revision, name: 'WEB board', plans_sprints: !opts.kanban, estimate: { unit: 'points' },
     columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 0, estimate: 0 } }],
     sprints: [{ id: opts.sprint ?? '8', name: 'Sprint', state: 'active', total: { rows: 1, estimate: 1 } }],
     all: { rows: 1, estimate: 1 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 100 },
@@ -256,15 +258,15 @@ describe('the board subscription', () => {
 
   it('reads whole on read again, past 100 IDs and after a gap, to the depth it held', async () => {
     const mocks = install();
-    mocks.board.mockImplementation(async () => view([{ section: SPRINT, rows: rows(0, 100), next: true }]));
+    mocks.board.mockImplementation(async () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true }));
     mocks.page.mockImplementation(async (_id: string, _s: Section, after: { issue: string }) => {
       const from = Number(after.issue) + 1;
-      return { section: SPRINT, rows: rows(from, 100), next: from + 100 < 300 ? { order: `k${String(from + 99).padStart(4, '0')}`, issue: String(from + 99), lifetime: 1, revision: 1 } : null };
+      return { section: COLUMN, rows: rows(from, 100), next: from + 100 < 300 ? { order: `k${String(from + 99).padStart(4, '0')}`, issue: String(from + 99), lifetime: 1, revision: 1 } : null };
     });
     const board = attachTrackerBoard(REF);
     await flush();
-    loadMoreOfSection(board.key, SPRINT);
-    expect(board.current?.paging.has('sprint:8:0')).toBe(true);
+    loadMoreOfSection(board.key, COLUMN);
+    expect(board.current?.paging.has('column::0')).toBe(true);
     await flush();
     expect(heldIds(board)[0].length).toBe(200);
     expect(board.current?.paging.size).toBe(0);
@@ -304,18 +306,18 @@ describe('the board subscription', () => {
 
   it('reads a stale page again once the patch carries its cursor on', async () => {
     const mocks = install();
-    mocks.board.mockImplementation(async () => view([{ section: SPRINT, rows: rows(0, 100), next: true }]));
+    mocks.board.mockImplementation(async () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true }));
     const board = attachTrackerBoard(REF);
     await flush();
     mocks.page.mockImplementationOnce(async () => {
       throw new TransportError('tracker_page_stale', 'the board changed since this section was read; read the section again from its start');
     });
-    loadMoreOfSection(board.key, SPRINT);
+    loadMoreOfSection(board.key, COLUMN);
     await flush();
     expect(mocks.page).toHaveBeenCalledTimes(1);
-    expect(board.current?.paging.has('sprint:8:0')).toBe(true);
+    expect(board.current?.paging.has('column::0')).toBe(true);
     // Nothing reads it again until the board moves past that revision.
-    loadMoreOfSection(board.key, SPRINT);
+    loadMoreOfSection(board.key, COLUMN);
     await flush();
     expect(mocks.page).toHaveBeenCalledTimes(1);
     applyTrackerBoardEvent(event(11, { changed: ['500'] }), HOME_BACKEND);
@@ -328,18 +330,35 @@ describe('the board subscription', () => {
 
   it('reads every page of a section a filter asked for', async () => {
     const mocks = install();
-    mocks.board.mockImplementation(async () => view([{ section: SPRINT, rows: rows(0, 100), next: true }]));
+    mocks.board.mockImplementation(async () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true }));
+    mocks.page.mockImplementation(async (_id: string, _s: Section, after: { issue: string }) => {
+      const from = Number(after.issue) + 1;
+      return { section: COLUMN, rows: rows(from, 100), next: from + 100 < 300 ? { order: `k${String(from + 99).padStart(4, '0')}`, issue: String(from + 99), lifetime: 1, revision: 1 } : null };
+    });
+    const board = attachTrackerBoard(REF);
+    await flush();
+    loadSectionWhole(board.key, COLUMN);
+    await flush();
+    expect(mocks.page).toHaveBeenCalledTimes(2);
+    expect(heldIds(board)[0].length).toBe(300);
+    expect(board.current?.held?.sections[0].next).toBeNull();
+    board.release();
+  });
+
+  it('reads a sprint whole as soon as it is held', async () => {
+    const mocks = install({ view: view([{ section: SPRINT, rows: rows(0, 100), next: true }]) });
     mocks.page.mockImplementation(async (_id: string, _s: Section, after: { issue: string }) => {
       const from = Number(after.issue) + 1;
       return { section: SPRINT, rows: rows(from, 100), next: from + 100 < 300 ? { order: `k${String(from + 99).padStart(4, '0')}`, issue: String(from + 99), lifetime: 1, revision: 1 } : null };
     });
     const board = attachTrackerBoard(REF);
-    await flush();
-    loadSectionWhole(board.key, SPRINT);
+    await tick();
+    await tick();
+    expect(board.current?.paging.has('sprint:8:0')).toBe(true);
     await flush();
     expect(mocks.page).toHaveBeenCalledTimes(2);
     expect(heldIds(board)[0].length).toBe(300);
-    expect(board.current?.held?.sections[0].next).toBeNull();
+    expect(board.current?.paging.size).toBe(0);
     board.release();
   });
 

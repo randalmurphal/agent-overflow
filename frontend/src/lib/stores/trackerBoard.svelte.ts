@@ -26,7 +26,8 @@
 //
 // What the board holds is bounded by each section's loaded part: the first
 // page, the pages a person scrolled to, and the rest of a section a filter
-// asked for. A full read starts a fresh interner, so the shared parts of
+// asked for. A sprint is read whole as soon as it is held, so the columns
+// its rows fill count and sum every card of it. A full read starts a fresh interner, so the shared parts of
 // rows go with the board.
 
 import type {
@@ -162,7 +163,9 @@ export function trackerBoardKey(ref: TrackerBoardRef): string {
   return composeWorkspaceKey(ref.backend, `${ref.projectId}\n${ref.connection}\n${ref.board}`);
 }
 
-function boardOnComputer(ref: TrackerBoardRef): string {
+/** A board on its computer, whichever project lists it: what the pane
+ * remembers per board. */
+export function trackerBoardOnComputer(ref: Omit<TrackerBoardRef, 'projectId'>): string {
   return composeWorkspaceKey(ref.backend, `${ref.connection}\n${ref.board}`);
 }
 
@@ -194,7 +197,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     live.aborted = true;
     if (lives.get(key) === live) lives.delete(key);
   }, { once: true });
-  const asked = lastSections.get(boardOnComputer(ref)) ?? [];
+  const asked = lastSections.get(trackerBoardOnComputer(ref)) ?? [];
   let answer: BoardSubscription;
   try {
     answer = await withBackendTarget(ref.backend, () => SubscribeTrackerBoard(ref.projectId, ref.connection, ref.board, asked));
@@ -216,13 +219,15 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   live.id = id;
   live.seq = answer.seq;
   const view = answer.view ?? null;
+  const held = view ? heldFromView(view, live.intern) : null;
   live.state = {
     ...live.state,
-    held: view ? heldFromView(view, live.intern) : null,
+    held,
     failure: answer.failure ?? null,
     readAt: view?.sync.read_at ?? 0,
+    paging: held ? pagingOf(live, held) : NO_SECTIONS,
   };
-  if (view) lastSections.set(boardOnComputer(ref), heldSections(live.state.held!));
+  if (held) lastSections.set(trackerBoardOnComputer(ref), heldSections(held));
   const early = live.joining ?? [];
   live.joining = null;
   for (const event of early) fold(live, event);
@@ -309,7 +314,7 @@ async function run(live: Live): Promise<void> {
     const held = live.state.held;
     try {
       if (live.readAgain) {
-        await readWhole(live, held ? boardScreenSections(held.shape) : (lastSections.get(boardOnComputer(live.ref)) ?? []));
+        await readWhole(live, held ? boardScreenSections(held.shape) : (lastSections.get(trackerBoardOnComputer(live.ref)) ?? []));
       } else if (held && !sameSections(heldSections(held), boardScreenSections(held.shape))) {
         await readWhole(live, boardScreenSections(held.shape));
       } else if (held && live.pending.size > 0) {
@@ -372,7 +377,7 @@ async function readWhole(live: Live, sections: Section[]): Promise<void> {
     }
   }
   live.intern = intern;
-  lastSections.set(boardOnComputer(ref), heldSections(held));
+  lastSections.set(trackerBoardOnComputer(ref), heldSections(held));
   live.staleAt = -1;
   update(live, { held, readAt: view.sync.read_at || live.state.readAt, readError: null, paging: pagingOf(live, held) });
 }
@@ -406,9 +411,15 @@ function pageWanted(live: Live, held: HeldBoard): number {
       live.wantWhole.delete(k);
       continue;
     }
-    if (live.wantPage.has(k) || live.wantWhole.has(k)) return i;
+    if (owedPage(live, sec)) return i;
   }
   return -1;
+}
+
+/** Whether a held section with more to read is owed its next page. */
+function owedPage(live: Live, sec: HeldBoard['sections'][number]): boolean {
+  const k = sectionKey(sec.section);
+  return sec.section.kind === 'sprint' || live.wantPage.has(k) || live.wantWhole.has(k);
 }
 
 async function readPage(live: Live, held: HeldBoard, at: number): Promise<void> {
@@ -435,8 +446,7 @@ async function readPage(live: Live, held: HeldBoard, at: number): Promise<void> 
 function pagingOf(live: Live, held: HeldBoard): ReadonlySet<string> {
   const out = new Set<string>();
   for (const sec of held.sections) {
-    const k = sectionKey(sec.section);
-    if (sec.next && (live.wantPage.has(k) || live.wantWhole.has(k))) out.add(k);
+    if (sec.next && owedPage(live, sec)) out.add(sectionKey(sec.section));
   }
   return out.size === 0 ? NO_SECTIONS : out;
 }

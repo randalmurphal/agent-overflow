@@ -97,6 +97,7 @@ import { toggleReadAloud } from './readAloud.svelte';
 import { PICKER_TOGGLE_INPUT_EVENT, type GitDialogKind } from './eventNames';
 import { startPaneTitleRename } from './paneTitleRename';
 import { registerWorkflowCommands } from './workflowCommands.svelte';
+import { registerIssuesCommands } from './issuesCommands';
 import { isPullsPaneFocused, registerPullsCommands } from './pullsCommands.svelte';
 import { isBrowserPaneFocused, registerBrowserCommands } from './browserCommands.svelte';
 import {
@@ -1165,6 +1166,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   // so this file doesn't grow another surface's worth of registrations.
   registerWorkflowCommands();
   registerPullsCommands();
+  registerIssuesCommands();
   registerBrowserCommands();
 }
 

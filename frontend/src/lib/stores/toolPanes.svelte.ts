@@ -37,6 +37,7 @@ import {
   destroyPane,
   focusPane,
   getFocusedPaneId,
+  getFocusedPaneOrNull,
   getPane,
   removeToolPaneFromLayout,
   resolveNewPaneInsertIndex,
@@ -54,6 +55,14 @@ function parseLastTool(raw: string | null): ToolPaneKind {
 }
 
 let lastTool = $state<ToolPaneKind>(parseLastTool(appStorageGet(LAST_TOOL_KEY)));
+
+const openedFromProject = new Map<ToolPaneKind, string | null>();
+
+/** The project of the thread focused when the tool last opened, null when
+ * none was. Not reactive: a tool reads it when its pane mounts. */
+export function toolOpenedFromProject(kind: ToolPaneKind): string | null {
+  return openedFromProject.get(kind) ?? null;
+}
 
 /** The tool kind of a mounted tool pane, null for any other id. */
 export function toolKindOf(paneId: string | null): ToolPaneKind | null {
@@ -203,6 +212,8 @@ export function openTool(kind: ToolPaneKind, options: OpenToolOptions = {}): voi
     revealPane(paneId);
     return;
   }
+  // Read before a plain open replaces the thread pane.
+  openedFromProject.set(kind, getFocusedPaneOrNull()?.thread?.projectId || null);
   if (slot !== undefined) {
     notePaneLayoutMutation();
     addPaneLayoutItem({ id: paneId, paneId, kind, widthPx: averagePaneWidthPx() }, slot);
@@ -280,6 +291,7 @@ export function toggleTool(kind: ToolPaneKind): void {
 
 export function resetToolPanesForTest(): void {
   lastTool = DEFAULT_TOOL;
+  openedFromProject.clear();
   unsubscribeReplaced?.();
   unsubscribeReplaced = null;
 }

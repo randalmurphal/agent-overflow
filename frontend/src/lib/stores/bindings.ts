@@ -1261,6 +1261,7 @@ import {
   AgentRosterSeeds as AgentRosterSeedsRaw,
   CheckAgentProfiles as CheckAgentProfilesRaw,
   GetStandingAgent as GetStandingAgentRaw,
+  TrackerBoardChoices as TrackerBoardChoicesRaw,
   ListThreadRecurringJobs as ListThreadRecurringJobsRaw,
   DeleteThreads as DeleteThreadsRaw,
   GetDeleteDependents as GetDeleteDependentsRaw,
@@ -1301,6 +1302,7 @@ import {
   type ThreadRequestState as ThreadRequestStateRow,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { AgentProfile, Settings as SettingsSnapshot } from '../../../bindings/agent-overflow/internal/settings/models.js';
+import type { BoardChoice as TrackerBoardChoice } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 import type { PastAgentRowsCursor, StandingAgent as StandingAgentRow, Thread as StoreThread } from '../../../bindings/agent-overflow/internal/store/models.js';
 import { methodId } from '../transport/methodId';
 import { orOlder, ThreadsPartlyDeleted, withNote } from './olderComputer';
@@ -1409,6 +1411,11 @@ export function WorkflowPauseItemAndEndSessions(itemId: string): Promise<void> {
 /** Null on a computer without assistants: it has no standing agent. */
 export function GetStandingAgent(threadID: string): Promise<StandingAgentRow | null> {
   return orOlder(() => GetStandingAgentRaw(threadID), () => null);
+}
+
+/** Empty on a computer without the Issues pane's board list. */
+export function TrackerBoardChoices(): Promise<TrackerBoardChoice[]> {
+  return orOlder(() => TrackerBoardChoicesRaw(), () => []);
 }
 
 /** Empty on a computer without recurring jobs. */

@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { WorkItem } from '../../types/workflow';
 import ToolsRow from './ToolsRow.svelte';
@@ -26,6 +26,8 @@ import {
 } from '../../stores/paneLayout.svelte';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { grantBackendScopes, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
+import { HOME_BACKEND } from '../../transport/backendKey';
 
 function item(id: string, state: string, over: Partial<WorkItem> = {}): WorkItem {
   return { id, projectId: 'p', state, createdAt: 1, ...over } as WorkItem;
@@ -76,7 +78,7 @@ describe('ToolsRow', () => {
 
   afterEach(resetAll);
 
-  it('lists Pull requests then Workflows, labelling only the active tool', async () => {
+  it('lists Pull requests, Workflows, then Issues, labelling only the active tool', async () => {
     await hydrate([]);
     const view = render(ToolsRow);
     const row = view.getByTestId('sidebar-tools-row');
@@ -84,6 +86,7 @@ describe('ToolsRow', () => {
     expect([...tools].map((tool) => tool.dataset.testid)).toEqual([
       'sidebar-tool-pulls',
       'sidebar-tool-workflows',
+      'sidebar-tool-issues',
     ]);
     // No native button and nothing interactive inside: Firefox starts no
     // drag from a <button>, and a nested control would steal the press.
@@ -98,6 +101,16 @@ describe('ToolsRow', () => {
     expect(view.getByTestId('sidebar-tool-workflows')).not.toHaveTextContent('Workflows');
     expect(view.getByTestId('sidebar-tool-workflows')).toHaveAttribute('title', 'Workflows');
     expect(view.getByTestId('sidebar-tool-workflows')).toHaveAttribute('aria-label', 'Workflows');
+  });
+
+  it('lists Issues only while a computer lets this window read issue trackers', async () => {
+    await hydrate([]);
+    await pairWithScopes(['threads:read']);
+    const view = render(ToolsRow);
+    expect(view.queryByTestId('sidebar-tool-issues')).toBeNull();
+    await grantBackendScopes(HOME_BACKEND, ['threads:read', 'tracker:read']);
+    await waitFor(() => expect(view.getByTestId('sidebar-tool-issues')).toHaveAttribute('title', 'Issues'));
+    resetToLocalPage();
   });
 
   it('labels the tool used last, and follows a focused tool pane over it', async () => {

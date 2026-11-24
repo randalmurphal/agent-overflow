@@ -89,8 +89,8 @@ export interface AgentPaneScopeSnapshot {
 
 export interface PaneLayoutPersistedPane {
   paneId: string;
-  /** Tool kinds (`pulls`, `workflows`) carry only an id and a width. */
-  kind: "thread" | "plan" | "review" | "agent" | "pulls" | "workflows";
+  /** Tool kinds (`pulls`, `workflows`, `issues`) carry only an id and a width. */
+  kind: "thread" | "plan" | "review" | "agent" | "pulls" | "workflows" | "issues";
   threadId?: string;
   sourcePaneId?: string;
   widthPx: number;

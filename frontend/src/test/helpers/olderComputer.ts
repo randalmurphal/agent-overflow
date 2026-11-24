@@ -21,7 +21,7 @@ export const METHODS_AFTER_V0_0_19 = [
   'SaveGitBlobImage', 'SendExternalThreadMessage', 'SetAssistantProjects', 'SetThreadPlacement',
   'SpendProviderAccountReset',
   'StartNextAssistantThread', 'StopThreadAgentIncoming', 'StopThreadAgentRows',
-  'StopThreadAgentRow', 'ThreadToolWatch', 'WakeThreadWakeNow', 'WorkflowPauseItemAndEndSessions',
+  'StopThreadAgentRow', 'ThreadToolWatch', 'TrackerBoardChoices', 'WakeThreadWakeNow', 'WorkflowPauseItemAndEndSessions',
 ] as const;
 
 /** The App methods that answer a value in this build and `null` on v0.0.19. */
