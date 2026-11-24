@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/workflow/runner"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -652,6 +653,22 @@ func TestWorkflowTakeoverInterruptsLiveTurnBeforeSteering(t *testing.T) {
 		t.Fatal(err)
 	}
 	threadID := waitForRunningWorkflowThread(t, app, item.ID)
+
+	// An awaited harness send is refused and leaves the live phase running,
+	// with no intervention recorded; the composer send below takes it over.
+	if _, err := (&harnessHost{app: app}).Send(context.Background(), threadID, "probe", true); !errors.Is(err, errWorkflowRunning) {
+		t.Fatalf("at-rest send to a live phase = %v, want the running-workflow refusal", err)
+	}
+	requireWorkflowItemState(t, app.store, item.ID, engine.StateRunning, "")
+	if phases, err := app.store.ListWorkItemPhases(item.ID); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, phase := range phases {
+			if len(phase.Intervention) != 0 {
+				t.Fatalf("phase %s/%d recorded an intervention: %s", phase.PhaseID, phase.Attempt, phase.Intervention)
+			}
+		}
+	}
 
 	completions := make(chan struct{}, 2)
 	unsubscribe := app.subscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {

@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/workflowhost"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -698,6 +699,16 @@ reliability:
 	}
 	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true) })
 	threadID := waitForRunningWorkflowUnitThread(t, app, item.ID, "beta")
+
+	// An awaited harness send is refused and leaves the live unit running;
+	// the explicit takeover below detaches it.
+	if _, err := (&harnessHost{app: app}).Send(context.Background(), threadID, "probe", true); !errors.Is(err, errWorkflowRunning) {
+		t.Fatalf("at-rest send to a live unit = %v, want the running-workflow refusal", err)
+	}
+	requireWorkflowItemState(t, app.store, item.ID, engine.StateRunning, "")
+	if beta := unitsByID(t, app, item.ID)["beta"]; beta.Status != store.WorkItemUnitRunning {
+		t.Fatalf("unit beta = %q, want still running", beta.Status)
+	}
 
 	if err := app.WorkflowTakeOverUnit(item.ID, "beta"); err != nil {
 		t.Fatal(err)

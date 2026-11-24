@@ -6,7 +6,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 )
 
@@ -403,6 +405,67 @@ func TestTakeOverParkedRefusesARunningItem(t *testing.T) {
 		t.Fatalf("TakeOverParked of a parked item: %v", err)
 	}
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
+}
+
+// A phase whose runner is still starting is one the engine is driving: a
+// parked-only takeover gets the same refusal as a running one, and an
+// ordinary takeover keeps its own starting error.
+func TestTakeOverParkedRefusesAStartingItem(t *testing.T) {
+	h := newHarnessWith(t, harnessOptions{
+		workflows:   map[string]def.Workflow{"basic": onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})},
+		projectIDs:  []string{"project"},
+		replyBudget: 150 * time.Millisecond,
+	})
+	item := testItem("starting", "project", "basic", 0)
+	wedged := make(chan struct{})
+	h.runner.startWait[item.ID] = wedged
+	t.Cleanup(func() { close(wedged) })
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOverParked(item.ID); !errors.Is(err, ErrRunActive) {
+		t.Fatalf("TakeOverParked of a starting item = %v, want ErrRunActive", err)
+	}
+	if err := h.engine.TakeOver(item.ID); err == nil || !strings.Contains(err.Error(), "phase runner is still starting") {
+		t.Fatalf("TakeOver of a starting item = %v, want the starting error", err)
+	}
+	requireItemState(t, h.store, item.ID, StateRunning, "")
+}
+
+// A refused parked-only takeover changed nothing, so it runs no scheduler
+// pass: a run waiting for capacity raised in the profile since the last pass
+// is not started by it.
+func TestRefusedTakeOverParkedStartsNoWaitingRun(t *testing.T) {
+	workflow := onePhaseWorkflow("writer", []string{"writer"}, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{}, map[string]def.Workflow{"writer": workflow}, []string{"project"}, nil)
+	h.profiles.setCapacity("project", "writer", 1)
+	running := testItem("running", "project", "writer", 0)
+	waiting := testItem("waiting", "project", "writer", 1)
+	for _, item := range []store.WorkItem{running, waiting} {
+		if err := h.engine.StartItem(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	startedItems := func() []string {
+		var ids []string
+		for _, start := range h.runner.started() {
+			ids = append(ids, start.Key.ItemID)
+		}
+		return ids
+	}
+	if ids := startedItems(); len(ids) != 1 || ids[0] != running.ID {
+		t.Fatalf("started runs = %v, want the first run alone", ids)
+	}
+	h.profiles.setCapacity("project", "writer", 2)
+	if err := h.engine.TakeOverParked(running.ID); !errors.Is(err, ErrRunActive) {
+		t.Fatalf("TakeOverParked of a running item = %v, want ErrRunActive", err)
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if ids := startedItems(); len(ids) != 1 {
+		t.Fatalf("started runs after a refused parked-only takeover = %v, want the first run alone", ids)
+	}
 }
 
 func TestTakeoverOfParkedQuestionLeavesAnswerPathUntouchedUntilTakeover(t *testing.T) {

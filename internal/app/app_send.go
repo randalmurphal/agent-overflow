@@ -1002,6 +1002,10 @@ func (a *App) sendMessageLocked(
 	return userItem, nil
 }
 
+// errWorkflowRunning refuses a send admitted only at rest to the thread of a
+// workflow phase or fan-out unit the engine is running.
+var errWorkflowRunning = errors.New("the workflow run on this thread is running: an awaited send does not take it over; a send without waiting takes the run over, stopping the phase's agent or detaching the unit")
+
 // prepareWorkflowTakeoverSend detaches a workflow run for user steering.
 // It MUST NOT run while holding the thread's action lock: TakeOver
 // round-trips the engine command loop, whose teardown interrupts the
@@ -1058,7 +1062,7 @@ func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thre
 		takeOver = workflowEngine.TakeOverParked
 	}
 	if err := takeOver(item.ID); errors.Is(err, engine.ErrRunActive) {
-		return "", errThreadWorking
+		return "", errWorkflowRunning
 	} else if err != nil {
 		return "", fmt.Errorf("workflow takeover: detach item: %w", err)
 	}
@@ -1097,7 +1101,7 @@ func (a *App) prepareWorkflowUnitTakeoverSend(
 		)
 	}
 	if atRestOnly {
-		return "", errThreadWorking
+		return "", errWorkflowRunning
 	}
 	if err := workflowEngine.TakeOverUnit(item.ID, unit.UnitID); err != nil {
 		return "", fmt.Errorf("workflow takeover: detach unit %q: %w", unit.UnitID, err)
