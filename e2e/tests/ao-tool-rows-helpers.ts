@@ -25,6 +25,7 @@ import {
   doneFlowYaml,
   otherProvider,
 } from './workflows-agent-tools-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 export const LEAD_TITLE = 'Lead thread';
 export const TARGET_TITLE = 'Target thread';
@@ -300,7 +301,7 @@ export async function atOverlayEdge(row: Locator, overlay: Locator, press: () =>
 /** Screenshots a row placed as `placeRow` places it. */
 export async function shootRow(row: Locator, path: string): Promise<void> {
   await placeRow(row);
-  await row.screenshot({ path, animations: 'disabled' });
+  await screenshot(row, { path, animations: 'disabled' });
 }
 
 /**

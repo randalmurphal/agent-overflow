@@ -43,6 +43,7 @@ import {
   type ForgeRepo,
 } from './forge-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 export interface PullsSurface {
   compact: boolean;
@@ -163,7 +164,7 @@ async function useDarkTheme(page: Page): Promise<void> {
 }
 
 async function shoot(target: Page | Locator, testInfo: TestInfo, name: string): Promise<void> {
-  await target.screenshot({ path: testInfo.outputPath(`${name}.png`) });
+  await screenshot(target, { path: testInfo.outputPath(`${name}.png`) });
 }
 
 export async function openPage(page: Page): Promise<Locator> {

@@ -5,6 +5,7 @@ import { test, expect, type SeedResult } from './fixtures.js';
 import { launchHarness } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
 import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
+import { attachScreenshot } from '../src/screenshot.js';
 
 for (const compact of [false, true]) {
   test.describe(compact ? 'phone viewport' : 'desktop viewport', () => {
@@ -105,7 +106,7 @@ for (const compact of [false, true]) {
       await expect(page.getByText('No projects on the selected computers.')).toBeVisible();
       await trigger.click();
       await expect(checkbox).not.toBeChecked();
-      await testInfo.attach('device-filter', { body: await page.screenshot(), contentType: 'image/png' });
+      await attachScreenshot(testInfo, 'device-filter', page);
       await page.getByRole('menuitem', { name: 'All computers' }).click();
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('thread-group-row')).toBeVisible();

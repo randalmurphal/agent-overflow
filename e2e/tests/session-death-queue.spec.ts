@@ -18,6 +18,7 @@ import {
   textLines,
   waitForGate,
 } from './agent-visibility-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 async function send(page: Page, text: string): Promise<void> {
   const input = page.getByLabel('Message Input');
@@ -64,5 +65,5 @@ test('a session that dies with a queued message returns it to the composer and r
   await expect(input).toHaveValue(queued);
   await expect(page.getByTestId('send-queue-preview-row')).toHaveCount(0);
   await expect(page.getByTestId('user-message-bubble').filter({ hasText: queued })).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath('death-queue.png') });
+  await screenshot(page, { path: testInfo.outputPath('death-queue.png') });
 });

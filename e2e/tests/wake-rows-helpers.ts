@@ -18,6 +18,7 @@ import {
   type ScriptedTurn,
 } from './thread-tools-helpers.js';
 import { escapeTimelineFollow, timelineOf } from './timeline-follow-helpers.js';
+import { screenshot, screenshotsOn } from '../src/screenshot.js';
 
 /** The computer name a capture may show. */
 export const DEVICE_NAME = 'Wake tray computer';
@@ -241,7 +242,7 @@ export async function capture(page: Page, name: string, ...targets: Locator[]): 
   await page.evaluate(
     () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
   );
-  await page.screenshot({
+  await screenshot(page, {
     path: test.info().outputPath(name),
     animations: 'disabled',
     style: '[data-testid="sidebar-system-stats"] { display: none !important; }',
@@ -249,13 +250,14 @@ export async function capture(page: Page, name: string, ...targets: Locator[]): 
 }
 
 /**
- * capture, also copied to AO_AGENT_MESSAGE_SHOTS when it is set, since the
+ * capture, also copied to AO_AGENT_MESSAGE_SHOTS when it is set and
+ * screenshots are on (AO_E2E_SCREENSHOTS), since the
  * next run wipes the run's output: the agent message rows' published shots.
  */
 export async function captureAgentMessage(page: Page, name: string, ...targets: Locator[]): Promise<void> {
   await capture(page, name, ...targets);
   const dir = process.env.AO_AGENT_MESSAGE_SHOTS;
-  if (!dir) return;
+  if (!dir || !screenshotsOn) return;
   await mkdir(dir, { recursive: true });
   await copyFile(test.info().outputPath(name), `${dir}/${name}`);
 }

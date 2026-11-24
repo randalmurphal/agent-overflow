@@ -65,6 +65,7 @@ import {
   type ForgeHTTPInvocation,
   type ForgeRepo,
 } from './forge-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 export interface ManageSurface {
   /** The compact project: taps, the phone viewport. */
@@ -224,7 +225,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       const review = await openReview(page, thread, forge, compact);
       const press = (target: Locator) => (compact ? target.tap() : target.click());
       const reveal = async (row: Locator) => { if (!compact) await row.hover(); };
-      const shot = (target: Locator | Page, name: string) => target.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-${forge}-${name}.png`) });
+      const shot = (target: Locator | Page, name: string) => screenshot(target, { path: testInfo.outputPath(`${testInfo.project.name}-${forge}-${name}.png`) });
       const header = review.getByTestId('review-pr-header');
       const title = header.getByTestId('review-pr-title');
       const statePill = header.getByTestId('review-pr-state');
@@ -603,7 +604,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await press(details.locator('button[aria-expanded]').first());
     await expect(details.getByTestId('review-details-unavailable')).not.toBeEmpty();
     await expect(details.getByTestId('review-details-rows')).toHaveCount(0);
-    await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-unavailable.png`) });
+    await screenshot(details, { path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-unavailable.png`) });
     for (const id of MANAGE_CONTROLS) await expect(page.getByTestId(id), id).toHaveCount(0);
 
     // The read answers again: the controls return with the next read of
@@ -675,7 +676,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
       const details = review.getByTestId('review-pr-details');
       if ((await details.getAttribute('data-open')) !== 'true') await press(details.locator('button[aria-expanded]').first());
       await expect(details.locator('[data-testid="review-details-reviewer"][data-login="ao-viewer"]')).toHaveAttribute('data-state', state, { timeout: 30_000 });
-      await review.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-request-changes-${version}.png`) });
+      await screenshot(review, { path: testInfo.outputPath(`${testInfo.project.name}-gitlab-request-changes-${version}.png`) });
       await expectEveryForgeCallHandled(harness);
     });
   }
@@ -694,7 +695,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await expect(details.getByTestId('review-details-unavailable')).toContainText('runs 17.11; GitLab 18.0 or later is needed.');
     await expect(details.getByTestId('review-details-rows')).toHaveCount(0);
     for (const id of MANAGE_CONTROLS) await expect(page.getByTestId(id), id).toHaveCount(0);
-    await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
+    await screenshot(details, { path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
     await expectEveryForgeCallHandled(harness);
   });
 
@@ -806,7 +807,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await harness.open(page);
     const review = await openReview(page, thread, 'github', compact);
     const press = (target: Locator) => (compact ? target.tap() : target.click());
-    const shot = (target: Locator | Page, name: string) => target.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-github-${name}.png`) });
+    const shot = (target: Locator | Page, name: string) => screenshot(target, { path: testInfo.outputPath(`${testInfo.project.name}-github-${name}.png`) });
     await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
     const merge = await expandReviewSection(page, 'review-pr-merge');
     await expect(review.getByTestId('review-pr-readiness')).toHaveText('Ready to merge', { timeout: 30_000 });

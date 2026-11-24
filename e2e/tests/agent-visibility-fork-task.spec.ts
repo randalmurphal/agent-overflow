@@ -50,6 +50,7 @@ import {
 } from './agent-visibility-helpers.js';
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
+import { screenshot } from '../src/screenshot.js';
 
 const FORK_COMMAND = 'git diff HEAD~1 --stat';
 const FORK_REPORT = 'No blocking findings.';
@@ -433,7 +434,7 @@ test("Claude 2.1.300's stdout replay of a typed fork adds nothing to the fork's 
 
   for (const scheme of ['dark', 'light'] as const) {
     await page.emulateMedia({ colorScheme: scheme });
-    await page.screenshot({ path: test.info().outputPath(`claude-typed-fork-replay-${scheme}.png`) });
+    await screenshot(page, { path: test.info().outputPath(`claude-typed-fork-replay-${scheme}.png`) });
   }
 });
 

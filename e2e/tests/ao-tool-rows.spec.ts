@@ -8,8 +8,9 @@
 // collected the answer. The spawn's prompt is over the wire projection's
 // budget, so its header proves the clipped opening survives
 // (internal/itemwire). expandRow opens a row left with its toggle's center
-// less than a pixel above the "Jump to bottom" chip. Screenshots of every
-// row collapsed and expanded go to the test's output directory.
+// less than a pixel above the "Jump to bottom" chip. With AO_E2E_SCREENSHOTS=1,
+// screenshots of every row collapsed and expanded go to the test's output
+// directory.
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import {

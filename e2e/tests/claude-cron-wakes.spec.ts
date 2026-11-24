@@ -42,6 +42,7 @@ import {
   toolUseLine,
   waitForGate,
 } from './agent-visibility-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 const FIXTURES = path.resolve(import.meta.dirname, '../../internal/provider/wirecaptures/claude');
 const CRON_CAPTURE = 'cron_create_fire_20261010.ndjson';
@@ -95,7 +96,7 @@ function replyRow(page: Page, text: string | RegExp) {
 }
 
 async function shot(page: Page, testInfo: TestInfo, name: string): Promise<void> {
-  await page.screenshot({ path: testInfo.outputPath(name) });
+  await screenshot(page, { path: testInfo.outputPath(name) });
 }
 
 /** What a service update would wait for now; "" when nothing. */

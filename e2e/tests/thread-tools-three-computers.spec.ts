@@ -20,6 +20,7 @@ import { headlessPairing } from './headless-pairing-helpers.js';
 import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { backgroundShellSteps } from './agents-tray-helpers.js';
 import { laterMessage } from './standing-agent-wake-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -303,7 +304,7 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
   await advanceGate(bench!, heldGrand.mockId, 'two-hop-grand-hold');
   await expect(grandRow.getByTestId('agent-tray-row-state')).toHaveText('blocked');
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('running');
-  await body.screenshot({ path: test.info().outputPath('agents-two-hop-nested.png'), animations: 'disabled' });
+  await screenshot(body, { path: test.info().outputPath('agents-two-hop-nested.png'), animations: 'disabled' });
 
   const childInterrupted = studio.waitForEvent<HarnessMockEventData>(
     'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === child.path, 90_000);

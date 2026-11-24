@@ -5,6 +5,7 @@ import { join, relative, isAbsolute } from 'node:path';
 import { launchHarness } from '../src/harness.js';
 import { confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
+import { screenshot } from '../src/screenshot.js';
 
 /**
  * A conforming notification cue: the 44-byte canonical header plus silence.
@@ -76,7 +77,7 @@ export function frontendAssetsFlow(): void {
       await expect(uiTheme.locator('option[value="desk"]')).toHaveCount(1);
       await expect(uiTheme).toHaveValue('travel');
       await expect(page.getByTestId('settings-theme-mode')).toHaveValue('dark');
-      await page.screenshot({ path: `/tmp/ao-frontend-assets-${test.info().project.name}.png` });
+      await screenshot(page, { path: `/tmp/ao-frontend-assets-${test.info().project.name}.png` });
 
       await settingsPage(page, 'Working indicator');
       const animations = page.getByRole('switch', { name: 'Toggle animated spinner' });

@@ -3,8 +3,9 @@
 // inside the phone-width thread screen, opens by touch to its decoded
 // result, and the refusal shows its message and code. expandRow opens a
 // row left with its toggle's center less than a pixel above the composer,
-// where a tap reaches the composer. Screenshots of every row collapsed and
-// expanded go to the test's output directory.
+// where a tap reaches the composer. With AO_E2E_SCREENSHOTS=1,
+// screenshots of every row collapsed and expanded go to the test's output
+// directory.
 
 import { test, expect } from './fixtures.js';
 import type { Locator } from '@playwright/test';

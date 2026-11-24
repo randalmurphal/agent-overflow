@@ -8,7 +8,8 @@
 //   cancels the armed move first);
 // - with the change reverted the box waits under "Comments on files not in
 //   this diff", and Discard removes it.
-// With AO_REVIEW_SHOTS set, dark screenshots of the three states land there.
+// With AO_E2E_SCREENSHOTS=1, dark screenshots of the three states land in the
+// test output.
 import { randomBytes } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -17,6 +18,7 @@ import type { Locator, Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import { openThread } from './worktree-removal-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 export interface RelocationSurface {
   compact: boolean;
@@ -82,9 +84,7 @@ async function reloadUnfocused(review: Locator): Promise<void> {
 }
 
 async function shot(page: Page, name: string, compact: boolean): Promise<void> {
-  const dir = process.env.AO_REVIEW_SHOTS;
-  if (!dir) return;
-  await page.screenshot({ path: path.join(dir, `${compact ? 'compact' : 'desktop'}-${name}.png`) });
+  await screenshot(page, { path: test.info().outputPath(`${compact ? 'compact' : 'desktop'}-${name}.png`) });
 }
 
 export function reviewEditorRelocationFlow({ compact }: RelocationSurface): void {

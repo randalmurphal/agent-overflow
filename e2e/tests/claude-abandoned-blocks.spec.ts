@@ -26,6 +26,7 @@
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { trackPageCalls } from './offhost-helpers.js';
+import { attachScreenshot, screenshot } from '../src/screenshot.js';
 import {
   RESULT_LINE,
   advance,
@@ -358,10 +359,9 @@ async function openThread(page: Page, title: string): Promise<Locator> {
   return timeline;
 }
 
-async function screenshot(timeline: Locator, testInfo: TestInfo, name: string): Promise<void> {
-  const body = await timeline.screenshot();
-  await testInfo.attach(name, { body, contentType: 'image/png' });
-  await timeline.screenshot({ path: testInfo.outputPath(`${name}.png`) });
+async function shoot(timeline: Locator, testInfo: TestInfo, name: string): Promise<void> {
+  await attachScreenshot(testInfo, name, timeline);
+  await screenshot(timeline, { path: testInfo.outputPath(`${name}.png`) });
 }
 
 for (const theme of ['light', 'dark'] as const) {
@@ -416,7 +416,7 @@ for (const theme of ['light', 'dark'] as const) {
       await completed;
 
       await expectMarked(timeline, kind, theme);
-      await screenshot(timeline, testInfo, `abandoned-${kind}-${theme}`);
+      await shoot(timeline, testInfo, `abandoned-${kind}-${theme}`);
 
       // The store: the discarded row is completed history with the text it
       // streamed, and the record names it; nothing was rewritten.

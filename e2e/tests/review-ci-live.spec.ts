@@ -40,6 +40,7 @@ import {
   type ForgeRepo,
   type ForgeStep,
 } from './forge-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 const TITLE = 'CI thread';
 const JOB_ID = 7_001;
@@ -153,7 +154,7 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   await expect(scroll).toContainText('line 1\n');
   await expect.poll(() => scroll.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(200);
   expect(await scroll.evaluate((el) => el.scrollTop)).toBe(0);
-  await page.screenshot({ path: testInfo.outputPath('ci-log-sections-gitlab-running.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-log-sections-gitlab-running.png') });
 
   // A reader who moves to the end follows the trace as it grows, with no
   // click.
@@ -164,7 +165,7 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   repo = await moveCI(harness, repo, { jobs: [{ id: JOB_ID, name: 'unit', stage: 'test', status: 'running', log: gitlabTrace(2) }] });
   await expect(scroll).toContainText('step 2 done');
   await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
-  await page.screenshot({ path: testInfo.outputPath('ci-log-store-gitlab-following.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-log-store-gitlab-following.png') });
   expect(countRoute(await forgeInvocations(harness), 'glab api job trace')).toBeGreaterThan(1);
 
   // A reader who scrolled up keeps their place when more arrives. The
@@ -362,13 +363,13 @@ test('a running GitHub job lists its steps, waits out a log the forge has not pu
   await expect(section(log, 'step:7')).toHaveAttribute('data-status', 'success');
   await expect(section(log, 'step:8')).toHaveAttribute('data-status', 'success');
   await expect(scroll).not.toContainText('Post job cleanup.');
-  await page.screenshot({ path: testInfo.outputPath('ci-log-sections-github-failed-end.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-log-sections-github-failed-end.png') });
   await page.mouse.wheel(0, -100_000);
   await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBe(0);
   await expect(step3).toHaveAttribute('data-status', 'failed');
   await expect(step3).toContainText('59s');
   await expect(section(log, 'step:4')).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath('ci-log-sections-github-failed-top.png') });
+  await screenshot(page, { path: testInfo.outputPath('ci-log-sections-github-failed-top.png') });
 
 
   await expectEveryForgeCallHandled(harness);

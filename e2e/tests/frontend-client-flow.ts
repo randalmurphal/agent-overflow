@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { launchFrontendClient } from './frontend-client-helpers.js';
+import { screenshot } from '../src/screenshot.js';
 
 export function frontendClientFlow(): void {
   test('a new standalone frontend opens its local settings before any computer is paired', async ({ page }) => {
@@ -103,7 +104,7 @@ export function frontendClientFlow(): void {
         await expect(removed).toHaveCount(0);
         await expect(page.getByTestId('attached-system')).toHaveCount(1);
         await expect(page.getByTestId('attached-system')).toContainText('Second computer');
-        await page.screenshot({ path: info.outputPath('computers.png') });
+        await screenshot(page, { path: info.outputPath('computers.png') });
         await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
         const remainingThread = page.getByTestId('thread-row-title').filter({ hasText: 'Second computer conversation' });
         await expect(remainingThread).toHaveCount(1);

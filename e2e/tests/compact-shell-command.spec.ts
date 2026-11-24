@@ -12,6 +12,7 @@ import {
   startMock,
   textLines,
 } from './agent-visibility-helpers.js';
+import { attachScreenshot } from '../src/screenshot.js';
 
 test('a phone runs a command with the Run button and the card and block fit the screen', async ({
   harness,
@@ -54,9 +55,7 @@ test('a phone runs a command with the Run button and the card and block fit the 
     expect(stop.x + stop.width, `stop at ${width}`).toBeLessThanOrEqual(width);
   }
   await page.setViewportSize({ width: 412, height: 850 });
-  const path = testInfo.outputPath('shell-compact-running.png');
-  await page.screenshot({ path });
-  await testInfo.attach('shell-compact-running', { path, contentType: 'image/png' });
+  await attachScreenshot(testInfo, 'shell-compact-running', page);
 
   const block = page.getByTestId('shell-command-block');
   await expect(block.getByTestId('shell-command-outcome')).toContainText('ok', { timeout: 30_000 });
@@ -77,9 +76,7 @@ test('a phone runs a command with the Run button and the card and block fit the 
   await block.getByTestId('shell-command-toggle').tap();
   await expect(block.getByTestId('shell-command-output')).toContainText('done');
   await expect(block.getByRole('button', { name: 'Copy command' })).toBeVisible();
-  const sent = testInfo.outputPath('shell-compact-sent.png');
-  await page.screenshot({ path: sent });
-  await testInfo.attach('shell-compact-sent', { path: sent, contentType: 'image/png' });
+  await attachScreenshot(testInfo, 'shell-compact-sent', page);
 });
 
 test('a phone answers a command\'s prompt by touch and the answer row fits the screen', async ({ harness, page }, testInfo) => {
@@ -122,9 +119,7 @@ test('a phone answers a command\'s prompt by touch and the answer row fits the s
   await card.getByTestId('shell-run-answer-reveal').tap();
   await expect(answer).toHaveAttribute('type', 'text');
   await expect(answer).toHaveValue('yes');
-  const path = testInfo.outputPath('shell-compact-prompt.png');
-  await page.screenshot({ path });
-  await testInfo.attach('shell-compact-prompt', { path, contentType: 'image/png' });
+  await attachScreenshot(testInfo, 'shell-compact-prompt', page);
   await card.getByTestId('shell-run-answer-send').tap();
 
   const block = page.getByTestId('shell-command-block');
