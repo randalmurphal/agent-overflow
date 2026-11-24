@@ -162,32 +162,21 @@ it('entering compact records the pane the strip shows, though a reveal named the
   expectShown(strip, 'companion', ['thread']);
 });
 
-it('a rotation keeps the recorded pane on a strip that widened under it', async () => {
+// At the new width the old offset puts the pane's neighbour under the centre.
+it.each([
+  { change: 'widened', from: 360, to: 640, shown: 'c', others: ['a', 'b'] },
+  { change: 'narrowed', from: 640, to: 360, shown: 'b', others: ['a', 'c'] },
+])('a rotation keeps the recorded pane on a strip that $change under it', async ({ from, to, shown, others }) => {
   installViewportQuery(true);
-  const strip = await mountStrip(['a', 'b', 'c'], 360);
-  revealPane('c');
-  await waitFor(() => strip.scrollLeft === paneLeft('c'), 'the strip at c');
-  expectShown(strip, 'c', ['a', 'b']);
+  const strip = await mountStrip(['a', 'b', 'c'], from);
+  revealPane(shown);
+  await waitFor(() => strip.scrollLeft === paneLeft(shown), `the strip at ${shown}`);
+  expectShown(strip, shown, others);
 
-  // At the wider width the old offset puts b under the centre.
-  host.style.width = '640px';
+  host.style.width = `${to}px`;
   await raf();
   await stripAtRest(strip);
-  expectShown(strip, 'c', ['a', 'b']);
-});
-
-it('a rotation keeps the recorded pane on a strip that narrowed under it', async () => {
-  installViewportQuery(true);
-  const strip = await mountStrip(['a', 'b', 'c'], 640);
-  revealPane('b');
-  await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
-  expectShown(strip, 'b', ['a', 'c']);
-
-  // At the narrower width the old offset puts c under the centre.
-  host.style.width = '360px';
-  await raf();
-  await stripAtRest(strip);
-  expectShown(strip, 'b', ['a', 'c']);
+  expectShown(strip, shown, others);
 });
 
 // Narrowing clamps the strip. An engine may deliver the clamp's scroll
