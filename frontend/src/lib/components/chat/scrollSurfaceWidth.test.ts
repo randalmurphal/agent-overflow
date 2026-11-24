@@ -69,6 +69,8 @@ describe('observeScrollSurfaceContentWidth', () => {
 
     const widths: number[] = [];
     const stop = observeScrollSurfaceContentWidth(surface, (width) => widths.push(width));
+    expect(FireableResizeObserver.instances).toHaveLength(1); // exactly one observer created
+    expect(observer().observed.has(surface)).toBe(true);
 
     // Nothing is reported synchronously, and no layout query is made.
     expect(widths).toEqual([]);
@@ -89,18 +91,7 @@ describe('observeScrollSurfaceContentWidth', () => {
     expect(getRect).not.toHaveBeenCalled();
 
     stop();
-  });
-
-  it('observes the surface once and disconnects on cleanup', () => {
-    const surface = document.createElement('div');
-    const stop = observeScrollSurfaceContentWidth(surface, () => {});
-
-    const ro = observer();
-    expect(FireableResizeObserver.instances).toHaveLength(1); // exactly one observer created
-    expect(ro.observed.has(surface)).toBe(true);
-
-    stop();
-    expect(ro.observed.size).toBe(0);
+    expect(observer().observed.size).toBe(0);
   });
 
   it('rounds and clamps the measured width', () => {

@@ -34,38 +34,26 @@ describe('reviewTrigger', () => {
     vi.mocked(openReviewCompanion).mockClear();
   });
 
-  it('opens workspace scope with a file target', () => {
-    openReviewForItem(makeFakePane(), { filePath: 'src/foo.ts' });
+  it.each([
+    { name: 'with', opts: { filePath: 'src/foo.ts' } },
+    { name: 'without', opts: undefined },
+  ])('opens workspace scope $name a file target', ({ opts }) => {
+    openReviewForItem(makeFakePane(), opts);
 
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', SUBJECT, {
       scope: 'workspace',
-      filePath: 'src/foo.ts',
+      filePath: opts?.filePath,
       userInitiated: true,
     });
   });
 
-  it('opens workspace scope without a file target', () => {
-    openReviewForItem(makeFakePane());
-
-    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', SUBJECT, {
-      scope: 'workspace',
-      filePath: undefined,
-      userInitiated: true,
-    });
-  });
-
-  it('isPromoteModifier returns true for Cmd-click and Ctrl-click', () => {
-    const cmd = new MouseEvent('click', { metaKey: true });
-    const ctrl = new MouseEvent('click', { ctrlKey: true });
-    expect(isPromoteModifier(cmd)).toBe(true);
-    expect(isPromoteModifier(ctrl)).toBe(true);
-  });
-
-  it('isPromoteModifier returns false for plain click and shift-only click', () => {
-    const plain = new MouseEvent('click');
-    const shift = new MouseEvent('click', { shiftKey: true });
-    expect(isPromoteModifier(plain)).toBe(false);
-    expect(isPromoteModifier(shift)).toBe(false);
+  it.each([
+    { name: 'Cmd-click', init: { metaKey: true }, promotes: true },
+    { name: 'Ctrl-click', init: { ctrlKey: true }, promotes: true },
+    { name: 'plain click', init: {}, promotes: false },
+    { name: 'shift-only click', init: { shiftKey: true }, promotes: false },
+  ])('isPromoteModifier is $promotes for $name', ({ init, promotes }) => {
+    expect(isPromoteModifier(new MouseEvent('click', init))).toBe(promotes);
   });
 });
 
