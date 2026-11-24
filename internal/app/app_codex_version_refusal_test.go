@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
@@ -403,6 +404,34 @@ func spawnCodexAnswer(t *testing.T, f *requestFixture) string {
 		t.Fatalf("thread_spawn refused with %v, which has no message for the agent", err)
 	}
 	return message
+}
+
+// The profile editor says why a Codex profile does not run here when Codex
+// is below the minimum, whether the profile names its model or inherits
+// it: the same refusal a spawn of the profile answers.
+func TestCodexVersionRefusalReachesTheProfileEditor(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	useCodexCatalog(f)
+	fake := newVersionedCodex(t, "0.153.4")
+	fake.write(t)
+	if _, err := f.app.settings.Update(map[string]any{"codexBinaryPath": fake.path}); err != nil {
+		t.Fatal(err)
+	}
+
+	checks, err := f.app.CheckAgentProfiles(t.Context(), []settings.AgentProfile{
+		{Name: "Inherits", Provider: string(provider.Codex)},
+		{Name: "Names", Provider: string(provider.Codex), Model: "gpt-5.5"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := wantCodexVersionMessage(fake.path, "0.153.4")
+	for i, check := range checks {
+		if !strings.Contains(check.Missing, want) || check.Problem != "" {
+			t.Errorf("profile %d check = %+v, want it missing with %q", i, check, want)
+		}
+	}
 }
 
 // An agent spawning a Codex thread while the model catalog is cold reaches

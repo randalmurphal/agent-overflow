@@ -233,6 +233,24 @@ func TestProfileProblem(t *testing.T) {
 	}
 }
 
+// A provider installed here that runs nothing, such as a Codex below the
+// minimum, is what a profile of it lacks here whether it names its model or
+// inherits it, with the reason the catalog gives, as a spawn of it says.
+func TestProfileProblemReportsAnUnavailableProvider(t *testing.T) {
+	reason := "Codex v0.153.4 (/usr/bin/codex) is installed; Agent Overflow needs v0.154.0 or newer. Update Codex."
+	catalog := []ProviderOption{claudeOption, {ID: "codex", Name: "Codex", Unavailable: reason}}
+	for _, profile := range []AgentProfile{
+		{Provider: "codex"},
+		{Provider: "codex", Effort: "high"},
+		{Provider: "codex", Model: model("codex", "sol"), Effort: "high"},
+	} {
+		check := ProfileProblem(profile, catalog)
+		if check.Missing != reason || check.Problem != "" {
+			t.Errorf("%+v: problem %q, missing %q; want missing %q", profile, check.Problem, check.Missing, reason)
+		}
+	}
+}
+
 // liveClaude and liveCodex are the model lists this computer's thread tools
 // reported on 2026-11-21, in their order: Claude's probe answer with Opus
 // 5 still listed because a thread ran it that week, and Codex's live list.

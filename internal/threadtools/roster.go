@@ -221,12 +221,18 @@ type ProfileCheck struct {
 
 // ProfileProblem checks a profile against this computer's catalog. A
 // profile that inherits its provider or model is resolved against each
-// spawner's own, so it has no problem and no model it runs here.
+// spawner's own, so it has no problem and no model it runs here; one that
+// names a provider this computer lacks, or has installed and cannot run,
+// says so.
 func ProfileProblem(profile AgentProfile, catalog []ProviderOption) ProfileCheck {
 	index := slices.IndexFunc(catalog, func(candidate ProviderOption) bool { return candidate.ID == profile.Provider })
 	if profile.Provider == "" || profile.Model.IsZero() {
-		if profile.Provider != "" && index < 0 {
+		switch {
+		case profile.Provider == "":
+		case index < 0:
 			return ProfileCheck{Missing: fmt.Sprintf("%s does not run on this computer.", providerLabel(profile.Provider))}
+		case catalog[index].Unavailable != "":
+			return ProfileCheck{Missing: catalog[index].Unavailable}
 		}
 		return ProfileCheck{}
 	}
