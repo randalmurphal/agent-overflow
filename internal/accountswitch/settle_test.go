@@ -25,46 +25,6 @@ func endedSettle(c *Coordinator) error {
 	return c.Settle(ctx)
 }
 
-// A Settle that cannot finish says what it waited for.
-func TestSettleNamesWhatIsUnsettled(t *testing.T) {
-	t.Run("worker not started", func(t *testing.T) {
-		c := New(pastThresholdWhileRunning().deps())
-		c.ReadingUpdated("claude", "b")
-		if err := endedSettle(c); err == nil || !strings.Contains(err.Error(), "the worker has not started") {
-			t.Fatalf("Settle = %v", err)
-		}
-	})
-	t.Run("a pass still deciding", func(t *testing.T) {
-		f := pastThresholdWhileRunning()
-		g := newGate()
-		f.beforeSwitch = func(string) { g.hold() }
-		c := New(f.deps())
-		startHeld(t, context.Background(), c, g)
-		c.ReadingUpdated("claude", "b")
-		<-g.entered
-		err := endedSettle(c)
-		if err == nil || !strings.Contains(err.Error(), "the worker is still deciding on the work queued before the wait") ||
-			!errors.Is(err, context.Canceled) {
-			t.Fatalf("Settle = %v", err)
-		}
-	})
-	t.Run("a continue still running", func(t *testing.T) {
-		f, c := readyToContinue()
-		g := newGate()
-		f.continueHook = func(context.Context, string) error {
-			g.hold()
-			return nil
-		}
-		startHeld(t, context.Background(), c, g)
-		c.ReadingUpdated("claude", "a")
-		<-g.entered
-		awaitPassesDecided(c)
-		if err := endedSettle(c); err == nil || !strings.Contains(err.Error(), "the continue of thread t1 is still running") {
-			t.Fatalf("Settle = %v", err)
-		}
-	})
-}
-
 // awaitPassesDecided waits until the worker has finished deciding on every
 // trigger queued so far, without regard to the continues it started.
 func awaitPassesDecided(c *Coordinator) {
@@ -127,7 +87,8 @@ func pastThresholdWhileRunning() *fakeApp {
 }
 
 // A reading is settled only once the pass that took it has decided, its
-// switch included, and a trigger queued meanwhile is waited for too.
+// switch included, and a trigger queued meanwhile is waited for too. A
+// Settle that cannot finish says what it waited for.
 func TestSettleWaitsForThePassDecidingOnAReading(t *testing.T) {
 	f := pastThresholdWhileRunning()
 	g := newGate()
@@ -137,8 +98,9 @@ func TestSettleWaitsForThePassDecidingOnAReading(t *testing.T) {
 
 	c.ReadingUpdated("claude", "b")
 	<-g.entered
-	if settledNow(c) {
-		t.Fatal("settled while the worker was still deciding on the reading")
+	if err := endedSettle(c); err == nil || !strings.Contains(err.Error(), "the worker is still deciding on the work queued before the wait") ||
+		!errors.Is(err, context.Canceled) {
+		t.Fatalf("Settle while the worker was still deciding on the reading = %v", err)
 	}
 	c.ReadingUpdated("claude", "b")
 	settled := settleAsync(context.Background(), c)
@@ -168,8 +130,8 @@ func TestSettleWaitsForTheContinuesItsPassesStarted(t *testing.T) {
 	c.ReadingUpdated("claude", "a")
 	<-g.entered
 	awaitPassesDecided(c)
-	if settledNow(c) {
-		t.Fatal("settled while a continue the pass started was still running")
+	if err := endedSettle(c); err == nil || !strings.Contains(err.Error(), "the continue of thread t1 is still running") {
+		t.Fatalf("Settle while a continue the pass started was still running = %v", err)
 	}
 	settled := settleAsync(context.Background(), c)
 	g.release()
@@ -255,8 +217,8 @@ func TestSettleBeforeStartWaitsForTheWorker(t *testing.T) {
 	c := New(f.deps())
 	c.ReadingUpdated("claude", "b")
 	settled := settleAsync(context.Background(), c)
-	if settledNow(c) {
-		t.Fatal("settled before the worker ran")
+	if err := endedSettle(c); err == nil || !strings.Contains(err.Error(), "the worker has not started") {
+		t.Fatalf("Settle before the worker ran = %v", err)
 	}
 	startHeld(t, context.Background(), c, newGate())
 	if err := <-settled; err != nil {

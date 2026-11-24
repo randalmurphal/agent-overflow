@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -857,43 +858,35 @@ func TestScenarioDoneEntriesDoNotAccumulate(t *testing.T) {
 // TestCoalescedEmitIsOneWrite: a scenario asking for coalesce must reach
 // the provider's stdin as ONE write, because the defect it reproduces
 // (a reader that mishandles several NDJSON lines arriving in a single
-// read) is invisible when each line gets its own syscall.
+// read) is invisible when each line gets its own syscall. Substitution
+// still runs on a coalesced emit. Coalesce is opt-in: every existing
+// scenario depends on line-at-a-time delivery.
 func TestCoalescedEmitIsOneWrite(t *testing.T) {
-	rec := &recordingWriter{}
-	sc := &scenario.Scenario{Version: scenario.CurrentVersion, Name: "unit", Provider: scenario.ProviderClaude}
-	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(rec), &reporter{}, scenario.Vars{"SESSION_ID": "s1"})
+	for _, tc := range []struct {
+		name       string
+		coalesce   bool
+		lines      []string
+		wantLines  []string
+		wantWrites int
+	}{
+		{"coalesced", true, []string{`{"a":1}`, `{"b":"${SESSION_ID}"}`, `{"c":3}`}, []string{`{"a":1}`, `{"b":"s1"}`, `{"c":3}`}, 1},
+		{"plain is one write per line", false, []string{`{"a":1}`, `{"b":2}`, `{"c":3}`}, []string{`{"a":1}`, `{"b":2}`, `{"c":3}`}, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recordingWriter{}
+			sc := &scenario.Scenario{Version: scenario.CurrentVersion, Name: "unit", Provider: scenario.ProviderClaude}
+			e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(rec), &reporter{}, scenario.Vars{"SESSION_ID": "s1"})
 
-	lines := []string{`{"a":1}`, `{"b":"${SESSION_ID}"}`, `{"c":3}`}
-	e.runEmit(e.varsForTurn(0), &scenario.EmitStep{Lines: lines, Coalesce: true})
+			e.runEmit(e.varsForTurn(0), &scenario.EmitStep{Lines: tc.lines, Coalesce: tc.coalesce})
 
-	writes := rec.snapshot()
-	if len(writes) != 1 {
-		t.Fatalf("coalesced emit made %d writes, want 1: %q", len(writes), writes)
-	}
-	got := strings.Split(strings.TrimRight(writes[0], "\n"), "\n")
-	want := []string{`{"a":1}`, `{"b":"s1"}`, `{"c":3}`}
-	if len(got) != len(want) {
-		t.Fatalf("coalesced write = %q, want %q", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("coalesced write line %d = %q, want %q (substitution must still run)", i, got[i], want[i])
-		}
-	}
-}
-
-// TestUncoalescedEmitStaysOneWritePerLine guards the default: coalesce
-// is opt-in, and every existing scenario depends on line-at-a-time
-// delivery.
-func TestUncoalescedEmitStaysOneWritePerLine(t *testing.T) {
-	rec := &recordingWriter{}
-	sc := &scenario.Scenario{Version: scenario.CurrentVersion, Name: "unit", Provider: scenario.ProviderClaude}
-	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(rec), &reporter{}, scenario.Vars{"SESSION_ID": "s1"})
-
-	e.runEmit(e.varsForTurn(0), &scenario.EmitStep{Lines: []string{`{"a":1}`, `{"b":2}`, `{"c":3}`}})
-
-	if writes := rec.snapshot(); len(writes) != 3 {
-		t.Fatalf("plain emit made %d writes, want one per line: %q", len(writes), writes)
+			writes := rec.snapshot()
+			if len(writes) != tc.wantWrites {
+				t.Fatalf("emit made %d writes, want %d: %q", len(writes), tc.wantWrites, writes)
+			}
+			if got := strings.Split(strings.TrimRight(strings.Join(writes, ""), "\n"), "\n"); !slices.Equal(got, tc.wantLines) {
+				t.Fatalf("written lines = %q, want %q", got, tc.wantLines)
+			}
+		})
 	}
 }
 
