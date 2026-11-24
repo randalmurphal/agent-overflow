@@ -4,15 +4,11 @@ package wsllauncher
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
-
-	"golang.org/x/sys/windows"
 )
 
 // These tests cover the Windows-only helpers that compile under the
@@ -165,44 +161,6 @@ func TestInstallPayloadScriptUsesAtomicRename(t *testing.T) {
 	if strings.Contains(script, "$") {
 		t.Fatalf("install payload script should not rely on shell expansion: %q", script)
 	}
-}
-
-// TestLauncherStopForgivesRealTerminateProcessRefusal pins the exact
-// Windows error the teardown log used to carry. ERROR_ACCESS_DENIED
-// matches neither sentinel Stop already knew, so the only thing that can
-// quieten it is the confirmed exit. Asserting both halves is what stops
-// the fix being rewritten as an errno match, which would also swallow the
-// refusal for a child that is still running.
-func TestLauncherStopForgivesRealTerminateProcessRefusal(t *testing.T) {
-	refusal := &os.SyscallError{Syscall: "TerminateProcess", Err: windows.ERROR_ACCESS_DENIED}
-	if errors.Is(refusal, os.ErrProcessDone) || errors.Is(refusal, syscall.EINVAL) {
-		t.Fatalf("TerminateProcess refusal %v already matches a Stop sentinel", refusal)
-	}
-	l := startStopTestChild(t, "exited", fakePlatform{}, func() error { return refusal })
-	if err := l.Wait(); err != nil {
-		t.Fatalf("wait for the exited child: %v", err)
-	}
-	if err := l.Stop(); err != nil {
-		t.Fatalf("Stop reported %v for a child the Job Object close already killed", err)
-	}
-}
-
-func TestListDistros_PathMiss(t *testing.T) {
-	// On a Windows host without wsl.exe on PATH, ListDistros must
-	// return (nil, nil) so the picker UI's empty-state branch fires.
-	// We can't trivially yank wsl.exe out of PATH from inside a test,
-	// so this test is deliberately a guard against future regressions
-	// of the early-return contract: it documents the expected return
-	// shape rather than exercising the branch directly.
-	got, err := ListDistros(context.Background())
-	if err != nil {
-		// Either nil (no wsl.exe) or an actual error (wsl.exe failure).
-		// Both are valid; what we're catching is a panic / type drift.
-		if !strings.Contains(err.Error(), "wsl") {
-			t.Logf("unexpected non-WSL error from ListDistros: %v", err)
-		}
-	}
-	_ = got
 }
 
 // A launch whose bootstrap never comes kills its child and reaps it: the

@@ -107,26 +107,18 @@ func addWorktree(t *testing.T, repo, name string) string {
 	return path
 }
 
-func TestFirstWatchReportsTheProjectOnce(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
-	rec := newRecorder()
-	m := newTestManager(t, rec, Config{})
-
-	m.SetProjects([]string{repo})
-
-	rec.waitCount(t, repo, 1, 5*time.Second)
-	rec.assertNoMore(t, repo, 150*time.Millisecond)
-	if got := m.Projects(); len(got) != 1 || got[0] != repo {
-		t.Fatalf("Projects() = %v, want [%s]", got, repo)
-	}
-}
-
 func TestRegistryChangesAreReported(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	rec := newRecorder()
 	m := newTestManager(t, rec, Config{})
 	m.SetProjects([]string{repo})
+
+	// The first watch reports the project once.
 	rec.waitCount(t, repo, 1, 5*time.Second)
+	rec.assertNoMore(t, repo, 150*time.Millisecond)
+	if got := m.Projects(); len(got) != 1 || got[0] != repo {
+		t.Fatalf("Projects() = %v, want [%s]", got, repo)
+	}
 
 	// `worktrees/` did not exist when the project was first watched: the
 	// common-dir watch is what sees it appear.

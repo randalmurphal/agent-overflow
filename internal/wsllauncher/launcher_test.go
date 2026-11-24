@@ -340,33 +340,19 @@ func TestDrainStderr_ForwardsUntilEOF(t *testing.T) {
 	}
 }
 
-func TestReadBootstrapLine_RejectsMalformedJSON(t *testing.T) {
-	stdin := strings.NewReader("__AO_BOOTSTRAP__: not-json\n")
-	_, err := readBootstrapLine(context.Background(), stdin, DefaultBootstrapPrefix, nil)
-	if err == nil {
-		t.Fatal("expected error on malformed JSON")
-	}
-	if !strings.Contains(err.Error(), "decode bootstrap") {
-		t.Fatalf("unexpected error message: %q", err.Error())
-	}
-}
-
-func TestReadBootstrapLine_RejectsZeroPort(t *testing.T) {
-	stdin := strings.NewReader("__AO_BOOTSTRAP__: {\"port\":0,\"token\":\"abc\"}\n")
-	_, err := readBootstrapLine(context.Background(), stdin, DefaultBootstrapPrefix, nil)
-	if err == nil {
-		t.Fatal("expected error on zero port")
-	}
-	if !strings.Contains(err.Error(), "invalid bootstrap") {
-		t.Fatalf("unexpected error message: %q", err.Error())
-	}
-}
-
-func TestReadBootstrapLine_RejectsEmptyToken(t *testing.T) {
-	stdin := strings.NewReader("__AO_BOOTSTRAP__: {\"port\":1234,\"token\":\"\"}\n")
-	_, err := readBootstrapLine(context.Background(), stdin, DefaultBootstrapPrefix, nil)
-	if err == nil {
-		t.Fatal("expected error on empty token")
+func TestReadBootstrapLine_RejectsABadStdout(t *testing.T) {
+	for _, tc := range []struct{ name, stdout, want string }{
+		{"malformed JSON", "__AO_BOOTSTRAP__: not-json\n", "decode bootstrap"},
+		{"zero port", "__AO_BOOTSTRAP__: {\"port\":0,\"token\":\"abc\"}\n", "invalid bootstrap"},
+		{"empty token", "__AO_BOOTSTRAP__: {\"port\":1234,\"token\":\"\"}\n", "invalid bootstrap"},
+		{"stdout closed before the bootstrap", "oops\n", "closed stdout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := readBootstrapLine(context.Background(), strings.NewReader(tc.stdout), DefaultBootstrapPrefix, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("readBootstrapLine(%q) error = %v, want one containing %q", tc.stdout, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -422,17 +408,6 @@ func TestReadBootstrapLine_TimeoutWithClose_GoroutineExits(t *testing.T) {
 	// before its "child closed stdout" branch runs.
 	if elapsed > 250*time.Millisecond {
 		t.Fatalf("readBootstrapLine took %v, want < 250ms (goroutine likely leaked)", elapsed)
-	}
-}
-
-func TestReadBootstrapLine_StdoutCloseBeforeBootstrap(t *testing.T) {
-	stdin := strings.NewReader("oops\n")
-	_, err := readBootstrapLine(context.Background(), stdin, DefaultBootstrapPrefix, nil)
-	if err == nil {
-		t.Fatal("expected error when stdout closes without bootstrap")
-	}
-	if !strings.Contains(err.Error(), "closed stdout") {
-		t.Fatalf("unexpected error message: %q", err.Error())
 	}
 }
 

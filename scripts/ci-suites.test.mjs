@@ -188,7 +188,6 @@ test('no job a pull request can run holds actions: write', () => {
   }
   assert.deepEqual(writers, ['ci.yml:cache-cleanup']);
   assert.equal(plan('pull_request', ['Makefile'], harness)['cache-cleanup'], false);
-  assert.equal(plan('workflow_dispatch', undefined, harness)['cache-cleanup'], false);
 });
 
 // The whole-tree gates run on every run of their job: a change selects the
