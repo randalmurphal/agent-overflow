@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -138,10 +139,22 @@ func TestHarnessSendAtRestOnly(t *testing.T) {
 	}
 	withSession(idle)
 
-	// An action holding the thread's lock while a completion is published
-	// holds the send back. The floor is read once the send is admitted, so
-	// that completion is at or below it.
-	unlock := app.threadLocks().Lock(idle.ID)
+	// The floor is read once the send is admitted and before its turn is
+	// asked for. A completion published while an action holds the thread's
+	// lock and the send waits is at or below it; one published after
+	// placement, at the send's "placed" stage, is above it.
+	unlock := sync.OnceFunc(app.threadLocks().Lock(idle.ID))
+	t.Cleanup(unlock)
+	var afterPlacement transport.Event
+	app.sendStageFn = func(threadID, stage string) {
+		if threadID != idle.ID || stage != "placed" {
+			return
+		}
+		var err error
+		if afterPlacement, err = bus.Emit(eventchan.ProviderTurnCompleted, map[string]any{"threadId": "elsewhere", "turnIndex": 0}); err != nil {
+			t.Error(err)
+		}
+	}
 	type answer struct {
 		got harnessrpc.HarnessSendResult
 		err error
@@ -151,8 +164,8 @@ func TestHarnessSendAtRestOnly(t *testing.T) {
 		got, err := host.Send(context.Background(), idle.ID, "at rest", true)
 		answered <- answer{got, err}
 	}()
-	waitUntil(t, 5*time.Second, func() bool { return app.threadLocks().Refs(idle.ID) == 2 })
-	published, err := bus.Emit(eventchan.ProviderTurnCompleted, map[string]any{"threadId": idle.ID, "turnIndex": 0})
+	waitForThreadLockRefs(t, app.threadLocks(), idle.ID, 2)
+	whileWaiting, err := bus.Emit(eventchan.ProviderTurnCompleted, map[string]any{"threadId": idle.ID, "turnIndex": 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,8 +175,12 @@ func TestHarnessSendAtRestOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Send at rest only to an idle thread: %v", err)
 	}
-	if got.CompletionsAfter < published.Seq {
-		t.Fatalf("CompletionsAfter = %d, want at or above %d, the completion published while the send waited for the lock", got.CompletionsAfter, published.Seq)
+	if afterPlacement.Seq == 0 {
+		t.Fatal("the at-rest send never reached its placed stage")
+	}
+	if got.CompletionsAfter < whileWaiting.Seq || got.CompletionsAfter >= afterPlacement.Seq {
+		t.Fatalf("CompletionsAfter = %d, want at or above %d (published while the send waited for the lock) and below %d (published after placement)",
+			got.CompletionsAfter, whileWaiting.Seq, afterPlacement.Seq)
 	}
 	rows := userRows(idle.ID)
 	if len(rows) != 1 || got.Queued || got.TurnIndex != rows[0].TurnIndex || got.TurnIndex != 1 {
