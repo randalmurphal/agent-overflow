@@ -4894,7 +4894,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // Spring canceled — scrollTop stops.
       const afterEscape = geom.scrollTop;
-      for (let i = 0; i < 5; i++) await nextFrame();
+      for (let i = 0; i < 20; i++) await nextFrame();
       expect(geom.scrollTop).toBe(afterEscape);
       expect(geom.scrollTop).toBeLessThan(800); // didn't arrive after stop
     });
