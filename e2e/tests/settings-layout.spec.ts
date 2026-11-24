@@ -18,7 +18,6 @@ const VIEWPORTS = [1280, 1024, 800].map((width) => ({ width, height: 760 }));
 
 test('settings pages fit a 1280px, 1024px and 800px window', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.setViewportSize(VIEWPORTS[0]);
   const harness = await launchHarness();
   try {
     expect(await settingsLayoutFaults(harness, page, false, VIEWPORTS)).toEqual([]);
