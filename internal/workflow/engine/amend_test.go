@@ -137,52 +137,41 @@ func TestAmendSeedsRefusesATerminalRun(t *testing.T) {
 	requireSeeds(t, h, item.ID, `{"fix-budget":2}`)
 }
 
-// An undeclared key is refused naming the ones that exist, because the fix is a
-// name the caller has to be able to read off the refusal.
-func TestAmendSeedsRefusesAnUndeclaredKeyNamingTheDeclaredOnes(t *testing.T) {
-	h := newSeededHarness(t)
-	item := startSeeded(t, h, `{"fix-budget":2}`)
-	parkStuck(t, h, item.ID)
+// A bad change to a parked run is refused and leaves its seeds as they were.
+func TestAmendSeedsRefusesABadChangeToAParkedRun(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change map[string]any
+		wants  []string
+	}{
+		// The refusal names the declared keys, because the fix is a name the
+		// caller has to be able to read off it.
+		{"an undeclared key", map[string]any{"fixbudget": float64(4)}, []string{`"fixbudget" is not an input`, "fix-budget, label"}},
+		// The SAME validator a start seed passes through judges the value, so a
+		// value accepted at start and one accepted later cannot be judged by
+		// different rules.
+		{"a value of the wrong type", map[string]any{"fix-budget": "four"}, []string{"$.seeds.fix-budget"}},
+		// Naming nothing is not a no-op write: an amendment that changed nothing
+		// and reported success is indistinguishable from one that applied.
+		{"an empty change", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newSeededHarness(t)
+			item := startSeeded(t, h, `{"fix-budget":2}`)
+			parkStuck(t, h, item.ID)
 
-	_, err := h.engine.AmendSeeds(item.ID, map[string]any{"fixbudget": float64(4)})
-	if err == nil {
-		t.Fatal("an undeclared seed was accepted")
+			_, err := h.engine.AmendSeeds(item.ID, tc.change)
+			if err == nil {
+				t.Fatal("the amendment was accepted")
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("amend error = %v, want it to contain %q", err, want)
+				}
+			}
+			requireSeeds(t, h, item.ID, `{"fix-budget":2}`)
+		})
 	}
-	for _, want := range []string{`"fixbudget" is not an input`, "fix-budget, label"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("amend error = %v, want it to contain %q", err, want)
-		}
-	}
-	requireSeeds(t, h, item.ID, `{"fix-budget":2}`)
-}
-
-// A declared key with the wrong type is refused by the SAME validator a start
-// seed passes through, so a value accepted at start and one accepted later
-// cannot be judged by different rules.
-func TestAmendSeedsTypechecksAgainstTheInputSchema(t *testing.T) {
-	h := newSeededHarness(t)
-	item := startSeeded(t, h, `{"fix-budget":2}`)
-	parkStuck(t, h, item.ID)
-
-	_, err := h.engine.AmendSeeds(item.ID, map[string]any{"fix-budget": "four"})
-	if err == nil || !strings.Contains(err.Error(), "$.seeds.fix-budget") {
-		t.Fatalf("amend error = %v, want the schema validator's own finding", err)
-	}
-	requireSeeds(t, h, item.ID, `{"fix-budget":2}`)
-}
-
-// Naming nothing is a refusal rather than a no-op write: an amendment that
-// changed nothing and reported success is indistinguishable from one that
-// applied.
-func TestAmendSeedsRefusesAnEmptyChange(t *testing.T) {
-	h := newSeededHarness(t)
-	item := startSeeded(t, h, `{"fix-budget":2}`)
-	parkStuck(t, h, item.ID)
-
-	if _, err := h.engine.AmendSeeds(item.ID, nil); err == nil {
-		t.Fatal("an amendment naming no seed was accepted")
-	}
-	requireSeeds(t, h, item.ID, `{"fix-budget":2}`)
 }
 
 // A fan-out park is repaired in place by a bare resume, and that attempt runs on

@@ -154,23 +154,20 @@ func TestFromItemInvalidJSONReturnsError(t *testing.T) {
 	}
 }
 
-func TestEncodeDraftSourceReturnsEmptyForNil(t *testing.T) {
-	got, err := EncodeDraftSource(nil)
-	if err != nil {
-		t.Fatalf("EncodeDraftSource: %v", err)
-	}
-	if got != "" {
-		t.Fatalf("nil ref should encode to empty string, got %q", got)
-	}
-}
-
-func TestEncodeDraftSourceReturnsEmptyForEmptyItemID(t *testing.T) {
-	got, err := EncodeDraftSource(&store.ProposedPlanSourceRef{ThreadID: "t1", ItemID: ""})
-	if err != nil {
-		t.Fatalf("EncodeDraftSource: %v", err)
-	}
-	if got != "" {
-		t.Fatalf("empty ItemID should encode to empty string, got %q", got)
+func TestEncodeDraftSourceReturnsEmptyWithoutAnItem(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ref  *store.ProposedPlanSourceRef
+	}{
+		{"nil ref", nil},
+		{"empty ItemID", &store.ProposedPlanSourceRef{ThreadID: "t1", ItemID: ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := EncodeDraftSource(tc.ref)
+			if err != nil || got != "" {
+				t.Fatalf("EncodeDraftSource = %q, %v; want an empty string", got, err)
+			}
+		})
 	}
 }
 

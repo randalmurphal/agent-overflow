@@ -4,38 +4,44 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
+// Append writes each non-blank line once, its line ending normalized.
 func TestAppendWritesJSONLines(t *testing.T) {
-	tr, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-
-	path, err := tr.Append([]string{
-		`{"label":"chat.state","data":{"threadId":"thread-1"}}`,
-		`{"label":"chat.dom"}`,
-	})
-	if err != nil {
-		t.Fatalf("Append returned error: %v", err)
-	}
-	if path != tr.path {
-		t.Fatalf("Append path = %q, want %q", path, tr.path)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read trace file: %v", err)
-	}
-	got := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(got) != 2 {
-		t.Fatalf("line count = %d, want 2; data=%q", len(got), data)
-	}
-	if got[0] != `{"label":"chat.state","data":{"threadId":"thread-1"}}` {
-		t.Fatalf("first line = %q", got[0])
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"two lines", []string{`{"label":"chat.state","data":{"threadId":"thread-1"}}`, `{"label":"chat.dom"}`},
+			`{"label":"chat.state","data":{"threadId":"thread-1"}}` + "\n" + `{"label":"chat.dom"}` + "\n"},
+		{"blank lines skipped", []string{"", "   ", `{"a":1}`, "\r\n"}, `{"a":1}` + "\n"},
+		{"trailing newline stripped", []string{`{"a":1}` + "\r\n"}, `{"a":1}` + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := New(t.TempDir())
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			path, err := tr.Append(tc.lines)
+			if err != nil {
+				t.Fatalf("Append returned error: %v", err)
+			}
+			if path != tr.path {
+				t.Fatalf("Append path = %q, want %q", path, tr.path)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read trace file: %v", err)
+			}
+			if string(data) != tc.want {
+				t.Fatalf("content = %q, want %q", data, tc.want)
+			}
+		})
 	}
 }
 
@@ -64,21 +70,35 @@ func TestNewErrorsRequiresConfigDir(t *testing.T) {
 	}
 }
 
-func TestAppendRejectsEmbeddedNewlines(t *testing.T) {
-	tr, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-
-	// json.Valid accepts newlines as inter-token whitespace, so without
-	// the explicit check this single "line" would write three physical
-	// lines — a forged standalone record plus dangling fragments.
-	smuggled := "{\"a\":\n{\"injected\":\"fake record\"}\n}"
-	if _, err := tr.Append([]string{smuggled}); err == nil {
-		t.Fatal("Append accepted a line with embedded newlines")
-	}
-	if _, err := os.Stat(tr.path); !os.IsNotExist(err) {
-		t.Fatalf("rejected batch still created the file (err=%v)", err)
+// A batch with any bad line is refused whole, before the file is created.
+func TestAppendRejectsABadBatch(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		// json.Valid accepts newlines as inter-token whitespace, so without
+		// the explicit check this single "line" would write three physical
+		// lines — a forged standalone record plus dangling fragments.
+		{"embedded newlines", []string{"{\"a\":\n{\"injected\":\"fake record\"}\n}"}, "embedded newlines"},
+		{"invalid JSON", []string{`{"label":`}, "not valid JSON"},
+		{"oversized line", []string{`{"value":"` + strings.Repeat("x", MaxLineBytes) + `"}`}, "max"},
+		{"oversized batch", slices.Repeat([]string{`{"value":"` + strings.Repeat("x", 3000) + `"}`}, MaxBatchLines), "batch"},
+		{"too many lines", slices.Repeat([]string{`{"x":1}`}, MaxBatchLines+1), "max"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := New(t.TempDir())
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			_, err = tr.Append(tc.lines)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want one containing %q", err, tc.want)
+			}
+			if _, err := os.Stat(tr.path); !os.IsNotExist(err) {
+				t.Fatalf("rejected batch still created the file (err=%v)", err)
+			}
+		})
 	}
 }
 
@@ -122,182 +142,44 @@ func TestAppendEmptyBatchIsNoOp(t *testing.T) {
 	}
 }
 
-func TestAppendRejectsInvalidJSON(t *testing.T) {
-	tr, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-
-	_, err = tr.Append([]string{`{"label":`})
-	if err == nil {
-		t.Fatal("Append returned nil error")
-	}
-	if !strings.Contains(err.Error(), "not valid JSON") {
-		t.Fatalf("error = %q, want invalid JSON message", err)
-	}
-}
-
-func TestAppendRejectsOversizedLine(t *testing.T) {
-	tr, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-	line := `{"value":"` + strings.Repeat("x", MaxLineBytes) + `"}`
-
-	_, err = tr.Append([]string{line})
-	if err == nil {
-		t.Fatal("Append returned nil error")
-	}
-	if !strings.Contains(err.Error(), "max") {
-		t.Fatalf("error = %q, want max size message", err)
-	}
-}
-
-func TestAppendRejectsOversizedBatch(t *testing.T) {
-	tr, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-	line := `{"value":"` + strings.Repeat("x", 3000) + `"}`
-	lines := make([]string, 0, MaxBatchLines)
-	for i := 0; i < MaxBatchLines; i++ {
-		lines = append(lines, line)
-	}
-
-	_, err = tr.Append(lines)
-	if err == nil {
-		t.Fatal("Append returned nil error")
-	}
-	if !strings.Contains(err.Error(), "batch") {
-		t.Fatalf("error = %q, want batch size message", err)
-	}
-}
-
-func TestAppendRejectsTooManyLines(t *testing.T) {
-	tr, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-	lines := make([]string, MaxBatchLines+1)
-	for i := range lines {
-		lines[i] = `{"x":1}`
-	}
-
-	_, err = tr.Append(lines)
-	if err == nil {
-		t.Fatal("Append returned nil error")
-	}
-	if !strings.Contains(err.Error(), "max") {
-		t.Fatalf("error = %q, want max lines message", err)
-	}
-}
-
-func TestAppendSkipsBlankLines(t *testing.T) {
-	tr, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-
-	path, err := tr.Append([]string{"", "   ", `{"a":1}`, "\r\n"})
-	if err != nil {
-		t.Fatalf("Append returned error: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read trace file: %v", err)
-	}
-	if strings.TrimSpace(string(data)) != `{"a":1}` {
-		t.Fatalf("content = %q, want single JSON line", data)
-	}
-}
-
-func TestAppendStripsTrailingNewlines(t *testing.T) {
-	tr, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-
-	path, err := tr.Append([]string{`{"a":1}` + "\r\n"})
-	if err != nil {
-		t.Fatalf("Append returned error: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read trace file: %v", err)
-	}
-	if string(data) != `{"a":1}`+"\n" {
-		t.Fatalf("content = %q, want single normalized line", data)
-	}
-}
-
+// The first rotation finds no predecessor; the second replaces the first.
 func TestAppendRotatesAtMaxFileBytes(t *testing.T) {
 	dir := t.TempDir()
 	tr, err := New(dir)
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
-
-	// Pre-seed the trace file at MaxFileBytes so any non-empty append
-	// pushes size+pending past the cap and forces rotation.
 	if err := os.MkdirAll(filepath.Join(dir, DirName), 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	bulk := strings.Repeat("a", MaxFileBytes)
-	if err := os.WriteFile(tr.path, []byte(bulk), 0644); err != nil {
-		t.Fatalf("seed trace file: %v", err)
-	}
+	for _, fill := range []string{"a", "b"} {
+		// Pre-seed the trace file at MaxFileBytes so any non-empty append
+		// pushes size+pending past the cap and forces rotation.
+		bulk := strings.Repeat(fill, MaxFileBytes)
+		if err := os.WriteFile(tr.path, []byte(bulk), 0644); err != nil {
+			t.Fatalf("seed trace file: %v", err)
+		}
 
-	if _, err := tr.Append([]string{`{"a":1}`}); err != nil {
-		t.Fatalf("Append returned error: %v", err)
-	}
+		if _, err := tr.Append([]string{`{"a":1}`}); err != nil {
+			t.Fatalf("rotation of %q: Append returned error: %v", fill, err)
+		}
 
-	rotated, err := os.ReadFile(tr.path + ".1")
-	if err != nil {
-		t.Fatalf("read rotated file: %v", err)
-	}
-	if len(rotated) != len(bulk) {
-		t.Fatalf("rotated size = %d, want %d", len(rotated), len(bulk))
-	}
+		rotated, err := os.ReadFile(tr.path + ".1")
+		if err != nil {
+			t.Fatalf("read rotated file: %v", err)
+		}
+		if string(rotated) != bulk {
+			t.Fatalf("rotation of %q: rotated file is %d bytes starting %.8q, want the %d-byte trace it replaced",
+				fill, len(rotated), rotated, len(bulk))
+		}
 
-	current, err := os.ReadFile(tr.path)
-	if err != nil {
-		t.Fatalf("read current file: %v", err)
-	}
-	if string(current) != `{"a":1}`+"\n" {
-		t.Fatalf("current file = %q, want single appended line", current)
-	}
-}
-
-func TestAppendReplacesPreviousRotation(t *testing.T) {
-	dir := t.TempDir()
-	tr, err := New(dir)
-	if err != nil {
-		t.Fatalf("New returned error: %v", err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(dir, DirName), 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(tr.path+".1", []byte("stale"), 0644); err != nil {
-		t.Fatalf("seed stale rotation: %v", err)
-	}
-	bulk := strings.Repeat("b", MaxFileBytes)
-	if err := os.WriteFile(tr.path, []byte(bulk), 0644); err != nil {
-		t.Fatalf("seed trace file: %v", err)
-	}
-
-	if _, err := tr.Append([]string{`{"a":1}`}); err != nil {
-		t.Fatalf("Append returned error: %v", err)
-	}
-
-	rotated, err := os.ReadFile(tr.path + ".1")
-	if err != nil {
-		t.Fatalf("read rotated file: %v", err)
-	}
-	if string(rotated) == "stale" {
-		t.Fatal("stale rotation was not replaced")
+		current, err := os.ReadFile(tr.path)
+		if err != nil {
+			t.Fatalf("read current file: %v", err)
+		}
+		if string(current) != `{"a":1}`+"\n" {
+			t.Fatalf("current file = %q, want single appended line", current)
+		}
 	}
 }
 

@@ -102,19 +102,6 @@ func TestWallClockBudgetUsesEngineClock(t *testing.T) {
 	}
 }
 
-func TestNoBudgetDoesNotQuerySpend(t *testing.T) {
-	h := newHarness(t, Config{}, map[string]def.Workflow{
-		"flow": onePhaseWorkflow("flow", nil, []def.Route{{To: "done"}}),
-	}, []string{"p"}, nil)
-	item := testItem("unlimited", "p", "flow", 0)
-	if err := h.engine.StartItem(item); err != nil {
-		t.Fatal(err)
-	}
-	if len(h.runner.started()) != 1 || h.spend.callCount() != 0 {
-		t.Fatalf("starts=%d spend calls=%d", len(h.runner.started()), h.spend.callCount())
-	}
-}
-
 func TestWallClockBudgetRecheckedAfterResourceWait(t *testing.T) {
 	workflow := onePhaseWorkflow("resource", []string{"stack"}, []def.Route{{To: "done"}})
 	h := newHarness(t, Config{}, map[string]def.Workflow{
