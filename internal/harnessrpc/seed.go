@@ -697,6 +697,9 @@ func (h *Harness) HarnessReset() (err error) {
 	h.mu.Unlock()
 	h.forge.Reset()
 	h.forgeAPIServer().setOffline(false)
+	if err := h.resetTrackers(); err != nil {
+		return err
+	}
 	if h.config.Host != nil {
 		if usage := h.config.Host.ClaudeUsageFake(); usage != nil {
 			usage.Clear("")

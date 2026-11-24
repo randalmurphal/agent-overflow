@@ -214,9 +214,10 @@ func TestAFailingBootStepFailsTheBootAfterTheOtherSteps(t *testing.T) {
 }
 
 // The goroutines the unattended work leaves running with no narrower owner
-// are ones Shutdown joins. The worktree watch's first read waits for the
-// first catalog reads, which no client makes here, and the binary watcher,
-// the domain certificate loop and the tailnet loop run until shutdown.
+// are ones Shutdown joins. The worktree watch's first read and the issue
+// trackers' cleanup wait for the first catalog reads, which no client
+// makes here, and the binary watcher, the domain certificate loop and the
+// tailnet loop run until shutdown.
 func TestShutdownJoinsTheLoopsTheUnattendedWorkLeavesRunning(t *testing.T) {
 	a := newBootTestApp(t)
 	t.Cleanup(func() {
@@ -227,8 +228,8 @@ func TestShutdownJoinsTheLoopsTheUnattendedWorkLeavesRunning(t *testing.T) {
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if got := a.unattendedLoops.members(); got != 4 {
-		t.Errorf("unattended loops after the boot = %d, want 4", got)
+	if got := a.unattendedLoops.members(); got != 5 {
+		t.Errorf("unattended loops after the boot = %d, want 5", got)
 	}
 	if err := a.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)

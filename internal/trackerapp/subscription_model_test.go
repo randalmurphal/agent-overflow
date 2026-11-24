@@ -143,7 +143,7 @@ func subscriptionModel(t *testing.T, r *rand.Rand) {
 			s.board = boards[r.IntN(len(boards))]
 			scope := Scope{Connection: m.conn.ID, Board: s.board}
 			started := m.svc.boardPumpOf(scope) == nil
-			a := must[BoardSubscription](t)(m.svc.SubscribeBoard(m.project(), scope, []Section{{Kind: SectionBacklog}}))
+			a := must[BoardSubscription](t)(m.svc.SubscribeBoard(m.project(), scope, []Section{{Kind: SectionBacklog}}, untied))
 			s.handle, s.applied, s.failure = a.ID, a.Seq, a.Failure
 			if started {
 				// A new pump's first tick runs on its own; a refresh, which
@@ -326,7 +326,7 @@ func subscriptionModel(t *testing.T, r *rand.Rand) {
 				t.Errorf("%s: the subscriber holds a view loaded %v (%x); a fresh answer gives loaded %v (%x)", target, s.loaded, s.digest, loaded, digest)
 			}
 		} else {
-			fresh = must[BoardSubscription](t)(m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: s.board}, nil)).Failure
+			fresh = must[BoardSubscription](t)(m.svc.SubscribeBoard(m.project(), Scope{Connection: m.conn.ID, Board: s.board}, nil, untied)).Failure
 		}
 		if !sameFailure(s.failure, fresh) {
 			t.Errorf("%s: the subscriber applied %+v; a fresh answer gives %+v", target, s.failure, fresh)

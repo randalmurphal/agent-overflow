@@ -235,7 +235,8 @@ func (s *Service) takeTicketHandle(key ticketKey) (id string, tp *ticketPump, st
 		s.subs.tickets[key] = tp
 		start = true
 	}
-	id = s.takeHandleLocked(&handle{ticket: tp}, &tp.core)
+	id = newHandleID()
+	s.takeHandleLocked(id, &handle{ticket: tp}, &tp.core)
 	if !start {
 		// A shown handle on a hidden pump shows it: its connection's round
 		// follows.

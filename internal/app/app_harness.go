@@ -22,6 +22,7 @@ import (
 	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/providerupdate/updatefake"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/def"
 
@@ -36,12 +37,15 @@ type harnessHost struct {
 // HarnessPaths is the filesystem/configuration snapshot prepared by the
 // executable's harness or soak boot path.
 type HarnessPaths struct {
-	DataRoot        string
-	DataDir         string
-	HomeDir         string
-	CredentialHome  string
-	MockProvider    string
-	MockForge       string
+	DataRoot       string
+	DataDir        string
+	HomeDir        string
+	CredentialHome string
+	MockProvider   string
+	MockForge      string
+	// Trackers are the fake issue trackers whose Origin this App was
+	// isolated with (IsolationConfig.TrackerOrigin).
+	Trackers        *harnessrpc.TrackerFake
 	BuildStamp      string
 	AssetsFreshness string
 	AssetsDigest    string
@@ -63,6 +67,7 @@ func NewHarness(app *App, paths HarnessPaths) *harnessrpc.Harness {
 		CredentialHome:  paths.CredentialHome,
 		MockProvider:    paths.MockProvider,
 		MockForge:       paths.MockForge,
+		Trackers:        paths.Trackers,
 		AssetsFreshness: paths.AssetsFreshness,
 		AssetsDigest:    paths.AssetsDigest,
 		ShutdownTimeout: paths.ShutdownTimeout,
@@ -412,6 +417,23 @@ func (h *harnessHost) ResetProviderConnections() error {
 		return nil
 	}
 	return h.app.sessionRuntime.Connections().Reset()
+}
+
+func (h *harnessHost) ResetTrackerConnections() error {
+	if h.app.trackers == nil {
+		return nil
+	}
+	list, err := h.app.trackers.Connections()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, c := range list {
+		if err := h.app.trackers.Remove(c.ID); err != nil && !errors.Is(err, trackerapp.ErrNotFound) {
+			errs = append(errs, fmt.Errorf("remove tracker connection %s: %w", c.ID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (h *harnessHost) CancelProviderLogins() {

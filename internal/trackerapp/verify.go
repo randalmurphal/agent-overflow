@@ -52,11 +52,11 @@ func (s *Service) Verify(ctx context.Context, id string) (Connection, error) {
 			return Connection{}, err
 		}
 		// No client means no call: the connection's problem is why.
-		moved, err := s.settle(id, row.Kind, stamp{}, err, nil)
+		_, changed, err := s.settle(id, row.Kind, stamp{}, err, nil)
 		if err != nil {
 			return Connection{}, err
 		}
-		if moved {
+		if changed {
 			s.changed()
 		}
 		return s.view(row), nil
@@ -70,10 +70,10 @@ func (s *Service) Verify(ctx context.Context, id string) (Connection, error) {
 	verification, callErr := s.identity(ctx, row, c)
 
 	s.opMu.Lock()
-	out, moved, err := s.settleVerification(row, at, file, verification, callErr)
+	out, changed, err := s.settleVerification(row, at, file, verification, callErr)
 	s.forgetHolds()
 	s.opMu.Unlock()
-	if moved {
+	if changed {
 		s.changed()
 	}
 	return out, err
@@ -123,7 +123,8 @@ func (s *Service) identity(ctx context.Context, row store.TrackerConnection, c *
 // began at at, through settle: one whose outcome settle does not apply
 // records nothing, its verification row included, and returns the
 // connection as it is. file is the key file's state the verification
-// read. The caller holds opMu.
+// read. It reports whether what a list shows changed (settle). The caller
+// holds opMu.
 func (s *Service) settleVerification(row store.TrackerConnection, at stamp, file keyfile.Status, v store.TrackerVerification, callErr error) (Connection, bool, error) {
 	record := func() error {
 		v.VerifiedAt = s.now().UnixMilli()
@@ -134,16 +135,16 @@ func (s *Service) settleVerification(row store.TrackerConnection, at stamp, file
 		row = recorded
 		return nil
 	}
-	moved, err := s.settle(row.ID, row.Kind, at, callErr, record)
+	applied, changed, err := s.settle(row.ID, row.Kind, at, callErr, record)
 	switch {
 	case err != nil:
-		return Connection{}, false, err
-	case moved:
-		return s.viewWith(row, file), true, nil
+		return Connection{}, changed, err
+	case applied:
+		return s.viewWith(row, file), changed, nil
 	}
 	current, err := s.get(row.ID)
 	if err != nil {
-		return Connection{}, false, err
+		return Connection{}, changed, err
 	}
-	return s.view(current), false, nil
+	return s.view(current), changed, nil
 }

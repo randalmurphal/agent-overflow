@@ -18,9 +18,10 @@ import (
 // FinishMirrorCleanup drains everything the mirror owes (store
 // FinishMirrorCleanup): detached mirrors, retired boards and unkept
 // issues. It fails with the store's error when one cannot be drained. It
-// runs after a turn off or a removal (cleanupAfter) and from the linked
-// loop once StartLinkedSync armed it; the app calls neither at start yet.
-// With nothing pending it is one statement. The store serializes calls.
+// runs after a turn off or a removal (cleanupAfter), after each round of
+// the linked loop, and once the first reads settle at the app's start, whose call
+// is the only one that runs with no connection on. With nothing pending
+// it is one statement. The store serializes calls.
 // Stop ends a cleanup in flight before its next transaction, which then
 // returns ErrStopped; the next cleanup finishes what it left.
 func (s *Service) FinishMirrorCleanup() error {

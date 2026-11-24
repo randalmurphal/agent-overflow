@@ -392,6 +392,11 @@ func (a *App) startUnattendedWork() []bootStep {
 		// exactly what a trial has to prove works; what waits is the part that
 		// acts.
 		infallibleBootStep(a.armWorkflowAutoResumes),
+		// Arm the issue trackers' linked-issues loop and finish the mirror
+		// cleanup the last run left, once the first client's reads settle:
+		// both reach the trackers or delete rows, and neither may hold up
+		// the first window (app_tracker.go).
+		a.reportedBootStep("tracker.start", "Starting the issue trackers' sync", a.startTrackers),
 	}
 }
 

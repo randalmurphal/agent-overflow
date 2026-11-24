@@ -381,6 +381,21 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
     __attachBackendForTest(HOME_DESCRIPTOR, mockClient as unknown as Parameters<typeof __attachBackendForTest>[1]);
   });
 
+  // A tracker board subscribe goes to the computer that owns its project,
+  // and a call on its handle to the computer it is pinned to.
+  it('routes a tracker board subscribe by its project and its handle by the pin', async () => {
+    const SUBSCRIBE_TRACKER_BOARD = 2857898243;
+    const TRACKER_BOARD_PATCH = 2847247437;
+    const callByID = remoteClient({ id: 'handle-1' });
+    __resetEntityIndexForTest();
+    noteProject('project-on-laptop', REMOTE);
+    await Call.ByID(SUBSCRIBE_TRACKER_BOARD, 'project-on-laptop', 'conn', '7', []);
+    await withBackendTarget(REMOTE, () => Call.ByID(TRACKER_BOARD_PATCH, 'handle-1', [], ['10001'], { lifetime: 0, revision: 0 }));
+    expect(callByID.mock.calls.map(([method]) => method)).toEqual([SUBSCRIBE_TRACKER_BOARD, TRACKER_BOARD_PATCH]);
+    expect(mockClient.callByID).not.toHaveBeenCalled();
+    __resetEntityIndexForTest();
+  });
+
   it('notes a single minted id against the pinned backend', async () => {
     const callByID = remoteClient({ terminalID: 'term-1' });
 
@@ -390,8 +405,14 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
     expect(terminalBackend('term-1')).toBe(REMOTE);
   });
 
-  // The last three name a subscription id, which every caller pins.
-  it.each([1098302047, 3632185196, 1186337974, 70120675, 1078249699, 2888550814, 3263989430])('refuses unknown entity ownership with two computers for method %s', async (method) => {
+  // From 1078249699 on they name a subscription id, which every caller
+  // pins: the PR updates', git status's and a tracker board's (TrackerBoard,
+  // TrackerSectionRows, TrackerBoardPatch, SetTrackerSubscriptionVisible,
+  // RefreshTrackerSubscription, ReleaseTrackerSubscription).
+  it.each([
+    1098302047, 3632185196, 1186337974, 70120675, 1078249699, 2888550814, 3263989430,
+    3524633257, 4150293291, 2847247437, 2154788414, 247632441, 1393115131,
+  ])('refuses unknown entity ownership with two computers for method %s', async (method) => {
     const callByID = remoteClient(null);
     await expect(Call.ByID(method, 'unseen')).rejects.toThrow('computer that owns');
     expect(callByID).not.toHaveBeenCalled();
