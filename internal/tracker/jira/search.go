@@ -315,35 +315,33 @@ func (c *Client) bulkFetch(ctx context.Context, refs, fields []string, byID bool
 		if len(fields) > 0 {
 			body["fields"] = fields
 		}
-		var v struct {
-			Issues []issueJSON `json:"issues"`
-			Errors []struct {
-				ID      string `json:"id"`
-				Message string `json:"errorMessage"`
-			} `json:"issueErrors"`
-		}
+		var v bulkAnswer
 		resp, err := c.call(ctx, trackerapi.Request{
 			Method: http.MethodPost, Path: apiPath + "issue/bulkfetch", Body: body, ReadOnly: true,
 		}, &v)
+		if err == nil {
+			err = v.check()
+		}
 		if err != nil {
 			return out, fmt.Errorf("jira: bulk fetch from %s: %w", batch[0], err)
 		}
-		if len(v.Issues)+len(v.Errors) < len(batch) {
+		issues, failed := *v.Issues, *v.Errors
+		if len(issues)+len(failed) < len(batch) {
 			left.note(resp)
 		}
 		if byID {
-			if err := checkAnswered(batch, v.Issues); err != nil {
+			if err := checkAnswered(batch, issues); err != nil {
 				return out, fmt.Errorf("jira: bulk fetch from %s: %w", batch[0], err)
 			}
 		}
-		for _, is := range v.Issues {
+		for _, is := range issues {
 			got := is.decode()
 			if got.ID == "" || !returned[got.ID] {
 				returned[got.ID] = true
 				out.Issues = append(out.Issues, got)
 			}
 		}
-		for _, e := range v.Errors {
+		for _, e := range failed {
 			out.Failed = append(out.Failed, BulkFailure(e))
 		}
 	}
@@ -352,6 +350,32 @@ func (c *Client) bulkFetch(ctx context.Context, refs, fields []string, byID bool
 	}
 	out.Complete = len(out.Failed) == 0 && len(out.Issues) == len(refs)
 	return out, nil
+}
+
+// bulkAnswer is a bulk fetch's answer: the issues returned and those Jira
+// could not return. An issue in neither does not exist or is hidden from
+// the user, so both lists are what an absence is read from.
+type bulkAnswer struct {
+	Issues *[]issueJSON `json:"issues"`
+	Errors *[]struct {
+		ID      string `json:"id"`
+		Message string `json:"errorMessage"`
+	} `json:"issueErrors"`
+}
+
+// check refuses an answer missing either list, or holding null for it, as
+// a malformed answer: measured, Jira answers both, as arrays, even when
+// no issue asked exists, so an answer without them (an empty object, an
+// error envelope) says nothing of the issues asked and must not read as
+// every one absent.
+func (a bulkAnswer) check() error {
+	switch {
+	case a.Issues == nil:
+		return &AnswerError{Message: "malformed answer: a bulk fetch answered with no issues list"}
+	case a.Errors == nil:
+		return &AnswerError{Message: "malformed answer: a bulk fetch answered with no issueErrors list"}
+	}
+	return nil
 }
 
 // checkAnswered refuses issues, the answer to a bulk fetch of the IDs

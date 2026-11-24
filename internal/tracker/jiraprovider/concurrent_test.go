@@ -22,7 +22,7 @@ func TestConcurrentUse(t *testing.T) {
 	for id := int64(10001); id <= 10006; id++ {
 		x.set(id, at)
 	}
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", issue("10001", "WEB-1", updatedAt, nil))))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(issue("10001", "WEB-1", updatedAt, nil))))
 	f.On("GET", board4Issues, jiratest.Reply(200, page("", issue("10001", "WEB-1", updatedAt, nil))))
 	f.On("PUT", "/rest/agile/1.0/issue/rank", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(http.StatusNoContent) })
 	var wg sync.WaitGroup

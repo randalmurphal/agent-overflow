@@ -162,6 +162,15 @@ func page(next string, issues ...map[string]any) string {
 	return mustJSON(v)
 }
 
+// bulk is a bulk fetch's answer holding issues, with no issue Jira could
+// not return.
+func bulk(issues ...map[string]any) string {
+	if issues == nil {
+		issues = []map[string]any{}
+	}
+	return mustJSON(map[string]any{"issues": issues, "issueErrors": []any{}})
+}
+
 func mustJSON(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {

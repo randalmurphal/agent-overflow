@@ -193,6 +193,10 @@ func TestBulkFetchByIDRefusesAMalformedAnswer(t *testing.T) {
 		{"no ID", `{"issues":[{"id":"","key":"WEB-1","fields":{}}],"issueErrors":[]}`},
 		{"not asked", `{"issues":[{"id":"10003","key":"WEB-3","fields":{}}],"issueErrors":[]}`},
 		{"twice", `{"issues":[{"id":"10001","key":"WEB-1","fields":{}},{"id":"10001","key":"WEB-1","fields":{}}],"issueErrors":[]}`},
+		{"no lists", `{}`},
+		{"an error envelope", `{"errorMessages":["Bad request"],"errors":{}}`},
+		{"null issues", `{"issues":null,"issueErrors":[]}`},
+		{"no issueErrors", `{"issues":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := jiratest.NewServer(t)
@@ -209,11 +213,33 @@ func TestBulkFetchByIDRefusesAMalformedAnswer(t *testing.T) {
 	if res, err := c.BulkFetchByID(t.Context(), []string{"10001", "10002"}, "status"); err != nil || len(res.Issues) != 1 || res.Complete {
 		t.Fatalf("an answer leaving one out: %+v %v", res, err)
 	}
+	f.On("POST", "/rest/api/3/issue/bulkfetch", jiratest.Reply(200, `{"expand":"","issues":[],"issueErrors":[]}`))
+	if res, err := c.BulkFetchByID(t.Context(), []string{"10001"}, "status"); err != nil || len(res.Issues) != 0 || res.Complete {
+		t.Fatalf("an answer holding none: %+v %v", res, err)
+	}
 	if _, err := c.BulkFetchByID(t.Context(), []string{"WEB-1"}, "status"); err == nil {
 		t.Fatal("a key fetched by ID")
 	}
-	if n := f.Count("POST", "/rest/api/3/issue/bulkfetch"); n != 1 {
-		t.Errorf("%d requests, want 1", n)
+	if n := f.Count("POST", "/rest/api/3/issue/bulkfetch"); n != 2 {
+		t.Errorf("%d requests, want 2", n)
+	}
+}
+
+// A bulk fetch by key or ID, as by ID, fails as a malformed answer
+// (*AnswerError) on an answer without its issues or issueErrors list.
+func TestBulkFetchRefusesAnAnswerWithoutItsLists(t *testing.T) {
+	for _, answer := range []string{`{}`, `{"errorMessages":["Bad request"],"errors":{}}`, `{"issues":null,"issueErrors":[]}`, `{"issues":[]}`} {
+		f := jiratest.NewServer(t)
+		c := newTestClient(t, f)
+		f.On("POST", "/rest/api/3/issue/bulkfetch", jiratest.Reply(200, answer))
+		for name, fetch := range map[string]func() error{
+			"by key": func() error { _, err := c.BulkFetch(t.Context(), []string{"WEB-1"}); return err },
+			"by ID":  func() error { _, err := c.BulkFetchByID(t.Context(), []string{"10001"}); return err },
+		} {
+			if err := fetch(); !isAnswerErr(err) {
+				t.Errorf("%s answered %s: %v; want a malformed answer", name, answer, err)
+			}
+		}
 	}
 }
 
@@ -246,7 +272,7 @@ func TestBulkFetchBatches(t *testing.T) {
 	if n := f.Count("POST", "/rest/api/3/issue/bulkfetch"); n != 2 {
 		t.Errorf("%d requests, want 2", n)
 	}
-	f.On("POST", "/rest/api/3/issue/bulkfetch", jiratest.Reply(200, `{"issues":[{"id":"3","key":"WEB-1"},{"id":"4","key":"WEB-2"}]}`))
+	f.On("POST", "/rest/api/3/issue/bulkfetch", jiratest.Reply(200, `{"issues":[{"id":"3","key":"WEB-1"},{"id":"4","key":"WEB-2"}],"issueErrors":[]}`))
 	if res, err := c.BulkFetch(t.Context(), []string{"WEB-1", "4"}); err != nil || !res.Complete {
 		t.Errorf("every issue returned: %+v %v", res, err)
 	}
@@ -308,7 +334,7 @@ func TestBulkFetchCapacity(t *testing.T) {
 		for _, ref := range req.Refs {
 			issues = append(issues, `{"id":"`+strings.TrimPrefix(ref, "WEB-")+`","key":"`+ref+`"}`)
 		}
-		jiratest.Reply(200, `{"issues":[`+strings.Join(issues, ",")+`]}`)(w, r, b)
+		jiratest.Reply(200, `{"issues":[`+strings.Join(issues, ",")+`],"issueErrors":[]}`)(w, r, b)
 	})
 	res, err := c.BulkFetch(t.Context(), refs, "summary", "status")
 	if err != nil || !res.Complete || !slices.Equal(sizes, []int{500, 500, 1}) {
@@ -344,7 +370,7 @@ func TestBulkFetchRepeatedReference(t *testing.T) {
 				issues = append(issues, fmt.Sprintf(`{"id":"%s","key":"WEB-%s"}`, id, id))
 			}
 		}
-		jiratest.Reply(200, `{"issues":[`+strings.Join(issues, ",")+`]}`)(w, r, b)
+		jiratest.Reply(200, `{"issues":[`+strings.Join(issues, ",")+`],"issueErrors":[]}`)(w, r, b)
 	})
 	res, err := c.BulkFetch(t.Context(), refs)
 	if err != nil || res.Complete || len(res.Issues) != 100 {

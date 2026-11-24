@@ -148,7 +148,7 @@ func TestNewRowsUnderOneCredential(t *testing.T) {
 	s.on("POST", matchPath, func(string, *http.Request) string {
 		return `{"matches":[{"matchedIssues":[10005],"errors":[]},{"matchedIssues":[10005],"errors":[]}]}`
 	})
-	s.on("POST", bulkFetchPath, func(string, *http.Request) string { return page("", listedIssue("api/3")) })
+	s.on("POST", bulkFetchPath, func(string, *http.Request) string { return bulk(listedIssue("api/3")) })
 	got, err := p.NewRows(t.Context(), "10005", []tracker.BoardID{"3", "4"})
 	if err != nil {
 		t.Fatal(err)

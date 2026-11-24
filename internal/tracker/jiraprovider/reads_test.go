@@ -320,7 +320,7 @@ func TestBoardRowsWithDeletedIssues(t *testing.T) {
 			})
 			f.On("POST", bulkFetchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
 				jiratest.WantJSON(t, b, `{"issueIdsOrKeys":["10001","10002","10009"],"fields":["status"]}`)
-				jiratest.Reply(200, page("", one, two))(w, r, b)
+				jiratest.Reply(200, bulk(one, two))(w, r, b)
 			})
 			// The bulk fetch proved the deleted issue absent: no match is
 			// asked about it.
@@ -338,7 +338,7 @@ func TestBoardRowsWithDeletedIssues(t *testing.T) {
 	// Every issue asked is deleted: each is Missing, and no match is asked.
 	f, p := newSite(t)
 	f.On("GET", board3Issues, jiratest.Reply(400, `{"errorMessages":["An issue with key '10009' does not exist for field 'id'."]}`))
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("")))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk()))
 	f.On("POST", matchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		t.Error("a match asked about issues the bulk fetch proved absent")
 		jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`)(w, r, b)
@@ -350,7 +350,7 @@ func TestBoardRowsWithDeletedIssues(t *testing.T) {
 	// When every issue exists, the failure is the listing's own.
 	f, p = newSite(t)
 	f.On("GET", board3Issues, jiratest.Reply(400, `{"errorMessages":["bad"]}`))
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", nil))))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", nil))))
 	if _, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001"}, tracker.Eligibility{}); err == nil {
 		t.Error("a refused listing of issues that exist read as empty")
 	}
@@ -367,7 +367,7 @@ func TestCards(t *testing.T) {
 		if ids := v["issueIdsOrKeys"].([]any); len(ids) != 3 {
 			t.Errorf("asked for %v", ids)
 		}
-		jiratest.Reply(200, page("", issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", nil), done))(w, r, b)
+		jiratest.Reply(200, bulk(issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", nil), done))(w, r, b)
 	})
 	cards, err := p.Cards(t.Context(), []tracker.IssueID{"10001", "10002", "10009", "10001"})
 	if err != nil || len(cards.Cards) != 2 || !slices.Equal(cards.Missing, []tracker.IssueID{"10009"}) {
@@ -388,7 +388,7 @@ func TestCards(t *testing.T) {
 	if _, err := p.Cards(t.Context(), []tracker.IssueID{"WEB-1"}); !errors.Is(err, tracker.ErrInvalidInput) {
 		t.Errorf("a key for an ID: %v", err)
 	}
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", map[string]any{"status": nil}))))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", map[string]any{"status": nil}))))
 	if _, err := p.Cards(t.Context(), []tracker.IssueID{"10001"}); err == nil {
 		t.Error("a card without its status")
 	}

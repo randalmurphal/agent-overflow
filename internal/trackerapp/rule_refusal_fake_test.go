@@ -244,11 +244,11 @@ func TestAMatchNotJudgedForADeletedSprintRecoversByTheList(t *testing.T) {
 func TestASignInCheckRefusedAfterAMatchKeepsThePass(t *testing.T) {
 	t.Parallel()
 	s := newRuleScenario(t)
-	s.answering(func(kind string, w http.ResponseWriter, r *http.Request, _ *httputil.ReverseProxy) bool {
-		switch {
-		case kind == reqMatch:
+	s.answering(func(kind string, w http.ResponseWriter, _ *http.Request, _ *httputil.ReverseProxy) bool {
+		switch kind {
+		case reqMatch:
 			return reply(w, http.StatusOK, `{"matches":[{"matchedIssues":[],"errors":[]}]}`)
-		case kind == http.MethodGet+" /rest/api/3/myself":
+		case http.MethodGet + " /rest/api/3/myself":
 			return reply(w, http.StatusBadRequest, badRequest)
 		}
 		return false
@@ -320,14 +320,19 @@ func TestAPersistent400ListsTheBoardAgainOnceAnInterval(t *testing.T) {
 // rule: a failure of either is the tick's, of its own kind (a 429's
 // deadline the outcome's RetryAt), never a refusal of the rule, so the
 // board is not listed again; an answer holding an issue with no ID, one
-// not asked or one twice is a malformed answer, never the asked issue's
-// absence. Each keeps the stored row of the issue read.
+// not asked or one twice, and one without its issues and issueErrors
+// lists (an empty object, an error envelope), is a malformed answer,
+// never the asked issue's absence. Each keeps the stored row of the issue
+// read and the pass.
 func TestAFailedBulkReadIsItsOwnFailureAndKeepsTheRow(t *testing.T) {
 	t.Parallel()
 	malformed := map[string]string{
 		"no ID":     `{"issues":[{"id":"","key":"WEB-4","fields":{}}],"issueErrors":[]}`,
 		"not asked": `{"issues":[{"id":"10999","key":"WEB-99","fields":{}}],"issueErrors":[]}`,
 		"twice":     `{"issues":[{"id":"10104","key":"WEB-4","fields":{}},{"id":"10104","key":"WEB-4","fields":{}}],"issueErrors":[]}`,
+		"no lists":  `{}`,
+		"errors":    `{"errorMessages":["Bad request"],"errors":{}}`,
+		"null":      `{"issues":null,"issueErrors":[]}`,
 	}
 	type bulkCase struct {
 		name  string
@@ -386,8 +391,44 @@ func TestAFailedBulkReadIsItsOwnFailureAndKeepsTheRow(t *testing.T) {
 				if !s.rowStored(t, s.conn.ID, done) {
 					t.Errorf("the failed rows read removed the row of %s", done)
 				}
+				if !slices.Contains(s.pump.pass.left, done) {
+					t.Errorf("the pass %+v; want it kept with %s", s.pump.pass, done)
+				}
 			})
 		}
+	}
+}
+
+// A bulk read that answers both lists empty, after a refused list and
+// after a match that confirmed the issue, says the issue does not exist:
+// the pass completes and removes its row.
+func TestAnEmptyBulkReadIsTheIssuesAbsence(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"after a refused list", "after a match"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			s := newRuleScenario(t)
+			s.answering(func(kind string, w http.ResponseWriter, _ *http.Request, _ *httputil.ReverseProxy) bool {
+				switch {
+				case kind == reqRowRead && path == "after a refused list":
+					return reply(w, http.StatusBadRequest, badRequest)
+				case kind == reqRowRead:
+					return reply(w, http.StatusOK, `{"isLast":true,"issues":[]}`)
+				case kind == reqMatch:
+					return reply(w, http.StatusOK, `{"matches":[{"matchedIssues":[`+done+`],"errors":[]}]}`)
+				case kind == reqBulk:
+					return reply(w, http.StatusOK, `{"issues":[],"issueErrors":[]}`)
+				}
+				return false
+			})
+			out := s.tick(t)
+			if out.Failure != nil || out.More() || fmt.Sprint(out.Changes().Removed) != "["+done+"]" {
+				t.Fatalf("the tick %+v; want the completed issue removed and the pass done", out)
+			}
+			if s.rowStored(t, s.conn.ID, done) || s.count(reqBulk) != 1 {
+				t.Fatalf("the row of %s stored %v after %d bulk reads; want it removed after 1", done, s.rowStored(t, s.conn.ID, done), s.count(reqBulk))
+			}
+		})
 	}
 }
 

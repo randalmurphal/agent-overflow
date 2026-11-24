@@ -136,7 +136,7 @@ func TestLookupCost(t *testing.T) {
 		"WEB-1": issue("10001", "WEB-1", updatedAt, nil), "APP-5": issue("10005", "APP-5", updatedAt, nil), "WEB-5": issue("10005", "APP-5", updatedAt, nil),
 	}
 	f.On("POST", bulkFetchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		var issues []any
+		issues := []any{}
 		seen := map[string]bool{}
 		for _, k := range bodyOf(t, b)["issueIdsOrKeys"].([]any) {
 			if is, ok := current[strings.ToUpper(k.(string))]; ok && !seen[is["id"].(string)] {

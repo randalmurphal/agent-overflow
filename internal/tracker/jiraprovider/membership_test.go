@@ -62,7 +62,7 @@ func TestARowReadsNoURL(t *testing.T) {
 	f, p := newSite(t)
 	f.On("GET", board3Issues, jiratest.Reply(200, page("", listedIssue("agile/1.0"))))
 	f.On("POST", matchPath, jiratest.Reply(200, `{"matches":[{"matchedIssues":[10005],"errors":[]}]}`))
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", listedIssue("api/3"))))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(listedIssue("api/3"))))
 	listed, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"}, tracker.Eligibility{})
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestNewRows(t *testing.T) {
 		if !strings.Contains(string(b), `"customfield_10019","customfield_10016"]`) || strings.Contains(string(b), "timeoriginalestimate") {
 			t.Errorf("bulk fetch %s", b)
 		}
-		jiratest.Reply(200, page("", listedIssue("api/3")))(w, r, b)
+		jiratest.Reply(200, bulk(listedIssue("api/3")))(w, r, b)
 	})
 	got, err := p.NewRows(t.Context(), "10005", []tracker.BoardID{"3", "4", "5", "6", "7"})
 	if err != nil {
@@ -167,7 +167,7 @@ func TestBoardRowsConfirmsAMiss(t *testing.T) {
 		if !strings.Contains(string(b), `"issueIdsOrKeys":["10005"]`) {
 			t.Errorf("bulk fetch %s", b)
 		}
-		jiratest.Reply(200, page("", listedIssue("api/3")))(w, r, b)
+		jiratest.Reply(200, bulk(listedIssue("api/3")))(w, r, b)
 	})
 	answers := map[string]string{
 		"placed":     `{"matches":[{"matchedIssues":[10005],"errors":[]}]}`,
@@ -215,7 +215,7 @@ func TestBoardRowsReadsAChangedBoardAgain(t *testing.T) {
 		}
 		jiratest.Reply(200, answer)(w, r, b)
 	})
-	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", listedIssue("api/3"))))
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, bulk(listedIssue("api/3"))))
 	got, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"}, tracker.Eligibility{})
 	if err != nil {
 		t.Fatal(err)

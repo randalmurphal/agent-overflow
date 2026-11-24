@@ -687,7 +687,8 @@ and writes share:
   issue the bulk fetch after a refused list shows does not exist is
   Missing and is not sent to `jql/match`; every Jira read by ID is one
   checked bulk fetch, and an answer holding an issue with no ID, one not
-  asked or one twice fails the read. Jira's rows read returns
+  asked or one twice, or lacking its issues or issueErrors list, fails
+  the read. Jira's rows read returns
   `tracker.ErrRuleRefused` when Jira answers 400 to the list or the
   match that carries a rule naming sprints (`jira.QueryRefusedError`,
   set at that request; a failed sign-in check that proves the answer is
