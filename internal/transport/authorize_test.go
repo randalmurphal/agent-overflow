@@ -63,14 +63,24 @@ func TestAuthorizeSessionMethodRefusesAnEmptyGrantSet(t *testing.T) {
 // `host` is a method property, never a grant: a session that somehow
 // carried the name must still be refused when it is not on this machine,
 // and admitted when it is (the embedded webview's own session names one).
+// A passkey proof satisfies STEP-UP and nothing else: no signature can make
+// a remote caller be on this machine, so a stepped-up remote session still
+// cannot reach a method with no remote form.
 func TestHostScopedMethodFollowsHostPresenceNotGrants(t *testing.T) {
-	claiming := []string{string(ScopeHost)}
-	fe := AuthorizeSessionMethod(claiming, hostMethod, CallerProof{})
-	if fe == nil {
-		t.Fatalf("%s from a remote session = admitted, want refused", hostMethod)
-	}
-	if fe.Code != ErrCodeScopeRequired || fe.Scope != string(ScopeHost) {
-		t.Errorf("refusal = %#v, want scope_required naming host", fe)
+	for _, tc := range []struct {
+		name    string
+		granted []string
+		proof   CallerProof
+	}{
+		{"a remote session claiming host", []string{string(ScopeHost)}, CallerProof{}},
+		{"a remote session that stepped up", nil, CallerProof{StepUp: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := AuthorizeSessionMethod(tc.granted, hostMethod, tc.proof)
+			if fe == nil || fe.Code != ErrCodeScopeRequired || fe.Scope != string(ScopeHost) {
+				t.Fatalf("%s = %#v, want scope_required naming host", hostMethod, fe)
+			}
+		})
 	}
 	if fe := AuthorizeSessionMethod(nil, hostMethod, CallerProof{HostPresent: true}); fe != nil {
 		t.Errorf("%s from the host itself = %#v, want admitted", hostMethod, fe)
@@ -97,20 +107,6 @@ func TestStepUpMethodNeedsAProofNoGrantCanSupply(t *testing.T) {
 	}
 	if fe := AuthorizeSessionMethod(everything, stepUpMethod, CallerProof{StepUp: true}); fe != nil {
 		t.Errorf("%s with a spent passkey token = %#v, want admitted", stepUpMethod, fe)
-	}
-}
-
-// A passkey proof satisfies STEP-UP and nothing else. Host scope is a
-// statement about where the caller is, and no signature can make a remote
-// caller be on this machine — so a stepped-up remote session still cannot
-// reach a method with no remote form.
-func TestAPasskeyProofNeverStandsInForHostPresence(t *testing.T) {
-	fe := AuthorizeSessionMethod(nil, hostMethod, CallerProof{StepUp: true})
-	if fe == nil {
-		t.Fatalf("%s reached a remote session that had stepped up", hostMethod)
-	}
-	if fe.Code != ErrCodeScopeRequired || fe.Scope != string(ScopeHost) {
-		t.Fatalf("refusal = %#v, want the host scope refusal", fe)
 	}
 }
 
@@ -393,29 +389,10 @@ func TestScopeGateRefusesOverTheWire(t *testing.T) {
 	if !strings.Contains(argRefused.Error.Message, "full-access") {
 		t.Fatalf("argument recheck message %q lost the argument it refused", argRefused.Error.Message)
 	}
-}
-
-// An in-method refusal answers as a scope refusal, not a method failure:
-// the scope and message are the answer.
-func TestArgumentRefusalAnswersAsAScopeRefusal(t *testing.T) {
-	d := NewDispatcher()
-	if _, err := d.Register(&scopeGateStub{}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	method, fe := d.ResolveForOrigin(0, "UpdateThreadRuntimeMode", true)
-	if fe != nil {
-		t.Fatalf("resolve: %#v", fe)
-	}
-	params := []json.RawMessage{json.RawMessage(`"t1"`), json.RawMessage(`"full-access"`)}
-	_, frameErr := d.Invoke(context.Background(), method, params)
-	if frameErr == nil {
-		t.Fatal("the argument recheck did not refuse")
-	}
-	if frameErr.Code != ErrCodeScopeRequired || frameErr.Scope != string(ScopeThreadsAutonomy) {
-		t.Fatalf("refusal = %#v, want scope_required naming threads:autonomy", frameErr)
-	}
-	if strings.Contains(frameErr.Message, "method failed") {
-		t.Fatalf("the refusal answered as a method failure: %q", frameErr.Message)
+	// A scope refusal, not a method failure: the scope and message are the
+	// answer.
+	if strings.Contains(argRefused.Error.Message, "method failed") {
+		t.Fatalf("the refusal answered as a method failure: %q", argRefused.Error.Message)
 	}
 }
 

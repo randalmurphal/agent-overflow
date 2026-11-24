@@ -26,31 +26,26 @@ func TestNewToken_Unique(t *testing.T) {
 	}
 }
 
-func TestConstantTimeEqual_Match(t *testing.T) {
-	if err := ConstantTimeEqual("secret", "secret"); err != nil {
-		t.Fatalf("matching tokens should not error: %v", err)
-	}
-}
-
-func TestConstantTimeEqual_Mismatch(t *testing.T) {
-	if err := ConstantTimeEqual("secret", "wrong"); err == nil {
-		t.Fatalf("mismatched tokens should error")
-	}
-	// Same length to exercise the constant-time branch on equal-length
-	// inputs (the constant-time credential comparison).
-	if err := ConstantTimeEqual("aaaaaa", "bbbbbb"); err == nil {
-		t.Fatalf("equal-length mismatched tokens should error")
-	}
-}
-
-func TestConstantTimeEqual_Empty(t *testing.T) {
-	if err := ConstantTimeEqual("", ""); !errors.Is(err, ErrEmptyToken) {
-		t.Fatalf("empty/empty should return ErrEmptyToken, got %v", err)
-	}
-	if err := ConstantTimeEqual("server", ""); !errors.Is(err, ErrEmptyToken) {
-		t.Fatalf("non-empty server / empty supplied should return ErrEmptyToken, got %v", err)
-	}
-	if err := ConstantTimeEqual("", "supplied"); !errors.Is(err, ErrEmptyToken) {
-		t.Fatalf("empty server / non-empty supplied should return ErrEmptyToken, got %v", err)
+// TestConstantTimeEqual covers the match, a mismatch of either length (the
+// equal-length row exercises the constant-time branch), and an empty token
+// on either side, which answers ErrEmptyToken rather than a mismatch.
+func TestConstantTimeEqual(t *testing.T) {
+	for _, tc := range []struct {
+		name, server, supplied string
+		wantErr, wantEmpty     bool
+	}{
+		{"match", "secret", "secret", false, false},
+		{"mismatch", "secret", "wrong", true, false},
+		{"equal-length mismatch", "aaaaaa", "bbbbbb", true, false},
+		{"both empty", "", "", true, true},
+		{"empty supplied", "server", "", true, true},
+		{"empty server", "", "supplied", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ConstantTimeEqual(tc.server, tc.supplied)
+			if (err != nil) != tc.wantErr || errors.Is(err, ErrEmptyToken) != tc.wantEmpty {
+				t.Fatalf("ConstantTimeEqual(%q, %q) = %v, want error %v, ErrEmptyToken %v", tc.server, tc.supplied, err, tc.wantErr, tc.wantEmpty)
+			}
+		})
 	}
 }

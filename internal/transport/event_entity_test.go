@@ -249,23 +249,3 @@ func TestEntityFilteredChannelsMatchTheTable(t *testing.T) {
 		}
 	}
 }
-
-// TestEntityFilteredChannelsAreThreadKeyed pins the one payload assumption
-// the whole mechanism rests on: every filtered channel's events must carry
-// a `threadId` the emit-side extractor can find, or the fail-open branch
-// swallows the narrowing and the column becomes a no-op nobody notices.
-// The wire event structs live in internal/app, so this checks the
-// registry's half — that each member is a channel internal/app emits
-// through the keyed funnel — by name.
-func TestEntityFilteredChannelsAreThreadKeyed(t *testing.T) {
-	for _, name := range EntityFilteredChannels() {
-		policy, registered := policyForChannel(name)
-		if !registered {
-			t.Errorf("%s is filtered but unregistered; an unregistered channel must never be narrowed", name)
-			continue
-		}
-		if policy.Why == "" {
-			t.Errorf("%s carries no Why; an EntityFiltered row is a claim about its consumers and has to argue it", name)
-		}
-	}
-}

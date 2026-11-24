@@ -76,11 +76,7 @@ func TestMethodErrorCarriesItsTextAndChain(t *testing.T) {
 	if fe.Detail.Method != "Wrapped" || fe.Detail.At == 0 || fe.Detail.Ref == "" {
 		t.Fatalf("detail identity = %+v", fe.Detail)
 	}
-}
-
-func TestMethodErrorRefNamesItsRetainedLogLine(t *testing.T) {
-	captureLog(t)
-	fe := invokeDetail(t, "Wrapped")
+	// The ref names the retained log line.
 	lines, found := logging.RecentLogLinesBefore("(id: "+fe.Detail.Ref+")", 5)
 	if !found || !strings.Contains(lines[len(lines)-1], "uuid u1 missing") {
 		t.Fatalf("log lines for ref %s = %q found=%v", fe.Detail.Ref, lines, found)
