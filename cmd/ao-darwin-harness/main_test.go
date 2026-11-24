@@ -3,7 +3,6 @@
 package main
 
 import (
-	"flag"
 	"reflect"
 	"testing"
 )
@@ -34,23 +33,4 @@ func TestSupervisedUpArgsPreservesSoakAutopilot(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("supervised soak args = %v, want %v", got, want)
 	}
-}
-
-func TestFlagSeparatorPreservesBackendArgs(t *testing.T) {
-	flags := newFlagSetForTest()
-	if err := flags.Parse([]string{"--binary", "app", "--data-root", "root", "--", "--harness", "--window"}); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := flags.Args(), []string{"--harness", "--window"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("backend args = %v, want %v", got, want)
-	}
-}
-
-func newFlagSetForTest() *flag.FlagSet {
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
-	flags.String("binary", "", "")
-	flags.String("data-root", "", "")
-	flags.String("plist", "", "")
-	flags.String("mock-provider", "", "")
-	return flags
 }

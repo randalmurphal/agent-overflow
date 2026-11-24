@@ -42,8 +42,8 @@ func startClaudeLoginMock(t *testing.T) (*claude.LoginSession, string) {
 	return session, configDir
 }
 
-func TestClaudeSignInMockAnswersBothLinks(t *testing.T) {
-	session, _ := startClaudeLoginMock(t)
+func TestClaudeSignInMockCompletesOnThePastedCode(t *testing.T) {
+	session, configDir := startClaudeLoginMock(t)
 	urls, err := session.Authenticate(t.Context())
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
@@ -57,14 +57,6 @@ func TestClaudeSignInMockAnswersBothLinks(t *testing.T) {
 	if state := mockLoginState(t, urls.ManualURL); state != mockLoginState(t, urls.AutomaticURL) {
 		t.Fatalf("the two links carry different state: %q vs %q",
 			state, mockLoginState(t, urls.AutomaticURL))
-	}
-}
-
-func TestClaudeSignInMockCompletesOnThePastedCode(t *testing.T) {
-	session, configDir := startClaudeLoginMock(t)
-	urls, err := session.Authenticate(t.Context())
-	if err != nil {
-		t.Fatalf("Authenticate: %v", err)
 	}
 	if err := session.SubmitCallback(t.Context(), mockClaudeLoginCode, mockLoginState(t, urls.ManualURL)); err != nil {
 		t.Fatalf("SubmitCallback: %v", err)

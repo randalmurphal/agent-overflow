@@ -58,62 +58,34 @@ func TestRelocateCwd(t *testing.T) {
 		return func() (string, error) { return "", errors.New(msg) }
 	}
 
-	t.Run("not WSL: never chdirs", func(t *testing.T) {
-		called := false
-		relocateCwd(false, ok(winCwd), ok(home), func(string) error { called = true; return nil })
-		if called {
-			t.Fatal("chdir called off WSL")
-		}
-	})
-
-	t.Run("WSL but Linux-native cwd: no chdir", func(t *testing.T) {
-		called := false
-		relocateCwd(true, ok(linuxCwd), ok(home), func(string) error { called = true; return nil })
-		if called {
-			t.Fatal("chdir called for a Linux-native cwd")
-		}
-	})
-
-	t.Run("WSL on a Windows mount: chdirs to home", func(t *testing.T) {
-		got := ""
-		relocateCwd(true, ok(winCwd), ok(home), func(dir string) error { got = dir; return nil })
-		if got != home {
-			t.Fatalf("chdir target = %q, want %q", got, home)
-		}
-	})
-
-	t.Run("getwd error: no chdir, no panic", func(t *testing.T) {
-		called := false
-		relocateCwd(true, fail("getwd boom"), ok(home), func(string) error { called = true; return nil })
-		if called {
-			t.Fatal("chdir called despite getwd error")
-		}
-	})
-
-	t.Run("home unavailable: no chdir, degrades", func(t *testing.T) {
-		called := false
-		relocateCwd(true, ok(winCwd), fail("no home"), func(string) error { called = true; return nil })
-		if called {
-			t.Fatal("chdir called despite unavailable home")
-		}
-	})
-
-	t.Run("empty home (no error): no chdir", func(t *testing.T) {
-		called := false
-		relocateCwd(true, ok(winCwd), ok(""), func(string) error { called = true; return nil })
-		if called {
-			t.Fatal("chdir called despite empty home")
-		}
-	})
-
-	t.Run("chdir error: attempted, degrades without panic", func(t *testing.T) {
-		attempted := false
-		relocateCwd(true, ok(winCwd), ok(home), func(string) error {
-			attempted = true
-			return errors.New("chdir denied")
+	for _, tc := range []struct {
+		name     string
+		wsl      bool
+		getwd    func() (string, error)
+		home     func() (string, error)
+		chdirErr error
+		wantDir  string // "" when chdir must not run
+	}{
+		{"not WSL: never chdirs", false, ok(winCwd), ok(home), nil, ""},
+		{"WSL but Linux-native cwd: no chdir", true, ok(linuxCwd), ok(home), nil, ""},
+		{"WSL on a Windows mount: chdirs to home", true, ok(winCwd), ok(home), nil, home},
+		{"getwd error: no chdir, no panic", true, fail("getwd boom"), ok(home), nil, ""},
+		{"home unavailable: no chdir, degrades", true, ok(winCwd), fail("no home"), nil, ""},
+		{"empty home (no error): no chdir", true, ok(winCwd), ok(""), nil, ""},
+		{"chdir error: attempted, degrades without panic", true, ok(winCwd), ok(home), errors.New("chdir denied"), home},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var dirs []string
+			relocateCwd(tc.wsl, tc.getwd, tc.home, func(dir string) error {
+				dirs = append(dirs, dir)
+				return tc.chdirErr
+			})
+			switch {
+			case tc.wantDir == "" && len(dirs) != 0:
+				t.Fatalf("chdir called with %q, want no chdir", dirs)
+			case tc.wantDir != "" && (len(dirs) != 1 || dirs[0] != tc.wantDir):
+				t.Fatalf("chdir calls = %q, want one to %q", dirs, tc.wantDir)
+			}
 		})
-		if !attempted {
-			t.Fatal("expected a chdir attempt")
-		}
-	})
+	}
 }

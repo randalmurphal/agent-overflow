@@ -54,22 +54,6 @@ func TestHeadlessBootReportsTheUpdateItFinishes(t *testing.T) {
 	}
 }
 
-// TestHeadlessBootRefusesPendingMigrationsWhenAsked: the headless boot the
-// launcher starts with --refuse-pending-migrations asks the store to refuse
-// before Start, and answers a refusal as the refusal, not as a startup
-// failure. e2e/tests/update-trial.spec.ts proves the answer end to end.
-func TestHeadlessBootRefusesPendingMigrationsWhenAsked(t *testing.T) {
-	text := readRootSource(t, "main.go")
-	body := text[strings.Index(text, "func runHeadless("):]
-	refuse := strings.Index(body, "appservice.RefusePendingMigrations(appService.App)")
-	start := strings.Index(body, "appService.Start(bootCtx)")
-	pending := strings.Index(body, "srv.MarkMigrationsPending(")
-	failed := strings.Index(body, "srv.MarkStartupFailed()")
-	if refuse < 0 || start < 0 || pending < 0 || failed < 0 || !(refuse < start && start < pending && pending < failed) {
-		t.Fatalf("runHeadless: refuse=%d Start=%d MarkMigrationsPending=%d MarkStartupFailed=%d; want the option before Start and the refusal answered before the failure", refuse, start, pending, failed)
-	}
-}
-
 // TestLauncherBootsCancelStartOnShutdownRequest: the two boots the
 // launcher can abandon before they are ready cancel App.Start when it
 // asks them to stop.
