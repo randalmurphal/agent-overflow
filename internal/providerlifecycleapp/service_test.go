@@ -3,6 +3,7 @@ package providerlifecycleapp
 import (
 	"encoding/json"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -271,4 +272,30 @@ func TestSessionAccountFallsBackToManagedMetadata(t *testing.T) {
 	if !ok || account.Account.Email != "person@example.test" || account.Generation != 4 {
 		t.Fatalf("session account = %+v, ok = %v", account, ok)
 	}
+}
+
+func TestConcurrentCacheAndActivityAccess(t *testing.T) {
+	service := New(Deps{})
+	const workers = 16
+	var group sync.WaitGroup
+	for worker := range workers {
+		group.Add(1)
+		go func(worker int) {
+			defer group.Done()
+			providerName := string(provider.Claude)
+			service.NoteTurnActivity(providerName)
+			snapshot := provider.RateLimitsSnapshot{
+				Provider: providerName, AccountID: "account",
+				Limits: []provider.RateLimitEntry{{
+					LimitID: "session", WindowMins: 300, UsedPercent: float64(worker),
+				}},
+			}
+			service.RememberEvent(eventchan.ProviderUsage, provider.UsageEvent{
+				Action: "rate_limits", RateLimits: &snapshot,
+			})
+			_ = service.Snapshots()
+			_ = service.TurnCompletedSince(providerName, time.Time{})
+		}(worker)
+	}
+	group.Wait()
 }
