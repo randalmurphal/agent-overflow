@@ -13,9 +13,8 @@ import (
 )
 
 // heldLookup is a mirror store that holds each read of the mirror's cards
-// naming issue, after it read them, until the test releases it: one at a
-// time in any order (release), or every one held and every later one
-// (releaseAll).
+// naming issue, after it read them, until the test releases every one held
+// and every later one (releaseAll).
 type heldLookup struct {
 	Store
 	issue   string
@@ -57,25 +56,15 @@ func (h *heldLookup) next(t *testing.T, what string) {
 	}
 }
 
-// release lets the i-th read held, from zero, go on.
-func (h *heldLookup) release(i int) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	close(h.held[i])
-	h.held[i] = nil
-}
-
 // releaseAll lets every read held go on, and every later one pass.
 func (h *heldLookup) releaseAll() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.free = true
-	for i, rel := range h.held {
-		if rel != nil {
-			close(rel)
-			h.held[i] = nil
-		}
+	for _, rel := range h.held {
+		close(rel)
 	}
+	h.held = nil
 }
 
 // parentFixture is an open ticket of 10001 whose board also holds 10002,
