@@ -26,25 +26,26 @@
 // events. It failed on svelte 5.56.8 and must keep passing from 5.57.0
 // on, with or without a patch.
 //
-// Needs --expose-gc; reports skipped without it:
-//   NODE_OPTIONS=--expose-gc pnpm exec vitest run --project unit \
-//     src/test/integration/svelte-patch-event-slot.test.ts
+// The file turns on --expose-gc itself, so it runs in the unit project.
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import EventSlotTarget from './svelte-patch-fixtures/EventSlotTarget.svelte';
 
-const gc = (globalThis as { gc?: () => void }).gc;
+setFlagsFromString('--expose-gc');
+const gc = runInNewContext('gc') as () => void;
 
 const settle = () => new Promise((r) => setTimeout(r, 25));
 
 async function collectHard(): Promise<void> {
   for (let i = 0; i < 5; i += 1) {
-    gc!();
+    gc();
     await settle();
   }
 }
 
-describe.runIf(gc)('svelte patch: delegated-event slot releases after dispatch', () => {
+describe('svelte patch: delegated-event slot releases after dispatch', () => {
   it('a clicked element is collectable after unmount with no further events', async () => {
     // Element refs stay confined to this inner scope — stack locals in
     // the test frame would themselves be GC roots.
@@ -75,8 +76,8 @@ describe.runIf(gc)('svelte patch: delegated-event slot releases after dispatch',
     // GC. This proves the probe actually observes the slot (the final
     // assertion cannot pass vacuously) and demonstrates the pristine
     // behavior: without the patch this pin lasts forever.
-    gc!();
-    gc!();
+    gc();
+    gc();
     expect(ref.deref(), 'probe precondition: slot should pin the element until the clear fires').toBeDefined();
 
     // Phase 2 — after macrotasks run, the patch's scheduled clear has
