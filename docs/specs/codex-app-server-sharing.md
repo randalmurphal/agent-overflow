@@ -122,7 +122,7 @@ binary, its environment, its `-c` flags and its auth.
 
 Every notification and server request that concerns a thread carries
 `threadId`. `thread/started` also carries `sessionId`, "shared by threads
-that belong to the same session tree" (`v2/thread_data.rs`, present since
+that belong to the same session tree" (`v2/thread_data.rs`, present at
 0.143, below AO's floor), so a spawned child names its root. A `thread/start`
 attaches the thread's listener before it writes the response
 (`thread_processor.rs`), so frames of a new thread can precede the response
