@@ -17,33 +17,6 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
-// A serve boot's headless browser ends with the backend: its engine gets the
-// app's orphan reaper, which records the browser's group.
-func TestTheHeadlessBrowserIsGivenTheOrphanReaper(t *testing.T) {
-	t.Parallel()
-	leader := exec.Command("sleep", "60")
-	if err := leader.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = leader.Process.Kill()
-		_ = leader.Wait()
-	})
-	a := NewApp()
-	a.browser.headlessChromium = true
-	registry := orphanreaper.NewRegistry(filepath.Join(t.TempDir(), "orphan-registry.json"))
-	a.orphanRegistry = registry
-	opts := a.headlessChromiumOptions(settings.Settings{})
-	if opts == nil || opts.Reaper == nil {
-		t.Fatalf("headless options %+v carry no reaper", opts)
-	}
-	opts.Reaper.Watch(leader.Process.Pid)
-	records, err := registry.Load()
-	if err != nil || len(records) != 1 || records[0].Leader != leader.Process.Pid || records[0].Owner != "headless browser" {
-		t.Fatalf("records %+v %v, want the browser's group", records, err)
-	}
-}
-
 // A leader whose identity cannot be read gets no record: the sweep could
 // never reap it. A recorded leader carries its identity.
 func TestAWatchedGroupIsRecordedOnlyWithItsLeadersIdentity(t *testing.T) {
@@ -79,9 +52,10 @@ func TestAWatchedGroupIsRecordedOnlyWithItsLeadersIdentity(t *testing.T) {
 	}
 }
 
-// The services that start provider processes on the app's behalf are given
-// the app's orphan reaper, which records each group under its owner.
-func TestProviderServicesAreGivenTheOrphanReaper(t *testing.T) {
+// The services that start processes on the app's behalf are given the app's
+// orphan reaper, which records each group under its owner. A serve boot's
+// headless browser is one: it ends with the backend.
+func TestAppServicesAreGivenTheOrphanReaper(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
 		owner  string
@@ -89,6 +63,14 @@ func TestProviderServicesAreGivenTheOrphanReaper(t *testing.T) {
 	}{
 		{"mcp sign-in", func(a *App) procutil.Reaper { return a.mcpDeps().Reaper }},
 		{"codex read", func(a *App) procutil.Reaper { return a.codexAppDeps().Reaper }},
+		{"headless browser", func(a *App) procutil.Reaper {
+			a.browser.headlessChromium = true
+			opts := a.headlessChromiumOptions(settings.Settings{})
+			if opts == nil {
+				return nil
+			}
+			return opts.Reaper
+		}},
 	} {
 		t.Run(c.owner, func(t *testing.T) {
 			leader := exec.Command("sleep", "60")

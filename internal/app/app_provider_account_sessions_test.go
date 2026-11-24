@@ -243,7 +243,7 @@ func TestCodexAccountSwitchWaitsForWorkOnlyTheRouterHolds(t *testing.T) {
 }
 
 // A launch that left the live set keeps `status='running'`. It does not
-// hold the switch.
+// hold the switch: the idle session reconnects to the selected account.
 func TestCodexAccountSwitchIgnoresLaunchesNoLongerLive(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -284,47 +284,6 @@ func TestCodexAccountSwitchIgnoresLaunchesNoLongerLive(t *testing.T) {
 		t.Fatalf("ensureProviderAccountReadyForSendLocked() error = %v", err)
 	}
 	if got, _ := app.sessionManager().get(thread.ID); got.Token != "new-process" || got.CredentialAccountID != "second" {
-		t.Fatalf("reconnected session = %+v", got)
-	}
-}
-
-func TestCodexIdleAccountSwitchReconnectsToSelectedAccount(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("codex-account-idle")
-	thread.Provider = string(provider.Codex)
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatal(err)
-	}
-	installTestProviderAccounts(t, app, string(provider.Codex))
-	app.sessionManager().put(thread.ID, session{
-		Provider:             string(provider.Codex),
-		Token:                "old-process",
-		CredentialGeneration: 1,
-		CredentialAccountID:  "first",
-		Liveness:             newSessionLiveness(time.Now()),
-	})
-	app.stopSessionFn = func(threadID string) error {
-		app.sessionManager().take(threadID)
-		return nil
-	}
-	app.startSessionFn = func(threadID string) error {
-		selection := app.captureProviderAccountSelection(string(provider.Codex))
-		app.sessionManager().put(threadID, session{
-			Provider:             string(provider.Codex),
-			Token:                "new-process",
-			CredentialGeneration: selection.Generation,
-			CredentialAccountID:  selection.AccountID,
-			Liveness:             newSessionLiveness(time.Now()),
-		})
-		return nil
-	}
-
-	if err := app.ensureProviderAccountReadyForSendLocked(thread); err != nil {
-		t.Fatalf("ensureProviderAccountReadyForSendLocked() error = %v", err)
-	}
-	got, _ := app.sessionManager().get(thread.ID)
-	if got.Token != "new-process" || got.CredentialAccountID != "second" {
 		t.Fatalf("reconnected session = %+v", got)
 	}
 }

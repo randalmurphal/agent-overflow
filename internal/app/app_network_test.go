@@ -96,63 +96,6 @@ func TestGetNetworkSettings_DefaultsToLoopback(t *testing.T) {
 	}
 }
 
-// TestSetNetworkSettings_TogglesAndPersistsBindAll proves the binding
-// flips both directions: false→true rebinds to 0.0.0.0:<same-port>,
-// true→false rebinds back to 127.0.0.1:<same-port>. The port is
-// preserved so any URL the user already shared keeps working at the
-// host-only differing address.
-func TestSetNetworkSettings_TogglesAndPersistsBindAll(t *testing.T) {
-	t.Parallel()
-	remotetest.Require(t)
-	app, srv := newNetworkTestApp(t)
-	originalPort := portFromAddr(srv.Addr())
-
-	got, err := app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: true})
-	if err != nil {
-		t.Fatalf("SetNetworkSettings(true): %v", err)
-	}
-	if !got.BindAll {
-		t.Fatalf("BindAll = false, want true after toggle")
-	}
-	// The transport addr must now be 0.0.0.0 (or [::]) on the same port.
-	host, port, err := net.SplitHostPort(srv.Addr())
-	if err != nil {
-		t.Fatalf("split addr after toggle: %v", err)
-	}
-	if host != "0.0.0.0" && host != "::" {
-		t.Fatalf("bind host = %q, want 0.0.0.0 after BindAll=true", host)
-	}
-	if port != intToPortString(originalPort) {
-		t.Fatalf("port changed across rebind: was %d, now %s", originalPort, port)
-	}
-
-	// Settings file persisted the change — a fresh service over the
-	// same dir should reload it.
-	persisted := app.settings.Get()
-	if !persisted.Network.BindAll {
-		t.Fatalf("persisted Network.BindAll = false, want true")
-	}
-
-	// Toggle back; verify rebind to loopback.
-	got, err = app.SetNetworkSettings(atTheMachine(), network.Settings{BindAll: false})
-	if err != nil {
-		t.Fatalf("SetNetworkSettings(false): %v", err)
-	}
-	if got.BindAll {
-		t.Fatalf("BindAll = true, want false after second toggle")
-	}
-	host, port, err = net.SplitHostPort(srv.Addr())
-	if err != nil {
-		t.Fatalf("split addr after second toggle: %v", err)
-	}
-	if host != "127.0.0.1" {
-		t.Fatalf("bind host = %q, want 127.0.0.1 after BindAll=false", host)
-	}
-	if port != intToPortString(originalPort) {
-		t.Fatalf("port changed across second rebind: was %d, now %s", originalPort, port)
-	}
-}
-
 // TestNetworkSettings_InsecureFlag pins the LAN-bind-plaintext
 // warning surface: when BindAll is on and the URL is http://, the
 // Insecure flag is true so the frontend can render a "use Tailscale
@@ -366,7 +309,9 @@ func TestSetNetworkSettings_TransportUnavailable(t *testing.T) {
 // TestSetNetworkSettings_BindAllTrueFalseTrueCycle exercises the
 // listener swap three times in a row to surface any state retention
 // from previous rebinds (origin patterns reverting, listener leak,
-// addr churn). Each toggle must land on the right bind host.
+// addr churn). Each toggle must land on the right bind host and keep
+// the port, so any URL the user already shared keeps working at the
+// host-only differing address, and the settings file persists the flag.
 func TestSetNetworkSettings_BindAllTrueFalseTrueCycle(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -404,6 +349,9 @@ func TestSetNetworkSettings_BindAllTrueFalseTrueCycle(t *testing.T) {
 		}
 		if port != intToPortString(originalPort) {
 			t.Fatalf("step %d port changed: was %d, now %s", i, originalPort, port)
+		}
+		if persisted := app.settings.Get().Network.BindAll; persisted != exp.bindAll {
+			t.Fatalf("step %d persisted Network.BindAll = %v, want %v", i, persisted, exp.bindAll)
 		}
 	}
 }

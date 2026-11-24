@@ -212,95 +212,57 @@ func TestGetPayloadDataFlushesLiveThinkingBuffer(t *testing.T) {
 	}
 }
 
-func TestGetPayloadDataIncludesThinkingDeltaBeforeWireEmission(t *testing.T) {
+// A read made while the delta is being emitted already holds that delta's
+// text, so a live client never places a read before text it received.
+func TestGetPayloadDataIncludesTheDeltaBeforeWireEmission(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-live-thinking-wire-order")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
+	cases := []struct {
+		kind      string
+		event     provider.EventKind
+		payloadID func(itemID string) string
+	}{
+		{kind: "thinking", event: provider.EventThinking, payloadID: triage.ThinkingPayloadID},
+		{kind: "assistant_text", event: provider.EventTextDelta, payloadID: triage.AssistantTextPayloadID},
 	}
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread("thread-live-wire-order")
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
 
-	var payloadDuringDelta string
-	app.triage = triage.NewRouter(app.store, func(eventName eventchan.Channel, data any) {
-		if eventName != "provider:item_event" {
-			return
-		}
-		evt, ok := data.(triage.ItemStreamEvent)
-		if !ok || evt.Action != "delta" || evt.Kind != "thinking" {
-			return
-		}
-		got, err := app.GetPayloadData(thread.ID, "thinking:think:0:1")
-		if err != nil {
-			t.Fatalf("GetPayloadData during delta emission: %v", err)
-		}
-		payloadDuringDelta = got.Data
-	})
+			var payloadDuringDelta string
+			app.triage = triage.NewRouter(app.store, func(eventName eventchan.Channel, data any) {
+				if eventName != "provider:item_event" {
+					return
+				}
+				evt, ok := data.(triage.ItemStreamEvent)
+				if !ok || evt.Action != "delta" || evt.Kind != tc.kind {
+					return
+				}
+				got, err := app.GetPayloadData(thread.ID, tc.payloadID(evt.ItemID))
+				if err != nil {
+					t.Fatalf("GetPayloadData during delta emission: %v", err)
+				}
+				payloadDuringDelta = got.Data
+			})
 
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventThinking,
-		ThreadID:  thread.ID,
-		Content:   "first",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("thinking first: %v", err)
-	}
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventThinking,
-		ThreadID:  thread.ID,
-		Content:   " second",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("thinking second: %v", err)
-	}
+			for _, content := range []string{"first", " second"} {
+				if err := app.triage.Handle(provider.ProviderEvent{
+					Kind:      tc.event,
+					ThreadID:  thread.ID,
+					Content:   content,
+					Timestamp: time.Now(),
+				}); err != nil {
+					t.Fatalf("%s %q: %v", tc.kind, content, err)
+				}
+			}
 
-	if payloadDuringDelta != "first second" {
-		t.Fatalf("GetPayloadData during delta emission = %q, want full visible thinking text", payloadDuringDelta)
-	}
-}
-
-func TestGetPayloadDataIncludesAssistantTextDeltaBeforeWireEmission(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-live-text-wire-order")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	var payloadDuringDelta string
-	app.triage = triage.NewRouter(app.store, func(eventName eventchan.Channel, data any) {
-		if eventName != "provider:item_event" {
-			return
-		}
-		evt, ok := data.(triage.ItemStreamEvent)
-		if !ok || evt.Action != "delta" || evt.Kind != "assistant_text" {
-			return
-		}
-		payloadID := triage.AssistantTextPayloadID(evt.ItemID)
-		got, err := app.GetPayloadData(thread.ID, payloadID)
-		if err != nil {
-			t.Fatalf("GetPayloadData during delta emission: %v", err)
-		}
-		payloadDuringDelta = got.Data
-	})
-
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTextDelta,
-		ThreadID:  thread.ID,
-		Content:   "first",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("text first: %v", err)
-	}
-	if err := app.triage.Handle(provider.ProviderEvent{
-		Kind:      provider.EventTextDelta,
-		ThreadID:  thread.ID,
-		Content:   " second",
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("text second: %v", err)
-	}
-
-	if payloadDuringDelta != "first second" {
-		t.Fatalf("GetPayloadData during delta emission = %q, want full visible assistant text", payloadDuringDelta)
+			if payloadDuringDelta != "first second" {
+				t.Fatalf("GetPayloadData during delta emission = %q, want the full visible text", payloadDuringDelta)
+			}
+		})
 	}
 }

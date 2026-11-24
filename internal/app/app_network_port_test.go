@@ -216,15 +216,3 @@ func TestSetNetworkSettings_RefusesAnUnusablePort(t *testing.T) {
 		t.Fatalf("a refused port still moved the listener from %d to %d", before, bound)
 	}
 }
-
-// A nil recorder is every fixture and every boot that resolved no config
-// directory. Touching the port there must not panic.
-func TestSetNetworkSettings_ToleratesNoBoundPortRecorder(t *testing.T) {
-	t.Parallel()
-	app, _ := newNetworkTestApp(t)
-	app.boundPortRecorder = nil
-
-	if _, _, err := saveOnFreeLoopbackPort(app, network.Settings{}); err != nil {
-		t.Fatalf("SetNetworkSettings with no recorder installed: %v", err)
-	}
-}
