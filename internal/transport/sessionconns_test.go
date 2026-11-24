@@ -47,7 +47,8 @@ func TestSessionConnsClosesEveryConnectionOnOneSession(t *testing.T) {
 // TestSessionConnsHandlesTheFourLifecycleOrders — every ordering of
 // attach, detach and revoke has to be a normal answer, because a real
 // client disconnects, reconnects, and is revoked without coordinating any
-// of it with the server.
+// of it with the server. Two connections on one session is
+// TestSessionConnsClosesEveryConnectionOnOneSession.
 func TestSessionConnsHandlesTheFourLifecycleOrders(t *testing.T) {
 	t.Run("connection closed before revoke", func(t *testing.T) {
 		registry := newSessionConns()
@@ -74,16 +75,6 @@ func TestSessionConnsHandlesTheFourLifecycleOrders(t *testing.T) {
 		registry.attach("sess", func() { closed.Add(1) })
 		if got := registry.CountForSession("sess"); got != 1 {
 			t.Fatalf("a later attach was rejected by the registry: %d", got)
-		}
-	})
-
-	t.Run("two connections on one session", func(t *testing.T) {
-		registry := newSessionConns()
-		var closed atomic.Int64
-		registry.attach("sess", func() { closed.Add(1) })
-		registry.attach("sess", func() { closed.Add(1) })
-		if got := registry.CloseSession("sess"); got != 2 {
-			t.Fatalf("CloseSession closed %d, want both", got)
 		}
 	})
 

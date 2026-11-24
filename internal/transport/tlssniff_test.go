@@ -155,48 +155,41 @@ func TestWebSocketUpgradesOverTLS(t *testing.T) {
 
 // Over TLS the manifest names a wss:// socket and the cookie that rides
 // the same exchange is Secure. Both are downstream of r.TLS being set,
-// which is why the sniff hands net/http a real *tls.Conn.
+// which is why the sniff hands net/http a real *tls.Conn. The cleartext
+// half of the same server keeps its old answers, so a browser that cannot
+// pin is unaffected by the certificate existing: a Secure cookie there is
+// one the browser would drop.
 func TestBootstrapOverTLSNamesWSSAndSetsASecureCookie(t *testing.T) {
 	srv, material := tlsFixture(t, nil)
-
-	url := fmt.Sprintf("https://%s/bootstrap.json?%s=%s", srv.Addr(), PageTicketParam, pageURLTicket(t, srv))
-	resp, err := pinnedClient(material).Get(url)
-	if err != nil {
-		t.Fatalf("bootstrap over TLS: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("bootstrap over TLS = %d, want 200", resp.StatusCode)
-	}
-	cookie := pageCookieFrom(t, resp)
-	if !cookie.Secure {
-		t.Error("the page cookie planted over TLS is not Secure")
-	}
-	var manifest Bootstrap
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
-		t.Fatalf("decode the manifest: %v", err)
-	}
-	if !strings.HasPrefix(manifest.WSURL, "wss://") {
-		t.Fatalf("wsUrl over TLS = %q, want a wss:// URL", manifest.WSURL)
-	}
-}
-
-// The cleartext half of the same server keeps its old answers, so a
-// browser that cannot pin is unaffected by the certificate existing.
-func TestBootstrapOverCleartextIsUnchangedByTheCertificate(t *testing.T) {
-	srv, _ := tlsFixture(t, nil)
-
-	resp := bootstrapWithTicket(t, srv.Addr(), pageURLTicket(t, srv))
-	defer resp.Body.Close()
-	if cookie := pageCookieFrom(t, resp); cookie.Secure {
-		t.Error("a cleartext exchange planted a Secure cookie, which the browser would drop")
-	}
-	var manifest Bootstrap
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
-		t.Fatalf("decode the manifest: %v", err)
-	}
-	if !strings.HasPrefix(manifest.WSURL, "ws://") {
-		t.Fatalf("wsUrl over cleartext = %q, want a ws:// URL", manifest.WSURL)
+	for _, tc := range []struct {
+		scheme     string
+		wantSecure bool
+		wantWS     string
+	}{
+		{"https", true, "wss://"},
+		{"http", false, "ws://"},
+	} {
+		t.Run(tc.scheme, func(t *testing.T) {
+			url := fmt.Sprintf("%s://%s/bootstrap.json?%s=%s", tc.scheme, srv.Addr(), PageTicketParam, pageURLTicket(t, srv))
+			resp, err := pinnedClient(material).Get(url)
+			if err != nil {
+				t.Fatalf("bootstrap over %s: %v", tc.scheme, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("bootstrap over %s = %d, want 200", tc.scheme, resp.StatusCode)
+			}
+			if cookie := pageCookieFrom(t, resp); cookie.Secure != tc.wantSecure {
+				t.Errorf("page cookie over %s Secure = %v, want %v", tc.scheme, cookie.Secure, tc.wantSecure)
+			}
+			var manifest Bootstrap
+			if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+				t.Fatalf("decode the manifest: %v", err)
+			}
+			if !strings.HasPrefix(manifest.WSURL, tc.wantWS) {
+				t.Fatalf("wsUrl over %s = %q, want a %s URL", tc.scheme, manifest.WSURL, tc.wantWS)
+			}
+		})
 	}
 }
 
