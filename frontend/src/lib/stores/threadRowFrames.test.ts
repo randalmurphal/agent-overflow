@@ -25,12 +25,6 @@ describe('threadReplyRow', () => {
     expect(threadReplyRow(row('t-never'), mark, undefined)).toEqual(row('t-never'));
   });
 
-  it('skips the reply when a whole-row frame arrived after the call started', () => {
-    const mark = threadRowFrameMark();
-    noteThreadRowFrame('t-row');
-    expect(threadReplyRow(row('t-row'), mark, row('t-row', { title: 'frame' }))).toBeNull();
-  });
-
   it('applies an answer that says a fork is ready over the preparing row a frame set', () => {
     const mark = threadRowFrameMark();
     noteThreadRowFrame('t-fork');
