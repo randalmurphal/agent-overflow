@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -369,14 +369,29 @@ func TestTakeoverFinalizeValidationFailureReparksAndResumeIsFresh(t *testing.T) 
 	}
 }
 
-// TakeOverParked leaves an item the engine is driving as it is: its runner
-// keeps running and no intervention is recorded. A parked item is taken over
-// as TakeOver takes it.
+// TakeOverParked leaves an item the engine is driving as it is, while its
+// runner starts and once it runs: the runner keeps going and no intervention
+// is recorded. An ordinary takeover of a starting runner keeps its own error.
+// A parked item is taken over as TakeOver takes it.
 func TestTakeOverParkedRefusesARunningItem(t *testing.T) {
 	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
 	h := newHarness(t, Config{}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "question", 0)
-	if err := h.engine.StartItem(item); err != nil {
+	gate := make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+	h.runner.startWait[item.ID] = gate
+	if err := h.engine.StartItemDetachedStarts(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOverParked(item.ID); !errors.Is(err, ErrRunActive) {
+		t.Fatalf("TakeOverParked of a starting item = %v, want ErrRunActive", err)
+	}
+	if err := h.engine.TakeOver(item.ID); err == nil || !strings.Contains(err.Error(), "phase runner is still starting") {
+		t.Fatalf("TakeOver of a starting item = %v, want the starting error", err)
+	}
+	release()
+	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
@@ -405,31 +420,6 @@ func TestTakeOverParkedRefusesARunningItem(t *testing.T) {
 		t.Fatalf("TakeOverParked of a parked item: %v", err)
 	}
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
-}
-
-// A phase whose runner is still starting is one the engine is driving: a
-// parked-only takeover gets the same refusal as a running one, and an
-// ordinary takeover keeps its own starting error.
-func TestTakeOverParkedRefusesAStartingItem(t *testing.T) {
-	h := newHarnessWith(t, harnessOptions{
-		workflows:   map[string]def.Workflow{"basic": onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})},
-		projectIDs:  []string{"project"},
-		replyBudget: 150 * time.Millisecond,
-	})
-	item := testItem("starting", "project", "basic", 0)
-	wedged := make(chan struct{})
-	h.runner.startWait[item.ID] = wedged
-	t.Cleanup(func() { close(wedged) })
-	if err := h.engine.StartItem(item); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.engine.TakeOverParked(item.ID); !errors.Is(err, ErrRunActive) {
-		t.Fatalf("TakeOverParked of a starting item = %v, want ErrRunActive", err)
-	}
-	if err := h.engine.TakeOver(item.ID); err == nil || !strings.Contains(err.Error(), "phase runner is still starting") {
-		t.Fatalf("TakeOver of a starting item = %v, want the starting error", err)
-	}
-	requireItemState(t, h.store, item.ID, StateRunning, "")
 }
 
 // A parked-only takeover frees no capacity, refused or not, so it runs no
