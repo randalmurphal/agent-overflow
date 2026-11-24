@@ -1137,8 +1137,8 @@ and `interrupted -> stop_reason=interrupted, aborted=true`.
 ## `turn/steer` and client message identity
 
 `turn/start` and `turn/steer` both take `clientUserMessageId`
-(`Option<String>` on both params structs since 0.136, below AO's 0.143
-floor, so no version gate). The `userMessage` ThreadItem the turn produces
+(`Option<String>` on both params structs since 0.136, below AO's minimum
+Codex, so no version gate). The `userMessage` ThreadItem the turn produces
 echoes it back as `clientId` (`ThreadItem::UserMessage`,
 `codex-rs/app-server-protocol/src/protocol/v2/item.rs:236` @ rust-v0.149.0),
 which is how a caller matches an echo to the row that produced it without
@@ -1244,7 +1244,8 @@ success response. There is no capability handshake to gate on:
 
 - pre-0.115: field unknown, **silently dropped**.
 - 0.115–0.123: field known, value rejected: `-32600`, unknown variant.
-- 0.143+ (AO's floor, `internal/provider/codex_version.go`): accepted.
+- 0.143+: accepted. AO's minimum (`internal/provider/codex_version.go`) is
+  above it.
 
 So the start/resume **response** is the only probe. AO reads
 `approvalsReviewer` back off it (`verifyApprovalsReviewerEcho`,
@@ -1471,8 +1472,8 @@ compaction drops it. An unknown thread is refused with
 `-32600` `thread not found: <id>`, and an item that is not a Responses API
 item with `-32600` `items[<n>] is not a valid response item: ...`
 (`app-server/src/request_processors/turn_processor.rs`
-`thread_inject_items_response_inner`). The method exists throughout AO's
-supported range (0.143+) and is not experimental. The experimental
+`thread_inject_items_response_inner`). The method exists at 0.143 and
+later, which covers every Codex AO supports, and is not experimental. The experimental
 `turn/start` `additionalContext` also reaches the model, but each value is
 middle-truncated to 1,000 tokens and is not re-emitted after a compaction
 while unchanged, so it cannot carry AO's guide.
@@ -1591,7 +1592,7 @@ each server's attempt has settled, so "no evidence" means failed, never
 - `serverInfo` (`Option<McpServerInfo>`: name / title / version, no
   secrets) is populated whenever `initialize` succeeded, at ALL detail
   levels including `toolsAndAuthOnly`, on every version from
-  `rust-v0.143.0` (AO's floor). MCP makes `serverInfo` mandatory in a
+  `rust-v0.143.0`, below AO's minimum. MCP makes `serverInfo` mandatory in a
   successful `initialize` response, so its presence proves
   initialization and its absence on a settled attempt proves failure.
 - **Tool count proves nothing on its own.** Zero tools is a legitimate
@@ -1714,7 +1715,7 @@ against `rust-v0.146.0-alpha.4`.
 
 `SkillsList => "skills/list"` with `serialization:
 global_shared_read("config")`. It is **global**, no thread, no turn, no
-`#[experimental]` gate. Since codex 0.73.0, far below AO's 0.143 floor, so
+`#[experimental]` gate. Since codex 0.73.0, far below AO's minimum Codex, so
 no capability probe is needed.
 
 ```json
@@ -2049,8 +2050,8 @@ thread's cwd lists none of the thread config's hooks.
 
 ### UserPromptSubmit
 
-Source read at `rust-v0.143.0` and `rust-v0.162.1`; AO's minimum Codex,
-0.143.0, has it.
+Source read at `rust-v0.143.0` and `rust-v0.162.1`; every Codex AO
+supports has it.
 
 - Each user input a turn takes runs the hooks before it is recorded: the
   turn's own prompt, after the SessionStart hooks the turn runs, and each
@@ -2324,7 +2325,7 @@ Checked against rust-v0.150.1 for every consumer of thread shape:
   after a compaction it is the compacted window, which is what the model had.
 - Live turn and item notifications do not depend on the mode.
 - Downgrade hazard: a paginated rollout is unreadable by a codex older than
-  0.143 (`reject_unknown_thread_history_mode`), which is also AO's provider
+  0.143 (`reject_unknown_thread_history_mode`), which is below AO's provider
   floor, so every supported app-server understands the mode.
 
 ---

@@ -7,12 +7,12 @@ import (
 	"strings"
 )
 
-// minimumCodexCLIVersion gates the Codex provider on `thread/fork`
-// accepting `lastTurnId` (added in 0.143.0), which every revert / fork
-// flow relies on since the `thread/rollback` migration — upstream
-// deprecated rollback in 0.144 and will remove it. Older CLIs lack any
-// non-rollback way to cut history at a turn boundary.
-const minimumCodexCLIVersion = "0.143.0"
+// minimumCodexCLIVersion is the first stable Codex release that honors
+// `thread_unload_delay_secs`, which the shared app-server is started with
+// (codex.codexSharedAppServerArgs) so a closed thread unloads at once. The
+// stable releases before it ignore the setting and keep a closed thread
+// loaded, with its writer lock and MCP children.
+const minimumCodexCLIVersion = "0.154.0"
 
 var codexVersionPattern = regexp.MustCompile(`\bv?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)\b`)
 
@@ -177,6 +177,13 @@ func formatCodexCLIUpgradeMessage(version string) string {
 		version,
 		minimumCodexCLIVersion,
 	)
+}
+
+// CodexCLIUpgradeMessage is the too-old message for the version text a Codex
+// binary printed. It names no path, so it can go where a binary's path may
+// not; DetectProvider adds the path for the provider status.
+func CodexCLIUpgradeMessage(versionOutput string) string {
+	return formatCodexCLIUpgradeMessage(parseCodexCLIVersion(versionOutput))
 }
 
 func isNumericString(value string) bool {
