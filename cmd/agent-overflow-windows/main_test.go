@@ -19,65 +19,36 @@ import (
 	"agent-overflow/internal/wsllauncher"
 )
 
-// TestExportAppDataToWSL_NoAPPDATA covers the defensive branch: if
-// %APPDATA% is unset, the function is a no-op (sentinel logs once).
-// The WSL backend's WSLConfigDir() returns ok=false in that case and
-// the Settings UI hides the WSL distro switcher.
-func TestExportAppDataToWSL_NoAPPDATA(t *testing.T) {
-	t.Setenv("APPDATA", "")
-	t.Setenv(wsldistro.AppDataEnv, "leftover")
-	t.Setenv("WSLENV", "")
-
-	exportAppDataToWSL()
-
-	if got := os.Getenv(wsldistro.AppDataEnv); got != "leftover" {
-		t.Errorf("AppDataEnv was clobbered: got %q, want %q (function should no-op)", got, "leftover")
-	}
-	if got := os.Getenv("WSLENV"); got != "" {
-		t.Errorf("WSLENV was clobbered: got %q, want empty", got)
-	}
-}
-
-// TestExportAppDataToWSL_SetsBoth_NoPriorWSLENV is the cold-start
-// path: APPDATA exported to AGENT_OVERFLOW_WIN_APPDATA, WSLENV set to
-// the /p translation rule alone.
-func TestExportAppDataToWSL_SetsBoth_NoPriorWSLENV(t *testing.T) {
-	const want = `C:\Users\dev\AppData\Roaming`
-	t.Setenv("APPDATA", want)
-	t.Setenv(wsldistro.AppDataEnv, "")
-	t.Setenv("WSLENV", "")
-
-	exportAppDataToWSL()
-
-	if got := os.Getenv(wsldistro.AppDataEnv); got != want {
-		t.Errorf("AppDataEnv = %q, want %q", got, want)
-	}
-	wantWSLENV := wsldistro.AppDataEnv + "/p"
-	if got := os.Getenv("WSLENV"); got != wantWSLENV {
-		t.Errorf("WSLENV = %q, want %q", got, wantWSLENV)
-	}
-}
-
-// TestExportAppDataToWSL_PrependsToExistingWSLENV pins the merge
-// behavior: a developer with an existing WSLENV (e.g. PYTHONPATH/p)
-// must keep their rules — the function prepends our entry so we don't
-// silently drop another tool's translation.
-func TestExportAppDataToWSL_PrependsToExistingWSLENV(t *testing.T) {
+// TestExportAppDataToWSL exports %APPDATA% to AGENT_OVERFLOW_WIN_APPDATA
+// with a /p rule in WSLENV. If %APPDATA% is unset it is a no-op: the WSL
+// backend's WSLConfigDir() returns ok=false and the Settings UI hides the
+// WSL distro switcher. A developer's existing WSLENV rules (e.g.
+// PYTHONPATH/p) are kept behind ours, so another tool's translation is not
+// silently dropped.
+func TestExportAppDataToWSL(t *testing.T) {
 	const appdata = `C:\Users\dev\AppData\Roaming`
-	const prior = "PYTHONPATH/p:GOPATH/p"
-	t.Setenv("APPDATA", appdata)
-	t.Setenv(wsldistro.AppDataEnv, "")
-	t.Setenv("WSLENV", prior)
+	for _, tc := range []struct {
+		name, appdata, env, wslenv string
+		wantEnv, wantWSLENV        string
+	}{
+		{"no APPDATA", "", "leftover", "", "leftover", ""},
+		{"no prior WSLENV", appdata, "", "", appdata, wsldistro.AppDataEnv + "/p"},
+		{"prior WSLENV", appdata, "", "PYTHONPATH/p:GOPATH/p", appdata, wsldistro.AppDataEnv + "/p:PYTHONPATH/p:GOPATH/p"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("APPDATA", tc.appdata)
+			t.Setenv(wsldistro.AppDataEnv, tc.env)
+			t.Setenv("WSLENV", tc.wslenv)
 
-	exportAppDataToWSL()
+			exportAppDataToWSL()
 
-	got := os.Getenv("WSLENV")
-	wantPrefix := wsldistro.AppDataEnv + "/p:"
-	if !strings.HasPrefix(got, wantPrefix) {
-		t.Errorf("WSLENV = %q, want prefix %q", got, wantPrefix)
-	}
-	if !strings.Contains(got, prior) {
-		t.Errorf("WSLENV = %q, lost prior rules %q", got, prior)
+			if got := os.Getenv(wsldistro.AppDataEnv); got != tc.wantEnv {
+				t.Errorf("AppDataEnv = %q, want %q", got, tc.wantEnv)
+			}
+			if got := os.Getenv("WSLENV"); got != tc.wantWSLENV {
+				t.Errorf("WSLENV = %q, want %q", got, tc.wantWSLENV)
+			}
+		})
 	}
 }
 
@@ -89,49 +60,34 @@ func stubKnownDownloadsFolder(t *testing.T, dir string, err error) {
 	t.Cleanup(func() { knownDownloadsFolder = original })
 }
 
-// TestExportDownloadsToWSL_ExportsTheKnownFolder: the folder crosses as a
-// /p rule ahead of any rules already in WSLENV, so wsl.exe translates it
-// to its /mnt/c form for the backend.
-func TestExportDownloadsToWSL_ExportsTheKnownFolder(t *testing.T) {
-	const prior = "AGENT_OVERFLOW_WIN_APPDATA/p"
-	want := `C:\Users\u\Downloads`
-	stubKnownDownloadsFolder(t, want, nil)
-	t.Setenv(wsldistro.DownloadsEnv, "")
-	t.Setenv("WSLENV", prior)
-
-	exportDownloadsToWSL()
-
-	if got := os.Getenv(wsldistro.DownloadsEnv); got != want {
-		t.Errorf("DownloadsEnv = %q, want %q", got, want)
-	}
-	if got, wantWSLENV := os.Getenv("WSLENV"), wsldistro.DownloadsEnv+"/p:"+prior; got != wantWSLENV {
-		t.Errorf("WSLENV = %q, want %q", got, wantWSLENV)
-	}
-}
-
-// TestExportDownloadsToWSL_UnresolvedFolderExportsNothing: a failed or
-// empty lookup leaves both variables alone, so the backend keeps its own
-// default instead of reading a stale or empty value.
-func TestExportDownloadsToWSL_UnresolvedFolderExportsNothing(t *testing.T) {
-	for name, stub := range map[string]struct {
-		dir string
-		err error
+// TestExportDownloadsToWSL: the folder crosses as a /p rule ahead of any
+// rules already in WSLENV, so wsl.exe translates it to its /mnt/c form for
+// the backend. A failed or empty lookup leaves both variables alone, so the
+// backend keeps its own default instead of reading a stale or empty value.
+func TestExportDownloadsToWSL(t *testing.T) {
+	const folder = `C:\Users\u\Downloads`
+	for _, tc := range []struct {
+		name, dir           string
+		err                 error
+		env, wslenv         string
+		wantEnv, wantWSLENV string
 	}{
-		"lookup failed": {"", errors.New("known folder unavailable")},
-		"empty path":    {"", nil},
+		{"known folder", folder, nil, "", "AGENT_OVERFLOW_WIN_APPDATA/p", folder, wsldistro.DownloadsEnv + "/p:AGENT_OVERFLOW_WIN_APPDATA/p"},
+		{"lookup failed", "", errors.New("known folder unavailable"), "leftover", "PYTHONPATH/p", "leftover", "PYTHONPATH/p"},
+		{"empty path", "", nil, "leftover", "PYTHONPATH/p", "leftover", "PYTHONPATH/p"},
 	} {
-		t.Run(name, func(t *testing.T) {
-			stubKnownDownloadsFolder(t, stub.dir, stub.err)
-			t.Setenv(wsldistro.DownloadsEnv, "leftover")
-			t.Setenv("WSLENV", "PYTHONPATH/p")
+		t.Run(tc.name, func(t *testing.T) {
+			stubKnownDownloadsFolder(t, tc.dir, tc.err)
+			t.Setenv(wsldistro.DownloadsEnv, tc.env)
+			t.Setenv("WSLENV", tc.wslenv)
 
 			exportDownloadsToWSL()
 
-			if got := os.Getenv(wsldistro.DownloadsEnv); got != "leftover" {
-				t.Errorf("DownloadsEnv = %q, want it untouched", got)
+			if got := os.Getenv(wsldistro.DownloadsEnv); got != tc.wantEnv {
+				t.Errorf("DownloadsEnv = %q, want %q", got, tc.wantEnv)
 			}
-			if got := os.Getenv("WSLENV"); got != "PYTHONPATH/p" {
-				t.Errorf("WSLENV = %q, want it untouched", got)
+			if got := os.Getenv("WSLENV"); got != tc.wantWSLENV {
+				t.Errorf("WSLENV = %q, want %q", got, tc.wantWSLENV)
 			}
 		})
 	}
@@ -149,50 +105,28 @@ func TestKnownDownloadsFolderResolves(t *testing.T) {
 	}
 }
 
-// TestForwardDebugEnvToWSL_Unset_NoOp covers the production default:
-// AGENT_OVERFLOW_DEBUG unset, the function must not touch WSLENV.
-func TestForwardDebugEnvToWSL_Unset_NoOp(t *testing.T) {
-	t.Setenv("AGENT_OVERFLOW_DEBUG", "")
-	t.Setenv("WSLENV", "")
-
-	forwardDebugEnvToWSL()
-
-	if got := os.Getenv("WSLENV"); got != "" {
-		t.Errorf("WSLENV = %q, want empty (function should no-op when var unset)", got)
-	}
-}
-
-// TestForwardDebugEnvToWSL_Set_PrependsRule covers the dev-wsl path:
-// AGENT_OVERFLOW_DEBUG=provider lands as a string rule in WSLENV so
-// wsl.exe forwards it to the Linux backend.
-func TestForwardDebugEnvToWSL_Set_PrependsRule(t *testing.T) {
-	t.Setenv("AGENT_OVERFLOW_DEBUG", "provider")
-	t.Setenv("WSLENV", "")
-
-	forwardDebugEnvToWSL()
-
-	if got := os.Getenv("WSLENV"); got != "AGENT_OVERFLOW_DEBUG" {
-		t.Errorf("WSLENV = %q, want %q", got, "AGENT_OVERFLOW_DEBUG")
-	}
-}
-
-// TestForwardDebugEnvToWSL_PrependsToExistingWSLENV pins co-existence
-// with rules already added by exportAppDataToWSL (and any user rules).
-// In production main() runs both functions in sequence; this verifies
-// the second call doesn't drop the first's rule.
-func TestForwardDebugEnvToWSL_PrependsToExistingWSLENV(t *testing.T) {
+// TestForwardDebugEnvToWSL: AGENT_OVERFLOW_DEBUG unset (the production
+// default) leaves WSLENV alone; set (the dev-wsl path) it lands as a string
+// rule so wsl.exe forwards it to the Linux backend, ahead of the rules
+// exportAppDataToWSL and the user already added. In production main() runs
+// both functions in sequence, so the second must not drop the first's rule.
+func TestForwardDebugEnvToWSL(t *testing.T) {
 	const prior = "AGENT_OVERFLOW_WIN_APPDATA/p:PYTHONPATH/p"
-	t.Setenv("AGENT_OVERFLOW_DEBUG", "all")
-	t.Setenv("WSLENV", prior)
+	for _, tc := range []struct{ name, debug, wslenv, want string }{
+		{"unset", "", "", ""},
+		{"set", "provider", "", "AGENT_OVERFLOW_DEBUG"},
+		{"set with prior rules", "all", prior, "AGENT_OVERFLOW_DEBUG:" + prior},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_OVERFLOW_DEBUG", tc.debug)
+			t.Setenv("WSLENV", tc.wslenv)
 
-	forwardDebugEnvToWSL()
+			forwardDebugEnvToWSL()
 
-	got := os.Getenv("WSLENV")
-	if !strings.HasPrefix(got, "AGENT_OVERFLOW_DEBUG:") {
-		t.Errorf("WSLENV = %q, want prefix %q", got, "AGENT_OVERFLOW_DEBUG:")
-	}
-	if !strings.Contains(got, prior) {
-		t.Errorf("WSLENV = %q, lost prior rules %q", got, prior)
+			if got := os.Getenv("WSLENV"); got != tc.want {
+				t.Errorf("WSLENV = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -205,41 +139,31 @@ func TestOpenLogPermissionConstants(t *testing.T) {
 	}
 }
 
+// A soak run writes its own file, the evidence-attribution gate: its
+// watchdog lines have to be greppable on their own, not interleaved with
+// every dev launch that shares %APPDATA%.
 func TestOpenLogCreatesLogUnderAppData(t *testing.T) {
-	appData := t.TempDir()
-	t.Setenv("APPDATA", appData)
+	for _, tc := range []struct{ profile, file string }{
+		{"", "launcher.log"},
+		{appidentity.ProfileSoak, "launcher-soak.log"},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			appData := t.TempDir()
+			t.Setenv("APPDATA", appData)
 
-	f, err := openLog("")
-	if err != nil {
-		t.Fatalf("openLog: %v", err)
-	}
-	defer f.Close()
+			f, err := openLog(tc.profile)
+			if err != nil {
+				t.Fatalf("openLog(%q): %v", tc.profile, err)
+			}
+			defer f.Close()
 
-	want := filepath.Join(appData, "agent-overflow", "launcher.log")
-	if f.Name() != want {
-		t.Fatalf("log path = %q, want %q", f.Name(), want)
-	}
-	if _, err := f.WriteString("hello\n"); err != nil {
-		t.Fatalf("write log: %v", err)
-	}
-}
-
-// TestOpenLogSoakProfileWritesItsOwnFile is the evidence-attribution
-// gate: a soak run's watchdog lines have to be greppable on their own,
-// not interleaved with every dev launch that shares %APPDATA%.
-func TestOpenLogSoakProfileWritesItsOwnFile(t *testing.T) {
-	appData := t.TempDir()
-	t.Setenv("APPDATA", appData)
-
-	f, err := openLog(appidentity.ProfileSoak)
-	if err != nil {
-		t.Fatalf("openLog(soak): %v", err)
-	}
-	defer f.Close()
-
-	want := filepath.Join(appData, "agent-overflow", "launcher-soak.log")
-	if f.Name() != want {
-		t.Fatalf("soak log path = %q, want %q", f.Name(), want)
+			if want := filepath.Join(appData, "agent-overflow", tc.file); f.Name() != want {
+				t.Fatalf("log path = %q, want %q", f.Name(), want)
+			}
+			if _, err := f.WriteString("hello\n"); err != nil {
+				t.Fatalf("write log: %v", err)
+			}
+		})
 	}
 }
 
@@ -729,60 +653,30 @@ func TestRotateChromeDebugLog(t *testing.T) {
 	})
 }
 
-// TestBrowserArgsWebviewLogGate covers the opt-in Chromium logging flags:
-// present only when AGENT_OVERFLOW_WEBVIEW_LOG is set (in any mode — the
-// gate is the env var, not dev mode), absent otherwise so the WebView2
-// console-window side effect (WebView2Feedback #3192) stays out of normal
-// runs.
-func TestBrowserArgsWebviewLogGate(t *testing.T) {
-	hasLogging := func(args []string) bool {
-		for _, a := range args {
-			if a == "--enable-logging" {
-				return true
+// TestBrowserArgsOptInGates covers the opt-in flags: each is present only
+// when its env var is set, in any mode (the gate is the env var, not dev
+// mode). Chromium logging stays out of normal runs because of the WebView2
+// console-window side effect (WebView2Feedback #3192); --disable-gpu stays
+// out so normal runs keep GPU acceleration.
+func TestBrowserArgsOptInGates(t *testing.T) {
+	for _, tc := range []struct{ env, flag string }{
+		{webviewLogEnv, "--enable-logging"},
+		{webviewSoftwareEnv, "--disable-gpu"},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			t.Setenv(tc.env, "")
+			if slices.Contains(browserArgs("dev", true, false), tc.flag) || slices.Contains(browserArgs("prod", true, false), tc.flag) {
+				t.Errorf("%s present without opt-in", tc.flag)
 			}
-		}
-		return false
-	}
 
-	t.Setenv(webviewLogEnv, "")
-	if hasLogging(browserArgs("dev", true, false)) || hasLogging(browserArgs("prod", true, false)) {
-		t.Error("logging flags present without opt-in")
-	}
-
-	t.Setenv(webviewLogEnv, "1")
-	if !hasLogging(browserArgs("dev", true, false)) {
-		t.Error("dev: logging flags missing despite opt-in")
-	}
-	if !hasLogging(browserArgs("prod", true, false)) {
-		t.Error("prod: logging flags missing despite opt-in")
-	}
-}
-
-// TestBrowserArgsWebviewSoftwareGate covers the opt-in software-rendering
-// flag: --disable-gpu present only when AGENT_OVERFLOW_WEBVIEW_SOFTWARE
-// is set (in any mode — the gate is the env var, not dev mode), absent
-// otherwise so normal runs keep GPU acceleration.
-func TestBrowserArgsWebviewSoftwareGate(t *testing.T) {
-	hasDisableGpu := func(args []string) bool {
-		for _, a := range args {
-			if a == "--disable-gpu" {
-				return true
+			t.Setenv(tc.env, "1")
+			if !slices.Contains(browserArgs("dev", true, false), tc.flag) {
+				t.Errorf("dev: %s missing despite opt-in", tc.flag)
 			}
-		}
-		return false
-	}
-
-	t.Setenv(webviewSoftwareEnv, "")
-	if hasDisableGpu(browserArgs("dev", true, false)) || hasDisableGpu(browserArgs("prod", true, false)) {
-		t.Error("--disable-gpu present without opt-in")
-	}
-
-	t.Setenv(webviewSoftwareEnv, "1")
-	if !hasDisableGpu(browserArgs("dev", true, false)) {
-		t.Error("dev: --disable-gpu missing despite opt-in")
-	}
-	if !hasDisableGpu(browserArgs("prod", true, false)) {
-		t.Error("prod: --disable-gpu missing despite opt-in")
+			if !slices.Contains(browserArgs("prod", true, false), tc.flag) {
+				t.Errorf("prod: %s missing despite opt-in", tc.flag)
+			}
+		})
 	}
 }
 
