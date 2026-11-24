@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/harnessrpc"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -46,8 +47,8 @@ func TestHarnessSendsThePageDefaultSend(t *testing.T) {
 
 // An awaited harness send is admitted only at rest. A thread that is working
 // refuses it and nothing is recorded: no row, no queued message, no message
-// waiting for its turn. A thread at rest answers the turn its row opened and
-// the completion sequence read before the send.
+// waiting for its turn. A thread at rest answers the turn its row was placed
+// in and the completion floor read once the send was admitted.
 func TestHarnessSendAtRestOnly(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -110,40 +111,62 @@ func TestHarnessSendAtRestOnly(t *testing.T) {
 		}
 	}
 
+	withSession := func(thread store.Thread) {
+		sess, err := claude.NewSession(context.Background(), thread.ID, claude.Config{
+			Reaper:    procutiltest.Reaper(),
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
+		}, func(provider.ProviderEvent) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sess.Close() })
+		app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
+	}
+
+	// An ordinary send reads no floor.
+	ordinary := newThread("harness-send-ordinary")
+	withSession(ordinary)
+	if got, err := host.Send(context.Background(), ordinary.ID, "ordinary", false); err != nil || got.Queued || got.CompletionsAfter != 0 {
+		t.Fatalf("ordinary send = %+v, %v, want a turn of its own and no completion floor", got, err)
+	}
+
 	idle := newThread("harness-send-idle")
 	if err := app.store.InsertItem(store.Item{ID: "earlier", ThreadID: idle.ID, TurnIndex: 0, Kind: "assistant_text", Role: "assistant", Summary: "prior turn", CreatedAt: time.Now().UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
-	sess, err := claude.NewSession(context.Background(), idle.ID, claude.Config{
-		Reaper:    procutiltest.Reaper(),
-		Retention: claude.UserHomeRetention(0),
-		Binary:    writeClaudePassthroughBinary(t),
-		WorkDir:   idle.WorkspacePath,
-	}, func(provider.ProviderEvent) {})
+	withSession(idle)
+
+	// An action holding the thread's lock while a completion is published
+	// holds the send back. The floor is read once the send is admitted, so
+	// that completion is at or below it.
+	unlock := app.threadLocks().Lock(idle.ID)
+	type answer struct {
+		got harnessrpc.HarnessSendResult
+		err error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		got, err := host.Send(context.Background(), idle.ID, "at rest", true)
+		answered <- answer{got, err}
+	}()
+	waitUntil(t, 5*time.Second, func() bool { return app.threadLocks().Refs(idle.ID) == 2 })
+	published, err := bus.Emit(eventchan.ProviderTurnCompleted, map[string]any{"threadId": idle.ID, "turnIndex": 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sess.Close() })
-	app.sessionManager().put(idle.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
-
-	// A completion sequenced while the send runs is above the floor the
-	// answer carries.
-	app.sendStageFn = func(threadID, stage string) {
-		if threadID == idle.ID && stage == "placed" {
-			if _, err := bus.Emit(eventchan.ProviderTurnCompleted, map[string]any{"threadId": "elsewhere", "turnIndex": 0}); err != nil {
-				t.Error(err)
-			}
-		}
-	}
-	got, err := host.Send(context.Background(), idle.ID, "at rest", true)
+	unlock()
+	result := <-answered
+	got, err := result.got, result.err
 	if err != nil {
 		t.Fatalf("Send at rest only to an idle thread: %v", err)
+	}
+	if got.CompletionsAfter < published.Seq {
+		t.Fatalf("CompletionsAfter = %d, want at or above %d, the completion published while the send waited for the lock", got.CompletionsAfter, published.Seq)
 	}
 	rows := userRows(idle.ID)
 	if len(rows) != 1 || got.Queued || got.TurnIndex != rows[0].TurnIndex || got.TurnIndex != 1 {
 		t.Fatalf("answer = %+v, rows = %+v, want turn 1, the turn of its row", got, rows)
-	}
-	if got.CompletionsAfter != 1 {
-		t.Fatalf("CompletionsAfter = %d, want 1, the completion sequenced before the send", got.CompletionsAfter)
 	}
 }

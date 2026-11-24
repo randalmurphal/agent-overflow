@@ -164,50 +164,34 @@ func acknowledgeMockClaudeSend(t *testing.T, a *App, threadID string) {
 }
 
 // A window older than v0.0.15 predicts its row as user:<nextTurn> and does
-// not send reconcileBySendId. Its send is refused, at rest or working, with
-// the refusal a request the computer cannot read gets, before anything is
-// accepted: its existing failure path restores the draft and removes the
-// placeholder.
+// not send reconcileBySendId. Its send is refused before anything else, a
+// repeat of a send already recorded included, with the refusal a request the
+// computer cannot read gets: its existing failure path restores the draft and
+// removes the placeholder.
 func TestSendWithoutReconcileBySendIDIsRefused(t *testing.T) {
 	t.Parallel()
-	for _, state := range []string{"idle", "active", "starting"} {
-		t.Run(state, func(t *testing.T) {
-			a := newTestAppWithStore(t)
-			a.triage = triage.NewRouter(a.store, func(eventchan.Channel, any) {})
-			thread := testThread("legacy-send")
-			if err := a.store.CreateThread(thread); err != nil {
-				t.Fatal(err)
-			}
-			switch state {
-			case "active":
-				if err := a.store.InsertTurn(store.Turn{TurnID: "active", ThreadID: thread.ID, TurnIndex: 3, StartedAt: 1}); err != nil {
-					t.Fatal(err)
-				}
-			case "starting":
-				a.triage.RegisterPendingSendWithExpectation(thread.ID, "user:3", 3, triage.PendingSendExpectation{})
-			}
-			if err := a.SaveDraft(t.Context(), thread.ID, "keep this draft", nil, nil, nil); err != nil {
-				t.Fatal(err)
-			}
-			_, err := a.SendMessageWithOptions(t.Context(), thread.ID, "not accepted", SendMessageOptions{SendID: "legacy-send"})
-			if err == nil || err.Error() != dispatchrefusal.Unreadable {
-				t.Fatalf("send without reconcileBySendId: %v, want %q", err, dispatchrefusal.Unreadable)
-			}
-			if record, found, err := a.findRecordedSend(thread.ID, "legacy-send"); err != nil || found {
-				t.Fatalf("refused send accepted: %+v, %v, %v", record, found, err)
-			}
-			queued, err := a.GetQueueState(thread.ID)
-			if err != nil || len(queued) != 0 {
-				t.Fatalf("refused send queued: %+v, %v", queued, err)
-			}
-			rows, err := a.store.ListItems(thread.ID)
-			if err != nil || len(rows) != 0 {
-				t.Fatalf("refused send persisted: %+v, %v", rows, err)
-			}
-			draft, err := a.GetDraft(thread.ID)
-			if err != nil || draft.Content != "keep this draft" {
-				t.Fatalf("refused send changed draft: %+v, %v", draft, err)
-			}
-		})
+	a := newTestAppWithStore(t)
+	a.triage = triage.NewRouter(a.store, func(eventchan.Channel, any) {})
+	thread := testThread("legacy-send")
+	if err := a.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.RegisterQueueItem(t.Context(), thread.ID, "recorded", SendMessageOptions{SendID: "legacy-send", ReconcileBySendID: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SaveDraft(t.Context(), thread.ID, "keep this draft", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err := a.SendMessageWithOptions(t.Context(), thread.ID, "recorded", SendMessageOptions{SendID: "legacy-send"})
+	if err == nil || err.Error() != dispatchrefusal.Unreadable {
+		t.Fatalf("send without reconcileBySendId: %v, want %q", err, dispatchrefusal.Unreadable)
+	}
+	queued, err := a.GetQueueState(thread.ID)
+	if err != nil || len(queued) != 1 || queued[0].SendID != "legacy-send" {
+		t.Fatalf("queue after the refusal = %+v, %v, want the recorded send alone", queued, err)
+	}
+	draft, err := a.GetDraft(thread.ID)
+	if err != nil || draft.Content != "keep this draft" {
+		t.Fatalf("refused send changed draft: %+v, %v", draft, err)
 	}
 }

@@ -16,7 +16,7 @@ import (
 // `workflowrunner.MaxFeedbackNoteRunes`.
 const MaxHumanNoteBytes = 16 * 1024
 
-func (e *Engine) takeOver(itemID string) error {
+func (e *Engine) takeOver(itemID string, parkedOnly bool) error {
 	item, tracked := e.items[itemID]
 	if tracked {
 		if State(item.item.State) != StateRunning {
@@ -36,6 +36,9 @@ func (e *Engine) takeOver(itemID string) error {
 	if tracked {
 		if item.runnerStarting {
 			return fmt.Errorf("take over item %q: phase runner is still starting", itemID)
+		}
+		if parkedOnly {
+			return fmt.Errorf("take over item %q: %w", itemID, ErrRunActive)
 		}
 		if item.runnerActive {
 			var stopErr error

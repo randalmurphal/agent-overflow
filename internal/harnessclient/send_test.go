@@ -9,11 +9,12 @@ import (
 	"agent-overflow/internal/transport"
 )
 
-// The completion SendAndAwaitTurn answers is the one for the turn the send
-// opened, sequenced after the backend read its floor. An earlier turn that
+// The completion SendAndAwaitTurn answers is the one for the turn its send
+// names, sequenced after the backend read its floor. An earlier turn that
 // held the same index completed below the floor and is not it; a completion
 // that lands inside the send's own round trip is. Completions are the only
-// traffic it subscribes to.
+// traffic it subscribes to. Its send is admitted only at rest, and a plain
+// Send is not.
 func TestSendAndAwaitTurnAnswersTheCompletionAfterItsSend(t *testing.T) {
 	backend := newFakeBackend(t)
 	sent := make(chan []json.RawMessage, 1)
@@ -22,6 +23,9 @@ func TestSendAndAwaitTurnAnswersTheCompletionAfterItsSend(t *testing.T) {
 			return json.RawMessage(`null`), nil
 		}
 		sent <- frame.Params
+		if len(frame.Params) != 3 || string(frame.Params[2]) != "true" {
+			return json.RawMessage(`{"queued":true,"turnIndex":0}`), nil
+		}
 		completion := func(turn int) map[string]any { return map[string]any{"threadId": "t1", "turnIndex": turn} }
 		// Turn 3 completed, was discarded, and its index is reused.
 		backend.pushEvent(t, "provider:turn_completed", completion(3))
@@ -47,23 +51,12 @@ func TestSendAndAwaitTurnAnswersTheCompletionAfterItsSend(t *testing.T) {
 	if subs := backend.subscriptions(); !slices.Equal(subs, []string{"provider:turn_completed"}) {
 		t.Fatalf("subscriptions = %v, want provider:turn_completed alone", subs)
 	}
-}
 
-// Send queues behind a working thread's work: it is not admitted only at
-// rest.
-func TestSendQueuesBehindWork(t *testing.T) {
-	backend := newFakeBackend(t)
-	sent := make(chan []json.RawMessage, 1)
-	backend.handle = func(frame transport.ClientFrame) (json.RawMessage, *transport.FrameError) {
-		sent <- frame.Params
-		return json.RawMessage(`{"queued":true,"turnIndex":0,"completionsAfter":0}`), nil
-	}
-	client := backend.dial(t)
-	if err := client.Send(testContext(t), "t1", "hello"); err != nil {
+	if err := client.Send(testContext(t), "t1", "later"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	if got, want := rawStrings(<-sent), []string{`"t1"`, `"hello"`, `false`}; !slices.Equal(got, want) {
-		t.Fatalf("send params = %v, want %v", got, want)
+	if got, want := rawStrings(<-sent), []string{`"t1"`, `"later"`, `false`}; !slices.Equal(got, want) {
+		t.Fatalf("plain send params = %v, want %v: queued behind work, not admitted only at rest", got, want)
 	}
 }
 

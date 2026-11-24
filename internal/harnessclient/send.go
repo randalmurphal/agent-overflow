@@ -14,10 +14,10 @@ const SendMethod = "HarnessSend"
 
 // sendResult is what one SendMethod call admitted only at rest did.
 type sendResult struct {
-	// TurnIndex is the turn the message opened.
+	// TurnIndex is the turn the message's row was placed in.
 	TurnIndex int `json:"turnIndex"`
-	// CompletionsAfter is the provider:turn_completed sequence the backend
-	// read before the send.
+	// CompletionsAfter is the provider:turn_completed floor the backend read
+	// once the send was admitted.
 	CompletionsAfter uint64 `json:"completionsAfter"`
 }
 
@@ -42,15 +42,15 @@ func (c *Client) send(ctx context.Context, threadID, text string, atRestOnly boo
 }
 
 // SendAndAwaitTurn sends text as Send does and blocks until the turn its
-// message opened completes, returning that turn's completion event.
+// message's row was placed in completes, returning that turn's completion
+// event.
 //
 // The backend admits the send only at rest, deciding under the thread's
-// action lock, and answers the turn the message opened. A thread that is
-// working refuses it and nothing is sent. The completion awaited is that
-// turn's and sequenced after the send began: a completion announced late
-// for an earlier turn, or an earlier turn that held the same index, is not
-// taken for it. Completions are subscribed before the send, because a mock
-// can finish a scripted turn inside the send's round trip.
+// action lock, and answers that turn with the completion floor it read once
+// the send was admitted (HarnessSend). A thread that is working refuses it
+// and nothing is sent. The completion awaited is that turn's, above the
+// floor. Completions are subscribed before the send, because a mock can
+// finish a scripted turn inside the send's round trip.
 func (c *Client) SendAndAwaitTurn(ctx context.Context, threadID, text string) (Event, error) {
 	channel := string(eventchan.ProviderTurnCompleted)
 	if err := c.Subscribe(ctx, channel); err != nil {
