@@ -329,7 +329,7 @@ func TestDesktopHelperAppliesAnUpdateThroughTheRealTrial(t *testing.T) {
 			[]string{"lock", "snapshot.copy", "trial.start", "trial.boot", "trial.stop", "settle", "publish"},
 			`^snapshot:[^,]+,record-attempt:[^,]+,trial\.1:[^,]+,settle:[^,]+,publish:[^,]+$`},
 		{"failed rolls back", "fail", supervise.UpdateRolledBack, "old", "live",
-			[]string{"lock", "snapshot.copy", "trial.start", "trial.boot", "trial.stop", "restore.copy", "settle", "remove-staged"},
+			[]string{"lock", "snapshot.copy", "trial.start", "trial.boot", "restore.copy", "settle", "remove-staged"},
 			`^snapshot:[^,]+,record-attempt:[^,]+,trial\.1:[^,]+\(failed\),settle:[^,]+,discard:[^,]+,remove-staged:[^,]+$`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -350,6 +350,11 @@ func TestDesktopHelperAppliesAnUpdateThroughTheRealTrial(t *testing.T) {
 			text := strings.Join(logged, "\n")
 			mu.Unlock()
 			wantPhasesOnce(t, text, tc.phases...)
+			// A trial that reports its failure also exits on its own, and
+			// one whose exit is read first needs no stop.
+			if timed, _ := phaseCounts(t, text); timed["trial.stop"] > 1 {
+				t.Fatalf("trial.stop logged %d times, want at most once\n%s", timed["trial.stop"], text)
+			}
 			if !strings.Contains(text, "updater: update "+id+": phase=lock duration=") {
 				t.Fatalf("the helper's lock wait is not logged as its own:\n%s", text)
 			}
