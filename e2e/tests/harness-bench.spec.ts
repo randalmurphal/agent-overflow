@@ -156,7 +156,7 @@ test('health rolls up the same instance and exits ok', async ({ harness, page })
 });
 
 for (const provider of ['claude', 'codex'] as const) {
-  test(`send --wait reports the turn its own message opened and refuses a working thread (${provider})`, async ({ harness }) => {
+  test(`send --wait reports the turn its message is placed in and refuses a working thread (${provider})`, async ({ harness }) => {
     test.setTimeout(90_000);
     const gate = `cli-send-wait-held-${provider}`;
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
