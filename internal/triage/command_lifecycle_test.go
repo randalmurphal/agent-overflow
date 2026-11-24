@@ -44,6 +44,16 @@ func lastCommandLifecycleEmission(t *testing.T, emissions *emissionLog) CommandL
 	return *found
 }
 
+func countCommandLifecycleEmissions(emissions *emissionLog) int {
+	var n int
+	for _, e := range emissions.snapshot() {
+		if e.eventName == "provider:command_lifecycle" {
+			n++
+		}
+	}
+	return n
+}
+
 // registerCommandPendingSend puts a pending send carrying the wire uuid in
 // the FIFO, which is the state every real send path leaves behind BEFORE
 // the stdin write the acks answer.
@@ -227,6 +237,22 @@ func TestCommandLifecycle_TerminalStatesReleaseCorrelation(t *testing.T) {
 				t.Fatal("correlation still present after a terminal ack")
 			}
 		})
+	}
+}
+
+// The no-ack baseline: a CLI that emits no lifecycle frames must leave
+// every other routing decision untouched. Nothing to assert beyond "no
+// emissions" — which is exactly the point.
+func TestCommandLifecycle_NoAcksEmitNothing(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	registerCommandPendingSend(router, "t1", "user:0:flush:1", testCommandUUID, 1)
+
+	if n := countCommandLifecycleEmissions(emissions); n != 0 {
+		t.Fatalf("emissions = %d, want 0 without any ack", n)
+	}
+	if _, ok := router.peekCommandLifecycle("t1", testCommandUUID); ok {
+		t.Fatal("correlation registered without an ack")
 	}
 }
 
