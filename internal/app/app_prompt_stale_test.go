@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/providerstatus"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -350,7 +351,7 @@ while IFS= read -r line; do
   if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then
     printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-stale-spawn"}}}\n' "$id"; continue
   fi
-  printf '{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}\n' "$id"
+` + testutil.MockCodexUnsubscribeShell + `  printf '{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}\n' "$id"
 done
 `
 	binary := filepath.Join(t.TempDir(), "mock-codex")

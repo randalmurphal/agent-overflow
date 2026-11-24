@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
 
 	"github.com/google/uuid"
@@ -63,9 +64,9 @@ while IFS= read -r line; do
     printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-%%s","status":"completed"}}}\n' "$turn"
     continue
   fi
-  printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+%s  printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, accountJSON, providerThread, capture, providerThread, providerThread, providerThread)
+`, accountJSON, providerThread, capture, providerThread, providerThread, providerThread, testutil.MockCodexUnsubscribeShell)
 	path := filepath.Join(t.TempDir(), "codex-turns")
 	mockexec.Write(t, path, script)
 	return path

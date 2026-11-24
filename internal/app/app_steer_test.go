@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 )
 
 // writeCodexSteerBinary mints a fake codex app-server that knows how to
@@ -67,9 +68,9 @@ while IFS= read -r line; do
         %s
         continue
     fi
-    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+%s    printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, threadID, steerBranch, startBranch)
+`, threadID, steerBranch, startBranch, testutil.MockCodexUnsubscribeShell)
 
 	path := filepath.Join(t.TempDir(), "codex-steer.sh")
 	mockexec.Write(t, path, script)
