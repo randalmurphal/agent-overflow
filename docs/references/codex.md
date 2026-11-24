@@ -126,7 +126,7 @@ wraps all three in `internal/provider/codex/session_background.go`.
 `terminate` is bound as `App.TerminateCodexBackgroundTerminal` and backs
 the tray's per-row Stop button; `clean` backs Stop-all.
 Version floor: `terminate`/`list` shipped in 0.140.0, below AO's
-provider-wide minimum of 0.143.0, so no runtime capability probe is
+provider-wide minimum of 0.154.0, so no runtime capability probe is
 needed (guarded by
 `provider.TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate`).
 
