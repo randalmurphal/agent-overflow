@@ -84,9 +84,14 @@ func TestHumanGateApprovalRoutesToDone(t *testing.T) {
 	requireItemState(t, h.store, item.ID, StateDone, "")
 }
 
+// A reject loops to its target carrying the note and the gate's values, and
+// the gate records the decision. A reject the route has no budget left for is
+// refused, not converted: the gate offered two verbs, and parking the run
+// `retries-exhausted` on the spent one would take the other away too, so
+// approve has to still be there afterwards, and the refusal has to name every
+// option that is.
 func TestHumanGateRejectPersistsFeedbackAndEnforcesBound(t *testing.T) {
-	workflow := humanWorkflow()
-	h := newHarness(t, Config{}, map[string]def.Workflow{"human": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"human": humanWorkflow()}, []string{"project"}, nil)
 	item := testItem("item", "project", "human", 0)
 	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
@@ -116,32 +121,7 @@ func TestHumanGateRejectPersistsFeedbackAndEnforcesBound(t *testing.T) {
 	}
 
 	parkAtHumanGate(t, h, item.ID)
-	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "again"); err == nil {
-		t.Fatal("a reject past its bound was taken")
-	}
-	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonGate)
-	if got := len(h.runner.started()); got != 4 {
-		t.Fatalf("exhausted human reject started another phase: %d starts", got)
-	}
-}
-
-// A reject the route has no budget left for is refused, not converted. The gate
-// offered two verbs; parking the run `retries-exhausted` on the spent one would
-// take the other away too, so approve has to still be there afterwards — and
-// the refusal has to name every option that is.
-func TestHumanRejectPastItsBoundIsRefusedAndLeavesTheGateDecidable(t *testing.T) {
-	h := newHarness(t, Config{}, map[string]def.Workflow{"human": humanWorkflow()}, []string{"project"}, nil)
-	item := testItem("item", "project", "human", 0)
-	if err := h.engine.StartItem(item); err != nil {
-		t.Fatal(err)
-	}
-	parkAtHumanGate(t, h, item.ID)
-	if err := h.engine.ResolveHumanGate(item.ID, HumanReject, "once"); err != nil {
-		t.Fatal(err)
-	}
-	parkAtHumanGate(t, h, item.ID)
-
-	err := h.engine.ResolveHumanGate(item.ID, HumanReject, "twice")
+	err = h.engine.ResolveHumanGate(item.ID, HumanReject, "again")
 	if err == nil {
 		t.Fatal("a reject past its bound was taken")
 	}
@@ -150,10 +130,13 @@ func TestHumanRejectPastItsBoundIsRefusedAndLeavesTheGateDecidable(t *testing.T)
 			t.Fatalf("over-budget reject refusal %q does not name %q", err, want)
 		}
 	}
+	if got := len(h.runner.started()); got != 4 {
+		t.Fatalf("exhausted human reject started another phase: %d starts", got)
+	}
 	// The run rests exactly where it was, on the trace the gate wrote: nothing
 	// about the refused decision was persisted.
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonGate)
-	phases, err := h.store.ListWorkItemPhases(item.ID)
+	phases, err = h.store.ListWorkItemPhases(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

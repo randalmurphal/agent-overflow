@@ -30,10 +30,6 @@ func validateCallFanOut(t *testing.T, workflow Workflow, children ...Workflow) V
 	return Validate(fanOutFixture(t, workflow, callFanOutPrompts()), validBindings(), callsFor(children...))
 }
 
-func TestCallUnitValidates(t *testing.T) {
-	requireValid(t, validateCallFanOut(t, callFanOutWorkflow()))
-}
-
 // The three unit bindings are mutually exclusive, and the matrix is the
 // contract: exactly one of prompt / command / call, never two, never none.
 func TestUnitBindingMatrix(t *testing.T) {

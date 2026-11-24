@@ -224,10 +224,9 @@ func TestALauncherFocusWithdrawnBeforeItsDirectiveArrivesIsDropped(t *testing.T)
 		name     string
 		messages []FocusIntentMessage
 	}{
-		// Each is the SPA withdrawing on the user's next focus choice.
-		{"the composer focused", []FocusIntentMessage{arm, withdraw}},
-		{"the address bar refocused", []FocusIntentMessage{arm, withdraw}},
-		{"a tab switch", []FocusIntentMessage{arm, withdraw}},
+		// The SPA withdrawing on the user's next focus choice: the composer
+		// focused, the address bar refocused, or a tab switch.
+		{"the user's next focus choice", []FocusIntentMessage{arm, withdraw}},
 		// Messages arrive on goroutines of their own.
 		{"the withdrawal heard before its arm", []FocusIntentMessage{withdraw, arm}},
 		// A newer request supersedes the delayed one.

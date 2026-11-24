@@ -168,45 +168,56 @@ func TestReceiverSpecs_TodaysConfig(t *testing.T) {
 	}
 }
 
-// TestScanReceivers_RefusesUnannotatedMethods is the completeness gate
+// TestScanReceivers_RefusesAnUnclassifiedMethod is the completeness gate
 // the spec moved out of the test suite and into the generator (§5): an
 // unclassified method must stop the run, not merely fail a later test,
 // because the generated table is what puts the name on the wire.
 //
 // Every offending name is listed. One run has to tell a developer
 // everything they have to classify, or a wave of new methods becomes a
-// wave of failing runs.
-func TestScanReceivers_RefusesUnannotatedMethods(t *testing.T) {
-	specs := []receiverSpec{{Dir: "testdata/unclassified", Receiver: "Delta", Package: "main"}}
-	_, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
-	if err == nil {
-		t.Fatal("want a refusal for the unannotated fixture methods, got nil")
-	}
-	for _, want := range []string{"Unannotated", "AlsoUnannotated", "//ao:scope"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("refusal %q does not name %q", err, want)
-		}
-	}
-	if strings.Contains(err.Error(), "Annotated,") || strings.Contains(err.Error(), " Annotated ") {
-		t.Errorf("refusal %q names the correctly annotated control method", err)
-	}
-}
-
-// TestScanReceivers_RefusesUndeclaredScope closes the other half: an
-// annotation is only a classification if the name means something. A
-// typo one character off a real scope reads correct in review and would
-// otherwise land as a scope no tier table places, which is a method no
-// grant can ever admit.
-func TestScanReceivers_RefusesUndeclaredScope(t *testing.T) {
-	specs := []receiverSpec{{Dir: "testdata/badscope", Receiver: "Epsilon", Package: "main"}}
-	_, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
-	if err == nil {
-		t.Fatal("want a refusal for the undeclared scope, got nil")
-	}
-	for _, want := range []string{"Typo", "threads:reed", "threads:read"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("refusal %q does not name %q — the faulty method, its typo, and the declared set", err, want)
-		}
+// wave of failing runs. The correctly classified control method in each
+// fixture is not named.
+func TestScanReceivers_RefusesAnUnclassifiedMethod(t *testing.T) {
+	for _, tc := range []struct {
+		name, dir, receiver string
+		// wants are the faulty methods, their typo and the declared set.
+		wants, unnamed []string
+	}{
+		{"no scope", "testdata/unclassified", "Delta",
+			[]string{"Unannotated", "AlsoUnannotated", "//ao:scope"}, []string{"Annotated,", " Annotated "}},
+		// An annotation is only a classification if the name means
+		// something: a typo one character off a real scope reads correct in
+		// review and would land as a scope no tier table places, which is a
+		// method no grant can ever admit.
+		{"undeclared scope", "testdata/badscope", "Epsilon",
+			[]string{"Typo", "threads:reed", "threads:read"}, nil},
+		// A method nobody routed is one a multi-backend client would answer
+		// from whichever socket happened to be first: a wrong answer that
+		// looks like a right one.
+		{"no route", "testdata/unrouted", "Theta",
+			[]string{"Unrouted", "AlsoUnrouted", "//ao:route"}, []string{"Routed,", " Routed "}},
+		// A typo one transposition off a real route would land as a value no
+		// client can resolve.
+		{"undeclared route", "testdata/badroute", "Iota",
+			[]string{"Typo", "hoem", "home"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			specs := []receiverSpec{{Dir: tc.dir, Receiver: tc.receiver, Package: "main"}}
+			_, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
+			if err == nil {
+				t.Fatal("want a refusal, got nil")
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("refusal %q does not name %q", err, want)
+				}
+			}
+			for _, control := range tc.unnamed {
+				if strings.Contains(err.Error(), control) {
+					t.Errorf("refusal %q names the correctly classified control method", err)
+				}
+			}
+		})
 	}
 }
 
@@ -416,44 +427,6 @@ func TestScanReceivers_InfersRouteFromTheFirstParameter(t *testing.T) {
 	for name, route := range want {
 		if got[name] != route {
 			t.Errorf("%s: route = %q, want %q", name, got[name], route)
-		}
-	}
-}
-
-// TestScanReceivers_RefusesUnroutedMethods is the route half of the
-// completeness gate. A method nobody routed is one a multi-backend
-// client would answer from whichever socket happened to be first, which
-// is a wrong answer that looks like a right one — so it stops the run,
-// listing every offender the way the scope gate does.
-func TestScanReceivers_RefusesUnroutedMethods(t *testing.T) {
-	specs := []receiverSpec{{Dir: "testdata/unrouted", Receiver: "Theta", Package: "main"}}
-	_, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
-	if err == nil {
-		t.Fatal("want a refusal for the unrouted fixture methods, got nil")
-	}
-	for _, want := range []string{"Unrouted", "AlsoUnrouted", "//ao:route"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("refusal %q does not name %q", err, want)
-		}
-	}
-	if strings.Contains(err.Error(), "Routed,") || strings.Contains(err.Error(), " Routed ") {
-		t.Errorf("refusal %q names the correctly routed control method", err)
-	}
-}
-
-// TestScanReceivers_RefusesUndeclaredRoute closes the other half, for
-// the reason the undeclared-scope refusal exists: a typo one
-// transposition off a real route reads correct in review, and would
-// land as a value no client can resolve.
-func TestScanReceivers_RefusesUndeclaredRoute(t *testing.T) {
-	specs := []receiverSpec{{Dir: "testdata/badroute", Receiver: "Iota", Package: "main"}}
-	_, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
-	if err == nil {
-		t.Fatal("want a refusal for the undeclared route, got nil")
-	}
-	for _, want := range []string{"Typo", "hoem", "home"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("refusal %q does not name %q — the faulty method, its typo, and the declared set", err, want)
 		}
 	}
 }

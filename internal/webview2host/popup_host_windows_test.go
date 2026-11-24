@@ -116,7 +116,8 @@ func TestPopupOfAPopup(t *testing.T) {
 
 // Every way a popup's create can end answers its window request once, with
 // no window unless the popup took it, and the backend hears nothing of a
-// popup it was never told of.
+// popup it was never told of. Its opener closing meanwhile is
+// TestAnOpenerThatGoesAnswersItsPopupsRequests.
 func TestPopupRequestIsAnsweredOnceOnEveryPath(t *testing.T) {
 	type outcome struct {
 		// controller is the popup's, if one came up; window says the
@@ -132,13 +133,6 @@ func TestPopupRequestIsAnsweredOnceOnEveryPath(t *testing.T) {
 			opener.view.requestWindow(args)
 			r.host.Close()
 			// The late completion closes the controller that outlived its page.
-			controller := newFakeController()
-			r.env.complete(r.t, 0, controller)
-			return outcome{controller: controller}
-		}},
-		{"its opener closes while its controller is created", func(r *popupRig, openerPage *hostPage, opener *fakeController, args *fakeWindowArgs) outcome {
-			opener.view.requestWindow(args)
-			r.host.Apply(Directive{Op: OpClose, PageID: openerPage.id})
 			controller := newFakeController()
 			r.env.complete(r.t, 0, controller)
 			return outcome{controller: controller}
