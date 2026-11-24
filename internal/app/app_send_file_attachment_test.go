@@ -12,6 +12,8 @@ import (
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+
+	"github.com/google/uuid"
 )
 
 // A `file` attachment is delivered as one line appended to the PROVIDER
@@ -155,7 +157,7 @@ func TestSendMessage_MixedAttachmentTurnReachesTheWire(t *testing.T) {
 	thread, capturePath := newMixedTurnThread(t, app, "thread-mixed-send")
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, mixedTurnMessage, SendMessageOptions{AttachmentIDs: ids}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, mixedTurnMessage, SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, AttachmentIDs: ids}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	envelopes := waitForCapturedUserEnvelopes(t, capturePath, 1)

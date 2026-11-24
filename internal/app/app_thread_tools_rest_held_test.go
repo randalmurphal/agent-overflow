@@ -18,6 +18,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // echoedTurn is a turn that takes the message it answers in, echoing it
@@ -54,7 +56,7 @@ func TestAHeldSpawnSettlesErroredWhenALaterTurnFails(t *testing.T) {
 	f.holdCallerSession()
 	ack := f.heldOnALoop(t, []string{mockClaudeInitLine,
 		`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["the sandbox denied the write"]}`})
-	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "check it again", SendMessageOptions{}); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "check it again", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestErrored)
@@ -76,7 +78,7 @@ func TestAHeldSpawnSettlesInterruptedWhenItsSessionEndsInALaterTurn(t *testing.T
 	f.holdCallerSession()
 	second := filepath.Join(t.TempDir(), "second")
 	ack := f.heldOnALoop(t, gatedTurn(second, "Halfway through the check."))
-	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "check it again", SendMessageOptions{}); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "check it again", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {

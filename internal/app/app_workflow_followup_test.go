@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
 func TestWorkflowPRReviewCommentsAndDiscussPRReuseLinkedThread(t *testing.T) {
@@ -575,7 +577,7 @@ func TestWorkflowTakeoverSteersSchemaLessThenCompletesThroughGate(t *testing.T) 
 			}
 		}
 	})
-	if _, err := app.SendMessageWithOptions(context.Background(), threadID, "I fixed the workspace; prepare to finalize.", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadID, "I fixed the workspace; prepare to finalize.", pageSendOptions(uuid.NewString())); err != nil {
 		unsubscribe()
 		t.Fatal(err)
 	}
@@ -660,7 +662,7 @@ func TestWorkflowTakeoverInterruptsLiveTurnBeforeSteering(t *testing.T) {
 			}
 		}
 	})
-	if _, err := app.SendMessageWithOptions(context.Background(), threadID, "Steer after the interrupt.", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadID, "Steer after the interrupt.", pageSendOptions(uuid.NewString())); err != nil {
 		unsubscribe()
 		t.Fatal(err)
 	}

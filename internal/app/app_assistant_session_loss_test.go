@@ -38,7 +38,7 @@ func lostSessionAssistant(t *testing.T) (f *requestFixture, threadID, stdinLog s
 
 func sendFindingTheSessionGone(t *testing.T, a *App, threadID, text string) {
 	t.Helper()
-	_, err := a.SendMessageWithOptions(t.Context(), threadID, text, SendMessageOptions{SendID: uuid.NewString()})
+	_, err := a.SendMessageWithOptions(t.Context(), threadID, text, SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString()})
 	if code, _, ok := errorsx.PublicDetails(err); !ok || code != transport.ErrCodeAssistantSessionGone {
 		t.Fatalf("send %q = %v, want %s", text, err, transport.ErrCodeAssistantSessionGone)
 	}
@@ -143,7 +143,7 @@ func TestConcurrentSendsDuringSessionLossKeepBothTexts(t *testing.T) {
 		var wg sync.WaitGroup
 		for i := range texts {
 			wg.Go(func() {
-				_, errs[i] = f.app.SendMessageWithOptions(t.Context(), threadID, texts[i], SendMessageOptions{SendID: uuid.NewString()})
+				_, errs[i] = f.app.SendMessageWithOptions(t.Context(), threadID, texts[i], SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString()})
 			})
 		}
 		wg.Wait()
@@ -169,7 +169,7 @@ func TestASecondSendRightAfterSessionLossKeepsBothTexts(t *testing.T) {
 	for run := range 5 {
 		f, threadID, _ := lostSessionAssistant(t)
 		sendFindingTheSessionGone(t, f.app, threadID, "first message")
-		_, second := f.app.SendMessageWithOptions(t.Context(), threadID, "second message", SendMessageOptions{SendID: uuid.NewString()})
+		_, second := f.app.SendMessageWithOptions(t.Context(), threadID, "second message", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString()})
 		successor := awaitCurrentThread(t, f.app, threadID)
 		f.app.waitAgentNoticeWork()
 		draft := draftContent(t, f.app, successor)
@@ -236,7 +236,7 @@ func TestASessionLossWhileStoppingCarriesNothing(t *testing.T) {
 	f, threadID, _ := lostSessionAssistant(t)
 	f.app.stopAgentNoticeWork()
 
-	_, err := f.app.SendMessageWithOptions(t.Context(), threadID, "Anything new?", SendMessageOptions{SendID: uuid.NewString()})
+	_, err := f.app.SendMessageWithOptions(t.Context(), threadID, "Anything new?", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString()})
 	if err == nil {
 		t.Fatal("send succeeded, want the start failure")
 	}
@@ -260,7 +260,7 @@ func TestSessionLossCarriesAttachments(t *testing.T) {
 	}
 	f.app.attachments = attStore
 	att := uploadTestAttachment(t, f.app, threadID, "note.txt", "text/plain", []byte("hello"))
-	_, err = f.app.SendMessageWithOptions(t.Context(), threadID, "See the note", SendMessageOptions{SendID: uuid.NewString(), AttachmentIDs: []string{att.ID}})
+	_, err = f.app.SendMessageWithOptions(t.Context(), threadID, "See the note", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString(), AttachmentIDs: []string{att.ID}})
 	if code, _, ok := errorsx.PublicDetails(err); !ok || code != transport.ErrCodeAssistantSessionGone {
 		t.Fatalf("send = %v", err)
 	}

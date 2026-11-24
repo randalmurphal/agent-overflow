@@ -17,6 +17,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/workspacefiles"
+
+	"github.com/google/uuid"
 )
 
 // newComposerTestApp builds an *App with a fresh on-disk SQLite store, a
@@ -301,7 +303,7 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 	})
 
 	msg := "please review this image"
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, msg, SendMessageOptions{AttachmentIDs: []string{record.ID}}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, msg, SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, AttachmentIDs: []string{record.ID}}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -350,7 +352,7 @@ func TestComposer_SendMessageRejectsAttachmentFromDifferentThread(t *testing.T) 
 
 	record := uploadTestAttachment(t, app, sourceThread.ID, "cover.png", "image/png", tinyPNG())
 
-	_, err := app.SendMessageWithOptions(context.Background(), targetThread.ID, "please review this image", SendMessageOptions{AttachmentIDs: []string{record.ID}})
+	_, err := app.SendMessageWithOptions(context.Background(), targetThread.ID, "please review this image", SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, AttachmentIDs: []string{record.ID}})
 	if err == nil {
 		t.Fatal("SendMessage error = nil, want cross-thread attachment rejection")
 	}
@@ -408,7 +410,7 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 	})
 
 	outgoing := "initial question\n\n```terminal shell\n$ ls\nREADME.md\n```"
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, outgoing, SendMessageOptions{AttachmentIDs: []string{record.ID}}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, outgoing, SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, AttachmentIDs: []string{record.ID}}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -585,7 +587,9 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 		Claude:   sess,
 	})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Actual message", SendMessageOptions{}); err != nil {
+	opts := pageSendOptions(uuid.NewString())
+	opts.ConsumeDraft = &DraftSnapshot{Content: "draft text", AttachmentIDs: []string{}, TerminalChips: []TerminalChip{}}
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Actual message", opts); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 

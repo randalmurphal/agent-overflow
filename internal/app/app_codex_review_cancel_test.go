@@ -7,6 +7,8 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 // A review and a manual compaction each start a provider turn. Neither waits
@@ -19,8 +21,16 @@ func TestCodexTurnStartersRunWhenTheirCallerIsGone(t *testing.T) {
 		method string
 	}{
 		"review": {
-			call: func(ctx context.Context, app *App, threadID string) error {
-				_, err := app.SendMessageWithOptions(ctx, threadID, "/review", SendMessageOptions{})
+			// A client's send is admitted under its caller's context, so the
+			// caller leaves once the send is placed.
+			call: func(_ context.Context, app *App, threadID string) error {
+				caller, leave := context.WithCancel(context.Background())
+				app.sendStageFn = func(_, stage string) {
+					if stage == "placed" {
+						leave()
+					}
+				}
+				_, err := app.SendMessageWithOptions(caller, threadID, "/review", pageSendOptions(uuid.NewString()))
 				return err
 			},
 			method: `"method":"review/start"`,

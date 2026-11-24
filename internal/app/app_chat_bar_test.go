@@ -16,6 +16,8 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
+
+	"github.com/google/uuid"
 )
 
 func TestSeedChatModelProfileSkipsHiddenLastUsedModel(t *testing.T) {
@@ -268,11 +270,11 @@ func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
 	const plainText = "and then tell me what happened"
 	// The bound wire method, not the internal helper: expansion is an
 	// explicit opt-in that only the composer-facing entry points set.
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, commandText, SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, commandText, pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("send command message: %v", err)
 	}
 	acknowledgeMockClaudeSend(t, app, thread.ID)
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, plainText, SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, plainText, pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("send plain message: %v", err)
 	}
 	_ = sess.Close()

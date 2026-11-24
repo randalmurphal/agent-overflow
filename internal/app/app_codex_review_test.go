@@ -18,6 +18,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 // writeCodexReviewBinary mints a fake codex app-server that answers the two
@@ -214,7 +216,7 @@ func TestComposerReviewSendsTheTargetInline(t *testing.T) {
 	capturePath := filepath.Join(t.TempDir(), "rpc.ndjson")
 	installCodexReviewSession(t, app, thread, "", capturePath)
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review branch main", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review branch main", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessageWithOptions /review branch main: %v", err)
 	}
 
@@ -261,7 +263,7 @@ func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T
 		Provider: string(provider.Codex), Token: "codex-projected-review", Codex: sess,
 	})
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review", pageSendOptions("review-send")); err != nil {
 		t.Fatalf("SendMessageWithOptions /review: %v", err)
 	}
 	waitForCapturedRequest(t, capturePath, `"method":"review/start"`)
@@ -294,11 +296,15 @@ func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T
 	default:
 	}
 
+	sent, found, err := app.store.FindUserTextItemBySendID(thread.ID, "review-send")
+	if err != nil || !found {
+		t.Fatalf("the /review row: found=%v err=%v", found, err)
+	}
 	var user, launch, result *store.Item
 	for i := range items {
 		item := &items[i]
 		switch {
-		case item.ID == "user:0":
+		case item.ID == sent.ID:
 			user = item
 		case item.ToolName == "codex_review":
 			launch = item
@@ -350,7 +356,7 @@ func TestComposerReviewRefusesAnotherThreadAnswer(t *testing.T) {
 	capturePath := filepath.Join(t.TempDir(), "rpc.ndjson")
 	installCodexReviewSession(t, app, thread, "some-other-thread", capturePath)
 
-	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review", SendMessageOptions{})
+	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review", pageSendOptions(uuid.NewString()))
 	if err == nil {
 		t.Fatal("an answer naming another thread must be surfaced as an error, not reported as a started review")
 	}
@@ -402,7 +408,7 @@ func TestCodexReviewLazyStartsAColdThread(t *testing.T) {
 		t.Fatalf("set mock Codex binary: %v", err)
 	}
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/review", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessageWithOptions /review: %v", err)
 	}
 	if _, ok := app.sessionManager().get(thread.ID); !ok {

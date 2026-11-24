@@ -23,6 +23,8 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 const restShellCommand = "tail -f deploy.log"
@@ -165,7 +167,7 @@ func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
 		}
 	})
 	t.Cleanup(func() { letGo(); f.app.triage.SetTurnRowWrittenGate(nil) })
-	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "how is it going?", SendMessageOptions{}); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "how is it going?", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	select {

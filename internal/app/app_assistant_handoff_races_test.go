@@ -405,7 +405,7 @@ func TestASendRacingTheDraftMoveLandsOnce(t *testing.T) {
 					time.Sleep(50 * time.Microsecond)
 				}
 			}
-			_, sendErr = f.app.SendMessageWithOptions(t.Context(), f.caller.ID, "typed note", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "typed note"}})
+			_, sendErr = f.app.SendMessageWithOptions(t.Context(), f.caller.ID, "typed note", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "typed note"}})
 		}()
 		if run%2 == 1 {
 			time.Sleep(time.Duration(run) * 200 * time.Microsecond)
@@ -467,7 +467,7 @@ func TestSendsDuringAFailedReturnAreEachKeptOnce(t *testing.T) {
 	f.app.assistantHandOffEndedForTest = func(string) {
 		once.Do(func() {
 			go func() {
-				_, err := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
+				_, err := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
 				third <- err
 			}()
 			// The handoff the third send starts waits on this composer, or,
@@ -503,7 +503,7 @@ func TestSendsDuringAFailedReturnAreEachKeptOnce(t *testing.T) {
 	})
 	second := make(chan error, 1)
 	go func() {
-		_, err := f.app.SendMessageWithOptions(t.Context(), threadID, "second message", SendMessageOptions{SendID: uuid.NewString()})
+		_, err := f.app.SendMessageWithOptions(t.Context(), threadID, "second message", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString()})
 		second <- err
 	}()
 	select {
@@ -600,7 +600,7 @@ func TestASendFromAPastThreadAfterAnotherClientsSaveIsSent(t *testing.T) {
 	if err := f.app.SaveDraft(t.Context(), past, "client two text", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.app.SendMessageWithOptions(t.Context(), past, "client one text", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "client one text"}}); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), past, "client one text", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "client one text"}}); err != nil {
 		t.Fatalf("send = %v, want it sent", err)
 	}
 	if n := sentTexts(t, f.app, past, "client one text"); n != 1 {
@@ -610,7 +610,7 @@ func TestASendFromAPastThreadAfterAnotherClientsSaveIsSent(t *testing.T) {
 		t.Fatalf("past thread's draft = %q, want client two's", got)
 	}
 	// The text the handoff moved is still refused from the past thread.
-	_, err = f.app.SendMessageWithOptions(t.Context(), past, "moved note", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "moved note"}})
+	_, err = f.app.SendMessageWithOptions(t.Context(), past, "moved note", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "moved note"}})
 	if code, _, _ := errorsx.PublicDetails(err); code != transport.ErrCodeAssistantDraftMoved {
 		t.Fatalf("send of the moved text = %v, want %s", err, transport.ErrCodeAssistantDraftMoved)
 	}
@@ -659,7 +659,7 @@ func TestASessionLossDuringAManualHandOffIsCarriedOnce(t *testing.T) {
 		if !f.app.assistantHandOffs.begin(agentID, threadID) {
 			t.Fatal("begin")
 		}
-		_, sendErr := f.app.SendMessageWithOptions(t.Context(), threadID, "lost-session message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "lost-session message"}})
+		_, sendErr := f.app.SendMessageWithOptions(t.Context(), threadID, "lost-session message", SendMessageOptions{ReconcileBySendID: true, SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "lost-session message"}})
 		successor, err := f.app.nextAssistantThread(t.Context(), threadID, false)
 		f.app.endAssistantHandOff(agentID, threadID)
 		if err != nil {
@@ -726,7 +726,8 @@ func handedOffDraft(t *testing.T, content string, attachments int) (f *requestFi
 func sendConsuming(t *testing.T, a *App, threadID, text string, ids []string) string {
 	t.Helper()
 	_, err := a.SendMessageWithOptions(t.Context(), threadID, text, SendMessageOptions{
-		SendID: uuid.NewString(), AttachmentIDs: ids, ConsumeDraft: &DraftSnapshot{Content: text, AttachmentIDs: ids},
+		ReconcileBySendID: true,
+		SendID:            uuid.NewString(), AttachmentIDs: ids, ConsumeDraft: &DraftSnapshot{Content: text, AttachmentIDs: ids},
 	})
 	if err == nil {
 		return ""

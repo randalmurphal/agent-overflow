@@ -21,6 +21,8 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // acceptRequest writes caller's request of target as the tools accept one
@@ -165,7 +167,7 @@ func testWorkerPromptsByRun(t *testing.T, placement string) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = app.StopSession(worker.ID) })
-			if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, "go", SendMessageOptions{}); err != nil {
+			if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, "go", pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			if row := requestRow(t, app, "middle-worker"); !row.RunEnded() {

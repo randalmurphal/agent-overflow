@@ -11,6 +11,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 const codexStopBeforeTurnThread = "codex-stop-before-turn"
@@ -131,7 +133,7 @@ func TestStopBeforeACodexTurnOpensEndsInOneOutcome(t *testing.T) {
 			const message = "stop me before I start"
 			if tc.queued {
 				dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{ID: "queue:stop-before", Message: message}})
-			} else if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, message, SendMessageOptions{}); err != nil {
+			} else if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, message, pageSendOptions(uuid.NewString())); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			if got := turnStartsCarrying(t, capture, message); got != 1 {

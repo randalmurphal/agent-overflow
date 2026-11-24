@@ -15,6 +15,8 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // restedWorkerAtBoot is a worker the fixture's caller spawned in placement,
@@ -70,7 +72,7 @@ func TestAMessageDuringTheBootsRecoveryEndsTheEarlierRunFirst(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() {
-				_, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{})
+				_, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", pageSendOptions(uuid.NewString()))
 				done <- err
 			}()
 			stillWaiting(t, done)
@@ -164,7 +166,7 @@ func TestAMessageWaitingTooLongForTheBootsRecoveryFails(t *testing.T) {
 	f.watchAgentRows()
 	f.app.restRecoveryWaitOverride = 200 * time.Millisecond
 	worker := f.restedWorkerAtBoot(t, "waiting-spawn", store.PlacementOwned)
-	if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{}); !errors.Is(err, errRestRecovering) {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", pageSendOptions(uuid.NewString())); !errors.Is(err, errRestRecovering) {
 		t.Fatalf("SendMessage = %v; want %v", err, errRestRecovering)
 	}
 	items, err := f.app.store.ListItems(worker.ID)

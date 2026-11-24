@@ -11,6 +11,8 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+
+	"github.com/google/uuid"
 )
 
 // createRuntimeTestThread seeds a thread the runtime-mode bindings can
@@ -202,7 +204,9 @@ func TestSendRuntimeModeChangeReconnectsAfterInflightStart(t *testing.T) {
 	sendErr := make(chan error, 1)
 	go func() {
 		_, err := app.SendMessageWithOptions(context.Background(), id, "hello", SendMessageOptions{
-			RuntimeMode: string(provider.RuntimeFullAccess),
+			SendID:            uuid.NewString(),
+			ReconcileBySendID: true,
+			RuntimeMode:       string(provider.RuntimeFullAccess),
 		})
 		sendErr <- err
 	}()

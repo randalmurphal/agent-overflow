@@ -17,6 +17,8 @@ import (
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // remoteLoopWorker spawns a thread on the pair's destination that answers,
@@ -198,7 +200,7 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 	}
 
 	// Its spawner's pane stays closed while the destination resumes.
-	if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "now also update the changelog", SendMessageOptions{}); err != nil {
+	if _, err := pair.dest.SendMessageWithOptions(context.Background(), child, "now also update the changelog", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	// The turn's row there reports the run open before its turn is open,
@@ -276,7 +278,7 @@ func TestDisconnectedOwnerKeepsRestingAnswerUntilReconciled(t *testing.T) {
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	spawn, child := remoteRestedWorker(t, pair)
-	if _, err := pair.dest.SendMessageWithOptions(t.Context(), child, "continue this worker", SendMessageOptions{}); err != nil {
+	if _, err := pair.dest.SendMessageWithOptions(t.Context(), child, "continue this worker", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatal(err)
 	}
 	expirePastTheFloor(pair.source)

@@ -529,18 +529,4 @@ func (h *harnessHost) Send(ctx context.Context, threadID, text string, atRestOnl
 	return harnessrpc.HarnessSendResult{TurnIndex: item.TurnIndex, CompletionsAfter: completionsAfter}, nil
 }
 
-// pageSendOptions are the options of the page's default send under sendID
-// (frontend/src/lib/utils/sendOptions.ts buildSendOptions): rows found by
-// that id, and an empty draft snapshot, which consumes no composer draft.
-// frontend/src/test/fixtures/pageDefaultSend.json is the reference they are
-// checked against.
-func pageSendOptions(sendID string) SendMessageOptions {
-	return SendMessageOptions{
-		AttachmentIDs:     []string{},
-		ConsumeDraft:      &DraftSnapshot{AttachmentIDs: []string{}, TerminalChips: []TerminalChip{}},
-		SendID:            sendID,
-		ReconcileBySendID: true,
-	}
-}
-
 var _ harnessrpc.Host = (*harnessHost)(nil)

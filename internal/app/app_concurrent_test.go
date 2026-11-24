@@ -158,7 +158,7 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "go", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "go", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 

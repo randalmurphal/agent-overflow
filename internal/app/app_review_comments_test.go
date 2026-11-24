@@ -24,6 +24,8 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 func TestSendPlanRevisionCommentsSendsDraftsAndMarksSent(t *testing.T) {
@@ -185,6 +187,8 @@ func TestSendMessageWithOptionsAppendsDraftPlanComments(t *testing.T) {
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
 	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "Please revise.", SendMessageOptions{
+		SendID:                     uuid.NewString(),
+		ReconcileBySendID:          true,
 		RevisionSourceProposedPlan: &SourceProposedPlan{ThreadID: thread.ID, ItemID: "plan-item"},
 		RevisionSourceCommentIDs:   []string{comment.ID},
 	})
@@ -427,6 +431,8 @@ func TestSendPRDiffReviewCommentsSendsAPRsDraftsToAThread(t *testing.T) {
 	}
 	// The thread's send door refuses a PR's drafts: they are git:operate.
 	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "", SendMessageOptions{
+		SendID:                       uuid.NewString(),
+		ReconcileBySendID:            true,
 		RevisionSourceDiffReview:     &SourceDiffReview{PRKey: diffReviewSendPR.Key(), Scope: draft.Scope, SourceKey: draft.SourceKey},
 		RevisionSourceDiffCommentIDs: []string{draft.ID},
 	}); err == nil || !strings.Contains(err.Error(), "SendPRDiffReviewComments") {

@@ -16,6 +16,8 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // restedWorker is a worker the fixture's caller spawned in placement, that
@@ -50,7 +52,7 @@ func (f *requestFixture) nudge(t *testing.T, by string, worker store.Thread) {
 	t.Helper()
 	switch by {
 	case "the person":
-		if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{}); err != nil {
+		if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", pageSendOptions(uuid.NewString())); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 	case "another thread's send":
@@ -320,7 +322,7 @@ func TestARefusedNudgeRecordsNoRun(t *testing.T) {
 	f.watchAgentRows()
 	worker := f.restedWorker(t, "refused-spawn", store.PlacementOwned)
 	f.app.sendMessageFn = func(string, string, []string) error { return errors.New("refused") }
-	if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{}); err == nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", pageSendOptions(uuid.NewString())); err == nil {
 		t.Fatal("the refused message was sent")
 	}
 	f.app.threadRequestsWG.Wait()

@@ -17,6 +17,8 @@ import (
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/testutil/mockexec"
+
+	"github.com/google/uuid"
 )
 
 // stubProviderBinaryDetect installs the watcher's version-probe seam for the
@@ -417,7 +419,7 @@ func TestStaleBinaryFlagsTheLiveThreadAndHydrates(t *testing.T) {
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
@@ -501,7 +503,7 @@ func TestStaleBinaryFlagsTheLiveThreadAndHydrates(t *testing.T) {
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession again: %v", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi again", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi again", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage again: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)

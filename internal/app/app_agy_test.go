@@ -15,6 +15,8 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/google/uuid"
 )
 
 func writeSharedPoolAgyBinary(t *testing.T, logPath string) string {
@@ -166,7 +168,7 @@ func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T
 	}
 
 	// Send a turn on thread A and verify the response lands on the timeline.
-	if _, err := app.SendMessageWithOptions(context.Background(), threadA.ID, "hello agy", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadA.ID, "hello agy", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage(A): %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -362,7 +364,7 @@ func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testi
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession(1): %v", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "turn one", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "turn one", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage(1): %v", err)
 	}
 	waitAssistantCount := func(want int) {
@@ -392,7 +394,7 @@ func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testi
 	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession(2): %v", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "turn two", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "turn two", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage(2): %v", err)
 	}
 	waitAssistantCount(2)

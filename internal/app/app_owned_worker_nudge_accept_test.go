@@ -22,7 +22,7 @@ type nudgeDoor struct {
 
 var nudgeDoors = []nudgeDoor{
 	{"the composer", func(t *testing.T, f *requestFixture, worker store.Thread, sendID string) error {
-		_, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{SendID: sendID})
+		_, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{ReconcileBySendID: true, SendID: sendID})
 		return err
 	}},
 	{"revert and resend", func(t *testing.T, f *requestFixture, worker store.Thread, sendID string) error {
@@ -154,7 +154,7 @@ func TestARepeatedAcceptedSendRecordsNoNudgeRun(t *testing.T) {
 			installMockClaudeTurns(t, f.app, [][]string{runTurnLines("accepted", "Checked the docs.", gate)})
 			worker := f.plainThread(t)
 			f.restAsWorker(t, "repeat-spawn", worker, store.PlacementOwned)
-			if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{SendID: "repeat-send"}); err != nil {
+			if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{ReconcileBySendID: true, SendID: "repeat-send"}); err != nil {
 				t.Fatal(err)
 			}
 			var first ThreadAgentRow

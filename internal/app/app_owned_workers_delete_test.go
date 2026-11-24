@@ -21,6 +21,8 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 // Deleting a thread deletes the workers it owns, down the lineage, as one
@@ -686,7 +688,7 @@ func TestAProjectRemovalRefusesWhileAWorkerOutsideRuns(t *testing.T) {
 				runningSession(t, f.app, worker.ID)
 			} else {
 				f.app.deleteClaimedForTest = func([]string) {
-					_, sendErr = f.app.SendMessageWithOptions(context.Background(), worker.ID, "more", SendMessageOptions{})
+					_, sendErr = f.app.SendMessageWithOptions(context.Background(), worker.ID, "more", pageSendOptions(uuid.NewString()))
 					runningSession(t, f.app, worker.ID)
 				}
 			}

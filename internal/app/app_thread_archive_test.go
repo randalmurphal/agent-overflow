@@ -13,6 +13,8 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // archiveThread is the ArchiveThread binding as one error: its refusal, or
@@ -78,7 +80,7 @@ func startExitMarkerClaudeSession(t *testing.T, app *App, bus *capturedEventBus,
 	if err := app.startSessionTakingLock(context.Background(), threadID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if _, err := app.SendMessageWithOptions(context.Background(), threadID, "hello", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadID, "hello", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
@@ -470,7 +472,7 @@ func TestSendAfterArchiveStartsAColdSession(t *testing.T) {
 		t.Fatal("archive did not close the session")
 	}
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "still here", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "still here", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessage after archive: %v", err)
 	}
 	second, restarted := app.sessionManager().get(thread.ID)

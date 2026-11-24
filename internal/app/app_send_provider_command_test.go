@@ -17,6 +17,8 @@ import (
 	"agent-overflow/internal/triage"
 
 	"context"
+
+	"github.com/google/uuid"
 )
 
 // writeStdinCapturingClaudeBinary mints a fake `claude` that appends every
@@ -144,7 +146,7 @@ func TestSendMessageWithOptions_CommandRoutingDoesNotDependOnDiscovery(t *testin
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
 	installCapturingClaudeSession(t, app, thread, capturePath)
 
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/usage", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/usage", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("SendMessageWithOptions: %v", err)
 	}
 	texts := waitForCapturedUserMessages(t, capturePath, 1)
@@ -153,7 +155,7 @@ func TestSendMessageWithOptions_CommandRoutingDoesNotDependOnDiscovery(t *testin
 	}
 
 	acknowledgeMockClaudeSend(t, app, thread.ID)
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/not-discovered argument", SendMessageOptions{}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "/not-discovered argument", pageSendOptions(uuid.NewString())); err != nil {
 		t.Fatalf("unknown SendMessageWithOptions: %v", err)
 	}
 	texts = waitForCapturedUserMessages(t, capturePath, 2)

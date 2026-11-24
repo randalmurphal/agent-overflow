@@ -8,6 +8,8 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 func TestEmptySendRefusedBeforeDraftHistoryQueueOrRuntimeEffects(t *testing.T) {
@@ -33,7 +35,7 @@ func TestEmptySendRefusedBeforeDraftHistoryQueueOrRuntimeEffects(t *testing.T) {
 				case "send", "workflow":
 					_, err = app.SendMessageWithOptions(context.Background(), thread.ID, " \n\t", opts)
 				case "legacy":
-					_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "", SendMessageOptions{})
+					_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "", pageSendOptions(uuid.NewString()))
 				case "queue":
 					_, err = app.RegisterQueueItem(context.Background(), thread.ID, " \n\t", opts)
 				}
@@ -67,7 +69,7 @@ func TestEmptyRetryReturnsAcceptedQueueReceiptAcrossSendMethods(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
-	opts := SendMessageOptions{SendID: "accepted"}
+	opts := SendMessageOptions{SendID: "accepted", ReconcileBySendID: true}
 	holdFlushQueue(app)
 	first, err := app.RegisterQueueItem(context.Background(), thread.ID, "accepted once", opts)
 	if err != nil {
@@ -170,7 +172,7 @@ func TestAttachmentOnlySendStillReachesProvider(t *testing.T) {
 	app := newMixedTurnApp(t)
 	thread, capture := newMixedTurnThread(t, app, "attachment-only-send")
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)
-	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "", SendMessageOptions{AttachmentIDs: ids}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "", SendMessageOptions{SendID: uuid.NewString(), ReconcileBySendID: true, AttachmentIDs: ids}); err != nil {
 		t.Fatal(err)
 	}
 	blocks := waitForCapturedUserEnvelopes(t, capture, 1)[0]

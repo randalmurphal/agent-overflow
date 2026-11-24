@@ -990,6 +990,20 @@ type SendMessageOptions struct {
 	ReconcileBySendID bool `json:"reconcileBySendId,omitempty"`
 }
 
+// pageSendOptions are the options of the page's default send under sendID
+// (frontend/src/lib/utils/sendOptions.ts buildSendOptions): rows found by
+// that id, and an empty draft snapshot, which consumes no composer draft.
+// frontend/src/test/fixtures/pageDefaultSend.json is the reference they are
+// checked against.
+func pageSendOptions(sendID string) SendMessageOptions {
+	return SendMessageOptions{
+		AttachmentIDs:     []string{},
+		ConsumeDraft:      &DraftSnapshot{AttachmentIDs: []string{}, TerminalChips: []TerminalChip{}},
+		SendID:            sendID,
+		ReconcileBySendID: true,
+	}
+}
+
 // interruptTurnCtx is InterruptTurn with a bounded entry: ctx limits ONLY the
 // thread-action-lock acquisition, which is the one wait here that can be
 // abandoned with no side effects (`LockCtx`'s contract). The workflow runner's
