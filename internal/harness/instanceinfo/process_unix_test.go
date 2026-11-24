@@ -3,12 +3,13 @@
 package instanceinfo
 
 import (
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // A binary replaced on disk after spawn (the harness-rebuild case) makes
@@ -20,22 +21,7 @@ func TestCaptureProcessIdentityStripsDeletedMarker(t *testing.T) {
 	if err != nil {
 		t.Skipf("no sleep binary: %v", err)
 	}
-	src, err := os.Open(sleepPath)
-	if err != nil {
-		t.Fatalf("open sleep: %v", err)
-	}
-	defer src.Close()
-	copied := filepath.Join(t.TempDir(), "sleep-copy")
-	dst, err := os.OpenFile(copied, os.O_CREATE|os.O_WRONLY, 0o755)
-	if err != nil {
-		t.Fatalf("create copy: %v", err)
-	}
-	if _, err := io.Copy(dst, src); err != nil {
-		t.Fatalf("copy sleep: %v", err)
-	}
-	if err := dst.Close(); err != nil {
-		t.Fatalf("close copy: %v", err)
-	}
+	copied := mockexec.CopyFile(t, filepath.Join(t.TempDir(), "sleep-copy"), sleepPath, 0o755, nil)
 
 	cmd := exec.Command(copied, "30")
 	if err := cmd.Start(); err != nil {
@@ -65,22 +51,22 @@ func TestCaptureProcessIdentityStripsDeletedMarker(t *testing.T) {
 	}
 }
 
-// parseStat takes the state and starttime from after the last ')', so a
-// command name holding spaces and parentheses cannot shift the fields.
+// parseStat takes the state, parent and starttime from after the last ')',
+// so a command name holding spaces and parentheses cannot shift the fields.
 func TestParseStatReadsStateAndStartTimeAfterTheCommand(t *testing.T) {
-	line := "4242 (a) b) c (d)) Z 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1234 56 18446744073709551615\n"
-	state, start, err := parseStat(4242, []byte(line))
+	line := "4242 (a) b) c (d)) Z 17 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1234 56 18446744073709551615\n"
+	proc, err := parseStat(4242, []byte(line))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state != "Z" || start != "987654" {
-		t.Fatalf("parseStat = %q, %q; want Z, 987654", state, start)
+	if want := (Process{Start: "987654", PPID: 17, Exited: true}); proc != want {
+		t.Fatalf("parseStat = %+v; want %+v", proc, want)
 	}
-	if !exitedState(state) || exitedState("S") || exitedState("R") {
+	if exitedState("S") || exitedState("R") {
 		t.Fatal("exitedState does not tell a zombie from a running process")
 	}
-	for _, bad := range []string{"4242 (no terminator", "4242 (short) S 1 2 3"} {
-		if _, _, err := parseStat(4242, []byte(bad)); err == nil {
+	for _, bad := range []string{"4242 (no terminator", "4242 (short) S 1 2 3", "4242 (comm) S x 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1234"} {
+		if _, err := parseStat(4242, []byte(bad)); err == nil {
 			t.Errorf("parseStat(%q) accepted a malformed line", bad)
 		}
 	}
@@ -137,5 +123,27 @@ func TestProcessStartIsTheIdentitysBirthMarker(t *testing.T) {
 	}
 	if _, _, err := ProcessStart(0); err == nil {
 		t.Fatal("ProcessStart(0) read a process")
+	}
+}
+
+// ReadProcess reads the birth marker ProcessStart reports and the parent
+// from the same record, and finds no process once the pid is reaped.
+func TestReadProcessReadsStartAndParentTogether(t *testing.T) {
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	proc, found, err := ReadProcess(cmd.Process.Pid)
+	start, alive, startErr := ProcessStart(cmd.Process.Pid)
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+	if err != nil || startErr != nil || !found || !alive {
+		t.Fatalf("ReadProcess = %+v, %v, %v; ProcessStart alive %v, %v", proc, found, err, alive, startErr)
+	}
+	if proc.PPID != os.Getpid() || proc.Start != start || proc.Exited {
+		t.Fatalf("ReadProcess = %+v, want parent %d and start %q", proc, os.Getpid(), start)
+	}
+	if proc, found, err := ReadProcess(cmd.Process.Pid); err != nil || found {
+		t.Fatalf("ReadProcess after the reap = %+v, %v, %v; want no process", proc, found, err)
 	}
 }

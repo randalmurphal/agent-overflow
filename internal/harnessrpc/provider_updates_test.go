@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/providerupdate/updatefake"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // withMockInstall gives the harness a home and a stand-in mock binary,
@@ -16,9 +17,7 @@ func withMockInstall(t *testing.T, h *Harness) updatefake.MockInstall {
 	t.Helper()
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "ao-mockprovider")
-	if err := os.WriteFile(exe, []byte("mock"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, exe, []byte("mock"), 0o755)
 	old := time.Now().Add(-time.Hour).Truncate(time.Second)
 	if err := os.Chtimes(exe, old, old); err != nil {
 		t.Fatal(err)

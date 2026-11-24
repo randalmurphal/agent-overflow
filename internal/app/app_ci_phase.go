@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -34,6 +35,10 @@ import (
 // Everything below runs on the owning pump's goroutine, including the work
 // an RPC asks for through its requests: one writer per pump keeps frame
 // order equal to sequence order, which a log's versions depend on.
+
+// MaxPRCILiveInterval is the longest IsolationConfig.PRCILiveInterval: the
+// CI retry starts from it and doubles.
+const MaxPRCILiveInterval = time.Duration(math.MaxInt64 / 2)
 
 const (
 	defaultPRCILiveInterval   = 10 * time.Second

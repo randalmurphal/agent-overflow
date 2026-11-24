@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createInitialContext,
   isSetextHeadingUnderline,
-  isTableDelimiter,
   isThematicBreak,
   updateContext,
 } from './detector';
@@ -16,7 +15,6 @@ describe('boundary detector fast rejection', () => {
       const line = 'ordinary prose '.repeat(10_000);
       expect(isSetextHeadingUnderline(line, 'heading')).toBe(false);
       expect(isThematicBreak(line)).toBe(false);
-      expect(isTableDelimiter(line)).toBe(false);
     } finally {
       trim.mockRestore();
     }
@@ -26,7 +24,6 @@ describe('boundary detector fast rejection', () => {
     expect(isSetextHeadingUnderline('   ===   ', 'Heading')).toBe(true);
     expect(isSetextHeadingUnderline('    ===   ', 'Heading')).toBe(false);
     expect(isThematicBreak('   ***   ')).toBe(true);
-    expect(isTableDelimiter('  | :--- | ---: |   ')).toBe(true);
   });
 
   it('reuses immutable context while an ordinary line changes no block state', () => {

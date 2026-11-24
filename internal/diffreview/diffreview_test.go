@@ -86,31 +86,6 @@ func TestCommentLinePrefersNewThenOld(t *testing.T) {
 	}
 }
 
-func TestIDsOfPreservesOrder(t *testing.T) {
-	got := IDsOf([]store.DiffReviewComment{
-		{ID: "c1"}, {ID: "c2"}, {ID: "c3"},
-	})
-	want := []string{"c1", "c2", "c3"}
-	if len(got) != len(want) {
-		t.Fatalf("len mismatch: got %v want %v", got, want)
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			t.Fatalf("idx %d: got %q want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestIDsOfReturnsEmptySliceNotNil(t *testing.T) {
-	got := IDsOf(nil)
-	if got == nil {
-		t.Fatal("expected empty slice, got nil")
-	}
-	if len(got) != 0 {
-		t.Fatalf("expected empty, got %v", got)
-	}
-}
-
 // A range names its first and last line on the half both are on.
 func TestBuildPromptRendersRanges(t *testing.T) {
 	prompt := BuildPrompt([]store.DiffReviewComment{

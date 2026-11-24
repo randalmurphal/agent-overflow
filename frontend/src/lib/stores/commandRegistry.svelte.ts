@@ -220,10 +220,6 @@ export function registerCommand(cmd: Command): void {
   commands.set(cmd.id, { ...cmd, whenAst, offeredAst });
 }
 
-export function unregisterCommand(id: string): void {
-  commands.delete(id);
-}
-
 export function listCommands(): Command[] {
   return Array.from(commands.values());
 }

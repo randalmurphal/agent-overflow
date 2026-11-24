@@ -20,6 +20,10 @@ type TimelineDigestContext struct {
 	CompletedAt  *int64          `json:"completedAt,omitempty"`
 	PromptID     string          `json:"promptId"`
 	AnswerID     string          `json:"answerId"`
+	// ExecutionTurnID names a Codex card's execution: a row inside the
+	// bounds that another execution started is not in it
+	// (codexExecutionMemberSQL).
+	ExecutionTurnID string `json:"executionTurnId,omitempty"`
 }
 
 func (d *TimelineDigestContext) filter(alias string) (string, []any) {
@@ -40,6 +44,10 @@ func (d *TimelineDigestContext) filter(alias string) (string, []any) {
 	if d.CompletedAt != nil {
 		terms = append(terms, alias+"created_at <= ?")
 		args = append(args, *d.CompletedAt)
+	}
+	if d.ExecutionTurnID != "" {
+		terms = append(terms, codexExecutionMemberSQL(alias))
+		args = append(args, d.ExecutionTurnID, d.ExecutionTurnID)
 	}
 	return strings.Join(terms, " AND "), args
 }
@@ -89,8 +97,11 @@ func (s *Store) resolveTimelineDigest(q sqlQueryer, threadID string, scope *time
 	}
 	if anchor.Kind == "tool_completion" {
 		var meta struct {
-			Start *int `json:"codex_execution_child_start_index"`
-			End   *int `json:"codex_execution_child_end_index"`
+			Start   *int `json:"codex_execution_child_start_index"`
+			End     *int `json:"codex_execution_child_end_index"`
+			Runtime struct {
+				TurnID string `json:"turnId"`
+			} `json:"codex_runtime"`
 		}
 		if anchor.Meta != "" {
 			if err := json.Unmarshal([]byte(anchor.Meta), &meta); err != nil {
@@ -100,6 +111,7 @@ func (s *Store) resolveTimelineDigest(q sqlQueryer, threadID string, scope *time
 		if meta.Start != nil && meta.End != nil {
 			d.After = &TimelineCursor{TurnIndex: launch.TurnIndex, ItemIndex: *meta.Start}
 			d.Before = &TimelineCursor{TurnIndex: launch.TurnIndex, ItemIndex: *meta.End + 1}
+			d.ExecutionTurnID = strings.TrimSpace(meta.Runtime.TurnID)
 		} else {
 			d.CompletedAt = &anchor.CreatedAt
 			if launch.ToolName == "collab_agent" {

@@ -156,13 +156,6 @@ func (q *pageEndQueue) run(handle ids.PageHandle) {
 	}
 }
 
-// adoptPopup announces popup and adopts it in the caller's goroutine.
-func (m *Manager) adoptPopup(popup enginePopup) {
-	if m.announcePopup(popup) {
-		m.runAdoption(popup)
-	}
-}
-
 // announcePopup registers popup's admission and answers false for a popup
 // reported before.
 func (m *Manager) announcePopup(popup enginePopup) bool {
@@ -286,8 +279,7 @@ func pageWithHandle(scope *jarScope, handle ids.PageHandle) *managedPage {
 // removeClosedPage is the teardown of a page whose engine reported its
 // close (pageClosed).
 func (m *Manager) removeClosedPage(handle ids.PageHandle) {
-	// Before m.mu, so a popup's tab is taken only once the downloads its
-	// listing owes it are in it (adoptPopup).
+	// Before m.mu: a popup never listed has what it parked listed below.
 	m.parkMu.Lock()
 	// The page's tab leaves in a hold that waits out a jar switch of its
 	// lifetime (lockStructure), whose commit may close it first. Without a

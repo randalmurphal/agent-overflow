@@ -1,6 +1,8 @@
 package provideraccountapp
 
 import (
+	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,8 +17,14 @@ import (
 
 func newTestManager(t *testing.T) (*Manager, *provideraccounts.Store, *provideraccounts.Credentials) {
 	t.Helper()
+	return newTestManagerAt(t, t.TempDir())
+}
+
+// newTestManagerAt is newTestManager whose account store lives in dir.
+func newTestManagerAt(t *testing.T, dir string) (*Manager, *provideraccounts.Store, *provideraccounts.Credentials) {
+	t.Helper()
 	isolation := kerneltest.IsolateSpawns(t)
-	store, err := provideraccounts.NewStore(t.TempDir())
+	store, err := provideraccounts.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,11 +36,21 @@ func newTestManager(t *testing.T) (*Manager, *provideraccounts.Store, *providera
 		Reaper:          procutiltest.Reaper(),
 		ProviderBinary:  func(string) string { return isolation.PoisonedBinary },
 		ClaudeRetention: func(string) claude.Retention { return claude.UserHomeRetention(0) },
+		// A test that makes a provider request answers it itself.
+		HTTPClient: func() *http.Client { return &http.Client{Transport: refuseProviderRequests{}} },
 	})
 	if err := manager.Attach(store, credentials, ""); err != nil {
 		t.Fatal(err)
 	}
 	return manager, store, credentials
+}
+
+// refuseProviderRequests fails every request it is given, so no test reaches
+// a provider's real endpoint.
+type refuseProviderRequests struct{}
+
+func (refuseProviderRequests) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("test: no provider request is answered here: %s %s", req.Method, req.URL)
 }
 
 func TestManagerSelectionProjectsOwnedStore(t *testing.T) {

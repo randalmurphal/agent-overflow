@@ -621,3 +621,50 @@ func TestDisarmTreeAutoResumesIsFencedAgainstAFireAndTheSweep(t *testing.T) {
 		t.Fatalf("after the disarm: %d resumes, %d timers armed, %d registered; want the one fire alone", resumes, len(installed), f.service.AutoResumeTimerCount())
 	}
 }
+
+// A run whose work phase completed once, then failed its gate with a
+// report, was rerun; the rerun's attempt is running, then parks. The run's
+// declared output stays the failed attempt's report on every surface that
+// reads it, because an attempt that cannot supply values never displaces
+// one that can.
+func TestRunOutputsKeepTheFailedGatesResultWhileARerunRunsAndParks(t *testing.T) {
+	f := newServiceFixture(t)
+	item := f.run("run-1", string(engine.StateRunning), "")
+	for _, phase := range []store.WorkItemPhase{
+		{ItemID: item.ID, PhaseID: "work", Attempt: 1, Status: "completed", StartedAt: 2,
+			OutputEnvelope: json.RawMessage(`{"status":"done","outputs":{"report":"first.md"}}`)},
+		{ItemID: item.ID, PhaseID: "work", Attempt: 2, Status: "failed", StartedAt: 3,
+			OutputEnvelope: json.RawMessage(`{"status":"done","outputs":{"report":"second.md"}}`)},
+		{ItemID: item.ID, PhaseID: "work", Attempt: 3, Status: "running", StartedAt: 4},
+	} {
+		if err := f.store.CreateWorkItemPhase(phase); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output, err := f.service.RunOutput(f.ctx(), item.ID)
+	if err != nil || output.Outputs["report"] != "second.md" {
+		t.Fatalf("run_output while the rerun runs = %+v, %v; want second.md", output.Outputs, err)
+	}
+
+	if err := f.store.CompleteWorkItemPhase(item.ID, "work", 3, nil, nil, "parked", "interrupted", 0, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.UpdateWorkItemState(item.ID, string(engine.StateNeedsHuman), string(engine.ReasonInterrupted), 0); err != nil {
+		t.Fatal(err)
+	}
+	output, err = f.service.RunOutput(f.ctx(), item.ID)
+	if err != nil || output.Outputs["report"] != "second.md" {
+		t.Fatalf("run_output once the rerun parked = %+v, %v; want second.md", output.Outputs, err)
+	}
+	parked, err := f.store.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composed, err := f.service.composeWorkflowWake(parked, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wake := composed.message.String(); !strings.Contains(wake, "second.md") || strings.Contains(wake, "first.md") {
+		t.Fatalf("the park wake shows the wrong report:\n%s", wake)
+	}
+}

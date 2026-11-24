@@ -346,8 +346,9 @@ type Config struct {
 	WatermarkInterval time.Duration
 	// FrontendTiming is the frontend timer overrides a harness boot serves
 	// in its bootstrap manifest (Bootstrap.HarnessTiming), in milliseconds
-	// by diagenv.HarnessTiming name. New refuses it without Harness, so no
-	// other boot can put a page into shortened timing.
+	// by diagenv.HarnessTiming name, each 1 to MaxFrontendTimingMs. New
+	// refuses it without Harness, so no other boot can put a page into
+	// shortened timing.
 	FrontendTiming map[string]int64
 	// CoalesceWindow overrides DefaultCoalesceWindow. Zero defaults to it.
 	// Test knob, like KeepaliveInterval.
@@ -657,6 +658,11 @@ type Server struct {
 	speechTickets *ticketBook
 }
 
+// MaxFrontendTimingMs is the longest Config.FrontendTiming value: the page
+// arms each timer with setTimeout, whose delay is a signed 32-bit count of
+// milliseconds, so a longer one wraps and fires at once.
+const MaxFrontendTimingMs = 1<<31 - 1
+
 // New constructs a Server. Generates a token if one wasn't provided.
 // Does not start listening — caller invokes Start.
 func New(cfg Config) (*Server, error) {
@@ -682,8 +688,8 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("transport: Config.FrontendTiming is served only by a harness boot (Config.Harness)")
 	}
 	for name, ms := range cfg.FrontendTiming {
-		if strings.TrimSpace(name) == "" || ms <= 0 {
-			return nil, fmt.Errorf("transport: Config.FrontendTiming %q needs a name and a positive duration, got %dms", name, ms)
+		if strings.TrimSpace(name) == "" || ms <= 0 || ms > MaxFrontendTimingMs {
+			return nil, fmt.Errorf("transport: Config.FrontendTiming %q needs a name and a duration of 1 to %dms, got %dms", name, MaxFrontendTimingMs, ms)
 		}
 	}
 	if cfg.HTTPReadHeaderTimeout == 0 {

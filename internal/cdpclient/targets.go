@@ -208,23 +208,14 @@ func ListTargets(ctx context.Context, httpBase string) ([]Target, error) {
 	return targets, nil
 }
 
-// SelectPageTarget picks the page to attach to without a page identity.
+// selectPageTarget picks the page to attach to, by the authenticated page
+// marker and an optional exact frontend page identity.
 //
 // The rule is strict: an attachable page must be on the same origin as
 // wantURL and carry the same authenticated page marker. There is no sole-page
 // fallback. Anything else is an error listing the candidates — a browser
 // with three tabs open must not be profiled at whichever one the listing put
 // first.
-func SelectPageTarget(targets []Target, wantURL string) (Target, error) {
-	return selectPageTarget(targets, wantURL, "")
-}
-
-// SelectPageTargetForPage picks the page using the authenticated page marker
-// and an optional exact frontend page identity.
-func SelectPageTargetForPage(targets []Target, wantURL, pageID string) (Target, error) {
-	return selectPageTarget(targets, wantURL, pageID)
-}
-
 func selectPageTarget(targets []Target, wantURL, pageID string) (Target, error) {
 	var pages, detached []Target
 	for _, t := range targets {

@@ -9,7 +9,7 @@ import { takePinnedBackend } from '../transport/backends';
 import { setSelectedBackend } from './selectedBackend.svelte';
 import { getSettings, loadSettings, resetSettingsForTest, resyncSettings, updateSetting } from './settings.svelte';
 import { getProviderAccount } from './accountInfo.svelte';
-import { getProviderRateLimit } from './rateLimitsInfo.svelte';
+import { getProviderRateLimitsForWindow } from './rateLimitsInfo.svelte';
 import { getProviderModels, refreshProviderModels } from './providerModels.svelte';
 import { getProviderAccountsFor, loadProviderAccounts, switchProviderAccount } from './providerAccounts.svelte';
 import { applyProviderAccount, applyUsageEvent } from './eventsProvider';
@@ -116,8 +116,8 @@ describe('computer ownership', () => {
     }
     expect(getProviderAccountsFor('claude', GPU)[0].email).toBe('gpu@example.test');
     expect(getProviderAccount('claude', MAC)?.email).toBe('mac@example.test');
-    expect(getProviderRateLimit('claude', 300, undefined, GPU)?.usedPercent).toBe(70);
-    expect(getProviderRateLimit('claude', 300, undefined, MAC)?.usedPercent).toBe(10);
+    expect(getProviderRateLimitsForWindow('claude', 300, undefined, GPU).primary?.usedPercent).toBe(70);
+    expect(getProviderRateLimitsForWindow('claude', 300, undefined, MAC).primary?.usedPercent).toBe(10);
   });
 
   it('keeps model catalogs and account-change generations specific to their computer', async () => {

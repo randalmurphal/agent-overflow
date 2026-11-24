@@ -14,7 +14,3 @@ export function openCheatSheet(): void {
 export function closeCheatSheet(): void {
   open = false;
 }
-
-export function toggleCheatSheet(): void {
-  open = !open;
-}

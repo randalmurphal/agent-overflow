@@ -205,7 +205,7 @@ func Prepare(plan Plan) (writable []string, err error) {
 	for _, project := range plan.Projects {
 		err := makeFolder(project.Dir)
 		if err == nil {
-			err = recordProjectPath(project)
+			err = recordProjectPath(project, systemMarkerOps())
 		}
 		if err == nil {
 			// A folder is writable only once its marker names the
@@ -279,11 +279,25 @@ func folderError(dir string, info fs.FileInfo) error {
 	return nil
 }
 
+// markerOps are the operations recordProjectPath publishes a marker with:
+// the system's in production (systemMarkerOps), fakes in a test.
+type markerOps struct {
+	publish func(from, to string) (leftover string, err error)
+	remove  func(name string) error
+}
+
+func systemMarkerOps() markerOps {
+	return markerOps{publish: atomicfile.RenameNoReplace, remove: os.Remove}
+}
+
 // recordProjectPath writes project's path in its folder unless the folder
 // records one. The marker appears whole: it is written to a hidden temporary
 // file, which facts never are, and renamed into place without replacing a
-// marker another Prepare published first.
-func recordProjectPath(project Project) (err error) {
+// marker another Prepare published first. A marker published by a hard link
+// whose temporary name could not be removed is published; the removal of
+// the temporary file that ends every call tries it again and reports a
+// failure.
+func recordProjectPath(project Project, ops markerOps) (err error) {
 	name := filepath.Join(project.Dir, ProjectPathFile)
 	fail := func(err error) error { return fmt.Errorf("record the project's path in %s: %w", name, err) }
 	if _, err := os.Lstat(name); err == nil {
@@ -297,7 +311,7 @@ func recordProjectPath(project Project) (err error) {
 	}
 	temp := file.Name()
 	defer func() {
-		if removeErr := os.Remove(temp); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+		if removeErr := ops.remove(temp); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
 			err = errors.Join(err, fail(removeErr))
 		}
 	}()
@@ -309,7 +323,8 @@ func recordProjectPath(project Project) (err error) {
 		err = closeErr
 	}
 	if err == nil {
-		err = atomicfile.RenameNoReplace(temp, name)
+		// A leftover is temp itself, which the deferred removal takes.
+		_, err = ops.publish(temp, name)
 	}
 	if err != nil && !errors.Is(err, fs.ErrExist) {
 		return fail(err)

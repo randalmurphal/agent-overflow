@@ -965,7 +965,7 @@ verdict it now is, with what the first attempt got wrong.
   nothing shipped, nothing installed, and no `PATH` ever contained, so
   every `ao run start …` an agent typed answered "command not found".
   The whole D15 surface existed and was unreachable. It is deleted.
-  `main.go` now matches `os.Args[1]` against `aocli.Commands()` and hands
+  `main.go` now matches `os.Args[1]` with `aocli.IsCommand` and hands
   the argv to `aocli.Run`: `agent-overflow run start <id>`,
   `agent-overflow workflow list`. The verb set is exported from the
   package's own dispatch table rather than restated in `main`, because a
@@ -1936,7 +1936,7 @@ on a spent reject budget silently destroyed the gate's still-declared approve.
 
 - **D44. Post-validation owes literal presence to `status` alone.** The
   generated envelope schema lists every control key in `required` because
-  provider strict mode demands it, but `ValidateEnvelope` also judges
+  provider strict mode demands it, but `EnvelopeContract.Validate` also judges
   envelopes the tool driver reads from disk, hand-written by scripts that
   never saw that schema. Requiring the keys literally made `"question": null,
   "reason": null` boilerplate whose omission converted a successful merge

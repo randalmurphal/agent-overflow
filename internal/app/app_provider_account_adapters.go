@@ -39,11 +39,13 @@ func (a *App) codexProbeConfig(binary string, pins map[provider.ReservedEnv]stri
 
 func providerProbeWorkDir() string { return provideraccountapp.ProbeWorkDir() }
 
-func (a *App) reconcileExternalProviderAccount(providerName string) error {
+// reconcileProviderAccountBeforeSend reconciles an outside login before a
+// send and refuses the send while the canonical login is unresolved.
+func (a *App) reconcileProviderAccountBeforeSend(providerName string) error {
 	if a.providerAccounts == nil {
 		return nil
 	}
-	return a.providerAccounts.ReconcileExternalProviderAccount(providerName)
+	return a.providerAccounts.ReconcileBeforeSend(providerName)
 }
 
 func (a *App) accountIDForObservedIdentity(

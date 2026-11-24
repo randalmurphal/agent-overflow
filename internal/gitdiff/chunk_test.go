@@ -128,9 +128,9 @@ func TestDiffKeyIsTheTextsAtAnyChunking(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	rng := rand.New(rand.NewPCG(7, 8))
 	writeFile(t, repo, "arbitrary.txt", jstexttest.ArbitraryText(rng, 12*MinChunkBytes, MinChunkBytes))
-	diff, err := OpenWorktreeDiff(context.Background(), repo, t.TempDir(), Options{})
+	diff, err := diffOf(Options{})(WorktreeSides(context.Background(), repo, t.TempDir()))
 	if err != nil {
-		t.Fatalf("OpenWorktreeDiff: %v", err)
+		t.Fatalf("WorktreeSides: %v", err)
 	}
 	defer closeDiff(t, diff)
 	type served struct {

@@ -15,7 +15,7 @@ import { realpath } from 'node:fs/promises';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../../frontend/src/lib/pageTiming.ts';
-import { callsInFlight, methodIdByName } from './offhost-helpers.js';
+import { methodIdByName, trackPageCalls } from './offhost-helpers.js';
 
 const PROJECT = 'draft-worktree-app';
 /** Committed by the fixture and left unchecked-out, so a worktree can attach it. */
@@ -525,35 +525,28 @@ test('text typed during the erased draft’s delete and left by opening another 
 
 /**
  * A page whose draft saves for one thread reach the server only once
- * released; after that every frame passes. `inFlight` counts the page's
- * calls the route has seen and the server has not answered, held ones
- * included, so a drain of it also waits for a save the route still holds.
+ * released; after that every frame passes. `calls` is the page's own record
+ * of its calls, installed after the route so it sees the routed socket; a
+ * save the route holds stays open in it until released and answered.
  */
 async function holdDraftSaves(page: Page, threadId: () => string) {
   const saveMethod = methodIdByName('SaveDraft');
   const held: Array<() => void> = [];
-  const open = new Set<string>();
   let holding = true;
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number; params?: unknown[] };
-      if (frame.type === 'rpc') open.add(String(frame.id));
       if (holding && frame.type === 'rpc' && frame.methodId === saveMethod && threadId() && frame.params?.[0] === threadId()) {
         held.push(() => server.send(message));
         return;
       }
       server.send(message);
     });
-    server.onMessage((message) => {
-      const frame = JSON.parse(String(message)) as { type?: string; id?: string };
-      if (frame.type === 'rpc') open.delete(String(frame.id));
-      socket.send(message);
-    });
   });
   return {
+    calls: await trackPageCalls(page),
     count: () => held.length,
-    inFlight: () => open.size,
     release: () => {
       holding = false;
       held.splice(0).forEach((send) => send());
@@ -579,7 +572,7 @@ test('text typed on other screens into a new thread this screen erases ends in a
       return { page: other, saves: await holdDraftSaves(other, () => shared) };
     }));
     await page.clock.install();
-    const calls = callsInFlight(page);
+    const calls = await trackPageCalls(page);
     await openFreshDraft(harness, page);
     await page.getByLabel('Message Input').fill('half a thought');
     await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
@@ -609,10 +602,12 @@ test('text typed on other screens into a new thread this screen erases ends in a
     await expect(page.getByLabel('Message Input')).toHaveValue('');
     await expect(errorToasts(page)).toHaveCount(0);
     // Nothing a page still had due makes another thread: every debounce has
-    // run, and every call it made, which the route saw by the time the clock
-    // move returned, is answered.
+    // run, and every call it sent, which the page recorded as it sent it
+    // inside the clock move, is answered.
     for (const view of [page, ...screens.map((screen) => screen.page)]) await view.clock.fastForward(PAST_DRAFT_DEBOUNCE_MS);
-    await expect.poll(() => calls() + screens.reduce((sum, screen) => sum + screen.saves.inFlight(), 0)).toBe(0);
+    for (const pageCalls of [calls, ...screens.map((screen) => screen.saves.calls)]) {
+      await pageCalls.drain('a call a page made after the last save debounce was not answered');
+    }
     expect((await threadRows(harness)).length).toBe(2);
   } finally {
     await Promise.all(others.map((context) => context.close()));

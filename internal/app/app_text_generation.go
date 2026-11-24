@@ -17,7 +17,6 @@ import (
 	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/settings"
@@ -91,7 +90,7 @@ func (a *App) resolveTextGenerationConfig(ctx context.Context) (textgen.Config, 
 		cfg.ClaudeRetention = a.claudeRetention
 	case string(provider.Agy):
 		cfg.Binary = agyBin
-		cfg.Env = a.agyTextGenEnv(cfg.Env)
+		cfg.AgyHome = a.ensureProviderAccountManager().AgyCanonicalHome
 	}
 	// User's TextGenerationModel only applies when we kept the configured
 	// provider. After a substitution the provider's own default runs: the
@@ -115,7 +114,7 @@ func (a *App) resolveTextGenerationConfig(ctx context.Context) (textgen.Config, 
 
 // resolveTextGenerationConfigFor builds a textgen.Config for an explicit
 // provider name, used by the Layer 2 retry path to construct the alternate
-// provider's config without re-running PickAvailableProvider. Returns ok=false
+// provider's config without re-running PickAvailableProviderOrdered. Returns ok=false
 // when the alternate's binary doesn't resolve on PATH, or when it lists no
 // model of its text-generation family, which is logged — the caller must
 // NOT attempt the run in that case.
@@ -154,7 +153,7 @@ func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName s
 			return textgen.Config{}, false
 		}
 		cfg.Model = textgen.DefaultAgyModel
-		cfg.Env = a.agyTextGenEnv(cfg.Env)
+		cfg.AgyHome = a.ensureProviderAccountManager().AgyCanonicalHome
 	default:
 		return textgen.Config{}, false
 	}
@@ -166,13 +165,6 @@ func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName s
 	cfg.Model = model.Slug
 	cfg.Effort = textGenerationEffort(cfg.Provider, cfg.Effort, model, true)
 	return cfg, true
-}
-
-func (a *App) agyTextGenEnv(base provider.EnvInput) provider.EnvInput {
-	if !a.hasManagedAgyCredentialFile() {
-		return base
-	}
-	return agy.WithFileStorage(base)
 }
 
 // textGenerationDefaultModel is the catalog row of the model a run on

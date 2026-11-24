@@ -32,6 +32,10 @@ const (
 	// A fire is a turn, so a shorter one spends the user's usage on a
 	// clock; a harness boot lowers it (IsolationConfig.AgentWakeFloor).
 	agentWakeFloor = threadtools.WakeFloorSeconds * time.Second
+	// AgentWakeFloorUnit is what IsolationConfig.AgentWakeFloor must be a
+	// whole number of: the thread tools state the floor in seconds
+	// (threadtools.Tools.SetWakeFloor).
+	AgentWakeFloorUnit = time.Second
 )
 
 // agentWakeState is the supervisor's in-process state. Zero value ready.

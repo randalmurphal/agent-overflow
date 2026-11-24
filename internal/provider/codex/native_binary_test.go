@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 const testCodexPackageJSON = `{"name":"@openai/codex","version":"0.162.1","bin":{"codex":"bin/codex.js"},"type":"module"}`
@@ -13,9 +15,7 @@ func writeTestFile(t *testing.T, path, body string, mode os.FileMode) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(body), mode); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, path, []byte(body), mode)
 }
 
 func symlinkTestFile(t *testing.T, target, link string) {

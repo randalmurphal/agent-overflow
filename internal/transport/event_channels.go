@@ -896,16 +896,6 @@ var channelPolicies = []ChannelPolicy{
 			"stay threads:operate. Keyed per thread: never latest-only.",
 	},
 	{
-		Channel:   eventchan.ProviderSessionLive,
-		Audience:  AudienceAny,
-		Retention: RetentionDefault,
-		Scope:     ScopeThreadsRead,
-		Why: "{threadId, live} only: whether a thread has a provider session " +
-			"live or starting, which decides whether End Session has anything " +
-			"to end. No content, so the sidebar audience of provider:sends_pending. " +
-			"Keyed per thread: never latest-only.",
-	},
-	{
 		Channel:   eventchan.ProviderQueueStateChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
@@ -1867,20 +1857,11 @@ func policyForChannel(channel string) (ChannelPolicy, bool) {
 	return fallback, false
 }
 
-// channelAudience and channelRetention are the two questions the registry
-// answers.
-//
-// channelRetention is cold — EventBus.Emit consults it once per channel
-// (on ring creation) and Replay once per channel per replay request — so
-// it reads the index directly. channelAudience is likewise cold; the HOT
-// visibility check (per event, per subscriber, and again per event per
-// connection) goes through eventVisibleToOrigin's derived bool sets
-// instead, which is one hash probe rather than a struct copy.
-func channelAudience(channel string) Audience {
-	policy, _ := policyForChannel(channel)
-	return policy.Audience
-}
-
+// channelRetention is cold — EventBus.Emit consults it once per channel (on
+// ring creation) and Replay once per channel per replay request — so it reads
+// the index directly. The HOT visibility check (per event, per subscriber, and
+// again per event per connection) goes through eventVisibleToOrigin's derived
+// bool sets instead, which is one hash probe rather than a struct copy.
 func channelRetention(channel string) Retention {
 	policy, _ := policyForChannel(channel)
 	return policy.Retention

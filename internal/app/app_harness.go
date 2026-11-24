@@ -94,6 +94,19 @@ func (h *harnessHost) RequestWaits(tokens []string) map[string]bool {
 	return h.app.requestsHeld(tokens)
 }
 
+// ThreadWork is threadWaitingOn as the harness reads it: the session's own
+// prompts, not a Codex async question, which outlives its turn.
+func (h *harnessHost) ThreadWork(threadID string) harnessrpc.ThreadWork {
+	waiting := h.app.threadWaitingOn(threadID)
+	on, _, _ := threadAgentBlockedOn(waiting.snapshot)
+	return harnessrpc.ThreadWork{
+		ActiveTurn:   waiting.live.ActiveTurn,
+		PendingSends: waiting.live.PendingSends,
+		WaitingOn:    on,
+		Compacting:   waiting.snapshot.CompactingSinceUnixMs > 0,
+	}
+}
+
 func (h *harnessHost) ClaudeUsageFake() *claudefake.Usage { return h.app.claudeUsageFake }
 
 func (h *harnessHost) ReadClaudeUsage(ctx context.Context) error {
@@ -108,6 +121,8 @@ func (h *harnessHost) ProviderUpdateFeed() *updatefake.Feed { return h.app.provi
 func (h *harnessHost) RecheckProviderUpdates() { h.app.providerUpdateService().Check() }
 
 func (h *harnessHost) PauseMergedPRCleanup() (resume func()) { return h.app.pauseMergedPRCleanup() }
+
+func (h *harnessHost) MergedPRPolled() time.Time { return h.app.mergedPRPolled() }
 
 func (h *harnessHost) ReplayLog() *replaylog.Manager { return h.app.replay }
 

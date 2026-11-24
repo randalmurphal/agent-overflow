@@ -2,6 +2,7 @@ package provideraccountapp
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"path/filepath"
@@ -61,7 +62,7 @@ func completedLogin(
 ) *loginAttempt {
 	t.Helper()
 	claudeName := string(provider.Claude)
-	home, err := credentials.NewEphemeralHomeWithCredential(claudeName, credential, "")
+	home, err := credentials.NewEphemeralHomeWithCredential(claudeName, credential, provideraccounts.EphemeralOwner{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestASignInForAnotherSavedAccountRenewsItWithoutSwitching(t *testing.T) {
 	generation := store.Generation(claudeName)
 	fresh := claudeLoginAs("other@example.com", "other-new", time.Now().Add(30*24*time.Hour))
 
-	result, err := manager.adoptLogin(completedLogin(t, manager, credentials, fresh))
+	result, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, credentials, fresh))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +162,7 @@ func TestASignInForANewAccountIsAddedLastWithoutSwitching(t *testing.T) {
 	generation := store.Generation(claudeName)
 	fresh := claudeLoginAs("new@example.com", "new", time.Now().Add(30*24*time.Hour))
 
-	result, err := manager.adoptLogin(completedLogin(t, manager, credentials, fresh))
+	result, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, credentials, fresh))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +198,7 @@ func TestASignInForTheSelectedAccountRenewsTheCanonicalLogin(t *testing.T) {
 	seedClaudeAccounts(t, manager, store, credentials, canonical, "other", claudeLogin("other", time.Now().Add(20*24*time.Hour)))
 	fresh := claudeLoginAs("current@example.com", "current-new", time.Now().Add(30*24*time.Hour))
 
-	result, err := manager.adoptLogin(completedLogin(t, manager, credentials, fresh))
+	result, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, credentials, fresh))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +220,7 @@ func TestTheFirstSignInBecomesTheSelectedAccount(t *testing.T) {
 	manager, store, credentials, sink := signInManager(t)
 	fresh := claudeLoginAs("first@example.com", "first", time.Now().Add(30*24*time.Hour))
 
-	result, err := manager.adoptLogin(completedLogin(t, manager, credentials, fresh))
+	result, err := manager.adoptLogin(context.Background(), completedLogin(t, manager, credentials, fresh))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +250,7 @@ func reconcileSeed(t *testing.T, deadline time.Time) (
 	canonical := claudeCredential(claudefake.AccessToken("current@example.com", testClaudeOrgID, "current"), time.Now().Add(time.Hour), deadline)
 	seedClaudeAccounts(t, manager, store, credentials, canonical, "other", claudeLogin("other", time.Now().Add(20*24*time.Hour)))
 	manager.mu.Lock()
-	delete(manager.fingerprints, string(provider.Claude))
+	manager.forgetCanonicalLocked(string(provider.Claude))
 	manager.mu.Unlock()
 	return manager, store, credentials, sink
 }

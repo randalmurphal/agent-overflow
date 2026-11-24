@@ -2648,6 +2648,13 @@ export class TimelineDigestContext {
     "promptId": string;
     "answerId": string;
 
+    /**
+     * ExecutionTurnID names a Codex card's execution: a row inside the
+     * bounds that another execution started is not in it
+     * (codexExecutionMemberSQL).
+     */
+    "executionTurnId"?: string;
+
     /** Creates a new TimelineDigestContext instance. */
     constructor($$source: Partial<TimelineDigestContext> = {}) {
         if (!("promptId" in $$source)) {

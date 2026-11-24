@@ -78,7 +78,7 @@ func TestProviderBackendHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(records) == 1 {
-			fmt.Printf("ready %d\n", records[0].PGID)
+			fmt.Printf("ready %d\n", records[0].Leader)
 			break
 		}
 		select {

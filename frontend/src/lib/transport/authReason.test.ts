@@ -3,7 +3,6 @@ import { TransportError } from './wsClient';
 import {
   AUTH_REASON_CODES,
   UNKNOWN_AUTH_REASON,
-  authFailurePresentation,
   isAuthFailure,
   isAuthReasonCode,
   presentAuthReason,
@@ -112,25 +111,5 @@ describe('isAuthFailure', () => {
     expect(isAuthFailure(new Error('auth_failed'))).toBe(false);
     expect(isAuthFailure('auth_failed')).toBe(false);
     expect(isAuthFailure(undefined)).toBe(false);
-  });
-});
-
-describe('authFailurePresentation', () => {
-  it('translates a refusal', () => {
-    const shown = authFailurePresentation(refusal('outside_time_window'));
-    expect(shown?.hint).toContain('automatic date & time');
-  });
-
-  // The null answer is what keeps an ordinary method failure from being
-  // reported as a sign-in problem.
-  it('answers null for anything that is not a refusal', () => {
-    expect(authFailurePresentation(new TransportError('method_error', 'boom'))).toBeNull();
-    expect(authFailurePresentation(new Error('boom'))).toBeNull();
-    expect(authFailurePresentation(null)).toBeNull();
-  });
-
-  it('falls back for a refusal it cannot explain', () => {
-    expect(authFailurePresentation(refusal('reason_from_a_later_phase'))).toBe(UNKNOWN_AUTH_REASON);
-    expect(authFailurePresentation(refusal(undefined))).toBe(UNKNOWN_AUTH_REASON);
   });
 });

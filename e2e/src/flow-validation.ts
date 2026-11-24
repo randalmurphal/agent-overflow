@@ -1,4 +1,5 @@
-import { validateMonitorSelection, validateCompatibilityLeg, type CompatibilityLeg, type MonitorId } from './monitor-catalog.ts';
+import type { BuiltinMonitorId, MonitorCompatibilityLeg } from '../../frontend/src/lib/harness/monitorTypes.ts';
+import { validateMonitorSelection, validateCompatibilityLeg } from './monitor-catalog.ts';
 import {
   FUNCTIONAL_FLOW_VERSION,
   MAX_FLOW_WAIT_MS,
@@ -111,6 +112,27 @@ export function parseFunctionalScenario(raw: unknown): FunctionalScenario {
   return { v: FUNCTIONAL_FLOW_VERSION, id, actions, ...(assertions ? { assertions } : {}), ...(monitors ? { monitors } : {}), ...(extensions ? { extensions } : {}) };
 }
 
+/**
+ * Checks a run's compatibility leg against its scenario by the rule the
+ * harness commands apply to a leg (validateMonitorLeg in cmd/ao-harness):
+ * the leg must select a typed monitor, and every typed monitor must belong
+ * to it. `option` names the leg as the caller sets it.
+ */
+export function validateScenarioLeg(scenario: FunctionalScenario, leg: MonitorCompatibilityLeg | undefined, option: string): void {
+  if (leg === undefined) return;
+  const typed = (scenario.monitors ?? []).flatMap((monitor) => (monitor.monitorId === undefined ? [] : [monitor.monitorId]));
+  if (typed.length === 0) {
+    throw new Error(`${option} ${leg} selects no monitor: scenario ${JSON.stringify(scenario.id)} has no typed monitor; add one of that leg to scenario.monitors or drop ${option}`);
+  }
+  for (const monitorId of typed) {
+    try {
+      validateMonitorSelection(monitorId, leg);
+    } catch (error) {
+      throw new Error(`${option} ${leg}: ${(error as Error).message}`);
+    }
+  }
+}
+
 function parseMonitors(raw: unknown): FlowMonitor[] {
   if (!Array.isArray(raw)) throw new Error('scenario.monitors must be an array');
   const seen = new Set<string>();
@@ -123,7 +145,7 @@ function parseMonitors(raw: unknown): FlowMonitor[] {
     const intervalMs = value.intervalMs === undefined ? undefined : finiteNumber(value, 'intervalMs', path);
     if (intervalMs !== undefined && (intervalMs <= 0 || intervalMs > MAX_FLOW_WAIT_MS)) throw new Error(`${path}.intervalMs must be between 1 and ${MAX_FLOW_WAIT_MS}`);
     const id = requiredString(value, 'id', path);
-    const monitorId = value.monitorId === undefined ? undefined : requiredString(value, 'monitorId', path) as MonitorId;
+    const monitorId = value.monitorId === undefined ? undefined : requiredString(value, 'monitorId', path) as BuiltinMonitorId;
     if (seen.has(monitorId ?? id)) throw new Error(`${path} duplicates monitor ${JSON.stringify(monitorId ?? id)}`);
     seen.add(monitorId ?? id);
     if (monitorId) {

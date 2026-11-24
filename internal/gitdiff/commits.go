@@ -242,35 +242,6 @@ func parseCommitLog(stdout string) ([]Commit, error) {
 	return commits, nil
 }
 
-// OpenCommitDiff opens the patch a single commit introduced (CommitSides).
-func OpenCommitDiff(ctx context.Context, workspace, sha string, opts Options) (*Diff, error) {
-	sides, err := CommitSides(ctx, workspace, sha)
-	if err != nil {
-		return nil, err
-	}
-	return sides.OpenDiff(opts), nil
-}
-
-// OpenCommitRangeDiff opens the patch of a contiguous run of a pull
-// request's commits (CommitRangeSides).
-func OpenCommitRangeDiff(ctx context.Context, workspace, base, head, first, last string, opts Options) (*Diff, error) {
-	sides, err := CommitRangeSides(ctx, workspace, base, head, first, last)
-	if err != nil {
-		return nil, err
-	}
-	return sides.OpenDiff(opts), nil
-}
-
-// OpenMergeBaseDiff opens the three-dot patch from the merge base of base
-// and head to head (MergeBaseSides).
-func OpenMergeBaseDiff(ctx context.Context, workspace, base, head string, opts Options) (*Diff, error) {
-	sides, err := MergeBaseSides(ctx, workspace, base, head)
-	if err != nil {
-		return nil, err
-	}
-	return sides.OpenDiff(opts), nil
-}
-
 // ShowFileAtCommit returns the full content of path as of the given
 // commit. Backs review-diff hunk-gap expansion when a single commit is
 // selected, where the diff's new side is that commit rather than the

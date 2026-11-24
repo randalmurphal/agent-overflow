@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 const testKey = "sk-proj-AbC123_xyz-789"
@@ -32,9 +34,7 @@ func keyFile(t *testing.T, contents string, dirMode, fileMode fs.FileMode) File 
 	if err := os.Mkdir(filepath.Dir(file.Path()), dirMode); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(file.Path(), []byte(contents), fileMode); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, file.Path(), []byte(contents), fileMode)
 	// WriteFile and Mkdir are subject to the umask; set the modes exactly.
 	if err := os.Chmod(file.Path(), fileMode); err != nil {
 		t.Fatal(err)

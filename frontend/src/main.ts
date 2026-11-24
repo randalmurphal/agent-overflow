@@ -24,6 +24,7 @@ import {
   revealDrainStats,
   type RevealDrainSummary,
 } from './lib/utils/revealDrainProbe';
+import { pendingItemEventsSettled } from './lib/stores/itemEventSettlement';
 
 import './fonts';
 import './app.css';
@@ -54,6 +55,12 @@ installStepUpProof();
 // unset.
 (window as Window & { __aoRevealDrain?: () => Promise<RevealDrainSummary> }).__aoRevealDrain = () =>
   revealDrainStats();
+// Resolves once the item stream has applied, to every pane, each item event
+// the page had queued when it was called: the fence a test waits on before
+// it acts on live rows having landed. A read of the stream's own settlement
+// count; it neither flushes nor delays anything.
+(window as Window & { __aoItemEventsSettled?: () => Promise<void> }).__aoItemEventsSettled = () =>
+  pendingItemEventsSettled() ?? Promise.resolve();
 
 // A `#pair=` fragment means this page was opened from a pairing link
 // (docs/specs/remote-access.md §4): mount the pairing screen instead of

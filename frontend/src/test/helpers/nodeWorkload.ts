@@ -8,10 +8,12 @@
 //
 // Node strips the types itself, but it resolves specifiers the way Node
 // does: the app's imports are extensionless (`moduleResolution: bundler`),
-// so the child registers a resolve hook that retries with `.ts`, then with
-// `/index.ts`. The retry is unconditional for a relative specifier: a "does
-// it already have an extension" test on the string cannot tell `./x.ts` from
-// module names that carry a dot (`./parseBlocks.cache`).
+// so the child registers a resolve hook that tries a relative specifier as
+// written, then with `.ts`, then with `/index.ts`. The retry does not test
+// the string for an extension: that cannot tell `./x.ts` from module names
+// that carry a dot (`./parseBlocks.cache`). As written goes first because
+// most relative specifiers a child resolves are a package's own, which
+// resolve as written.
 import { execFileSync } from 'node:child_process';
 
 /** An export of a workload module: `url` is the module's `import.meta.url`,
@@ -24,8 +26,8 @@ import nodeModule from 'node:module';
 nodeModule.registerHooks({
   resolve(specifier, context, next) {
     if (specifier.startsWith('.')) {
-      try { return next(specifier + '.ts', context); } catch {}
       try { return next(specifier, context); } catch {}
+      try { return next(specifier + '.ts', context); } catch {}
       return next(specifier + '/index.ts', context);
     }
     return next(specifier, context);

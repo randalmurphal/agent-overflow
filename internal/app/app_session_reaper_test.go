@@ -1093,7 +1093,7 @@ func TestClaudeHeartbeatRefreshesOnlySessionLiveness(t *testing.T) {
 	}
 	live := newSessionLiveness(time.Unix(1, 0))
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "current", Liveness: live})
-	// The registration's own provider:session_live frame is not the heartbeat's.
+	// The registration's own sends-pending worker pass is not the heartbeat's.
 	waitSendsPendingIdle(t, app)
 	var emitted []string
 	app.testEmitHook = func(name string, _ any) { emitted = append(emitted, name) }

@@ -5,7 +5,7 @@ import { Call } from './runtime';
 import { HOME_BACKEND } from './backendKey';
 import { __resetSelectedBackendForTest, initializeSelectedBackend, selectedBackend, setSelectedBackend } from '../stores/selectedBackend.svelte';
 import { setCarriedSessionScopes } from './scopes';
-import { workflowItemHasScope } from './entityScopes';
+import { workflowItemScopeGrant } from './entityScopes';
 
 // This fixture boots a fresh document in frontend-only mode, just as the
 // native shell does.
@@ -18,10 +18,10 @@ afterEach(() => { vi.restoreAllMocks(); });
 it('uses the sole execution computer for unknown-item permissions, never the controller', () => {
   stageBackend({ id: 'first', backendId: 'first' });
   setCarriedSessionScopes('first', ['threads:read']);
-  expect(workflowItemHasScope('threads:read', 'unknown-run')).toBe(true);
-  expect(workflowItemHasScope('threads:autonomy', 'unknown-run')).toBe(false);
+  expect(workflowItemScopeGrant('threads:read', 'unknown-run')).toBe('granted');
+  expect(workflowItemScopeGrant('threads:autonomy', 'unknown-run')).not.toBe('granted');
   detachBackend('first');
-  expect(workflowItemHasScope('threads:read', 'unknown-run')).toBe(false);
+  expect(workflowItemScopeGrant('threads:read', 'unknown-run')).not.toBe('granted');
 });
 
 it('keeps local administration outside the computer catalog and every-computer calls', async () => {

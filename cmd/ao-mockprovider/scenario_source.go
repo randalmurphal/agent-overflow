@@ -60,6 +60,11 @@ func acquireScenario(protocol, cwd, resumeRef string) (scenarioSource, error) {
 		if err != nil {
 			return scenarioSource{}, err
 		}
+		// Only a control channel's advance releases the startup hold, and
+		// this mock has none: the hold would never end.
+		if sc.StartupGate != "" {
+			return scenarioSource{}, fmt.Errorf("%s scenario %q sets startupGate %q, which only an advance on a harness control channel releases, and this mock has no control channel", path, sc.Name, sc.StartupGate)
+		}
 		return scenarioSource{sc: sc, fixtureRoot: os.Getenv(envFixtureRoot)}, nil
 	}
 

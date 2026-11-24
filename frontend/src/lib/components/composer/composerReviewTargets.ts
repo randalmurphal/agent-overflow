@@ -6,9 +6,10 @@
 // rows); this module only decides what the rows say.
 //
 // Each row inserts an argument in the grammar the backend reads from the
-// sent text (`codexReviewCommandTarget` in `app_codex_review.go`): four
-// variants, discriminated by the first argument word, each with its own
-// required payload. A bare `/review` is the uncommitted-changes variant.
+// sent text when the `/review` draft is sent (`codexReviewCommandTarget` in
+// `app_codex_review.go`): four variants, discriminated by the first argument
+// word, each with its own required payload. A bare `/review` is the
+// uncommitted-changes variant.
 
 import type { BranchCommit } from '../../types/git';
 import type { ComposerCommandEntry, ComposerCommandSection } from './composerCommandEntries';

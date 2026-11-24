@@ -22,14 +22,17 @@ import (
 // its adoption, at its page's close (removeClosedPage), or after
 // popupParkTimeout if neither comes, and is remembered (popupFate), so a
 // download the popup starts after it goes the same way at once
-// (admitLate). Where a download goes is decided, and that page's download
-// log taken, in one m.mu hold (holdParkedOwner), the hold every page's
-// departure ends its log in, so an opener leaving at any point of that
-// listing finds the row in its log or has already left as the popup's
-// carrier. The tab
-// and its downloads are listed in one m.parkMu hold, which a page's close
-// also takes (removeClosedPage), so a close never takes the tab before the
-// downloads, with their newest progress, are in it. A download whose
+// (admitLate). Every page's departure ends its log in an m.mu hold
+// (pageLeftLocked), so a download is listed with its page chosen and its
+// log taken in one m.mu hold: an adopted popup's in the hold that lists
+// its tab (listAdoptedParkedLocked), any other in holdParkedOwner's. A
+// page leaving at any point after finds the row in its log, or, for an
+// opener, has already left as the popup's carrier. The row is listed as
+// parking left it (addParkedRow): its counts, or canceled over the cap.
+// An end parked for a download listed in its adopted tab is applied to
+// that tab after the hold, still in m.parkMu, before the row is first
+// published; the row waits for it across a departure, and the user's
+// cancel declines it. A download whose
 // workspace or a bound refuses it is refused, and one no listed page, open
 // jar or workspace can own yet is unowned (parkDownload): either way its
 // engine ends it (downloadAdmission), the file AO keeps for it (staged or
@@ -39,9 +42,10 @@ import (
 // listed one does from its start: maxDownloadBytes of its workspace's
 // allowance, the workspace of the nearest page that opened it, and of the
 // artifact quota, or it is refused. Its listing takes that reservation and
-// its file over (listParked), and its refusal discards both, the file first
-// (downloads_discard.go). One whose progress passes the per-download cap
-// is stopped then. A parked download keeps the jar it is written in, whose
+// its file over (addParkedRow), and its refusal discards both, the file
+// first (downloads_discard.go). One whose progress passes the per-download
+// cap is stopped then, and its row lists it canceled over the cap and
+// discards both. A parked download keeps the jar it is written in, whose
 // directory holds its file until it is listed or removed, whether or not
 // the jar is still open.
 //
@@ -157,10 +161,10 @@ type parkedDownload struct {
 	// reservation is, on an engine whose downloads are AO's, the quota the
 	// download holds, maxDownloadBytes of its workspace's allowance and of
 	// the artifact root's, from its start until its row takes it
-	// (listParked) or it is refused.
+	// (addParkedRow) or it is refused.
 	reservation *quota.Reservation
 	// file is the file the engine writes it into, in scope's directory,
-	// which its listing hands to its row (listParked).
+	// which its listing hands to its row (addParkedRow).
 	file downloadFile
 	// phase is whether AO has stopped it (stop).
 	phase parkedPhase
@@ -272,7 +276,8 @@ func (m *Manager) parkPopupLocked(handle ids.PageHandle) *parkedPopup {
 // parkProgressLocked keeps the newest progress of a parked download, and
 // answers whether id is one. One past maxDownloadBytes on an engine whose
 // downloads are AO's is stopped then, keeping that progress, which lists
-// it canceled over the cap at its fate. The caller holds m.parkMu.
+// it canceled over the cap at its fate (addParkedRow). The caller holds
+// m.parkMu.
 func (m *Manager) parkProgressLocked(event downloadProgress) bool {
 	handle, ok := m.parkedIDs[event.ID]
 	if !ok {
@@ -285,8 +290,9 @@ func (m *Manager) parkProgressLocked(event downloadProgress) bool {
 		newest := event
 		d.newest = &newest
 		if m.downloadsToArtifacts() && int64(event.Received) > maxDownloadBytes && !event.State.stopped() && d.stop() {
-			// Its file goes now; its reservation stays for its row, which
-			// lists it canceled over the cap, or its refusal.
+			// Its file goes now; it and its reservation stay for its row,
+			// which lists it canceled over the cap and discards both, or for
+			// its refusal.
 			m.stopParked(d, downloadDiscard{id: d.start.ID, file: d.file})
 		}
 	}
@@ -333,6 +339,26 @@ func (m *Manager) resolveParked(handle ids.PageHandle, p *managedPage, openers .
 
 // resolveParkedLocked is resolveParked for a caller that holds m.parkMu.
 func (m *Manager) resolveParkedLocked(handle ids.PageHandle, p *managedPage, openers ...ids.PageHandle) {
+	fate, popup := m.takeParkedLocked(handle, p, openers)
+	if popup == nil {
+		return
+	}
+	for _, d := range popup.downloads {
+		placed, discard, canceled := m.placeParked(handle, fate, d, true)
+		switch {
+		case !placed:
+			log.Printf("browser: download %s of popup %s is listed in no tab: no page that opened the popup is open", d.start.ID, handle)
+			m.refuseParked(d)
+		case canceled:
+			m.stopRefused(d, discard)
+		}
+	}
+}
+
+// takeParkedLocked records the fate of popup handle (resolveParked) and
+// takes what it parked, nil for nothing: the downloads are no longer
+// parked, and the caller lists each. The caller holds m.parkMu.
+func (m *Manager) takeParkedLocked(handle ids.PageHandle, p *managedPage, openers []ids.PageHandle) (popupFate, *parkedPopup) {
 	fate, _ := m.fates().get(handle)
 	if p != nil {
 		fate.listed = p.driver.Handle()
@@ -348,19 +374,98 @@ func (m *Manager) resolveParkedLocked(handle ids.PageHandle, p *managedPage, ope
 		fate.openers = mergeOpeners(fate.openers, popup.openers)
 	}
 	m.fates().put(handle, fate)
+	return fate, popup
+}
+
+// parkedRow is a parked download's row as addParkedRow listed it: the
+// note of its start, and the end its lister still applies to the row, nil
+// for none. capped is set for a row listed canceled over the cap, whose
+// lister stops it (stopOverCap) with discard, the row's file and
+// reservation; running is whether it ran when parking stopped it.
+type parkedRow struct {
+	id      downloadID
+	start   downloadNote
+	end     *downloadProgress
+	capped  bool
+	running bool
+	discard downloadDiscard
+}
+
+// listAdoptedParkedLocked records that popup handle, opened by opener, is
+// listed as p, and adds a row to p's log for each download it parked, in
+// the m.mu hold that lists p (commitPopup): every departure of p comes
+// after, and settles the rows as it settles any of p's (pageLeftLocked).
+// The caller publishes the answer once m.mu is released
+// (publishAdoptedParked). The caller holds m.parkMu and m.mu.
+func (m *Manager) listAdoptedParkedLocked(handle ids.PageHandle, p *managedPage, opener ids.PageHandle) []parkedRow {
+	_, popup := m.takeParkedLocked(handle, p, []ids.PageHandle{opener})
 	if popup == nil {
-		return
+		return nil
 	}
+	held := p.downloads.hold()
+	defer held.release()
+	rows := make([]parkedRow, 0, len(popup.downloads))
 	for _, d := range popup.downloads {
-		placed, discard, canceled := m.placeParked(handle, fate, d, true)
-		switch {
-		case !placed:
-			log.Printf("browser: download %s of popup %s is listed in no tab: no page that opened the popup is open", d.start.ID, handle)
-			m.refuseParked(d)
-		case canceled:
-			m.stopRefused(d, discard)
+		rows = append(rows, m.addParkedRow(p, held, d, downloadSource(p, d.start)))
+	}
+	return rows
+}
+
+// publishAdoptedParked finishes the rows listAdoptedParkedLocked listed in
+// p, a tab of scope: it applies each row's parked end to it in p, listed
+// still or left with the row waiting for that end, stops each row listed
+// over the cap, and then publishes them all in one push, so no row is
+// shown before its known end. The caller holds m.parkMu, so a later
+// progress lands after.
+func (m *Manager) publishAdoptedParked(p *managedPage, scope *jarScope, rows []parkedRow) {
+	notes := make([]downloadNote, 0, 2*len(rows))
+	for _, row := range rows {
+		notes = append(notes, row.start)
+		if row.end != nil {
+			notes = append(notes, m.applyHeldRow(p, scope, p.downloads.hold(), *row.end))
+		}
+		if row.capped {
+			m.stopOverCap(scope, row.id, row.running, row.discard)
 		}
 	}
+	m.publishDownloads(notes...)
+}
+
+// addParkedRow adds parked download d's row to p's log, held, as parking
+// left it, and answers it. The row takes d's file, its reservation and its
+// newest counts. One parking stopped over the cap is listed canceled so
+// (settleOverCap), and answers its discard for its lister to finish. One
+// whose newest progress is its end answers that end, which its lister
+// applies after the row is added, and until then waits for it as a row
+// whose end its engine received does: a leave of p before the end is
+// applied leaves the row to it (departLocked), and the user's cancel
+// declines it (CancelThreadDownload).
+func (m *Manager) addParkedRow(p *managedPage, held *downloadLogHold, d *parkedDownload, source string) parkedRow {
+	entry := m.downloadEntry(d.start)
+	// Its bytes stay held, against the workspace they were taken from.
+	entry.reservation = quota.Take(&d.reservation)
+	entry.source, d.file = d.file, downloadFile{}
+	row := parkedRow{id: d.start.ID}
+	if newest := d.newest; newest != nil {
+		entry.Bytes = int64(newest.Received)
+		if newest.Total > 0 {
+			entry.TotalBytes = int64(newest.Total)
+		}
+		switch {
+		case d.phase == parkedStopped:
+			settleOverCap(&entry)
+			row.capped, row.running = true, newest.State.running()
+		case !newest.State.running():
+			row.end = newest
+			entry.endReported = func() bool { return true }
+		}
+	}
+	listed := held.add(entry)
+	if row.capped {
+		row.discard = listed.discard()
+	}
+	row.start = m.noteDownloadStartLocked(p, listed, source)
+	return row
 }
 
 // placeParked lists d, a parked download of popup handle whose fate is
@@ -417,23 +522,25 @@ func (m *Manager) holdParkedOwner(handle ids.PageHandle, fate popupFate, live bo
 }
 
 // listParked adds d's row to owner's log, which it lets go: the row takes
-// d's file and reservation, and d's newest progress is applied before the
-// log is let go. A row in a carrier's log then settles as that leave
-// settled its others (departLocked), and discard is the discard of a row
-// that settled canceled.
+// d's file and reservation (addParkedRow), and d's parked end, if any, is
+// applied before the log is let go; one listed over the cap is stopped
+// (stopOverCap). The row is published once, with its end. A row in a
+// carrier's log then settles as that leave settled its others
+// (departLocked), and discard is the discard of a row that settled
+// canceled.
 func (m *Manager) listParked(owner parkedOwner, d *parkedDownload) (discard downloadDiscard, canceled bool) {
 	p, held := owner.page, owner.held
-	entry := m.downloadEntry(d.start)
-	// Its bytes stay held, against the workspace they were taken from.
-	entry.reservation = quota.Take(&d.reservation)
-	entry.source, d.file = d.file, downloadFile{}
-	listed := m.noteDownloadStartLocked(p, held.add(entry), owner.source)
-	if d.newest != nil {
-		m.applyHeldRow(p, owner.scope, held, *d.newest)
+	row := m.addParkedRow(p, held, d, owner.source)
+	var end downloadNote
+	if row.end != nil {
+		end = m.applyHeldRow(p, owner.scope, held, *row.end)
 	} else {
 		held.release()
 	}
-	m.publishDownloads(listed)
+	if row.capped {
+		m.stopOverCap(owner.scope, row.id, row.running, row.discard)
+	}
+	m.publishDownloads(row.start, end)
 	return m.settleCarried(owner, d.start.ID)
 }
 

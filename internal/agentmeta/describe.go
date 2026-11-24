@@ -107,7 +107,7 @@ func headline(d Described) string {
 	if d.Facts.Headline != "" {
 		return d.Facts.Headline
 	}
-	body := d.Facts.BodyOf(d.Text)
+	body := d.Body()
 	if d.Facts.Form == threadtools.FormReport && d.Report != nil && d.Report.Body == ReportBodyData {
 		body = ReadableWakeText(body)
 	}

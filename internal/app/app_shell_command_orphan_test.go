@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/orphanreaper/orphanreapertest"
 	"agent-overflow/internal/procutil"
@@ -92,11 +93,11 @@ func TestAShellCommandIsRecordedForTheOrphanReaperWhileItRuns(t *testing.T) {
 		if stop {
 			waitShellOutput(t, app, thread.ID, "started")
 			record := waitOrphanRecord(t, registry)
-			if record.Owner != "shell command" || record.PGID != record.PID || record.ParentPID != os.Getpid() || !groupRunning(record.PGID) {
+			if record.Owner != "shell command" || record.Parent != os.Getpid() || !groupRunning(record.Leader) {
 				t.Fatalf("record %+v, want the running group of run %s", record, runID)
 			}
-			if record.CreateUnix == 0 || record.CreateUnix != orphanreaper.CaptureCreateUnix(record.PID) {
-				t.Fatalf("record %+v carries no start time that names the leader", record)
+			if start, alive, err := instanceinfo.ProcessStart(record.Leader); err != nil || !alive || record.Identity == nil || record.Identity.Start != start {
+				t.Fatalf("record %+v identity %+v does not carry the leader's kernel start %q %v", record, record.Identity, start, err)
 			}
 			if err := app.StopThreadShellCommand(thread.ID, runID); err != nil {
 				t.Fatal(err)
@@ -138,7 +139,7 @@ func TestShellCommandBackendHelper(t *testing.T) {
 	waitShellOutput(t, app, thread.ID, "started")
 	// The sidecar is told of the group before the record is written.
 	record := waitOrphanRecord(t, app.orphanRegistry)
-	fmt.Printf("ready %d\n", record.PGID)
+	fmt.Printf("ready %d\n", record.Leader)
 	helperproc.Hold()
 }
 
@@ -213,7 +214,7 @@ func requireGroupEndsWithBackend(t *testing.T, backend *exec.Cmd, stdout io.Read
 		if !groupRunning(pgid) {
 			t.Fatal("the group ended with the backend; this case needs one that survives it")
 		}
-		if err := orphanreaper.Sweep(registry, orphanreaper.GopsutilProcInfo(), 100*time.Millisecond); err != nil {
+		if err := orphanreaper.Sweep(registry, orphanreaper.SystemProcInfo(), 100*time.Millisecond); err != nil {
 			t.Fatal(err)
 		}
 	}

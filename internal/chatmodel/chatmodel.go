@@ -224,12 +224,6 @@ func FallbackProfileWith(
 	return profile
 }
 
-// IsValidContextWindow reports whether `tokens` is a usable size. A
-// non-positive value means "no opinion, fall back to the default."
-func IsValidContextWindow(tokens int) bool {
-	return tokens > 0
-}
-
 // ValidateContextUpdate runs the per-field bounds checks for a thread's
 // context settings update: trims and requires
 // provider/model, asserts that the caller-resolved options are

@@ -70,7 +70,7 @@ func TestCrashedCodexProbeHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	home, err := credentials.NewEphemeralHomeWithCredential(string(provider.Codex), seed.Bytes(), "acct-1")
+	home, err := credentials.NewEphemeralHomeWithCredential(string(provider.Codex), seed.Bytes(), provideraccounts.EphemeralOwner{AccountID: "acct-1", Slot: seed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool, use
 	if err := credentials.WriteAccountCredential(string(provider.Codex), "acct-1", consumed); err != nil {
 		t.Fatal(err)
 	}
-	if err := credentials.CommitSelectedCredential(string(provider.Codex), "acct-1", consumed, consumed); err != nil {
+	if err := credentials.CommitSelectedCredentialForTest(string(provider.Codex), "acct-1", consumed, consumed); err != nil {
 		t.Fatal(err)
 	}
 

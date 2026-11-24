@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/testutil/reporoot"
 )
 
@@ -194,6 +195,8 @@ func installFakeSecurity(t *testing.T) {
 	script := `#!/bin/sh
 case "$1" in
 find-generic-password)
+  [ -n "$FAKE_SECURITY_LOG" ] && echo "$*" >> "$FAKE_SECURITY_LOG"
+  [ -n "$FAKE_SECURITY_FIND_SLEEP" ] && exec /bin/sleep "$FAKE_SECURITY_FIND_SLEEP"
   wantw=0
   for a in "$@"; do [ "$a" = "-w" ] && wantw=1; done
   code="${FAKE_SECURITY_FIND_EXIT:-0}"
@@ -205,9 +208,7 @@ delete-generic-password) exit "${FAKE_SECURITY_DELETE_EXIT:-0}" ;;
 esac
 exit 0
 `
-	if err := os.WriteFile(filepath.Join(dir, "security"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(dir, "security"), []byte(script), 0o755)
 	t.Setenv("PATH", dir)
 }
 

@@ -214,65 +214,6 @@ func TestClaudeCleanupPeriodDaysResolvesPerWorkingDirectory(t *testing.T) {
 	})
 }
 
-// A HOME in the Claude environment moves the home the child sweeps and reads
-// its settings from, so the period is resolved there and not in the provider
-// home.
-func TestClaudeCleanupPeriodDaysResolvesInTheHomeTheChildRunsUnder(t *testing.T) {
-	t.Parallel()
-	setClaudeHome := func(t *testing.T, app *App, home string) {
-		t.Helper()
-		if _, err := app.settings.SetProviderEnvVar(string(provider.Claude), "HOME", home, false); err != nil {
-			t.Fatalf("set the Claude environment: %v", err)
-		}
-	}
-
-	t.Run("the child's longer period stands", func(t *testing.T) {
-		t.Parallel()
-		app, _ := setupE2EApp(t)
-		setTestRetentionDays(t, app, 90)
-		childHome := t.TempDir()
-		writeClaudeSettingsFile(t, claude.UserSettingsPathForHome(childHome), `{"cleanupPeriodDays":365}`)
-		setClaudeHome(t, app, childHome)
-
-		if got := app.claudeCleanupPeriodDays(""); got != 0 {
-			t.Fatalf("child home keeps 365 days: got %d, want 0", got)
-		}
-		state, err := app.GetClaudeTranscriptRetention(90)
-		if err != nil {
-			t.Fatalf("GetClaudeTranscriptRetention: %v", err)
-		}
-		if want := claude.UserSettingsPathForHome(childHome); state.SettingsPath != want {
-			t.Fatalf("SettingsPath = %q, want %q", state.SettingsPath, want)
-		}
-	})
-
-	t.Run("the provider home's period does not answer for the child", func(t *testing.T) {
-		t.Parallel()
-		app, _ := setupE2EApp(t)
-		setTestRetentionDays(t, app, 90)
-		writeTestClaudeSettings(t, app, `{"cleanupPeriodDays":365}`)
-		setClaudeHome(t, app, t.TempDir())
-
-		if got := app.claudeCleanupPeriodDays(""); got != 90 {
-			t.Fatalf("child home sets no period: got %d, want 90", got)
-		}
-	})
-
-	t.Run("a home that cannot be located sends none and says so", func(t *testing.T) {
-		t.Parallel()
-		app, _ := setupE2EApp(t)
-		setTestRetentionDays(t, app, 90)
-		setClaudeHome(t, app, "relative/home")
-
-		if got := app.claudeCleanupPeriodDays(""); got != 0 {
-			t.Fatalf("relative HOME: got %d, want 0", got)
-		}
-		if _, err := app.GetClaudeTranscriptRetention(90); err == nil || !strings.Contains(err.Error(), "HOME") {
-			t.Fatalf("GetClaudeTranscriptRetention error = %v, want one naming HOME", err)
-		}
-	})
-}
-
 // startClaudeAndReadSettingsBlock starts a Claude session for a new thread in
 // workDir against an argv-recording binary and returns its `--settings`
 // value, empty when the session was spawned with none.

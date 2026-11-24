@@ -163,5 +163,3 @@ export function createThreadPaneTurns(options: ThreadPaneTurnsOptions) {
     },
   };
 }
-
-export type ThreadPaneTurns = ReturnType<typeof createThreadPaneTurns>;

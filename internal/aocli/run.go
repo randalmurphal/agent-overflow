@@ -65,9 +65,10 @@ var topLevelCommands = []topLevelCommand{
 }
 
 // Commands names every top-level command, in the order the dispatch table
-// declares them. The app binary uses it to decide whether an argv is a CLI
-// invocation or a boot, which is the one place a second, hand-maintained copy
-// of this list would silently rot.
+// declares them, for the tests that hold every verb to the CLI branch. The
+// app binary decides whether an argv is a CLI invocation or a boot with
+// IsCommand, which reads the same table, so no second copy of the verb list
+// exists to rot.
 func Commands() []string {
 	names := make([]string, 0, len(topLevelCommands))
 	for _, command := range topLevelCommands {

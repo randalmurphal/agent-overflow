@@ -7,7 +7,6 @@ import {
   listCommands,
   registerCommand,
   runCommand,
-  unregisterCommand,
   type CommandContext,
 } from './commandRegistry.svelte';
 
@@ -30,15 +29,11 @@ describe('commandRegistry', () => {
     clearCommandRegistry();
   });
 
-  it('register + get + list + unregister round-trip', () => {
+  it('register + get + list round-trip', () => {
     const run = vi.fn();
     registerCommand({ id: 'foo', label: 'Foo', run });
     expect(getCommand('foo')?.label).toBe('Foo');
     expect(listCommands().map((c) => c.id)).toEqual(['foo']);
-
-    unregisterCommand('foo');
-    expect(getCommand('foo')).toBeUndefined();
-    expect(listCommands()).toHaveLength(0);
   });
 
   it('runCommand invokes run() and returns true', () => {

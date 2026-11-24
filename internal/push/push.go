@@ -70,7 +70,7 @@ var ErrTokenGone = errors.New("push: this registration token is no longer valid"
 // phone is REPLACED by the next send about the same moment rather than
 // delivered behind it — the offline half of the same replace-in-place rule
 // `internal/notify` states for the tray. The device-side tray tag is
-// composed from the `backend` and `id` data keys (`TrayTag`), because a
+// composed from the `backend` and `id` data keys (`TrayNotifier.tagFor`), because a
 // collapse key is scoped to one sender's project while a tray is shared by
 // every backend the phone is paired with.
 type Message struct {
@@ -174,15 +174,4 @@ func MessageFor(send notify.Send, token, backendID, backendName string) (Message
 	data[KeyBody] = backendName
 	data[KeyTarget] = target
 	return Message{Token: token, Tag: send.ID, Data: data}, nil
-}
-
-// TrayTag is the tag a phone's tray keys one moment by: the backend's
-// identity, a separator, the send id.
-//
-// Spelled here so the Go tests pin the rule the two device-side readers
-// mirror — `TrayNotifier.tagFor` for the pushed message and
-// `stores/pushPresenter.svelte.ts`'s `pushTag` for the socket path. Nothing
-// on the backend keys by it; it exists so the contract has one home.
-func TrayTag(backendID, id string) string {
-	return backendID + "|" + id
 }

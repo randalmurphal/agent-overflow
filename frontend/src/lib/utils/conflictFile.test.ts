@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { conflictPatchFile } from './conflictFile';
-import { buildPatchDisplayRows } from './patchFiles';
+import { buildPatchDisplayRows } from '../../test/helpers/patchDisplayRows';
 
 function contents(file: ReturnType<typeof conflictPatchFile>): string[] {
   return file.lines.map((line) => line.content);

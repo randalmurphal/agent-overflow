@@ -3,6 +3,7 @@ package harnessrpc
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/keybindings"
@@ -100,6 +101,9 @@ type Host interface {
 	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
 	// and drops its in-memory state; resume starts it again from nothing.
 	PauseMergedPRCleanup() (resume func())
+	// MergedPRPolled is when the merged pull request poll's last pass
+	// that ran to its end began; zero before one has.
+	MergedPRPolled() time.Time
 	// DropReviewDiffImages forgets the image bytes review diffs read and
 	// what their opens pinned, so a spec's URLs and file handles do not
 	// resolve in the next.
@@ -139,6 +143,9 @@ type Host interface {
 	// RequestWaits reads the thread tools' wait registry: for each request
 	// token, whether a tool call holds it now.
 	RequestWaits(tokens []string) map[string]bool
+	// ThreadWork reads what threadID still runs or owes from the app's
+	// own answer to what a thread waits on (ThreadWork).
+	ThreadWork(threadID string) ThreadWork
 	// ClaudeUsageFake is the isolated boot's Claude usage endpoint, nil on a
 	// boot without one. ReadClaudeUsage reads the selected Claude account's
 	// usage and returns once the reading is cached and auto-switch has

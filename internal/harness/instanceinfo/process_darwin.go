@@ -39,7 +39,7 @@ func CaptureProcessIdentity(pid int) (ProcessIdentity, error) {
 		// ps fails or prints nothing for a pid that exited before it ran.
 		// Callers skip a vanished process by fs.ErrNotExist, as procfs
 		// reports it on Linux.
-		if _, _, kernelErr := kernelStart(pid); errors.Is(kernelErr, errNoProcess) {
+		if _, kernelErr := kernelProcess(pid); errors.Is(kernelErr, errNoProcess) {
 			return ProcessIdentity{}, fmt.Errorf("query process %d: %w", pid, kernelErr)
 		}
 		if err != nil {
@@ -47,7 +47,7 @@ func CaptureProcessIdentity(pid int) (ProcessIdentity, error) {
 		}
 		return ProcessIdentity{}, fmt.Errorf("query process %d returned incomplete identity", pid)
 	}
-	start, _, err := kernelStart(pid)
+	proc, err := kernelProcess(pid)
 	if err != nil {
 		return ProcessIdentity{}, fmt.Errorf("query process %d kernel identity: %w", pid, err)
 	}
@@ -55,7 +55,7 @@ func CaptureProcessIdentity(pid int) (ProcessIdentity, error) {
 	// The kernel start time is the lifecycle discriminator and has microsecond
 	// precision, unlike ps lstart's one-second display.
 	return ProcessIdentity{
-		StartTime:  start,
+		StartTime:  proc.Start,
 		Executable: filepath.Clean(strings.Join(fields, " ")),
 		Namespace:  "darwin",
 	}, nil
@@ -68,37 +68,51 @@ var errNoProcess = fmt.Errorf("no such process: %w", fs.ErrNotExist)
 // it, and whether the process has not exited. A zombie has exited. A pid
 // that names no process is not alive, with a nil error.
 func ProcessStart(pid int) (start string, alive bool, err error) {
-	if pid <= 0 {
-		return "", false, fmt.Errorf("process identity: %d is not a pid", pid)
+	proc, found, err := ReadProcess(pid)
+	if err != nil || !found {
+		return "", false, err
 	}
-	start, zombie, err := kernelStart(pid)
-	if errors.Is(err, errNoProcess) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("read process %d: %w", pid, err)
-	}
-	return start, !zombie, nil
+	return proc.Start, !proc.Exited, nil
 }
 
-// kernelStart reads the start time, as seconds.microseconds, and the zombie
-// state from the kernel's process record.
-func kernelStart(pid int) (start string, zombie bool, err error) {
+// ReadProcess reads pid's Process from one kernel process record. A pid that
+// names no process is not found, with a nil error.
+func ReadProcess(pid int) (proc Process, found bool, err error) {
+	if pid <= 0 {
+		return Process{}, false, fmt.Errorf("process identity: %d is not a pid", pid)
+	}
+	proc, err = kernelProcess(pid)
+	if errors.Is(err, errNoProcess) {
+		return Process{}, false, nil
+	}
+	if err != nil {
+		return Process{}, false, fmt.Errorf("read process %d: %w", pid, err)
+	}
+	return proc, true, nil
+}
+
+// kernelProcess reads the start time, as seconds.microseconds, the parent
+// and the zombie state from the kernel's process record.
+func kernelProcess(pid int) (Process, error) {
 	proc, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
 		// A missing pid answers ESRCH on some releases and, on current
 		// macOS, zero bytes, which SysctlKinfoProc reports as EIO.
 		if errors.Is(err, unix.ESRCH) || errors.Is(err, unix.EIO) {
-			return "", false, errNoProcess
+			return Process{}, errNoProcess
 		}
-		return "", false, err
+		return Process{}, err
 	}
 	t := proc.Proc.P_starttime
 	if t.Sec < 0 || t.Usec < 0 || t.Usec >= 1_000_000 {
-		return "", false, fmt.Errorf("process %d has an invalid start time", pid)
+		return Process{}, fmt.Errorf("process %d has an invalid start time", pid)
 	}
-	// SZOMB is 5 in <sys/proc.h>.
-	return strconv.FormatInt(t.Sec, 10) + "." + fmt.Sprintf("%06d", t.Usec), proc.Proc.P_stat == 5, nil
+	return Process{
+		Start: strconv.FormatInt(t.Sec, 10) + "." + fmt.Sprintf("%06d", t.Usec),
+		PPID:  int(proc.Eproc.Ppid),
+		// SZOMB is 5 in <sys/proc.h>.
+		Exited: proc.Proc.P_stat == 5,
+	}, nil
 }
 
 func CurrentPIDNamespace() string { return "darwin" }

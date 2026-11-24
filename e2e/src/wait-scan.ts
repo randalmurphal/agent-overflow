@@ -4,24 +4,54 @@
 // covers what a fixture cannot reach. Every file of the gate, each spec the
 // Playwright config runs and every file of the suite one imports, may not:
 //
-//   - sleep: `waitForTimeout`, a promise a timer resolves (however the timer
-//     is reached: `setTimeout`, `window.setTimeout`, `globalThis['setTimeout']`),
-//     or a `timers/promises` sleep. A product timer the spec crosses gets a
-//     knob (main_harness.go harnessTimers, set by `harnessTiming`) or the page
+//   - sleep: `waitForTimeout`, a promise a timer resolves, or a
+//     `timers/promises` sleep. A product timer the spec crosses gets a knob
+//     (main_harness.go harnessTimers, set by `harnessTiming`) or the page
 //     clock (`page.clock`); a settle waits on its condition (`expect.poll`);
 //     an absence ends at a barrier (`HarnessApp.watchEvents`).
 //   - turn a wait's failure into a value: `.then(onDone, () => false)` or
 //     `.catch(() => …)` on a wait, which passes once the wait times out and
-//     so costs the whole timeout to say nothing happened. A wait is a call
-//     named like one (`waitFor…`, `poll`, `toPass`, `expect…`) or a call
-//     handed a timeout.
-//   - declare tests with Playwright's own `test` under tests/: a spec takes
+//     so costs the whole timeout to say nothing happened.
+//   - reach Playwright's own `test`, except tests/base-test.ts: a spec takes
 //     `test` from tests/base-test.ts, or from tests/fixtures.ts, which extends
 //     it. Its fixtures make a page sleep throw, end each event watch with its
 //     test, and capture a stalled page when a test fails.
 //
+// The scan reads syntax, not types, so it resolves these forms and no others:
+//
+//   - A timer is `setTimeout` or `setInterval` reached by name, member or
+//     string element (`window.setTimeout`, `globalThis['setTimeout']`), or a
+//     name the file binds to one: `const t = setTimeout`, a `.bind` of one,
+//     `const { setTimeout: t } = globalThis`, `import { setTimeout as t }`.
+//     It sleeps when it sits in a `new Promise` executor and is handed the
+//     executor's `resolve`, `resolve.bind(…)`, or a function whose own body
+//     calls `resolve` outside any branch.
+//   - A wait is a call named like one (`waitFor…`, `poll`, `toPass`,
+//     `expect…`, `…wait…`), a call handed a timeout, a call chained from a
+//     wait, or a name the file assigns a wait to without awaiting it. A call
+//     is handed a timeout when it passes an object literal with a property
+//     named like a timeout, or passes an argument at a parameter position a
+//     scanned file declares with a name like a timeout (`timeoutMs`,
+//     `deadlineMs`) under the name the call reaches it by. A number alone is
+//     not a timeout.
+//   - `then` and `catch` are reached by member or string element, and the
+//     handler that turns a failure into a value is a function that returns a
+//     literal, `undefined`, `void …`, or nothing.
+//   - Playwright's `test` is reached by an import that is not type-only (the
+//     named `test`, a namespace or the default), an `export … from` that
+//     re-exports it or everything, `import … = require(…)`, `require(…)`, or
+//     a dynamic `import(…)`.
+//
+// Not resolved: names by scope (a name counts file-wide, wherever it is
+// bound), a timer or `resolve` passed through a parameter, a property or
+// another file, a wait returned from a function, a timeout parameter
+// declared outside the scanned files, and `test` handed on as a value by a
+// file that imports it from tests/base-test.ts.
+//
 // WAIT_ALLOWED names the sites that must hold for a time, each with its
-// reason. Files are parsed one at a time and no tree outlives its scan.
+// reason. Each file is parsed once and read in one walk; what the walk
+// leaves for the timeout parameters of later files is plain data, and no
+// tree outlives its file.
 import { readFileSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
 import ts from 'typescript';
@@ -81,12 +111,31 @@ export const WAIT_ALLOWED: readonly WaitAllowance[] = [
 ];
 
 const TIMER_PROMISES = new Set(['node:timers/promises', 'timers/promises']);
+const TIMER_MODULES = new Set(['node:timers', 'timers']);
 const TIMERS = new Set(['setTimeout', 'setInterval']);
+const PLAYWRIGHT = '@playwright/test';
+const TIMEOUT_NAME = /timeout|deadline/i;
+const WAIT_NAME = /^(waitFor|poll$|toPass$|expect)|wait/i;
 
-function unwrap(node: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node) || ts.isAwaitExpression(node)) {
+/** The file that may reach Playwright's own `test`, relative to the e2e root. */
+const BASE_TEST = 'tests/base-test.ts';
+
+/** Whether the suite file at `relative` (to the e2e root) is held to the bare-test rule: every file but BASE_TEST. */
+function heldToBareTest(relative: string): boolean {
+  return relative !== BASE_TEST;
+}
+
+/** Strips the wrappers that do not change which value an expression is. */
+function strip(node: ts.Expression): ts.Expression {
+  while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node) || ts.isSatisfiesExpression(node)) {
     node = node.expression;
   }
+  return node;
+}
+
+/** `strip`, and the `await` of a promise as the promise. */
+function unwrap(node: ts.Expression): ts.Expression {
+  for (node = strip(node); ts.isAwaitExpression(node); node = strip(node.expression));
   return node;
 }
 
@@ -99,91 +148,158 @@ function calleeName(callee: ts.Expression): string {
   return '';
 }
 
+/** The object a member call is made on: `a` of `a.f()` or `a['f']()`. */
+function receiverOf(call: ts.CallExpression): ts.Expression | undefined {
+  const callee = strip(call.expression);
+  return ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee) ? callee.expression : undefined;
+}
+
 /** The literal-valued handlers a rejection is turned into a value with. */
 function answersALiteral(node: ts.Node | undefined): boolean {
   if (!node || !(ts.isArrowFunction(node) || ts.isFunctionExpression(node))) return false;
-  let body: ts.Node = node.body;
-  if (ts.isBlock(body)) {
-    if (body.statements.length === 0) return true;
-    if (body.statements.length !== 1) return false;
-    const only = body.statements[0];
+  let value: ts.Expression;
+  if (ts.isBlock(node.body)) {
+    if (node.body.statements.length === 0) return true;
+    if (node.body.statements.length !== 1) return false;
+    const only = node.body.statements[0];
     if (!ts.isReturnStatement(only)) return false;
     if (!only.expression) return true;
-    body = only.expression;
+    value = unwrap(only.expression);
+  } else {
+    value = unwrap(node.body);
   }
-  body = unwrap(body as ts.Expression);
   return (
-    body.kind === ts.SyntaxKind.TrueKeyword ||
-    body.kind === ts.SyntaxKind.FalseKeyword ||
-    body.kind === ts.SyntaxKind.NullKeyword ||
-    ts.isNumericLiteral(body) ||
-    ts.isStringLiteralLike(body) ||
-    (ts.isIdentifier(body) && body.text === 'undefined') ||
-    ts.isVoidExpression(body)
+    value.kind === ts.SyntaxKind.TrueKeyword ||
+    value.kind === ts.SyntaxKind.FalseKeyword ||
+    value.kind === ts.SyntaxKind.NullKeyword ||
+    ts.isNumericLiteral(value) ||
+    ts.isStringLiteralLike(value) ||
+    (ts.isIdentifier(value) && value.text === 'undefined') ||
+    ts.isVoidExpression(value)
   );
 }
 
-const WAIT_NAME = /^(waitFor|poll$|toPass$|expect)|wait/i;
+/**
+ * The parameter positions the scanned files declare with a name like a
+ * timeout, by the name a call reaches the function by. A name declared more
+ * than once takes every declaration's positions.
+ */
+type TimeoutParameters = Map<string, Set<number>>;
 
-/** Whether a call is handed a timeout: a `timeout:` option or a literal of a second or more. */
-function handedATimeout(call: ts.CallExpression): boolean {
-  return call.arguments.some((arg) => {
-    arg = unwrap(arg);
-    if (ts.isNumericLiteral(arg)) return Number(arg.text.replace(/_/g, '')) >= 1000;
-    return ts.isObjectLiteralExpression(arg) && arg.properties.some((p) => p.name !== undefined && ts.isIdentifier(p.name) && p.name.text === 'timeout');
-  });
+/** The function a declaration's value or type is, if it is one. */
+function signatureOf(node: ts.Node | undefined): ts.SignatureDeclaration | undefined {
+  if (!node) return undefined;
+  if (ts.isParenthesizedTypeNode(node)) return signatureOf(node.type);
+  if (ts.isExpression(node)) node = strip(node);
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionTypeNode(node)) return node;
+  return undefined;
 }
 
-/** Whether `expr`, or a call it is chained from, is a wait. */
-function isWait(expr: ts.Expression): boolean {
-  for (let at: ts.Expression | undefined = unwrap(expr); at; ) {
+/** The function `node` declares by name, if it declares one. */
+function declaredFunction(node: ts.Node): { name: string; signature: ts.SignatureDeclaration } | undefined {
+  let name: ts.Node | undefined;
+  let signature: ts.SignatureDeclaration | undefined;
+  if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isMethodSignature(node)) [name, signature] = [node.name, node];
+  else if (ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node) || ts.isPropertyAssignment(node)) [name, signature] = [node.name, signatureOf(node.initializer)];
+  else if (ts.isPropertySignature(node)) [name, signature] = [node.name, signatureOf(node.type)];
+  if (!name || !signature || !(ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteralLike(name))) return undefined;
+  return { name: name.text, signature };
+}
+
+/** A call in a chain, as much of it as the wait rule needs once every timeout parameter is known. */
+interface ChainCall {
+  name: string;
+  args: number;
+  /** Passes an object literal with a property named like a timeout. */
+  timeoutOption: boolean;
+}
+
+/** An expression as the calls it is chained from, outermost first, and the name the chain starts from. */
+interface Chain {
+  calls: ChainCall[];
+  root: string;
+}
+
+function chainOf(expr: ts.Expression): Chain {
+  const calls: ChainCall[] = [];
+  for (let at = unwrap(expr); ; ) {
     if (ts.isCallExpression(at)) {
-      if (WAIT_NAME.test(calleeName(at.expression)) || handedATimeout(at)) return true;
-      at = ts.isPropertyAccessExpression(at.expression) || ts.isElementAccessExpression(at.expression) ? unwrap(at.expression.expression) : undefined;
+      calls.push({
+        name: calleeName(at.expression),
+        args: at.arguments.length,
+        timeoutOption: at.arguments.some((arg) => {
+          arg = strip(arg);
+          return ts.isObjectLiteralExpression(arg) && arg.properties.some((p) =>
+            p.name !== undefined && (ts.isIdentifier(p.name) || ts.isStringLiteralLike(p.name)) && TIMEOUT_NAME.test(p.name.text));
+        }),
+      });
+      const receiver = receiverOf(at);
+      if (!receiver) return { calls, root: '' };
+      at = unwrap(receiver);
     } else if (ts.isPropertyAccessExpression(at) || ts.isElementAccessExpression(at)) {
       at = unwrap(at.expression);
     } else {
-      return false;
+      return { calls, root: ts.isIdentifier(at) ? at.text : '' };
     }
   }
-  return false;
 }
 
-/** The resolve parameter of the `new Promise` executor `node` sits in, if any. */
-function enclosingExecutor(node: ts.Node): { resolve: string } | undefined {
-  for (let at: ts.Node | undefined = node.parent; at; at = at.parent) {
-    if (
-      (ts.isArrowFunction(at) || ts.isFunctionExpression(at)) &&
-      ts.isNewExpression(at.parent) &&
-      calleeName(at.parent.expression) === 'Promise' &&
-      at.parameters.length > 0 &&
-      ts.isIdentifier(at.parameters[0].name)
-    ) {
-      return { resolve: at.parameters[0].name.text };
-    }
+/** Whether a chain is a wait, given every timeout parameter and the file's names that hold a wait. */
+function isWait(chain: Chain, timeouts: TimeoutParameters, waits: Set<string>): boolean {
+  return waits.has(chain.root) || chain.calls.some((call) => {
+    if (WAIT_NAME.test(call.name) || call.timeoutOption) return true;
+    const positions = timeouts.get(call.name);
+    return positions !== undefined && [...positions].some((i) => i < call.args);
+  });
+}
+
+/** The timer name `expr` refers to as a function, not a call of one: `setTimeout`, `a.setTimeout`, `t.bind(…)`; '' otherwise. */
+function timerReference(expr: ts.Expression): string {
+  expr = strip(expr);
+  if (ts.isIdentifier(expr) || ts.isPropertyAccessExpression(expr) || ts.isElementAccessExpression(expr)) return calleeName(expr);
+  if (ts.isCallExpression(expr) && calleeName(expr.expression) === 'bind') {
+    const target = receiverOf(expr);
+    return target ? timerReference(target) : '';
+  }
+  return '';
+}
+
+/** The resolve parameter's name when `node` is a `new Promise` executor. */
+function executorResolve(node: ts.Node): string | undefined {
+  if (
+    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+    ts.isNewExpression(node.parent) &&
+    calleeName(node.parent.expression) === 'Promise' &&
+    node.parameters.length > 0 &&
+    ts.isIdentifier(node.parameters[0].name)
+  ) {
+    return node.parameters[0].name.text;
   }
   return undefined;
 }
 
 /**
  * Whether a timer callback settles its promise by resolving it whenever it
- * runs: `resolve` itself, or a function whose own body calls `resolve`
- * outside any branch or nested function. A callback that resolves only on a
- * condition, or rejects, is a check or a deadline rather than a sleep.
+ * runs: `resolve` itself, `resolve.bind(…)`, or a function whose own body
+ * calls `resolve` outside any branch or nested function. A callback that
+ * resolves only on a condition, or rejects, is a check or a deadline rather
+ * than a sleep.
  */
 function alwaysResolves(callback: ts.Expression, resolve: string): boolean {
-  callback = unwrap(callback);
+  const isResolve = (expr: ts.Expression | undefined): boolean => {
+    if (!expr) return false;
+    expr = unwrap(expr);
+    return ts.isIdentifier(expr) && expr.text === resolve;
+  };
   const callsResolve = (expr: ts.Expression | undefined): boolean => {
     if (!expr) return false;
     expr = unwrap(expr);
     if (ts.isVoidExpression(expr)) return callsResolve(expr.expression);
-    return ts.isCallExpression(expr) && ts.isIdentifier(unwrap(expr.expression)) && (unwrap(expr.expression) as ts.Identifier).text === resolve;
+    return ts.isCallExpression(expr) && isResolve(expr.expression);
   };
-  if (ts.isIdentifier(callback)) return callback.text === resolve;
-  if (ts.isCallExpression(callback) && calleeName(callback.expression) === 'bind') {
-    const target = unwrap((callback.expression as ts.PropertyAccessExpression).expression);
-    return ts.isIdentifier(target) && target.text === resolve;
-  }
+  callback = unwrap(callback);
+  if (ts.isIdentifier(callback)) return isResolve(callback);
+  if (ts.isCallExpression(callback) && calleeName(callback.expression) === 'bind') return isResolve(receiverOf(callback));
   if (!(ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))) return false;
   if (!ts.isBlock(callback.body)) return callsResolve(callback.body);
   return callback.body.statements.some((statement) =>
@@ -202,66 +318,148 @@ function enclosingFunctionName(node: ts.Node): string {
   return '';
 }
 
-/** Every wait rule `source` breaks. */
-export function scanWaits(source: ts.SourceFile): WaitFinding[] {
-  const findings: WaitFinding[] = [];
-  const report = (node: ts.Node, rule: WaitFinding['rule']) => {
-    const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
-    findings.push({
-      file: source.fileName,
-      line: line + 1,
-      rule,
-      within: enclosingFunctionName(node),
-      text: node.getText(source).split('\n')[0].slice(0, 120),
-    });
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && TIMER_PROMISES.has(node.moduleSpecifier.text)) {
-      report(node, 'sleep');
-    } else if (ts.isCallExpression(node)) {
-      const name = calleeName(node.expression);
-      if (name === 'waitForTimeout') {
-        report(node, 'sleep');
-      } else if (TIMERS.has(name) && node.arguments.length > 0) {
-        // A timer whose firing resolves a promise is a sleep.
-        const executor = enclosingExecutor(node);
-        if (executor && alwaysResolves(node.arguments[0], executor.resolve)) report(node, 'sleep');
-      } else if (name === 'then' && answersALiteral(node.arguments[1]) && ts.isPropertyAccessExpression(node.expression) && isWait(node.expression.expression)) {
-        report(node, 'expiring wait');
-      } else if (name === 'catch' && answersALiteral(node.arguments[0]) && ts.isPropertyAccessExpression(node.expression) && isWait(node.expression.expression)) {
-        report(node, 'expiring wait');
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return findings;
+/** Whether `node` names Playwright's package. */
+function isPlaywright(node: ts.Node | undefined): boolean {
+  return node !== undefined && ts.isStringLiteralLike(node) && node.text === PLAYWRIGHT;
 }
 
-/** The file that may take `test` from '@playwright/test', relative to the e2e root. */
-const BASE_TEST = 'tests/base-test.ts';
+/**
+ * Whether `node` can reach Playwright's own `test` value: an import of the
+ * named `test`, a namespace or the default; a re-export of `test` or of
+ * everything; `import … = require(…)`; `require(…)`; or a dynamic `import(…)`.
+ */
+function reachesPlaywrightTest(node: ts.Node): boolean {
+  const namesTest = (elements: ts.NodeArray<ts.ImportSpecifier | ts.ExportSpecifier>) =>
+    elements.some((element) => !element.isTypeOnly && (element.propertyName ?? element.name).text === 'test');
+  if (ts.isImportDeclaration(node)) {
+    const clause = node.importClause;
+    const bindings = clause?.namedBindings;
+    return isPlaywright(node.moduleSpecifier) && clause !== undefined && !clause.isTypeOnly &&
+      (clause.name !== undefined || (bindings !== undefined && (ts.isNamespaceImport(bindings) || namesTest(bindings.elements))));
+  }
+  if (ts.isExportDeclaration(node)) {
+    const clause = node.exportClause;
+    return isPlaywright(node.moduleSpecifier) && !node.isTypeOnly && (!clause || ts.isNamespaceExport(clause) || namesTest(clause.elements));
+  }
+  if (ts.isImportEqualsDeclaration(node)) {
+    return !node.isTypeOnly && ts.isExternalModuleReference(node.moduleReference) && isPlaywright(node.moduleReference.expression);
+  }
+  return ts.isCallExpression(node) &&
+    (node.expression.kind === ts.SyntaxKind.ImportKeyword || calleeName(node.expression) === 'require') &&
+    isPlaywright(node.arguments[0]);
+}
 
 /**
- * Each import in `source` that can reach Playwright's own `test` value: the
- * named `test`, a namespace import, or the default import.
+ * What one file's walk leaves once its tree is gone: the findings it
+ * decided, and the candidates the expiring-wait rule decides once every
+ * file's timeout parameters are known.
  */
-export function bareTestImports(source: ts.SourceFile): WaitFinding[] {
-  const findings: WaitFinding[] = [];
-  for (const statement of source.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const clause = statement.importClause;
-    if (statement.moduleSpecifier.text !== '@playwright/test' || !clause || clause.isTypeOnly) continue;
-    const bindings = clause.namedBindings;
-    const reaches =
-      clause.name !== undefined ||
-      (bindings !== undefined && ts.isNamespaceImport(bindings)) ||
-      (bindings !== undefined && ts.isNamedImports(bindings) &&
-        bindings.elements.some((element) => !element.isTypeOnly && (element.propertyName ?? element.name).text === 'test'));
-    if (!reaches) continue;
-    const { line } = source.getLineAndCharacterOfPosition(statement.getStart(source));
-    findings.push({ file: source.fileName, line: line + 1, rule: 'bare test', within: '', text: `${statement.getText(source).replace(/\s+/g, ' ')} (use ${BASE_TEST})` });
+interface FileReading {
+  findings: WaitFinding[];
+  /** Names the file assigns an unawaited value to, with the value's chain. */
+  assignedWaits: Array<{ name: string; chain: Chain }>;
+  /** `then`/`catch` calls that turn a failure into a literal, with their receiver's chain. */
+  expiring: Array<{ chain: Chain; finding: WaitFinding }>;
+}
+
+/**
+ * Reads `source` in one walk: adds the timeout parameters it declares to
+ * `timeouts`, decides its sleeps (and, when `bareTest` is set, its reaches
+ * for Playwright's `test`), and keeps the expiring-wait candidates.
+ */
+function readFile(source: ts.SourceFile, timeouts: TimeoutParameters, bareTest: boolean): FileReading {
+  const reading: FileReading = { findings: [], assignedWaits: [], expiring: [] };
+  const finding = (node: ts.Node, rule: WaitFinding['rule'], text = node.getText(source).split('\n')[0].slice(0, 120)): WaitFinding => ({
+    file: source.fileName,
+    line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
+    rule,
+    within: rule === 'bare test' ? '' : enclosingFunctionName(node),
+    text,
+  });
+  const timers = new Set(TIMERS);
+  const timerAliases: Array<{ name: string; timer: string }> = [];
+  const timerCalls: Array<{ timer: string; finding: WaitFinding }> = [];
+  // The resolve parameters of the `new Promise` executors the walk is inside, innermost last.
+  const executors: string[] = [];
+  const assigned = (name: string, value: ts.Expression) => {
+    const timer = timerReference(value);
+    if (timer) timerAliases.push({ name, timer });
+    // An awaited wait holds its result, not the wait.
+    if (!ts.isAwaitExpression(strip(value))) reading.assignedWaits.push({ name, chain: chainOf(value) });
+  };
+  const visit = (node: ts.Node): void => {
+    const declared = declaredFunction(node);
+    declared?.signature.parameters.forEach((parameter, i) => {
+      if (!ts.isIdentifier(parameter.name) || !TIMEOUT_NAME.test(parameter.name.text)) return;
+      timeouts.set(declared.name, (timeouts.get(declared.name) ?? new Set<number>()).add(i));
+    });
+    if (bareTest && reachesPlaywrightTest(node)) {
+      reading.findings.push(finding(node, 'bare test', `${node.getText(source).replace(/\s+/g, ' ')} (use ${BASE_TEST})`));
+    }
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      if (TIMER_PROMISES.has(node.moduleSpecifier.text)) reading.findings.push(finding(node, 'sleep'));
+      const named = node.importClause?.namedBindings;
+      if (TIMER_MODULES.has(node.moduleSpecifier.text) && named && ts.isNamedImports(named)) {
+        for (const element of named.elements) timerAliases.push({ name: element.name.text, timer: (element.propertyName ?? element.name).text });
+      }
+    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      assigned(node.name.text, node.initializer);
+    } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left)) {
+      assigned(node.left.text, node.right);
+    } else if (ts.isBindingElement(node) && ts.isIdentifier(node.name) && ts.isObjectBindingPattern(node.parent)) {
+      const property = node.propertyName ?? node.name;
+      if (ts.isIdentifier(property)) timerAliases.push({ name: node.name.text, timer: property.text });
+    } else if (ts.isCallExpression(node)) {
+      const name = calleeName(node.expression);
+      const receiver = receiverOf(node);
+      if (name === 'waitForTimeout') {
+        reading.findings.push(finding(node, 'sleep'));
+      } else if (name && executors.length > 0 && node.arguments.length > 0 && alwaysResolves(node.arguments[0], executors[executors.length - 1])) {
+        // A timer whose firing resolves a promise is a sleep; whether `name`
+        // is a timer is known once the file's aliases are.
+        timerCalls.push({ timer: name, finding: finding(node, 'sleep') });
+      }
+      if (receiver && ((name === 'then' && answersALiteral(node.arguments[1])) || (name === 'catch' && answersALiteral(node.arguments[0])))) {
+        reading.expiring.push({ chain: chainOf(receiver), finding: finding(node, 'expiring wait') });
+      }
+    }
+    const resolve = executorResolve(node);
+    if (resolve !== undefined) executors.push(resolve);
+    ts.forEachChild(node, visit);
+    if (resolve !== undefined) executors.pop();
+  };
+  visit(source);
+  for (let before = -1; before !== timers.size; ) {
+    before = timers.size;
+    for (const alias of timerAliases) if (timers.has(alias.timer)) timers.add(alias.name);
   }
-  return findings;
+  for (const call of timerCalls) if (timers.has(call.timer)) reading.findings.push(call.finding);
+  return reading;
+}
+
+/** The findings of a reading once `timeouts` holds every scanned file's timeout parameters. */
+function settle(reading: FileReading, timeouts: TimeoutParameters): WaitFinding[] {
+  const waits = new Set<string>();
+  for (let before = -1; before !== waits.size; ) {
+    before = waits.size;
+    for (const { name, chain } of reading.assignedWaits) if (isWait(chain, timeouts, waits)) waits.add(name);
+  }
+  const expiring = reading.expiring.filter(({ chain }) => isWait(chain, timeouts, waits)).map(({ finding }) => finding);
+  return [...reading.findings, ...expiring];
+}
+
+/**
+ * Every wait rule `source` breaks, against the timeout parameters it
+ * declares itself.
+ */
+export function scanWaits(source: ts.SourceFile): WaitFinding[] {
+  const timeouts: TimeoutParameters = new Map();
+  return settle(readFile(source, timeouts, false), timeouts);
+}
+
+/** Each place in `source` that can reach Playwright's own `test` value. */
+export function bareTestImports(source: ts.SourceFile): WaitFinding[] {
+  return readFile(source, new Map(), true).findings.filter((finding) => finding.rule === 'bare test');
 }
 
 function parse(file: string, text = readFileSync(file, 'utf8')): ts.SourceFile {
@@ -330,6 +528,20 @@ export function specFiles(projects: ProjectFiles[]): string[] {
   return [...specs].sort();
 }
 
+/** The suite files under `root` that `source`, read from `file`, imports or re-exports. */
+function suiteImports(root: string, file: string, source: ts.SourceFile): string[] {
+  const targets: string[] = [];
+  for (const statement of source.statements) {
+    if (!(ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement))) continue;
+    const specifier = statement.moduleSpecifier;
+    if (!specifier || !ts.isStringLiteral(specifier) || !specifier.text.startsWith('.')) continue;
+    const target = path.resolve(path.dirname(file), specifier.text).replace(/\.js$/, '.ts');
+    if (!target.startsWith(root + path.sep) || target.includes(`${path.sep}node_modules${path.sep}`)) continue;
+    if (target.endsWith('.ts')) targets.push(target);
+  }
+  return targets;
+}
+
 /**
  * Scans `specs` and every file under `root` they import, directly or
  * through another, one file at a time. Returns the findings that no entry
@@ -340,38 +552,34 @@ export function scanGate(
   specs: string[],
   allowed: readonly WaitAllowance[] = WAIT_ALLOWED,
 ): { findings: WaitFinding[]; unused: WaitAllowance[]; files: number } {
+  const readings = new Map<string, FileReading>();
+  const timeouts: TimeoutParameters = new Map();
   const pending = [...specs];
-  const seen = new Set<string>();
-  const findings: WaitFinding[] = [];
-  const used = new Set<WaitAllowance>();
-  while (pending.length > 0) {
-    const file = pending.pop()!;
-    if (seen.has(file)) continue;
-    seen.add(file);
+  for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+    if (readings.has(file)) continue;
     const source = parse(file);
     const relative = path.relative(root, file).split(path.sep).join('/');
-    if (relative.startsWith('tests/') && relative !== BASE_TEST) findings.push(...bareTestImports(source));
-    for (const finding of scanWaits(source)) {
-      const allowance = allowed.find((a) => a.file === relative && a.function === finding.within);
+    readings.set(file, readFile(source, timeouts, heldToBareTest(relative)));
+    pending.push(...suiteImports(root, file, source));
+  }
+  const findings: WaitFinding[] = [];
+  const used = new Set<WaitAllowance>();
+  for (const [file, reading] of readings) {
+    const relative = path.relative(root, file).split(path.sep).join('/');
+    for (const finding of settle(reading, timeouts)) {
+      const allowance = finding.rule === 'bare test' ? undefined : allowed.find((a) => a.file === relative && a.function === finding.within);
       if (allowance) used.add(allowance);
       else findings.push(finding);
     }
-    for (const statement of source.statements) {
-      if (!(ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement))) continue;
-      const specifier = statement.moduleSpecifier;
-      if (!specifier || !ts.isStringLiteral(specifier) || !specifier.text.startsWith('.')) continue;
-      const target = path.resolve(path.dirname(file), specifier.text).replace(/\.js$/, '.ts');
-      if (!target.startsWith(root + path.sep) || target.includes(`${path.sep}node_modules${path.sep}`)) continue;
-      if (target.endsWith('.ts') && !seen.has(target)) pending.push(target);
-    }
   }
-  return { findings, unused: allowed.filter((a) => !used.has(a)), files: seen.size };
+  return { findings, unused: allowed.filter((a) => !used.has(a)), files: readings.size };
 }
 
 /**
  * Samples each rule must flag and must leave alone, scanned before the
  * suite so a rule that stopped matching fails here rather than letting
- * every later sleep through.
+ * every later sleep through. A wait sample is judged against the timeout
+ * parameters it declares itself.
  */
 export const WAIT_SCAN_SAMPLES: { flagged: string[]; allowed: string[]; bareTest: string[]; fixtureTest: string[] } = {
   flagged: [
@@ -384,14 +592,26 @@ export const WAIT_SCAN_SAMPLES: { flagged: string[]; allowed: string[]; bareTest
     `await new Promise((resolve) => setTimeout(() => { return resolve(); }, 100));`,
     `await new Promise((resolve) => setTimeout(() => { done = true; resolve(undefined); }, 100));`,
     `await new Promise((resolve) => setTimeout(resolve.bind(null, 1), 100));`,
+    `await new Promise((resolve) => setTimeout(resolve['bind'](null, 1), 100));`,
     `await new Promise((resolve) => setTimeout(() => void resolve(), 100));`,
     `await page.evaluate((ms) => new Promise((resolve) => setTimeout(resolve, ms)), 100);`,
     `import { setTimeout as sleep } from 'node:timers/promises';`,
+    `const later = setTimeout;\nawait new Promise((resolve) => later(resolve, 100));`,
+    `await new Promise((resolve) => again(resolve, 100));\nconst later = globalThis.setTimeout.bind(globalThis);\nconst again = later;`,
+    `const { setTimeout: later } = globalThis;\nawait new Promise((resolve) => later(resolve, 100));`,
+    `import { setTimeout as later } from 'node:timers';\nawait new Promise((resolve) => later(resolve, 100));`,
     `const woken = harness.waitForEvent('x', undefined, 30_000).then(() => true, () => false);`,
-    `const woken = wakeInput(here, home, 'x', 20_000).then(() => true, () => { return false; });`,
+    `async function wakeInput(h: Harness, home: string, text: string, timeoutMs = 20_000) {}\n` +
+      `const woken = wakeInput(here, home, 'x', 20_000).then(() => true, () => { return false; });`,
+    `const came = await rig.arrival('x', LONG).catch(() => false);\nclass Rig { arrival(id: string, deadlineMs: number) {} }`,
     `await harness.waitForEvent('provider:turn_completed').catch(() => undefined);`,
     `const ready = await expect.poll(read).toBe('ready').catch(() => false);`,
+    `const ready = await expect.poll(read).toBe('ready')['catch'](() => false);`,
+    `const woken = await harness.waitForEvent('x')['then'](() => true, () => false);`,
     `const shown = await locator.isVisible({ timeout: 5_000 }).catch(() => false);`,
+    `const sent = await rpc('Send', { deadlineMs: 5_000 }).catch(() => false);`,
+    `const arrived = harness.waitForEvent('x');\nawait act();\nconst came = await arrived.catch(() => false);`,
+    `let shown;\nshown = locator.isVisible({ timeout: 5_000 });\nconst seen = await shown.then(() => true, () => false);`,
   ],
   allowed: [
     `await expect.poll(() => count()).toBe(1);`,
@@ -404,24 +624,54 @@ export const WAIT_SCAN_SAMPLES: { flagged: string[]; allowed: string[]; bareTest
     `setTimeout(() => controller.abort(), 1_000);`,
     `await new Promise((resolve) => { const t = setTimeout(() => { kill(); child.once('close', () => resolve(undefined)); }, ms); });`,
     `await new Promise((resolve) => { const tick = () => setTimeout(() => { if (done()) resolve(1); else tick(); }, 0); tick(); });`,
+    `await new Promise((resolve) => setTimeout(bind(resolve), 500));`,
+    `await new Promise((resolve) => queue.push(resolve));`,
+    `const read = await readChunk(4096).catch(() => 0);`,
+    `function readChunk(bytes: number) {}\nconst read = await readChunk(4096).catch(() => 0);`,
+    `async function stop(id: string, timeoutMs = 5_000) {}\nawait stop('x').catch(() => undefined);`,
+    `const event = await harness.waitForEvent('x');\nconst size = await event.load().catch(() => 0);`,
   ],
   bareTest: [
     `import { test, expect } from '@playwright/test';`,
     `import { expect, test as pwTest, type Page } from '@playwright/test';`,
     `import * as pw from '@playwright/test';`,
     `import pw from '@playwright/test';`,
+    `export { test } from '@playwright/test';`,
+    `export { expect, test as it } from '@playwright/test';`,
+    `export * from '@playwright/test';`,
+    `export * as pw from '@playwright/test';`,
+    `import pw = require('@playwright/test');`,
+    `const { test } = require('@playwright/test');`,
+    `const pw = await import('@playwright/test');`,
   ],
   fixtureTest: [
     `import { devices, type Page } from '@playwright/test';\nimport { test, expect } from './base-test.js';`,
     `import type * as pw from '@playwright/test';`,
     `import type { test } from '@playwright/test';`,
     `import { type test, expect } from '@playwright/test';`,
+    `export { expect, devices } from '@playwright/test';`,
+    `export type { Page } from '@playwright/test';`,
+    `export { type test } from '@playwright/test';`,
+    `export { test } from './base-test.js';`,
+    `function at(page: import('@playwright/test').Page) {}`,
   ],
 };
+
+/** Suite files, relative to the e2e root, and whether the bare-test rule holds them. */
+const BARE_TEST_SCOPE: ReadonlyArray<[string, boolean]> = [
+  ['tests/base-test.ts', false],
+  ['tests/fixtures.ts', true],
+  ['tests/some-flow.spec.ts', true],
+  ['src/harness-app.ts', true],
+  ['src/any-helper.ts', true],
+];
 
 /** Fails when a sample is not judged as it says. */
 export function checkWaitScanSamples(): string[] {
   const problems: string[] = [];
+  for (const [relative, held] of BARE_TEST_SCOPE) {
+    if (heldToBareTest(relative) !== held) problems.push(`wait scan ${held ? 'exempts' : 'holds'} ${relative} ${held ? 'from' : 'to'} the bare-test rule`);
+  }
   const judge = (kind: string, samples: string[], rule: (source: ts.SourceFile) => WaitFinding[], flag: boolean) => {
     samples.forEach((sample, i) => {
       const found = rule(parse(`sample-${kind}-${i}.ts`, sample)).length > 0;

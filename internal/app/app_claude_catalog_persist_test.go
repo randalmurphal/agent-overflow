@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -14,6 +13,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provideraccounts"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // seedTestApp builds an app whose Claude binary setting points at path, with
@@ -55,9 +55,7 @@ func seedTestApp(
 func writeFakeProviderBinaryFile(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claude")
-	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
-		t.Fatalf("write fake binary: %v", err)
-	}
+	mockexec.WriteFile(t, path, []byte(contents), 0o755)
 	return path
 }
 

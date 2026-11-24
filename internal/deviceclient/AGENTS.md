@@ -18,7 +18,8 @@ directory sync); `Restore` reads the file back to say whether it is as
 found. `WithSession` states the lock order. `Redemption.Save` writes through
 a `HeldSession` of its own profile directory only, is single use, and takes
 the nickname its caller chooses (a re-pairing starts without one).
-`ForgetSession` drops whatever is stored, after the owner retires its client.
+Forgetting a computer removes its stored session through `HeldSession.Remove`,
+after the owner retires its client.
 
 Confirmation waits poll renewal, not socket tickets. Pending confirmation is
 read-only on the server and preserves the saved renewal operation; approval

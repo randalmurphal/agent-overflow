@@ -157,10 +157,14 @@ func (s *Service) RunOutput(ctx context.Context, itemID string) (RunOutputs, err
 	}, nil
 }
 
-// NamedOutputs resolves a run's declared non-artifact outputs from its frozen
-// snapshot and the envelopes of its phases: each phase's latest attempt that
-// rested `done` supplies `<phase>.<name>` variables, and each declared output
-// reads the variable its `from` names.
+// NamedOutputs reads a run's declared non-artifact outputs from its frozen
+// snapshot and its phases' attempts.
+//
+// Each phase's values come from exactly one attempt, chosen by the engine's
+// rule (engine.SelectOutputs): the newest that can supply them. The run
+// view counts one attempt the engine does not: an attempt that failed at a
+// gate with a done envelope, so a run that ended failed there shows that
+// attempt's outputs, and keeps showing them while a rerun's attempt runs.
 func NamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseTimeline) (map[string]any, error) {
 	outputs := make(map[string]any)
 	if len(payload) == 0 {
@@ -170,28 +174,13 @@ func NamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseTimeline)
 	if err := json.Unmarshal(payload, &snapshot); err != nil {
 		return nil, err
 	}
+	chosen, err := engine.SelectOutputs(phases, timelineAttempt, viewSuppliesOutputs)
+	if err != nil {
+		return nil, err
+	}
 	vars := make(map[string]any)
-	latestAttempts := make(map[string]int)
-	for _, phase := range phases {
-		if (phase.Status != "completed" && phase.Status != "failed") || len(phase.OutputEnvelope) == 0 || phase.Attempt < latestAttempts[phase.PhaseID] {
-			continue
-		}
-		var envelope struct {
-			Status  string         `json:"status"`
-			Outputs map[string]any `json:"outputs"`
-		}
-		if err := json.Unmarshal(phase.OutputEnvelope, &envelope); err != nil {
-			return nil, fmt.Errorf("decode phase %s attempt %d: %w", phase.PhaseID, phase.Attempt, err)
-		}
-		if envelope.Status != "done" {
-			continue
-		}
-		latestAttempts[phase.PhaseID] = phase.Attempt
-		for name, value := range envelope.Outputs {
-			if value != nil {
-				vars[phase.PhaseID+"."+name] = value
-			}
-		}
+	if err := engine.BindOutputs(vars, chosen); err != nil {
+		return nil, err
 	}
 	for name, declaration := range snapshot.Workflow.Outputs {
 		if declaration.Artifact {
@@ -202,6 +191,28 @@ func NamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseTimeline)
 		}
 	}
 	return outputs, nil
+}
+
+func timelineAttempt(phase store.WorkItemPhaseTimeline) engine.PhaseAttempt {
+	return engine.PhaseAttempt{PhaseID: phase.PhaseID, Attempt: phase.Attempt, Status: phase.Status, Envelope: phase.OutputEnvelope}
+}
+
+// viewSuppliesOutputs is engine.Completed, plus an attempt that failed at a
+// gate with a done envelope.
+func viewSuppliesOutputs(attempt engine.PhaseAttempt) (bool, error) {
+	if completed, err := engine.Completed(attempt); completed || err != nil {
+		return completed, err
+	}
+	if attempt.Status != "failed" || len(attempt.Envelope) == 0 {
+		return false, nil
+	}
+	var envelope struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(attempt.Envelope, &envelope); err != nil {
+		return false, fmt.Errorf("decode the envelope: %w", err)
+	}
+	return envelope.Status == "done", nil
 }
 
 // InspectRun returns a compact run view plus persisted coordinates and an

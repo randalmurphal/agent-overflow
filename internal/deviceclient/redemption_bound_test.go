@@ -148,3 +148,9 @@ func TestARedemptionWithNoBoundLeftIsNotSent(t *testing.T) {
 		}
 	}
 }
+
+// withRoundTrip wraps the credential transport, so this package's tests can
+// read the deadline each exchange is sent with.
+func withRoundTrip(wrap func(http.RoundTripper) http.RoundTripper) Option {
+	return func(o *options) { o.roundTrip = wrap }
+}

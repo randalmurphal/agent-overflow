@@ -35,7 +35,16 @@ alive. Rate-limit persistence and emission enter through narrow
 - A Codex device flow may complete on another screen. Correlate completion by
   `loginId` through projected state rather than a blocking return.
 - Each attempt owns one provider process and closes it on success, failure,
-  cancellation, or replacement.
+  cancellation, or replacement. Every run ends in `finishLoginRun`: a
+  teardown that fails is audited on every exit as what failed (the process
+  close, or the temporary home's removal), and a failed sign-in shows that
+  failure after its own sentence, each within its own bound.
+- Adoption (`adoptLogin`) runs on the sign-in's context: the probe of the
+  temporary home and the identity requests stop at a Cancel or the time
+  limit, and a step that failed because the sign-in ended reports that end.
+  Its commit point is under the reconcile lock, before `selectionChanging`
+  and any write: a sign-in that ended before it saves nothing, and one past
+  it is saved whole and reported.
 - Adoption lands a login by its identity and never switches: a saved account
   is renewed in its slot, a new one is appended. Only a login for the selected
   account, or the first login when none is selected, replaces the canonical
@@ -51,6 +60,60 @@ alive. Rate-limit persistence and emission enter through narrow
 - Build login and probe environments from the same layers: configured user
   environment, boot-mode overrides, then the isolated provider-home pin.
   Endpoint configuration is part of account identity.
+- The canonical record (`recorded.go`) is the one proof, for every managed
+  provider, that canonical bytes are the selected account's login; only a
+  credential identified or activated as that account's is recorded. Beside
+  it is the verdict on a canonical login reconciliation identified and could
+  not attribute to one saved account (`unresolvedLoginError`), keyed by the
+  credential's digest and the saved identities: another credential, a
+  changed identity or a removal forgets it. Until then no reconciliation
+  identifies those bytes again, every reading and spend of the selected
+  account answers with its sentence, a send is refused with it before
+  anything is dispatched (`ReconcileBeforeSend`), and a switch, removal or
+  sign-in goes through and preserves nothing from them.
+- One resolver (`resolveObservedLoginLocked`) attributes an unrecorded
+  canonical login of any managed provider, for reconciliation and for the
+  selected Claude refresh. An account saved without an email takes an
+  observed login, named or not, only while nothing the login carries
+  contradicts it (`blankEmailAccountTakes`, also session attribution's
+  rule). An email several saved accounts share, with no organization named,
+  is nobody's for certain. An Antigravity login is named by Google's
+  userinfo, under the ACP probe's bound (`agyIdentifyTimeout`), or by the
+  email its credential carries; a failed lookup of a credential that
+  carries none identified nothing, so reconciliation fails with it and the
+  next one asks again, and a sign-in fails unsaved
+  (`agySignInUnidentifiedError`).
+- A usage reading of any managed provider, or a Codex spend, of the selected
+  account whose canonical credential is not the recorded one reconciles
+  first (`reconciledUsageStart`), under the lock it already holds, and runs
+  on exactly the credential reconciliation accepted: an account no longer
+  selected is read from its slot, and a spend of it is refused unsent. An
+  Antigravity reading releases the lock before its quota request; after a
+  refused one, the canonical credential is the account's refreshed login
+  only with the same refresh token (`agyLoginContinues`), and anything else
+  fails the reading with a retryable answer for the next reading to
+  reconcile. The commit
+  lands a selected reading's slot write and record only for the recorded
+  credential (`commitProviderUsageRefreshLocked`). A Codex rotation is
+  placed only by the credential store's settle, live and at boot; the commit
+  learns where it went.
+- A saved slot whose credential carries another identity than its account
+  (`savedLoginOfAnotherAccount`; what a credential carries is
+  `credentialIdentity`: a Codex workspace, an Antigravity email, nothing for
+  Claude) is never read or activated: a reading of an account that is not
+  selected and a switch refuse it before anything runs or is written,
+  auto-switch reads that refusal as an account that needs a sign-in
+  (`IsNeedsLogin`), and removal passes over it when it picks the
+  replacement.
+- The selected Claude refresh starts the CLI only while the canonical store
+  still holds the credential the reading was admitted on. A sign-in landing
+  between that check and the CLI's own refresh cannot be excluded: the
+  CLI's lock is its own while it runs, so the refreshed credential is judged
+  by the resolver. A saved Claude slot that already holds another account's
+  login is not detected; its bytes name nobody without a profile request.
+- `provider:account` carries the selected account only, which every client
+  shows as the one in use. Any other card's change publishes the listing
+  (`provider:account_listing`).
 - Transfer validation uses a fresh provider-specific probe under the reconcile
   lock. Display caches never prove that the destination can accept ownership.
   Successful probes adopt credential rotation through the normal transaction.

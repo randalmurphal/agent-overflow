@@ -99,17 +99,6 @@ var editorCatalog = []Editor{
 	},
 }
 
-// EditorCatalog returns a fresh copy of the supported editor list.
-// Useful for tests and call sites that need the pristine catalog
-// without going through detection. The slice and elements are
-// independent of the package-level fixture so callers can mutate
-// freely.
-func EditorCatalog() []Editor {
-	out := make([]Editor, len(editorCatalog))
-	copy(out, editorCatalog)
-	return out
-}
-
 // detectEnv groups the injection seams DetectEditors uses so tests can
 // fake PATH lookups and the WSL filesystem without touching real os
 // state. Production calls leave every field nil and DetectEditors

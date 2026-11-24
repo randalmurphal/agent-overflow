@@ -25,8 +25,9 @@ import (
 func TestSelectedCodexUsageCredentialRotationAdvancesReconnectGeneration(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	original := []byte(`{"tokens":{"access_token":"original"}}`)
-	rotated := `{"tokens":{"access_token":"rotated"}}`
+	// A rotation is a new refresh token; a rewrite that keeps it is not one.
+	original := []byte(`{"tokens":{"access_token":"original","refresh_token":"original-rt"}}`)
+	rotated := `{"tokens":{"access_token":"rotated","refresh_token":"rotated-rt"}}`
 	installIdentityTestAccount(
 		t,
 		app,

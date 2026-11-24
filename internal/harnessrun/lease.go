@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/harness/instanceinfo"
 )
 
@@ -30,9 +29,6 @@ type Lease struct {
 }
 
 func leasePath(root string) string { return filepath.Join(root, LeaseFileName) }
-
-// LeasePath returns the exclusive lease path for a data root.
-func LeasePath(root string) string { return leasePath(root) }
 
 // AcquireLease takes the data-root lease using O_EXCL. Existing stale leases
 // are removed and retried. The operation is safe against concurrent callers:
@@ -154,47 +150,6 @@ func (r LeaseRecord) heartbeat() time.Time {
 		return r.HeartbeatAt
 	}
 	return r.AcquiredAt
-}
-
-func (l *Lease) Record() LeaseRecord {
-	if l == nil {
-		return LeaseRecord{}
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.record
-}
-
-// Heartbeat refreshes the lease timestamp after proving that this token still
-// owns the root. Long-running runs can therefore remain live without relying
-// on the stale-age fallback.
-func (l *Lease) Heartbeat(now time.Time) error {
-	if l == nil {
-		return errors.New("lease: nil lease")
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	current, err := readLease(leasePath(l.root))
-	if err != nil {
-		return err
-	}
-	if current.Token != l.record.Token {
-		return errors.New("lease: refusing to refresh a different owner's lease")
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	} else {
-		now = now.UTC()
-	}
-	current.HeartbeatAt = now
-	if err := atomicfile.WriteJSON(leasePath(l.root), current); err != nil {
-		return fmt.Errorf("lease: heartbeat: %w", err)
-	}
-	if err := syncDir(l.root); err != nil {
-		return fmt.Errorf("lease: durable heartbeat: %w", err)
-	}
-	l.record.HeartbeatAt = now
-	return nil
 }
 
 // Verify proves that this lease token still owns the root. It does not

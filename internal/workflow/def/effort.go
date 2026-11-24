@@ -14,7 +14,7 @@ import (
 // because this package is pure (see AGENTS.md). A workflow
 // definition is authored, validated, and published without any provider
 // process in reach. The two vocabularies are held together by
-// TestWorkflowEffortTiersMatchTheProviderReasoningEfforts in the root package,
+// TestWorkflowEffortTiersMatchTheProviderReasoningEfforts in internal/app,
 // which fails if either side gains or loses a tier.
 type EffortTier string
 

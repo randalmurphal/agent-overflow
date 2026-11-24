@@ -72,25 +72,6 @@ class RawJsonPrefixClassifier {
   }
 }
 
-/** Whether a message body is an unfenced JSON document (or the start of
- * one). Cheap: reads leading whitespace and at most two characters. */
-export function isRawJsonSource(source: string): boolean {
-  let i = 0;
-  const n = source.length;
-  while (i < n && isWs(source.charCodeAt(i))) i += 1;
-  if (i === n) return false;
-  const open = source[i];
-  if (open !== '{' && open !== '[') return false;
-  i += 1;
-  while (i < n && isWs(source.charCodeAt(i))) i += 1;
-  // A lone opener is the first tick of a JSON stream; committing to the
-  // fence now means the block never flips from prose later.
-  if (i === n) return true;
-  const next = source[i];
-  if (open === '{') return next === '"' || next === '}';
-  return next === '"' || next === '{' || next === '[' || next === ']';
-}
-
 function isValidSecondSignificantCodeUnit(open: number, next: number): boolean {
   return open === 0x7b
     ? next === 0x22 || next === 0x7d

@@ -333,7 +333,7 @@ export function createWorkspaceChangeLockState(
 }
 
 /**
- * Diagnostics / tests: the workspaces currently held. Both consumers create
+ * Tests: the workspaces currently held. Both consumers create
  * their view inside a component, so an unmount that failed to release would
  * pin a workspace's listeners and its debounce for the app's lifetime — the
  * leak is only visible from here.

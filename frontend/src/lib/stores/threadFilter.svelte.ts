@@ -3,7 +3,6 @@
 // jump to a thread by index even when the sidebar isn't mounted.
 
 let query = $state('');
-let workspaceFilter = $state<string | null>(null);
 let selected: Set<string> = $state(new Set());
 
 export function getThreadFilterQuery(): string {
@@ -12,18 +11,6 @@ export function getThreadFilterQuery(): string {
 
 export function setThreadFilterQuery(next: string): void {
   query = next;
-}
-
-export function getWorkspaceFilter(): string | null {
-  return workspaceFilter;
-}
-
-export function setWorkspaceFilter(next: string | null): void {
-  if (workspaceFilter === next) return;
-  workspaceFilter = next;
-  // A workspace filter change can hide previously-selected threads,
-  // so clear the selection.
-  selected = new Set();
 }
 
 export function getSelectedThreadIds(): Set<string> {

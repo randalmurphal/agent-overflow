@@ -11,7 +11,8 @@ This package owns seven utilities:
   which kills only the leader. `Group` stops through the same function, and
   an owner of a group `StartGroup` does not supervise (a provider, a
   terminal) uses it to end what a reaped leader left before it releases the
-  group's watch. On Unix,
+  group's watch. `StopGroup` is the same stop for a group named only by its
+  pgid, which the orphan reaper's startup sweep uses. On Unix,
   `SignalGroup` returns `os.ErrProcessDone` once no member of a group can
   still run, including the exited, unreaped group that macOS refuses with
   EPERM. Use it wherever a group signal's result is checked.
@@ -75,7 +76,12 @@ This package owns seven utilities:
   starts, runs next: a child forked while the file is open for writing keeps
   it busy, and running it fails with "text file busy". Every process start
   waits, so hold it only across the write, and not for an executable another
-  process runs.
+  process runs. `InstallExecutable` (bytes) and `CopyExecutable` (a regular
+  file) are that write, replacing whatever is at the path and running no
+  caller code while starts are held off; test code writes executables only
+  through them. `WriteExecutable`
+  holds starts off for less on Linux, for a large copy in the app; their
+  doc comments say when each applies.
 - `SetJobInformation` and `QueryJobInformation` (Windows) pass a Job
   Object information buffer pinned across the call. Use them for every Job
   Object limit or accounting call, never a bare `uintptr(unsafe.Pointer(...))`

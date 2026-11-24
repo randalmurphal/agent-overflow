@@ -2,10 +2,15 @@ package settings
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"agent-overflow/internal/provider"
 )
 
 func TestSetProviderEnvVarRoundTripsNameValueAndSensitiveFlag(t *testing.T) {
@@ -132,6 +137,10 @@ func TestSetProviderEnvVarRejectsReservedNames(t *testing.T) {
 		{"codex", "PATH"},
 		{"codex", "CODEX_HOME"},
 		{"codex", "AO_ENDPOINT"},
+		{"agy", "GEMINI_HOME"},
+		{"agy", "AGY_APP_DATA_DIR"},
+		{"agy", "AGY_ACP_FORCE_FILE_STORAGE"},
+		{"agy", "SSH_CONNECTION"},
 	}
 	for _, test := range cases {
 		t.Run(test.provider+"/"+test.varName, func(t *testing.T) {
@@ -144,6 +153,45 @@ func TestSetProviderEnvVarRejectsReservedNames(t *testing.T) {
 				t.Fatalf("error = %v, want it to say the name is reserved", err)
 			}
 		})
+	}
+}
+
+// A custom HOME would move the provider CLI's login and data and not the
+// home Agent Overflow manages them in, for every provider, so saving one is
+// refused with that reason.
+func TestSetProviderEnvVarRefusesHomeForEveryProvider(t *testing.T) {
+	for _, providerName := range []string{"claude", "claude-tui", "codex", "agy"} {
+		t.Run(providerName, func(t *testing.T) {
+			svc := NewService(t.TempDir())
+			_, err := svc.SetProviderEnvVar(providerName, "HOME", "/tmp/elsewhere", false)
+			if err == nil {
+				t.Fatalf("%s accepted HOME", providerName)
+			}
+			if !strings.Contains(err.Error(), "reserved") || !strings.Contains(err.Error(), "login and data") {
+				t.Fatalf("error = %v, want it to say HOME is reserved and why", err)
+			}
+		})
+	}
+}
+
+// A HOME saved before HOME was reserved is dropped at load: no provider
+// applies it, and the rest of that provider's list is kept.
+func TestASavedHomeIsDroppedAtLoad(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{
+	  "claudeCustomEnv": [{"name": "HOME", "value": "/tmp/claude-home"}, {"name": "KEEP", "value": "1"}],
+	  "codexCustomEnv": [{"name": "HOME", "value": "/tmp/codex-home"}],
+	  "agyCustomEnv": [{"name": "HOME", "value": "/tmp/agy-home"}]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := NewService(dir).Get()
+	assertEnvVars(t, got.ClaudeCustomEnv, []ProviderEnvVar{{Name: "KEEP", Value: "1"}})
+	for _, providerName := range []string{"claude", "codex", "agy"} {
+		if _, applied := got.ProviderEnvMap(providerName)["HOME"]; applied {
+			t.Errorf("%s applies the saved HOME", providerName)
+		}
 	}
 }
 
@@ -365,4 +413,116 @@ func TestReservedCustomVariableKeepsItsSaveErrorAndLoadLog(t *testing.T) {
 		}
 	}
 	assertEnvVars(t, got.ClaudeCustomEnv, []ProviderEnvVar{{Name: "GOOD", Value: "1"}})
+}
+
+// A variable saved under a name now in the reserved table is reported for its
+// provider, once, by the same rule the load drops it with. Names the load
+// drops for another reason (malformed,
+// AO_-prefixed, a duplicate of an allowed name, past the list's cap) are not.
+func TestSavedReservedProviderEnvNamesWhatLoadDropsAsReserved(t *testing.T) {
+	dir := t.TempDir()
+	var pastCap strings.Builder
+	for i := range MaxProviderEnvVars {
+		fmt.Fprintf(&pastCap, `{"name": "KEEP_%d", "value": "1"},`, i)
+	}
+	writeSettingsFile(t, dir, `{
+	  "claudeCustomEnv": [
+	    {"name": " home ", "value": "/secret/claude-home"},
+	    {"name": "HOME", "value": "/secret/again"},
+	    {"name": "CLAUDE_CONFIG_DIR", "value": "/secret/config"},
+	    {"name": "NAME=value", "value": "x"},
+	    {"name": "1BAD", "value": "x"},
+	    {"name": "AO_TOKEN", "value": "x"},
+	    {"name": "FOO", "value": "1"},
+	    {"name": "FOO", "value": "2"}
+	  ],
+	  "codexCustomEnv": [{"name": "HOME", "value": "/secret/codex-home"}],
+	  "agyCustomEnv": [`+pastCap.String()+`{"name": "SSH_CONNECTION", "value": "/secret/ssh"}]
+	}`)
+	svc := NewService(dir)
+	want := []ReservedProviderEnv{{"claude", "HOME"}, {"claude", "CLAUDE_CONFIG_DIR"}, {"codex", "HOME"}}
+	got := svc.SavedReservedProviderEnv()
+	if !slices.Equal(got, want) {
+		t.Fatalf("reserved = %v, want %v", got, want)
+	}
+	if notice := ReservedProviderEnvNotice(got); strings.Contains(notice, "/secret") {
+		t.Fatalf("the notice names a saved value: %q", notice)
+	}
+	if again := svc.SavedReservedProviderEnv(); !slices.Equal(again, want) {
+		t.Fatalf("a second call = %v, want the same %v", again, want)
+	}
+
+	writeSettingsFile(t, dir, `{"agyCustomEnv": [{"name": "AGY_APP_DATA_DIR", "value": "/secret/app-data"}, {"name": "SSH_CONNECTION", "value": "/secret/ssh"}]}`)
+	if got := svc.SavedReservedProviderEnv(); !slices.Equal(got, []ReservedProviderEnv{{"agy", "AGY_APP_DATA_DIR"}, {"agy", "SSH_CONNECTION"}}) {
+		t.Fatalf("agy reserved = %v", got)
+	}
+	writeSettingsFile(t, dir, `{"claudeCustomEnv": "not a list"`)
+	if got := svc.SavedReservedProviderEnv(); got != nil {
+		t.Fatalf("a malformed file reported %v", got)
+	}
+	if err := os.Remove(filepath.Join(dir, "settings.json")); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.SavedReservedProviderEnv(); got != nil {
+		t.Fatalf("a missing file reported %v", got)
+	}
+}
+
+// The notice names each variable by provider and name, never a value, says
+// why and how to clear it, and stays within the 500 runes a boot failure
+// carries (transport's maxBootFailureErrorRunes) however many there are.
+func TestTheReservedProviderEnvNoticeIsBoundedAndNamesNoValue(t *testing.T) {
+	got := ReservedProviderEnvNotice([]ReservedProviderEnv{{"claude", "HOME"}, {"agy", "AGY_APP_DATA_DIR"}})
+	want := "Claude HOME and Antigravity AGY_APP_DATA_DIR are reserved, so the provider runs without them. Adding or removing any provider environment variable in Settings removes the saved entries."
+	if got != want {
+		t.Fatalf("notice = %q, want %q", got, want)
+	}
+	if one := ReservedProviderEnvNotice([]ReservedProviderEnv{{"codex", "HOME"}}); one != "Codex HOME is reserved, so the provider runs without it. Adding or removing any provider environment variable in Settings removes the saved entry." {
+		t.Fatalf("notice for one = %q", one)
+	}
+	if ReservedProviderEnvNotice(nil) != "" {
+		t.Fatal("a notice for nothing")
+	}
+
+	// The worst case: every name as long as a refused name can be
+	// (provider.MaxRefusedEnvNameLength, which provider's table test
+	// enforces), under the longest provider label.
+	longestName := strings.Repeat("N", provider.MaxRefusedEnvNameLength)
+	longest := make([]ReservedProviderEnv, 120)
+	for i := range longest {
+		longest[i] = ReservedProviderEnv{Provider: "agy", Name: longestName}
+	}
+	worst := ReservedProviderEnvNotice(longest)
+	if n := utf8.RuneCountInString(worst); n > 500 {
+		t.Fatalf("the longest notice is %d runes, over the 500 a boot failure carries: %q", n, worst)
+	}
+	if !strings.Contains(worst, "and 114 more") {
+		t.Fatalf("the longest notice does not count the rest: %q", worst)
+	}
+}
+
+// Adding a variable for a provider rewrites settings.json from the loaded
+// settings, so a reserved variable saved there is gone and is not reported
+// again: what the notice tells the person to do.
+func TestSavingAProviderVariableRemovesTheSavedReservedOnes(t *testing.T) {
+	dir := t.TempDir()
+	writeSettingsFile(t, dir, `{
+	  "claudeCustomEnv": [{"name": "HOME", "value": "/secret/claude-home"}, {"name": "KEEP", "value": "1"}],
+	  "agyCustomEnv": [{"name": "AGY_APP_DATA_DIR", "value": "/secret/app-data"}]
+	}`)
+	svc := NewService(dir)
+	if len(svc.SavedReservedProviderEnv()) != 2 {
+		t.Fatalf("reserved before the save = %v", svc.SavedReservedProviderEnv())
+	}
+	mustSetEnvVar(t, svc, "codex", "HTTPS_PROXY", "http://proxy.test", false)
+	written, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(written), `"HOME"`) || strings.Contains(string(written), "AGY_APP_DATA_DIR") {
+		t.Fatalf("settings.json after a save still holds a reserved variable: %s", written)
+	}
+	if got := svc.SavedReservedProviderEnv(); got != nil {
+		t.Fatalf("reserved after the save = %v, want none", got)
+	}
 }

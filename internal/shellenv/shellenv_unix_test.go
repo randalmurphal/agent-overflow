@@ -18,6 +18,7 @@ import (
 
 	"github.com/creack/pty"
 
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/testutil/providerpath"
 )
 
@@ -165,9 +166,7 @@ func fakeShell(t *testing.T, payload string) string {
 		"printf '%s\\n' '" + payload + "'\n" +
 		"printf '%s\\n' '" + pathEndSentinel + "'\n" +
 		"printf '%s\\n' '" + varsStartSentinel + "' '" + varsEndSentinel + "'\n"
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("write fake shell: %v", err)
-	}
+	mockexec.WriteFile(t, path, []byte(body), 0o755)
 	return path
 }
 
@@ -237,9 +236,7 @@ func shellScript(t *testing.T, prelude, payload string) string {
 	path := filepath.Join(t.TempDir(), "fakesh")
 	body := "#!/bin/sh\n" + prelude + "\n" +
 		"printf '%s\\n' '" + pathStartSentinel + "' '" + payload + "' '" + pathEndSentinel + "' '" + varsStartSentinel + "' '" + varsEndSentinel + "'\n"
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("write fake shell: %v", err)
-	}
+	mockexec.WriteFile(t, path, []byte(body), 0o755)
 	return path
 }
 
@@ -352,9 +349,7 @@ func TestProbe_DescendantHoldingStdoutDoesNotBlock(t *testing.T) {
 func TestSyncKeepsTheProviderPathPoisonFirst(t *testing.T) {
 	home := t.TempDir()
 	installed := t.TempDir()
-	if err := os.WriteFile(filepath.Join(installed, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(installed, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755)
 	profile := filepath.Join(home, ".profile")
 	if err := os.WriteFile(profile, []byte("PATH=\""+installed+":$PATH\"; export PATH\n"), 0o644); err != nil {
 		t.Fatal(err)

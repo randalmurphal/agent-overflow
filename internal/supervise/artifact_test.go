@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 type artifactEntry struct {
@@ -203,9 +205,7 @@ func TestArtifactExecutableIsWrittenWithForksHeldOff(t *testing.T) {
 // falsely; it can never fail a sound one.
 func TestServiceArtifactCopiesABareBinaryWithForksHeldOff(t *testing.T) {
 	downloaded := filepath.Join(t.TempDir(), "download-1")
-	if err := os.WriteFile(downloaded, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, downloaded, []byte("#!/bin/sh\nexit 0\n"), 0o700)
 	type result struct {
 		a   *Artifact
 		err error

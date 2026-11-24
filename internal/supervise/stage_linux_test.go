@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // The supervisor writes the copy of itself it then spawns with forks held
@@ -32,9 +34,7 @@ func TestTheSupervisorStagesItselfWithForksHeldOff(t *testing.T) {
 	rig := newRig(t)
 	config := rig.config()
 	// Large enough that the copy and its sync span many observer passes.
-	if err := os.WriteFile(config.SelfExecutable, bytes.Repeat([]byte("#!/bin/sh\n"), 1<<20), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, config.SelfExecutable, bytes.Repeat([]byte("#!/bin/sh\n"), 1<<20), 0o700)
 	supervisor, err := New(config)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -126,9 +126,7 @@ func TestStageBinaryTakesNoForkLock(t *testing.T) {
 		t.Fatalf("NewLayout: %v", err)
 	}
 	source := filepath.Join(t.TempDir(), "source")
-	if err := os.WriteFile(source, []byte("#!/bin/sh\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, source, []byte("#!/bin/sh\n"), 0o700)
 	syscall.ForkLock.Lock()
 	done := make(chan error, 1)
 	go func() { done <- StageBinary(layout, "1.0.0", source) }()

@@ -165,7 +165,6 @@ export {
   BrowserCompanionPaneRect,
   BrowserCompanionRecentAddresses,
   BrowserCompanionRevealPageFile,
-  GetContextSettings,
 
   // Per-project worktree setup (Settings -> Projects). Dedicated
   // read/write pair rather than settings keys: the recipe lives on the
@@ -762,7 +761,6 @@ export {
 export type { PastThreadsCursor, PastThreadsPage } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
   ChatBarFavorite,
-  ThreadFindAnswer,
   ThreadFindSince,
   ThreadMessageHit,
 } from '../../../bindings/agent-overflow/internal/store/models.js';
@@ -774,7 +772,6 @@ export {
   LoginPhase as ProviderLoginPhase,
   LoginState as ProviderLoginState,
   ResetSpendResult as ProviderAccountResetResult,
-  UnsettledReset as ProviderAccountUnsettledReset,
 } from '../../../bindings/agent-overflow/internal/provideraccountapp/models.js';
 export {
   UsageResetOption as ProviderAccountResetOption,
@@ -783,15 +780,11 @@ export {
 export { EditorSettings } from '../../../bindings/agent-overflow/internal/settings/models.js';
 export {
   Attached as AttachedBackend,
-  Attachment as BackendAttachment,
 } from '../../../bindings/agent-overflow/internal/attachedbackends/models.js';
 export {
   ManagedProviderAccount,
   CodexAccountUsage,
-  CodexAccountUsageBucket,
-  ContextSettingsProfile,
   EditorInfo,
-  GeneratedCommitMessage,
   GitWorkspaceState,
   GitStatusSubscriptionResult,
   MCPAuthInitResult,
@@ -801,7 +794,6 @@ export {
   ThreadMCPServer,
   BrowserCompanionAction,
   BrowserFindAction,
-  UpdateAvailability,
   BackgroundKillAgent,
   BusyThread,
   WorkspaceActivity,
@@ -809,10 +801,7 @@ export {
   ThreadWakeRow,
   ThreadWakes,
   ThreadAgentRow,
-  ThreadAgentRowRead,
-  ThreadRequestState,
   PastAgentRows,
-  ThreadAgentRows,
   ThreadAgentStop,
   StandingAgentWakes,
   ThreadWakeDetail,
@@ -846,21 +835,15 @@ export type { ReadAloudSourceStatus, ReadAloudVoice } from '../../../bindings/ag
 export type { ReviewDiffChunk, ReviewDiffOpened } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type {
   ForgeProject,
-  OpenPRThreadRequest,
-  OpenPRThreadResult,
   PipelineListResult,
   PipelineStages,
-  PipelineSubscriptionResult,
   PRListItem,
   PRListSnapshot,
-  PRListSubscriptionResult,
   PRThread,
-  PRThreadsRequest,
   ProjectPRList,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type {
   Notes as ProviderUpdateNotes,
-  Note as ProviderUpdateNote,
   Status as ProviderUpdateStatus,
 } from '../../../bindings/agent-overflow/internal/providerupdate/models.js';
 export type { Snapshot as BackgroundTaskOutputSnapshot } from '../../../bindings/agent-overflow/internal/tasktail/models.js';// Dev-server rows are read-only views of one machine's scan, never
@@ -881,8 +864,6 @@ export type {
   PairingStatusView,
   DeviceRevocationResult,
   PasskeySummary,
-  PasskeyChallengeResult,
-  PasskeyStepUpGrant,
   PushSenderStatus,
   ServiceUpdateStatus,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
@@ -972,7 +953,7 @@ export function BeginDraftProjectTransfer(threadId: string, operationId: string,
 // StartTerminal wrapper. Same plain-object-in / class-wrap pattern as
 // CreateThread. projectId empty roots a standalone "home" terminal; cwd
 // overrides the resolved root; title defaults to "Terminal" backend-side.
-export interface StartTerminalOptions {
+interface StartTerminalOptions {
   projectId?: string;
   cwd?: string;
   title?: string;
@@ -997,7 +978,7 @@ export function GetThreadDefaults(opts: CreateThreadOptions): Promise<ThreadDefa
   return GetThreadDefaultsRaw(new CreateThreadOptionsClass(opts)) as unknown as Promise<ThreadDefaults>;
 }
 
-export interface SendMessageOptions {
+interface SendMessageOptions {
   attachmentIds?: string[];
   consumeDraft?: DraftSnapshot;
   /**
@@ -1045,7 +1026,7 @@ import type {
 } from '../../../bindings/agent-overflow/internal/app/models';
 
 /** A backend without `sends-pending.v1` answers without `sendsPending`. */
-export type RegisteredQueueItem = WireQueuedItem & Partial<Pick<WireRegisteredQueueItem, 'sendsPending'>>;
+type RegisteredQueueItem = WireQueuedItem & Partial<Pick<WireRegisteredQueueItem, 'sendsPending'>>;
 
 export function RegisterQueueItem(
   threadId: string,
@@ -1111,9 +1092,9 @@ import type {
   PagedItems,
 } from '../../../bindings/agent-overflow/internal/store/models';
 
-export type SyncThreadWindowStatus = 'fresh' | 'stale' | 'rewritten' | 'gone';
+type SyncThreadWindowStatus = 'fresh' | 'stale' | 'rewritten' | 'gone';
 
-export interface SyncThreadWindowInput {
+interface SyncThreadWindowInput {
   selection?: TimelineSelection;
   /** Saved scroll anchor; empty resolves to the thread's tail. */
   anchorItemId: string;
@@ -1203,7 +1184,7 @@ import type { ActivityRunMembers } from '../../../bindings/agent-overflow/intern
 /** Which members of a run the caller wants, relative to the span it holds. */
 export type ActivityRunMembersDirection = 'before' | 'after' | 'around';
 
-export interface ActivityRunMembersInput {
+interface ActivityRunMembersInput {
   selection?: TimelineSelection;
   /** The run's first physical member; the call is refused if it moved. */
   runFirstItemId: string;

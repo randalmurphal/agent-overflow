@@ -70,21 +70,6 @@ export const DEFAULT_OPTIONS: Required<SpanTableOptions> = {
     maxColspan: null,
     handleComplexSpans: true
 };
-// Creates an HTML table cell with appropriate attributes
-export const getTableCell = (
-    text: string,
-    cell: BaseCell,
-    type: 'th' | 'td',
-    align: string | null
-): string => {
-    if (!cell.rowspan)
-        return '';
-    const tag = `<${type}` +
-        `${cell.colspan > 1 ? ` colspan=${cell.colspan}` : ''}` +
-        `${cell.rowspan > 1 ? ` rowspan=${cell.rowspan}` : ''}` +
-        `${align ? ` align=${align}` : ''}>`;
-    return `${tag + text}</${type}>\n`;
-};
 /** The start of the last backtick run of each length in `src`. */
 function lastBacktickRuns(src: string): Map<number, number> {
     const last = new Map<number, number>();

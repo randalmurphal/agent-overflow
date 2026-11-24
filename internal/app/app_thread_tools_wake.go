@@ -2,6 +2,7 @@ package app
 
 import (
 	"log"
+	"math"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -325,3 +326,9 @@ const (
 	threadWakeRetryAttempts     = 8
 	threadRequestWakeRetryBatch = 32
 )
+
+// MaxThreadWakeRetryBase is the longest IsolationConfig.ThreadWakeRetryBase
+// threadWakeRetryDelay can compute with: its ceiling is the base times
+// threadWakeRetryCeiling, and the doubling below the ceiling reaches under
+// twice that.
+const MaxThreadWakeRetryBase = time.Duration(math.MaxInt64 / (2 * threadWakeRetryCeiling))

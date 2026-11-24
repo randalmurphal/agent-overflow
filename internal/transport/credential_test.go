@@ -501,3 +501,11 @@ func neighbourPort(port string) string {
 	}
 	return "1"
 }
+
+// consumeTicket removes ticket from the outstanding set, reporting
+// whether it was there. A ticket answers exactly one exchange: a URL
+// that already bought its cookie cannot buy a second one.
+func (c *Credential) consumeTicket(ticket string) bool {
+	_, ok := c.tickets.consume(ticket)
+	return ok
+}

@@ -131,10 +131,6 @@ func NewArtifactRegistry(directory string, policy RetentionPolicy) (*ArtifactReg
 	return &ArtifactRegistry{dir: filepath.Clean(directory), policy: policy}, nil
 }
 
-func NewRegistry(directory string, policy RetentionPolicy) (*ArtifactRegistry, error) {
-	return NewArtifactRegistry(directory, policy)
-}
-
 func NewDefaultArtifactRegistry() (*ArtifactRegistry, error) {
 	dir, err := DefaultRegistryDir()
 	if err != nil {
@@ -275,15 +271,9 @@ func (r *ArtifactRegistry) save(doc retentionFile) error {
 	return nil
 }
 
-// RegisterQuarantine indexes a supervisor-owned failed fresh run. The
-// manifest must already be in the quarantined root.
-func (r *ArtifactRegistry) RegisterQuarantine(manifest Manifest, root string) error {
-	return r.RegisterQuarantineContext(context.Background(), manifest, root)
-}
-
-// RegisterQuarantineContext is RegisterQuarantine with a caller-owned lock
-// deadline. The supervisor uses this so a stuck host-global registry cannot
-// defeat run cleanup bounds.
+// RegisterQuarantineContext indexes a supervisor-owned failed fresh run. The
+// manifest must already be in the quarantined root. The lock deadline is the
+// caller's, so a stuck host-global registry cannot defeat run cleanup bounds.
 func (r *ArtifactRegistry) RegisterQuarantineContext(ctx context.Context, manifest Manifest, root string) error {
 	if r == nil {
 		return errors.New("artifact registry is nil")

@@ -19,8 +19,28 @@ import (
 
 func writeSharedPoolAgyBinary(t *testing.T, logPath string) string {
 	t.Helper()
+	return writePoolAgyBinary(t, logPath, "")
+}
+
+// writePoolAgyBinary is writeSharedPoolAgyBinary that, given a launchRecord
+// path, appends there one line per launch with its argv and the variables
+// through which agy chooses its login store and home ("<unset>" for an unset
+// one), and answers `agy mcp list` and `agy -p` too.
+func writePoolAgyBinary(t *testing.T, logPath, launchRecord string) string {
+	t.Helper()
+	record := ""
+	if launchRecord != "" {
+		// One line per launch: its argv and the variables agy chooses its
+		// login store and home from. `mcp list` and `-p` answer at once.
+		record = `printf 'args=%s|store=%s|gemini_home=%s|app_data_dir=%s\n' "$*" "${AGY_ACP_FORCE_FILE_STORAGE-<unset>}" "${GEMINI_HOME-<unset>}" "${AGY_APP_DATA_DIR-<unset>}" >> '` + launchRecord + `'
+case "$1" in
+mcp) echo 'No MCP servers configured.'; exit 0 ;;
+-p|--print*) echo '{"result":"{}"}'; exit 0 ;;
+esac
+`
+	}
 	script := `#!/bin/bash
-LOG_FILE="` + logPath + `"
+` + record + `LOG_FILE="` + logPath + `"
 n=0
 while IFS= read -r line; do
   if [ -n "$LOG_FILE" ]; then
@@ -58,6 +78,7 @@ done
 func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
+	attachFileAccountStoresForTest(t, app)
 	logPath := filepath.Join(t.TempDir(), "wire.log")
 	binary := writeSharedPoolAgyBinary(t, logPath)
 	if _, err := app.settings.Update(map[string]any{"agyBinaryPath": binary}); err != nil {
@@ -171,7 +192,11 @@ func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T
 
 	// borrowAgyConnForCurrentAccount must hit the warm pooled connection matching
 	// the live session's full pool key instead of silently falling back to a cold spawn.
-	borrowed, releaseBorrowed := app.borrowAgyConnForCurrentAccount(binary)
+	home, err := app.ensureProviderAccountManager().AgyCanonicalHome(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	borrowed, releaseBorrowed := app.borrowAgyConnForCurrentAccount(binary, home)
 	if borrowed == nil {
 		t.Fatal("borrowAgyConnForCurrentAccount missed warm pooled agy connection")
 	}
@@ -311,6 +336,7 @@ func TestAgyGeneratedImageImportContainment(t *testing.T) {
 func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
+	attachFileAccountStoresForTest(t, app)
 	app.configureTriageQueueCallbacks()
 	binary := writeSharedPoolAgyBinary(t, filepath.Join(t.TempDir(), "wire.log"))
 	if _, err := app.settings.Update(map[string]any{"agyBinaryPath": binary}); err != nil {

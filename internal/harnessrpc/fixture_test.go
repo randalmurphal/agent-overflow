@@ -44,6 +44,7 @@ type testHost struct {
 	pushSent            []PushMessage
 	updateWorkReason    string
 	requestWaits        map[string]bool
+	threadWork          map[string]ThreadWork
 	claudeUsage         *claudefake.Usage
 	usageReadings       int
 	usageReadErr        error
@@ -62,6 +63,7 @@ type testHost struct {
 	liveAfterStop   [][]string
 	mergedPRPauses  int
 	mergedPRResumes int
+	mergedPRPolled  time.Time
 	onPause         func()
 	onResume        func()
 }
@@ -137,8 +139,9 @@ func (h *testHost) RequestWaits(tokens []string) map[string]bool {
 	}
 	return out
 }
-func (h *testHost) ClaudeUsageFake() *claudefake.Usage   { return h.claudeUsage }
-func (h *testHost) ProviderUpdateFeed() *updatefake.Feed { return h.updateFeed }
+func (h *testHost) ThreadWork(threadID string) ThreadWork { return h.threadWork[threadID] }
+func (h *testHost) ClaudeUsageFake() *claudefake.Usage    { return h.claudeUsage }
+func (h *testHost) ProviderUpdateFeed() *updatefake.Feed  { return h.updateFeed }
 func (h *testHost) ReadClaudeUsage(ctx context.Context) error {
 	h.usageReadings++
 	h.usageReadDeadline, h.usageReadBounded = ctx.Deadline()
@@ -246,6 +249,7 @@ func (h *testHost) PauseMergedPRCleanup() func() {
 		}
 	}
 }
+func (h *testHost) MergedPRPolled() time.Time    { return h.mergedPRPolled }
 func (h *testHost) DropRetainedEvents()          { h.droppedRetained++ }
 func (h *testHost) HasWorkflowEngine() bool      { return false }
 func (h *testHost) RequireWorkflowEngine() error { return fmt.Errorf("workflow engine unavailable") }

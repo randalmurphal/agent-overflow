@@ -23,14 +23,6 @@ func RegistryDir() (string, error) {
 	return filepath.Join(base, "agent-overflow", "harness-instances"), nil
 }
 
-func Write(row Row) error {
-	dir, err := RegistryDir()
-	if err != nil {
-		return err
-	}
-	return WriteIn(dir, row)
-}
-
 func WriteIn(dir string, row Row) error {
 	path, err := rowPath(dir, row.ID)
 	if err != nil {
@@ -42,14 +34,6 @@ func WriteIn(dir string, row Row) error {
 	return nil
 }
 
-func Remove(id string) error {
-	dir, err := RegistryDir()
-	if err != nil {
-		return err
-	}
-	return RemoveIn(dir, id)
-}
-
 func RemoveIn(dir, id string) error {
 	path, err := rowPath(dir, id)
 	if err != nil {
@@ -59,14 +43,6 @@ func RemoveIn(dir, id string) error {
 		return fmt.Errorf("instanceinfo: remove %s: %w", path, err)
 	}
 	return nil
-}
-
-func List() ([]Instance, error) {
-	dir, err := RegistryDir()
-	if err != nil {
-		return nil, err
-	}
-	return ListIn(dir, nil)
 }
 
 // ListIn reads registry state with an injectable liveness probe. Malformed

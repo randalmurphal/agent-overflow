@@ -1,6 +1,7 @@
 package provideraccountapp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -55,6 +56,24 @@ func (m *Manager) beginLogin(providerName string) (*loginAttempt, error) {
 	return &loginAttempt{provider: providerName, binary: binary, home: home}, nil
 }
 
+// agySignInUnidentifiedError is a sign-in that ended before anything was
+// saved because the lookup of its Google account failed. Its sentence is what
+// the person reads (loginProse); the cause stays in the chain for the log.
+type agySignInUnidentifiedError struct{ cause error }
+
+const agySignInUnidentifiedSentence = "Agent Overflow could not look up which Google account this Antigravity sign-in belongs to, so nothing was saved. Check the connection and try again."
+
+func (e agySignInUnidentifiedError) Error() string {
+	return agySignInUnidentifiedSentence + ": " + e.cause.Error()
+}
+
+func (e agySignInUnidentifiedError) Unwrap() error { return e.cause }
+
+// PublicDetails makes the sentence the client-safe text (errorsx.Detailed).
+func (e agySignInUnidentifiedError) PublicDetails() (code, message string) {
+	return "agy_sign_in_unidentified", agySignInUnidentifiedSentence
+}
+
 // cleanup removes the temporary home. Adoption cleans up as soon as it has
 // read everything it needs, so the coordinator's own teardown call is usually
 // a no-op — which is exactly why it is safe on every exit path.
@@ -74,18 +93,31 @@ func (a *loginAttempt) cleanup() error {
 // account is renewed in place and a new one is appended. Only a login for the
 // selected account, or the first login when nothing is selected, replaces
 // the canonical credential; a sign-in never switches accounts.
-func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr error) {
+//
+// ctx is the sign-in's: the probe of the temporary home and the identity
+// lookups run on it, so a Cancel or the sign-in's time limit stops them, and
+// a step that failed because the sign-in ended reports that end. ctx is
+// checked once more under the reconcile lock, before anything is ended or
+// written, the commit point: a sign-in that ended before it saves nothing,
+// and one past it is saved whole.
+func (m *Manager) adoptLogin(ctx context.Context, attempt *loginAttempt) (_ ManagedAccount, retErr error) {
 	providerName := attempt.provider
 	binary := attempt.binary
 	loginHome := attempt.home
 	reconcileMu := m.reconcileMutex(providerName)
+	verifyFailed := func(err error) (ManagedAccount, error) {
+		if ctx.Err() != nil {
+			return ManagedAccount{}, context.Cause(ctx)
+		}
+		return ManagedAccount{}, err
+	}
 
-	info, err := m.probeProviderAccountAtHome(providerName, binary, loginHome.Path)
+	info, err := m.probeProviderAccountAtHome(ctx, providerName, binary, loginHome.Path)
 	if err != nil {
-		return ManagedAccount{}, fmt.Errorf("verify %s login: %w", providerName, err)
+		return verifyFailed(fmt.Errorf("verify %s login: %w", providerName, err))
 	}
 	if providerName == string(provider.Claude) && providerstatus.ClaudeUnauthenticated(info) {
-		return ManagedAccount{}, errors.New("Claude login completed without an authenticated account")
+		return verifyFailed(errors.New("Claude login completed without an authenticated account")) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
 	loginCredential, err := m.credentials.ReadEphemeralCredential(loginHome)
 	if err != nil {
@@ -96,13 +128,19 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	// the credential's own access token.
 	info = EnrichCodexIdentity(providerName, info, loginCredential.Bytes())
 	if providerName == string(provider.Claude) {
-		info, err = m.identifyClaudeCredential(info, loginCredential.Bytes())
+		info, err = m.identifyClaudeCredential(ctx, info, loginCredential.Bytes())
 		if err != nil {
-			return ManagedAccount{}, fmt.Errorf("verify %s login: %w", providerName, err)
+			return verifyFailed(fmt.Errorf("verify %s login: %w", providerName, err))
 		}
 	}
 	if providerName == string(provider.Agy) {
-		info = m.identifyAgyCredential(m.context(), info, loginCredential.Bytes())
+		// A failed lookup names nobody for certain, so nothing of the
+		// sign-in is saved; a lookup that answered and named nobody is
+		// saved under no email.
+		if info, err = m.identifyAgyCredential(ctx, info, loginCredential.Bytes()); err != nil {
+			m.audit("did not save the Antigravity sign-in: %v", err)
+			return verifyFailed(agySignInUnidentifiedError{cause: err})
+		}
 	}
 	if err := attempt.cleanup(); err != nil {
 		return ManagedAccount{}, err
@@ -114,6 +152,10 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 			reconcileMu.Unlock()
 		}
 	}()
+	// The commit point: from here the sign-in is saved whole.
+	if ctx.Err() != nil {
+		return verifyFailed(nil)
+	}
 	// A sign-in selects its account only when none is selected; signing in
 	// to the selected one keeps the account and its uses.
 	if _, hasCurrent := m.store.Active(providerName, time.Now()); !hasCurrent {
@@ -270,7 +312,7 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	// A fresh sign-in is where the provider sets the session deadline this
 	// account will live by, so it is the first place worth reading it.
 	account = m.withRecordedLoginExpiry(account, loginCredential.Bytes())
-	m.rememberProviderCredentialFingerprintLocked(providerName, loginCredential.Bytes())
+	m.recordCanonicalLocked(providerName, loginCredential.Bytes())
 	generation := m.store.Generation(providerName)
 	m.mu.Unlock()
 	accountLocked = false

@@ -2,14 +2,19 @@ package browser
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // trackerManagerRig is a real Manager keeping downloads as artifacts whose
@@ -252,5 +257,92 @@ func TestATabClosedWhileItsDownloadRunsCancelsIt(t *testing.T) {
 				t.Fatalf("the jar's directory holds %q, want only the empty room", left)
 			}
 		})
+	}
+}
+
+// A popup's download that passes the cap while parked, whose cancel fails
+// with its browser still running, and that Chromium then finishes before
+// the popup's adoption, hands its file over into the jar's directory: the
+// adopted row, listed canceled over the cap, still owns that file and the
+// download's reservation, so the file goes and the quota is released.
+func TestAParkedDownloadOverTheCapWhoseCancelFailedLosesTheFileItFinished(t *testing.T) {
+	manager, engine, _, opener := newAdoptionManagerSaving(t, downloadsAsArtifacts)
+	before := manager.artifactBytes.Used()
+	manager.mu.Lock()
+	var dir string
+	for _, scope := range manager.scopes {
+		dir = scope.downloadDir
+	}
+	manager.mu.Unlock()
+	room, err := openRoomIn(dir, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker := newDownloadTracker(engineEvents{DownloadStarted: manager.downloadStarted, DownloadProgress: manager.downloadProgress}, func(downloadID) {}, room)
+	engine.mu.Lock()
+	profile := engine.profile
+	engine.mu.Unlock()
+	tracker.popup = func(frame frameID) downloadStart {
+		if frame != "popup-frame" {
+			return downloadStart{}
+		}
+		return downloadStart{Popup: "popup", Openers: []ids.PageHandle{opener}, Profile: profile}
+	}
+	t.Cleanup(tracker.stop)
+	// The cancel CDP fails on, as headlessProfile.CancelDownload answers
+	// it: its mark on the tracker is undone, so Chromium's later finish is
+	// not read as AO's cancel.
+	engine.mu.Lock()
+	engine.onCancel = func(id downloadID) error {
+		undo, ended := tracker.canceling(id)
+		if ended {
+			return errDownloadEnded
+		}
+		undo()
+		return errors.New("the browser did not answer the cancel")
+	}
+	engine.mu.Unlock()
+	// What is at the download's own path in the jar's directory until the
+	// stop's discard removes it, which marks that the stop has finished.
+	handedOver := filepath.Join(dir, "G-1")
+	if err := os.WriteFile(handedOver, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(room.path(), "G-1"), []byte("the whole file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tracker.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: "G-1", FrameID: "popup-frame", URL: "https://example.test/G-1", SuggestedFilename: "G-1.txt"})
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		manager.parkMu.Lock()
+		_, parked := manager.parkedIDs["G-1"]
+		manager.parkMu.Unlock()
+		if parked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the popup's download was never parked")
+		}
+	}
+	tracker.progress(cdpbrowser.EventDownloadProgress{GUID: "G-1", ReceivedBytes: maxDownloadBytes + 1, State: cdpbrowser.DownloadProgressStateInProgress})
+	awaitRemoved(t, handedOver)
+	if got := engine.cancels(); !slices.Equal(got, []downloadID{"G-1"}) {
+		t.Fatalf("the stop asked to cancel %q, want G-1", got)
+	}
+	tracker.progress(cdpbrowser.EventDownloadProgress{GUID: "G-1", ReceivedBytes: maxDownloadBytes + 1, TotalBytes: maxDownloadBytes + 1, State: cdpbrowser.DownloadProgressStateCompleted})
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		if _, err := os.Lstat(handedOver); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Chromium's finish never handed the file over")
+		}
+	}
+	manager.adoptPopup(engine.popup(opener, "popup"))
+	wantDownloads(t, manager, "popup", fmt.Sprintf("G-1 canceled %d", maxDownloadBytes+1))
+	awaitRemoved(t, handedOver)
+	for deadline := time.Now().Add(hostedTestDeadline); manager.artifactBytes.Used() != before; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d artifact bytes are reserved, want %d", manager.artifactBytes.Used(), before)
+		}
 	}
 }

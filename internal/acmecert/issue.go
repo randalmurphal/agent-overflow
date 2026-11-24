@@ -106,9 +106,6 @@ func New(cfg Config) (*Issuer, error) {
 	}, nil
 }
 
-// Domain is the name this issuer orders for, normalized.
-func (i *Issuer) Domain() string { return i.domain }
-
 // Issue runs one complete order and persists what it gets.
 //
 // The stages, each of which names itself in its error: account key,

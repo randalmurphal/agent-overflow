@@ -75,16 +75,6 @@ export const MAX_REPLICA_THREADS = 50;
 export const MAX_REPLICA_CHARS = 32 * 1024 * 1024;
 
 /**
- * The attested stamp pair a body carries. Persisted stamps come ONLY
- * from a `SyncThreadWindow` response (§3.4) — the one place stamps and
- * rows are read in a single transaction.
- */
-export interface ReplicaStamp {
-  epoch: number;
-  rev: number;
-}
-
-/**
  * The persisted window. Field names follow the spec's envelope rather
  * than `ThreadItemSnapshot`'s pane-internal names: this is a stored
  * format with its own version, and it must not silently follow a

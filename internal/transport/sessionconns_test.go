@@ -464,3 +464,14 @@ func TestRevokedConnectionsAreNamedInTheCloseLog(t *testing.T) {
 		t.Fatalf("revoked connection reported as %q", got)
 	}
 }
+
+// sessions reports how many distinct sessions currently hold at least one
+// connection: the registry's own bound, which returns to zero.
+func (c *SessionConns) sessions() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.bySession)
+}

@@ -21,7 +21,7 @@ Public writes use strict validation and return actionable errors. Load uses leni
 
 Empty values usually mean provider or platform default. Do not replace an unset external-tool option with an Agent Overflow default unless the setting contract explicitly requires one. Provider-specific settings must return zero values for providers that cannot honor the complete behavior.
 
-Provider environment variables are secrets. Validate names and reserved variables at write time, preserve values only in storage and process launch, and redact every wire projection.
+Provider environment variables are secrets. Validate names and reserved variables at write time, preserve values only in storage and process launch, and redact every wire projection. A variable saved under a name provider's reserved table now refuses is dropped at load and also reported at boot (`SavedReservedProviderEnv`, `ReservedProviderEnvNotice`) by the load's own rule (`walkSavedProviderEnv`): table names only, never a value, a bounded list, until a save rewrites the file without them.
 
 Bound individual and aggregate list/string payloads that cross the wire. Reject invalid values on write; load-time sanitizers may discard invalid entries only with a visible log.
 

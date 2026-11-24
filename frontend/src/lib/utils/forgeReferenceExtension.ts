@@ -8,7 +8,7 @@
 //
 // A forge links a reference only when its target exists. The pane asks the
 // forge (a fact, utils/forgeFacts.ts) for every reference a body can hold
-// (`forgeFactKeys`), and the tokenizers read the answer from their block's
+// (`forgeFactScanner`), and the tokenizers read the answer from their block's
 // scope (`readFact`): found links where the forge links (a GitHub `#12`
 // that is a pull request goes to `/pull/12`) with its title as hover
 // text, absent is text as written. Without an answer (asked, unanswered,

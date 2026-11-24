@@ -597,7 +597,7 @@ func TestPrepareThreadWorktreeUsesTemporaryBranchWhenEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if !gitops.IsTemporaryWorktreeBranch(stored.Branch) {
+	if !gitops.IsTemporaryWorktreeBranchWithPrefix(stored.Branch, gitops.AutoWorktreeBranchPrefix) {
 		t.Fatalf("stored Branch = %q, want ao-<8-hex>", stored.Branch)
 	}
 	if !strings.Contains(worktreePath, "ao-") {

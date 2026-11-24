@@ -2777,7 +2777,7 @@ review-fix commit after them):
   presentation is dropped while the app is on screen; a retraction is
   never dropped. The socket presenter presents only while the lease is
   `background`. **The tray tag is `<backend>|<id>` on both paths**
-  (`push.TrayTag`, `TrayNotifier.tagFor`, `pushTag`), from the
+  (`TrayNotifier.tagFor`, `pushTag`), from the
   message's `backend` key and from the frame's origin respectively,
   which is what makes one moment told twice one notification and two
   machines' identical ids two; the agent's version tagged home's socket

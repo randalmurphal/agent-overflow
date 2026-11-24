@@ -135,12 +135,3 @@ func TestMessageForRefusesWhatNoPresenterShouldAct(t *testing.T) {
 		t.Error("a send naming an undeclared kind was accepted")
 	}
 }
-
-// The tray tag the two device-side readers compose from `backend` and `id`,
-// pinned here so the rule has one home the Java and TypeScript mirrors are
-// checked against by eye.
-func TestTrayTagIsBackendThenId(t *testing.T) {
-	if got := TrayTag("backend-9", "thread:t-1"); got != "backend-9|thread:t-1" {
-		t.Errorf("TrayTag = %q, want backend|id", got)
-	}
-}

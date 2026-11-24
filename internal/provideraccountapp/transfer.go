@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
@@ -72,7 +71,7 @@ func (m *Manager) CheckAgyTransferAccount(ctx context.Context, binary string) er
 		return fmt.Errorf("wait for the agy account lock to check the transfer's Antigravity account: %w", err)
 	}
 	defer lock.Unlock()
-	_, err = agy.ProbeAccount(ctx, m.AgyProbeConfig(binary, nil))
+	_, err = m.probeCanonicalAgy(ctx, binary, m.providerCustomEnv(string(provider.Agy)))
 	if err != nil {
 		return fmt.Errorf("sign in to Antigravity on this computer before receiving the conversation: %w", err)
 	}

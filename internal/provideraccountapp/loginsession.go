@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -140,6 +139,11 @@ const (
 // of output cannot become the UI.
 const loginProseRunes = 400
 
+// loginTeardownProseRunes bounds a teardown failure shown after a failed
+// sign-in's own sentence, which keeps its own loginProseRunes: both stay
+// visible whatever either says.
+const loginTeardownProseRunes = 200
+
 var (
 	errNoLoginInProgress = errors.New(
 		"there is no sign-in waiting for a code; start signing in again",
@@ -259,14 +263,14 @@ func (m *Manager) StartProviderLogin(providerName string, method LoginMethod) (L
 
 	flow, notice, err := m.openLoginFlow(ctx, run, method, "")
 	if err != nil {
-		joined := errors.Join(err, run.teardown())
-		m.settleLoginRun(run, LoginPhaseFailed, loginProse(joined))
+		down := run.teardown()
+		m.finishLoginRun(run, err, down)
 		// driveLogin never ran, so this path owns the close. A cancel or the
 		// shutdown join can already be parked on run.done — the run was in
 		// the registry for the whole spawn — and every waiter waits forever
 		// without it.
 		close(run.done)
-		return m.ProviderLoginState(providerName), joined
+		return m.ProviderLoginState(providerName), errors.Join(err, down.err())
 	}
 	state := m.publishLoginFlow(run, flow, notice)
 	transferred = true
@@ -394,15 +398,27 @@ func (m *Manager) ShutdownProviderLogins() {
 func (m *Manager) driveLogin(ctx context.Context, run *loginRun) {
 	defer close(run.done)
 	err := m.runLogin(ctx, run)
-	cleanupErr := run.teardown()
-	if err != nil {
-		m.settleLoginRun(run, LoginPhaseFailed, loginProse(errors.Join(err, cleanupErr)))
-		return
+	m.finishLoginRun(run, err, run.teardown())
+}
+
+// finishLoginRun settles a sign-in once its process and temporary home are
+// torn down, the one end of every sign-in that got a run. A teardown failure
+// is audited on every path, each half as what happened: a home that could
+// not be removed stays, and can hold the new credential, until the boot
+// sweep removes it; a process that did not close is that. A failed sign-in
+// shows its own sentence, followed by the teardown failure when there is
+// one; a successful one shows nothing of it, since the account it saved is
+// in use.
+func (m *Manager) finishLoginRun(run *loginRun, err error, down loginTeardown) {
+	if down.closeErr != nil {
+		m.audit("the %s sign-in's process did not close cleanly: %v", run.provider, down.closeErr)
 	}
-	if cleanupErr != nil {
-		// The account is switched and active. A leftover temporary home is
-		// the boot sweep's problem, not this user's.
-		log.Printf("provideraccountapp: %v", cleanupErr)
+	if down.homeErr != nil {
+		m.audit("the %s sign-in's temporary home could not be removed, so it stays until the next start: %v", run.provider, down.homeErr)
+	}
+	if err != nil {
+		m.settleLoginRun(run, LoginPhaseFailed, loginFailureProse(err, down.err()))
+		return
 	}
 	m.settleLoginRun(run, LoginPhaseSucceeded, "")
 }
@@ -416,7 +432,7 @@ func (m *Manager) runLogin(ctx context.Context, run *loginRun) error {
 		}
 		if notice == "" {
 			m.publishLoginPhase(run, LoginPhaseVerifying, "")
-			_, err := m.adoptLogin(run.attempt)
+			_, err := m.adoptLogin(ctx, run.attempt)
 			return err
 		}
 		next, carried, err := m.openLoginFlow(ctx, run, flow.method, notice)
@@ -573,14 +589,16 @@ func (m *Manager) openAgyLoginFlow(
 		_ = run.agy.Close()
 		run.agy = nil
 	}
-	geminiDir, appDataSubdir := splitAgyEphemeralHome(run.attempt.home.Path)
+	home, err := agy.IsolatedHome(run.attempt.home.Path)
+	if err != nil {
+		return loginFlow{}, "", err
+	}
 	session, err := agy.StartLogin(ctx, agy.LoginConfig{
-		Binary:        run.attempt.binary,
-		WorkDir:       providerProbeWorkDir(),
-		GeminiDir:     geminiDir,
-		AppDataSubdir: appDataSubdir,
-		Env:           m.providerLoginEnv(run.provider, nil),
-		Reaper:        m.deps.Reaper,
+		Binary:  run.attempt.binary,
+		WorkDir: providerProbeWorkDir(),
+		Home:    home,
+		Env:     m.providerLoginEnv(run.provider, nil),
+		Reaper:  m.deps.Reaper,
 	})
 	if err != nil {
 		return loginFlow{}, "", err
@@ -668,23 +686,30 @@ func (m *Manager) openLoginURL(ctx context.Context, rawURL string) error {
 	return m.deps.OpenBrowser(ctx, rawURL)
 }
 
+// loginTeardown is how a sign-in's teardown went: closing its provider
+// process and removing its temporary home.
+type loginTeardown struct {
+	closeErr, homeErr error
+}
+
+func (t loginTeardown) err() error { return errors.Join(t.closeErr, t.homeErr) }
+
 // teardown closes the provider process and removes the temporary home. Both
 // halves run whatever the other does, because a live app-server and a stray
 // home are different problems.
-func (r *loginRun) teardown() error {
-	var errs []error
+func (r *loginRun) teardown() loginTeardown {
+	var closeErrs []error
 	if r.claude != nil {
-		errs = append(errs, r.claude.Close())
+		closeErrs = append(closeErrs, r.claude.Close())
 	}
 	if r.codex != nil {
-		errs = append(errs, r.codex.Close())
+		closeErrs = append(closeErrs, r.codex.Close())
 	}
 	if r.agy != nil {
-		errs = append(errs, r.agy.Close())
+		closeErrs = append(closeErrs, r.agy.Close())
 	}
 	r.cancel()
-	errs = append(errs, r.attempt.cleanup())
-	return errors.Join(errs...)
+	return loginTeardown{closeErr: errors.Join(closeErrs...), homeErr: r.attempt.cleanup()}
 }
 
 // splitLoginPaste splits Claude's paste-back value on the FIRST `#`. The state
@@ -709,18 +734,45 @@ func splitLoginPaste(pasted string) (code, state string, err error) {
 // a rejected code says more than anything we could substitute — bounded so a
 // page of output cannot become the UI.
 func loginProse(err error) string {
+	var unidentified agySignInUnidentifiedError
 	switch {
 	case err == nil:
 		return ""
+	case errors.As(err, &unidentified):
+		// Before the timeout case: a lookup that ran out of time is a failed
+		// lookup, not a sign-in that ran out of time.
+		_, sentence := unidentified.PublicDetails()
+		return sentence
 	case errors.Is(err, context.DeadlineExceeded):
 		return loginTimedOutNotice
 	case errors.Is(err, context.Canceled):
 		return loginCancelledNotice
 	}
-	message := strings.Join(strings.Fields(err.Error()), " ")
+	return boundLoginProse(err.Error())
+}
+
+// loginFailureProse is the sentence a failed sign-in shows: the sign-in
+// error's own (loginProse), followed by its teardown's failure when that
+// failed too, each within its own bound.
+func loginFailureProse(err, cleanupErr error) string {
+	sentence := loginProse(err)
+	if cleanupErr == nil {
+		return sentence
+	}
+	return sentence + " " + boundProse(cleanupErr.Error(), loginTeardownProseRunes)
+}
+
+// boundLoginProse is text on one line, bounded so a page of output cannot
+// become the UI.
+func boundLoginProse(text string) string {
+	return boundProse(text, loginProseRunes)
+}
+
+func boundProse(text string, limit int) string {
+	message := strings.Join(strings.Fields(text), " ")
 	runes := []rune(message)
-	if len(runes) > loginProseRunes {
-		return string(runes[:loginProseRunes]) + "…"
+	if len(runes) > limit {
+		return string(runes[:limit]) + "…"
 	}
 	return message
 }

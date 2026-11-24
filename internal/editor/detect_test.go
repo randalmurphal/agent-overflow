@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"reflect"
 	"testing"
 )
 
@@ -373,21 +372,6 @@ func TestDetectEditors_RespectsContextCancellation(t *testing.T) {
 
 	if len(got) != 0 {
 		t.Fatalf("expected empty result on cancelled ctx; got %+v", got)
-	}
-}
-
-func TestEditorCatalog_ReturnsIndependentSlice(t *testing.T) {
-	a := EditorCatalog()
-	b := EditorCatalog()
-	if !reflect.DeepEqual(a, b) {
-		t.Fatalf("two catalog calls returned different content")
-	}
-	a[0].Name = "Mutated"
-	if b[0].Name == "Mutated" {
-		t.Fatalf("catalog calls share backing memory")
-	}
-	if EditorCatalog()[0].Name == "Mutated" {
-		t.Fatalf("catalog mutation leaked into package fixture")
 	}
 }
 

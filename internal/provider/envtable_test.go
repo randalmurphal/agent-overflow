@@ -71,12 +71,27 @@ func TestEveryReservedEnvRowDecidesItsRefusal(t *testing.T) {
 				t.Errorf("%s is declared twice for %s", entry.name, providerKey)
 			}
 			owner[key] = entry
+			want := EnvRefusal{}
+			if entry.refusal != "" {
+				want = EnvRefusal{Name: entry.name, Reason: entry.refusal}
+			}
 			for _, spelling := range []string{entry.name, strings.ToLower(entry.name)} {
-				reason, refused := ReservedEnvRefusal(providerKey, spelling)
-				if refused != (entry.refusal != "") || reason != entry.refusal {
-					t.Errorf("ReservedEnvRefusal(%q, %q) = %q, %v; want %q", providerKey, spelling, reason, refused, entry.refusal)
+				got, refused := ReservedEnvRefusal(providerKey, spelling)
+				if refused != (entry.refusal != "") || got != want {
+					t.Errorf("ReservedEnvRefusal(%q, %q) = %+v, %v; want %+v", providerKey, spelling, got, refused, want)
 				}
 			}
 		}
+		if entry.refusal != "" && len(entry.name) > MaxRefusedEnvNameLength {
+			t.Errorf("%s is longer than MaxRefusedEnvNameLength (%d)", entry.name, MaxRefusedEnvNameLength)
+		}
+	}
+}
+
+// A name under the prefix is refused for the prefix, with no table name.
+func TestAPrefixedNameIsRefusedForItsPrefix(t *testing.T) {
+	got, refused := ReservedEnvRefusal("codex", "ao_token")
+	if !refused || got != (EnvRefusal{Reason: reservedPrefixRefusal}) {
+		t.Fatalf("ReservedEnvRefusal(codex, ao_token) = %+v, %v; want the prefix refusal", got, refused)
 	}
 }

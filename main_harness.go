@@ -277,38 +277,48 @@ type harnessTiming struct {
 type harnessTimer struct {
 	name  string
 	field func(*harnessTiming) *time.Duration
+	// max is the longest value the timer's destination takes, when its
+	// arithmetic or its representation bounds it; zero is any Duration.
+	max time.Duration
+	// unit is what the value must be a whole number of, when its
+	// destination holds it in a coarser unit than a Duration; zero is any.
+	unit time.Duration
 }
+
+// pageTimerMax is the longest page timer: the page arms it with setTimeout
+// (transport.MaxFrontendTimingMs).
+const pageTimerMax = transport.MaxFrontendTimingMs * time.Millisecond
 
 // harnessTimers is the one table of harness timers: parseHarnessTiming,
 // isolationConfig and the bootstrap manifest all read it, so a timer is
 // added here and nowhere else in the boot.
 var harnessTimers = []harnessTimer{
-	{"pairing-probe", func(t *harnessTiming) *time.Duration { return &t.PairingProbe }},
-	{"watermark", func(t *harnessTiming) *time.Duration { return &t.Watermark }},
-	{"thread-poll", func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadRequestPoll }},
-	{"transfer-retry", func(t *harnessTiming) *time.Duration { return &t.Isolation.TransferPendingRetry }},
-	{"pr-update", func(t *harnessTiming) *time.Duration { return &t.Isolation.PRUpdateInterval }},
-	{"pr-update-retry", func(t *harnessTiming) *time.Duration { return &t.Isolation.PRUpdateRetryBase }},
-	{"pr-ci-live", func(t *harnessTiming) *time.Duration { return &t.Isolation.PRCILiveInterval }},
-	{"pr-ci-follow", func(t *harnessTiming) *time.Duration { return &t.Isolation.PRCIFollowInterval }},
-	{"pr-ci-log-wait", func(t *harnessTiming) *time.Duration { return &t.Isolation.PRCILogWaitInterval }},
-	{"merged-pr-poll", func(t *harnessTiming) *time.Duration { return &t.Isolation.MergedPRPollInterval }},
-	{"pr-lookup-retry", func(t *harnessTiming) *time.Duration { return &t.Isolation.PRLookupRetryBase }},
-	{"idle-reap", func(t *harnessTiming) *time.Duration { return &t.Isolation.IdleReapThreshold }},
-	{"idle-reap-sweep", func(t *harnessTiming) *time.Duration { return &t.Isolation.IdleReapInterval }},
-	{"wakeup-grace", func(t *harnessTiming) *time.Duration { return &t.Isolation.WakeupReapGrace }},
-	{"wake-floor", func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentWakeFloor }},
-	{"watch-failure-window", func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentWatchFailureWindow }},
-	{"remote-watch-poll", func(t *harnessTiming) *time.Duration { return &t.Isolation.RemoteWatchPoll }},
-	{"drain-stall", func(t *harnessTiming) *time.Duration { return &t.Isolation.ProviderEventDrainStall }},
-	{"usage-probe-gap", func(t *harnessTiming) *time.Duration { return &t.Isolation.UsageProbeGap }},
-	{"usage-poll", func(t *harnessTiming) *time.Duration { return &t.Isolation.UsagePollInterval }},
-	{"wake-retry", func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadWakeRetryBase }},
-	{"agent-settled-window", func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentSettledWindow }},
+	{name: "pairing-probe", field: func(t *harnessTiming) *time.Duration { return &t.PairingProbe }},
+	{name: "watermark", field: func(t *harnessTiming) *time.Duration { return &t.Watermark }},
+	{name: "thread-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadRequestPoll }, max: appservice.MaxThreadRequestPoll},
+	{name: "transfer-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.TransferPendingRetry }},
+	{name: "pr-update", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRUpdateInterval }, max: appservice.MaxPRUpdateInterval},
+	{name: "pr-update-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRUpdateRetryBase }},
+	{name: "pr-ci-live", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRCILiveInterval }, max: appservice.MaxPRCILiveInterval},
+	{name: "pr-ci-follow", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRCIFollowInterval }},
+	{name: "pr-ci-log-wait", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRCILogWaitInterval }},
+	{name: "merged-pr-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.MergedPRPollInterval }, max: appservice.MaxMergedPRPollInterval},
+	{name: "pr-lookup-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.PRLookupRetryBase }},
+	{name: "idle-reap", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.IdleReapThreshold }},
+	{name: "idle-reap-sweep", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.IdleReapInterval }},
+	{name: "wakeup-grace", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.WakeupReapGrace }},
+	{name: "wake-floor", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentWakeFloor }, unit: appservice.AgentWakeFloorUnit},
+	{name: "watch-failure-window", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentWatchFailureWindow }},
+	{name: "remote-watch-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.RemoteWatchPoll }},
+	{name: "drain-stall", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ProviderEventDrainStall }},
+	{name: "usage-probe-gap", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.UsageProbeGap }},
+	{name: "usage-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.UsagePollInterval }},
+	{name: "wake-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadWakeRetryBase }, max: appservice.MaxThreadWakeRetryBase},
+	{name: "agent-settled-window", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentSettledWindow }},
 	// Page timers: how long a computer stays unreachable before the screen
 	// says so, and how long a settled Agents row stays.
-	{"unreachable-settle", nil},
-	{"agent-row-linger", nil},
+	{name: "unreachable-settle", max: pageTimerMax, unit: time.Millisecond},
+	{name: "agent-row-linger", max: pageTimerMax, unit: time.Millisecond},
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -332,11 +342,18 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 			return harnessTiming{}, fmt.Errorf("%s: %s is given twice", diagenv.HarnessTiming, name)
 		}
 		seen[name] = true
+		timer := harnessTimers[row]
 		interval, err := time.ParseDuration(strings.TrimSpace(value))
 		if err != nil || interval <= 0 {
 			return harnessTiming{}, fmt.Errorf("%s: %s needs a positive duration, got %q", diagenv.HarnessTiming, name, strings.TrimSpace(value))
 		}
-		if field := harnessTimers[row].field; field != nil {
+		if timer.unit > 0 && interval%timer.unit != 0 {
+			return harnessTiming{}, fmt.Errorf("%s: %s must be a whole number of %s, got %s", diagenv.HarnessTiming, name, timer.unit, interval)
+		}
+		if timer.max > 0 && interval > timer.max {
+			return harnessTiming{}, fmt.Errorf("%s: %s must be at most %s, got %s", diagenv.HarnessTiming, name, timer.max, interval)
+		}
+		if field := timer.field; field != nil {
 			*field(&timing) = interval
 			continue
 		}

@@ -11,18 +11,18 @@ import (
 	"time"
 )
 
-// The sweep names a leader by pid and start time as the production process
+// The sweep names a leader by pid and identity as the production process
 // table reports them. A live leader recorded under a parent it no longer
-// has is reaped when its start time matches, and left running when the
-// recorded start time is another process's: the pid was reused.
+// has is reaped when its identity matches, and left running when the
+// recorded identity is another process's: the pid was reused.
 func TestSweepReapsTheRecordedLeaderAndNotAProcessThatReusedItsPid(t *testing.T) {
 	for _, c := range []struct {
 		name   string
-		shift  int64
+		other  bool
 		reaped bool
 	}{
-		{"the recorded leader", 0, true},
-		{"a process that reused the pid", 10_000, false},
+		{"the recorded leader", false, true},
+		{"a process that reused the pid", true, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			victim := exec.Command("sleep", "120")
@@ -37,25 +37,29 @@ func TestSweepReapsTheRecordedLeaderAndNotAProcessThatReusedItsPid(t *testing.T)
 				_, _ = victim.Process.Wait()
 				close(exited)
 			}()
-			created := CaptureCreateUnix(pid)
-			if created == 0 {
-				t.Fatal("the process table reported no start time")
-			}
-			registry := NewRegistry(filepath.Join(t.TempDir(), "orphan-registry.json"))
 			// Recorded by a parent other than this process, as a leader whose
 			// backend died is.
-			if err := registry.Add(Record{
-				Owner: "test", PID: pid, PGID: pid, CreateUnix: created + c.shift, ParentPID: os.Getppid(),
-			}); err != nil {
+			leader, err := capture(SystemProcInfo(), pid, os.Getppid())
+			if err != nil {
 				t.Fatal(err)
 			}
-			if err := Sweep(registry, GopsutilProcInfo(), 50*time.Millisecond); err != nil {
+			if c.other {
+				leader.identity.Start += "0"
+			}
+			registry := NewRegistry(filepath.Join(t.TempDir(), "orphan-registry.json"))
+			if err := registry.Add("test", leader); err != nil {
 				t.Fatal(err)
+			}
+			if err := Sweep(registry, SystemProcInfo(), 50*time.Millisecond); err != nil {
+				t.Fatal(err)
+			}
+			if recs, err := registry.Load(); err != nil || len(recs) != 0 {
+				t.Fatalf("the sweep left %+v %v in the registry", recs, err)
 			}
 			select {
 			case <-exited:
 				if !c.reaped {
-					t.Fatal("the sweep killed a process whose start time is not the recorded one")
+					t.Fatal("the sweep killed a process whose identity is not the recorded one")
 				}
 			case <-time.After(2 * time.Second):
 				if c.reaped {

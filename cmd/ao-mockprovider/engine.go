@@ -114,57 +114,76 @@ type engine struct {
 	// nothing and a per-turn await hanging forever.
 	doneTurns map[int]bool
 	// gate is the open waitSignal/stall block of the step goroutine (run).
-	gate *gate
-	// startupGate is the open startupGate hold of the adapter goroutine,
-	// which announces the provider while run may be blocked in an onStart
-	// step: a slot of its own, so neither hold replaces the other.
-	startupGate     *gate
+	gate            *gate
 	pendingAdvances []pendingAdvance
+	// hold is the scenario's startupGate, nil when it sets none. It is not
+	// a step gate and shares neither gate nor pendingAdvances.
+	hold *startupHold
 
 	turnCh chan int
-
-	// startup holds once, immediately before the adapter writes the first
-	// frame proving the provider is up. sync.Once rather than a flag
-	// because both adapters call it from their stdin goroutine while the
-	// engine goroutine is already running.
-	startup sync.Once
 }
 
-// awaitStartup holds behind the scenario's startupGate the FIRST time an
-// adapter is about to announce itself, and returns immediately every time
-// after. See scenario.Scenario.StartupGate. The hold is the adapter's, in
-// its own slot (engine.startupGate), so it and an onStart step's gate can
-// be open together in either order; only an advance naming it releases it.
-func (e *engine) awaitStartup() {
-	e.startup.Do(func() {
-		name := e.sc.StartupGate
-		if name == "" {
-			return
-		}
-		log.Printf("startupGate: holding the first provider frame behind %q", name)
-		turn, ch := e.openStartupGate(name)
-		e.rep.report(control.Report{Kind: control.ReportWaitingSignal, Turn: turn, Detail: name})
-		if ch != nil {
-			<-ch
-		}
-	})
+// startupHold is the scenario's startupGate (scenario.Scenario.StartupGate):
+// one hold per process, in front of the first frame that proves the
+// provider is up. An advance naming it is taken here and nowhere else,
+// whenever it arrives: before the adapter reaches the hold, before the
+// first turn, or while a step gate is open. Its state is the process's,
+// not a turn's, so no turn boundary drops it.
+type startupHold struct {
+	name string
+	// released is closed by the first advance naming the hold; every
+	// adapter call after that passes at once.
+	released chan struct{}
+	// mu orders the hold's reports, so a waiting report is never posted
+	// after the release that ended it.
+	mu sync.Mutex
+	// reached: an adapter call has come to the hold. done: released is closed.
+	reached, done bool
 }
 
-// openStartupGate registers the startup hold, or consumes a buffered
-// advance naming it (nil channel = don't block).
-func (e *engine) openStartupGate(name string) (int, <-chan struct{}) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	turn := e.currentTurnLocked()
-	for i, pending := range e.pendingAdvances {
-		if pending.turn == turn && pending.name == name {
-			e.pendingAdvances = append(e.pendingAdvances[:i], e.pendingAdvances[i+1:]...)
-			return turn, nil
-		}
+func newStartupHold(name string) *startupHold {
+	if name == "" {
+		return nil
 	}
-	g := &gate{turn: turn, name: name, ch: make(chan struct{})}
-	e.startupGate = g
-	return turn, g.ch
+	return &startupHold{name: name, released: make(chan struct{})}
+}
+
+// awaitStartup holds the adapter's first announcement behind the
+// startupGate until an advance names it, and returns at once without one.
+// Adapters call it from their stdin goroutine while run may be blocked in
+// an onStart step's gate; the two are separate, so either can open first.
+func (e *engine) awaitStartup() {
+	h := e.hold
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	first := !h.reached
+	h.reached = true
+	if first && !h.done {
+		log.Printf("startupGate: holding the first provider frame behind %q", h.name)
+		e.rep.report(control.Report{Kind: control.ReportWaitingSignal, Turn: e.currentTurn(), Detail: h.name, Startup: true})
+	}
+	h.mu.Unlock()
+	<-h.released
+}
+
+// releaseStartup takes an advance naming the startupGate. The first one
+// releases the hold; a later one has nothing to release and is reported
+// as discarded, never passed on to a step gate.
+func (e *engine) releaseStartup() {
+	h := e.hold
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	turn := e.currentTurn()
+	if h.done {
+		log.Printf("advance %q DISCARDED: the startup gate it names was already released", h.name)
+		e.rep.report(control.Report{Kind: control.ReportAdvanceBuffered, Turn: turn, Gate: h.name, Detail: control.AdvanceDroppedDetail, Startup: true})
+		return
+	}
+	h.done = true
+	close(h.released)
+	e.rep.report(control.Report{Kind: control.ReportAdvanceReleased, Turn: turn, Gate: h.name, Startup: true})
 }
 
 // awaitExitDelay blocks for the scenario's exitDelayMs once the app has
@@ -199,6 +218,7 @@ func newEngine(sc *scenario.Scenario, fixtureRoot, cwd string, w *lineWriter, re
 		turns:       make(map[int]*scenarioTurn),
 		doneTurns:   make(map[int]bool),
 		turnCh:      make(chan int, turnQueueCap),
+		hold:        newStartupHold(sc.StartupGate),
 	}
 }
 
@@ -660,16 +680,13 @@ type loginCompleter interface {
 // unobservable from outside the process: the buffered case looks
 // identical to a command that was never delivered.
 func (e *engine) advance(name string) {
-	e.mu.Lock()
-	// The startup hold first: it is released by its own name only, which
-	// an unnamed step gate would otherwise take.
-	if g := e.startupGate; g != nil && name == g.name {
-		e.startupGate = nil
-		e.mu.Unlock()
-		close(g.ch)
-		e.rep.report(control.Report{Kind: control.ReportAdvanceReleased, Turn: g.turn, Gate: g.name})
+	// The startupGate's name is the hold's alone: an unnamed step gate or
+	// the per-turn buffer would otherwise take it.
+	if e.hold != nil && name == e.hold.name {
+		e.releaseStartup()
 		return
 	}
+	e.mu.Lock()
 	if g := e.gate; g != nil && gateMatches(g.name, name) {
 		e.gate = nil
 		released := g.name

@@ -7,47 +7,12 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-
-	"agent-overflow/internal/provider"
 )
 
 const (
 	DefaultBinaryName  = "agy"
 	DefaultAppDataName = "antigravity-cli"
 )
-
-// LaunchArgs returns the CLI arguments for spawning a shared multiplexed
-// `agy acp` server. Intentionally omits `--process-per-session` (measured 16x
-// lower per-session memory with verified same-name HTTP MCP & cwd isolation)
-// and omits `--dangerously-skip-permissions` so every AO RuntimeMode and plan
-// mode switches live without restarting the server.
-func LaunchArgs(geminiDir, appDataSubdir string) []string {
-	args := []string{"acp"}
-	if strings.TrimSpace(geminiDir) != "" {
-		args = append(args, "--gemini-dir", geminiDir)
-		if strings.TrimSpace(appDataSubdir) != "" {
-			args = append(args, "--app-data-dir", appDataSubdir)
-		}
-	}
-	return args
-}
-
-// LaunchEnv adds what every `agy acp` process runs with to in: CLI
-// auto-update pinned off, so AO's providerupdate service owns upgrades, and
-// the ambient GCP/Gemini credentials a shell exports cleared, so they cannot
-// hijack a Google OAuth session. A value the user's custom environment sets
-// for one of them still applies.
-func LaunchEnv(in provider.EnvInput) provider.EnvInput {
-	return in.Pin(provider.AgyDisableAutoUpdateEnv, "1").Clear(provider.AgyAmbientCredentialEnvs...)
-}
-
-// WithFileStorage pins file-backed OAuth token storage, so a managed or
-// isolated account's token lands in its app-data directory instead of the
-// user's global OS keyring slot.
-func WithFileStorage(in provider.EnvInput) provider.EnvInput {
-	return in.Pin(provider.AgyForceFileStorageEnv, "1").
-		Pin(provider.AgySSHConnectionEnv, "127.0.0.1 0 127.0.0.1 0")
-}
 
 // ResolveBinary returns the configured agy binary path, falling back to PATH
 // and macOS Antigravity.app bundle locations when using the default name.

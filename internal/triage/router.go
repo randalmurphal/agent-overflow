@@ -86,6 +86,11 @@ type Router struct {
 	// BEFORE the open turn is set — the window SampleInterrupt waits
 	// out. Read under mu. Nil in production.
 	turnRowWrittenGate func(threadID string)
+	// scopedWriteGate is a test-only hook (SetScopedWriteGate) called by
+	// persistCodexAgentRow right before the store write, so a test can
+	// cut the conversation between the router's work and the write. Read
+	// under mu. Nil in production.
+	scopedWriteGate func(itemID string)
 	// interruptWaitHook is a test-only hook (SetInterruptWaitHook) called
 	// by SampleInterrupt right before it waits on a turn start in
 	// progress (woke false) and right after that start ends, before the
@@ -478,6 +483,15 @@ func (r *Router) SetTelemetry(tracer trace.Tracer, m TurnMetrics) {
 func (r *Router) SetEventHook(hook func(provider.ProviderEvent)) {
 	r.mu.Lock()
 	r.eventHook = hook
+	r.mu.Unlock()
+}
+
+// SetScopedWriteGate installs a test-only hook persistCodexAgentRow calls
+// right before its store write. Production code must leave this nil. Pass
+// nil to clear.
+func (r *Router) SetScopedWriteGate(gate func(itemID string)) {
+	r.mu.Lock()
+	r.scopedWriteGate = gate
 	r.mu.Unlock()
 }
 
@@ -1636,6 +1650,56 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 		r.reportUnsavedRow(item, err)
 		return store.Item{}, err
 	}
+	r.afterItemPersisted(persisted, payload, inputPayload, countsAsActivity, emit)
+	return persisted, nil
+}
+
+// persistCodexAgentRow appends a Codex agent's command or stdin interaction
+// row only while its agent's row is in history, in the agent's turn
+// (store.AppendCodexAgentRow); an agent a conversation cut removed, or a row
+// the store refuses (store.ErrItemNotAppended), writes nothing, which is
+// logged. Each caller writes its row once under a fresh id: the command's
+// completion takes the command's tracker before it writes, and the
+// interaction reserves its id (reserveItemID). These are the rows that can
+// still arrive from a Codex agent that finished before an in-place revert
+// cut its spawn: the revert gate counts a running agent and kills it with
+// consent, but not a finished agent's terminal.
+func (r *Router) persistCodexAgentRow(row store.CodexAgentRow) (persisted store.Item, written bool, err error) {
+	err = r.withSubagentCard(row.ThreadID, row.ParentID, func(card *store.SubagentCard) error {
+		row.Card = card
+		r.mu.Lock()
+		gate := r.scopedWriteGate
+		r.mu.Unlock()
+		if gate != nil {
+			gate(row.ID)
+		}
+		var err error
+		persisted, written, err = r.store.AppendCodexAgentRow(row)
+		return err
+	})
+	if errors.Is(err, store.ErrItemNotAppended) {
+		log.Printf("triage: refusing %s on thread %s: %v", row.ID, row.ThreadID, err)
+		return store.Item{}, false, nil
+	}
+	if err != nil {
+		return store.Item{}, false, err
+	}
+	if !written {
+		log.Printf("triage: dropping %s on thread %s: scope %s is no longer in history", row.ID, row.ThreadID, row.ParentID)
+		return store.Item{}, false, nil
+	}
+	var payload *store.Payload
+	if row.Output != nil {
+		payload = &store.Payload{ID: persisted.PayloadID, Kind: "command_output"}
+	}
+	r.afterItemPersisted(persisted, payload, nil, false, true)
+	return persisted, true, nil
+}
+
+// afterItemPersisted runs what every saved row owes once it is written: the
+// saved-row report, link and command bookkeeping, the activity bump, the
+// upsert emission, and the metrics.
+func (r *Router) afterItemPersisted(persisted store.Item, payload, inputPayload *store.Payload, countsAsActivity, emit bool) {
 	r.reportSavedRow(persisted)
 	r.noteToolCallLink(persisted)
 	r.notifyCommandSettled(persisted)
@@ -1661,7 +1725,6 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 		r.metrics.PayloadsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", inputPayload.Kind)))
 	}
-	return persisted, nil
 }
 
 // persistItemWithPayloadAppend is persistItemWithEmit's sibling for the

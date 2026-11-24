@@ -560,7 +560,7 @@ func (c *Client) Retired() bool {
 }
 
 // Retire closes this in-memory owner before a replacement writes the same
-// profile or the profile is forgotten (ForgetSession), so a rotation in
+// profile or the profile is forgotten (HeldSession.Remove), so a rotation in
 // flight cannot write it back. It leaves the file alone.
 func (c *Client) Retire() {
 	c.mu.Lock()

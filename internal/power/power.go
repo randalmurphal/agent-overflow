@@ -171,12 +171,6 @@ func (c *controller) apply(mode Mode) error {
 	return nil
 }
 
-func (c *controller) currentMode() Mode {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.effectiveLocked()
-}
-
 // effectiveLocked reads current as ModeOff until something is actually
 // held. A zero-value controller has held nothing, which is exactly what
 // ModeOff means — and reading it that way is what keeps a fresh
@@ -206,9 +200,6 @@ func newGuardedBackend() backend {
 // goroutine and from any prior state; a repeat of the current mode does
 // nothing.
 func Apply(mode Mode) error { return std.apply(mode) }
-
-// Current reports the last mode Apply successfully reached.
-func Current() Mode { return std.currentMode() }
 
 // errNoInhibitorAvailable is returned by a backend that reached no
 // working mechanism at all. Callers log it; the feature is best-effort by

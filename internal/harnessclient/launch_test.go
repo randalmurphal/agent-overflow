@@ -319,7 +319,9 @@ func TestDetachedLaunchWritesItsLogsAndOutlivesTheLauncher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	t.Cleanup(func() { _ = TerminateProcess(context.Background(), launched.PID, 2*time.Second) })
+	t.Cleanup(func() {
+		_ = TerminateProcessVerified(context.Background(), launched.PID, launched.identity, 2*time.Second)
+	})
 
 	if !instanceinfo.ProcessAlive(launched.PID) {
 		t.Fatal("the detached backend is not running")
@@ -332,13 +334,14 @@ func TestDetachedLaunchWritesItsLogsAndOutlivesTheLauncher(t *testing.T) {
 		t.Fatalf("stderr capture = %v, want the backend's own lines", stderr)
 	}
 
-	// TerminateProcess is what `ao-harness down` runs; it must actually
-	// end the process rather than report success on a signal nobody read.
-	if err := TerminateProcess(context.Background(), launched.PID, 5*time.Second); err != nil {
-		t.Fatalf("TerminateProcess: %v", err)
+	// TerminateProcessVerified is what `ao-harness down` runs; it must
+	// actually end the process rather than report success on a signal
+	// nobody read.
+	if err := TerminateProcessVerified(context.Background(), launched.PID, launched.identity, 5*time.Second); err != nil {
+		t.Fatalf("TerminateProcessVerified: %v", err)
 	}
 	if instanceinfo.ProcessAlive(launched.PID) {
-		t.Fatal("the backend survived TerminateProcess")
+		t.Fatal("the backend survived TerminateProcessVerified")
 	}
 }
 

@@ -463,14 +463,6 @@ func ToolCallInputPayloadID(itemID string) string {
 	return "tool-input:" + itemID
 }
 
-// AttachedPayloadID is the deterministic payload id for a blob attached
-// to a row by kind (diff, command output, proposed plan). The import
-// writer names these blobs the same way, so both writers agree and a
-// repeated import hashes the same.
-func AttachedPayloadID(payloadKind, itemID string) string {
-	return payloadKind + ":" + itemID
-}
-
 // ShouldSplitCodexToolCompletion reports whether a Codex tool's completion
 // gets its own `tool_completion` sibling row instead of settling the launch
 // row in place.

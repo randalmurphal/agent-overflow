@@ -1,7 +1,7 @@
 package provideraccountapp
 
 import (
-	"crypto/sha256"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -132,14 +132,43 @@ type needsLoginError struct{ message string }
 
 func (e needsLoginError) Error() string { return e.message }
 
+// savedLoginOfAnotherAccount refuses a saved slot whose credential carries
+// an identity (credentialIdentity: a Codex workspace, an Antigravity email)
+// that is provably not its account's: an older build could save one login
+// under another account. Every path that runs or installs a slot's
+// credential asks it first: an inactive account's reading, a switch or
+// auto-switch to the account, and the replacement a removal picks.
+func savedLoginOfAnotherAccount(providerName string, account provideraccounts.Account, credential []byte) error {
+	if !provideraccounts.AccountIdentity(account).Contradicts(credentialIdentity(providerName, credential)) {
+		return nil
+	}
+	name := describeProviderAccount(account)
+	return savedLoginMismatchError{sentence: fmt.Sprintf(
+		"The login saved for %s is another account's. Sign in to %s again.", name, name,
+	)}
+}
+
+// savedLoginMismatchError is the type of savedLoginOfAnotherAccount's
+// refusal: the account needs a sign-in, as one whose login is gone does.
+type savedLoginMismatchError struct{ sentence string }
+
+func (e savedLoginMismatchError) Error() string { return e.sentence }
+
+// PublicDetails makes the sentence the client-safe text (errorsx.Detailed).
+func (e savedLoginMismatchError) PublicDetails() (code, message string) {
+	return "account_login_mismatch", e.sentence
+}
+
 // IsNeedsLogin reports whether err says the switch target can be used only
-// after a fresh sign-in because its saved credential is missing or signed
-// out. A switch reports an expired target through SignInRequired instead.
-// The login sentinels are not matched: a switch wraps the reconcile of the
-// current account with %w, and that verdict is not about the target.
+// after a fresh sign-in because its saved credential is missing, signed out,
+// or another account's login. A switch reports an expired target through
+// SignInRequired instead. The login sentinels are not matched: a switch wraps
+// the reconcile of the current account with %w, and that verdict is not
+// about the target.
 func IsNeedsLogin(err error) bool {
 	var needsLogin needsLoginError
-	return errors.As(err, &needsLogin)
+	var mismatch savedLoginMismatchError
+	return errors.As(err, &needsLogin) || errors.As(err, &mismatch)
 }
 
 // errProviderAccountLoginExpired names the account whose OAuth session ran
@@ -428,7 +457,7 @@ func (m *Manager) switchProviderAccount(
 		m.recordLoginExpiry(providerName, preserveID, currentCredential.Bytes())
 	}
 	binary := m.providerBinaryPath(providerName)
-	m.rememberProviderCredentialFingerprintLocked(providerName, targetCredential.Bytes())
+	m.recordCanonicalLocked(providerName, targetCredential.Bytes())
 	generation := m.store.Generation(providerName)
 	m.mu.Unlock()
 	if kind == automaticSwitch {
@@ -509,6 +538,10 @@ func (m *Manager) planSwitchLocked(providerName, accountID string, kind switchKi
 		)
 		return switchPlan{}, errProviderAccountNeedsLogin(providerName, target)
 	}
+	if err := savedLoginOfAnotherAccount(providerName, target, targetCredential.Bytes()); err != nil {
+		m.audit("refused to %s to %s account %s: its saved credential names another account", kind, providerName, accountID)
+		return switchPlan{}, err
+	}
 	// An expired login is not yet a husk — the tokens are all still there —
 	// but activating it hands the provider a refresh token the server will
 	// reject, and the CLI answers that rejection by blanking the credential.
@@ -562,7 +595,7 @@ func (m *Manager) reconciledActiveCredentialLocked(
 		return "", nil, nil
 	}
 	snapshot, err := m.verifiedActiveCredentialLocked(providerName)
-	if errors.Is(err, errActiveCredentialSignedOut) {
+	if errors.Is(err, errActiveCredentialSignedOut) || errors.Is(err, errActiveCredentialUnattributed) {
 		return "", nil, nil
 	}
 	if err != nil {
@@ -579,6 +612,12 @@ func (m *Manager) reconciledActiveCredentialLocked(
 // inside the app ever replaces the husk.
 var errActiveCredentialSignedOut = errors.New("active provider credential was signed out by the provider")
 
+// errActiveCredentialUnattributed reports that the canonical credential is an
+// outside login reconciliation could not attribute to one saved account
+// (unresolvedLoginError). Like a sign-out, it is nothing to preserve into the
+// outgoing account's slot, and the account change proceeds over it.
+var errActiveCredentialUnattributed = errors.New("active provider credential is an outside login no saved account is known to own")
+
 func (m *Manager) verifiedActiveCredentialLocked(
 	providerName string,
 ) (provideraccounts.CredentialSnapshot, error) {
@@ -590,21 +629,24 @@ func (m *Manager) verifiedActiveCredentialLocked(
 			err,
 		)
 	}
-	// Checked before the fingerprint: a husk can never match the remembered
-	// fingerprint, and "changed; retry" would misdiagnose a sign-out as a
-	// concurrent login.
+	// Checked before the record: a husk can never be the recorded credential,
+	// and "changed; retry" would misdiagnose a sign-out as a concurrent login.
 	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(snapshot.Bytes()) {
 		return provideraccounts.CredentialSnapshot{}, errActiveCredentialSignedOut
 	}
-	fingerprint := sha256.Sum256(snapshot.Bytes())
-	known, ok := m.fingerprints[providerName]
-	if !ok || known != fingerprint {
-		return provideraccounts.CredentialSnapshot{}, fmt.Errorf(
-			"%s credentials changed while updating accounts; retry",
-			providerName,
-		)
+	if m.canonicalRecordedLocked(providerName, snapshot.Bytes()) {
+		return snapshot, nil
 	}
-	return snapshot, nil
+	// An outside login reconciliation could not attribute is no account's to
+	// preserve; the change installs a saved login over it, which is what the
+	// unresolved verdict tells the person to do.
+	if m.unresolvedLocked(providerName, snapshot.Bytes()) != nil {
+		return provideraccounts.CredentialSnapshot{}, errActiveCredentialUnattributed
+	}
+	return provideraccounts.CredentialSnapshot{}, fmt.Errorf(
+		"%s credentials changed while updating accounts; retry",
+		providerName,
+	)
 }
 
 // recordLoginExpiry keeps one account's stored OAuth session deadline equal to
@@ -664,21 +706,24 @@ func describeLoginExpiry(providerName string, credential []byte) string {
 	return time.UnixMilli(expiresAt).Format(time.RFC3339)
 }
 
-func (m *Manager) probeProviderAccountAtHome(providerName, binary, home string) (provider.AccountInfo, error) {
+func (m *Manager) probeProviderAccountAtHome(ctx context.Context, providerName, binary, home string) (provider.AccountInfo, error) {
 	switch providerName {
 	case string(provider.Claude):
-		return claude.ProbeAccount(m.context(), m.claudeProbeConfig(
+		return claude.ProbeAccount(ctx, m.claudeProbeConfig(
 			binary,
 			map[provider.ReservedEnv]string{provider.ClaudeConfigDirEnv: home},
 		))
 	case string(provider.Codex):
-		return codex.ProbeAccount(m.context(), m.codexProbeConfig(
+		return codex.ProbeAccount(ctx, m.codexProbeConfig(
 			binary,
 			map[provider.ReservedEnv]string{provider.CodexHomeEnv: home},
 		))
 	case string(provider.Agy):
-		geminiDir, appDataSubdir := splitAgyEphemeralHome(home)
-		return agy.ProbeAccount(m.context(), m.agyProbeConfig(binary, geminiDir, appDataSubdir, nil))
+		isolated, err := agy.IsolatedHome(home)
+		if err != nil {
+			return provider.AccountInfo{}, err
+		}
+		return agy.ProbeAccount(ctx, m.agyProbeConfig(binary, isolated.Source(), m.providerCustomEnv(providerName)))
 	default:
 		return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
 	}
@@ -772,7 +817,7 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 			return provideraccounts.Account{}, SignIn{}, errors.Join(err, cleanupErr)
 		}
 		account = m.withRecordedLoginExpiry(account, credential.Bytes())
-		m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
+		m.recordCanonicalLocked(providerName, credential.Bytes())
 		return account, SignIn{Provider: providerName, Account: account, Added: true, Active: true}, nil
 	}
 	account, signIn, _, err := m.reconcileObservedAccountLocked(
@@ -780,10 +825,15 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 		info,
 		*credential,
 	)
+	var unresolved unresolvedLoginError
+	if errors.As(err, &unresolved) {
+		m.markUnresolvedLocked(providerName, credential.Bytes(), err)
+		return provideraccounts.Account{}, SignIn{}, err
+	}
 	if err != nil {
 		return provideraccounts.Account{}, SignIn{}, err
 	}
-	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
+	m.recordCanonicalLocked(providerName, credential.Bytes())
 	return account, signIn, nil
 }
 
@@ -877,7 +927,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 		return SignIn{}, err
 	}
 	account = m.withRecordedLoginExpiry(account, credential.Bytes())
-	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Bytes())
+	m.recordCanonicalLocked(providerName, credential.Bytes())
 	return SignIn{Provider: providerName, Account: account, Added: !found, Active: true}, nil
 }
 

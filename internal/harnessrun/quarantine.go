@@ -8,10 +8,6 @@ import (
 	"path/filepath"
 )
 
-func (s *Supervisor) quarantine() error {
-	return s.quarantineContext(context.Background())
-}
-
 func (s *Supervisor) quarantineContext(ctx context.Context) error {
 	s.mu.Lock()
 	if s.manifest.Plan.Ownership != OwnershipFresh {

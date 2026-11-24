@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -73,7 +74,7 @@ func PathForHome(home string) string {
 // ListServers returns every configured MCP server in sorted name order.
 // A missing config file yields an empty list and a nil error.
 func (s *Store) ListServers() ([]Server, error) {
-	data, _, err := s.readFile()
+	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -132,77 +133,92 @@ func (s *Store) SetDisabled(name string, disabled bool) error {
 	if name == "" {
 		return ErrInvalidName
 	}
-	unlock := lockPath(s.path)
-	defer unlock()
-	data, statBefore, err := s.readFile()
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%w: %s", ErrNotFound, name)
+	return s.modify(func(data []byte, exists bool) ([]byte, error) {
+		if !exists {
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 		}
-		return err
-	}
+		return setDisabled(s.path, data, name, disabled)
+	})
+}
+
+// setDisabled is data with server name's `disabled` flag set, or nil when
+// it already is.
+func setDisabled(path string, data []byte, name string, disabled bool) ([]byte, error) {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(data, &root); err != nil {
-		return fmt.Errorf("agyconfig: parse %s: %w", s.path, err)
+		return nil, fmt.Errorf("agyconfig: parse %s: %w", path, err)
 	}
 	rawServers, ok := root["mcpServers"]
 	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, name)
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
 	var servers map[string]json.RawMessage
 	if err := json.Unmarshal(rawServers, &servers); err != nil {
-		return fmt.Errorf("agyconfig: parse mcpServers: %w", err)
+		return nil, fmt.Errorf("agyconfig: parse mcpServers: %w", err)
 	}
 	rawEntry, exists := servers[name]
 	if !exists {
-		return fmt.Errorf("%w: %s", ErrNotFound, name)
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
 	var entry map[string]any
 	if err := json.Unmarshal(rawEntry, &entry); err != nil {
-		return fmt.Errorf("agyconfig: parse server %q: %w", name, err)
+		return nil, fmt.Errorf("agyconfig: parse server %q: %w", name, err)
 	}
 	if entry == nil {
 		entry = map[string]any{}
 	}
 	if prev, has := entry["disabled"].(bool); has && prev == disabled {
-		return nil
+		return nil, nil
 	} else if !has && !disabled {
-		return nil
+		return nil, nil
 	}
 	entry["disabled"] = disabled
 
 	encodedEntry, err := json.Marshal(entry)
 	if err != nil {
-		return fmt.Errorf("agyconfig: encode server %q: %w", name, err)
+		return nil, fmt.Errorf("agyconfig: encode server %q: %w", name, err)
 	}
 	servers[name] = encodedEntry
 	encodedServers, err := json.Marshal(servers)
 	if err != nil {
-		return fmt.Errorf("agyconfig: encode mcpServers: %w", err)
+		return nil, fmt.Errorf("agyconfig: encode mcpServers: %w", err)
 	}
 	root["mcpServers"] = encodedServers
 	encodedRoot, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return fmt.Errorf("agyconfig: encode config: %w", err)
+		return nil, fmt.Errorf("agyconfig: encode config: %w", err)
 	}
-	encodedRoot = append(encodedRoot, '\n')
-
-	if statAfter, statErr := os.Stat(s.path); statErr == nil && statBefore != nil {
-		if !statAfter.ModTime().Equal(statBefore.ModTime()) || statAfter.Size() != statBefore.Size() {
-			return ErrConcurrentWrite
-		}
-	}
-	return atomicfile.Write(s.path, encodedRoot)
+	return append(encodedRoot, '\n'), nil
 }
 
-func (s *Store) readFile() ([]byte, os.FileInfo, error) {
-	info, err := os.Stat(s.path)
+// modify runs fn on the config as read and writes back what it returns,
+// under the in-process lock for the path. fn gets nil data and exists
+// false for a missing file; a nil result writes nothing. The write lands
+// only while the file is still the version read (atomicfile's guarded
+// write); a file another program wrote, replaced, created or deleted since
+// the read is ErrConcurrentWrite, and nothing is written.
+func (s *Store) modify(fn func(data []byte, exists bool) ([]byte, error)) error {
+	unlock := lockPath(s.path)
+	defer unlock()
+	data, before, err := atomicfile.ReadWithStat(s.path)
 	if err != nil {
-		return nil, nil, err
+		return fmt.Errorf("agyconfig: %w", err)
 	}
-	data, err := os.ReadFile(s.path)
+	out, err := fn(data, before != nil)
+	if err != nil || out == nil {
+		return err
+	}
+	committed, err := atomicfile.WriteIfUnchanged(s.path, out, before)
+	if committed {
+		if err != nil {
+			// The new config is in place; only its directory entry may not
+			// survive a power loss. The caller goes on as written.
+			log.Printf("agyconfig: %v", err)
+		}
+		return nil
+	}
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
-	return data, info, nil
+	return ErrConcurrentWrite
 }

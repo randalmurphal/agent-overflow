@@ -30,6 +30,9 @@ export const DRAFT_SAVE_DEBOUNCE_MS = 500;
 // WS close path rejecting all pending RPCs.
 export const RPC_TIMEOUT_MS = DEFAULT_METHOD_BUDGET_MS + METHOD_ANSWER_MARGIN_MS;
 export const RECONNECT_INITIAL_MS = 250;
+// The shortest rung: a jittered delay never draws below it, so a degenerate
+// random source cannot spin a tight reconnect loop.
+export const RECONNECT_FLOOR_MS = 50;
 // Backoff cap by backend locality (bootstrap `remote` flag). The 30s
 // cap is remote-client sizing — polite to a LAN server that may be
 // genuinely down. Against a same-machine backend a failed attempt is a

@@ -41,12 +41,6 @@ func TestTerminateOwnedRechecksIdentityBeforeGroupKill(t *testing.T) {
 	}
 }
 
-func TestTerminateRefusesANonPID(t *testing.T) {
-	if err := TerminateProcess(context.Background(), 0, time.Second); err == nil {
-		t.Fatal("terminate accepted pid 0")
-	}
-}
-
 // A delivered SIGKILL is a signal accepted, not a process gone: an
 // uninterruptible sleep (a wedged 9p read under WSL, a stalled NFS mount)
 // outlives it. Reporting "stopped" there is what puts two backends on one
@@ -69,12 +63,12 @@ func TestTerminateReportsAProcessThatSurvivedSIGKILL(t *testing.T) {
 	t.Cleanup(func() {
 		processAlive = restoreProbe
 		KillConfirmWindow = restoreWindow
-		_ = TerminateProcess(context.Background(), pid, time.Second)
+		_ = TerminateProcessVerified(context.Background(), pid, launched.identity, time.Second)
 	})
 
 	// Zero grace so the polite signal's wait is skipped and the kill path
 	// is what this exercises.
-	err = TerminateProcess(context.Background(), pid, 0)
+	err = TerminateProcessVerified(context.Background(), pid, launched.identity, 0)
 	if err == nil {
 		t.Fatal("terminate reported success for a process it never confirmed dead")
 	}

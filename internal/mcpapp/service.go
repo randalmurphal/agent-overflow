@@ -2,6 +2,7 @@ package mcpapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -52,6 +54,9 @@ type Deps struct {
 	ClaudeSessions    func(workspacePath string) []ClaudeLiveSession
 	ProviderBinary    func(providerName string) string
 	SessionProcessEnv func(providerName string) provider.EnvInput
+	// AgyCanonicalHome decides the home and login store of a canonical agy
+	// process, as it starts (agy.HomeSource).
+	AgyCanonicalHome func(ctx context.Context) (agy.Home, error)
 	// ClaudeRetention is a Claude sign-in process's answer to the
 	// transcript sweep (claude.Config.Retention).
 	ClaudeRetention      func(workDir string) claude.Retention
@@ -127,6 +132,15 @@ func (a *Service) providerBinaryPath(providerName string) string {
 		return ""
 	}
 	return a.deps.ProviderBinary(providerName)
+}
+
+// agyCanonicalHome is an agy.HomeSource, which the MCP status fetcher runs
+// only once it starts `agy mcp list`: a cached answer decides nothing.
+func (a *Service) agyCanonicalHome(ctx context.Context) (agy.Home, error) {
+	if a == nil || a.deps.AgyCanonicalHome == nil {
+		return agy.Home{}, errors.New("mcp status: the Antigravity home is unavailable")
+	}
+	return a.deps.AgyCanonicalHome(ctx)
 }
 
 func (a *Service) sessionProcessEnv(providerName string) provider.EnvInput {

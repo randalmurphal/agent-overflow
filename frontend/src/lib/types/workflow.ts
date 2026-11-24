@@ -139,12 +139,6 @@ export interface WorkflowResolvedReceipt {
   costUsd: number;
 }
 
-export interface WorkflowDefinitionView {
-  projectId: string;
-  catalog: WorkflowDefinitionCatalog;
-  definition: WorkflowDefinitionListing;
-}
-
 export type {
   // Project deletion (D25) walks the same run trees the workflow surfaces do,
   // so its shapes live here rather than growing a parallel definition next to

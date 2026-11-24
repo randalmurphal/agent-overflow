@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -423,6 +424,12 @@ func TestNormalizeStructuredOutputLine(t *testing.T) {
 	}
 }
 
+// pickBetween is PickAvailableProviderOrdered over claude and codex at the
+// given binaries, falling back in that order.
+func pickBetween(preferred, claudeBinary, codexBinary string, lookPath func(string) error) string {
+	return PickAvailableProviderOrdered(preferred, map[string]string{"claude": claudeBinary, "codex": codexBinary}, []string{"claude", "codex"}, lookPath)
+}
+
 func TestPickAvailableProvider_PreferredAvailable(t *testing.T) {
 	lookPath := func(bin string) error {
 		if bin == "codex" || bin == "claude" {
@@ -430,10 +437,10 @@ func TestPickAvailableProvider_PreferredAvailable(t *testing.T) {
 		}
 		return exec.ErrNotFound
 	}
-	if got := PickAvailableProvider("codex", "claude", "codex", lookPath); got != "codex" {
+	if got := pickBetween("codex", "claude", "codex", lookPath); got != "codex" {
 		t.Fatalf("both available, prefer codex: got %q, want codex", got)
 	}
-	if got := PickAvailableProvider("claude", "claude", "codex", lookPath); got != "claude" {
+	if got := pickBetween("claude", "claude", "codex", lookPath); got != "claude" {
 		t.Fatalf("both available, prefer claude: got %q, want claude", got)
 	}
 }
@@ -445,7 +452,7 @@ func TestPickAvailableProvider_PreferredMissingFallsBack(t *testing.T) {
 		}
 		return exec.ErrNotFound
 	}
-	if got := PickAvailableProvider("codex", "claude", "codex", onlyClaude); got != "claude" {
+	if got := pickBetween("codex", "claude", "codex", onlyClaude); got != "claude" {
 		t.Fatalf("only claude installed but prefer codex: got %q, want claude", got)
 	}
 
@@ -455,17 +462,17 @@ func TestPickAvailableProvider_PreferredMissingFallsBack(t *testing.T) {
 		}
 		return exec.ErrNotFound
 	}
-	if got := PickAvailableProvider("claude", "claude", "codex", onlyCodex); got != "codex" {
+	if got := pickBetween("claude", "claude", "codex", onlyCodex); got != "codex" {
 		t.Fatalf("only codex installed but prefer claude: got %q, want codex", got)
 	}
 }
 
 func TestPickAvailableProvider_NeitherAvailableReturnsPreferred(t *testing.T) {
 	none := func(string) error { return exec.ErrNotFound }
-	if got := PickAvailableProvider("codex", "claude", "codex", none); got != "codex" {
+	if got := pickBetween("codex", "claude", "codex", none); got != "codex" {
 		t.Fatalf("neither installed, prefer codex: got %q, want codex (so caller surfaces the codex error)", got)
 	}
-	if got := PickAvailableProvider("claude", "claude", "codex", none); got != "claude" {
+	if got := pickBetween("claude", "claude", "codex", none); got != "claude" {
 		t.Fatalf("neither installed, prefer claude: got %q, want claude", got)
 	}
 }
@@ -473,22 +480,15 @@ func TestPickAvailableProvider_NeitherAvailableReturnsPreferred(t *testing.T) {
 func TestPickAvailableProvider_EmptyBinaryPathTreatedAsUnavailable(t *testing.T) {
 	always := func(string) error { return nil }
 	// Empty codexBinary means we can't probe it — must fall back to claude.
-	if got := PickAvailableProvider("codex", "claude", "", always); got != "claude" {
+	if got := pickBetween("codex", "claude", "", always); got != "claude" {
 		t.Fatalf("empty codex binary, claude available: got %q, want claude", got)
-	}
-}
-
-func TestPickAvailableProvider_UnknownPreferredReturnedVerbatim(t *testing.T) {
-	always := func(string) error { return nil }
-	if got := PickAvailableProvider("nonsense", "claude", "codex", always); got != "nonsense" {
-		t.Fatalf("unknown preferred should pass through: got %q", got)
 	}
 }
 
 func TestPickAvailableProvider_NilLookPathReturnsPreferred(t *testing.T) {
 	// Defensive: production callers always supply lookPath, but a nil
 	// callback shouldn't panic.
-	if got := PickAvailableProvider("codex", "claude", "codex", nil); got != "codex" {
+	if got := pickBetween("codex", "claude", "codex", nil); got != "codex" {
 		t.Fatalf("nil lookPath: got %q, want codex (pass-through)", got)
 	}
 }
@@ -845,17 +845,25 @@ func assertFlagValue(t *testing.T, args []string, flag string, want []string) {
 
 func TestRunAgyAndDecodeStructured(t *testing.T) {
 	var got CLISpec
+	// The store is decided as the run starts: the config is built while the
+	// login is in the file, and the run starts after it moved to the
+	// Keychain.
+	fileStorage := true
 	cfg := Config{
 		Provider: "agy",
 		Binary:   "agy",
 		Model:    DefaultAgyModel,
 		Effort:   "low",
+		AgyHome: func(context.Context) (agy.Home, error) {
+			return agy.CanonicalHome("", fileStorage)
+		},
 		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
 			got = spec
 			return CLIResult{Stdout: `{"result":"{\"title\":\"Add Antigravity textgen\"}"}`}, nil
 		},
 	}
 
+	fileStorage = false
 	out, err := RunAgy(context.Background(), cfg, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute)
 	if err != nil {
 		t.Fatalf("RunAgy: %v", err)
@@ -870,6 +878,31 @@ func TestRunAgyAndDecodeStructured(t *testing.T) {
 	}
 	if got.Env.Pins[provider.AgyDisableAutoUpdateEnv] != "1" {
 		t.Errorf("AGY_CLI_DISABLE_AUTO_UPDATE = %q, want 1", got.Env.Pins[provider.AgyDisableAutoUpdateEnv])
+	}
+	// The run reads the login from the store its home names: the Keychain
+	// here, so an inherited file-storage flag is cleared.
+	if !slices.Contains(got.Env.Clears, provider.AgyForceFileStorageEnv) {
+		t.Errorf("agy clears = %v, want the file-storage flag cleared", got.Env.Clears)
+	}
+	isolated, err := agy.IsolatedHome(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	named, err := agy.CanonicalHome(filepath.Join(t.TempDir(), ".gemini", "antigravity-cli"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, home := range map[string]agy.HomeSource{
+		"no source":                   nil,
+		"no home":                     agy.Home{}.Source(),
+		"an isolated home":            isolated.Source(),
+		"a home naming its directory": named.Source(),
+	} {
+		refused := cfg
+		refused.AgyHome = home
+		if _, err := RunAgy(context.Background(), refused, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute); err == nil {
+			t.Errorf("RunAgy ran with %s", name)
+		}
 	}
 
 	type titlePayload struct {

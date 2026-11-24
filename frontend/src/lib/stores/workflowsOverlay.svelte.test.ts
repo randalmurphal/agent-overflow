@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  closeWorkflowsPane,
   consumeWorkflowsOverlayEscape,
   getWorkflowArmedAction,
   getWorkflowProjectFilter,
@@ -31,8 +30,8 @@ import {
 } from './workflowsOverlay.svelte';
 import { appStorageGet, appStorageSet } from './appStorage';
 import { createPane, focusPane, focusedOpenTargetPane, resetPanesForTest } from './panes.svelte';
-import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import { installToolPanes, isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
+import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest, toolPaneIdFor } from './paneLayout.svelte';
+import { closeToolPane, installToolPanes, isToolOpen, resetToolPanesForTest } from './toolPanes.svelte';
 
 const STACK_KEY = 'workflows:overlay';
 
@@ -169,7 +168,7 @@ describe('workflows navigation', () => {
       openWorkflowsPane();
       setWorkflowsOverlayDialog('intake');
       setWorkflowArmedAction('discard:run-1');
-      closeWorkflowsPane();
+      closeToolPane(toolPaneIdFor('workflows'));
       expect(getWorkflowsOverlayDialog()).toBeNull();
       expect(getWorkflowArmedAction()).toBeNull();
     });

@@ -3,6 +3,7 @@ package provideraccountapp
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -102,6 +103,17 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 
 	m.emitUnauthenticatedIfNoLogin(r, info)
 	account, signIn, move, err := m.adoptCurrentProviderAccount(r.ProviderName, info, credential)
+	if errors.As(err, new(unresolvedLoginError)) {
+		// The provider answered for a login no saved account is known to
+		// own: its answer is returned, and nothing of it (the account, a
+		// reading, a catalog) is filed under a saved account.
+		reconcileMu.Unlock()
+		m.audit("left the canonical %s login unattributed: %v", r.ProviderName, err)
+		if r.Cache != nil {
+			r.Cache.Set(r.Key, info)
+		}
+		return info, nil
+	}
 	if err != nil {
 		reconcileMu.Unlock()
 		return provider.AccountInfo{}, err
@@ -196,7 +208,7 @@ func (m *Manager) emitUnauthenticatedIfNoLogin(r ProbeRequest, info provider.Acc
 // claudeIdentifier replaces a Claude probe's reported identity with the one
 // that belongs to credential: identifyClaudeCredential, or for a caller not
 // holding mu, identifyCanonicalClaudeCredential.
-type claudeIdentifier func(info provider.AccountInfo, credential []byte) (provider.AccountInfo, error)
+type claudeIdentifier func(ctx context.Context, info provider.AccountInfo, credential []byte) (provider.AccountInfo, error)
 
 // runStableAccountProbe pairs provider identity with one stable canonical
 // credential value. A provider may legitimately rotate credentials while its
@@ -258,13 +270,16 @@ func (m *Manager) runStableAccountProbe(
 			// its workspace id in the credential, and Claude's comes from the
 			// API for the credential's own access token.
 			if providerName == string(provider.Claude) {
-				info, err = identifyClaude(info, after.Bytes())
+				info, err = identifyClaude(m.context(), info, after.Bytes())
 				if err != nil {
 					return provider.AccountInfo{}, nil, err
 				}
 			}
 			if providerName == string(provider.Agy) && afterPresent {
-				info = m.identifyAgyCredential(start, info, after.Bytes())
+				info, err = m.identifyAgyCredential(start, info, after.Bytes())
+				if err != nil {
+					return provider.AccountInfo{}, nil, err
+				}
 			}
 			if !afterPresent {
 				return info, nil, nil

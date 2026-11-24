@@ -17,10 +17,9 @@ func TestInitStoresRepairsAppOwnedPermissions(t *testing.T) {
 	}
 	configRoot := t.TempDir()
 	// initStores builds the provider credential store from os.UserHomeDir(),
-	// and its startup prune deletes credential slots. Without this redirect
-	// the test sweeps the DEVELOPER'S real ~/.claude and ~/.codex saved
-	// logins (incident 2026-07-29: every `make go-test` silently destroyed
-	// the machine's saved provider accounts).
+	// and the boot writes and deletes credential slots under it. Without
+	// this redirect the test would act on the developer's real ~/.claude and
+	// ~/.codex saved logins.
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	t.Setenv("USERPROFILE", homeDir)

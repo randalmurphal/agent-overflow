@@ -41,11 +41,6 @@ func DataRootFor(checkout string) string {
 	return filepath.Join(os.TempDir(), DataRootPrefix+flattened)
 }
 
-// SoakDataRootFor is DataRootFor with the soak suffix.
-func SoakDataRootFor(checkout string) string {
-	return DataRootFor(checkout) + SoakSuffix
-}
-
 // DefaultDataRoot is DataRootFor the current working directory. An
 // unreadable cwd (a deleted checkout) degrades to the bare prefix rather
 // than failing: naming SOME isolated scratch directory is better than

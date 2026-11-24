@@ -100,7 +100,9 @@ func (s *Sides) OpenDiff(opts Options) *Diff {
 }
 
 // WorktreeSides compares HEAD (the empty tree before the first commit) with
-// a snapshot of everything uncommitted: the sides of OpenWorktreeDiff.
+// a snapshot of everything uncommitted: tracked changes plus
+// untracked-not-ignored files, as `git status` shows them. The snapshot
+// lives in a directory under tempRoot until the diff it opens is closed.
 func WorktreeSides(ctx context.Context, workspace, tempRoot string) (*Sides, error) {
 	snapshot, err := CaptureWorktree(ctx, workspace, tempRoot)
 	if err != nil {
@@ -109,8 +111,8 @@ func WorktreeSides(ctx context.Context, workspace, tempRoot string) (*Sides, err
 	return &Sides{workspace: workspace, env: snapshot.tree.env, old: snapshot.oldSide, new: snapshot.tree.oid, worktree: true, release: snapshot.Close}, nil
 }
 
-// WorktreeFilesSides is WorktreeSides limited to the given literal paths:
-// the sides of OpenWorktreeFilesDiff. Pass both paths of a rename.
+// WorktreeFilesSides is WorktreeSides limited to the given literal paths.
+// Pass both paths of a rename.
 func WorktreeFilesSides(ctx context.Context, workspace, tempRoot string, paths []string) (*Sides, error) {
 	if err := validatePaths(paths); err != nil {
 		return nil, err
@@ -124,7 +126,9 @@ func WorktreeFilesSides(ctx context.Context, workspace, tempRoot string, paths [
 }
 
 // BranchBaseSides compares the merge base of baseBranch and HEAD with a
-// snapshot of the worktree: the sides of OpenBranchBaseDiff.
+// snapshot of the worktree: the patch a PR from HEAD plus the current
+// worktree would carry onto baseBranch, committed, staged, unstaged and
+// untracked-not-ignored changes in one stream.
 func BranchBaseSides(ctx context.Context, workspace, tempRoot, baseBranch string) (*Sides, error) {
 	base, err := resolveBaseRef(ctx, workspace, baseBranch)
 	if err != nil {

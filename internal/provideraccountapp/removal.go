@@ -81,6 +81,12 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 				// still validates for real.
 				usable = true
 			}
+			// A slot holding another account's login is passed over like a
+			// husk: refusing the removal would lock the selected account in
+			// place for an unrelated card's sake.
+			if usable && m.savedSlotOfAnotherAccountLocked(providerName, candidate) {
+				usable = false
+			}
 			if usable {
 				replacement = candidate
 				break
@@ -126,7 +132,7 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 			hasActiveSnapshot = true
 			savedSnapshot = activeSnapshot
 			hasSavedSnapshot = true
-		case errors.Is(err, errActiveCredentialSignedOut):
+		case errors.Is(err, errActiveCredentialSignedOut), errors.Is(err, errActiveCredentialUnattributed):
 			// The CLI blanked the canonical credential after a failed refresh.
 			// There is nothing worth preserving and the husk must not reach any
 			// slot; the removal itself proceeds — refusing here was the
@@ -210,12 +216,9 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 	binary := m.providerBinaryPath(providerName)
 	if removingActive {
 		if replacement.ID == "" {
-			delete(m.fingerprints, providerName)
+			m.forgetCanonicalLocked(providerName)
 		} else {
-			m.rememberProviderCredentialFingerprintLocked(
-				providerName,
-				replacementCredential.Bytes(),
-			)
+			m.recordCanonicalLocked(providerName, replacementCredential.Bytes())
 		}
 	}
 	generation := m.store.Generation(providerName)
@@ -223,6 +226,12 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 	accountLocked = false
 	m.invalidateProviderAccountProbe(providerName, binary)
 	m.forgetRateLimits(providerName, accountID)
+	// A rotation kept for this account's next sweep ends with the account.
+	// The removal stands either way; a failure leaves the entry for a later
+	// sweep and is recorded where a person can find it.
+	if err := m.credentials.ForgetAccountEphemerals(providerName, accountID, time.Now()); err != nil {
+		m.audit("could not forget the kept temporary %s homes of removed account %s: %v", providerName, accountID, err)
+	}
 	// BEFORE the branch, not inside it: removing an account that was not the
 	// active one took every early return below and published nothing at all,
 	// so the card stayed on every other client's Settings screen until reload.
@@ -244,4 +253,12 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 	)
 	m.applySelection(providerName, generation, accountID, replacement.ID)
 	return nil
+}
+
+// savedSlotOfAnotherAccountLocked reports that account's saved slot holds
+// a login savedLoginOfAnotherAccount refuses. A slot that cannot be read
+// is no verdict here; its activation reads it again. The caller holds mu.
+func (m *Manager) savedSlotOfAnotherAccountLocked(providerName string, account provideraccounts.Account) bool {
+	slot, err := m.credentials.ReadCredentialSnapshot(providerName, account.ID, false)
+	return err == nil && savedLoginOfAnotherAccount(providerName, account, slot.Bytes()) != nil
 }

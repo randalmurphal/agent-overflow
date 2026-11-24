@@ -240,14 +240,6 @@ func (l *rateLimiter) retryAfter() time.Duration {
 	return wait
 }
 
-// tracked reports how many peers hold state. For tests, and for the bound
-// this type promises.
-func (l *rateLimiter) tracked() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.peers)
-}
-
 // peerKey reduces a RemoteAddr to the host that identifies the peer. The
 // port changes per connection, so keying on the whole address would give
 // every request its own bucket and limit nothing at all.

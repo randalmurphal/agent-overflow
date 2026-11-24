@@ -26,9 +26,7 @@ func failCheckoutHook(t *testing.T, repo string) {
 		t.Skip("shell hook is unix-only")
 	}
 	hooks := t.TempDir()
-	if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte("#!/bin/sh\necho injected checkout failure >&2\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(hooks, "post-checkout"), []byte("#!/bin/sh\necho injected checkout failure >&2\nexit 1\n"), 0o755)
 	testutil.RunGit(t, repo, "config", "core.hooksPath", hooks)
 }
 

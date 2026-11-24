@@ -14,14 +14,12 @@
 import { appStorageGet, appStorageSet } from './appStorage';
 import {
   addToolPaneClosedObserver,
-  closeToolPane,
   focusedToolKind,
   openTool,
   registerToolDetailProbe,
   toggleTool,
   type OpenToolOptions,
 } from './toolPanes.svelte';
-import { toolPaneIdFor } from './paneLayout.svelte';
 
 const STACK_KEY = 'workflows:overlay';
 
@@ -134,10 +132,6 @@ export function getWorkflowsOverlayRunId(): string {
 /** Open or reveal the workflows pane (toolPanes.svelte#openTool). */
 export function openWorkflowsPane(options: OpenToolOptions = {}): void {
   openTool('workflows', options);
-}
-
-export function closeWorkflowsPane(): void {
-  closeToolPane(toolPaneIdFor('workflows'));
 }
 
 /** `workflows.toggle`: open or reveal the pane, or close it when focused. */

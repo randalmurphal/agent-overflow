@@ -164,7 +164,7 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			}
 		}, func(r *Router) bool { _, ok := r.PeekSubagentProgress(threadID, launch.ID); return ok }},
 		{"codex live tray", "codex execution tools", func(t *testing.T, r *Router, token string) {
-			if err := r.startCodexExecutionTools(launch, 0, token); err != nil {
+			if err := r.startCodexExecutionTools(launch, "", 0, token); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { _, ok := r.PeekSubagentProgress(threadID, launch.ID); return ok }},
@@ -431,7 +431,7 @@ func TestInFlightRetiredChildRowDoesNotCountTowardTheReplacement(t *testing.T) {
 	createTestThread(t, st, threadID)
 	r.MarkThreadActive(threadID, "session-a")
 	launch := store.Item{ID: "launch-1", ThreadID: threadID, Kind: itemKindToolCall, TurnIndex: 1}
-	if err := r.startCodexExecutionTools(launch, 0, "session-a"); err != nil {
+	if err := r.startCodexExecutionTools(launch, "", 0, "session-a"); err != nil {
 		t.Fatal(err)
 	}
 	r.MarkThreadActive(threadID, "session-b")
@@ -519,7 +519,7 @@ func TestRetiredChildRowStaysInHistoryAndTheReplacementCountsItsOwn(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.startCodexExecutionTools(launch, launch.ItemIndex, "session-a"); err != nil {
+	if err := r.startCodexExecutionTools(launch, "", launch.ItemIndex, "session-a"); err != nil {
 		t.Fatal(err)
 	}
 	r.MarkThreadActive(threadID, "session-b")
@@ -535,7 +535,7 @@ func TestRetiredChildRowStaysInHistoryAndTheReplacementCountsItsOwn(t *testing.T
 		t.Fatalf("the retired frame's child row counted: %+v", p)
 	}
 	// B starts its own execution of the launch after A's row.
-	if err := r.startCodexExecutionTools(launch, childA.ItemIndex, "session-b"); err != nil {
+	if err := r.startCodexExecutionTools(launch, "", childA.ItemIndex, "session-b"); err != nil {
 		t.Fatal(err)
 	}
 	if p, _ := r.PeekSubagentProgress(threadID, launch.ID); p.ToolUses != 0 {

@@ -179,39 +179,32 @@ func NewCredentialsWithFileKeychain(userHome string, policy Policy) (*Credential
 	return credentials, nil
 }
 
-// AgyShouldForceFileStorage reports whether launching `agy` against appDataDir
-// should set AGY_ACP_FORCE_FILE_STORAGE=1 so the subprocess reads the exact
-// same credential source that this Credentials store manages.
-//
-// When this store was constructed with file-backed credentials (e.g. `serve`,
-// harness mode, Linux/WSL, or tests), it returns true unconditionally (even
-// when the token file does not yet exist) so `agy` never falls back to the
-// host macOS desktop Keychain.
-func (c *Credentials) AgyShouldForceFileStorage(appDataDir string) bool {
-	if c != nil {
-		if _, isFile := c.agyKeychain.(fileAgyKeychain); isFile {
-			return true
+// AgyCanonicalFileStorage reports whether the canonical Antigravity login
+// this store reads and writes is the file under the canonical home (true) or
+// the macOS Keychain item (false). An agy process launched for the canonical
+// login must use the same store (agy.CanonicalHome); a failed Keychain query
+// is returned, never answered as either store.
+func (c *Credentials) AgyCanonicalFileStorage(ctx context.Context) (bool, error) {
+	keychain, ok := c.keychainFor("agy")
+	if !ok {
+		return true, nil
+	}
+	switch backend := keychain.(type) {
+	case fileAgyKeychain:
+		return true, nil
+	case securityAgyKeychain:
+		paths, err := c.Paths("agy")
+		if err != nil {
+			return false, err
 		}
-		if strings.TrimSpace(appDataDir) == "" && strings.TrimSpace(c.userHome) != "" {
-			appDataDir = filepath.Join(c.userHome, ".gemini", "antigravity-cli")
+		fileStorage, err := backend.canonicalFileStorage(ctx, paths.SharedHome, agyKeychainQueryTimeout)
+		if err != nil {
+			return false, fmt.Errorf("provideraccounts: query the macOS Keychain for the Antigravity login: %w", err)
 		}
+		return fileStorage, nil
+	default:
+		return false, fmt.Errorf("provideraccounts: unknown Antigravity credential backend %T", keychain)
 	}
-	if strings.TrimSpace(appDataDir) == "" {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(appDataDir, agyCredentialFileName))
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if c == nil {
-		return AgyShouldForceFileStorage(appDataDir)
-	}
-	if sec, isSec := c.agyKeychain.(securityAgyKeychain); isSec && runtime.GOOS == "darwin" {
-		if present, kcErr := sec.itemPresent(); kcErr == nil && present {
-			return false
-		}
-	}
-	return true
 }
 
 func (c *Credentials) keychainFor(providerName string) (providerKeychain, bool) {
@@ -688,6 +681,21 @@ func releaseSlot(lock *os.File) error {
 	return nil
 }
 
+// chainAdvances reports that next sits strictly later than current on one
+// account's rotation chain. Bytes without an ordering signal never
+// advance anything.
+func (c *Credentials) chainAdvances(providerName string, current, next []byte) bool {
+	if c.policy.ChainPosition == nil {
+		return false
+	}
+	currentPosition, ok := c.policy.ChainPosition(providerName, current)
+	if !ok {
+		return false
+	}
+	nextPosition, ok := c.policy.ChainPosition(providerName, next)
+	return ok && nextPosition > currentPosition
+}
+
 // ReplaceAccountCredential writes data into a slot only while the slot still
 // holds expected, the credential data was derived from. It reports whether
 // the slot holds data afterwards; false means the slot moved on (a sign-in,
@@ -743,35 +751,6 @@ func (c *Credentials) WriteAccountCredential(providerName, accountID string, dat
 	return c.writeCredential(providerName, accountID, false, data)
 }
 
-// CommitSelectedCredential publishes a refreshed credential to the canonical
-// native store before updating its saved account slot. Canonical-first ordering
-// keeps the active account usable if the secondary slot write fails; a later
-// reconciliation can repair the slot from canonical state.
-//
-// The slot is replaced only while it still holds expectedSlot, what the
-// caller read before it refreshed: once the canonical credential is
-// published another process can rotate it further and switch away, saving
-// the later credential into this slot, and that is not to be rewound. A slot
-// that moved on, or is gone, is left as it stands.
-func (c *Credentials) CommitSelectedCredential(
-	providerName string,
-	accountID string,
-	expectedSlot []byte,
-	data []byte,
-) error {
-	if err := c.writeActiveCredential(providerName, data); err != nil {
-		return fmt.Errorf("provideraccounts: activate refreshed %s credentials: %w", providerName, err)
-	}
-	if _, err := c.ReplaceAccountCredential(providerName, accountID, expectedSlot, data); err != nil {
-		return fmt.Errorf(
-			"provideraccounts: save refreshed %s account after canonical activation: %w",
-			providerName,
-			err,
-		)
-	}
-	return nil
-}
-
 func (c *Credentials) writeActiveCredential(providerName string, data []byte) error {
 	if c.credentialSignedOut(providerName, data) {
 		return fmt.Errorf("%w (%s)", ErrSignedOutCredential, providerName)
@@ -796,6 +775,49 @@ func (c *Credentials) storeActiveCredential(providerName string, data []byte) er
 		return err
 	}
 	defer release()
+	return c.storeActiveCredentialLocked(providerName, paths, data)
+}
+
+// replaceActiveCredentialHolding writes data as the canonical credential only
+// while the canonical credential still holds the refresh token token
+// fingerprints, and reports whether it wrote. The check and the write are
+// one operation under the provider's credential-write locks: for Claude the
+// CLI's own, so a sign-in or a refresh lands wholly before the check or after
+// the write. Codex takes no lock AO can share, so a native Codex writer
+// cannot be excluded: its check and write run back to back, and a sign-in
+// that completes between them is replaced.
+func (c *Credentials) replaceActiveCredentialHolding(providerName, token string, data []byte) (bool, error) {
+	if c.credentialSignedOut(providerName, data) {
+		return false, fmt.Errorf("%w (%s)", ErrSignedOutCredential, providerName)
+	}
+	paths, err := c.Paths(providerName)
+	if err != nil {
+		return false, err
+	}
+	release, err := c.lockCanonicalCredentialWrite(providerName, paths.SharedHome)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	current, err := c.readCredentialAt(providerName, paths.SharedHome, true)
+	if IsCredentialMissing(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("provideraccounts: inspect canonical %s credential: %w", providerName, err)
+	}
+	if !c.holdsConsumed(providerName, current.Bytes(), token) {
+		return false, nil
+	}
+	if err := c.storeActiveCredentialLocked(providerName, paths, data); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// storeActiveCredentialLocked is the canonical write itself, for a caller
+// holding the provider's credential-write locks.
+func (c *Credentials) storeActiveCredentialLocked(providerName string, paths ProviderPaths, data []byte) error {
 	if _, ok := c.keychainFor(providerName); !ok {
 		activePath := filepath.Join(paths.SharedHome, paths.CredentialFile)
 		if info, statErr := os.Lstat(activePath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {

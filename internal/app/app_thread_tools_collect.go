@@ -4,6 +4,7 @@ import (
 	"agent-overflow/internal/attachedbackends"
 	"context"
 	"errors"
+	"math"
 	"slices"
 	"time"
 
@@ -261,6 +262,10 @@ func (a *App) threadPollDelay(token string) time.Duration {
 	}
 	return normal
 }
+
+// MaxThreadRequestPoll is the longest IsolationConfig.ThreadRequestPoll:
+// threadLatePollDelay and the owner peer's retry double it.
+const MaxThreadRequestPoll = time.Duration(math.MaxInt64 / 2)
 
 // threadPollNormal is threadPollNormalDelay, or the shorter cadence an
 // isolated test boot set (IsolationConfig.ThreadRequestPoll).

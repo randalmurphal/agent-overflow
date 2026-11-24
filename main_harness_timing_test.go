@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"regexp"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	appservice "agent-overflow/internal/app"
 )
 
 func TestParseHarnessTiming(t *testing.T) {
@@ -39,6 +42,62 @@ func TestParseHarnessTiming(t *testing.T) {
 			t.Errorf("parseHarnessTiming(%q) accepted a malformed value", bad)
 		}
 	}
+}
+
+// Each timer whose destination bounds it takes the ends of what the
+// destination holds and refuses one step past either, naming the timer: a
+// page timer is whole milliseconds up to setTimeout's longest, the wake
+// floor whole seconds, and a timer the App doubles or multiplies at most
+// what that arithmetic fits.
+func TestParseHarnessTimingRefusesWhatTheDestinationCannotHold(t *testing.T) {
+	bounds := map[string]struct{ max, unit time.Duration }{
+		"thread-poll":        {max: appservice.MaxThreadRequestPoll},
+		"pr-update":          {max: appservice.MaxPRUpdateInterval},
+		"pr-ci-live":         {max: appservice.MaxPRCILiveInterval},
+		"merged-pr-poll":     {max: appservice.MaxMergedPRPollInterval},
+		"wake-retry":         {max: appservice.MaxThreadWakeRetryBase},
+		"wake-floor":         {unit: time.Second},
+		"unreachable-settle": {max: (1<<31 - 1) * time.Millisecond, unit: time.Millisecond},
+		"agent-row-linger":   {max: (1<<31 - 1) * time.Millisecond, unit: time.Millisecond},
+	}
+	for _, timer := range harnessTimers {
+		want := bounds[timer.name]
+		if timer.max != want.max || timer.unit != want.unit {
+			t.Errorf("%s: bounded at most %s in units of %s, want %s and %s", timer.name, timer.max, timer.unit, want.max, want.unit)
+		}
+	}
+	refused := func(entry, name string) {
+		t.Helper()
+		_, err := parseHarnessTiming(entry)
+		if err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("parseHarnessTiming(%q) = %v, want a refusal naming %s", entry, err, name)
+		}
+	}
+	taken := func(entry string) {
+		t.Helper()
+		if _, err := parseHarnessTiming(entry); err != nil {
+			t.Errorf("parseHarnessTiming(%q): %v", entry, err)
+		}
+	}
+	for name, bound := range bounds {
+		unit := max(bound.unit, time.Nanosecond)
+		taken(fmt.Sprintf("%s=%dns", name, unit))
+		if bound.unit > 0 {
+			refused(fmt.Sprintf("%s=%dns", name, bound.unit-1), name)
+			refused(fmt.Sprintf("%s=%dns", name, bound.unit+bound.unit/2), name)
+		}
+		if bound.max > 0 {
+			taken(fmt.Sprintf("%s=%dns", name, bound.max))
+			refused(fmt.Sprintf("%s=%dns", name, bound.max+unit), name)
+		}
+	}
+	// A page timer reaches the manifest in exact milliseconds.
+	got, err := parseHarnessTiming("unreachable-settle=2147483647ms,agent-row-linger=1ms")
+	if err != nil || got.Frontend["unreachable-settle"] != 1<<31-1 || got.Frontend["agent-row-linger"] != 1 {
+		t.Fatalf("page timers = %v, %v; want 2147483647 and 1", got.Frontend, err)
+	}
+	refused("unreachable-settle=600h", "unreachable-settle")
+	refused("wake-retry=600000h", "wake-retry")
 }
 
 // TestHarnessTimingOnlyInHarnessBoot: the shortened intervals are a test
@@ -140,7 +199,8 @@ var harnessTimerOwners = map[string]string{
 // isolationConfig), each harness timer reaches the owner its name means and
 // nothing else; every name has a meaning and every meaning a name.
 func TestEveryHarnessTimerReachesItsOwner(t *testing.T) {
-	const sentinel = 7 * time.Millisecond
+	// Whole seconds, so every timer takes it, the wake floor included.
+	const sentinel = 7 * time.Second
 	reached := func(timing harnessTiming) []string {
 		var set []string
 		if timing.PairingProbe == sentinel {
@@ -170,7 +230,7 @@ func TestEveryHarnessTimerReachesItsOwner(t *testing.T) {
 			t.Errorf("%s has no owner in harnessTimerOwners", timer.name)
 			continue
 		}
-		timing, err := parseHarnessTiming(timer.name + "=7ms")
+		timing, err := parseHarnessTiming(timer.name + "=" + sentinel.String())
 		if err != nil {
 			t.Fatalf("%s: %v", timer.name, err)
 		}

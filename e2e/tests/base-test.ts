@@ -3,11 +3,14 @@
 // assert against. The gate's rules: a page sleep throws, and an event watch
 // ends with the test that made it. tests/fixtures.ts extends it with the
 // harness backend and the page-error and CSP checks; a spec that launches its
-// own harnesses imports this one. The wait scan (src/wait-scan.ts) fails a
-// spec that imports `test` from '@playwright/test' instead.
+// own harnesses imports this one. The wait scan (src/wait-scan.ts) fails any
+// other suite file that reaches Playwright's own `test`, so this file hands
+// the harness the running test's TestInfo.
 import { test as base, expect, type BrowserContext, type Page } from '@playwright/test';
-import { openEventWatchScope } from '../src/harness.js';
+import { installTestInfoReader, openEventWatchScope } from '../src/harness.js';
 import { STALL_CAPTURE_TIMEOUT_MS, StalledPageCapture, StalledPageRegistry } from '../src/page-stall.js';
+
+installTestInfoReader(() => base.info());
 
 /** Makes `page.waitForTimeout` throw with the reason and the alternatives. */
 function banPageSleep(page: Page): void {
@@ -21,7 +24,10 @@ function banPageSleep(page: Page): void {
 }
 
 interface TestFixtures {
-  /** Ends every HarnessApp.watchEvents watch the test made, at its end. */
+  /**
+   * Ends every HarnessApp.watchEvents watch and cancels every
+   * HarnessApp.waitForEvent wait the test made, at its end.
+   */
   eventWatches: void;
   /**
    * When the test fails, attaches a `stalled page` report for each page open
@@ -44,14 +50,20 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   ],
   // A watch counts events for the test that made it; one the test never
   // asserted on, or abandoned at a failure, ends here rather than counting
-  // into the next test.
+  // into the next test. A wait still pending here was abandoned: by a
+  // failure before its await, which stands as the test's error, or by a
+  // test that never awaited it, which fails here.
   eventWatches: [
-    async ({}, use) => {
-      const end = openEventWatchScope();
+    async ({}, use, testInfo) => {
+      const scope = openEventWatchScope();
+      let pending: string[] = [];
       try {
         await use();
       } finally {
-        end();
+        pending = scope.end();
+      }
+      if (pending.length > 0 && testInfo.errors.length === 0) {
+        throw new Error(`the test ended without awaiting its event wait on ${pending.join(', ')}`);
       }
     },
     { auto: true, box: true },

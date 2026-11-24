@@ -217,7 +217,8 @@ function withKeyDatabase(
   return keyInFlight;
 }
 
-/** Drop the stored keypair. Only for tests and an explicit re-enrolment. */
+/** Drop the stored keypair. Tests only: re-pairing keeps the existing key
+ * (`enrollDeviceKey`). */
 export async function clearDeviceKey(): Promise<void> {
   if (typeof indexedDB === 'undefined') return;
   await new Promise<void>((resolve) => {

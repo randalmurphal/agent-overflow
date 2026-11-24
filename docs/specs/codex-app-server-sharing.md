@@ -254,7 +254,7 @@ busy thread would keep every idle thread on its process from being reaped.
 
 Session-scoped, unchanged in meaning: interrupt, End Session, background
 terminals, approvals, the `ao` credential, AO's MCP registrations,
-`provider:session_live`, the prompt-changed banner, the idle reaper's
+the prompt-changed banner, the idle reaper's
 decision, account gating per thread, triage's session token.
 
 ## Codex pool policy

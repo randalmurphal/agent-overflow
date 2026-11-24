@@ -16,6 +16,7 @@ import (
 
 	"agent-overflow/internal/harness/forgefake"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // forgeOriginDataRoot is a data root as the boot hands it over: canonical,
@@ -74,9 +75,7 @@ func forgeOriginPush(t *testing.T, work, bare, forge string, number int) (func(a
 	if err := os.WriteFile(filepath.Join(work, "a.go"), []byte("one\ntwo\nthree\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(work, "run.sh"), []byte("echo\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(work, "run.sh"), []byte("echo\n"), 0o755)
 	run(work, "add", "-A")
 	run(work, "commit", "--quiet", "-m", "init")
 	run(work, "checkout", "--quiet", "-b", "feature")

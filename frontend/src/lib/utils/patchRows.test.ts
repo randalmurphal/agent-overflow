@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPatchDisplayRows, parsePatchFiles } from './patchFiles';
+import { parsePatchFiles } from './patchFiles';
 import { parseReviewFiles } from './patchParser';
 import {
   anchorLines,
@@ -11,6 +11,7 @@ import {
   RowWalker,
 } from './patchRows';
 import { MIXED_PATCH } from '../../test/helpers/patchFixtures';
+import { buildPatchDisplayRows } from '../../test/helpers/patchDisplayRows';
 
 describe('split-view halves of a context row', () => {
   // Old 1..3, new 1..3: 1 and 3 unchanged, 2 replaced.

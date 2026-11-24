@@ -1461,8 +1461,8 @@ svg[data-mermaid-svg] .labelBox {
  * over 2s. `animate-pulse` is redefined in @theme to run these with
  * steps(8, jump-none), which lands 8 opacity values on each 1s half —
  * 125ms per value, the same slot grid every other ambient indicator
- * uses. Mirrors pulseOpacityAt() in utils/ambientTicker.ts, and
- * ambientCss.browser.test.ts samples this rule against it.
+ * uses. ambientCss.browser.test.ts samples this rule against its table
+ * of the 16 slot values.
  *
  * .ambient-pulse-s2 / -s4 are Indicator.svelte's staggers for the three
  * backgrounded dots, one and two slots apart so they never breathe in
@@ -1488,7 +1488,7 @@ svg[data-mermaid-svg] .labelBox {
 
 /*
  * SteppedSpinner's rotation: one 30° spoke advance per 125ms slot, 12
- * spokes per 1.5s revolution. Mirrors spinAngleAt(). transform is
+ * spokes per 1.5s revolution (ambientCss.browser.test.ts). transform is
  * compositable, so this is free on the main thread; the discretization
  * is what keeps a spoked glyph reading as design rather than as a
  * broken smooth spin. Components drop the class (low power) or the
@@ -1521,7 +1521,7 @@ svg[data-mermaid-svg] .labelBox {
  * working, unchanged from the JS ticker that drove it before, but on a
  * compositable property so it costs no main-thread work at all.
  *
- * Mirrors ledOpacitiesAt() exactly. The staggers are negative-
+ * ambientCss.browser.test.ts samples it slot by slot. The staggers are negative-
  * equivalent lags (-500ms ≡ +250ms at a 750ms period) so no LED sits
  * un-animated through its first cycle.
  *

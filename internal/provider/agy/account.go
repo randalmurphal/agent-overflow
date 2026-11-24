@@ -203,13 +203,14 @@ func identifyAccountAtURL(
 // Opening and closing an ephemeral ACP session also lets agy refresh an expired
 // access token in the target home.
 type ProbeConfig struct {
-	Binary        string
-	WorkDir       string
-	GeminiDir     string
-	AppDataSubdir string
-	Env           provider.EnvInput
-	Reaper        procutil.Reaper
-	ForceFileAuth bool
+	Binary  string
+	WorkDir string
+	// Home decides the canonical home the account manager reads, or answers
+	// the isolated home of a sign-in or a saved login. It runs inside the
+	// probe's time limit.
+	Home   HomeSource
+	Env    provider.EnvInput
+	Reaper procutil.Reaper
 }
 
 // ProbeAccount dials an ephemeral `agy acp` process, opens and closes a session
@@ -228,16 +229,23 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		workDir = "."
 	}
 
-	launchEnv := LaunchEnv(cfg.Env)
-	if cfg.ForceFileAuth || strings.TrimSpace(cfg.GeminiDir) != "" {
-		launchEnv = WithFileStorage(launchEnv)
+	if cfg.Home == nil {
+		return provider.AccountInfo{}, errors.New("agy: start account probe: launch without a home")
+	}
+	home, err := cfg.Home(probeCtx)
+	if err != nil {
+		return provider.AccountInfo{}, fmt.Errorf("agy: start account probe: %w", err)
+	}
+	launch, err := home.Launch(cfg.Env)
+	if err != nil {
+		return provider.AccountInfo{}, fmt.Errorf("agy: start account probe: %w", err)
 	}
 
 	conn, err := acp.Dial(probeCtx, acp.ConnConfig{
 		Binary:       binary,
-		Args:         LaunchArgs(cfg.GeminiDir, cfg.AppDataSubdir),
+		Args:         launch.ACPArgs(),
 		WorkDir:      workDir,
-		Env:          launchEnv,
+		Env:          launch.Env,
 		Reaper:       cfg.Reaper,
 		ThreadID:     "agy-account-probe",
 		ProviderName: string(provider.Agy),

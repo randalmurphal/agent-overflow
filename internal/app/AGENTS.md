@@ -78,8 +78,7 @@ operation whose owning package defines the outcome of a cut at every point
 and tests it. List it in
 `callerBoundMethods` with what its context reaches; when in doubt, do not.
 Work past a method's first effect that must also survive shutdown runs on
-`context.WithoutCancel(ctx)`, or `ctxutil.Detach` onto its owner's lifetime,
-under its own timeout.
+`context.WithoutCancel(ctx)` under its own timeout.
 
 Per-screen settings must be obtained through `settingsCaller(ctx)` so bucket
 and device class come from one derivation. Backend work for the local screen

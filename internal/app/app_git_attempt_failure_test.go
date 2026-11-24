@@ -13,6 +13,7 @@ import (
 
 	"agent-overflow/internal/harness/forgefake"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/transport"
 )
 
@@ -34,9 +35,7 @@ func failHook(t *testing.T, workspace, name string) {
 	if err := os.MkdirAll(hooks, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(hooks, name), []byte("#!/bin/sh\necho '"+gitFailureCause+"' >&2\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, filepath.Join(hooks, name), []byte("#!/bin/sh\necho '"+gitFailureCause+"' >&2\nexit 1\n"), 0o755)
 }
 
 // appDispatch calls app's bound methods the way a client does, through

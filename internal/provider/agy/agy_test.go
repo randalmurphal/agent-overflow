@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/acp"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/triage"
 )
 
@@ -282,10 +283,8 @@ for line in sys.stdin:
         send({"jsonrpc":"2.0","id":mid,"result":{}})
 `
 	bin := filepath.Join(t.TempDir(), "fake-agy-catalog.py")
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	models, err := ProbeCatalog(context.Background(), bin, t.TempDir(), provider.EnvInput{}, procutiltest.Reaper())
+	mockexec.WriteFile(t, bin, []byte(script), 0o755)
+	models, err := ProbeCatalog(context.Background(), bin, t.TempDir(), canonical(t, "", true).Source(), provider.EnvInput{}, procutiltest.Reaper())
 	if err != nil {
 		t.Fatalf("ProbeCatalog: %v", err)
 	}

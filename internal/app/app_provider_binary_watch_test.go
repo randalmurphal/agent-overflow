@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // stubProviderBinaryDetect installs the watcher's version-probe seam for the
@@ -40,9 +41,7 @@ func stubProviderBinaryDetect(t *testing.T, versions func(providerName string) s
 
 func writeProviderBinaryFile(t *testing.T, path, body string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	mockexec.WriteFile(t, path, []byte("#!/bin/sh\n"+body+"\n"), 0o755)
 	// Stat identity is (path, size, mtime); a rewrite inside the same clock
 	// tick would otherwise be invisible to the watcher for reasons that
 	// have nothing to do with the code under test.
@@ -620,9 +619,7 @@ func TestProviderBinaryWatchFollowsTheNpmWrappersNativeBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacement := f.native + ".new"
-	if err := os.WriteFile(replacement, body, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteFile(t, replacement, body, 0o755)
 	if err := os.Chtimes(replacement, before.ModTime(), before.ModTime()); err != nil {
 		t.Fatal(err)
 	}

@@ -427,7 +427,3 @@ export function createThreadDraftPlaceholder(
     canAdoptOpenedTerminal,
   };
 }
-
-export type ThreadDraftPlaceholder = ReturnType<
-  typeof createThreadDraftPlaceholder
->;

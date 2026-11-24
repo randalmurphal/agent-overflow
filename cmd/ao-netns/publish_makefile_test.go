@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/testutil/reporoot"
 )
 
@@ -52,9 +53,7 @@ fi
 exec ` + realMv + ` "$@"
 `
 	for name, script := range map[string]string{"go": fakeGo, "mv": fakeMv} {
-		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		mockexec.Write(t, filepath.Join(fakeBin, name), script)
 	}
 	// Read here, not included by path, so the test cache sees the file.
 	macro, err := os.ReadFile(reporoot.Path(t, "build/go-build-tool.mk"))

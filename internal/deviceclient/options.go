@@ -15,7 +15,8 @@ type options struct {
 	probe      time.Duration
 	redemption func() (time.Duration, error)
 	lifetime   context.Context
-	// roundTrip wraps the credential transport (withRoundTrip).
+	// roundTrip wraps the credential transport; set by this package's tests
+	// (withRoundTrip).
 	roundTrip func(http.RoundTripper) http.RoundTripper
 }
 type Option func(*options)
@@ -42,12 +43,6 @@ func WithProbeInterval(interval time.Duration) Option {
 // past pinTimeout.
 func WithRedemptionBound(bound func() (time.Duration, error)) Option {
 	return func(o *options) { o.redemption = bound }
-}
-
-// withRoundTrip wraps the credential transport, so this package's tests can
-// read the deadline each exchange is sent with.
-func withRoundTrip(wrap func(http.RoundTripper) http.RoundTripper) Option {
-	return func(o *options) { o.roundTrip = wrap }
 }
 
 // WithLifetime is the owner's lifetime. When it ends, a rotation in flight

@@ -103,6 +103,11 @@ var (
 	// front of the inherited PATH. It has no handle, so no spawn can pin,
 	// default or clear it beside the prefix.
 	_ = reserve("", pathName, "PATH is assembled by Agent Overflow (the bundled `agent-overflow` CLI directory is prepended to the inherited PATH for every session); point at a different CLI with the provider's binary-path setting instead")
+	// HOME is not set by Agent Overflow: every provider process inherits the
+	// process HOME, which is the home the account manager reads credentials
+	// under. A custom HOME would move the CLI's login and data and not the
+	// manager's, so it has no handle and only the refusal.
+	_ = reserve("", "HOME", "the provider CLI reads its login and data from a folder under HOME, and Agent Overflow manages the ones under your own home folder, so another HOME here would make the CLI use a login and data the app does not show")
 )
 
 // Claude and claude-tui.
@@ -151,12 +156,16 @@ var (
 	CodexReleaseEnv = reserve("codex", "CODEX_RELEASE", "")
 )
 
-// Antigravity.
+// Antigravity. agy.Home.Launch, the one builder of every agy launch that
+// reads the login, sets or clears the home and store variables: the home
+// variables are always cleared, and the store flag follows the store the
+// account manager reads, with SSH_CONNECTION set beside it.
 var (
 	AgyGeminiHomeEnv         = reserve("agy", "GEMINI_HOME", "Agent Overflow manages Antigravity's home isolation")
+	AgyAppDataDirEnv         = reserve("agy", "AGY_APP_DATA_DIR", "Agent Overflow manages Antigravity's app data directory")
 	AgyForceFileStorageEnv   = reserve("agy", "AGY_ACP_FORCE_FILE_STORAGE", "Agent Overflow controls Antigravity's credential storage isolation")
 	AgyDisableAutoUpdateEnv  = reserve("agy", "AGY_CLI_DISABLE_AUTO_UPDATE", "Agent Overflow pins this so background auto-updates do not replace the running ACP server mid-session")
-	AgySSHConnectionEnv      = reserve("agy", "SSH_CONNECTION", "")
+	AgySSHConnectionEnv      = reserve("agy", "SSH_CONNECTION", "Agent Overflow sets this with Antigravity's file credential storage on every launch that uses it")
 	AgyAmbientCredentialEnvs = []ReservedEnv{
 		reserve("agy", "GEMINI_API_KEY", ""),
 		reserve("agy", "GOOGLE_API_KEY", ""),
@@ -169,18 +178,32 @@ var (
 	}
 )
 
+// EnvRefusal is why the settings layer refuses one name in a provider's
+// custom environment.
+type EnvRefusal struct {
+	// Name is the table's spelling of the refused name, or "" when the name
+	// is refused for carrying ReservedEnvPrefix.
+	Name   string
+	Reason string
+}
+
+// MaxRefusedEnvNameLength bounds the name of every row with a refusal, so a
+// sentence that names refused variables, such as settings' notice of the
+// reserved variables a settings file still holds, stays short.
+const MaxRefusedEnvNameLength = 40
+
 // ReservedEnvRefusal reports why the settings layer refuses name in the
 // custom environment stored under providerKey ("claude", "codex" or "agy").
 // Lookup is case-insensitive: settings refuses a reserved name in any case.
-func ReservedEnvRefusal(providerKey, name string) (reason string, refused bool) {
+func ReservedEnvRefusal(providerKey, name string) (EnvRefusal, bool) {
 	upper := strings.ToUpper(strings.TrimSpace(name))
 	if strings.HasPrefix(upper, ReservedEnvPrefix) {
-		return reservedPrefixRefusal, true
+		return EnvRefusal{Reason: reservedPrefixRefusal}, true
 	}
 	for _, entry := range reservedEnvTable {
 		if entry.refusal != "" && entry.name == upper && (entry.provider == "" || entry.provider == providerKey) {
-			return entry.refusal, true
+			return EnvRefusal{Name: entry.name, Reason: entry.refusal}, true
 		}
 	}
-	return "", false
+	return EnvRefusal{}, false
 }

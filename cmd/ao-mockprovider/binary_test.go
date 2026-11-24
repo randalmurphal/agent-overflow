@@ -670,8 +670,10 @@ func TestClaudeBuiltinFallbackWithoutScenario(t *testing.T) {
 
 // TestANamedScenarioThatCannotRunFailsTheStart: a scenario file that is
 // unreadable, does not parse (a version-1 file with the retired
-// startupDelayMs among them) or is for the other provider ends the mock
-// with the reason, instead of running the builtin script in its place.
+// startupDelayMs among them), is for the other provider, or holds its start
+// behind a startupGate that nothing without a control channel can release
+// ends the mock with the reason, instead of running the builtin script in
+// its place.
 func TestANamedScenarioThatCannotRunFailsTheStart(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, doc string) string {
@@ -683,7 +685,8 @@ func TestANamedScenarioThatCannotRunFailsTheStart(t *testing.T) {
 	}
 	cases := []struct{ name, path, reason string }{
 		{"unreadable", filepath.Join(dir, "missing.json"), "missing.json"},
-		{"invalid", write("delay.json", `{"version":1,"name":"slow","provider":"claude","startupDelayMs":500,"turns":[{"steps":[{"delayMs":1}]}]}`), "scenario invalid"},
+		{"retired startup delay", write("delay.json", `{"version":1,"name":"slow","provider":"claude","startupDelayMs":500,"turns":[{"steps":[{"delayMs":1}]}]}`), "startupDelayMs is gone; hold the first provider frame with startupGate"},
+		{"startup gate without a control channel", write("held.json", `{"version":1,"name":"held","provider":"claude","startupGate":"held-start","turns":[{"steps":[{"delayMs":1}]}]}`), `sets startupGate "held-start", which only an advance on a harness control channel releases`},
 		{"other provider", write("codex.json", `{"version":1,"name":"codex-only","provider":"codex","turns":[{"steps":[{"delayMs":1}]}]}`), `targets provider "codex"`},
 	}
 	for _, c := range cases {

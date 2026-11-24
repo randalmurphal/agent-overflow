@@ -68,7 +68,7 @@ func TestTransferWorktreeRetainsObjectsAndRecoversRenameBeforeRepair(t *testing.
 	}
 	// Crash point: the directory is published but Git still names its old
 	// location. Recreate Core too, so no cached cwd/path data can save the retry.
-	if err := atomicfile.RenameNoReplace(plan.Stage, plan.Path); err != nil {
+	if _, err := atomicfile.RenameNoReplace(plan.Stage, plan.Path); err != nil {
 		t.Fatal(err)
 	}
 	core = NewCore()

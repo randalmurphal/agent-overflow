@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/store/storetest"
 )
 
 // claude-tui pins ANTHROPIC_BASE_URL on the child process, but reserving the
@@ -386,4 +387,79 @@ func (a *App) providerProbeCacheKey(providerName, binary string) provider.ProbeC
 		return provideraccountapp.ProbeCacheKeyForAccountEnv(binary, "", a.providerCustomEnv(providerName))
 	}
 	return a.providerAccounts.ProbeCacheKey(providerName, binary)
+}
+
+// savedProviderHomes is a settings file whose every provider's custom
+// environment holds a HOME, as one saved before HOME was reserved does.
+const savedProviderHomes = `{
+  "claudeCustomEnv": [{"name": "HOME", "value": "/tmp/claude-home"}],
+  "codexCustomEnv": [{"name": "HOME", "value": "/tmp/codex-home"}],
+  "agyCustomEnv": [{"name": "HOME", "value": "/tmp/agy-home"}]
+}`
+
+// A saved HOME reaches no provider process: each spawn environment carries
+// the process HOME, the home the account manager reads.
+func TestASavedProviderHomeIsNotApplied(t *testing.T) {
+	t.Parallel()
+	settingsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(savedProviderHomes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app, _ := setupE2EAppOn(t, storetest.ClonePath(t), settingsDir)
+
+	processHome := os.Getenv("HOME")
+	for _, providerName := range []string{string(provider.Claude), string(provider.Codex), string(provider.Agy)} {
+		child := "<unset>"
+		for _, entry := range provider.BuildEnvironment(app.sessionProcessEnv(providerName)) {
+			if home, ok := strings.CutPrefix(entry, "HOME="); ok {
+				child = home
+			}
+		}
+		if child != processHome {
+			t.Errorf("%s spawns with HOME=%q, want the process HOME %q", providerName, child, processHome)
+		}
+	}
+}
+
+// The boot's steps before clients, run as the boot runs them, report a
+// reserved variable saved in a provider's custom environment as a failure
+// of its own phase, which every client shows, naming the variable and not
+// its value; the boot goes on.
+//
+// Serial: the boot fixture sets HOME.
+func TestASavedReservedProviderVariableIsReportedByTheBoot(t *testing.T) {
+	a := newBootTestApp(t)
+	dbDir := filepath.Join(a.dataDirOverride, "agent-overflow")
+	if err := os.MkdirAll(dbDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dbDir, "settings.json"), []byte(savedProviderHomes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	progress := newRecordingBootProgress("")
+	SetBootProgress(a, progress)
+	ParkUnattendedWork(a)
+	t.Cleanup(func() {
+		if err := a.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for i, step := range a.startBeforeClients() {
+		if err := step(); err != nil {
+			t.Fatalf("boot step %d: %v", i, err)
+		}
+	}
+	want := "settings.reserved_provider_env: Claude HOME, Codex HOME, and Antigravity HOME are reserved, so the provider runs without them."
+	var reported []string
+	for _, failure := range progress.failures() {
+		if strings.HasPrefix(failure, "settings.reserved_provider_env:") {
+			reported = append(reported, failure)
+		}
+	}
+	if len(reported) != 1 || !strings.HasPrefix(reported[0], want) || strings.Contains(reported[0], "/tmp/") {
+		t.Fatalf("boot failures = %q, want one starting %q and naming no value", progress.failures(), want)
+	}
 }
