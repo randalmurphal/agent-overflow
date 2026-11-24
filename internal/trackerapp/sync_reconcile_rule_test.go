@@ -63,14 +63,6 @@ func dueTick(t *testing.T, m *mirrorFixture, holder *boardPump) Outcome {
 	return out
 }
 
-// awaitsListing reports whether holder's pass is open in the board's
-// lifetime with no candidate and no rule: due, and listing at its next
-// reconcile.
-func awaitsListing(m *mirrorFixture, holder *boardPump) bool {
-	p := holder.pass
-	return p.openIn(m.sync(testBoard).Lifetime) && len(p.left) == 0 && p.rule.Window.IsZero() && p.rule.Sprints == nil
-}
-
 // The refusal in the first batch stores nothing and in the third batch,
 // after two committed, keeps those rows; either way the pass ends and the
 // tick lists the board again at once and reads the rest, the committed
