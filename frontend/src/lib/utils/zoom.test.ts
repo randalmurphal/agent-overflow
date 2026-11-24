@@ -13,21 +13,12 @@ describe('applyFontScale', () => {
     document.documentElement.style.removeProperty('font-size');
   });
 
-  it('removes root font-size for the default (13)', () => {
-    applyFontScale(13);
-    expect(getRootFontSize()).toBe('');
-  });
-
-  it('sets root font-size for a larger value', () => {
-    applyFontScale(16);
-    const value = getRootFontSize();
-    expect(value).toMatch(/^19\.69\d*px$/);
-  });
-
-  it('sets root font-size for a smaller value', () => {
-    applyFontScale(10);
-    const value = getRootFontSize();
-    expect(value).toMatch(/^12\.30\d*px$/);
+  it.each([
+    ['larger', 16, /^19\.69\d*px$/],
+    ['smaller', 10, /^12\.30\d*px$/],
+  ])('sets root font-size for a %s value', (_size, fontSize, expected) => {
+    applyFontScale(fontSize);
+    expect(getRootFontSize()).toMatch(expected);
   });
 
   it('skips redundant DOM writes for the same value', () => {

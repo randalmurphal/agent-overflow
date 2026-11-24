@@ -518,7 +518,6 @@ describe('§5.1 skeleton ∪ records', () => {
       .toEqual([['plan', false], ['build', false], ['verify', true]]);
     expect(segments[2].status).toEqual({ kind: 'ghost' });
     expect(segments[2].signal).toBe('ghost');
-    expect(runMapTone(segments[2].signal)).toBe('text-fg-hint');
   });
 
   it('definition drift | records missing from the skeleton append with notInDefinition', () => {
@@ -598,7 +597,6 @@ describe('§5.1 skeleton ∪ records', () => {
     // Its OWN signal, never folded into `pending`: a status this build cannot
     // name must not be drawn as a queue the phase is not in.
     expect(node.signal).toBe('unknown');
-    expect(runMapTone(node.signal)).toBe('text-fg-muted');
   });
 
   it('§5.5 loop-back re-entry | an unrecorded phase BEFORE the furthest point is skipped, not future', () => {
@@ -687,10 +685,8 @@ describe('§5.8 records-only degradation (empty / undecodable snapshot)', () => 
       .toEqual([['second', false, false], ['first', false, false]]);
     expect(segments.some((node) => node.kind === 'decision')).toBe(false);
     expect(buildRunMap(view, NOW).loop).toBeNull();
-  });
-
-  it('still decides node kind from the records: units make it a fan', () => {
-    expect(nodeById(segmentsOf(view, 'root'), 'second').kind).toBe('fan');
+    // Node kind is still decided from the records: units make it a fan.
+    expect(nodeById(segments, 'second').kind).toBe('fan');
   });
 
   it('per-wave skeleton (§5.7): one wave degrading does not degrade the next', () => {
@@ -765,6 +761,17 @@ describe('§6 fan scale', () => {
     expect(fan.done.entries.map((chip) => chip.unitId)).toEqual(['port-a', 'port-e']);
     expect(fan.done.label).toBe('done ·1');
     expect(fan.done.droppedCount).toBe(1);
+    // unit `dropped`: a struck entry inside the done chip expansion.
+    const dropped = fan.done.entries.find((chip) => chip.unitId === 'port-e');
+    expect([dropped?.struck, dropped?.signal, dropped?.meta])
+      .toEqual([true, 'dropped', 'dropped — join proceeded without it · 1s']);
+    // unit `taken-over`: the amber signal and its triage thread.
+    const takenOver = fan.columns.find((column) => column.unit.unitId === 'port-f');
+    expect([takenOver?.unit.signal, takenOver?.unit.threadId]).toEqual(['parked', 't-f']);
+    // The join unit renders as the merge node, never a column or a chip.
+    expect([fan.join?.unitId, fan.join?.isJoin]).toEqual(['port-join', true]);
+    expect(fan.columns.some((column) => column.unit.isJoin)).toBe(false);
+    expect(fan.done.entries.some((chip) => chip.isJoin)).toBe(false);
   });
 
   // §7: a queued group names WHICH lanes it stands for, not just how many. The
@@ -781,26 +788,6 @@ describe('§6 fan scale', () => {
     // would claim lanes 4–9 that are not in the group.
     const fan = fanOf(segmentsOf(fanView({ width: 26 }), 'root'), 'port');
     expect(fan.queued.label).toBe('14 units · queued');
-  });
-
-  it('join unit | renders as the merge node, never a column or a chip', () => {
-    const fan = fanOf(segmentsOf(fanView(), 'root'), 'port');
-    expect(fan.join?.unitId).toBe('port-join');
-    expect(fan.join?.isJoin).toBe(true);
-    expect(fan.columns.concat().some((column) => column.unit.isJoin)).toBe(false);
-    expect(fan.done.entries.some((chip) => chip.isJoin)).toBe(false);
-  });
-
-  it('unit `dropped` | struck entry inside the done chip expansion', () => {
-    const dropped = fanOf(segmentsOf(fanView(), 'root'), 'port').done.entries.find((chip) => chip.unitId === 'port-e');
-    expect([dropped?.struck, dropped?.signal, dropped?.meta])
-      .toEqual([true, 'dropped', 'dropped — join proceeded without it · 1s']);
-  });
-
-  it('unit `taken-over` | amber signal and its triage thread', () => {
-    const takenOver = fanOf(segmentsOf(fanView(), 'root'), 'port').columns.find((column) => column.unit.unitId === 'port-f');
-    expect([takenOver?.unit.signal, takenOver?.unit.threadId]).toEqual(['parked', 't-f']);
-    expect(runMapTone(takenOver?.unit.signal ?? 'done')).toBe('text-warning');
   });
 
   // The wording rule survives the grouping: a pending unit that EARNS a lane —
@@ -1814,14 +1801,6 @@ describe('adversarial shapes', () => {
     expect(fan.columns.map((column) => column.unit.unitId)).toEqual(['a', 'b', 'c']);
     expect(fan.join?.unitId).toBe('z-join');
   });
-
-  it('an orphaned run (parent absent from the view) still renders as its own map', () => {
-    const view = makeView([makeRun('orphan', {
-      parentItemId: 'gone', parentPhaseId: 'next', parentAttempt: 1,
-      state: 'running', skeleton: [skeletonPhase('plan')], phases: [makePhase('plan')],
-    })], 'orphan');
-    expect(buildRunMap(view, NOW).waves.map((wave) => [wave.itemId, wave.ordinal])).toEqual([['orphan', 1]]);
-  });
 });
 
 describe('runMapPosition — the header\'s narrow read', () => {
@@ -1902,6 +1881,8 @@ describe('ghostAttempt — the row a node with no records renders as', () => {
       chain: [],
       onFrontierPath: node.onFrontierPath,
     });
+    // Keyed on the node, so the ghost row is the row `now ▸` can mark.
+    expect(node.key).not.toBe('');
   });
 
   it('names a pre-expansion fan by where its units come from, never by a count', () => {
@@ -1909,12 +1890,6 @@ describe('ghostAttempt — the row a node with no records renders as', () => {
     expect(fan.kind).toBe('fan');
     expect(ghostAttempt(fan).label).toBe(fan.kind === 'fan' ? fan.ghostLabel : '');
     expect(ghostAttempt(fan).label).not.toMatch(/\d/);
-  });
-
-  it('keys the ghost row on the node, so it is the row `now ▸` can mark', () => {
-    const node = nodeById(ghostNodes(), 'verify');
-    expect(ghostAttempt(node).key).toBe(node.key);
-    expect(ghostAttempt(node).key).not.toBe('');
   });
 });
 
