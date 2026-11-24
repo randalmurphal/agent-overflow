@@ -29,7 +29,7 @@ import { TAIL_WINDOW_CAP_CHARS, TAIL_WINDOW_KEEP_LINES, heightAbove } from './ta
 // falls out of view until the next text delta re-pins it. In the live app the
 // row width oscillates while the scroll spring settles at stream start (the
 // a5a5d032 width-reflow strand), so the thinking tail re-wraps mid-stream with
-// no delta to fix it. The tail-pin re-wrap test reproduces exactly that:
+// no delta to fix it. The width-only re-wrap test reproduces exactly that:
 // width change, no text change, tail must remain visible.
 
 const hosts: HTMLElement[] = [];
@@ -129,36 +129,6 @@ const LONG = Array.from(
 ).join('\n');
 
 describe('TailClampedText tail-pin', () => {
-  it('clamps to 3 lines and keeps the newest line visible on mount', async () => {
-    const { body } = mountTail(LONG, 600);
-    await tick();
-    await raf();
-
-    // The 3-line clamp is active: older content is clipped above the window.
-    expect(topClipPx(body)).toBeGreaterThan(0);
-    const threeLines = parseFloat(getComputedStyle(body).lineHeight) * 3;
-    expect(body.clientHeight).toBeLessThanOrEqual(Math.ceil(threeLines) + 1);
-
-    // Tail visible: the last glyph sits at/above the bottom of the window.
-    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
-  });
-
-  it('declares the clamp it renders, so the activity-run cap can subtract it', async () => {
-    const { body } = mountTail(LONG, 600);
-    await tick();
-    await raf();
-
-    // utils/activityRunClip.ts reads `data-collapsed-lines × line-height` as
-    // this body's collapsed baseline. The attribute (TAIL_CLAMP_LINES) and
-    // the literal `max-h-[3lh]` class cannot share a token — Tailwind only
-    // generates classes it can scan — so this pins them to the same number:
-    // a clamped body's rendered height must equal the height it declares.
-    const declared = Number(body.dataset.collapsedLines);
-    expect(declared).toBeGreaterThan(0);
-    const lh = parseFloat(getComputedStyle(body).lineHeight);
-    expect(Math.abs(body.clientHeight - declared * lh)).toBeLessThanOrEqual(1);
-  });
-
   it('shows short content in full without clamping', async () => {
     const { body } = mountTail('line one\nline two', 600);
     await tick();
@@ -173,35 +143,6 @@ describe('TailClampedText tail-pin', () => {
     expect(body.clientHeight).toBeLessThanOrEqual(Math.ceil(lh * 2) + 1);
     expect(body.scrollHeight).toBeLessThanOrEqual(body.clientHeight + 1); // no overflow
     expect(tailOverflowPx(body)).toBeLessThanOrEqual(1); // newest line visible
-  });
-
-  // THE GUARD (fails-without / passes-with). A width-only re-wrap must keep the
-  // tail visible. The original imperative pin never fired on resize, so the
-  // newest line scrolled out of the 3-line window (~234px below it in Chromium).
-  it('keeps the newest line visible when only the width changes (re-wrap)', async () => {
-    const { host, body } = mountTail(LONG, 600);
-    await tick();
-    await raf();
-
-    const spanBefore = contentSpanPx(body);
-    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1); // visible at the wide width
-
-    // Re-wrap WITHOUT touching `text`: narrower width => more visual lines =>
-    // taller text. This is the spring-driven width oscillation, with no delta
-    // to re-pin.
-    host.style.width = '300px';
-    await tick();
-    await raf();
-    await raf();
-
-    // Sanity: the re-wrap actually re-flowed the text taller, otherwise the
-    // test proves nothing about staleness. Mechanism-neutral so it passes on
-    // both the old (stale) and new (anchored) implementations.
-    expect(contentSpanPx(body)).toBeGreaterThan(spanBefore);
-
-    // The newest line must still be visible. Without a reflow-aware anchor it
-    // is not — it sits well below the clamped window.
-    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
   });
 });
 
@@ -294,16 +235,46 @@ describe('TailClampedText line-slide', () => {
     expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
   });
 
-  it('does not animate a width-only re-wrap', async () => {
-    // Wrapping text: narrowing the host genuinely re-wraps (more visual
-    // lines, taller content) with no text delta — the a5a5d032 shape. A
-    // translate cannot represent a re-wrap, so it must render instantly.
-    const { host, body, inner } = await mountCalibrated(LONG, 600);
+  // THE GUARD (fails-without / passes-with). A width-only re-wrap must keep the
+  // tail visible. The original imperative pin never fired on resize, so the
+  // newest line scrolled out of the 3-line window (~234px below it in Chromium).
+  it('clamps to 3 lines, then keeps the newest line visible and unanimated through a width-only re-wrap', async () => {
+    const { host, body } = mountTail(LONG, 600);
+    await tick();
+    await raf();
+
+    // The 3-line clamp is active: older content is clipped above the window,
+    // and the tail is visible (the last glyph sits at/above the window bottom).
+    expect(topClipPx(body)).toBeGreaterThan(0);
+    const lh = parseFloat(getComputedStyle(body).lineHeight);
+    expect(body.clientHeight).toBeLessThanOrEqual(Math.ceil(lh * 3) + 1);
+    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+
+    // utils/activityRunClip.ts reads `data-collapsed-lines × line-height` as
+    // this body's collapsed baseline. The attribute (TAIL_CLAMP_LINES) and
+    // the literal `max-h-[3lh]` class cannot share a token — Tailwind only
+    // generates classes it can scan — so this pins them to the same number:
+    // a clamped body's rendered height must equal the height it declares.
+    const declared = Number(body.dataset.collapsedLines);
+    expect(declared).toBeGreaterThan(0);
+    expect(Math.abs(body.clientHeight - declared * lh)).toBeLessThanOrEqual(1);
+
+    await raf(); // initial RO calibration
+    const inner = innerOf(body);
+    expect(translateY(inner)).toBe(0);
     const spanBefore = contentSpanPx(body);
 
+    // Re-wrap WITHOUT touching `text`: narrower width => more visual lines =>
+    // taller text, with no delta to re-pin (the a5a5d032 spring-driven width
+    // oscillation). Mechanism-neutral sanity check that the re-wrap happened,
+    // otherwise the test proves nothing about staleness.
     host.style.width = '300px';
     await raf();
-    expect(contentSpanPx(body)).toBeGreaterThan(spanBefore); // the re-wrap happened
+    expect(contentSpanPx(body)).toBeGreaterThan(spanBefore);
+
+    // A translate cannot represent a re-wrap, so it renders instantly, and the
+    // newest line is still visible: without a reflow-aware anchor it sits well
+    // below the clamped window.
     await expectNoSlide(inner);
     expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
   });
