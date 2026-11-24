@@ -2805,7 +2805,7 @@ func TestStartSession_FlushesRequeuedItems(t *testing.T) {
 		NoRow:      true,
 	})
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	t.Cleanup(func() { _ = app.StopSession(thread.ID) })

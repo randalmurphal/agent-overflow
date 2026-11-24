@@ -87,9 +87,9 @@ function appended(provider: ProviderName, config: MockSessionConfig): string {
 
 async function runSession(harness: HarnessApp, thread: string, text: string): Promise<void> {
   const done = awaitTurnCompleted(harness, thread);
-  await harness.rpc('SendMessage', thread, text, null);
+  await harness.send(thread, text);
   await done;
-  await harness.rpc('StopSession', thread);
+  await harness.stopSession(thread);
 }
 
 function row(page: Page, id: string) {

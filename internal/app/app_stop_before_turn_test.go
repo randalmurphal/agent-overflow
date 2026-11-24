@@ -121,13 +121,13 @@ func TestStopBeforeAClaudeTurnOpensEndsInOneOutcome(t *testing.T) {
 			if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeClaudeStopBeforeTurnBinary(t, tc.resolution, tc.stops)}); err != nil {
 				t.Fatalf("set binary: %v", err)
 			}
-			if err := app.StartSession(thread.ID); err != nil {
+			if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 				t.Fatalf("StartSession: %v", err)
 			}
 			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
 
 			const message = "stop me before I start"
-			if err := app.SendMessage(context.Background(), thread.ID, message, nil); err != nil {
+			if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, message, SendMessageOptions{}); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			turnIndex := -1

@@ -832,7 +832,7 @@ func TestARequestTheSessionDiedHoldingIsDeliveredAtTheNextStart(t *testing.T) {
 	if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": writeClaudeStdinRecorderBinary(t, stdin)}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := f.app.StartSession(h.thread.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), h.thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	t.Cleanup(func() { _ = f.app.StopSession(h.thread.ID) })

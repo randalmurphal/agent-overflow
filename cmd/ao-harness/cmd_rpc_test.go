@@ -9,7 +9,7 @@ import (
 func methodCatalog() []string {
 	return []string{
 		"HarnessInfo", "HarnessListMocks", "HarnessListMethods", "HarnessSeed",
-		"HarnessReset", "SendMessage", "ListThreads", "HarnessMockCommand",
+		"HarnessReset", "SendMessageWithOptions", "ListThreads", "HarnessMockCommand",
 	}
 }
 
@@ -21,11 +21,11 @@ func TestNearestMethodsAnswersARealTypo(t *testing.T) {
 		typed string
 		want  string
 	}{
-		{"HarnessListMock", "HarnessListMocks"},  // one character short
-		{"harnesslistmocks", "HarnessListMocks"}, // wrong case
-		{"seed", "HarnessSeed"},                  // a substring the other way round
-		{"HarnessRest", "HarnessReset"},          // transposed
-		{"sendmessage", "SendMessage"},           //
+		{"HarnessListMock", "HarnessListMocks"},              // one character short
+		{"harnesslistmocks", "HarnessListMocks"},             // wrong case
+		{"seed", "HarnessSeed"},                              // a substring the other way round
+		{"HarnessRest", "HarnessReset"},                      // transposed
+		{"sendmessagewithoptions", "SendMessageWithOptions"}, //
 	} {
 		near := nearestMethods(tc.typed, methodCatalog())
 		if !slices.Contains(near, tc.want) {

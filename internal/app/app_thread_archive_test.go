@@ -75,10 +75,10 @@ func startExitMarkerClaudeSession(t *testing.T, app *App, bus *capturedEventBus,
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(threadID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), threadID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), threadID, "hello", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadID, "hello", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
@@ -491,7 +491,7 @@ func TestSendAfterArchiveStartsAColdSession(t *testing.T) {
 		t.Fatal("archive did not close the session")
 	}
 
-	if err := app.SendMessage(context.Background(), thread.ID, "still here", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "still here", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage after archive: %v", err)
 	}
 	second, restarted := app.sessionManager().get(thread.ID)

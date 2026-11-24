@@ -82,10 +82,10 @@ func TestAnOrdinarySpawnersWorkerPromptsWakeItAndItsReplyAnswersThem(t *testing.
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.StartSession(worker.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), worker.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), worker.ID, "go", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, "go", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	// A prompt's wake is queued before its start is launched, so both are
@@ -340,10 +340,10 @@ func TestAnOldPromptTokenCannotAnswerAReplacementSessionsPrompt(t *testing.T) {
 	}
 	start := func(message string) {
 		t.Helper()
-		if err := app.StartSession(worker.ID); err != nil {
+		if err := app.startSessionTakingLock(context.Background(), worker.ID); err != nil {
 			t.Fatalf("StartSession: %v", err)
 		}
-		if err := app.SendMessage(context.Background(), worker.ID, message, nil); err != nil {
+		if _, err := app.SendMessageWithOptions(context.Background(), worker.ID, message, SendMessageOptions{}); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 	}

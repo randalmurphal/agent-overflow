@@ -60,7 +60,7 @@ test('Stop asks before killing a background agent; keep leaves the turn running,
   await harness.open(page);
   await page.getByText('Stop with agent').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'watch the gate and wait', null);
+  await harness.send(threadId, 'watch the gate and wait');
   await waitForGate(harness, 'answer');
 
   const stop = page.getByRole('button', { name: 'Interrupt current turn', exact: true });
@@ -131,7 +131,7 @@ test('an agent launched while the Stop question is open is asked about before it
   await harness.open(page);
   await page.getByText('Stop with a later agent').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'start the first worker', null);
+  await harness.send(threadId, 'start the first worker');
   await waitForGate(harness, 'later');
   // The mock reports its gate once it has written the launch frames; the
   // backend refuses a Stop only for agents it has stored by then.

@@ -86,7 +86,7 @@ async function openThreadAndStart(harness: HarnessApp, page: Page, title: string
   await page.getByTestId('thread-row-title').getByText(title, { exact: true }).click();
   const mockId = await startMock(harness, threadId);
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'build it', null);
+  await harness.send(threadId, 'build it');
   await completed;
   await page.getByTestId('activity-rail-background-toggle').click();
   const body = page.getByTestId('activity-rail-background-body');
@@ -328,7 +328,7 @@ test("a Monitor's tray row tails its output once a notification names the file",
   await page.getByTestId('thread-row-title').getByText('Monitor tail', { exact: true }).click();
   const mockId = await startMock(harness, threadId);
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'watch the gate', null);
+  await harness.send(threadId, 'watch the gate');
   await completed;
   await page.getByTestId('activity-rail-background-toggle').click();
   const row = page.getByTestId('activity-rail-background-body').locator('[data-testid="background-task-tray-row"][data-row-id="tu-watch"]');

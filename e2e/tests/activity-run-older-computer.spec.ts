@@ -344,13 +344,13 @@ for (const layout of ['desktop', 'compact'] as const) {
 
         // An agent message arriving live in an open thread, then reloaded.
         const sender = threads.senders.threadIds[0];
-        await app.rpc('StartSession', sender);
+        await app.startSession(sender);
         for (const [project, shape] of [[threads.liveTool, expected.liveMessageTool], [threads.liveText, expected.liveMessage]] as const) {
           const id = project.threadIds[0];
           await openThread(view, layout, id);
           await historySettles(wire, id);
           const done = awaitTurnCompleted(app, id);
-          await app.rpc('SendMessage', sender, `send to ${id}`, null);
+          await app.send(sender, `send to ${id}`);
           await done;
           await expectSettledShape(view, wire, id, shape, expected);
           wire.clear();

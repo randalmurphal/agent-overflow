@@ -206,14 +206,14 @@ for (const provider of ['claude', 'codex'] as const) {
       afterTurns: 'silent',
     }));
 
-    await harness.rpc('StartSession', leadId);
-    await harness.rpc('SendMessage', leadId, 'send the probe', null);
+    await harness.startSession(leadId);
+    await harness.send(leadId, 'send the probe');
     const probeSend = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', cwd: lead.path });
     expect(probeSend.isError, probeSend.text).toBe(false);
     const probeToken = probeSend.value!.token;
     await awaitTurnCompleted(harness, leadId);
     await expect.poll(() => parkedOn(harness, probeToken), { message: 'nothing waits on the probe yet' }).toBe(false);
-    await harness.rpc('SendMessage', leadId, 'rebase the target', null);
+    await harness.send(leadId, 'rebase the target');
     const sent = await awaitToolAnswer<{ outcome: string }>(harness, { tool: 'thread_send', cwd: lead.path });
     await expect.poll(() => parkedOn(harness, probeToken), { timeout: 30_000, message: 'the status call parks' }).toBe(true);
     await releaseAfterBackgrounded(sent, { harness, gate: 'inline-answer', cwd: target.path });

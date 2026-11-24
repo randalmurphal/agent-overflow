@@ -87,7 +87,7 @@ test("the parent turn ending leaves an agent's tool call and text open, and both
   const threadId = await seedAgentThread(harness, 'outlive-app', 'Agent outlives turn');
   const mockId = await startMock(harness, threadId);
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'read the readme', null);
+  await harness.send(threadId, 'read the readme');
   await completed;
 
   const agentRows = async () => {
@@ -171,7 +171,7 @@ test('Stop kills agents launched in an earlier turn: every row under each settle
   await page.getByText('Stop earlier agents').click();
   const mockId = await startMock(harness, threadId);
   const firstCompleted = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'launch two workers', null);
+  await harness.send(threadId, 'launch two workers');
   await firstCompleted;
   await waitForGate(harness, 'work');
   await advance(harness, mockId, 'work');
@@ -179,7 +179,7 @@ test('Stop kills agents launched in an earlier turn: every row under each settle
   await expect.poll(async () => unsettled(await listItems(harness, threadId)).length).toBe(agents.length * 2);
   await expect(page.getByTestId('activity-rail-background-toggle')).toBeVisible();
 
-  await harness.rpc('SendMessage', threadId, 'what next', null);
+  await harness.send(threadId, 'what next');
   await waitForGate(harness, 'never');
   const stop = page.getByRole('button', { name: 'Interrupt current turn', exact: true });
   await expect(stop).toBeVisible();

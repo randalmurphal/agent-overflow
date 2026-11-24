@@ -17,23 +17,6 @@ import (
 // longer only parks a goroutine that shutdown then has to join.
 const markThreadReadTimeout = 5 * time.Second
 
-// StartSession is the Wails-bound entry point for "bring this thread's
-// provider subprocess up." The sendMessage path also calls
-// startSessionNow via runRegisteredSessionStart when a thread has no active
-// session yet.
-//
-// Takes the per-thread action lock: an unserialized start racing a
-// revert can read the pre-revert SessionRef, clear the stopped-thread
-// gate mid-revert (MarkThreadActive), and register a session bound to
-// the old provider thread after the revert repointed the row. Internal
-// callers that already hold the lock (sends, deferred config restarts)
-// go through a.startSession / runRegisteredSessionStart directly.
-//
-//ao:scope threads:operate
-func (a *App) StartSession(threadID string) error {
-	return a.startSessionTakingLock(context.Background(), threadID)
-}
-
 // StopSession tears down the thread's provider session. Idempotent: a thread
 // with no active session still runs triage cleanup so stale state doesn't leak.
 //
@@ -44,28 +27,6 @@ func (a *App) StopSession(threadID string) error {
 	// no entry was registered, closeProviderSession returns nil and
 	// only triage state is reset.
 	return a.teardownAndCloseSession(threadID, sess)
-}
-
-// SendMessage is the Wails-bound compatibility entry point for user-typed
-// content. The options-aware path below owns newer composer controls.
-//
-//ao:scope threads:operate
-func (a *App) SendMessage(ctx context.Context, threadID string, content string, attachmentIDs []string) error {
-	if a.shuttingDown.Load() {
-		return ErrShuttingDown
-	}
-	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
-		return err
-	}
-	_, err := a.sendMessageWithOptions(context.Background(), threadID, content, sendMessageOptions{
-		AttachmentIDs: attachmentIDs,
-		QueueIfActive: true,
-		// Wire entry: this text was typed into a composer (D31). The internal
-		// a.sendMessage helper deliberately does NOT set this — its other
-		// callers send app-composed prompts.
-		ExpandComposerCommands: true,
-	})
-	return err
 }
 
 // SendMessageWithOptions applies send-time composer settings and dispatches the

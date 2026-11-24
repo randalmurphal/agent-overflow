@@ -347,8 +347,8 @@ export async function startAndWatchFromThread(
       afterTurns: 'repeatLast',
     }),
   );
-  await harness.rpc('StartSession', project.threadId);
-  await harness.rpc('SendMessage', project.threadId, 'Run the importer workflow and tell me how it went.', null);
+  await harness.startSession(project.threadId);
+  await harness.send(project.threadId, 'Run the importer workflow and tell me how it went.');
 
   const listing = await harness.awaitMcpTools({ server: W, cwd: project.path, timeoutMs: 60_000 });
   expect(listing.isError, listing.error).toBe(false);
@@ -364,7 +364,7 @@ export async function startAndWatchFromThread(
   const second = 'Now start the migration and let me know when it is done.';
   // A wake for the importer's rest would have started a turn of its own
   // after turn 1, and the send would be refused as the thread is working.
-  const refused = await harness.rpc('SendMessage', project.threadId, second, null).then(
+  const refused = await harness.send(project.threadId, second).then(
     () => undefined,
     (error: Error) => error.message,
   );

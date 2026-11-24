@@ -335,7 +335,7 @@ func runBenchDirectContext(ctx context.Context, e *env, args []string) error {
 	err = e.withClient(ctx, func(client *harnessclient.Client, t target, bs harnessclient.Bootstrap) error {
 		benchTarget = t
 		if err := requireHarnessProtocol(client, capabilityRequirements{
-			Methods: []string{"HarnessReset", "HarnessSeed", "HarnessSetScenario", "HarnessPerfStart", "HarnessPerfStop", "HarnessUIQuery", "HarnessEmit", "SendMessage"},
+			Methods: []string{"HarnessReset", "HarnessSeed", "HarnessSetScenario", "HarnessPerfStart", "HarnessPerfStop", "HarnessUIQuery", "HarnessEmit", harnessclient.SendMethod},
 			Actions: []string{"open", "reload"}, Queries: append([]string{"element", "open", "perf", "viewport"}, monitorQueryRequirement(perfSpec.Monitors)...),
 			Workloads: []string{workload.Name}, Meters: perfSpec.Meters,
 		}); err != nil {

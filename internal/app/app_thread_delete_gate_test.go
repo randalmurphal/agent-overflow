@@ -137,7 +137,7 @@ func TestAClaimLandingWhileABatchWaitsOnTheActionLockHoldsIt(t *testing.T) {
 		t.Run(map[bool]string{true: "refused", false: "committed"}[refuse], func(t *testing.T) {
 			t.Parallel()
 			f := newClaimFixture(t)
-			if err := f.app.StartSession(f.caller.ID); err != nil {
+			if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
 			unlock := f.app.threadLocks().Lock(f.caller.ID)
@@ -177,7 +177,7 @@ func TestABatchTheDispatcherHoldsKeepsItsThreadFromRest(t *testing.T) {
 			t.Parallel()
 			f := newClaimFixture(t)
 			id := f.caller.ID
-			if err := f.app.StartSession(id); err != nil {
+			if err := f.app.startSessionTakingLock(context.Background(), id); err != nil {
 				t.Fatal(err)
 			}
 			notAtRest := func(when string) {
@@ -218,7 +218,7 @@ func TestABatchTheDispatcherHoldsKeepsItsThreadFromRest(t *testing.T) {
 func TestABatchWaitsForAReclaimAfterARelease(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	marker := "twice-held-" + entityid.New()
@@ -252,7 +252,7 @@ func TestACommitEndsEveryStartWaitingForIt(t *testing.T) {
 	f := newClaimFixture(t)
 	worker := f.plainThread(t)
 	recordSpawn(t, f.app, "spawn-"+entityid.New(), f.caller.ID, worker.ID)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	batch := "batch-" + entityid.New()
@@ -304,7 +304,7 @@ func TestShutdownEndsTheStartsWaitingForADecision(t *testing.T) {
 	f.app.appCtx, f.app.appCancel = context.WithCancel(context.Background())
 	worker := f.plainThread(t)
 	recordSpawn(t, f.app, "spawn-"+entityid.New(), f.caller.ID, worker.ID)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	batch := "batch-" + entityid.New()
@@ -534,7 +534,7 @@ func TestAFireRunWhoseDeleteCommittedEndsSilently(t *testing.T) {
 func TestAReleaseBeforeTheBatchReachesTheGateIsNotMissed(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	marker := "early-release-" + entityid.New()
@@ -578,7 +578,7 @@ func TestTheBootLeavesNoClaimWithoutItsDelete(t *testing.T) {
 func TestAClaimNoDeleteDecidesEndsTheStart(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if err := f.app.StartSession(f.caller.ID); err != nil {
+	if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 		t.Fatal(err)
 	}
 	worker := f.plainThread(t)

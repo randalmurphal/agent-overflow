@@ -121,7 +121,7 @@ test('a streaming code block is colored by live pushes and no colored line goes 
   await sampleCodeColors(page);
 
   const completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'write the module', null);
+  await harness.send(threadId, 'write the module');
   await completed;
 
   const block = page.getByTestId('message-timeline-scroll').locator('.streamdown-code-host code').first();

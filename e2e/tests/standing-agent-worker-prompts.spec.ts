@@ -231,9 +231,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       };
 
       await harness.open(page);
-      await harness.rpc('StartSession', agent);
+      await harness.startSession(agent);
       const spawnTurnsBefore = agentTurns();
-      await harness.rpc('SendMessage', agent, 'ship release 4.2', null);
+      await harness.send(agent, 'ship release 4.2');
       const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home });
       expect(spawn.isError).toBe(false);
       const worker = spawn.value!.thread_id;
@@ -341,8 +341,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       // ---- No approval notification ever named the worker; an ordinary
       // thread's approval still raises one.
       const plainNotified = harness.waitForEvent<NotificationSend>('notification:send', approvalNeeded(plain), 60_000);
-      await harness.rpc('StartSession', plain);
-      await harness.rpc('SendMessage', plain, 'clean up', null);
+      await harness.startSession(plain);
+      await harness.send(plain, 'clean up');
       await plainNotified;
       expect(harness.countEvents<NotificationSend>('notification:send', approvalNeeded(worker))).toBe(0);
     } finally {
@@ -422,8 +422,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       );
 
       await harness.open(page);
-      await harness.rpc('StartSession', agent);
-      await harness.rpc('SendMessage', agent, 'rotate the logs', null);
+      await harness.startSession(agent);
+      await harness.send(agent, 'rotate the logs');
       const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home });
       const worker = spawn.value!.thread_id;
       // Shown in the sidebar, as Show in Sidebar does, so its row carries its state.
@@ -435,7 +435,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         // Claude's mock echoes whatever reaches a running session, so the
         // wake goes to a session still starting: it reads the wake, then
         // holds its first frame, and the echo never comes.
-        await harness.rpc('StopSession', agent);
+        await harness.stopSession(agent);
         await setScenario(harness, home, {
           ...threadToolsScenario({ name: `handback-slow-${provider}`, provider, turns: [{ text: 'unreached' }] }),
           startupGate: 'held-start',

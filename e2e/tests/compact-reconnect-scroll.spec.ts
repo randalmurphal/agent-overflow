@@ -39,7 +39,7 @@ for (const mode of ['large', 'small', 'reading', 'gesture', 'gap'] as const) {
     await harness.open(page);
     await page.getByTestId('thread-row').click();
     const mock = await startMock(harness, thread);
-    await harness.rpc('SendMessage', thread, 'Continue', null);
+    await harness.send(thread, 'Continue');
     await waitForGate(harness, 'finish');
     const scroll = page.getByTestId('message-timeline-scroll');
     await expect(page.getByText('Working before the disconnect.', { exact: true })).toBeVisible();

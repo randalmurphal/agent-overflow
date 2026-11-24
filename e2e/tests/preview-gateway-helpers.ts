@@ -483,7 +483,7 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
       await harness.rpc('HarnessSetScenario', { scenario: previewTurnScenario(devServer.port) });
       threadId = await seedAgentThread(harness, PROJECT_NAME, THREAD_TITLE);
       await startMock(harness, threadId);
-      await harness.rpc('SendMessage', threadId, 'start the dev server', null);
+      await harness.send(threadId, 'start the dev server');
       await harness.waitForEvent('provider:turn_completed');
 
       // The fixture's own precondition. The chip is gated on the row's

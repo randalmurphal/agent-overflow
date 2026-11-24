@@ -84,7 +84,7 @@ test('with background fetch off, a merge a previous run left waiting is acted on
     // A turn holds the worktree busy while the merge is read.
     await startMock(harness, threadId);
     const holding = waitForGate(harness, 'hold');
-    await harness.rpc('SendMessage', threadId, 'Start the long job.', []);
+    await harness.send(threadId, 'Start the long job.');
     await holding;
     await seedForge(harness, [{ ...fixture.repo, pulls: [{ ...fixture.repo.pulls![0], state: 'merged', mergedAt: new Date().toISOString() }] }]);
     await lookUpPR(harness, fixture);
@@ -108,7 +108,7 @@ test('with background fetch off, a merge a previous run left waiting is acted on
     });
     await startMock(harness, otherId);
     const completed = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === otherId);
-    await harness.rpc('SendMessage', otherId, 'Something else.', []);
+    await harness.send(otherId, 'Something else.');
     await completed;
     await expectHandled(harness, threadId, 'removed');
     expect(existsSync(fixture.worktreePath)).toBe(false);

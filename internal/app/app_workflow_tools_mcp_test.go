@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -237,7 +238,7 @@ func TestClaudeTUISessionStartsAndWatchesARunThroughTheWorkflowTools(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
@@ -341,7 +342,7 @@ func TestStartSession_ClaudeAllowsTheWorkflowToolsWithoutAPrompt(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	argv := spawnedClaudeArgv(t, argvPath)
@@ -368,7 +369,7 @@ func TestStartSession_CodexCarriesTheWorkflowToolsEntryAndGuide(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	params := waitForCodexRequest(t, logPath, "thread/start")

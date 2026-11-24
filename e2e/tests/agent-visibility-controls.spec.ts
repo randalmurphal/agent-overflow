@@ -105,7 +105,7 @@ test('a subagent’s approval and denial rows nest under its card; the composer 
   await harness.open(page);
   await page.getByText('Subagent approval').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'write the spike file', null);
+  await harness.send(threadId, 'write the spike file');
 
   // --- Pending: the prompt is the composer's, the pill is the card's --
   await harness.waitForEvent(
@@ -222,7 +222,7 @@ test('backgrounding a running inline agent returns the turn and the mirror conti
   await harness.open(page);
   await page.getByText('Background button').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'sweep the corpus', null);
+  await harness.send(threadId, 'sweep the corpus');
 
   await waitForGate(harness, 'cut');
   const timeline = page.getByTestId('message-timeline-scroll');

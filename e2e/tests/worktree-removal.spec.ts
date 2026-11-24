@@ -313,7 +313,7 @@ test('removing the thread\'s own worktree while its session takes seconds to exi
   await confirm.getByTestId('env-picker-confirm-remove').click();
   // Another thread's turn runs while the removal waits for the session to
   // exit: the picker hears its lifecycle events.
-  await harness.rpc('SendMessage', siblingId, 'Turn during the removal.', []);
+  await harness.send(siblingId, 'Turn during the removal.');
 
   // The row reaches the page while the session is still shutting down.
   await expect(envTrigger(page)).toHaveText('Base');

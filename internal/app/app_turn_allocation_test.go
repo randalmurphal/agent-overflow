@@ -19,7 +19,7 @@ import (
 func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if err := app.SendMessage(context.Background(), thread.ID, "first", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -36,7 +36,7 @@ func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 			t.Errorf("insert wake turn: %v", err)
 		}
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -61,7 +61,7 @@ func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if err := app.SendMessage(context.Background(), thread.ID, "first", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -78,7 +78,7 @@ func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 			t.Errorf("wake opened turn %d, want the send's turn 1", got)
 		}
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -95,7 +95,7 @@ func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if err := app.SendMessage(context.Background(), thread.ID, "first", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -113,7 +113,7 @@ func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 		app.triage.CleanupThread(threadID)
 		app.triage.MarkThreadActive(threadID, sess.Token)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -152,7 +152,7 @@ func startTwoTurnClaudeThread(t *testing.T) (*App, *capturedEventBus, store.Thre
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	return app, bus, thread

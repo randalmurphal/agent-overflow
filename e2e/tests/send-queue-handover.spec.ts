@@ -380,7 +380,7 @@ for (const loseDispatch of [false, true]) {
       await flushed;
       if (loseDispatch) await expect.poll(() => droppedDispatches).toBeGreaterThan(0);
       await expect.poll(async () => {
-        const rows = await harness.rpc<Array<{ summary: string }>>('ListItems', threadId, false);
+        const rows = await harness.items<{ summary: string }>(threadId, false);
         return rows.some((row) => row.summary === QUEUED);
       }).toBe(true);
       const live = await harness.rpc<{ flushedItems: Array<{ message: string }> }>('GetThreadLiveState', threadId);

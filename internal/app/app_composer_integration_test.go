@@ -332,7 +332,7 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 	})
 
 	msg := "please review this image"
-	if err := app.SendMessage(context.Background(), thread.ID, msg, []string{record.ID}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, msg, SendMessageOptions{AttachmentIDs: []string{record.ID}}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -381,7 +381,7 @@ func TestComposer_SendMessageRejectsAttachmentFromDifferentThread(t *testing.T) 
 
 	record := uploadTestAttachment(t, app, sourceThread.ID, "cover.png", "image/png", tinyPNG())
 
-	err := app.SendMessage(context.Background(), targetThread.ID, "please review this image", []string{record.ID})
+	_, err := app.SendMessageWithOptions(context.Background(), targetThread.ID, "please review this image", SendMessageOptions{AttachmentIDs: []string{record.ID}})
 	if err == nil {
 		t.Fatal("SendMessage error = nil, want cross-thread attachment rejection")
 	}
@@ -439,7 +439,7 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 	})
 
 	outgoing := "initial question\n\n```terminal shell\n$ ls\nREADME.md\n```"
-	if err := app.SendMessage(context.Background(), thread.ID, outgoing, []string{record.ID}); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, outgoing, SendMessageOptions{AttachmentIDs: []string{record.ID}}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -616,7 +616,7 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 		Claude:   sess,
 	})
 
-	if err := app.SendMessage(context.Background(), thread.ID, "Actual message", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Actual message", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 

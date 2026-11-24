@@ -270,7 +270,7 @@ func TestStartSessionUsesConfiguredClaudeBinaryPath(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
 	defer func() {

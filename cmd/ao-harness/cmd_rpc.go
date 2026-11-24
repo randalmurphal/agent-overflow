@@ -371,7 +371,7 @@ func runItems(e *env, args []string) error {
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
-		// Resolve FIRST. A garbage selector used to reach ListItems, come
+		// Resolve FIRST. A garbage selector used to reach HarnessListItems, come
 		// back empty, and print "no items" — which reads as "that thread is
 		// empty" rather than "that thread does not exist".
 		row, err := resolveThreadSelector(ctx, client, *thread)
@@ -386,7 +386,7 @@ func (e *env) printItems(ctx context.Context, client *harnessclient.Client, thre
 	// true: ask for inline previews so the printed rows carry the complete
 	// payload metadata rather than the wire projection's elided copy
 	// (internal/itemwire) — this is an inspection tool, not a renderer.
-	raw, err := client.Call(ctx, "ListItems", threadID, true)
+	raw, err := client.Call(ctx, "HarnessListItems", threadID, true)
 	if err != nil {
 		return err
 	}
@@ -459,7 +459,7 @@ func runSend(e *env, args []string) error {
 		ctx = waitCtx
 	}
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
-		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"SendMessage"}}); err != nil {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{harnessclient.SendMethod}}); err != nil {
 			return err
 		}
 		row, err := resolveThreadSelector(ctx, client, *thread)
@@ -467,9 +467,7 @@ func runSend(e *env, args []string) error {
 			return err
 		}
 		if !*wait {
-			// nil attachments: SendMessage's third parameter is a []string the
-			// server treats as absent when null.
-			if _, err := client.Call(ctx, "SendMessage", row.ID, text, nil); err != nil {
+			if err := client.Send(ctx, row.ID, text); err != nil {
 				return err
 			}
 			if e.jsonOutput() {
@@ -485,7 +483,7 @@ func runSend(e *env, args []string) error {
 // awaitTurnAfterSend sends one message and blocks until the app closes
 // that thread's turn. The order is the whole point: subscribe, PARK the
 // wait, and only then send. A mock can finish a scripted turn inside the
-// SendMessage round trip, so a wait registered after the RPC returns is a
+// send round trip, so a wait registered after the RPC returns is a
 // wait for the NEXT turn.
 //
 // Shared by `send --wait` and `profile`, which need the identical
@@ -505,7 +503,7 @@ func awaitTurnAfterSend(ctx context.Context, client *harnessclient.Client, threa
 		}
 		return json.Unmarshal(ev.Data, &payload) == nil && payload.ThreadID == threadID
 	})
-	if _, err := client.Call(ctx, "SendMessage", threadID, text, nil); err != nil {
+	if err := client.Send(ctx, threadID, text); err != nil {
 		awaiting.Close()
 		return harnessclient.Event{}, err
 	}

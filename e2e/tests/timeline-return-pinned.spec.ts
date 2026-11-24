@@ -203,7 +203,7 @@ test('a pinned reader whose turn finishes while the return loads history lands o
   await expect(timeline).toBeVisible();
   const mockId = await startMock(harness, threadId);
   const awayGate = waitForGate(harness, 'away');
-  await harness.rpc('SendMessage', threadId, 'one more pass', null);
+  await harness.send(threadId, 'one more pass');
   await awayGate;
   await expect(timeline.getByText(BEFORE_LEAVE)).toBeVisible();
   expect((await settledGeometry(page)).distance, 'pinned before leaving').toBeLessThanOrEqual(2);

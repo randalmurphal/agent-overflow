@@ -81,7 +81,7 @@ test('a background agent rings no bell at any depth: its card sits at the comple
   await harness.open(page);
   await page.getByText('Nested notify').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'run both', null);
+  await harness.send(threadId, 'run both');
   await harness.waitForEvent('provider:turn_completed');
 
   // --- Two completion siblings, no bell -------------------------------
@@ -212,7 +212,7 @@ test('a background agent’s card lands knowing its rows and hydrates on expand'
   await harness.open(page);
   await page.getByText('Count on landing').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'review the shard', null);
+  await harness.send(threadId, 'review the shard');
   await harness.waitForEvent('provider:turn_completed');
 
   const timeline = page.getByTestId('message-timeline-scroll');

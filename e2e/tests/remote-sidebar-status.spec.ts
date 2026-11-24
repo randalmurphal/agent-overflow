@@ -102,7 +102,7 @@ test('a remote thread with no pane here settles to idle after its queued message
     // Turn 1 runs on the laptop; a message is queued behind it, flushes at
     // once and is consumed at the turn boundary, where turn 2 runs.
     const mockId = await startMock(remote, threadId);
-    await remote.rpc('SendMessage', threadId, 'Check the tree.', null);
+    await remote.send(threadId, 'Check the tree.');
     await waitForGate(remote, 'finish');
     await expect(dot).toHaveAttribute('data-status', 'running');
     const flushed = remote.waitForEvent('provider:queue_flushed', (ev: any) => ev.threadId === threadId);
@@ -120,7 +120,7 @@ test('a remote thread with no pane here settles to idle after its queued message
     await expect(dot).toHaveAttribute('data-status', 'idle');
 
     // Turn 3 is running when the laptop drops off this page's view.
-    await remote.rpc('SendMessage', threadId, 'One more thing.', null);
+    await remote.send(threadId, 'One more thing.');
     await waitForGate(remote, 'later');
     await expect(dot).toHaveAttribute('data-status', 'running');
     await expect(dot).toHaveClass(/animate-pulse/);

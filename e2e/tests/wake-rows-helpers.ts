@@ -78,8 +78,8 @@ export async function registerThrough(
       afterTurns: 'repeatLast',
     }),
   );
-  await harness.rpc('StartSession', agent.thread);
-  await harness.rpc('SendMessage', agent.thread, 'set up the schedule', null);
+  await harness.startSession(agent.thread);
+  await harness.send(agent.thread, 'set up the schedule');
   const answers: Record<string, unknown>[] = [];
   for (const call of calls) {
     const answer = await awaitToolAnswer(harness, { tool: call.tool, cwd: agent.home, timeoutMs: 60_000 });

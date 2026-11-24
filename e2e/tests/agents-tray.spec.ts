@@ -220,7 +220,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     let taken!: HarnessMockEventData;
     let followUp!: TurnCompleted;
     await childWoken.expectNoneThrough(async () => {
-      await harness.rpc('SendMessage', started.child, 'one more thing', null);
+      await harness.send(started.child, 'one more thing');
       // The waiters read the retained event log first, so the send's events
       // are not missed. The follow-up's own completion: the stopped turn's,
       // still in the event log, completed before the send.
@@ -315,8 +315,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       name: `incoming-${provider}-peer`, provider, echoUserMessage: true,
       turns: [{ steps: [{ gate: 'peer-hold' }], text: 'The changelog is fine.' }],
     }));
-    await harness.rpc('StartSession', lead);
-    await harness.rpc('SendMessage', lead, 'ask the peer', null);
+    await harness.startSession(lead);
+    await harness.send(lead, 'ask the peer');
     const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', cwd: leadProject.path, timeoutMs: 60_000 });
     expect(send.isError, send.text).toBe(false);
     const token = send.value!.token;
@@ -325,7 +325,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
     // A live session takes a queued message at once; the caller's session
     // has ended and cannot start again, so the answer waits in its queue.
-    await harness.rpc('StopSession', lead);
+    await harness.stopSession(lead);
     const away = `${leadProject.path}.away`;
     if (provider === 'codex') {
       await setScenario(harness, leadProject.path, {
@@ -396,8 +396,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         { steps: [{ gate: 'send-hold' }], text: 'The migration is fine.' },
       ],
     }));
-    await harness.rpc('StartSession', lead);
-    await harness.rpc('SendMessage', lead, 'get the change reviewed', null);
+    await harness.startSession(lead);
+    await harness.send(lead, 'get the change reviewed');
     const spawned = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadProject.path, timeoutMs: 60_000 });
     expect(spawned.isError, spawned.text).toBe(false);
     const spawn = spawned.value!.token;
@@ -422,7 +422,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // row the worker is the lead's sub-agent still, so that run is a nudge:
     // one row of the lead's, counted, its own run's figures, holding the
     // lead, and delivering the lead nothing when it ends.
-    await harness.rpc('SendMessage', worker, 'also tidy the imports', null);
+    await harness.send(worker, 'also tidy the imports');
     const person = await awaitGate(harness, 'person-hold', workerProject.path);
     const nudgeRow = agentsBody(page).locator('[data-testid="agent-tray-row"][data-kind="nudge"]:not([data-past])');
     await expect(nudgeRow).toHaveCount(1, { timeout: 30_000 });
@@ -435,17 +435,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(nudge).toBeTruthy();
     expect(nudge).not.toBe(spawn);
     await capture(page, `agents-${provider}-nudge-run.png`, agentsBody(page));
-    const leadItems = (await harness.rpc<unknown[]>('ListItems', lead, false)).length;
+    const leadItems = (await harness.items<unknown>(lead, false)).length;
     const personDone = awaitTurnCompleted(harness, worker);
     await advanceGate(harness, person.mockId, 'person-hold');
     await personDone;
     await expect(past).toHaveText('2', { timeout: 30_000 });
     await expect(open).toHaveCount(0, { timeout: 30_000 });
     expect(heldSendIds(harness, lead)).toEqual([]);
-    expect((await harness.rpc<unknown[]>('ListItems', lead, false)).length).toBe(leadItems);
+    expect((await harness.items<unknown>(lead, false)).length).toBe(leadItems);
 
     // The lead sends the worker a follow-up: one row, the send's, counted once.
-    await harness.rpc('SendMessage', lead, 'check the migration too', null);
+    await harness.send(lead, 'check the migration too');
     const sent = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', cwd: leadProject.path, timeoutMs: 60_000 });
     expect(sent.isError, sent.text).toBe(false);
     const sendToken = sent.value!.token;

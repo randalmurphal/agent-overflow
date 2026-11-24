@@ -116,7 +116,7 @@ test('a parked background agent shows its state and report on the tray and its p
   await harness.open(page);
   await page.getByText('Parked agent').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'watch the gate', null);
+  await harness.send(threadId, 'watch the gate');
   await harness.waitForEvent('provider:turn_completed');
 
   const timeline = page.locator(

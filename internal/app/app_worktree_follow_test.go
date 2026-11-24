@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -437,7 +438,7 @@ func TestStartSessionSettlesTranscriptUnderWorkspace(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	t.Cleanup(func() { _ = app.StopSession(thread.ID) })

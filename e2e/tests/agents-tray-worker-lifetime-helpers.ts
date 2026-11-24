@@ -83,8 +83,8 @@ export async function runWorkerLifetime(harness: HarnessApp, page: Page, provide
     ],
     afterTurns: 'repeatLast',
   }));
-  await harness.rpc('StartSession', lead);
-  await harness.rpc('SendMessage', lead, 'rerun the deploy', null);
+  await harness.startSession(lead);
+  await harness.send(lead, 'rerun the deploy');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const { token, thread_id: worker } = spawn.value!;

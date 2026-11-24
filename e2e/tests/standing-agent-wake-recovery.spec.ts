@@ -92,8 +92,8 @@ echo "the only report"
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'report once', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'report once');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
       await awaitTurnCompleted(harness, thread);
@@ -103,7 +103,7 @@ echo "the only report"
       // reads the message, then holds its first frame, and the echo never
       // comes.
       const startHeld = async (name: string) => {
-        await harness.rpc('StopSession', thread);
+        await harness.stopSession(thread);
         await setScenario(harness, home, {
           ...threadToolsScenario({ name, provider, turns: [{ text: 'unreached' }] }),
           startupGate: 'held-start',
@@ -185,8 +185,8 @@ echo "the only report"
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'what did you miss?', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'what did you miss?');
       const status = await awaitToolAnswer<{ wakes?: (WakeRow & { last_output?: string; undelivered?: string })[] }>(
         harness,
         {
@@ -303,8 +303,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'watch tick', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'watch tick');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
       await awaitTurnCompleted(harness, thread);
@@ -325,7 +325,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       // The person's message holds the separator a joined message uses, so
       // the split has to tell it from the joins.
       const own = 'my own words\n\n---\n\nand a second paragraph';
-      await harness.rpc('StopSession', thread);
+      await harness.stopSession(thread);
       await b.brk();
       const sent = await threadSend(dataDir, [thread, 'deploy 9 is done']);
       expect(sent.code, sent.stderr).toBe(0);
@@ -485,12 +485,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      await harness.rpc('StartSession', thread);
-      await harness.rpc('SendMessage', thread, 'report once', null);
+      await harness.startSession(thread);
+      await harness.send(thread, 'report once');
       const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: home, timeoutMs: 60_000 });
       expect(ack.isError, ack.text).toBe(false);
       await awaitTurnCompleted(harness, thread);
-      await harness.rpc('StopSession', thread);
+      await harness.stopSession(thread);
 
       const queued = () => {
         const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });

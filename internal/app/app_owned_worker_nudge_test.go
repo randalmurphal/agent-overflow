@@ -50,7 +50,7 @@ func (f *requestFixture) nudge(t *testing.T, by string, worker store.Thread) {
 	t.Helper()
 	switch by {
 	case "the person":
-		if err := f.app.SendMessage(t.Context(), worker.ID, "also check the docs", nil); err != nil {
+		if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{}); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 	case "another thread's send":
@@ -320,7 +320,7 @@ func TestARefusedNudgeRecordsNoRun(t *testing.T) {
 	f.watchAgentRows()
 	worker := f.restedWorker(t, "refused-spawn", store.PlacementOwned)
 	f.app.sendMessageFn = func(string, string, []string) error { return errors.New("refused") }
-	if err := f.app.SendMessage(t.Context(), worker.ID, "also check the docs", nil); err == nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), worker.ID, "also check the docs", SendMessageOptions{}); err == nil {
 		t.Fatal("the refused message was sent")
 	}
 	f.app.threadRequestsWG.Wait()

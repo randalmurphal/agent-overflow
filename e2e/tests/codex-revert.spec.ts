@@ -17,6 +17,7 @@
 // Both legs assert the same two things from opposite sides: which method
 // the provider was asked for, and whether the thread's identity survived.
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
+import type { HarnessApp } from '../src/harness.js';
 
 interface Item {
   id: string;
@@ -32,10 +33,7 @@ interface Thread {
 
 /** Runs two answered turns on a fresh codex thread of the given scenario. */
 async function twoTurnCodexThread(
-  harness: {
-    rpc: <T>(method: string, ...args: unknown[]) => Promise<T>;
-    waitForEvent: <T>(channel: string, predicate?: (data: T) => boolean) => Promise<T>;
-  },
+  harness: Pick<HarnessApp, 'rpc' | 'waitForEvent' | 'send' | 'startSession'>,
   scenario: string,
 ): Promise<string> {
   await harness.rpc('HarnessSetScenario', { name: scenario });
@@ -49,20 +47,20 @@ async function twoTurnCodexThread(
     ],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   for (const text of ['first question', 'second question']) {
-    await harness.rpc('SendMessage', threadId, text, null);
+    await harness.send(threadId, text);
     await harness.waitForEvent('provider:turn_completed');
   }
   return threadId;
 }
 
 async function userItemId(
-  harness: { rpc: <T>(method: string, ...args: unknown[]) => Promise<T> },
+  harness: Pick<HarnessApp, 'items'>,
   threadId: string,
   summary: string,
 ): Promise<string> {
-  const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+  const items = await harness.items<Item>(threadId, true);
   const match = items.find((i) => i.kind === 'user_text' && i.summary === summary);
   if (!match) throw new Error(`no user_text ${JSON.stringify(summary)} in ${JSON.stringify(items)}`);
   return match.id;
@@ -103,7 +101,7 @@ test('editing a message on a paginated codex thread cuts it in place', async ({ 
   // The edited message replaced the old tail rather than appending to it.
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       return items
         .filter((i) => i.kind === 'user_text' || i.kind === 'assistant_text')
         .map((i) => i.summary);
@@ -145,7 +143,7 @@ test('editing a message falls back to a fork when the app-server predates thread
 
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       return items
         .filter((i) => i.kind === 'user_text' || i.kind === 'assistant_text')
         .map((i) => i.summary);

@@ -122,7 +122,7 @@ async function askAndSettle(harness: HarnessApp, threadId: string, text: string)
     'notification:send',
     turnComplete(threadId),
   );
-  await harness.rpc('SendMessage', threadId, text, null);
+  await harness.send(threadId, text);
   await completed;
 }
 
@@ -132,7 +132,7 @@ async function askAndWithdraw(harness: HarnessApp, threadId: string, text: strin
     'notification:send',
     (data) => Boolean(data.retract) && data.id === `thread:${threadId}`,
   );
-  await harness.rpc('SendMessage', threadId, text, null);
+  await harness.send(threadId, text);
   await withdrawn;
 }
 
@@ -202,7 +202,7 @@ test.describe.serial('phone push', () => {
       'notification:send',
       turnComplete(threadId),
     );
-    await harness.rpc('SendMessage', threadId, 'first question', null);
+    await harness.send(threadId, 'first question');
     // The DESKTOP notification names the thread. That contrast is the
     // point of the assertions below: one delivery stays on this machine,
     // the other transits a third party.

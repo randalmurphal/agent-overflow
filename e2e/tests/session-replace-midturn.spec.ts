@@ -1,5 +1,5 @@
 // A session start that replaces a live session mid-turn
-// (stopExistingSessionLocked, reached by StartSession on a thread whose
+// (stopExistingSessionLocked, reached by HarnessStartSession on a thread whose
 // session is still running) ends the closed session's open turn as
 // interrupted (triage EndReplacedSessionTurn), on both providers. The
 // process that ran the turn is gone and its replacement never continues
@@ -25,7 +25,7 @@ for (const provider of ['claude', 'codex'] as const) {
     if (provider === 'claude') {
       await sendAndHoldMidStream(harness, threadId, driver, 'run the long one');
     } else {
-      await harness.rpc('SendMessage', threadId, 'run the long one', null);
+      await harness.send(threadId, 'run the long one');
       await driver.gate('hold');
     }
 
@@ -34,14 +34,14 @@ for (const provider of ['claude', 'codex'] as const) {
     await row.getByTestId('thread-row-title').click();
     await expect(row.getByTestId('thread-row-status-dot')).toHaveAttribute('aria-label', 'Working');
 
-    await harness.rpc('StartSession', threadId);
+    await harness.startSession(threadId);
 
     // An idle row has no status dot at all, so the check is that no
     // Working dot is left rather than a dot with another label.
     await expect(row.locator('[data-testid="thread-row-status-dot"][aria-label="Working"]')).toHaveCount(0, {
       timeout: 10_000,
     });
-    const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+    const items = await harness.items<Item>(threadId, true);
     expect(items.filter((i) => i.status === 'streaming' || i.status === 'running' || i.status === 'inProgress')).toEqual([]);
     expect(items.map((i) => [i.kind, i.status, i.summary])).toContainEqual([...settledRow[provider]]);
     if (provider === 'claude') {

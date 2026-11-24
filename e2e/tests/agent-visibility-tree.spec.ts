@@ -114,7 +114,7 @@ test('a forked code-review skill is one skill card and nothing it does is the ma
   await harness.open(page);
   await page.getByText('Forked skill').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'review the change', null);
+  await harness.send(threadId, 'review the change');
   await harness.waitForEvent('provider:turn_completed');
 
   // --- Attribution, at the row level -------------------------------
@@ -249,7 +249,7 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   await harness.open(page);
   await page.getByText('Nested background').click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'review deeply', null);
+  await harness.send(threadId, 'review deeply');
 
   // The main turn returns while both agents keep running in the background.
   await harness.waitForEvent('provider:turn_completed');

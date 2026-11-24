@@ -64,7 +64,14 @@ type Host interface {
 	// columns (IsDraft) and lists the thread, and no store write announces
 	// either.
 	BroadcastThreadRow(threadID string)
+	// StartSession brings the thread's provider session up without a
+	// message, under the thread's action lock, as the workflow runner's
+	// start does. A send starts one by itself.
+	StartSession(threadID string) error
 	StopSession(threadID string) error
+	// ListItems is every item of the thread in order, with the byte
+	// backstop the paged loads apply.
+	ListItems(threadID string, inlinePreviews bool) ([]store.Item, error)
 	// AwaitSessionEndWork waits for the work stopped sessions set off (a
 	// request a stop settled, the wake that answer owes another thread, and
 	// the session that wake starts) and returns the threads with a live
@@ -124,6 +131,8 @@ type Host interface {
 	CancelWorkflowItem(context.Context, string) error
 	SyncWorkflowEngine() error
 	PublishStoreIdentity(store.Identity)
+	// SendMessage sends message as the page's default send does, through
+	// its entry and with the options it builds.
 	SendMessage(threadID, message string) error
 	// PushSent answers what the harness push recorder has been handed, and
 	// ForgetPushSent drops it. Both answer harmlessly on a boot with no

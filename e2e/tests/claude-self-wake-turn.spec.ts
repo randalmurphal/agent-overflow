@@ -123,7 +123,7 @@ test('a message sent while Claude works after waking itself lands and the pane k
   await page.getByText('Self wake').click();
   const mockId = await startMock(harness, threadId);
   const firstStarted = harness.waitForEvent('provider:turn_started', (ev: any) => ev.threadId === threadId);
-  await harness.rpc('SendMessage', threadId, 'start batch 6 in the background', null);
+  await harness.send(threadId, 'start batch 6 in the background');
   await firstStarted;
 
   const timeline = page.getByTestId('message-timeline-scroll');
@@ -193,7 +193,7 @@ test('a message sent while the result is withheld opens its own turn', async ({ 
   const mockId = await startMock(harness, threadId);
   const firstStarted = harness.waitForEvent('provider:turn_started', (ev: any) => ev.threadId === threadId);
   const roundEnded = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
-  await harness.rpc('SendMessage', threadId, 'review batch 6 with an agent', null);
+  await harness.send(threadId, 'review batch 6 with an agent');
   await firstStarted;
 
   const timeline = page.getByTestId('message-timeline-scroll');
@@ -246,7 +246,7 @@ test('a wake while the result is withheld is a turn of its own', async ({ harnes
   const mockId = await startMock(harness, threadId);
   const firstStarted = harness.waitForEvent('provider:turn_started', (ev: any) => ev.threadId === threadId);
   const roundEnded = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
-  await harness.rpc('SendMessage', threadId, 'review batch 6 with an agent', null);
+  await harness.send(threadId, 'review batch 6 with an agent');
   await firstStarted;
 
   const timeline = page.getByTestId('message-timeline-scroll');
@@ -317,7 +317,7 @@ test('a message sent while the model continues its ended message lands in that t
   const mockId = await startMock(harness, threadId);
   const firstStarted = harness.waitForEvent('provider:turn_started', (ev: any) => ev.threadId === threadId);
   const roundEnded = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
-  await harness.rpc('SendMessage', threadId, 'plan batch 6', null);
+  await harness.send(threadId, 'plan batch 6');
   await firstStarted;
 
   const timeline = page.getByTestId('message-timeline-scroll');

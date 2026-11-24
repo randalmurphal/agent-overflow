@@ -577,10 +577,10 @@ func TestE2E_FullClaudeSessionHappyPath(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "hi", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -644,7 +644,7 @@ func TestE2E_FullCodexSessionHappyPath(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -662,7 +662,7 @@ func TestE2E_FullCodexSessionHappyPath(t *testing.T) {
 		t.Fatalf("init sessionID = %q", info.SessionID)
 	}
 
-	if err := app.SendMessage(context.Background(), thread.ID, "hi", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -731,16 +731,16 @@ func TestE2E_MultiTurnClaude(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	if err := app.SendMessage(context.Background(), thread.ID, "first", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "first", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
 
-	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "second", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -816,7 +816,7 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -874,10 +874,10 @@ func TestE2E_ProviderExitsMidTurn(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "hi", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -913,10 +913,10 @@ func TestE2E_ProviderExitsMidTurn(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary2}); err != nil {
 		t.Fatalf("set binary2: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("restart session: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "hello again", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello again", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage after restart: %v", err)
 	}
 	txt := bus.nextProviderEventOfKind(t, provider.EventTextDelta, 5*time.Second)
@@ -970,7 +970,7 @@ exit 0
 		t.Fatalf("UpdateThread: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	// Wait briefly for the mock to spawn so the sentinel file is written.
@@ -1021,10 +1021,10 @@ func TestE2E_ParseErrorRecovery(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "hi", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -1067,7 +1067,7 @@ func TestE2E_SendMessageBeforeSessionStart(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.SendMessage(context.Background(), thread.ID, "hello", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage (lazy-start): %v", err)
 	}
 	// Session must now be live and the mock must have delivered both the
@@ -1148,7 +1148,7 @@ done
 		})
 	}
 
-	if err := app.SendMessage(context.Background(), thread.ID, "run bash and ask the advisor", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "run bash and ask the advisor", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
@@ -1165,7 +1165,7 @@ done
 	})
 	waitForIdleTurn()
 
-	if err := app.SendMessage(context.Background(), thread.ID, "direct send after orphaned advisor", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "direct send after orphaned advisor", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage with a live background task after an orphaned advisor call: %v", err)
 	}
 	waitForFileText(t, stdinLog, func(text string) bool {
@@ -1210,10 +1210,10 @@ func TestE2E_ToolCallFullCycle(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "ls", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "ls", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -1324,7 +1324,7 @@ func TestE2E_ThreadModelSwitchMidSession(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -1388,10 +1388,10 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "go", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "go", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -1450,10 +1450,10 @@ func TestE2E_InterruptCancelsPendingApproval(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "go", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "go", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	approval := bus.nextApprovalEvent(t, "request", 5*time.Second)
@@ -1504,7 +1504,7 @@ func TestE2E_StopSessionWithoutStartIsClean(t *testing.T) {
 	}
 
 	// App still usable.
-	if _, err := app.ListItems(thread.ID, true); err != nil {
+	if _, err := app.listThreadItems(thread.ID, true); err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
 }
@@ -1531,10 +1531,10 @@ func TestE2E_TokenUsagePersists(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "go", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "go", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -1575,10 +1575,10 @@ func TestE2E_ThinkingBlockPersistsAsItem(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "think", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "think", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -1787,7 +1787,7 @@ func TestE2E_SendMessageTouchesThreadUpdatedAt(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -1798,7 +1798,7 @@ func TestE2E_SendMessageTouchesThreadUpdatedAt(t *testing.T) {
 	// Ensure clock ticks. UnixMilli has 1ms resolution.
 	time.Sleep(2 * time.Millisecond)
 
-	if err := app.SendMessage(context.Background(), thread.ID, "touch", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "touch", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -1818,7 +1818,7 @@ func TestE2E_StartSessionUnknownThread(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
 
-	err := app.StartSession("missing-thread-id")
+	err := app.startSessionTakingLock(context.Background(), "missing-thread-id")
 	if err == nil {
 		t.Fatal("StartSession unknown thread: err = nil, want failure")
 	}
@@ -1839,7 +1839,7 @@ func TestE2E_SendMessageUnknownThread(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
 
-	err := app.SendMessage(context.Background(), "ghost-thread-id", "hello", nil)
+	_, err := app.SendMessageWithOptions(context.Background(), "ghost-thread-id", "hello", SendMessageOptions{})
 	if err == nil {
 		t.Fatal("SendMessage unknown thread: err = nil, want failure")
 	}
@@ -1902,7 +1902,7 @@ func TestE2E_StartSessionTwiceReplacesOldSession(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession #1: %v", err)
 	}
 	first, ok := app.sessionManager().get(thread.ID)
@@ -1910,7 +1910,7 @@ func TestE2E_StartSessionTwiceReplacesOldSession(t *testing.T) {
 		t.Fatal("first session not registered")
 	}
 
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession #2: %v", err)
 	}
 	second, ok := app.sessionManager().get(thread.ID)
@@ -2006,7 +2006,7 @@ func TestE2E_ClaudeStoppedThreadPreInitErrorResultSurfaces(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "hi", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -2031,7 +2031,7 @@ func TestE2E_ClaudeStoppedThreadPreInitErrorResultSurfaces(t *testing.T) {
 	}
 
 	// The retry send lazy-starts the replacement session.
-	if err := app.SendMessage(context.Background(), thread.ID, "are you there?", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "are you there?", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 

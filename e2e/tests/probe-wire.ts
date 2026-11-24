@@ -13,6 +13,7 @@
 // the summary fields only it reports.
 import * as path from 'node:path';
 import type { Page } from '@playwright/test';
+import type { HarnessApp } from '../src/harness.js';
 import { expect, type SeedResult } from './fixtures.js';
 
 export const OUT_DIR =
@@ -60,11 +61,7 @@ export interface TraceRecord {
 // ── Driver ─────────────────────────────────────────────────────────────
 
 /** Structural view of the harness fixture the probes drive. */
-export interface ProbeHarness {
-  rpc<T = unknown>(method: string, ...args: unknown[]): Promise<T>;
-  waitForEvent<T = unknown>(channel: string, match?: (data: T) => boolean): Promise<T>;
-  open(page: Page, options?: Parameters<Page['goto']>[1]): Promise<void>;
-}
+export type ProbeHarness = Pick<HarnessApp, 'rpc' | 'waitForEvent' | 'open' | 'send' | 'startSession'>;
 
 /** The per-frame fields every probe's rAF sampler records. */
 export interface ProbeFrame {

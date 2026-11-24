@@ -177,11 +177,11 @@ export function connectedComputersFlow(): void {
         ],
         afterTurns: 'silent',
       }));
-      await home.rpc('StartSession', sourceThread);
+      await home.startSession(sourceThread);
       const firstTurn = awaitTurnCompleted(home, sourceThread);
       const listedPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_computers', cwd: homeSeed.projects[0].path, timeoutMs: 30_000 });
       const startedPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd: homeSeed.projects[0].path, timeoutMs: 60_000 });
-      await home.rpc('SendMessage', sourceThread, 'run a remote command', null);
+      await home.send(sourceThread, 'run a remote command');
       const listed = await listedPromise;
       expect(listed.report.isError, listed.report.result).toBeFalsy();
       expect(JSON.parse(listed.report.result ?? '[]')).toEqual(expect.arrayContaining([expect.objectContaining({ id: remoteId })]));
@@ -195,7 +195,7 @@ export function connectedComputersFlow(): void {
       const secondTurn = awaitTurnCompleted(home, sourceThread);
       const disabledPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_computers', cwd: homeSeed.projects[0].path, timeoutMs: 30_000 });
       const receiptPromise = home.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_status', cwd: homeSeed.projects[0].path, timeoutMs: 30_000 });
-      await home.rpc('SendMessage', sourceThread, 'check after opt-out', null);
+      await home.send(sourceThread, 'check after opt-out');
       const disabled = await disabledPromise;
       expect(disabled.report.isError, disabled.report.result).toBeFalsy();
       expect(JSON.parse(disabled.report.result ?? 'null')).toEqual([]);

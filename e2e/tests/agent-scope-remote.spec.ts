@@ -46,7 +46,7 @@ test('a remote agent pane retains loaded run history through a disconnected comp
       await harness.open(page);
       await page.getByText('Remote scope reader', { exact: true }).click();
       const mock = await startMock(remote, thread);
-      await remote.rpc('SendMessage', thread, 'Inspect remote history', null);
+      await remote.send(thread, 'Inspect remote history');
       await waitForGate(remote, 'finish');
       // The gate opens once the mock has written the rows, which can be before
       // the remote has persisted them. A page read then ships an older window

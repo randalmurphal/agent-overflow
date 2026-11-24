@@ -162,7 +162,7 @@ test('an armed recurring cron job keeps its session alive until CronDelete relea
       await expect.poll(exitsOf(await startMock(harness, control)), { timeout: 15_000 }).toBe(1);
     };
 
-    await harness.rpc('SendMessage', threadId, 'Schedule the cron job.', null);
+    await harness.send(threadId, 'Schedule the cron job.');
     await expect(replyRow(page, SCHEDULED_REPLY)).toBeVisible();
     await waitForGate(harness, 'fire');
 
@@ -182,7 +182,7 @@ test('an armed recurring cron job keeps its session alive until CronDelete relea
     expect(exited(), 'the session was reaped after its job fired').toBe(0);
 
     // CronDelete releases the job; the next sweeps reap the idle session.
-    await harness.rpc('SendMessage', threadId, 'List and delete the jobs.', null);
+    await harness.send(threadId, 'List and delete the jobs.');
     await expect(replyRow(page, 'DONE')).toBeVisible();
     await expect.poll(exited, { timeout: 10_000 }).toBe(1);
   });
@@ -203,7 +203,7 @@ test('a cron fire renders as a scheduled turn with its prompt', async ({ page },
     const threadId = await seedAgentThread(harness, 'cron-fire', 'Cron fire');
     await openThread(harness, page, 'Cron fire');
     const mockId = await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'Schedule the cron job.', null);
+    await harness.send(threadId, 'Schedule the cron job.');
     await expect(replyRow(page, SCHEDULED_REPLY)).toBeVisible();
     await waitForGate(harness, 'fires');
     await advance(harness, mockId, 'fires');
@@ -232,13 +232,13 @@ test('a cron fire held through a busy turn renders after that turn as a schedule
     const threadId = await seedAgentThread(harness, 'cron-held', 'Cron held');
     await openThread(harness, page, 'Cron held');
     await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'Loop every minute.', null);
+    await harness.send(threadId, 'Loop every minute.');
     await expect(replyRow(page, SCHEDULED_REPLY)).toBeVisible();
     // `/loop` runs its prompt once right away, so the reply above already
     // ends in LOOP-PING; the fire's reply is the second one.
     const pings = replyRow(page, 'LOOP-PING');
     await expect(pings).toHaveCount(1);
-    await harness.rpc('SendMessage', threadId, 'Sleep for 80 seconds.', null);
+    await harness.send(threadId, 'Sleep for 80 seconds.');
     await expect(pings).toHaveCount(2);
     await expectClearOfComposer(page, pings.last());
     await shot(page, testInfo, 'cron-held-fire.png');
@@ -285,7 +285,7 @@ test('a CLI that exits by itself takes its scheduled wakeup and one-shot job wit
       harness.countEvents<{ report: { kind: string } }>('harness:mock', (ev) => ev.report.kind === 'registered');
     const held = 'Waiting for turns and queued work to finish…';
     const armed = async (n: number) => {
-      await harness.rpc('SendMessage', threadId, `Schedule the checks (${n}).`, null);
+      await harness.send(threadId, `Schedule the checks (${n}).`);
       await expect(replyRow(page, `Armed schedule ${n}.`)).toBeVisible();
       await expect.poll(() => updateWorkReason(harness)).toBe(held);
     };
@@ -312,7 +312,7 @@ test('a CLI that exits by itself takes its scheduled wakeup and one-shot job wit
     // completes. It never served one, so it is not resumed
     // (TestAutoReconnectRearmsOnlyAfterAServedTurn) and only the exit
     // itself can drop what it armed.
-    await harness.rpc('SendMessage', threadId, 'Schedule the checks (3).', null);
+    await harness.send(threadId, 'Schedule the checks (3).');
     await expect(replyRow(page, 'Armed schedule 3.')).toBeVisible();
     await exitCleanly(third);
     // Soft, so a failure here still records what the transfer does.
@@ -432,7 +432,7 @@ test('a background completion and a Monitor event that wake an idle session each
     const threadId = await seedAgentThread(harness, 'idle-wake', 'Idle wake');
     await openThread(harness, page, 'Idle wake');
     const mockId = await startMock(harness, threadId);
-    await harness.rpc('SendMessage', threadId, 'Build the release and watch the deploy.', null);
+    await harness.send(threadId, 'Build the release and watch the deploy.');
     await expect(replyRow(page, ARMED_REPLY)).toBeVisible();
 
     await waitForGate(harness, 'build-done');

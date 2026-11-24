@@ -22,7 +22,7 @@ test('phone meters, attachments, workspace and command details remain usable', a
   await harness.open(page);
   await page.getByTestId('thread-row').click();
   await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'show command details', null);
+  await harness.send(threadId, 'show command details');
   await harness.waitForEvent('provider:turn_completed');
 
   const ring = page.getByTestId('composer-rate-limit-7d').getByRole('button');

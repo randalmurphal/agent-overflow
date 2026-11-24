@@ -35,8 +35,8 @@ test('built-in browser MCP reaches both provider launch boundaries and composer 
   });
   const [claudeThread, codexThread] = seed.projects[0].threadIds;
 
-  await harness.rpc('StartSession', claudeThread);
-  await harness.rpc('StartSession', codexThread);
+  await harness.startSession(claudeThread);
+  await harness.startSession(codexThread);
 
   const [claude] = await sessionConfigs(harness, 'claude', 1);
   const [codex] = await sessionConfigs(harness, 'codex', 1);
@@ -98,7 +98,7 @@ test('a hidden browser page stays headless until explicitly presented as an inte
     }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await harness.open(page);
   await page.getByText('Browser companion').click();
   const htmlPath = await harness.rpc<string>(

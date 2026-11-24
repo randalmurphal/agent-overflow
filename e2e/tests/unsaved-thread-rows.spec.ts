@@ -67,11 +67,11 @@ async function liveThreadRefusing(
   );
   const cleanup = async () => {
     withDatabase(harness, (db) => db.exec(`DROP TRIGGER IF EXISTS ${trigger}`));
-    await harness.rpc('StopSession', threadId).catch(() => undefined);
+    await harness.stopSession(threadId).catch(() => undefined);
   };
   try {
     const before = await mockSessions(harness, 'claude', 0);
-    await harness.rpc('StartSession', threadId);
+    await harness.startSession(threadId);
     let mockId = '';
     await expect
       .poll(async () => {

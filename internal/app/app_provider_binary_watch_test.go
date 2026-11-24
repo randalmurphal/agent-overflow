@@ -414,10 +414,10 @@ func TestStaleBinaryFlagsTheLiveThreadAndHydrates(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "hi", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
@@ -498,10 +498,10 @@ func TestStaleBinaryFlagsTheLiveThreadAndHydrates(t *testing.T) {
 	// Back on a live session running the old build, then the user restarts
 	// the CLI onto the session's build (or the session onto the new one):
 	// the banner is raised and then withdrawn.
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession again: %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "hi again", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hi again", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage again: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)

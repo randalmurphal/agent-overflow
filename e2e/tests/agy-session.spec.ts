@@ -28,26 +28,26 @@ test('agy thread switches via model picker, runs ACP turns across reconnect, and
   );
   expect(updated.provider).toBe('agy');
 
-  await harness.rpc('StartSession', threadId);
-  await harness.rpc('SendMessage', threadId, 'hello antigravity', null);
+  await harness.startSession(threadId);
+  await harness.send(threadId, 'hello antigravity');
   await harness.waitForEvent('provider:turn_completed');
 
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       return items.find((i) => i.kind === 'assistant_text')?.summary ?? '';
     })
     .toContain('Hello from Antigravity mock.');
 
   // Disconnect and reconnect, then send a second turn and verify both turns survive.
-  await harness.rpc('StopSession', threadId);
-  await harness.rpc('StartSession', threadId);
-  await harness.rpc('SendMessage', threadId, 'second turn after reconnect', null);
+  await harness.stopSession(threadId);
+  await harness.startSession(threadId);
+  await harness.send(threadId, 'second turn after reconnect');
   await harness.waitForEvent('provider:turn_completed');
 
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
+      const items = await harness.items<Item>(threadId, true);
       return items.filter((i) => i.kind === 'assistant_text').length;
     })
     .toBeGreaterThanOrEqual(2);

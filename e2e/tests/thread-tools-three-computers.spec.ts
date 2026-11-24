@@ -166,8 +166,8 @@ test('computers narrows a search to the one computer it names', async () => {
       ],
     }),
   );
-  await home.rpc('StartSession', caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'what is on every computer?', null);
+  await home.startSession(caller.threadIds[0]);
+  await home.send(caller.threadIds[0], 'what is on every computer?');
 
   // The default fan-out covers this computer and both paired ones.
   const every = await awaitToolAnswer<SearchAnswer>(home, {
@@ -189,7 +189,7 @@ test('computers narrows a search to the one computer it names', async () => {
 
   // Naming one computer drops every other group, this computer's included.
   await awaitTurnCompleted(home, caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'now only the studio', null);
+  await home.send(caller.threadIds[0], 'now only the studio');
   const narrowed = await awaitToolAnswer<SearchAnswer>(home, {
     tool: 'thread_search',
     cwd: caller.path,
@@ -212,7 +212,7 @@ test('computers narrows a search to the one computer it names', async () => {
 
   // "local" is the same filter pointed at the caller's own computer.
   await awaitTurnCompleted(home, caller.threadIds[0]);
-  await home.rpc('SendMessage', caller.threadIds[0], 'now only this computer', null);
+  await home.send(caller.threadIds[0], 'now only this computer');
   const local = await awaitToolAnswer<SearchAnswer>(home, {
     tool: 'thread_search',
     cwd: caller.path,
@@ -278,8 +278,8 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
     } }], text: 'Packaged.' }, { text: 'Noted.' }],
   }));
 
-  await home.rpc('StartSession', lead.threadIds[0]);
-  await home.rpc('SendMessage', lead.threadIds[0], 'build it two computers away', null);
+  await home.startSession(lead.threadIds[0]);
+  await home.send(lead.threadIds[0], 'build it two computers away');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const nested = await awaitToolAnswer<{ token: string; thread_id: string }>(studio, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
@@ -390,8 +390,8 @@ test('workers two computers away are placed on their own computers, and archivin
     turns: [{ steps: [{ gate: 'owned-grand-hold' }], text: 'Packaged.' }, { text: 'Noted.' }],
   }));
 
-  await home.rpc('StartSession', lead.threadIds[0]);
-  await home.rpc('SendMessage', lead.threadIds[0], 'build it two computers away, owned', null);
+  await home.startSession(lead.threadIds[0]);
+  await home.send(lead.threadIds[0], 'build it two computers away, owned');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const nested = await awaitToolAnswer<{ token: string; thread_id: string }>(studio, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
@@ -478,8 +478,8 @@ test('a paired computer that is down becomes an errors row beside the live rows'
   const down = bench!;
   bench = undefined;
   await down.close();
-  await home.rpc('StartSession', offlineCaller.threadIds[0]);
-  await home.rpc('SendMessage', offlineCaller.threadIds[0], 'search every computer again', null);
+  await home.startSession(offlineCaller.threadIds[0]);
+  await home.send(offlineCaller.threadIds[0], 'search every computer again');
 
   const answer = await awaitToolAnswer<SearchAnswer>(home, {
     tool: 'thread_search',

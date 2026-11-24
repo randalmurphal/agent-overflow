@@ -87,7 +87,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(editor).toHaveCount(0);
     await expect(page.getByText('Later answer', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('Message Input')).toHaveValue('Unsent work stays here');
-    const items = await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', threadId, true);
+    const items = await harness.items<{ kind: string; summary: string }>(threadId, true);
     expect(items.filter(item => item.kind === 'user_text').map(item => item.summary)).toEqual(['Replacement question']);
     const frames = await page.evaluate(async () => {
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
@@ -146,7 +146,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
     await expect(page.getByLabel('Message Input')).toHaveValue('Unsent follow-up');
     expect(replacementCalls).toBe(1);
-    const rows = await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', threadId, true);
+    const rows = await harness.items<{ kind: string; summary: string }>(threadId, true);
     expect(rows.filter(row => row.kind === 'user_text').map(row => row.summary)).toEqual(['Replacement after reconnect']);
   });
 
@@ -182,7 +182,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(page.getByTestId('user-message-editor').getByLabel('Message Input')).toHaveValue('Keep this edit');
     await expect(page.getByText('Later answer', { exact: true })).toBeVisible();
     expect(resendCalls).toBe(0);
-    const rows = await harness.rpc<Array<{ kind: string; summary: string }>>('ListItems', threadId, true);
+    const rows = await harness.items<{ kind: string; summary: string }>(threadId, true);
     expect(rows.filter(row => row.kind === 'user_text').map(row => row.summary)).toEqual(['Old question', 'Later question']);
   });
 }
@@ -206,7 +206,7 @@ test('Codex startup failure after the cut recovers the edit with composer WIP', 
   await expect(page.getByTestId('user-message-editor')).toHaveCount(0);
   await expect(page.getByLabel('Message Input')).toHaveValue('Recover this replacement\n\nExisting draft');
   await expect.poll(async () => (await harness.rpc<{ content: string }>('GetDraft', threadId)).content).toBe('Recover this replacement\n\nExisting draft');
-  const rows = await harness.rpc<Array<{ kind: string }>>('ListItems', threadId, true);
+  const rows = await harness.items<{ kind: string }>(threadId, true);
   expect(rows.filter(row => row.kind === 'user_text')).toEqual([]);
   await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
 });

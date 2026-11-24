@@ -534,7 +534,7 @@ type App struct {
 	// instead of just being protected from it.
 	keepAwakeApply func(power.Mode) error
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
-	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
+	// points that spin up new work (SendMessageWithOptions, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race
 	// with subsystem teardown. Pairs with appCtx: binding entry points
 	// read this for fast-fail; in-flight goroutines derive from appCtx
@@ -1295,12 +1295,11 @@ func (a *App) backendIdentity() (backendID, replicaGeneration string) {
 
 // --- Item operations ---
 
-// ListItems returns every item persisted for a thread in chronological
-// order. Unwindowed, so it carries the byte backstop the same way the
-// paged loads do; active panes use the bounded slice surface instead.
-//
-//ao:scope threads:read
-func (a *App) ListItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
+// listThreadItems returns every item persisted for a thread in chronological
+// order, for the harness's HarnessListItems. Unwindowed, so it carries the
+// byte backstop the same way the paged loads do; panes use the bounded
+// slice surface instead.
+func (a *App) listThreadItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
 	if err := a.readyThreadHistory(threadID); err != nil {
 		return nil, err
 	}

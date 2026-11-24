@@ -66,12 +66,12 @@ func TestCodexPoolSharesOneAppServerAcrossThreadsAndDrainsCleanly(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if err := app.StartSession(threadA.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), threadA.ID); err != nil {
 		t.Fatalf("StartSession(A): %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
 
-	if err := app.StartSession(threadB.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), threadB.ID); err != nil {
 		t.Fatalf("StartSession(B): %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
@@ -112,7 +112,7 @@ func TestCodexPoolSharesOneAppServerAcrossThreadsAndDrainsCleanly(t *testing.T) 
 
 	// Draining puts the old Conn in drain mode so thread C starts on a fresh PID.
 	app.drainCodexConnections()
-	if err := app.StartSession(threadC.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), threadC.ID); err != nil {
 		t.Fatalf("StartSession(C): %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)

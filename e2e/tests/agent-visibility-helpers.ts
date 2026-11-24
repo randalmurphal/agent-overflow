@@ -529,7 +529,7 @@ export async function seedAgentThread(
 
 /** Start the provider session and wait for the mock to register. */
 export async function startMock(harness: HarnessApp, threadId: string): Promise<string> {
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const registered = await harness.waitForEvent<{ mockId: string }>(
     'harness:mock',
     (ev: any) => ev.report.kind === 'registered',
@@ -568,7 +568,7 @@ export interface Item {
 }
 
 export function listItems(harness: HarnessApp, threadId: string): Promise<Item[]> {
-  return harness.rpc<Item[]>('ListItems', threadId, true);
+  return harness.items<Item>(threadId, true);
 }
 
 export function itemMeta(item: Item | undefined): Record<string, unknown> {

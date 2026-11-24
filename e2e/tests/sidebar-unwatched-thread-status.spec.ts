@@ -53,10 +53,10 @@ for (const provider of ['codex', 'claude'] as const) {
     await page.getByTestId('thread-row').filter({ hasText: 'Watched caller' }).first().click();
     await expect(page.getByTestId('message-timeline-scroll')).toBeVisible();
 
-    await harness.rpc('StartSession', caller);
+    await harness.startSession(caller);
     const reviewing = harness.waitForEvent<HarnessMockEvent>('harness:mock',
       (ev) => ev.report.kind === 'waiting_signal' && ev.report.detail === 'review' && ev.cwd === targetPath);
-    await harness.rpc('SendMessage', caller, 'start a review', null);
+    await harness.send(caller, 'start a review');
     const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn' });
     expect(spawn.isError, spawn.text).toBe(false);
     const target = spawn.value!.thread_id;
@@ -76,7 +76,7 @@ for (const provider of ['codex', 'claude'] as const) {
 
     // A message queued behind the running turn, consumed at its boundary.
     await callerIdle();
-    await harness.rpc('SendMessage', caller, 'tell it about one more change', null);
+    await harness.send(caller, 'tell it about one more change');
     const queued = await awaitToolAnswer(harness, { tool: 'thread_send' });
     expect(queued.isError, queued.text).toBe(false);
     const consumed = targetInput('One more change.');
@@ -87,7 +87,7 @@ for (const provider of ['codex', 'claude'] as const) {
     // A message to the idle thread starts a turn of its own.
     await callerIdle();
     const rechecked = targetInput('Recheck please.');
-    await harness.rpc('SendMessage', caller, 'ask for a recheck', null);
+    await harness.send(caller, 'ask for a recheck');
     await rechecked;
     await settled();
   });

@@ -142,7 +142,7 @@ function channelFrames(
 
 /** Run one scripted turn and answer the wire index it started at. */
 async function runTurn(harness: HarnessApp, threadId: string, prompt: string): Promise<void> {
-  await harness.rpc('SendMessage', threadId, prompt, null);
+  await harness.send(threadId, prompt);
   await harness.waitForEvent<{ threadId: string }>(
     'provider:turn_completed',
     (event) => event.threadId === threadId,

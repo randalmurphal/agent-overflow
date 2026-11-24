@@ -226,7 +226,7 @@ test('an error row on an unwatched thread paints Failed on every sidebar, and it
 
     // ---- the real path: a turn that ends with a persisted error row ----
     await startMock(harness, fixture.subjectThread);
-    await harness.rpc('SendMessage', fixture.subjectThread, 'do the thing', null);
+    await harness.send(fixture.subjectThread, 'do the thing');
     // The harness connection never sent a watch frame, so it is wildcard:
     // seeing the transcript stream here proves the frames exist to withhold.
     await harness.waitForEvent<{ threadId: string }>(
@@ -257,7 +257,7 @@ test('an error row on an unwatched thread paints Failed on every sidebar, and it
     // always produces both. Which one clears it in isolation is pinned by
     // frontend/src/lib/stores/events.test.ts ("clears an error badge from a
     // thread:updated activity patch"); what this asserts is the outcome.
-    await harness.rpc('SendMessage', fixture.subjectThread, 'try again', null);
+    await harness.send(fixture.subjectThread, 'try again');
     await harness.waitForEvent<{ threadId: string }>(
       'provider:turn_completed',
       (event) => event.threadId === fixture.subjectThread,
@@ -271,7 +271,7 @@ test('an error row on an unwatched thread paints Failed on every sidebar, and it
 
     // ---- the second ordering barrier: a turn the first client watches ----
     await startMock(harness, fixture.neighbourThread);
-    await harness.rpc('SendMessage', fixture.neighbourThread, 'answer me', null);
+    await harness.send(fixture.neighbourThread, 'answer me');
     await harness.waitForEvent<{ threadId: string }>(
       'provider:turn_completed',
       (event) => event.threadId === fixture.neighbourThread,
@@ -334,7 +334,7 @@ test('a proposed plan on an unwatched thread paints Plan Ready on every sidebar'
     const clients = await openSidebarOnlyClients(harness, page, bareContext, fixture);
 
     await startMock(harness, fixture.subjectThread);
-    await harness.rpc('SendMessage', fixture.subjectThread, 'propose something', null);
+    await harness.send(fixture.subjectThread, 'propose something');
     await harness.waitForEvent<{ threadId: string }>(
       'provider:item_event',
       (event) => event.threadId === fixture.subjectThread,

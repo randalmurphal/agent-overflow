@@ -53,7 +53,7 @@ test('the header button and a mod-clicked link open the browser from no tab', as
     }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await harness.open(page);
   await page.getByText('Browser tabs').click();
 
@@ -119,7 +119,7 @@ async function seedBrowserThread(harness: HarnessApp, title: string): Promise<st
     }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   return threadId;
 }
 

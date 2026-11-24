@@ -34,7 +34,7 @@ test('browser pages come back after a restart and restore when presented', async
     });
     const projectId = seed.projects[0].projectId;
     const threadId = seed.projects[0].threadIds[0];
-    await host.rpc('StartSession', threadId);
+    await host.startSession(threadId);
     const files: string[] = [];
     for (const name of ['first.html', 'second.html']) {
       files.push(await host.rpc<string>(

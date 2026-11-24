@@ -136,7 +136,7 @@ test('a completed turn notifies by name and resuming the thread withdraws it', a
   await startMock(harness, threadId);
 
   const completed = harness.waitForEvent<NotificationSend>('notification:send', turnComplete(threadId));
-  await harness.rpc('SendMessage', threadId, 'first question', null);
+  await harness.send(threadId, 'first question');
   const presented = await completed;
 
   // Named after the thread, and saying only that it is at rest — the
@@ -161,7 +161,7 @@ test('a completed turn notifies by name and resuming the thread withdraws it', a
     'notification:send',
     turnComplete(threadId),
   );
-  await harness.rpc('SendMessage', threadId, 'second question', null);
+  await harness.send(threadId, 'second question');
   const retraction = await withdrawn;
   expect(retraction.title).toBe('');
   expect(retraction.target.kind).toBe('');
@@ -186,7 +186,7 @@ test('turning turn-complete off silences it without stranding a retraction', asy
   await harness.rpc('UpdateSettings', { notifyTurnComplete: false });
 
   const before = harness.countEvents<NotificationSend>('notification:send', turnComplete(threadId));
-  await harness.rpc('SendMessage', threadId, 'first question', null);
+  await harness.send(threadId, 'first question');
   await harness.waitForEvent('provider:turn_completed');
 
   // The barrier: the next turn's START queues a retraction BEHIND the
@@ -197,7 +197,7 @@ test('turning turn-complete off silences it without stranding a retraction', asy
     'notification:send',
     (data) => Boolean(data.retract) && data.id === `thread:${threadId}`,
   );
-  await harness.rpc('SendMessage', threadId, 'second question', null);
+  await harness.send(threadId, 'second question');
   await withdrawn;
 
   expect(harness.countEvents<NotificationSend>('notification:send', turnComplete(threadId)))

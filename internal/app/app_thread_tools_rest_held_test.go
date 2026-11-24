@@ -54,7 +54,7 @@ func TestAHeldSpawnSettlesErroredWhenALaterTurnFails(t *testing.T) {
 	f.holdCallerSession()
 	ack := f.heldOnALoop(t, []string{mockClaudeInitLine,
 		`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["the sandbox denied the write"]}`})
-	if err := f.app.SendMessage(t.Context(), ack.ThreadID, "check it again", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "check it again", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestErrored)
@@ -76,7 +76,7 @@ func TestAHeldSpawnSettlesInterruptedWhenItsSessionEndsInALaterTurn(t *testing.T
 	f.holdCallerSession()
 	second := filepath.Join(t.TempDir(), "second")
 	ack := f.heldOnALoop(t, gatedTurn(second, "Halfway through the check."))
-	if err := f.app.SendMessage(t.Context(), ack.ThreadID, "check it again", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "check it again", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {

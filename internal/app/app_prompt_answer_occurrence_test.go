@@ -100,10 +100,10 @@ func TestAUsersAnswerIsWrittenOnlyToTheSessionThatAsked(t *testing.T) {
 			}
 			start := func(message string) {
 				t.Helper()
-				if err := app.StartSession(thread.ID); err != nil {
+				if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 					t.Fatalf("StartSession: %v", err)
 				}
-				if err := app.SendMessage(context.Background(), thread.ID, message, nil); err != nil {
+				if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, message, SendMessageOptions{}); err != nil {
 					t.Fatalf("SendMessage: %v", err)
 				}
 			}

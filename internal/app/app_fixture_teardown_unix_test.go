@@ -26,7 +26,7 @@ func TestTheFixtureTeardownEndsTheProcessOfALeftSession(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	s, ok := app.sessionManager().get(thread.ID)

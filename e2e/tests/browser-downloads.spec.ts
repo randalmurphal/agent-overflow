@@ -28,7 +28,7 @@ test('a download shows in the address row, can be canceled, opened and cleared, 
     }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await harness.open(page);
   await page.getByText('Browser downloads').click();
   await page.getByTestId('browser-companion-toggle').click();

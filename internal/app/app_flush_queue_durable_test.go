@@ -99,7 +99,7 @@ func TestDispatchedQueueItemDropsItsDurableRow(t *testing.T) {
 	}
 
 	app.triage.SetFlushDispatcher(app.enqueueFlushDispatch)
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	t.Cleanup(func() { _ = app.StopSession(thread.ID) })

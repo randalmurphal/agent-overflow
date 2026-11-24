@@ -102,7 +102,7 @@ test('interrupted then stalled replay recovers a changed thread and an accepted 
       emit([...textLines('first-end', 'First thread finished during recovery.'), RESULT_LINE]),
     ]) });
     const firstMock = await startMock(harness, first);
-    await harness.rpc('SendMessage', first, 'Start first thread.', null);
+    await harness.send(first, 'Start first thread.');
     await waitForGate(harness, 'first-finish');
     await expect(page.getByText('First thread is working.', { exact: true })).toBeVisible();
     const stop = page.getByRole('button', { name: 'Interrupt current turn', exact: true });

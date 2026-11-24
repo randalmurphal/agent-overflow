@@ -178,7 +178,7 @@ test.describe.serial('off-host live thread state', () => {
       }),
     });
     await startMock(harness, queueThreadId);
-    await harness.rpc('SendMessage', queueThreadId, 'own work', null);
+    await harness.send(queueThreadId, 'own work');
     await waitForGate(harness, 'hold-queue-thread');
     // A paired device is never `host`, whatever address it arrived from:
     // open-in-editor names an editor on the host's screen, which this
@@ -262,7 +262,7 @@ test.describe.serial('off-host live thread state', () => {
     await expect(phone.getByTestId('composer-pending-approval')).toHaveCount(0);
 
     await startMock(harness, approvalThreadId);
-    await harness.rpc('SendMessage', approvalThreadId, 'write the note', null);
+    await harness.send(approvalThreadId, 'write the note');
 
     // The provider is parked on the control request. Everything after this
     // barrier is about who learns of it.

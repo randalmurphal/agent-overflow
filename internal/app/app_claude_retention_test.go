@@ -229,7 +229,7 @@ func startClaudeAndReadSettingsBlock(t *testing.T, app *App, workDir string) str
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	block, _ := argValue(spawnedClaudeArgv(t, argvPath), "--settings")

@@ -76,9 +76,9 @@ the same change; two authorities may never coexist.
    removal. This is required before the Manager can own the registry lock.
 5. Audit the remaining reconnect/config/sweep wards and move them or give them
    proven disjoint locks. Only then replace `App.mu` with the Manager.
-6. Keep the existing root Wails methods (`StartSession`, `StopSession`,
-   `ReconnectSession`, `SendMessage`, `SendMessageWithOptions`, `InterruptTurn`,
-   `SwitchThread`, `AutoResumeThread`) and their comments/signatures exactly;
+6. Keep the existing root Wails methods (`StopSession`, `ReconnectSession`,
+   `SendMessageWithOptions`, `InterruptTurn`, `SwitchThread`,
+   `AutoResumeThread`) and their comments/signatures exactly;
    they become lifecycle adapters over the Manager and existing spawn/send
    policy.
 7. Move registry/start/reaper/live-config unit tests beside the Manager. Retain

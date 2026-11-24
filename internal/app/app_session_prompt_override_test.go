@@ -661,7 +661,7 @@ func startOverrideSessionIn(t *testing.T, app *App, id string, providerName prov
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	if err := app.StartSession(id); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), id); err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
 	t.Cleanup(func() { _ = app.StopSession(id) })

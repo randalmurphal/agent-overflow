@@ -187,7 +187,7 @@ func TestStartSession_ClaudeAllowsTheThreadToolsWithoutAPrompt(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -259,7 +259,7 @@ func TestStartSession_CodexCarriesTheThreadToolsEntryAndGuide(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": writeCodexRequestLogBinary(t, logPath)}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -316,7 +316,7 @@ func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	params := waitForCodexRequest(t, logPath, "thread/start")
@@ -339,7 +339,7 @@ func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) 
 	if _, err := app.settings.Update(map[string]any{"threadToolsEnabled": false}); err != nil {
 		t.Fatalf("disable thread tools: %v", err)
 	}
-	if err := app.StartSession(other.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), other.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 	params = waitForCodexRequest(t, logPath, "thread/start")

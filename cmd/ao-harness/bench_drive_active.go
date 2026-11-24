@@ -88,8 +88,8 @@ func startActiveMultiPaneStream(ctx context.Context, run *benchRun) error {
 		sends.Add(1)
 		go func(id string, pane int) {
 			defer sends.Done()
-			_, err := run.client.Call(sendCtx, "SendMessage", id,
-				fmt.Sprintf("bench %s run %d active pane %d", run.workload.Name, run.index, pane), nil)
+			err := run.client.Send(sendCtx, id,
+				fmt.Sprintf("bench %s run %d active pane %d", run.workload.Name, run.index, pane))
 			results <- sendResult{threadID: id, err: err}
 		}(threadID, i+1)
 	}

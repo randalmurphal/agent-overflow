@@ -68,10 +68,10 @@ test('the at-rest check names a thread whose turn is held mid-stream, and passes
       text: '',
     }],
   }));
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const held = harness.waitForEvent<{ mockId: string; cwd: string; report: { kind: string; detail?: string } }>(
     'harness:mock', (ev) => ev.report.kind === 'waiting_signal' && ev.report.detail === gate && ev.cwd === cwd, TURN_TIMEOUT_MS);
-  await harness.rpc('SendMessage', threadId, 'Start and stop halfway.', null);
+  await harness.send(threadId, 'Start and stop halfway.');
   const parked = await held;
   await expect.poll(() => streamingRows(harness, threadId), {
     message: 'the held turn never wrote its streaming row',
@@ -112,12 +112,12 @@ test('the at-rest check names a thread whose sent message has not opened its tur
   const title = 'At rest: turn still to open';
   const { cwd, threadId } = await seedThread(harness, title);
   await setScenario(harness, cwd, plainScenario({ name: `at-rest-stalled-${randomBytes(3).toString('hex')}`, provider: 'claude', texts: ['Answered.'] }));
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await harness.rpc('HarnessStallProviderEvents', threadId);
   let released = false;
   try {
     const ended = awaitTurnCompleted(harness, threadId, TURN_TIMEOUT_MS);
-    await harness.rpc('SendMessage', threadId, 'Answer once.', null);
+    await harness.send(threadId, 'Answer once.');
     // The stall itself is one pending event; the turn's frames queue behind it.
     await expect.poll(() => harness.rpc<number>('HarnessPendingProviderEvents', threadId), {
       message: 'the turn\'s frames never reached the stalled worker',
@@ -169,11 +169,11 @@ test('the at-rest check names a turn whose end the store refused, which the back
   const title = 'At rest: turn end refused';
   const { cwd, threadId } = await seedThread(harness, title);
   await setScenario(harness, cwd, plainScenario({ name: `at-rest-refused-${randomBytes(3).toString('hex')}`, provider: 'claude', texts: ['Answered.'] }));
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await refusingWrites(harness, `refuse_turn_end_${threadId}`, 'turns',
     `NEW.thread_id = '${threadId}' AND OLD.completed_at IS NULL AND NEW.completed_at IS NOT NULL`, async () => {
       const ended = awaitTurnCompleted(harness, threadId, TURN_TIMEOUT_MS);
-      await harness.rpc('SendMessage', threadId, 'Answer once.', null);
+      await harness.send(threadId, 'Answer once.');
       await ended;
     });
   expect(await harness.rpc('HarnessThreadsWorking', [threadId]), 'the backend no longer reads the turn as live').toEqual([]);
@@ -189,11 +189,11 @@ test('the at-rest check names a streaming row whose settle the store refused', a
   const title = 'At rest: row settle refused';
   const { cwd, threadId } = await seedThread(harness, title);
   await setScenario(harness, cwd, plainScenario({ name: `at-rest-row-${randomBytes(3).toString('hex')}`, provider: 'claude', texts: ['Answered.'] }));
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   await refusingWrites(harness, `refuse_row_settle_${threadId}`, 'items',
     `NEW.thread_id = '${threadId}' AND OLD.status = 'streaming' AND NEW.status <> 'streaming'`, async () => {
       const ended = awaitTurnCompleted(harness, threadId, TURN_TIMEOUT_MS);
-      await harness.rpc('SendMessage', threadId, 'Answer once.', null);
+      await harness.send(threadId, 'Answer once.');
       await ended;
     });
   expect(await harness.rpc('HarnessThreadsWorking', [threadId]), 'the backend no longer reads the turn as live').toEqual([]);

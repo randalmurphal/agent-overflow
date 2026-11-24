@@ -102,8 +102,8 @@ export async function runAsyncQuestionAnsweredBySpawner(
   }));
 
   await harness.open(page);
-  await harness.rpc('StartSession', leadID);
-  await harness.rpc('SendMessage', leadID, 'ship release 4.2', null);
+  await harness.startSession(leadID);
+  await harness.send(leadID, 'ship release 4.2');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const worker = spawn.value!.thread_id;
@@ -208,8 +208,8 @@ export async function runAsyncQuestionHandedBack(
   }));
 
   await harness.open(page);
-  await harness.rpc('StartSession', leadID);
-  await harness.rpc('SendMessage', leadID, 'rotate the logs', null);
+  await harness.startSession(leadID);
+  await harness.send(leadID, 'rotate the logs');
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const worker = spawn.value!.thread_id;

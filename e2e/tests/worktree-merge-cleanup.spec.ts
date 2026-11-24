@@ -393,7 +393,7 @@ test('a turn running when the PR merges delays the cleanup until it ends', async
 
   const mockId = await startMock(harness, threadId);
   const holding = waitForGate(harness, 'hold');
-  await harness.rpc('SendMessage', threadId, 'Start the long job.', []);
+  await harness.send(threadId, 'Start the long job.');
   await holding;
   await expect(page.getByText('Working on it.')).toBeVisible();
 
@@ -434,7 +434,7 @@ test('a message the user sent after the merge keeps the worktree, with no notice
   // the merge only after.
   const mergedAt = new Date(Date.now() - 1_000);
   const completed = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
-  await harness.rpc('SendMessage', threadId, 'One more thing on this branch.', []);
+  await harness.send(threadId, 'One more thing on this branch.');
   await completed;
   await mergePR(harness, fixture, mergedAt);
 
@@ -522,7 +522,7 @@ test('a MR an agent\'s glab mr create opens is tracked when the command settles'
   const mockId = await startMock(harness, threadId);
   const creating = waitForGate(harness, 'creating');
   const completed = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
-  await harness.rpc('SendMessage', threadId, 'open an MR', []);
+  await harness.send(threadId, 'open an MR');
   await creating;
   // The MR exists on the forge from here on, as the command creates it.
   await movePR(harness, fixture, {});

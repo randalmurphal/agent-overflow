@@ -77,11 +77,11 @@ async function holdRequest(harness: HarnessApp, tag: string, end: 'answer' | 'ex
       afterTurns: 'silent',
     }),
   );
-  await harness.rpc('StartSession', target);
-  await harness.rpc('SendMessage', target, 'start on the first task', null);
+  await harness.startSession(target);
+  await harness.send(target, 'start on the first task');
   const held = await awaitGate(harness, 'hold-target', targetProject.path);
-  await harness.rpc('StartSession', sender);
-  await harness.rpc('SendMessage', sender, 'pass that on', null);
+  await harness.startSession(sender);
+  await harness.send(sender, 'pass that on');
   const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
   expect(send.isError, send.text).toBe(false);
   const token = send.value?.token ?? '';
@@ -114,7 +114,7 @@ test('claude: a Stop gives back a request the CLI had not taken in, and the next
   const { sender, target, targetPath, token } = await holdRequest(harness, 'requeue-stop', 'answer');
   await harness.open(page);
 
-  await harness.rpc('StopSession', target);
+  await harness.stopSession(target);
   // Back on the target's queue, owed again: accepted, and the sender told
   // nothing.
   await expect.poll(() => requestState(harness, sender, token), { timeout: 15_000 }).toBe('accepted');
@@ -134,7 +134,7 @@ test('claude: a Stop gives back a request the CLI had not taken in, and the next
   await captureAgentMessage(page, 'claude-requeued-request-incoming.png', incoming);
 
   await setScenario(harness, targetPath, plainScenario({ name: 'requeue-stop-next', provider: 'claude', texts: [ANSWER], afterTurns: 'silent' }));
-  await harness.rpc('StartSession', target);
+  await harness.startSession(target);
   await expect(page.getByTestId('message-timeline-scroll').getByText(ANSWER)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId('agent-message-row').filter({ hasText: REQUEST })).toHaveCount(1);
   await expect(incoming).toHaveCount(0);

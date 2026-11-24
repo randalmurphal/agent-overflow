@@ -2,6 +2,7 @@
 // it, and the thread starter that hands back the mock's driver. A turn
 // parked this way is a stable state to act on instead of a frame to race:
 // fork-midturn forks from it, session-replace-midturn replaces its session.
+import type { HarnessApp } from '../src/harness.js';
 import type { HarnessMockEvent, SeedResult } from './fixtures.js';
 
 // Per-turn text so a two-turn thread's assertions can name the turn they
@@ -97,12 +98,7 @@ export interface Driver {
   gate: (name: string) => Promise<HarnessMockEvent>;
 }
 
-export type Harness = {
-  rpc: <T>(method: string, ...args: unknown[]) => Promise<T>;
-  waitForEvent: <T>(channel: string, predicate?: (data: T) => boolean) => Promise<T>;
-  bootstrap: { homeDir?: string };
-  url: string;
-};
+export type Harness = Pick<HarnessApp, 'rpc' | 'waitForEvent' | 'bootstrap' | 'url' | 'send' | 'startSession'>;
 
 export async function startThread(
   harness: Harness,
@@ -118,7 +114,7 @@ export async function startThread(
     ],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('StartSession', threadId);
+  await harness.startSession(threadId);
   const registered = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) => ev.report.kind === 'registered',
@@ -145,7 +141,7 @@ export async function sendAndHoldMidStream(
   driver: Driver,
   text: string,
 ): Promise<void> {
-  await harness.rpc('SendMessage', threadId, text, null);
+  await harness.send(threadId, text);
   await driver.gate('half');
   await driver.advance('half');
   await driver.gate('finish');

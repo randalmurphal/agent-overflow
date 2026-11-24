@@ -27,7 +27,7 @@ for (const returnPath of ['switch', 'reopen'] as const) {
       const open = () => page.getByTestId('thread-row').getByText('Active return', { exact: true }).click();
       await open();
       const mockId = await startMock(harness, threadId);
-      await harness.rpc('SendMessage', threadId, 'Start', null);
+      await harness.send(threadId, 'Start');
       await waitForGate(harness, 'away');
       const tail = page.getByTestId('activity-run').last();
       await expect(tail).toHaveAttribute('data-live', 'true');
@@ -111,7 +111,7 @@ test('a reader-pinned run keeps its earlier window when its tail advances out of
   await harness.open(page);
   await page.getByTestId('thread-row').getByText('Pinned return', { exact: true }).click();
   const mockId = await startMock(harness, seed.projects[0].threadIds[0]);
-  await harness.rpc('SendMessage', seed.projects[0].threadIds[0], 'Start', null);
+  await harness.send(seed.projects[0].threadIds[0], 'Start');
   await waitForGate(harness, 'away');
   const run = page.getByTestId('activity-run').last();
   await expect(run.getByTestId('activity-run-header-counts')).toContainText('39 Bash');

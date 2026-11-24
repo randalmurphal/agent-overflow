@@ -943,7 +943,7 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 		t.Run(outcome, func(t *testing.T) {
 			t.Parallel()
 			f := newClaimFixture(t)
-			if err := f.app.StartSession(f.caller.ID); err != nil {
+			if err := f.app.startSessionTakingLock(context.Background(), f.caller.ID); err != nil {
 				t.Fatal(err)
 			}
 			tokens := []string{"first-" + entityid.New(), "withdrawn-" + entityid.New(), "last-" + entityid.New()}

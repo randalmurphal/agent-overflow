@@ -114,7 +114,7 @@ async function stageHolder(rig: Sandbox): Promise<{ holderId: string; forkId: st
     await host.rpc('HarnessSetScenario', { scenario: plainScenario({ name: 'upgrade-holder', provider: 'claude', texts: ['Answered.'] }) });
     const holderId = await seedAgentThread(host, 'upgrade-holder', 'Forked, then deleted');
     const answered = host.waitForEvent<{ threadId: string }>('provider:turn_completed', (event) => event.threadId === holderId);
-    await host.rpc('SendMessage', holderId, 'answer once', null);
+    await host.send(holderId, 'answer once');
     await answered;
     const fork = await host.rpc<{ id: string }>('ForkThread', holderId, null);
     await host.rpc('DeleteThread', holderId);
@@ -177,11 +177,11 @@ async function stageCrashedRoot(rig: Sandbox): Promise<Omit<Staged, 'holderId' |
     expect(terminal.mode).toBe('terminal');
     const mockId = await startMock(host, threadId);
     const completed = host.waitForEvent('provider:turn_completed');
-    await host.rpc('SendMessage', threadId, 'launch two workers', null);
+    await host.send(threadId, 'launch two workers');
     await completed;
     await waitForGate(host, 'work');
     await advance(host, mockId, 'work');
-    await host.rpc('SendMessage', threadId, 'what next', null);
+    await host.send(threadId, 'what next');
     await waitForGate(host, 'never');
     await expect.poll(async () => (await listItems(host, threadId))
       .filter((i) => i.completionOf === 'tu-done' || i.id === 'tu-live-read').map((i) => `${i.id}:${i.status}`).sort())

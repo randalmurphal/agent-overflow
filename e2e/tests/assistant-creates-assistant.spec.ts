@@ -60,7 +60,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
     const opening = awaitMockInput(harness, { includes: 'You are "Scout", a new standing agent in Agent Overflow, created by the standing agent "Lead"' });
     const reported = awaitMockInput(harness, { cwd, includes: 'I am Scout. I propose: watch the nightly build.' });
-    await harness.rpc('SendMessage', lead, 'Make an assistant for the nightly build.', null);
+    await harness.send(lead, 'Make an assistant for the nightly build.');
     const created = await awaitToolAnswer<{ token: string; thread_id: string; assistant_id: string; name: string; home: string; outcome: string }>(
       harness, { tool: 'thread_new_assistant', cwd, timeoutMs: 60_000 });
     expect(created.isError, created.text).toBe(false);
@@ -105,8 +105,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       name: `assistant-creates-plain-${provider}`, provider,
       turns: [{ steps: [{ call: { tool: 'thread_new_assistant', args: { name: 'Nobody', role: ROLE } } }], text: 'Refused.' }],
     }));
-    await harness.rpc('StartSession', plain);
-    await harness.rpc('SendMessage', plain, 'Make an assistant.', null);
+    await harness.startSession(plain);
+    await harness.send(plain, 'Make an assistant.');
     const refused = await awaitToolAnswer(harness, { tool: 'thread_new_assistant', cwd: plainProject.path, timeoutMs: 60_000 });
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain("Only an assistant's current thread may create an assistant");

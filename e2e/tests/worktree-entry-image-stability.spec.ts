@@ -235,7 +235,7 @@ async function run(harness: HarnessApp, page: Page, historyImagePath: string): P
   await startMock(harness, threadId);
 
   let completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'show me', null);
+  await harness.send(threadId, 'show me');
   await completed;
   const images = timeline.locator('img[data-markdown-image-src]');
   await expect(images).toHaveCount(3);
@@ -250,7 +250,7 @@ async function run(harness: HarnessApp, page: Page, historyImagePath: string): P
 
   await installSampler(page);
   completed = harness.waitForEvent('provider:turn_completed');
-  await harness.rpc('SendMessage', threadId, 'build it', null);
+  await harness.send(threadId, 'build it');
   await completed;
   await expect(timeline.getByText('Done with the build.')).toBeVisible({ timeout: 20_000 });
   // The page has taken the move into the worktree, every image has painted

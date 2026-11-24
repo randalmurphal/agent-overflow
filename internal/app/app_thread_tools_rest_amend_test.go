@@ -132,7 +132,7 @@ func TestARestartKeepsTheTurnAHeldSpawnAnswersFrom(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"call-1","type":"tool_result","content":"ok","is_error":false}]}}`,
 		mockClaudeResultLine,
 	})
-	if err := f.app.SendMessage(t.Context(), ack.ThreadID, "check it again", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "check it again", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {

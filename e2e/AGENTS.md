@@ -69,6 +69,12 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   A new mock scenario is listed in `upgrade-corpus-config.ts` as a top-up
   turn or excluded with the reason; the coverage spec fails until it is.
 
+A spec sends, starts or stops a session, and reads a thread's items through
+`HarnessApp.send`, `startSession`, `stopSession` and `items`
+(`src/harness-app.ts`), which own the call each makes; `send` sends as the
+page's default send does. Only a call against a saved older release binary
+names the release's own method.
+
 Calls such as `harness.rpc('MethodName', ...)` are not linked to Go signatures.
 Any bound-method signature change must sweep `e2e/tests` and `cmd/ao-harness`
 and run the end-to-end gate.

@@ -508,7 +508,7 @@ func TestAnArchiveAdmittedWhoseAnswerWasLostIsNotAppliedTwice(t *testing.T) {
 	if _, err := p.dest.UnarchiveThread(p.worker); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.dest.StartSession(p.worker); err != nil {
+	if err := p.dest.startSessionTakingLock(context.Background(), p.worker); err != nil {
 		t.Fatal(err)
 	}
 	p.peer.asleep.Store(false)

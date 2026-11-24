@@ -35,10 +35,17 @@ import (
 
 const codexAccountReadTimeout = 8 * time.Second
 
-// startSessionTakingLock is StartSession's body with a caller-supplied context.
-// The bound method cannot take one — Wails generates the TS wrapper from its
-// signature — so internal callers that DO have a cancellable context (the
-// workflow runner's start path) come through here instead.
+// startSessionTakingLock brings the thread's provider subprocess up for a
+// caller that does not hold the per-thread action lock: the workflow
+// runner's start and the harness's HarnessStartSession. Sends start a
+// session lazily through runRegisteredSessionStart instead.
+//
+// It takes the action lock because an unserialized start racing a revert
+// can read the pre-revert SessionRef, clear the stopped-thread gate
+// mid-revert (MarkThreadActive), and register a session bound to the old
+// provider thread after the revert repointed the row. Callers that already
+// hold the lock (sends, deferred config restarts) go through a.startSession
+// / runRegisteredSessionStart directly.
 //
 // ctx bounds the two waits that have performed no side effects yet: the
 // per-thread action lock and the join on somebody else's in-flight start.

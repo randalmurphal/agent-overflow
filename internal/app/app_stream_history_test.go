@@ -40,7 +40,7 @@ func TestHistoryReadsCoverEmittedDeltas(t *testing.T) {
 			return err
 		},
 		"ListItems": func(a *App, threadID, _ string) error {
-			_, err := a.ListItems(threadID, false)
+			_, err := a.listThreadItems(threadID, false)
 			return err
 		},
 		"ListActivityRunMembers": func(a *App, threadID, itemID string) error {

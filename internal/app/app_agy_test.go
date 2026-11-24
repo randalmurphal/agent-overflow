@@ -94,10 +94,10 @@ func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T
 		t.Fatal(err)
 	}
 
-	if err := app.StartSession(threadA.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), threadA.ID); err != nil {
 		t.Fatalf("StartSession(A): %v", err)
 	}
-	if err := app.StartSession(threadB.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), threadB.ID); err != nil {
 		t.Fatalf("StartSession(B): %v", err)
 	}
 
@@ -166,7 +166,7 @@ func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T
 	}
 
 	// Send a turn on thread A and verify the response lands on the timeline.
-	if err := app.SendMessage(context.Background(), threadA.ID, "hello agy", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), threadA.ID, "hello agy", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage(A): %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -359,10 +359,10 @@ func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testi
 
 	// 2. Run Turn 1, stop/disconnect session, reconnect, and run Turn 2.
 	// Both turns MUST land as distinct turn rows in SQLite (no acp-turn-1 collision).
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession(1): %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "turn one", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "turn one", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage(1): %v", err)
 	}
 	waitAssistantCount := func(want int) {
@@ -389,10 +389,10 @@ func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testi
 	if err := app.StopSession(thread.ID); err != nil {
 		t.Fatalf("StopSession: %v", err)
 	}
-	if err := app.StartSession(thread.ID); err != nil {
+	if err := app.startSessionTakingLock(context.Background(), thread.ID); err != nil {
 		t.Fatalf("StartSession(2): %v", err)
 	}
-	if err := app.SendMessage(context.Background(), thread.ID, "turn two", nil); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "turn two", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage(2): %v", err)
 	}
 	waitAssistantCount(2)

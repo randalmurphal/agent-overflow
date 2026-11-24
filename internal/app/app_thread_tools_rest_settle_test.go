@@ -151,7 +151,7 @@ func TestAHeldSpawnSettlesOnceWithItsWorkersLaterMessage(t *testing.T) {
 	})
 	ack := f.spawnWorker(t, "watch the deploy")
 	f.awaitRestHold(t, ack)
-	if err := f.app.SendMessage(t.Context(), ack.ThreadID, "how is it going?", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "how is it going?", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
@@ -190,7 +190,7 @@ func TestAHeldSpawnsWorkerIsNotAtRestWhileATurnStarts(t *testing.T) {
 		}
 	})
 	t.Cleanup(func() { letGo(); f.app.triage.SetTurnRowWrittenGate(nil) })
-	if err := f.app.SendMessage(t.Context(), ack.ThreadID, "how is it going?", nil); err != nil {
+	if _, err := f.app.SendMessageWithOptions(t.Context(), ack.ThreadID, "how is it going?", SendMessageOptions{}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	select {

@@ -461,10 +461,10 @@ func TestShutdownBlocksNewWork(t *testing.T) {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
 
-	if err := app.StartSession("thread-x"); !errors.Is(err, ErrShuttingDown) {
+	if err := app.startSessionTakingLock(context.Background(), "thread-x"); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("StartSession after shutdown = %v, want ErrShuttingDown", err)
 	}
-	if err := app.SendMessage(context.Background(), "thread-x", "hi", nil); !errors.Is(err, ErrShuttingDown) {
+	if _, err := app.SendMessageWithOptions(context.Background(), "thread-x", "hi", SendMessageOptions{}); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("SendMessage after shutdown = %v, want ErrShuttingDown", err)
 	}
 	if err := app.ReconnectSession("thread-x"); !errors.Is(err, ErrShuttingDown) {
@@ -487,7 +487,7 @@ func TestShutdownSetsFlagAtomically(t *testing.T) {
 	// Pre-flight: StartSession without shutdown should not trip the
 	// ErrShuttingDown branch (it will fail for a different reason —
 	// unknown thread — but not ErrShuttingDown).
-	if err := app.StartSession("nonexistent"); errors.Is(err, ErrShuttingDown) {
+	if err := app.startSessionTakingLock(context.Background(), "nonexistent"); errors.Is(err, ErrShuttingDown) {
 		t.Fatal("StartSession returned ErrShuttingDown before shutdown")
 	}
 
@@ -496,7 +496,7 @@ func TestShutdownSetsFlagAtomically(t *testing.T) {
 	}
 
 	// Post-shutdown.
-	if err := app.StartSession("nonexistent"); !errors.Is(err, ErrShuttingDown) {
+	if err := app.startSessionTakingLock(context.Background(), "nonexistent"); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("StartSession post-shutdown = %v, want ErrShuttingDown", err)
 	}
 }

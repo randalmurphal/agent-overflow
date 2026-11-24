@@ -12,7 +12,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-// readLimit matches transport.DefaultReadLimit. A ListItems response for
+// readLimit matches transport.DefaultReadLimit. A HarnessListItems response for
 // a long thread runs into tens of MiB, and coder/websocket's default cap
 // is 32 KiB — a client that left it there would fail on exactly the
 // reads an assertion wants.

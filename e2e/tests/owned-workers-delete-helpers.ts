@@ -81,9 +81,9 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
   await harness.open(page);
   await awaitSidebarSettled(page);
 
-  await harness.rpc('StartSession', lead);
+  await harness.startSession(lead);
   const leadTurn = awaitTurnCompleted(harness, lead, 120_000);
-  await harness.rpc('SendMessage', lead, 'spawn two workers', null);
+  await harness.send(lead, 'spawn two workers');
   const spawned: string[] = [];
   for (let i = 0; i < 2; i++) {
     const answer = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadProject.path, timeoutMs: 60_000 });

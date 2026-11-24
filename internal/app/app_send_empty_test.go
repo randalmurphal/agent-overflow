@@ -33,7 +33,7 @@ func TestEmptySendRefusedBeforeDraftHistoryQueueOrRuntimeEffects(t *testing.T) {
 				case "send", "workflow":
 					_, err = app.SendMessageWithOptions(context.Background(), thread.ID, " \n\t", opts)
 				case "legacy":
-					err = app.SendMessage(context.Background(), thread.ID, "", nil)
+					_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "", SendMessageOptions{})
 				case "queue":
 					_, err = app.RegisterQueueItem(context.Background(), thread.ID, " \n\t", opts)
 				}
@@ -170,7 +170,7 @@ func TestAttachmentOnlySendStillReachesProvider(t *testing.T) {
 	app := newMixedTurnApp(t)
 	thread, capture := newMixedTurnThread(t, app, "attachment-only-send")
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)
-	if err := app.SendMessage(context.Background(), thread.ID, "", ids); err != nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "", SendMessageOptions{AttachmentIDs: ids}); err != nil {
 		t.Fatal(err)
 	}
 	blocks := waitForCapturedUserEnvelopes(t, capture, 1)[0]

@@ -171,7 +171,7 @@ func (a *App) goAgentNoticeWork(threadID string, fn func()) bool {
 
 // startAgentNoticeSession starts the session a queued notice needs, and
 // reports whether the thread has one afterwards. It takes the thread's
-// action lock the way StartSession does, and re-checks under it: a session
+// action lock the way startSessionTakingLock does, and re-checks under it: a session
 // someone else started meanwhile already has the message, because startup's
 // flush trigger dispatches the queue, and starting again would restart that
 // session.

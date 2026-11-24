@@ -176,12 +176,12 @@ async function runProbe(
     const page = await browser.newPage({ viewport: { width: 960, height: 1200 } });
     await openProbeThread(page, harness, `Boundary probe ${engine}`);
 
-    await harness.rpc('StartSession', threadId);
+    await harness.startSession(threadId);
     await harness.waitForEvent<HarnessMockEvent>(
       'harness:mock',
       (ev) => ev.report.kind === 'registered',
     );
-    await harness.rpc('SendMessage', threadId, 'run the boundary probe', null);
+    await harness.send(threadId, 'run the boundary probe');
     await harness.waitForEvent('provider:turn_completed');
     await expect(page.getByText('BOUNDARY_PROBE_DONE')).toBeVisible({ timeout: 20_000 });
     // Let the drain tail + settle passes finish before sampling.

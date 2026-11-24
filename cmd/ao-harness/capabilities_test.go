@@ -10,7 +10,7 @@ import (
 func compatibleCapabilities() harnessclient.HarnessCapabilities {
 	return harnessclient.HarnessCapabilities{
 		ProtocolRevision: cliHarnessProtocolRevision,
-		Methods:          []string{"HarnessSeed", "SendMessage"},
+		Methods:          []string{"HarnessSeed", "SendMessageWithOptions"},
 		Meters:           []string{"frames"},
 		Actions:          []string{"open"},
 		Queries:          []string{"viewport"},
@@ -20,9 +20,9 @@ func compatibleCapabilities() harnessclient.HarnessCapabilities {
 
 func TestMissingCapabilitiesNamesTheControlBeforeMutation(t *testing.T) {
 	caps := compatibleCapabilities()
-	caps.Methods = []string{"SendMessage"}
+	caps.Methods = []string{"SendMessageWithOptions"}
 	// This exercises the pure missing-name logic used by the command gates.
-	missing := missingCapabilities([]string{"HarnessSeed", "HarnessSeed", "SendMessage"}, caps.Methods)
+	missing := missingCapabilities([]string{"HarnessSeed", "HarnessSeed", "SendMessageWithOptions"}, caps.Methods)
 	if got, want := strings.Join(missing, ","), "HarnessSeed"; got != want {
 		t.Fatalf("missing = %q, want %q", got, want)
 	}

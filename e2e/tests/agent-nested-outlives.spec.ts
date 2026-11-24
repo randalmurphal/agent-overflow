@@ -65,7 +65,7 @@ test('a nested agent that outlives its parent gets its own card in the main time
   await harness.open(page);
   await page.getByTestId('thread-row-title').getByText('Nested outlives parent', { exact: true }).click();
   const mockId = await startMock(harness, threadId);
-  await harness.rpc('SendMessage', threadId, 'review deeply', null);
+  await harness.send(threadId, 'review deeply');
   await harness.waitForEvent('provider:turn_completed');
 
   const timeline = page.locator(

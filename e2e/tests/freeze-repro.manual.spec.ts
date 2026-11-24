@@ -165,7 +165,7 @@ test.describe('freeze repro', () => {
         el.scrollTop = el.scrollHeight;
       });
 
-      await harness.rpc('StartSession', threadId);
+      await harness.startSession(threadId);
       await harness.waitForEvent<HarnessMockEvent>(
         'harness:mock',
         (ev) => ev.report.kind === 'registered',
@@ -180,7 +180,7 @@ test.describe('freeze repro', () => {
       for (const turn of manifest.live) {
         const startedAt = Date.now();
         note(`turn ${turn.turn}: sending (${turn.emittedItems} items to replay)`);
-        await harness.rpc('SendMessage', threadId, turn.userText, null);
+        await harness.send(threadId, turn.userText);
 
         // The turn's completion and the wedge race each other. The loser's
         // rejection is swallowed on purpose — a timed-out waitForEvent after a

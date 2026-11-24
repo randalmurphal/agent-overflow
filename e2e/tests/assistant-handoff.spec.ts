@@ -65,8 +65,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       turns: [{ steps: [{ call: { tool: 'thread_loop', args: { label: 'board check', note: 'look at the board', every_seconds: 3600 } } }], text: 'Scheduled.' }],
       afterTurns: 'silent',
     }));
-    await harness.rpc('StartSession', first);
-    await harness.rpc('SendMessage', first, 'Look at the board every hour.', null);
+    await harness.startSession(first);
+    await harness.send(first, 'Look at the board every hour.');
     const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd });
     expect(loop.isError, loop.text).toBe(false);
     await awaitTurnCompleted(harness, first);
@@ -136,7 +136,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const cwd = await assistantHome(harness, first);
     await setScenario(harness, cwd, plainScenario({ name: `assistant-handoff-twice-${provider}`, provider, texts: ['Picked up.'], afterTurns: 'repeatLast', echoUserMessage: true }));
     const turn = awaitTurnCompleted(harness, first);
-    await harness.rpc('SendMessage', first, 'hello', null);
+    await harness.send(first, 'hello');
     await turn;
     // The calls the page makes, read off its socket: the second click's
     // would be refused, and its error toast fades, so the wire is the
