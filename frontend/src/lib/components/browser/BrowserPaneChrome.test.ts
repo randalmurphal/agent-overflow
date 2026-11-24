@@ -208,19 +208,10 @@ describe('<BrowserPane> chrome', () => {
     expect(getPromotedPaneId()).toBeNull();
   });
 
-  it('Escape in the address hands focus to the page area', async () => {
-    setBindingMock('BrowserCompanionDo', async () => undefined);
-    const view = mount([page('a')]);
-    const address = await ready(view);
-    address.focus();
-    await fireEvent.keyDown(address, { key: 'Escape' });
-    expect(document.activeElement).toBe(view.getByTestId('browser-pane-host-rect'));
-  });
-
   it.each([
     ['Escape', 'https://example.test/a'],
     ['Enter', 'https://example.test/typed'],
-  ])('%s in the address asks the engine to give the active page the keyboard', async (key, typed) => {
+  ])('%s in the address hands focus to the page area and asks the engine to give the active page the keyboard', async (key, typed) => {
     const actions: { kind: string; pageId?: string; mount?: string; intent?: number }[] = [];
     setBindingMock('BrowserCompanionDo', async (_thread: string, action: { kind: string }) => {
       actions.push({ ...action });
@@ -232,6 +223,7 @@ describe('<BrowserPane> chrome', () => {
     await fireEvent.input(address, { target: { value: typed } });
     actions.length = 0;
     await fireEvent.keyDown(address, { key });
+    expect(document.activeElement).toBe(view.getByTestId('browser-pane-host-rect'));
     await waitFor(() => expect(actions).toContainEqual(expect.objectContaining({ kind: 'focus-page', pageId: 'a', mount: 'mount-1', intent: 1 })));
     expect(actions.some((action) => action.kind === 'navigate')).toBe(key === 'Enter');
     // Focusing the address again is the user's next choice: the request is

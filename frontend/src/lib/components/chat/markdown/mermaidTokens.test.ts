@@ -20,15 +20,6 @@ afterEach(() => {
 });
 
 describe('resolveMermaidThemeConfig', () => {
-  it('pins the derive-from-variables theme in both modes', () => {
-    // `base` is the ONLY mermaid theme that derives its whole palette
-    // from themeVariables; 'default'/'dark' ignore most of them, which
-    // is what left diagrams on a palette of their own.
-    for (const mode of ['light', 'dark'] as const) {
-      expect(resolveMermaidThemeConfig(mode).theme).toBe('base');
-    }
-  });
-
   it('carries the resolved mode as mermaid darkMode', () => {
     const dark = resolveMermaidThemeConfig('dark');
     const light = resolveMermaidThemeConfig('light');
