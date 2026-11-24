@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { makeSettings } from '../../test/helpers/settings';
-import { hiddenModelSlugs, isModelHidden, offeredModels, pickerVisibleModels } from './hiddenModels';
+import { hiddenModelSlugs, offeredModels, pickerVisibleModels } from './hiddenModels';
 import { catalogWithdrawals } from './catalogWithdrawals';
 
 describe('hiddenModels', () => {
@@ -11,14 +11,14 @@ describe('hiddenModels', () => {
   });
 
   it('claude and claude-tui share the claude hide-list', () => {
-    expect(isModelHidden(settings, 'claude', 'claude-opus-4-5')).toBe(true);
-    expect(isModelHidden(settings, 'claude-tui', 'claude-opus-4-5')).toBe(true);
-    expect(isModelHidden(settings, 'claude', 'claude-opus-4-8')).toBe(false);
+    expect(hiddenModelSlugs(settings, 'claude').has('claude-opus-4-5')).toBe(true);
+    expect(hiddenModelSlugs(settings, 'claude-tui').has('claude-opus-4-5')).toBe(true);
+    expect(hiddenModelSlugs(settings, 'claude').has('claude-opus-4-8')).toBe(false);
   });
 
   it('codex uses its own list', () => {
-    expect(isModelHidden(settings, 'codex', 'gpt-5.2')).toBe(true);
-    expect(isModelHidden(settings, 'codex', 'claude-opus-4-5')).toBe(false);
+    expect(hiddenModelSlugs(settings, 'codex').has('gpt-5.2')).toBe(true);
+    expect(hiddenModelSlugs(settings, 'codex').has('claude-opus-4-5')).toBe(false);
   });
 
   it('unknown providers hide nothing', () => {
@@ -28,7 +28,7 @@ describe('hiddenModels', () => {
   it('treats absent lists as empty (Go persists with omitempty)', () => {
     const sparse = makeSettings();
     delete sparse.claudeHiddenModels;
-    expect(isModelHidden(sparse, 'claude', 'claude-opus-4-5')).toBe(false);
+    expect(hiddenModelSlugs(sparse, 'claude').has('claude-opus-4-5')).toBe(false);
   });
 
   describe('unlisted models', () => {

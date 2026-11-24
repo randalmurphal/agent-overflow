@@ -279,5 +279,3 @@ export function createComposerHistoryRecall(deps: ComposerHistoryRecallDeps) {
     },
   };
 }
-
-export type ComposerHistoryRecall = ReturnType<typeof createComposerHistoryRecall>;

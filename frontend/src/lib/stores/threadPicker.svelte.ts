@@ -21,8 +21,3 @@ export function closeThreadPicker(): void {
   open = false;
   targetPaneId = null;
 }
-
-export function toggleThreadPicker(paneId: string | null = null): void {
-  if (open) closeThreadPicker();
-  else openThreadPicker(paneId);
-}

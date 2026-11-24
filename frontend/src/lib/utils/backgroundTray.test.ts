@@ -11,8 +11,6 @@ import {
   formatElapsed,
   isCodexStoppableTask,
   isCodexSubagentTask,
-  statusClass,
-  statusLabel,
   trayRowStopTarget,
   trayTaskLabel,
   scopedTrayTasks,
@@ -346,31 +344,6 @@ describe('trayRowStopTarget', () => {
         'none',
       ),
     ).toBeNull();
-  });
-});
-
-describe('statusLabel / statusClass', () => {
-  it('labels active/error statuses in the compact tray style', () => {
-    expect(statusLabel('running')).toBe('running');
-    // Completed rows use Forge-style icon-only success chrome.
-    expect(statusLabel('completed')).toBe('');
-    expect(statusLabel('errored')).toBe('failed');
-    expect(statusLabel('declined')).toBe('declined');
-    // `killed` must NOT collapse into "Failed" — it's a user-initiated
-    // stop; the label difference is the whole point of the phase.
-    expect(statusLabel('killed')).toBe('stopped');
-  });
-
-  it('paints killed on muted-gray and keeps errored/declined on the error palette', () => {
-    expect(statusClass('running')).toBe('text-accent');
-    expect(statusClass('completed')).toContain('text-success');
-    expect(statusClass('completed')).toContain('bg-success/10');
-    expect(statusClass('errored')).toBe('text-error');
-    expect(statusClass('declined')).toBe('text-error');
-    // The phase spec calls for killed to read distinct from errored;
-    // the class MUST NOT be the error palette.
-    expect(statusClass('killed')).toBe('text-text-secondary');
-    expect(statusClass('killed')).not.toBe('text-error');
   });
 });
 

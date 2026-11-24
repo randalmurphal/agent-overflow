@@ -79,7 +79,6 @@ export type { PerfSample, PerfStartOptions, PerfSummary, PerfTeardownReceipt } f
 export const PERF_WATCHDOG_MS = 5 * 60_000;
 
 let run: PerfRun | null = null;
-let lastTeardownReceipt: PerfTeardownReceipt | null = null;
 
 /**
  * Set when the watchdog disarmed a run behind the caller's back, and kept
@@ -334,8 +333,8 @@ export function stopPerfRun(): PerfSummary | null {
 }
 
 /**
- * Stops an armed run for bridge teardown and retains the typed partial receipt
- * until the next teardown. The ordinary stop path remains unchanged because
+ * Stops an armed run for bridge teardown and returns the typed partial
+ * receipt, which `bridgeLifecycle.ts` retains until the next teardown. The ordinary stop path remains unchanged because
  * it is the backend-owned completion boundary. Teardown has no reply channel,
  * so dropping this summary would make a page close indistinguishable from a
  * run that never collected any data.
@@ -344,7 +343,7 @@ export function stopPerfRunForTeardown(): PerfTeardownReceipt | null {
   const runId = perfRunId();
   const summary = stopPerfRun();
   if (summary === null) return null;
-  lastTeardownReceipt = {
+  return {
     v: 1,
     kind: 'perf-teardown',
     reason: 'bridge-teardown',
@@ -352,9 +351,4 @@ export function stopPerfRunForTeardown(): PerfTeardownReceipt | null {
     runId,
     summary,
   };
-  return lastTeardownReceipt;
-}
-
-export function lastPerfTeardownReceipt(): PerfTeardownReceipt | null {
-  return lastTeardownReceipt;
 }

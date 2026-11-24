@@ -90,12 +90,6 @@ export function ensureSyntaxClassNames(): Promise<void> {
 let schemaVersionPromise: Promise<string> | null = null;
 let schemaVersion: string | null = null;
 
-/** Test seam: pin the schema version without a fetch. */
-export function initHighlightSchemaVersionForTest(version: string | null): void {
-  schemaVersion = version;
-  schemaVersionPromise = version === null ? null : Promise.resolve(version);
-}
-
 /**
  * Fetches the backend's span schema version once. Persisted span blobs
  * (item meta codeSpans, payload preview/full spans) carry the stamp of

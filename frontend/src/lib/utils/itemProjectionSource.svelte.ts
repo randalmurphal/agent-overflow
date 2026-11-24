@@ -70,16 +70,12 @@ let totalBytes = 0;
 const inFlight = new Set<string>();
 
 /**
- * Reactivity: consumers read through `itemProjectionSourceGeneration()`
- * so a landed fetch repaints exactly the cards that asked. Same shape as
+ * Reactivity: `readItemProjectionSource` reads `generation` so a landed
+ * fetch repaints exactly the cards that asked. Same shape as
  * the diff span cache — one module-level counter rather than a reactive
  * Map, so a hit costs a plain lookup.
  */
 let generation = $state(0);
-
-export function itemProjectionSourceGeneration(): number {
-  return generation;
-}
 
 function sourceKey(threadId: string, itemId: string, version: unknown): string {
   return JSON.stringify([threadId, itemId, payloadVersionKey(version)]);
@@ -230,9 +226,4 @@ export function __resetItemProjectionSourceCacheForTest(): void {
   inFlight.clear();
   totalBytes = 0;
   generation += 1;
-}
-
-/** Test-only inspection. */
-export function __itemProjectionSourceStatsForTest(): { entries: number; bytes: number } {
-  return { entries: entries.size, bytes: totalBytes };
 }

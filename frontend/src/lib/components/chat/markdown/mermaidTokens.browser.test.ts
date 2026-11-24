@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import '../../../../app.css';
 import {
   readTokenColors,
-  readTokenFontFamily,
   readTokenStyles,
   toConcreteColor,
 } from '../../../utils/cssColorProbe';
@@ -105,8 +104,7 @@ describe('cssColorProbe (real cascade + canvas)', () => {
     const { colors, fontFamily } = readTokenStyles(['--surface-1'], '--font-sans');
     expect(colors['--surface-1']).toMatch(RGB);
     expect(fontFamily).toContain('Geist Sans');
-    expect(readTokenFontFamily('--font-sans')).toContain('Geist Sans');
-    expect(readTokenFontFamily('--ao-font-that-does-not-exist')).toBeUndefined();
+    expect(readTokenStyles([], '--ao-font-that-does-not-exist').fontFamily).toBeUndefined();
   });
 });
 

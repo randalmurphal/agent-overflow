@@ -41,7 +41,6 @@ import {
   previewLinkTargetFor,
   previewRewriteKey,
   previewRouted,
-  previewSignature,
   sharedPreviewPorts,
 } from './devServers.svelte';
 import { forgetThread, noteThread } from '../transport/entityIndex';
@@ -224,23 +223,6 @@ describe('devServers store', () => {
   });
 
   describe('the answer a link reads', () => {
-    it('is armed only once a machine has answered', () => {
-      initDevServers();
-      expect(previewSignature(HOME_BACKEND)).toBe('');
-      emitWailsEvent('devserver:list', list());
-      expect(previewSignature(HOME_BACKEND)).not.toBe('');
-    });
-
-    it('moves on a newly shared port and stands still on a frame that says the same thing', () => {
-      initDevServers();
-      emitWailsEvent('devserver:list', list());
-      const first = previewSignature(HOME_BACKEND);
-      emitWailsEvent('devserver:list', list({ servers: [server(5173, { pid: 42 })] }));
-      expect(previewSignature(HOME_BACKEND)).toBe(first);
-      emitWailsEvent('devserver:list', list({ servers: [server(5173), server(3000)] }));
-      expect(previewSignature(HOME_BACKEND)).not.toBe(first);
-    });
-
     it('says no-address before it says not-shared, because allowing a port there changes nothing', () => {
       initDevServers();
       emitWailsEvent('devserver:list', list({ previewHost: '' }));
@@ -423,7 +405,7 @@ describe('devServers store', () => {
       expect(previewFor('laptop', 5173).kind).toBe('open');
       resetStagedBackends();
       expect(machineDevServers('laptop').list).toBeNull();
-      expect(previewSignature('laptop')).toBe('');
+      expect(machineDevServers('laptop').signature).toBe('');
     });
   });
 
@@ -507,7 +489,7 @@ describe('devServers store', () => {
       },
       inFlight: () => {
         emitWailsEvent('devserver:list', list());
-        expect(previewSignature(HOME_BACKEND)).not.toBe('');
+        expect(machineDevServers(HOME_BACKEND).signature).not.toBe('');
       },
       // The list itself deliberately survives a teardown, exactly as it
       // survives a dropped socket, so it is not in the resting state.

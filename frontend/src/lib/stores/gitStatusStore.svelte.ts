@@ -486,7 +486,7 @@ export function createGitStatusView(getThread: () => Thread | null): GitStatusVi
   };
 }
 
-/** Diagnostics / tests: the workspaces currently held. */
+/** Tests: the workspaces currently held. */
 export function gitStatusKeys(): string[] {
   return store.keys();
 }

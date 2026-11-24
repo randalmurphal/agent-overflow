@@ -595,23 +595,6 @@ export function isSendInFlight(threadId: string | null | undefined, paneSendInFl
   return paneSendInFlight || hasPendingSend(threadId);
 }
 
-/**
- * Explicit clear for the pending-send flag without changing other
- * status flags. Queue-drain failure uses this because on a thrown
- * provider write the flag would otherwise leak forever. Distinct from
- * `projectSendResolved({error:true})` because we don't want to flip the
- * thread to a Failed status pill: the queue preview is still showing
- * the user's restored item, the error banner carries the failure
- * context, and another drain attempt should be possible from a clean
- * state.
- */
-export function clearPendingSend(threadId: string): void {
-  if (!threadId) return;
-  if (!pendingSendThreads.get(threadId)) return;
-  pendingSendThreads.set(threadId, false);
-  recalculateThreadStatus(threadId);
-}
-
 export function replaceInteractiveRequestsForThread(
   threadId: string,
   snapshot: {

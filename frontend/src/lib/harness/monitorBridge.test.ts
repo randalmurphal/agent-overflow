@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { answerHarnessQuery } from './bridge';
 import { dispatchMonitor, stopAllMonitors } from './monitorBridge';
 
@@ -9,20 +9,22 @@ describe('monitor bridge', () => {
       monitors: Array<Record<string, unknown>>;
     };
     expect(result.v).toBe(1);
-    expect(result.monitors).toHaveLength(13);
-    expect(result.monitors.map((monitor) => monitor.id)).toContain('compositor-counters');
+    expect(result.monitors).toHaveLength(10);
+    expect(result.monitors.map((monitor) => monitor.id)).toContain('semantic-dom-stability');
     expect(result.monitors.some((monitor) => 'create' in monitor)).toBe(false);
   });
 
-  it('refuses a source monitor when the page has no source adapter', async () => {
+  it('refuses a monitor whose capability the page lacks', async () => {
+    vi.stubGlobal('PerformanceObserver', undefined);
     const result = await answerHarnessQuery({
       v: 1,
       kind: 'monitor',
       op: 'start',
-      runId: 'source-run',
-      monitorIds: ['source-rewind'],
+      runId: 'long-task-run',
+      monitorIds: ['long-task'],
     }) as { error?: string };
-    expect(result.error).toMatch(/requires unavailable capabilities/);
+    vi.unstubAllGlobals();
+    expect(result.error).toMatch(/requires unavailable capabilities: performance:longtask/);
   });
 
   it('starts a browser monitor and returns a run-scoped receipt', async () => {

@@ -85,12 +85,3 @@ export function pickerVisibleModels<T extends { slug: string; unlisted?: boolean
   );
   return visible.length === 0 ? offered : visible;
 }
-
-/** Whether the user hid the model from pickers in settings. */
-export function isModelHidden(
-  settings: Settings,
-  provider: string,
-  slug: string,
-): boolean {
-  return hiddenModelSlugs(settings, provider).has(slug);
-}

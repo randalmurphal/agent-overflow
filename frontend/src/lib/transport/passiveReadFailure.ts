@@ -1,4 +1,5 @@
-import { DisconnectedError, TransportError } from './wsClient';
+import { isAuthFailure } from './authReason';
+import { DisconnectedError } from './wsClient';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 
 /** Connection/auth banners own these failures during automatic reads. Keep
@@ -8,5 +9,5 @@ import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 export function isPassiveConnectionFailure(error: unknown): boolean {
   return error instanceof DisconnectedError
     || error instanceof ReadDeadlineError
-    || (error instanceof TransportError && error.code === 'auth_failed');
+    || isAuthFailure(error);
 }

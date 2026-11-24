@@ -151,10 +151,8 @@ export function replaceDiffReviewCommentsForTest(
   commentsBySource.put(cacheKey(threadId, scope, sourceKey), normalizeComments(comments));
 }
 
-export function resetForTest(): void {
+export function resetDiffReviewCommentsForTest(): void {
   commentsBySource.clear();
   fetchSeqBySource.clear();
   activeSourceByThread.clear();
 }
-
-export const resetDiffReviewCommentsForTest = resetForTest;

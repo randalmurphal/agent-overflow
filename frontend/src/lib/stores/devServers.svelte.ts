@@ -13,9 +13,10 @@
 //     this page's is reachable at all. `previewFor` answers `open`,
 //     `not-shared` or `no-address`, and the markdown rewrite and the
 //     command row's dev-server chip both read that one answer.
-//   - Whether the rewrite is ARMED for a machine at all. `previewSignature`
-//     is empty until that machine has sent a list, and a caller that has no
-//     signature leaves links exactly as they were: an inert "not shared"
+//   - Whether the rewrite is ARMED for a machine at all. A machine's list
+//     signature is empty until it has sent a list, and until then
+//     `previewLinkTargetFor` and `previewRewriteKey` leave links exactly as
+//     they were: an inert "not shared"
 //     link rendered before the first frame would be a wrong sentence, not
 //     a slow one.
 //   - What a click opens. `MintPreviewURL` answers an absolute URL carrying
@@ -199,15 +200,6 @@ export function attributedPreviewPorts(key: BackendKey): readonly AttributedPrev
     }
   }
   return rows;
-}
-
-/**
- * Whether a rewrite may run against this machine at all. Empty until it has
- * answered once, which is what keeps a link plain rather than wrongly inert
- * on the way to the first frame.
- */
-export function previewSignature(key: BackendKey): string {
-  return machines.get(key).signature;
 }
 
 /** Why a preview link is live, dead, or has nowhere to point. */

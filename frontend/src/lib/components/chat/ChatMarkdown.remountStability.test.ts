@@ -6,7 +6,6 @@ import {
 import {
   FAKE_INNER_HEIGHT,
   FAKE_OUTER_HEIGHT,
-  FAKE_RENDERED_HEIGHT,
   FAKE_SOURCE_SWAP_HEIGHT,
   FAKE_STALE_RETRY_HEIGHT,
   installRenderedHeightGeometryStubs,
@@ -98,7 +97,7 @@ describe('<ChatMarkdown> block-math remount stability (rendered-height cache)', 
     expect(secondWrapper).not.toBeNull();
     expect(secondWrapper!.classList.contains('math-rendered')).toBe(true);
     expect(secondWrapper!.style.getPropertyValue('--math-cached-min-h')).toBe(
-      `${FAKE_RENDERED_HEIGHT}px`,
+      `${FAKE_INNER_HEIGHT}px`,
     );
 
     r.unmount();

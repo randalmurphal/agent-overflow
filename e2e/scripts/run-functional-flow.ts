@@ -12,9 +12,10 @@ import {
   FunctionalFlowRunner,
   ownPage,
   parseFunctionalScenario,
+  validateScenarioLeg,
   type FunctionalFlowReport,
 } from '../src/functional-flow.ts';
-import type { CompatibilityLeg } from '../src/monitor-catalog.ts';
+import type { MonitorCompatibilityLeg } from '../../frontend/src/lib/harness/monitorTypes.ts';
 import { validateCompatibilityLeg } from '../src/monitor-catalog.ts';
 
 interface Options {
@@ -25,7 +26,7 @@ interface Options {
   binary?: string;
   mockProvider?: string;
   mockForge?: string;
-  compatibilityLeg?: string;
+  compatibilityLeg?: MonitorCompatibilityLeg;
   pageID?: string;
   supervisedRoot?: boolean;
 }
@@ -94,7 +95,7 @@ function parseArgs(argv: string[]): Options {
   let binary: string | undefined;
   let mockProvider: string | undefined;
   let mockForge: string | undefined;
-  let compatibilityLeg: string | undefined;
+  let compatibilityLeg: MonitorCompatibilityLeg | undefined;
   let pageID: string | undefined;
   let supervisedRoot = false;
   for (let index = 0; index < argv.length; index += 1) {
@@ -145,6 +146,7 @@ async function main(options: Options): Promise<number> {
   // Validate before launching anything. A malformed document must not leave a
   // backend or browser behind and must never be reported as a runtime failure.
   const scenario = parseFunctionalScenario(raw);
+  validateScenarioLeg(scenario, options.compatibilityLeg, '--leg');
   if (options.dataDir) await requireEmptyDataDir(options.dataDir, options.supervisedRoot === true);
   const startedAt = new Date().toISOString();
   const runId = randomUUID();
@@ -213,7 +215,7 @@ async function main(options: Options): Promise<number> {
     });
     runner = new FunctionalFlowRunner(ownPage(page), [], {
       runId,
-      compatibilityLeg: options.compatibilityLeg as CompatibilityLeg | undefined,
+      compatibilityLeg: options.compatibilityLeg,
       monitorQuery: async (spec) => {
         const currentOrigin = new URL(page.url()).origin;
         if (currentOrigin !== expectedOrigin) throw new Error(`owned flow page navigated to ${currentOrigin}, expected ${expectedOrigin}`);

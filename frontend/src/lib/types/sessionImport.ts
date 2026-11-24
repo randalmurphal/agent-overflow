@@ -68,19 +68,6 @@ export interface SessionImportProgressEvent {
   done?: boolean;
 }
 
-/**
- * Provider-update check verdicts. The wire field is a plain Go string (the
- * generated `ImportUpdateStatus.status`), so this is the set the backend
- * emits, not a guarantee — consumers must still carry a default branch.
- */
-export type ImportUpdateStatusKind =
-  | 'up-to-date'
-  | 'updates-available'
-  | 'diverged-local'
-  | 'source-missing'
-  | 'source-diverged'
-  | 'not-imported';
-
 // ---------------------------------------------------------------------------
 // Frontend-only view types
 // ---------------------------------------------------------------------------

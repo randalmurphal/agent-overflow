@@ -34,7 +34,7 @@ function makeSummary(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
   };
 }
 
-describe('ThreadTerminalState', () => {
+describe('createThreadTerminalState', () => {
 
   it('adds a tab and marks it active', () => {
     const s = createThreadTerminalState();

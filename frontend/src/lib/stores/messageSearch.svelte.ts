@@ -22,8 +22,3 @@ export function closeMessageSearch(): void {
   open = false;
   targetPaneId = null;
 }
-
-export function toggleMessageSearch(paneId: string | null = null): void {
-  if (open) closeMessageSearch();
-  else openMessageSearch(paneId);
-}

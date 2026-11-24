@@ -46,6 +46,3 @@ export function projectHasScope(scope: GrantableScope, projectId: string | null 
 export function workflowItemScopeGrant(scope: GrantableScope, itemId: string): EntityScopeGrant {
   return entityScopeGrant(scope, workflowItemBackend(itemId));
 }
-export function workflowItemHasScope(scope: GrantableScope, itemId: string): boolean {
-  return workflowItemScopeGrant(scope, itemId) === 'granted';
-}

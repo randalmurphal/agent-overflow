@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   CLAUDE_CROSS_SESSION_INBOUND_OPTIONS,
   crossSessionPatch,
-  effectiveInbound,
 } from './claudeCrossSession';
 
 describe('cross-session inbound options', () => {
@@ -22,18 +21,6 @@ describe('cross-session inbound options', () => {
       expect(option.value).not.toBe('');
       expect(option.description.length).toBeGreaterThan(0);
     }
-  });
-});
-
-describe('effectiveInbound', () => {
-  it('resolves an enabled-but-unset session to accept', () => {
-    expect(effectiveInbound({ enabled: true })).toBe('accept');
-    expect(effectiveInbound({ enabled: true, inbound: '' })).toBe('accept');
-  });
-
-  it('says nothing at all while disabled', () => {
-    expect(effectiveInbound({})).toBe('');
-    expect(effectiveInbound({ inbound: 'accept' })).toBe('');
   });
 });
 

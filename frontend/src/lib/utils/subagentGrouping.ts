@@ -883,38 +883,6 @@ export function isToolTextBoundary(nodes: readonly TimelineNode[], index: number
 }
 
 /**
- * Item ids that are the LAST top-level `assistant_text` in their turn,
- * excluding any turn currently in flight. The "Response" pill divider
- * uses this to label only the closing assistant message of a settled
- * turn; intermediate text-after-tool boundaries inside the same turn
- * render the divider as a plain line. Excluding the in-flight turn is
- * load-bearing because providers emit per round (see
- * docs/architecture/turn-lifecycle.md § Rounds and turns): more rounds
- * may still arrive and promote a different message to "final."
- *
- * Subagent-group descendants are intentionally invisible to this walk —
- * the divider can only sit before a top-level leaf (chat row contract),
- * so a turn whose only trailing assistant_text lives inside a group
- * gets no pill.
- */
-export function finalAssistantTextIdsByTurn(
-  nodes: readonly TimelineNode[],
-  activeTurnKey: number | null,
-  turnKeyOf: (item: Item) => number = itemTurnIndexKey,
-): Set<string> {
-  const lastByTurn = new Map<number, string>();
-  for (const node of nodes) {
-    if (node.kind !== 'leaf') continue;
-    if (node.item.kind !== 'assistant_text') continue;
-    lastByTurn.set(turnKeyOf(node.item), node.item.id);
-  }
-  if (activeTurnKey !== null) {
-    lastByTurn.delete(activeTurnKey);
-  }
-  return new Set(lastByTurn.values());
-}
-
-/**
  * The default turn key: the provider turn the row was written in. The
  * agent pane's scoped facade substitutes one key for its whole window
  * (`ThreadPane.timelineTurns`), because a subagent's rows straddle the

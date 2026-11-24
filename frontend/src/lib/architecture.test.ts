@@ -1348,7 +1348,7 @@ describe('architecture', () => {
       const findings: string[] = [];
       SCANNED.text(file).split('\n').forEach((line, index) => {
         if (/ScopeGrant\(|\bscopeGrant\(/.test(line)) grantReads += 1;
-        if (/\b(?:threadHasScope|projectHasScope|workflowItemHasScope)\b/.test(line)) {
+        if (/\b(?:threadHasScope|projectHasScope)\b/.test(line)) {
           findings.push(`line ${index + 1}: uses an entity's yes/no grant helper`);
         } else if (/\bhasScope\(\s*(?!['"]host['"])/.test(line)) {
           findings.push(`line ${index + 1}: asks hasScope for a grant`);

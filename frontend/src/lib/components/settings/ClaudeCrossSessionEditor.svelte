@@ -27,8 +27,8 @@
   let settings = $derived(getSettings());
   let cross = $derived(settings.claudeCrossSession ?? {});
   let enabled = $derived(cross.enabled === true);
-  // The RAW stored policy, not the resolved one. effectiveInbound answers the
-  // RUNTIME question ("what happens to a message right now"), which is
+  // The RAW stored policy, not the resolved one. The resolved policy (Go
+  // `ClaudeCrossSession.EffectiveInbound`) answers the RUNTIME question ("what happens to a message right now"), which is
   // deliberately '' while the feature is off — so binding the editor to it
   // showed 'accept' over a stored 'refuse', and the next save wrote that
   // fallback back, discarding the very choice crossSessionPatch goes out of

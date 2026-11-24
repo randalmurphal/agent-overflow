@@ -126,5 +126,3 @@ export function createThreadPaneCompanions(options: ThreadPaneCompanionsOptions)
     },
   };
 }
-
-export type ThreadPaneCompanions = ReturnType<typeof createThreadPaneCompanions>;

@@ -11,9 +11,11 @@ import {
 } from './patchStore';
 
 // Display rows of a review file, computed from its compact body the way
-// `buildPatchDisplayRows` computes them from a PatchFile: gap rows for
-// the hidden runs between hunks, one row per content, marker and fold
-// line, and the same row ids and intraline pairing. The walker reads line
+// the reference builder (src/test/helpers/patchDisplayRows.ts, checked
+// against this file in patchParser.test.ts) computes them from a
+// PatchFile: gap rows for the hidden runs between hunks, one row per
+// content, marker and fold line, and the same row ids and intraline
+// pairing. The walker reads line
 // kinds and hunk starts only, so row counts, line numbers and anchor
 // lookups never touch text; `materializeRows` builds row objects for
 // the rows on screen.
@@ -58,7 +60,7 @@ function trailingGapRows(file: ReviewFile): number {
   return total === undefined || total >= body.endNew ? 1 : 0;
 }
 
-/** The file's display row count (`filePatchDisplayRows(file).length`). */
+/** The file's display row count (the length of the reference builder's rows for it). */
 export function displayRowCount(file: ReviewFile): number {
   const body = file.body;
   if (!fileGapsOn(file)) return body.contentRows;
@@ -212,7 +214,7 @@ export class RowWalker {
     return this.newLine || this.oldLine;
   }
 
-  /** The row id `buildPatchDisplayRows` gives this row. */
+  /** The row id the reference builder gives this row. */
   rowId(): string {
     if (this.type === 'gap') return `gap:${this.gapId}:${this.gapStartNew}`;
     return `${this.row}:${this.oldLine}:${this.newLine}:${this.content}`;

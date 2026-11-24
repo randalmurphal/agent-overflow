@@ -483,9 +483,10 @@ describe('App integration — keybindings + palette', () => {
     applyBrowserCompanionState(state as never);
     const { hasPaneFindProvider } = await import('../../lib/stores/paneFind.svelte');
     // The pane registers its find once its mount is attached, after the
-    // pane's lazy chunk loads in the whole app; a loaded machine takes longer
-    // than the default second for that.
-    await waitFor(() => expect(hasPaneFindProvider('browser-main')).toBe(true), { timeout: 5_000 });
+    // pane's lazy chunk loads. Importing the chunk here waits for the same
+    // load the pane started, however long it takes.
+    await import('../../lib/components/browser/BrowserPane.svelte');
+    await waitFor(() => expect(hasPaneFindProvider('browser-main')).toBe(true));
     const chord = (key: string) => ({ key, ...(isMacPlatform() ? { meta: true } : { ctrl: true }) });
     const composer = rendered.container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Input"]')!;
     composer.focus();

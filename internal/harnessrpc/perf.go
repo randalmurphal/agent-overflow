@@ -262,6 +262,9 @@ type harnessPerfRun struct {
 // "no frontend attached" fails HERE — loudly, at the call that asked for
 // meters — rather than producing a run of half-empty samples.
 func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResult, error) {
+	if spec.CompatibilityLeg != "" && len(spec.Monitors) == 0 {
+		return HarnessPerfStatusResult{}, fmt.Errorf("compatibilityLeg %q selects no monitor: pass monitors of that leg or omit it", spec.CompatibilityLeg)
+	}
 	sampleMs := spec.SampleMs
 	if sampleMs <= 0 {
 		sampleMs = harnessPerfDefaultSampleMs
@@ -307,9 +310,6 @@ func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResul
 		run.compatibilityLeg = spec.CompatibilityLeg
 	}
 	h.perf.run = run
-	// A new run supersedes an uncollected self-finished one: keeping it
-	// would hand the NEXT stop a report from a run two arms ago.
-	h.perf.expired = nil
 	h.perf.mu.Unlock()
 	monitorsArmed := false
 	cleanupStart := func(cause error) (HarnessPerfStatusResult, error) {
@@ -360,6 +360,12 @@ func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResul
 		}
 	}
 
+	// A run that armed supersedes an uncollected self-finished one: keeping
+	// it would hand the NEXT stop a report from a run two arms ago. A start
+	// that failed above leaves it collectable.
+	h.perf.mu.Lock()
+	h.perf.expired = nil
+	h.perf.mu.Unlock()
 	go h.runPerfSampler(run)
 	return h.HarnessPerfStatus()
 }

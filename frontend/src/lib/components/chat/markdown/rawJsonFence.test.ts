@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { seededRandom } from '../../../../test/helpers/seededRandom';
 import { createProvenAppend } from '../../../markdown';
-import { RawJsonFenceFormatter, isRawJsonSource } from './rawJsonFence';
+import { RawJsonFenceFormatter } from './rawJsonFence';
 
 // A workflow-envelope-shaped document on ONE line: nested objects and
 // arrays, empty containers, strings holding every delimiter the printer
@@ -99,16 +99,22 @@ function settled(source: string): string {
   return new RawJsonFenceFormatter().render(source, false);
 }
 
-describe('isRawJsonSource', () => {
+function classifies(source: string): boolean {
+  const f = new RawJsonFenceFormatter();
+  f.render(source, true);
+  return f.sourceIsRawJson;
+}
+
+describe('raw JSON detection', () => {
   it('accepts the shapes a schema answer starts with', () => {
     for (const s of ['{"a":1}', '{}', '[{"a":1}]', '["a"]', '[[1]]', '[]', '  \n{"a":1}', '{', '[', '{ \n "a": 1 }']) {
-      expect(isRawJsonSource(s), s).toBe(true);
+      expect(classifies(s), s).toBe(true);
     }
   });
 
   it('rejects prose, fenced code, and things that merely start with a brace', () => {
     for (const s of ['', '   ', 'hello', '```json\n{"a":1}\n```', '{a: 1}', '[1, 2]', '{{template}}', '- item', '{ foo']) {
-      expect(isRawJsonSource(s), s).toBe(false);
+      expect(classifies(s), s).toBe(false);
     }
   });
 });
