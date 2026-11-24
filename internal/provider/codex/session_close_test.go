@@ -19,7 +19,6 @@ import (
 var sessionScopedStateGroups = []string{
 	"turn",
 	"collab",
-	"childRouting",
 	"collabHistory",
 	"rawCalls",
 	"rolloutTail",

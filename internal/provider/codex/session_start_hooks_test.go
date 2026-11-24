@@ -902,9 +902,7 @@ func kindIndexOf(events []provider.ProviderEvent, kind provider.EventKind) int {
 func TestCodexIgnoresAChildThreadsHookRuns(t *testing.T) {
 	t.Parallel()
 	s, rec := sessionStartSession(t, provider.SessionStartAfterStart)
-	if !s.registerChildOwnership(sessionStartRootThread, "child-thread", "/root/reviewer", "spawn-1") {
-		t.Fatal("the child was not registered")
-	}
+	ownChild(t, s, sessionStartRootThread, "child-thread", "/root/reviewer", "spawn-1")
 	child := func(method string, params map[string]any) {
 		t.Helper()
 		params["threadId"] = "child-thread"

@@ -24,7 +24,7 @@ func TestResumedIdleChildMailboxObservesAppendAndStopsWithSession(t *testing.T) 
 	s.readDone = make(chan struct{})
 	s.rolloutTail.path = "resumed-root"
 	s.rolloutTail.started = true
-	s.registerHistoricalChildOwnership("root-provider-thread", "child", "/root/worker", "spawn")
+	ownHistoricalChild(t, s, "root-provider-thread", "child", "/root/worker", "spawn")
 	path := filepath.Join(t.TempDir(), "rollout-child.jsonl")
 	if err := os.WriteFile(path, []byte("{}\n"), 0600); err != nil {
 		t.Fatal(err)

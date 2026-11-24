@@ -21,9 +21,7 @@ import "testing"
 func TestClosingAChildDropsItsTurnGenerationCounter(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	if !s.registerChildOwnership("root-thread", "child-1", "/root/reviewer", "spawn-1") {
-		t.Fatal("registerChildOwnership refused the fixture")
-	}
+	ownChild(t, s, "root-thread", "child-1", "/root/reviewer", "spawn-1")
 
 	s.advanceChildTurnGeneration("child-1")
 	s.advanceChildTurnGeneration("child-1")
@@ -56,9 +54,7 @@ func TestClosingAChildDropsItsTurnGenerationCounter(t *testing.T) {
 func TestClosingAChildResolvesTheGenerationKeyBeforeDroppingItsPath(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	if !s.registerChildOwnership("root-thread", "child-1", "/root/reviewer", "spawn-1") {
-		t.Fatal("registerChildOwnership refused the fixture")
-	}
+	ownChild(t, s, "root-thread", "child-1", "/root/reviewer", "spawn-1")
 	s.advanceChildTurnGeneration("child-1")
 
 	s.mu.Lock()
@@ -81,9 +77,7 @@ func TestClosingAChildResolvesTheGenerationKeyBeforeDroppingItsPath(t *testing.T
 func TestClosingAnUnnamedChildDropsItsTurnGenerationCounter(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	if !s.registerChildOwnership("root-thread", "child-1", "", "spawn-1") {
-		t.Fatal("registerChildOwnership refused the fixture")
-	}
+	ownChild(t, s, "root-thread", "child-1", "", "spawn-1")
 	s.advanceChildTurnGeneration("child-1")
 	if got := s.childTurnGeneration("child-1"); got != 1 {
 		t.Fatalf("generation = %d, want 1", got)

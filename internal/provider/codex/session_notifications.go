@@ -56,20 +56,10 @@ func (s *Session) dispatchNotificationDirect(method string, params json.RawMessa
 		return
 	}
 	providerThreadID := providerThreadIDFromParams(params)
-	if dispatch, held := s.dispatchesWireThread(providerThreadID, deferredChildWireEvent{
+	if dispatch, _ := s.dispatchesWireThread(providerThreadID, deferredChildWireEvent{
 		Method: method,
 		Params: params,
 	}, nil); !dispatch {
-		if !held {
-			return
-		}
-		// MultiAgentV2 creates the child thread before it emits the parent-side
-		// subAgentActivity ownership item. Its display metadata is kept while
-		// the connection holds the frame, so the spawn row can show it.
-		if method == "thread/started" {
-			s.rememberAgentMetaForProviderThread(providerThreadID, params)
-		}
-		s.scheduleChildOwnershipRecovery(providerThreadID)
 		return
 	}
 

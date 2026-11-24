@@ -749,6 +749,9 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 	if generationKey != "" {
 		delete(s.collab.childTurnGenerations, generationKey)
 	}
+	// The route goes with the ownership, so the closed child's later frames
+	// are held and expire instead of reaching this session unowned.
+	s.conn.unregisterChildRoute(providerThreadID, s)
 	s.mu.Unlock()
 }
 
@@ -849,18 +852,6 @@ func (s *Session) rememberAgentMetaForProviderThread(providerThreadID string, pa
 		return
 	}
 	s.rememberCollabReceiverMeta(meta)
-}
-
-func (s *Session) deleteUnownedAgentMeta(providerThreadID string) {
-	providerThreadID = strings.TrimSpace(providerThreadID)
-	if providerThreadID == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.collab.childParentByThread[providerThreadID] == "" {
-		delete(s.collab.agentMetaByThread, providerThreadID)
-	}
 }
 
 func providerThreadIDFromParams(params json.RawMessage) string {

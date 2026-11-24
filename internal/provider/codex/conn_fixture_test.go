@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -419,4 +420,113 @@ func (p *linePipe) err() error {
 		return errors.New("fixture: more than 4096 lines queued for the read loop")
 	}
 	return nil
+}
+
+// fakeDeadlines replaces a connection's hold timers: each hold the connection
+// creates arms one entry, which fires only when the test calls fire.
+type fakeDeadlines struct {
+	mu     sync.Mutex
+	timers []*fakeHoldTimer
+}
+
+type fakeHoldTimer struct {
+	after   time.Duration
+	fn      func()
+	stopped atomic.Bool
+}
+
+func (t *fakeHoldTimer) Stop() bool { return !t.stopped.Swap(true) }
+
+// deadlines makes the test the clock for every hold the connection creates
+// from now on.
+func (fx *connFixture) deadlines() *fakeDeadlines {
+	d := &fakeDeadlines{}
+	fx.conn.routesMu.Lock()
+	fx.conn.startHoldTimer = func(after time.Duration, fn func()) holdTimer {
+		timer := &fakeHoldTimer{after: after, fn: fn}
+		d.mu.Lock()
+		d.timers = append(d.timers, timer)
+		d.mu.Unlock()
+		return timer
+	}
+	fx.conn.routesMu.Unlock()
+	return d
+}
+
+// armed returns the i-th deadline armed, failing the test when fewer were.
+func (d *fakeDeadlines) armed(t *testing.T, i int) *fakeHoldTimer {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if i >= len(d.timers) {
+		t.Fatalf("the connection armed %d hold deadlines, want at least %d", len(d.timers), i+1)
+	}
+	return d.timers[i]
+}
+
+// count is how many deadlines the connection armed.
+func (d *fakeDeadlines) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.timers)
+}
+
+// fire runs the i-th deadline's callback, as its timer would.
+func (d *fakeDeadlines) fire(t *testing.T, i int) {
+	t.Helper()
+	d.armed(t, i).fn()
+}
+
+// heldFrames is how many frames the connection holds for providerThreadID.
+func (fx *connFixture) heldFrames(providerThreadID string) int {
+	fx.conn.routesMu.Lock()
+	defer fx.conn.routesMu.Unlock()
+	if hold := fx.conn.holds[providerThreadID]; hold != nil {
+		return len(hold.frames)
+	}
+	return 0
+}
+
+// rejectedRequest reports whether the connection answered request id with
+// the routing error.
+func (fx *connFixture) rejectedRequest(id int64) bool {
+	fx.t.Helper()
+	lines, _ := fx.pipe.waitWritten(0)
+	for _, line := range lines {
+		var response struct {
+			ID    int64 `json:"id"`
+			Error *struct {
+				Code int `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(line, &response) == nil && response.ID == id && response.Error != nil && response.Error.Code == -32000 {
+			return true
+		}
+	}
+	return false
+}
+
+// ownChild records childThreadID as a live child of parentToolUseID and
+// routes it to s, as a spawn does once its row was emitted: only a routed
+// child's frames reach s. A session built without a connection gets one.
+func ownChild(t *testing.T, s *Session, sourceThreadID, childThreadID, agentPath, parentToolUseID string) {
+	t.Helper()
+	routeOwnedChild(t, s, childThreadID, s.registerChildOwnership(sourceThreadID, childThreadID, agentPath, parentToolUseID))
+}
+
+// ownHistoricalChild is ownChild for ownership recovered from history.
+func ownHistoricalChild(t *testing.T, s *Session, sourceThreadID, childThreadID, agentPath, parentToolUseID string) {
+	t.Helper()
+	routeOwnedChild(t, s, childThreadID, s.registerHistoricalChildOwnership(sourceThreadID, childThreadID, agentPath, parentToolUseID))
+}
+
+func routeOwnedChild(t *testing.T, s *Session, childThreadID string, registered bool) {
+	t.Helper()
+	if !registered {
+		t.Fatalf("child %s ownership was refused", childThreadID)
+	}
+	if s.conn == nil {
+		s.conn = newConnFixture(t).conn
+	}
+	s.drainDeferredChildWireEvents(childThreadID)
 }

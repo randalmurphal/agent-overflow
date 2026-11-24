@@ -759,19 +759,21 @@ app-server sends no `thread/started` for a spawned child: it announces only a
 names no root.
 
 The shared connection (`internal/provider/codex/conn.go`) holds every frame
-of an unmapped non-root provider thread and replays it to the session whose
-typed ownership edge claims the thread. A session that receives such a frame
-by another route hands it to the same queue. Falling through to the AO root
-is forbidden: child turn starts reset root stream counters, and child turn
-completions falsely close the root round. The queue has per-thread,
-total-count, byte, and thread-id bounds, shared by every session on the
-connection. If typed ownership does not arrive within ten seconds, held
-approvals are rejected, the held notifications are dropped, and the
-connection logs the thread, both counts, and the sessions on the connection.
-Nothing is shown on a thread, since a held frame does not name its root.
-A held `thread/started`'s display metadata is cached by the session it was
-routed to, so its nickname can still enrich the spawn row on first paint once
-ownership arrives.
+of a non-root provider thread it does not route, and replays it to the session
+whose typed ownership edge claims the thread. A session routes a child only
+after its spawn row was emitted, and close_agent removes the route, so a frame
+a session receives for a thread it does not route goes back to the same hold.
+Falling through to the AO root is forbidden: child turn starts reset root
+stream counters, and child turn completions falsely close the root round. The
+holds have per-thread, total-count, byte, and thread-id bounds, shared by every
+session on the connection. If typed ownership does not arrive within ten
+seconds, held approvals are rejected, the held notifications are dropped, and
+the connection logs the thread, both counts, the frames its full queue
+refused, and the sessions on the connection. Nothing is shown on a thread,
+since a held frame does not name its root. Frames refused for a full queue
+are counted on the thread's hold, and frames refused for the full connection
+budget on the connection, and both are logged once at the next claim or
+expiry.
 
 `thread/started` includes a `sessionId` shared by a root and its descendants.
 The connection routes a `thread/started` by that `sessionId` or by its

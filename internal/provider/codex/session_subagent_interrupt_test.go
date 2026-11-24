@@ -14,7 +14,7 @@ func TestInterruptSubagentTargetsOwnedChildTurnAndIsIdempotent(t *testing.T) {
 	events := make(chan provider.ProviderEvent, 4)
 	s, fx := newCapturingSession(t, "root-provider-thread")
 	s.onEvent = func(event provider.ProviderEvent) { events <- event }
-	s.registerChildOwnership("root-provider-thread", "child-provider-thread", "/root/reviewer", "spawn-1")
+	ownChild(t, s, "root-provider-thread", "child-provider-thread", "/root/reviewer", "spawn-1")
 	s.drainDeferredChildWireEvents("child-provider-thread")
 	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-provider-thread","turn":{"id":"child-turn-7"}}}`))
 
@@ -84,7 +84,7 @@ statusObserved:
 func TestInterruptSubagentUsesStartupInterruptBeforeTurnStarted(t *testing.T) {
 	t.Parallel()
 	s, fx := newCapturingSession(t, "root-provider-thread")
-	s.registerChildOwnership("root-provider-thread", "child-pending", "", "spawn-pending")
+	ownChild(t, s, "root-provider-thread", "child-pending", "", "spawn-pending")
 	answerer := newPendingAnswerer(t, s)
 
 	done := make(chan error, 1)

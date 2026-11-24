@@ -2,10 +2,11 @@ package codex
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 )
@@ -34,23 +35,25 @@ func recordingRootSession(t *testing.T) (*connFixture, *Session, func() []provid
 	}
 }
 
-func (fx *connFixture) heldFrames(providerThreadID string) int {
-	fx.conn.routesMu.Lock()
-	defer fx.conn.routesMu.Unlock()
-	return len(fx.conn.deferredChild[providerThreadID])
+func childDelta(threadID, itemID, delta string) []byte {
+	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":%q,"turnId":"child-turn","itemId":%q,"delta":%q}}`, threadID, itemID, delta))
+}
+
+func childApproval(threadID string, id int) []byte {
+	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"item/commandExecution/requestApproval","params":{"threadId":%q,"turnId":"t","itemId":"cmd","command":"go test"}}`, id, threadID))
 }
 
 // TestLateSpawnDrainsSameSessionChildFromTheConnection runs a same-session
-// child through the connection: its thread/started reaches the session by the
-// root's session id and is handed back to the connection, and its later
-// frames carry only its threadId and wait there too. The late spawn releases
-// both from the one queue, with the child's answer under the spawn.
+// child through the connection: a frame that reaches the session by the
+// root's session id is held on the connection with the child's later frames,
+// which carry only its threadId. The late spawn releases both from the one
+// hold, with the child's answer under the spawn.
 func TestLateSpawnDrainsSameSessionChildFromTheConnection(t *testing.T) {
 	t.Parallel()
 	fx, _, events := recordingRootSession(t)
 
 	fx.feed([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-a","sessionId":"root-session","parentThreadId":"root-provider-thread"}}}`))
-	fx.feed([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"child-a","turnId":"child-turn","itemId":"answer","delta":"owned"}}`))
+	fx.feed(childDelta("child-a", "answer", "owned"))
 	if got := fx.heldFrames("child-a"); got != 2 {
 		t.Fatalf("connection held %d frames before the spawn, want 2", got)
 	}
@@ -73,67 +76,101 @@ func TestLateSpawnDrainsSameSessionChildFromTheConnection(t *testing.T) {
 	t.Fatalf("late spawn did not deliver the child answer held on the connection: %+v", events())
 }
 
-// TestChildFrameHandedAfterItsSpawnDrainedIsReleased is the window between
-// a session finding a thread unowned and handing its frame to the
-// connection: a spawn recorded and drained in that window has already
-// emptied the thread's queue, so the frame must be released by the hand-off
-// itself rather than wait for a deadline.
-func TestChildFrameHandedAfterItsSpawnDrainedIsReleased(t *testing.T) {
+// A spawn recovered from history records the child's ownership before it
+// emits the spawn row. A child frame that arrives between the two is held,
+// and reaches the thread only after the spawn row, under it.
+func TestChildFrameBetweenRecoveredOwnershipAndItsSpawnWaitsForTheSpawn(t *testing.T) {
 	t.Parallel()
-	fx, s, events := recordingRootSession(t)
-	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/child-a", "spawn-a") {
-		t.Fatal("register child ownership")
-	}
-	s.drainDeferredChildWireEvents("child-a")
+	fx := newConnFixture(t)
+	answerChildProfileReads(fx)
+	fx.answer("thread/read", `{"thread":{"id":"child-r","parentThreadId":"root-provider-thread"}}`)
+	fx.answer("thread/items/list", `{"data":[{"turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-r","kind":"started","agentThreadId":"child-r","agentPath":"/root/child-r"}}]}`)
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	spawnEmitting := make(chan struct{})
+	release := make(chan struct{})
+	releaseSpawn := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseSpawn)
+	var once sync.Once
+	s := fx.session("ao-thread", "root-provider-thread", func(event provider.ProviderEvent) {
+		if event.ItemID == "spawn-r" && event.Kind == provider.EventToolStart {
+			once.Do(func() {
+				close(spawnEmitting)
+				<-release
+			})
+		}
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	})
+	fx.feed(childDelta("child-r", "first", "held before recovery"))
 
-	held := s.handChildFrame("child-a", deferredChildWireEvent{
-		Method: "item/agentMessage/delta",
-		Params: []byte(`{"threadId":"child-a","turnId":"child-turn","itemId":"answer","delta":"late"}`),
-	}, nil)
-	if !held {
-		t.Fatal("connection refused the frame")
+	recovered := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), fixtureWait)
+		defer cancel()
+		recovered <- s.recoverChildOwnership(ctx, "child-r", make(map[string]bool))
+	}()
+	select {
+	case <-spawnEmitting:
+	case <-time.After(fixtureWait):
+		t.Fatal("recovery did not emit the spawn")
 	}
-	if got := fx.heldFrames("child-a"); got != 0 {
-		t.Fatalf("connection still holds %d frames for a claimed thread", got)
+	if s.parentToolUseForProviderThread("child-r") != "spawn-r" {
+		releaseSpawn()
+		t.Fatal("recovery emitted the spawn before recording its ownership")
 	}
-	for _, event := range events() {
-		if event.ItemID == "answer" && event.ParentToolUseID == "spawn-a" {
-			return
+	err := fx.pipe.deliver(childDelta("child-r", "second", "arrives mid-emission"))
+	held := fx.heldFrames("child-r")
+	releaseSpawn()
+	if err != nil {
+		t.Fatalf("the frame that arrived mid-emission was not handled: %v", err)
+	}
+	if held != 2 {
+		t.Fatalf("connection held %d frames while the spawn was emitting, want 2", held)
+	}
+	if err := <-recovered; err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	spawnDone, delivered := false, 0
+	for _, event := range events {
+		switch {
+		case event.ItemID == "spawn-r" && event.Kind == provider.EventToolComplete:
+			spawnDone = true
+		case event.ItemID == "first" || event.ItemID == "second":
+			if !spawnDone || event.ParentToolUseID != "spawn-r" {
+				t.Fatalf("child frame reached the thread before or outside its spawn: %+v", events)
+			}
+			delivered++
 		}
 	}
-	t.Fatalf("frame handed after its spawn drained was not delivered: %+v", events())
+	if delivered != 2 {
+		t.Fatalf("delivered %d child frames after the spawn, want 2: %+v", delivered, events)
+	}
 }
 
 // TestHeldThreadExpiryIsLoggedNotShown pins what the deadline does with a
 // thread no spawn claimed: its request is rejected, its notification dropped,
-// nothing reaches any thread, and one log line names the thread, both counts
+// nothing reaches any thread, and one log line names the thread, the counts
 // and every session on the connection, since a held frame names no root.
 func TestHeldThreadExpiryIsLoggedNotShown(t *testing.T) {
 	fx, _, events := recordingRootSession(t)
+	deadlines := fx.deadlines()
 	var otherEvents []provider.ProviderEvent
 	fx.session("ao-thread-2", "other-root", func(event provider.ProviderEvent) { otherEvents = append(otherEvents, event) })
-	fx.feed([]byte(`{"jsonrpc":"2.0","id":51,"method":"item/commandExecution/requestApproval","params":{"threadId":"child-x","turnId":"t","itemId":"cmd","command":"go test"}}`))
-	fx.feed([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"child-x","turnId":"t","itemId":"m","delta":"x"}}`))
+	fx.feed(childApproval("child-x", 51))
+	fx.feed(childDelta("child-x", "m", "x"))
 
-	logged := captureLog(t, func() { fx.conn.expireDeferredChild("child-x") })
+	logged := captureLog(t, func() { deadlines.fire(t, 0) })
 
-	want := "codex: no spawn claimed provider thread child-x before the routing deadline: rejected 1 requests, dropped 1 notifications; sessions on the connection: [ao-thread ao-thread-2]"
+	want := "codex: no spawn claimed provider thread child-x before the routing deadline: rejected 1 requests, dropped 1 notifications (0 and 0 more refused for its full queue); 0 frames refused connection-wide for a full routing budget; sessions on the connection: [ao-thread ao-thread-2]"
 	if !strings.Contains(logged, want) {
 		t.Fatalf("expiry log = %q, want it to contain %q", logged, want)
 	}
-	rejected := false
-	for _, line := range fx.written(1) {
-		var response struct {
-			ID    int64 `json:"id"`
-			Error *struct {
-				Code int `json:"code"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(line, &response) == nil && response.ID == 51 && response.Error != nil && response.Error.Code == -32000 {
-			rejected = true
-		}
-	}
-	if !rejected {
+	if !fx.rejectedRequest(51) {
 		t.Fatalf("held request 51 was not rejected: %q", fx.written(1))
 	}
 	if len(events()) != 0 || len(otherEvents) != 0 {
@@ -141,14 +178,169 @@ func TestHeldThreadExpiryIsLoggedNotShown(t *testing.T) {
 	}
 }
 
+// The deadline a hold arms is what ends it: firing the scheduled callback
+// rejects the held request and returns the hold's frames to the budget, and
+// closing the connection cancels a deadline still pending.
+func TestHoldDeadlineRejectsAndReleasesTheBudget(t *testing.T) {
+	t.Parallel()
+	fx, _, _ := recordingRootSession(t)
+	deadlines := fx.deadlines()
+	fx.feed(childApproval("child-d", 61))
+	fx.feed(childDelta("child-e", "m", "pending at close"))
+	if got := deadlines.count(); got != 2 {
+		t.Fatalf("the connection armed %d deadlines for two holds, want 2", got)
+	}
+	if after := deadlines.armed(t, 0).after; after != deferredChildOwnershipTimeout {
+		t.Fatalf("deadline armed for %v, want %v", after, deferredChildOwnershipTimeout)
+	}
+
+	deadlines.fire(t, 0)
+	if !fx.rejectedRequest(61) {
+		t.Fatalf("the deadline did not reject held request 61: %q", fx.written(1))
+	}
+	fx.conn.routesMu.Lock()
+	frames, bytes := fx.conn.heldFrames, fx.conn.heldBytes
+	_, stillHeld := fx.conn.holds["child-d"]
+	fx.conn.routesMu.Unlock()
+	if stillHeld || frames != 1 {
+		t.Fatalf("after the deadline: hold kept %v, %d frames in the budget, want only child-e's", stillHeld, frames)
+	}
+	if want := len(childDelta("child-e", "m", "pending at close")); bytes <= 0 || bytes > want {
+		t.Fatalf("budget holds %d bytes, want only child-e's frame", bytes)
+	}
+
+	if err := fx.conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !deadlines.armed(t, 1).stopped.Load() {
+		t.Fatal("closing the connection left child-e's deadline armed")
+	}
+}
+
+// An expiry owns only the hold that armed it. A second hold for the same
+// thread, started while the first expiry is writing its rejections, keeps
+// its frames, and the first deadline firing again does nothing to it.
+func TestAnExpiryLeavesANewerHoldForTheSameThread(t *testing.T) {
+	t.Parallel()
+	fx, _, _ := recordingRootSession(t)
+	deadlines := fx.deadlines()
+	writing := make(chan struct{})
+	release := make(chan struct{})
+	var gate sync.Once
+	fx.pipe.onWrite = func(line []byte) {
+		if strings.Contains(string(line), `"id":81`) && strings.Contains(string(line), `"error"`) {
+			gate.Do(func() {
+				close(writing)
+				<-release
+			})
+		}
+		fx.observeWrite(line)
+	}
+	fx.feed(childApproval("child-y", 81))
+
+	expired := make(chan struct{})
+	go func() {
+		defer close(expired)
+		deadlines.fire(t, 0)
+	}()
+	select {
+	case <-writing:
+	case <-time.After(fixtureWait):
+		t.Fatal("the expiry did not write its rejection")
+	}
+	err := fx.pipe.deliver(childDelta("child-y", "m", "second hold"))
+	close(release)
+	<-expired
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fx.heldFrames("child-y"); got != 1 {
+		t.Fatalf("the newer hold has %d frames after the first expiry, want 1", got)
+	}
+	deadlines.fire(t, 0)
+	if got := fx.heldFrames("child-y"); got != 1 {
+		t.Fatalf("the first deadline firing again took the newer hold: %d frames", got)
+	}
+	if deadlines.armed(t, 1).stopped.Load() {
+		t.Fatal("the first expiry stopped the newer hold's deadline")
+	}
+	rejections := 0
+	for _, line := range fx.written(1) {
+		if strings.Contains(string(line), `"id":81`) && strings.Contains(string(line), `"error"`) {
+			rejections++
+		}
+	}
+	if rejections != 1 {
+		t.Fatalf("request 81 was rejected %d times, want once", rejections)
+	}
+}
+
+// A frame refused for a full thread queue is counted on the hold and logged
+// once when a spawn claims it; one refused for the full connection budget is
+// counted on the connection and logged once with the next claim or expiry.
+func TestRefusedFramesAreCountedAndLoggedOnce(t *testing.T) {
+	fx, _, events := recordingRootSession(t)
+	deadlines := fx.deadlines()
+	for i := 0; i < maxDeferredChildEventsPerThread+2; i++ {
+		fx.feed(childDelta("child-q", fmt.Sprintf("q-%d", i), "x"))
+	}
+	if got := fx.heldFrames("child-q"); got != maxDeferredChildEventsPerThread {
+		t.Fatalf("held %d frames, want the per-thread bound %d", got, maxDeferredChildEventsPerThread)
+	}
+	logged := captureLog(t, func() {
+		fx.feed(v2ActivityLine("root-provider-thread", "root-turn", "spawn-q", "started", "child-q", "/root/child-q"))
+	})
+	want := "codex: a spawn claimed provider thread child-q after its full queue dropped 2 notifications and rejected 0 requests; 0 frames refused connection-wide for a full routing budget"
+	if strings.Count(logged, "a spawn claimed provider thread") != 1 || !strings.Contains(logged, want) {
+		t.Fatalf("claim log = %q, want it once: %q", logged, want)
+	}
+	delivered := 0
+	for _, event := range events() {
+		if strings.HasPrefix(event.ItemID, "q-") {
+			delivered++
+		}
+	}
+	if delivered == 0 {
+		t.Fatal("the claim did not deliver the held frames")
+	}
+
+	// Fill the connection budget across threads, then refuse one more.
+	threads := maxDeferredChildEventsTotal / maxDeferredChildEventsPerThread
+	for thread := 0; thread < threads; thread++ {
+		for i := 0; i < maxDeferredChildEventsPerThread; i++ {
+			fx.feed(childDelta(fmt.Sprintf("full-%d", thread), fmt.Sprintf("f-%d", i), "x"))
+		}
+	}
+	fx.feed(childDelta("over-budget", "o", "x"))
+	if got := fx.heldFrames("over-budget"); got != 0 {
+		t.Fatalf("held %d frames past the connection budget", got)
+	}
+	fx.conn.routesMu.Lock()
+	holds := len(fx.conn.holds)
+	fx.conn.routesMu.Unlock()
+	if holds != threads {
+		t.Fatalf("the connection has %d holds, want %d: a refused frame made one", holds, threads)
+	}
+	// Deadline 0 was child-q's, which the spawn claimed; 1 and 2 are the
+	// first two full threads.
+	logged = captureLog(t, func() { deadlines.fire(t, 1) })
+	if !strings.Contains(logged, "1 frames refused connection-wide for a full routing budget") {
+		t.Fatalf("expiry log = %q, want the budget refusal", logged)
+	}
+	logged = captureLog(t, func() { deadlines.fire(t, 2) })
+	if !strings.Contains(logged, "0 frames refused connection-wide") {
+		t.Fatalf("second expiry log = %q, want the budget refusal logged only once", logged)
+	}
+}
+
 // TestForkAnnouncementWithOneSessionWaitsUnseen covers a revert's live-session
 // fork when its session is the only one on the connection. Codex answers
 // thread/fork and then announces the fork with a thread/started that names no
-// parent, which the connection routes to the only session; that session does
-// not own the fork, so the frame waits on the connection. The fork returns
-// before the announcement, the source thread shows nothing while the frame
-// waits, and either the reverted session that resumes the fork receives the
-// announcement (which shows nothing either) or the deadline drops it.
+// parent and its own session. The connection hands it to the only session,
+// which does not route the fork and so returns it to the connection's hold:
+// the session keeps nothing for it and asks Codex nothing about it.
+// The fork returns before the announcement, and either the session that
+// resumes the fork receives it (which shows nothing) or the deadline drops it.
 func TestForkAnnouncementWithOneSessionWaitsUnseen(t *testing.T) {
 	for _, resumed := range []bool{true, false} {
 		name := "deadline"
@@ -158,14 +350,10 @@ func TestForkAnnouncementWithOneSessionWaitsUnseen(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			fx, s, events := recordingRootSession(t)
+			deadlines := fx.deadlines()
 			version := "0.169.0"
 			s.appServerVersion.Store(&version)
 			fx.answer("thread/fork", `{"thread":{"id":"fork-thread"}}`)
-			recovered := make(chan struct{})
-			fx.answer("thread/read", func(json.RawMessage) any {
-				defer close(recovered)
-				return `{"thread":{"id":"fork-thread"}}`
-			})
 
 			ctx, cancel := context.WithTimeout(context.Background(), fixtureWait)
 			defer cancel()
@@ -173,14 +361,15 @@ func TestForkAnnouncementWithOneSessionWaitsUnseen(t *testing.T) {
 			if err != nil || forkID != "fork-thread" {
 				t.Fatalf("ForkAt = %q, %v", forkID, err)
 			}
+			before := len(fx.written(1))
 			fx.feed([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"fork-thread","sessionId":"fork-session"}}}`))
 			if got := fx.heldFrames("fork-thread"); got != 1 {
 				t.Fatalf("connection held %d fork frames, want 1", got)
 			}
-			// The only session looks for the fork's spawn, finds no parent,
-			// and keeps waiting for one until the deadline.
-			<-recovered
 			s.collabAsyncWG.Wait()
+			if after := len(fx.written(before)); after != before {
+				t.Fatalf("the announcement made the connection write %d lines: %q", after-before, fx.written(after)[before:])
+			}
 			if got := events(); len(got) != 0 {
 				t.Fatalf("the source thread showed the fork announcement: %+v", got)
 			}
@@ -195,7 +384,7 @@ func TestForkAnnouncementWithOneSessionWaitsUnseen(t *testing.T) {
 					t.Fatalf("the reverted thread showed the fork announcement: %+v", revertedEvents)
 				}
 			} else {
-				fx.conn.expireDeferredChild("fork-thread")
+				deadlines.fire(t, 0)
 				if got := fx.heldFrames("fork-thread"); got != 0 {
 					t.Fatalf("connection still holds %d fork frames after the deadline", got)
 				}

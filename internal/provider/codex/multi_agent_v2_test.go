@@ -177,8 +177,8 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 	})
 	s.turnConfig.model = "gpt-5.4"
 	s.turnConfig.reasoningEffort = "high"
-	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-a","agentNickname":"Socrates","source":{"subAgent":{"threadSpawn":{"parentThreadId":"root-provider-thread","agentPath":"/root/reviewer"}}}}}}`))
-
+	// No supported Codex announces a spawned child with thread/started, so the
+	// spawn row carries no nickname until the child's metadata read answers.
 	feed(t, s, v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
 
 	if got := s.parentToolUseForProviderThread("child-a"); got != "spawn-a" {
@@ -214,7 +214,7 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 		}
 		if meta.Input.Tool != "spawn_agent" || meta.Input.AgentPath != "/root/reviewer" ||
 			meta.Input.Model != "" || meta.Input.ReasoningEffort != "" ||
-			meta.Input.AgentNickname != "Socrates" || meta.Input.AgentRole != "default" ||
+			meta.Input.AgentNickname != "" || meta.Input.AgentRole != "default" ||
 			len(meta.Input.ReceiverThreadIDs) != 1 || meta.Input.ReceiverThreadIDs[0] != "child-a" ||
 			len(meta.Input.AgentsStates) != 1 {
 			t.Fatalf("normalized meta = %+v", meta.Input)
@@ -230,9 +230,7 @@ func TestMultiAgentV2NestedSpawnDoesNotInheritSourceAgentProfile(t *testing.T) {
 	})
 	s.turnConfig.model = "gpt-root"
 	s.turnConfig.reasoningEffort = "high"
-	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/reviewer", "spawn-a") {
-		t.Fatal("register source child ownership")
-	}
+	ownChild(t, s, "root-provider-thread", "child-a", "/root/reviewer", "spawn-a")
 	// The dispatch path drains after recording ownership, which routes the
 	// child's frames to this session on the connection.
 	s.drainDeferredChildWireEvents("child-a")
@@ -506,9 +504,7 @@ func TestMultiAgentV2OwnershipRejectsSelfAndConflictingRemap(t *testing.T) {
 	if s.registerChildOwnership("root-provider-thread", "root-provider-thread", "/root", "spawn-self") {
 		t.Fatal("registered root provider thread as its own child")
 	}
-	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/review", "spawn-a") {
-		t.Fatal("initial child ownership was rejected")
-	}
+	ownChild(t, s, "root-provider-thread", "child-a", "/root/review", "spawn-a")
 	if s.registerChildOwnership("root-provider-thread", "child-a", "/root/other", "spawn-b") {
 		t.Fatal("conflicting child ownership was accepted")
 	}
@@ -523,9 +519,7 @@ func TestMultiAgentV2OwnershipAllowsPathReuseByNewChildAfterRestart(t *testing.T
 	if !s.registerHistoricalChildOwnership("root-provider-thread", "child-old", "/root/review", "spawn-old") {
 		t.Fatal("register historical child ownership")
 	}
-	if !s.registerChildOwnership("root-provider-thread", "child-new", "/root/review", "spawn-new") {
-		t.Fatal("new child could not replace historical path ownership")
-	}
+	ownChild(t, s, "root-provider-thread", "child-new", "/root/review", "spawn-new")
 
 	if got := s.parentToolUseForProviderThread("child-old"); got != "spawn-old" {
 		t.Fatalf("historical thread ownership = %q, want spawn-old", got)
@@ -556,9 +550,7 @@ func TestMultiAgentV2OwnershipAllowsPathReuseByNewChildAfterRestart(t *testing.T
 func TestMultiAgentV2HistoryCannotReplaceLivePathOwner(t *testing.T) {
 	t.Parallel()
 	s := newMultiAgentV2RoutingSession(t, nil)
-	if !s.registerChildOwnership("root-provider-thread", "child-new", "/root/review", "spawn-new") {
-		t.Fatal("register live child ownership")
-	}
+	ownChild(t, s, "root-provider-thread", "child-new", "/root/review", "spawn-new")
 	if !s.registerHistoricalChildOwnership("root-provider-thread", "child-old", "/root/review", "spawn-old") {
 		t.Fatal("register old historical child ownership")
 	}
@@ -616,9 +608,7 @@ func TestMultiAgentV2LegacyConversationApprovalUsesChildScope(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/review", "spawn-a") {
-		t.Fatal("register child ownership")
-	}
+	ownChild(t, s, "root-provider-thread", "child-a", "/root/review", "spawn-a")
 	requestID := json.Number("17")
 	s.dispatchServerRequest("execCommandApproval", &requestID, json.RawMessage(`{"conversationId":"child-a","callId":"cmd-1","command":["go","test","./..."]}`), nil)
 	if len(events) != 1 || events[0].Kind != provider.EventApprovalRequest || events[0].ParentToolUseID != "spawn-a" {
@@ -626,6 +616,8 @@ func TestMultiAgentV2LegacyConversationApprovalUsesChildScope(t *testing.T) {
 	}
 }
 
+// An announcement for a thread no spawn names is held on the connection with
+// nothing kept for it in the session, and its deadline drops it unseen.
 func TestMultiAgentV2QuarantineExpiryDropsUnownedNotifications(t *testing.T) {
 	t.Parallel()
 	var events []provider.ProviderEvent
@@ -633,42 +625,23 @@ func TestMultiAgentV2QuarantineExpiryDropsUnownedNotifications(t *testing.T) {
 		events = append(events, event)
 	})
 	fx := fixtureFor(t, s)
+	deadlines := fx.deadlines()
 	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"unknown-child","agentNickname":"Orphan"}}}`))
-	if len(s.collabReceiverMetadataForThreads([]string{"unknown-child"})) != 1 {
-		t.Fatal("accepted quarantine did not retain child display metadata")
+	if got := fx.heldFrames("unknown-child"); got != 1 {
+		t.Fatalf("connection held %d frames, want 1", got)
 	}
-	fx.conn.expireDeferredChild("unknown-child")
+	if len(s.collabReceiverMetadataForThreads([]string{"unknown-child"})) != 0 {
+		t.Fatal("the session kept display metadata for a thread no spawn names")
+	}
+	deadlines.fire(t, 0)
 	fx.conn.routesMu.Lock()
-	held, count := len(fx.conn.deferredChild), fx.conn.deferredChildCount
+	holds, frames := len(fx.conn.holds), fx.conn.heldFrames
 	fx.conn.routesMu.Unlock()
-	if held != 0 || count != 0 {
-		t.Fatalf("expired quarantine retained data: count=%d queues=%d", count, held)
+	if holds != 0 || frames != 0 {
+		t.Fatalf("expired hold retained data: holds=%d frames=%d", holds, frames)
 	}
 	if len(events) != 0 {
 		t.Fatalf("expiry reached the thread: %+v", events)
-	}
-	if len(s.collabReceiverMetadataForThreads([]string{"unknown-child"})) != 0 {
-		t.Fatal("expired quarantine retained child display metadata")
-	}
-}
-
-func TestMultiAgentV2RejectedQuarantineDoesNotCacheMetadata(t *testing.T) {
-	t.Parallel()
-	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
-	providerThreadID := strings.Repeat("x", maxDeferredChildThreadIDBytes+1)
-	line, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "thread/started",
-		"params": map[string]any{
-			"thread": map[string]any{"id": providerThreadID, "agentNickname": "Orphan"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal notification: %v", err)
-	}
-	feed(t, s, line)
-	if len(s.collabReceiverMetadataForThreads([]string{providerThreadID})) != 0 {
-		t.Fatal("rejected quarantine retained child display metadata")
 	}
 }
 
@@ -878,9 +851,7 @@ func TestCollabHistoryTerminalReconciliationRejectsStaleAndMismatchedSnapshots(t
 	completed := collabThreadSnapshot{ThreadID: "child-a", Status: "idle", LatestTurnStatus: "completed"}
 
 	revisionBeforeRead := s.childLifecycleRevisionForThread("child-a")
-	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/review", "spawn-a") {
-		t.Fatal("register child ownership")
-	}
+	ownChild(t, s, "root-provider-thread", "child-a", "/root/review", "spawn-a")
 	s.drainDeferredChildWireEvents("child-a")
 	feed(t, s, []byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"child-a","turn":{"id":"turn-b","status":"inProgress"}}}`))
 	events = nil

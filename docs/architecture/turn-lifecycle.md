@@ -115,8 +115,9 @@ notifications retain their own typed completion evidence. See the
 [immutable agent history contract](../specs/agent-visibility.md#immutable-agent-history).
 
 Every non-root Codex provider thread is held on the shared connection until a
-V1 spawn completion or V2 started activity maps it to a spawn item; a session
-that receives a frame for a thread it does not own hands it to the same queue.
+V1 spawn completion or V2 started activity maps it to a spawn item and the
+spawn row is emitted; a session that receives a frame for a thread the
+connection does not route to it returns it to the same hold.
 The queue has bounds and an ownership deadline: expired server requests are
 rejected rather than stalling the provider indefinitely, and expired
 notifications are dropped and logged. Known child turn

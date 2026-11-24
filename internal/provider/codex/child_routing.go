@@ -13,10 +13,10 @@ const (
 	maxDeferredChildThreadIDBytes   = 256
 )
 
-// deferredChildOwnershipTimeout is how long a child thread's wire events stay
-// quarantined before the routing deadline rejects them. A var only so a test
-// can shrink it; nothing outside a test may write it.
-var deferredChildOwnershipTimeout = 10 * time.Second
+// deferredChildOwnershipTimeout is how long a thread's frames stay held before
+// the routing deadline rejects them. Conn.startHoldTimer arms it; a test
+// replaces that hook rather than this value.
+const deferredChildOwnershipTimeout = 10 * time.Second
 
 // deferredChildWireEvent is either a notification (RequestID empty) or a
 // server request. Server requests must be retained as well as notifications:
@@ -35,54 +35,36 @@ func (e deferredChildWireEvent) sizeBytes() int {
 
 // dispatchesWireThread reports whether this session dispatches a frame on
 // providerThreadID itself: the root, any frame before the root is known, or a
-// child whose spawn ownership is recorded. Any other frame is handed to the
-// connection, which holds it until a spawn claims the thread
-// (drainDeferredChildWireEvents) or rejects and drops it at the deadline, so
-// a child's frame never reaches the root. held reports whether the connection
-// accepted the frame rather than rejecting it for its bounds.
+// child the connection routes to this session, which it does once the child's
+// spawn was emitted (registerChildRoute). Any other frame joins the thread's
+// hold on the connection until a spawn claims the thread or the deadline
+// drops it, so a child's frame never reaches the root. held reports whether
+// the connection accepted the frame rather than refusing it for its bounds.
 func (s *Session) dispatchesWireThread(providerThreadID string, event deferredChildWireEvent, requestID *json.Number) (dispatch, held bool) {
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	rootThreadID := strings.TrimSpace(s.rootThreadID())
-	if providerThreadID == "" || rootThreadID == "" || providerThreadID == rootThreadID ||
-		s.parentToolUseForProviderThread(providerThreadID) != "" {
+	if providerThreadID == "" || rootThreadID == "" || providerThreadID == rootThreadID {
 		return true, false
 	}
-	return false, s.handChildFrame(providerThreadID, event, requestID)
+	return s.conn.deliverOrHold(providerThreadID, s, event, requestID)
 }
 
-// handChildFrame gives the connection a frame for a thread this session did
-// not own when it looked, and reports whether the connection holds it. A
-// spawn recorded after that look may already have drained the thread's held
-// frames, before this one joined them; claiming again releases it.
-func (s *Session) handChildFrame(providerThreadID string, event deferredChildWireEvent, requestID *json.Number) bool {
-	held := s.conn.holdChildFrame(providerThreadID, event, requestID)
-	if held && s.parentToolUseForProviderThread(providerThreadID) != "" {
-		s.drainDeferredChildWireEvents(providerThreadID)
-	}
-	return held
-}
-
-// drainDeferredChildWireEvents routes each newly owned child thread to this
-// session and releases the frames the connection held for it.
+// drainDeferredChildWireEvents routes each child this session owns to it and
+// releases the frames the connection held for it. Every caller runs it after
+// the child's spawn event was emitted, which is what makes the route the
+// signal that the child's frames may be delivered. A thread this session does
+// not own gets no route, so its frames stay held. Ownership is read and the
+// route written under s.mu, so close_agent's teardown cannot interleave.
 func (s *Session) drainDeferredChildWireEvents(providerThreadIDs ...string) {
 	for _, providerThreadID := range providerThreadIDs {
 		s.mu.Lock()
-		delete(s.childRouting.recoveryPending, providerThreadID)
+		moved := s.collab.childParentByThread[providerThreadID] != "" &&
+			s.conn.registerChildRoute(providerThreadID, s)
 		s.mu.Unlock()
-		if s.conn.registerChildRoute(providerThreadID, s) {
+		if moved {
 			s.flushEarlyFrames()
 		}
 	}
-}
-
-// forgetUnclaimedChild drops what this session kept for a thread the
-// connection stopped holding at its deadline: the pending ownership recovery
-// and the display metadata of a thread no spawn claimed.
-func (s *Session) forgetUnclaimedChild(providerThreadID string) {
-	s.mu.Lock()
-	delete(s.childRouting.recoveryPending, providerThreadID)
-	s.mu.Unlock()
-	s.deleteUnownedAgentMeta(providerThreadID)
 }
 
 func (s *Session) dispatchServerRequest(method string, id *json.Number, params json.RawMessage, line []byte) {

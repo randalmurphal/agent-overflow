@@ -260,15 +260,6 @@ type childRuntimeState struct {
 	generation uint64
 }
 
-// sessionChildRoutingState is the ownership recovery for provider threads
-// whose spawn ownership has not arrived yet; the connection holds their frames
-// (Conn.holdChildFrame). Guarded by mu; Close zeroes the group.
-type sessionChildRoutingState struct {
-	recoveryPending map[string]bool
-	recoveryQueue   []string
-	recoveryRunning bool
-}
-
 // sessionCollabHistoryState is the sequential metadata recovery a resume runs
 // for unresolved children (collab_rehydrate.go). It has no arbitrary total
 // child limit: persisted ownership is non-recursive, while the single worker
@@ -441,12 +432,11 @@ type Session struct {
 	// non-zero. Set by tests that exercise the late-response path; a
 	// production Session leaves it at zero to use the default.
 	requestTimeoutOverride time.Duration
-	// collab is the child-thread identity map, childRouting the quarantine for
-	// child frames whose ownership has not arrived, collabHistory the sequential
+	// collab is the child-thread identity map, collabHistory the sequential
 	// resume recovery queue for unresolved children, and rawCalls the raw
-	// function-call tracking their enrichment reads.
+	// function-call tracking their enrichment reads. The connection holds the
+	// frames of a child whose ownership has not arrived (Conn.holds).
 	collab        sessionCollabState
-	childRouting  sessionChildRoutingState
 	collabHistory sessionCollabHistoryState
 	rawCalls      sessionRawToolCallState
 	// rolloutTail is the arming state of the resumed-session rollout reader.
@@ -1116,7 +1106,6 @@ func (s *Session) Close() error {
 	s.review = nil
 	s.collab = sessionCollabState{}
 	s.rawCalls = sessionRawToolCallState{}
-	s.childRouting = sessionChildRoutingState{}
 	s.collabHistory = sessionCollabHistoryState{}
 	s.rolloutTail = sessionRolloutTailState{}
 	// childLifecycleRevision is the one piece of child state guarded by
