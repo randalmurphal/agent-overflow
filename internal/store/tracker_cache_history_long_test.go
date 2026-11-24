@@ -41,7 +41,8 @@ func mirrorHistoryShown(t *testing.T, s *Store) string {
 // writes or deletes more than a chunk; an identical one writes nothing,
 // its status result checked in one transaction of its own
 // (writeIdenticalHistory); a longer one that keeps the stored changes
-// appends in place.
+// appends in place. A new one is compared with the stored generation
+// first (three reads: the removals and two chunks), as any is.
 func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 10_000, "a")})
@@ -54,7 +55,7 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 		statements, chunks int
 		shown              string
 	}{
-		{"new", longHistory("10001", n, 1), true, 31, n / clearMirrorChunk, "5000 answered 5001 since 5000 other 0 dirty 0"},
+		{"new", longHistory("10001", n, 1), true, 34, n / clearMirrorChunk, "5000 answered 5001 since 5000 other 0 dirty 0"},
 		{"identical", longHistory("10001", n, 1), false, 17, 0, "5000 answered 5001 since 5000 other 0 dirty 0"},
 		{"appended", longHistory("10001", n+100, 1), true, 23, 1, "5100 answered 5101 since 5100 other 0 dirty 0"},
 		{"shortened", longHistory("10001", 10, 6000), true, 34, 0, "10 answered 6010 since 10 other 0 dirty 0"},
@@ -83,6 +84,53 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 		if got := mirrorHistoryShown(t, s); got != step.shown {
 			t.Errorf("%s: history %q; want %q", step.name, got, step.shown)
 		}
+	}
+}
+
+// A card of the same update in another status makes the issue due a
+// history read again (history_for 0) and keeps its stored history. That
+// history read again, identical, writes no change, staged (longer than a
+// chunk) or batched: it is compared with the stored generation, not taken
+// for a first write. It reports a change only for the status result it
+// decides (final for the update the card write left undecided), as a
+// batch does, and the same history once more reports none.
+func TestAnIdenticalHistoryAfterASameUpdateStatusChangeWritesNoChange(t *testing.T) {
+	for _, n := range []int{20, 5000} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			s, _, root := newMirror(t)
+			writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 10_000, "a")})
+			mustReplaceHistory(t, s, root, longHistory("10001", n, 1), MirrorWrite{Changed: true})
+			moved := webCard("10001", 10_000)
+			moved.StatusID = "3"
+			if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{moved}, MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
+				t.Fatal(err)
+			}
+			var historyFor int64
+			if err := s.db.QueryRow(`SELECT history_for FROM tracker_cache_issues WHERE root_id = ? AND issue_id = '10001'`, root).Scan(&historyFor); err != nil || historyFor != 0 {
+				t.Fatalf("after the same-update status change history_for is %d (%v); want 0", historyFor, err)
+			}
+			recorder := recordMirrorWrites(t, s)
+			for i, changed := range []bool{true, false} {
+				recorder.reset()
+				sweep, histories, read := currentSweep(s, root), dueHistories(s, root, []MirrorHistory{longHistory("10001", n, 1)}), nextMirrorRead(s, root)
+				results, _, err := s.ReplaceMirrorHistories(root, sweep, histories, MirrorCatalog{}, read)
+				if err != nil || len(results) != 1 || results[0].Superseded || results[0].Unkept {
+					t.Fatalf("identical history %d: %+v, %v", i, results, err)
+				}
+				if results[0].Changed != changed {
+					t.Errorf("identical history %d reports changed %v; want %v", i, results[0].Changed, changed)
+				}
+				if got := recorder.rowWrites()["tracker_cache_changes"]; got != 0 {
+					t.Errorf("identical history %d wrote %d history rows; want none", i, got)
+				}
+				if got, want := mirrorHistoryShown(t, s), fmt.Sprintf("%d answered %d since 0 other 0 dirty 0", n, n+1); got != want {
+					t.Errorf("identical history %d: history %q; want %q", i, got, want)
+				}
+				if got := statusOf(t, s, root, "10001"); got != "0 true 10000" {
+					t.Errorf("identical history %d: status %s; want no time, final", i, got)
+				}
+			}
+		})
 	}
 }
 

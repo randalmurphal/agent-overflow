@@ -172,12 +172,10 @@ func (s *Store) writeIdenticalHistory(rootID, sweep int64, in mirrorHistoryInput
 // only when it adds some. Either fails with errStaleReceipt when the
 // issue's receipt moved since st was read: in place before it writes
 // anything, a staged one at the switch, leaving its staged changes for
-// the caller to delete.
+// the caller to delete. The stored generation is compared whatever
+// history_for holds: a card write of the same update in another status
+// sets it to 0 and keeps the changes (mirrorStatusKeptBy).
 func (s *Store) writeStagedHistory(rootID int64, in mirrorHistoryInput, st mirrorHistoryState, action string) (changed bool, err error) {
-	if st.storedFor == 0 {
-		// No history is stored, so none of it can be kept in place.
-		return true, s.stageMirrorHistory(rootID, in, st, action)
-	}
 	probe, err := s.probeMirrorHistory(rootID, in, st.gen)
 	if err != nil {
 		return true, fmt.Errorf("%s: %w", action, err)
