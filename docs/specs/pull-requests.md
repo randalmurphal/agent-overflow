@@ -999,7 +999,8 @@ after it `Your turn`, a refused project failing alone, "Open with agent" opening
 thread on a worktree of the branch, and the Pipelines tab's filters
 remembered across a reload, stages and a GitLab and a GitHub job log.
 `review-manage.spec.ts` and its compact twin (`review-manage-flow.ts`)
-drive the management controls on both forges: a refused title edit and
+drive the management controls, on both forges on desktop and on GitHub
+on compact: a refused title edit and
 its retry, the stale-description refusal, each Details picker's change
 and the requests it sent, a reviewers change whose add was refused
 after its remove applied, re-request, close, reopen, draft and ready, a
@@ -1039,8 +1040,8 @@ toggled on and off, the popover's eight, GitLab's unknown awards, a
 refused GitLab reactions read, and the description and PR comment
 previews.
 `review-diff-reading.spec.ts` and its compact twin
-(`review-diff-reading-flow.ts`) drive reading the diff on both forges: a
-run by Shift+click and by `From here`, its card and leaving it, a head
+(`review-diff-reading-flow.ts`) drive reading the diff, on both forges on
+desktop and on GitHub on compact: a run by Shift+click and by `From here`, its card and leaving it, a head
 run's `Comment now` and agent-only line, `Changes from here`, image rows
 in unified and split view, an over-cap and a non-image binary file, the
 SVG toggle and a line's copied link.
