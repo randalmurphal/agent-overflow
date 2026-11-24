@@ -3,25 +3,16 @@ package trackerapp
 import (
 	"context"
 	"errors"
-	"hash/maphash"
 	"slices"
 	"time"
-
-	"agent-overflow/internal/tracker"
 )
 
-// What settles into an open ticket's pump. A ticket's view is derived from
-// its document and from what the mirror holds of other things
-// (ticketInputs), which move independently: the document by reads, ordered
-// by when they began, and the other inputs by the change funnel. One rule
-// installs a view (installViewLocked): it was built from the document the
-// pump holds now, and its build began after the last change to the other
-// inputs. A read settles its document and the view it built under that
-// rule; a view that misses it is built again (rebuildTicket) by the
-// goroutine that settled the document, or by the pump when an input
-// moved. Whether the view is loaded is part of what is told: a view that
-// becomes loaded, or stops being, is told even when its content is the
-// same.
+// What a read of open tickets settles into their pumps: each ticket's
+// outcome (success, failure, rate limit, not found), ordered by when the
+// reads began. What the read stored reaches the pumps through the change
+// funnel as any write does, and the read builds the views of its tickets
+// from the record as it settles them (buildTickets), so one event carries
+// a read's outcome together with the view it caused.
 
 // ticketsResult is how a read of tickets ended: failed for the read as a
 // whole, errs by pump (errOf), over when every pump read ended.
@@ -75,50 +66,21 @@ func askerErr(rd *ticketRead, failure *Failure, readErr error) error {
 	return errUnanswered
 }
 
-// ticketInputs reports what ch, changes stored by one write, moves of
-// tp's view: read when the issue's own card changed and the same write
-// stored no body of it, so the ticket is due a full read at once; rebuild
-// when an input of the view other than its document may have changed, or
-// another read stored its body, which the rebuild reads from the mirror.
-// The inputs are those detailView reads: the record's card of the issue
-// (with its status time), the cards of the issues it shows (its parent
-// and the issues it links) and whether the mirror keeps them (a row
-// stored or removed, a ticket's keep ended or begun again), the
-// connection's users and
-// statuses, and the mirror's body (another read stored it, or the cap
-// dropped it, or the issue stopped or started being kept). origin reports
-// that ch is a write of the read of the ticket itself, which settles its
-// own card and body.
-func ticketInputs(tp *ticketPump, ch Changes, origin bool) (read, rebuild bool) {
-	own := func(ids []tracker.IssueID) bool { return slices.Contains(ids, tp.key.issue) }
-	shown := func(ids []tracker.IssueID) bool {
-		return slices.ContainsFunc(tp.shows, func(id tracker.IssueID) bool { return slices.Contains(ids, id) })
-	}
-	read = !origin && own(ch.Cards) && !own(ch.Details)
-	rebuild = ch.Catalog || own(ch.Cards) || own(ch.History) || own(ch.Rows) || own(ch.Removed) || own(ch.Dropped) || own(ch.Visibility) ||
-		!origin && own(ch.Details) || shown(ch.Cards) || shown(ch.Rows) || shown(ch.Removed) || shown(ch.Visibility)
-	return read, rebuild
-}
-
 // readTickets reads the tickets of pumps, all of connection conn, together
-// (readDetails), each checked against what its pump settled last and read
-// in full when full is set (ticketReads), each write's changes passed
-// through the change funnel as it commits with these pumps as its origin,
-// and settles each pump with its own outcome (settleTickets). opened
-// records a person's opening.
+// (readDetails), each checked against the view its pump shows and read in
+// full when full is set (ticketReads), and settles each pump with its own
+// outcome (settleTickets). opened records a person's opening.
 func (s *Service) readTickets(ctx context.Context, conn string, pumps []*ticketPump, u Urgency, full, opened bool) ticketsResult {
 	began, reads := s.ticketReads(pumps, full)
 	at := millis(s.now())
-	res, err := s.readDetails(ctx, conn, reads, u, opened, &tickOrigin{tickets: pumps})
+	res, err := s.readDetails(ctx, conn, reads, u, opened)
 	return s.settleTickets(ctx, conn, pumps, began, reads, res, err, at)
 }
 
-// ticketReads are the reads of pumps' tickets, each checked against what
-// its pump settled last and read in full when full is set, and the stamp
-// the read began at. A read at once (readNowLocked) is checked as any
-// other, and read in full when the card stored since is newer than its
-// document (mirrorMoved). Each is in flight (ticketPump.reading) until
-// settleTickets settles it.
+// ticketReads are the reads of pumps' tickets, each knowing the body its
+// pump's view shows (ticketRead.prior) and read in full when full is set,
+// and the stamp the read began at. Each is in flight (ticketPump.reading)
+// until settleTickets settles it.
 func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, reads []*ticketRead) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
@@ -126,26 +88,24 @@ func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, rea
 	reads = make([]*ticketRead, len(pumps))
 	for i, tp := range pumps {
 		tp.reading++
-		reads[i] = &ticketRead{issue: tp.key.issue, tp: tp, full: full, nudged: tp.nudged > tp.settled}
-		if tp.check != nil {
-			prior := *tp.check
-			reads[i].prior = &prior
+		reads[i] = &ticketRead{issue: tp.key.issue, tp: tp, full: full}
+		if v := tp.view.detail; v != nil {
+			reads[i].prior, reads[i].behind = tp.view.body, v.BodyBehind
 		}
 	}
 	return began, reads
 }
 
 // settleTickets settles reads, what a read of pumps' tickets on connection
-// conn that began at began found, into each pump, and rebuilds the view of
-// each whose view the settlement left behind: res and err are how the read
-// ended (readDetails), res.ch everything the run stored that the funnel
-// was handed with these pumps as its origin, ctx the context the read ran
-// under, and at when it ended. Each ticket the read answered settles with
-// its own outcome; the read's failure is told to each ticket it did not
-// answer and makes it due on the retry schedule. A read stopped by its
-// context settles only the tickets it answered; a connection that ended
-// ends every pump. Each pump's asker is answered its own ticket's outcome
-// (ticketsResult.errOf).
+// conn that began at began found, into each pump, then builds the views of
+// those whose record changed since their views were built and sends each
+// pump's event (buildTickets): res and err are how the read ended
+// (readDetails), ctx the context the read ran under, and at when it ended.
+// Each ticket the read answered settles with its own outcome; the read's
+// failure is told to each ticket it did not answer and makes it due on the
+// retry schedule. A read stopped by its context settles only the tickets
+// it answered; a connection that ended ends every pump. Each pump's asker
+// is answered its own ticket's outcome (ticketsResult.errOf).
 func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticketPump, began uint64, reads []*ticketRead, res detailsRead, err error, at int64) ticketsResult {
 	out := ticketsResult{historyDue: res.historyDue}
 	end := readEnd{kind: res.kind, at: at, ok: !slices.ContainsFunc(reads, (*ticketRead).failed)}
@@ -176,29 +136,39 @@ func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticke
 	}
 	s.subMu.Lock()
 	out.over = true
-	var behind []*ticketPump
+	var live []*ticketPump
 	for i, tp := range pumps {
 		tp.reading--
 		switch {
 		case tp.over || tp.core.DeadLocked():
 		case ended:
 			s.endTicketLocked(tp)
-		case stopped && !reads[i].answered:
-			// A rebuild that left its document to this read builds now.
-			if tp.behindLocked() {
-				behind = append(behind, tp)
-			}
-			out.over = false
 		default:
-			if s.settleTicketLocked(tp, began, reads[i], res.ch, end) {
-				behind = append(behind, tp)
+			if !stopped || reads[i].answered {
+				s.settleTicketLocked(tp, began, reads[i], end)
 			}
+			live = append(live, tp)
 			out.over = false
 		}
 	}
+	// The builds are claimed with the settlement, so no one who sees the
+	// read settled sees the ticket owe no build before its view is built.
+	claimed, counted := s.claimBuildsLocked(live, false)
 	s.subMu.Unlock()
-	for _, tp := range behind {
-		s.rebuildTicket(tp)
+	if err := s.buildClaimed(conn, res.root, claimed, counted, false); err != nil {
+		if !errors.Is(err, ErrStopped) {
+			s.logf("trackerapp: build the views of %d open tickets of %s: %v", len(claimed), conn, err)
+		}
+		// A ticket whose view could not be built answers its asker that
+		// failure, unless its read answers one of its own.
+		for i, tp := range pumps {
+			if slices.Contains(claimed, tp) && out.errOf(i) == nil {
+				if out.errs == nil {
+					out.errs = make([]error, len(pumps))
+				}
+				out.errs[i] = err
+			}
+		}
 	}
 	return out
 }
@@ -231,20 +201,12 @@ func (rd *ticketRead) failed() bool {
 // tp's ticket, into tp, unless a read that began later settled already:
 // for a ticket the read did not answer, the read's failure (due again at
 // release when a rate limit holds it); for one it answered, the tracker
-// leaving the ticket out, a view that could not be built, or the document
-// now and which of the mirror and the pump holds it, with the view the
-// read built of it. ch is what the read stored. A changed view or failure
-// is told. It reports whether the view is left behind its inputs. The
-// caller holds subMu.
-func (s *Service) settleTicketLocked(tp *ticketPump, began uint64, rd *ticketRead, ch Changes, end readEnd) bool {
-	_, moved := ticketInputs(tp, ch, true)
+// leaving the ticket out, or a failure of its own, or success, with the
+// read time of the body the record holds (noteBodyLocked). A changed
+// failure is due to be told (flushTicketLocked). The caller holds subMu.
+func (s *Service) settleTicketLocked(tp *ticketPump, began uint64, rd *ticketRead, end readEnd) {
 	if began < tp.settled {
-		// What an earlier read stored may postdate the view the later one
-		// settled, and a rebuild may have left its document to this read.
-		if moved {
-			tp.inputs = s.nextStampLocked()
-		}
-		return tp.behindLocked()
+		return
 	}
 	tp.settled = began
 	now := s.now()
@@ -260,193 +222,13 @@ func (s *Service) settleTicketLocked(tp *ticketPump, began uint64, rd *ticketRea
 			failure = internalFailure(end.at)
 		}
 		s.dueLocked(tp, began, s.retryLocked(tp, now, end.release))
-		if failure.Kind == string(FailureInternal) {
-			// What the read stored may not be in the view: the next read
-			// decodes and rebuilds it.
-			tp.check = nil
-		}
 		tp.tellFailureLocked(failure)
 	case rd.err != nil:
 		s.dueLocked(tp, began, s.regularLocked(tp, now, end.ok))
 		tp.tellFailureLocked(notFoundFailure(end.kind, end.at))
 	default:
 		s.dueLocked(tp, began, s.regularLocked(tp, now, end.ok))
-		tp.check = nil
-		if rd.check != (detailCheck{}) {
-			check := rd.check
-			tp.check = &check
-		}
-		if rd.check.held == nil {
-			tp.held = nil
-		}
-		if rd.view != nil {
-			tp.docs++
-			if began >= tp.inputs {
-				again := s.unwatchedLocked(tp, rd.shows, began)
-				tp.shows = rd.shows
-				s.installViewLocked(tp, rd.view, rd.digest, rd.check.wall, began)
-				if again {
-					s.rebuildAgainLocked(tp)
-				}
-			}
-		}
+		tp.noteBodyLocked(rd.held)
 		tp.tellFailureLocked(nil)
 	}
-	if moved && tp.view.at < began {
-		// The read stored a change to an input of a view it did not build.
-		tp.inputs = max(tp.inputs, began)
-	}
-	s.flushTicketLocked(tp, false)
-	return tp.behindLocked()
-}
-
-// behindLocked reports that tp's view is not built from its document or
-// predates a change to its other inputs. The caller holds subMu.
-func (tp *ticketPump) behindLocked() bool {
-	return tp.view.docs != tp.docs || tp.view.at < tp.inputs
-}
-
-// installViewLocked makes v (nil: not loaded), with digest, tp's view,
-// built from the document tp holds now (held by the pump when its check
-// holds it, the document's read begun at wall time wall) in a build that began at
-// stamp at. A view that differs from the one told, in content or in
-// being loaded, is due to be told. The caller holds subMu and has checked
-// that the view is current (settleTicketLocked, rebuildTicket).
-func (s *Service) installViewLocked(tp *ticketPump, v *DetailView, digest uint64, wall int64, at uint64) {
-	loaded := v != nil
-	if loaded != tp.view.loaded || digest != tp.view.digest {
-		tp.changed, tp.pending = true, true
-	}
-	tp.view = toldView{loaded: loaded, digest: digest, docs: tp.docs, at: at}
-	tp.held = nil
-	if loaded && tp.check != nil && tp.check.held != nil {
-		tp.held = &heldDetail{view: *v, wall: wall}
-	}
-}
-
-// notLoadedLocked records, at stamp at, that neither the mirror nor tp's
-// pump holds its ticket's document, as a rebuild found or as a subscriber
-// was just answered (SubscribeTicket, TicketDetail). The view is told as
-// not loaded when it was told as loaded, and the ticket is then due a read
-// at once. The pump forgets its document as of at, so a read that began
-// earlier settles nothing and the next read builds the view of whatever
-// it finds and tells it. A pump that already told so and holds no document
-// has nothing to forget: a read that began since is the one that loads it,
-// and finding the ticket not loaded again leaves that read standing; the
-// not loaded view is still the one built at at. A ticket whose first read
-// has not settled is that read's to tell. The caller holds subMu.
-func (s *Service) notLoadedLocked(tp *ticketPump, at uint64) {
-	if tp.over || tp.core.DeadLocked() || tp.settled == 0 {
-		return
-	}
-	was := tp.view.loaded
-	if was || tp.check != nil {
-		tp.check, tp.shows, tp.settled = nil, nil, max(tp.settled, at)
-	}
-	s.installViewLocked(tp, nil, 0, 0, at)
-	if was {
-		s.readNowLocked(tp)
-	}
-	s.flushTicketLocked(tp, false)
-}
-
-// rebuildTicket builds tp's view again, with no tracker call, from the
-// newer of the document its pump holds and the mirror's copy (rebuiltView),
-// and installs it unless a read settled another document meanwhile (that
-// read builds its own) or an input moved since the build began (its nudge
-// builds again). A mirror's copy that is not the pump's document becomes
-// it, and the pump lets go of the one it held, unless a read of the ticket
-// is in flight: the copy may be that read's, and a view of it told before
-// the read settles would show its document with the failure the read
-// ends.
-// With no document anywhere the view is told as not loaded and the ticket
-// is due a read at once. A build that fails is told as a failure outside
-// the tracker when no failure is told, and is tried again at the next
-// read or nudge.
-func (s *Service) rebuildTicket(tp *ticketPump) {
-	s.subMu.Lock()
-	b, docs := s.nextStampLocked(), tp.docs
-	var held *ticketDoc
-	var readAt, wall int64
-	if tp.check != nil {
-		held, readAt, wall = tp.check.held, tp.check.readAt, tp.check.wall
-	}
-	first := tp.settled == 0
-	s.subMu.Unlock()
-	if first {
-		// The first read settles the view.
-		return
-	}
-	at := millis(s.now())
-	v, shows, mirrored, ok, err := s.rebuiltView(tp.key, held, readAt)
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	switch {
-	case tp.over || tp.core.DeadLocked() || tp.docs != docs || tp.inputs > b:
-		return
-	case err != nil:
-		s.logf("trackerapp: rebuild the view of open ticket %s of %s: %v", tp.key.issue, tp.key.connection, err)
-		tp.check = nil
-		if tp.failure == nil {
-			tp.tellFailureLocked(internalFailure(at))
-		}
-	case !ok:
-		s.notLoadedLocked(tp, b)
-		return
-	case mirrored != (detailCheck{}) && (tp.check == nil || *tp.check != mirrored) && tp.reading > 0:
-		// The mirror's copy is another read's document, and a read of the
-		// ticket is in flight: it may be that read's, which settles it with
-		// its outcome. That read builds the view, or rebuilds when it
-		// settles behind.
-		return
-	default:
-		if mirrored != (detailCheck{}) && (tp.check == nil || *tp.check != mirrored) {
-			// The mirror's copy is another read's document.
-			tp.check = &mirrored
-			tp.docs++
-			wall = mirrored.wall
-		}
-		again := s.unwatchedLocked(tp, shows, b)
-		tp.shows = shows
-		s.installViewLocked(tp, &v, s.digestOf(v), wall, b)
-		if again {
-			s.rebuildAgainLocked(tp)
-		}
-	}
-	s.flushTicketLocked(tp, false)
-}
-
-// rebuiltView is key's view built from the newer, by when their reads
-// began, of the document its pump holds (held, its read begun at heldAt;
-// nil for none) and the mirror's body, which another read may have stored
-// beside the pump's. mirrored is the mirror's body's check when the view
-// is built from it. ok is false when neither holds a document.
-func (s *Service) rebuiltView(key ticketKey, held *ticketDoc, heldAt int64) (v DetailView, shows []tracker.IssueID, mirrored detailCheck, ok bool, err error) {
-	root, err := s.readRoot(key.connection)
-	if errors.Is(err, ErrNotMirrored) {
-		return DetailView{}, nil, detailCheck{}, false, nil
-	}
-	if err != nil {
-		return DetailView{}, nil, detailCheck{}, false, err
-	}
-	defer s.leave()
-	row, err := s.viewRow(key.connection)
-	if err != nil {
-		return DetailView{}, nil, detailCheck{}, false, err
-	}
-	var d ticketDoc
-	b, stored, isStored, err := s.storedDetail(root, key.issue)
-	switch {
-	case err != nil:
-		return DetailView{}, nil, detailCheck{}, false, err
-	case isStored && (held == nil || b.ReadAt > heldAt):
-		d = stored
-		mirrored = detailCheck{readAt: b.ReadAt, wall: b.Wall, updated: b.UpdatedAt, doc: maphash.Bytes(s.digestSeed, b.Data)}
-	case held != nil:
-		d = *held
-	default:
-		return DetailView{}, nil, detailCheck{}, false, nil
-	}
-	v, shows, err = s.detailView(root, row, d)
-	return v, shows, mirrored, err == nil, err
 }

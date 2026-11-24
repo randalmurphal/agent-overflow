@@ -39,10 +39,11 @@ type bindGate struct {
 
 // The kinds of call a bindGate holds.
 const (
-	callRead  = "read"
-	callStore = "store"
-	callKeep  = "keep"
-	callDrop  = "drop"
+	callRead   = "read"
+	callStore  = "store"
+	callKeep   = "keep"
+	callDrop   = "drop"
+	callBodies = "bodies"
 )
 
 // gateHold is one armed hold of a bindGate: arrived closes when a call
@@ -118,6 +119,16 @@ func (g *bindGate) BeginMirrorRead(root, now int64) (store.MirrorRead, error) {
 		}
 	}
 	return g.Store.BeginMirrorRead(root, now)
+}
+
+func (g *bindGate) ListMirrorBodies(root int64, issues []string) ([]store.MirrorBody, error) {
+	if h := g.wait(callBodies); h != nil {
+		defer close(h.done)
+		if h.fail != nil {
+			return nil, h.fail
+		}
+	}
+	return g.Store.ListMirrorBodies(root, issues)
 }
 
 func (g *bindGate) StoreMirrorTickets(root, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog,
@@ -463,7 +474,7 @@ func TestAReadOfAClosedTicketLandingBeforeTheReopenedReadStoresNoBody(t *testing
 	opening.open()
 	settled(t, s.svc)
 	quiet(t, s.svc)
-	b, ok, err := s.st.GetMirrorBody(root, "10101")
+	b, ok, err := getMirrorBody(s.st, root, "10101")
 	if err != nil || !ok {
 		t.Fatalf("the reopened ticket's body: %v, %v", ok, err)
 	}
@@ -492,7 +503,7 @@ func TestADirectReadHeldAcrossACloseAndReopenIsOrderedByItsVersion(t *testing.T)
 	}
 	direct := make(chan error, 1)
 	go func() {
-		_, _, err := s.svc.RefreshIssueDetail(t.Context(), conn.ID, "10101", Interactive)
+		_, _, err := s.svc.issueDetail(t.Context(), conn.ID, "10101", Interactive, true)
 		direct <- err
 	}()
 	waitHeld(t, s.e, route)
@@ -579,7 +590,7 @@ func (s *fakeScenario) renameIssueLater(t *testing.T, conn Connection, issue tra
 // bodyOrFail is the body the record of 10101 holds.
 func bodyOrFail(t *testing.T, s *fakeScenario, root int64) (store.MirrorBody, error) {
 	t.Helper()
-	b, ok, err := s.st.GetMirrorBody(root, "10101")
+	b, ok, err := getMirrorBody(s.st, root, "10101")
 	if err == nil && !ok {
 		err = errors.New("the record holds no body")
 	}

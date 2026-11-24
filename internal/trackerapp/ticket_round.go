@@ -14,8 +14,8 @@ import (
 // one of its tickets. Each ticket carries when its next read is due
 // (ticketPump.due), set by whoever changes it under subMu: a settled read
 // makes it due with the round's next regular read, a failed read on the
-// connection's retry schedule, and a stored change of its card at once
-// (readNowLocked). The round's timer is the earliest due time of the shown
+// connection's retry schedule, and a view whose body is behind its card,
+// or a record that lost the body its view showed, at once (readNowLocked). The round's timer is the earliest due time of the shown
 // tickets, and each time it fires the round reads every shown ticket then
 // due together, in one verified read (readTickets). A hidden ticket is
 // left out and keeps its due time, so it is due when shown if its time
@@ -197,11 +197,10 @@ func (s *Service) roundHistory(rd *ticketRound, first []string) {
 	}
 }
 
-// readNowLocked makes tp due a read at once (a stored card of its issue
-// changed, or nothing holds its document), in full when that card is newer
-// than the pump's document and else checked (mirrorMoved), and wakes its
-// connection's round. A read that began before this does not undo it. The
-// caller holds subMu.
+// readNowLocked makes tp due a read at once (its view's body is behind its
+// card, which a check reads in full, or the record no longer holds the
+// body its view shows), and wakes its connection's round. A read that
+// began before this does not undo it. The caller holds subMu.
 func (s *Service) readNowLocked(tp *ticketPump) {
 	tp.nudged = s.nextStampLocked()
 	tp.due = s.now()

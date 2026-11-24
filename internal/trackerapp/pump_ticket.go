@@ -2,7 +2,6 @@ package trackerapp
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"hash/maphash"
 	"slices"
@@ -15,10 +14,10 @@ import (
 
 // ticketPump is an open ticket's pump: one goroutine for every handle on
 // the issue, with no timer. It makes the reads a person waits on (the
-// opening's first read and a refresh) and rebuilds its view when an input
-// of it moves; every other read of the ticket is its connection's round's
-// (ticket_round.go). Its core and the fields below viewChanged are under
-// subMu.
+// opening's first read and a refresh) and builds the views of its
+// connection's tickets when an input of one moved (ticket_view.go); every
+// other read of the ticket is its connection's round's (ticket_round.go).
+// Its core and the fields below viewChanged are under subMu.
 type ticketPump struct {
 	core pump.Core[readRequest]
 	key  ticketKey
@@ -42,39 +41,32 @@ type ticketPump struct {
 	// every is the connection's round interval, the answer's PollEvery.
 	every  time.Duration
 	exited chan struct{}
-	// viewChanged nudges the pump to rebuild its view (rebuildTicket): an
-	// input of it other than its document moved. One queued nudge is
-	// enough; a hidden pump rebuilds when shown again.
+	// viewChanged nudges the pump to build the views of its connection's
+	// tickets that owe one (buildShown). One queued nudge is enough; a
+	// hidden pump builds when shown again.
 	viewChanged chan struct{}
 
-	// check is the document: what the next read checks the ticket against,
-	// nil when it decodes the mirror's copy. settled is when the last read
-	// settled into the pump began (Service.nextStampLocked), zero before
-	// the first; docs counts the documents settled into it.
-	check         *detailCheck
-	settled, docs uint64
-	// due is when the round reads the ticket next. nudged is the stamp of
-	// the last request to read it at once (readNowLocked): a read that
-	// began before it neither undoes it nor counts as its read. inputs is
-	// the stamp of the last change to an input of the view other than its
-	// document (ticketInputs). judged is the stamp of the last change the
-	// funnel judged by shows (tellTicketLocked), which a view built before
-	// it with other dependencies is checked against (unwatchedLocked).
-	due                    time.Time
-	nudged, inputs, judged uint64
+	// dirty counts the stored changes to an input of the view
+	// (tellTicketLocked), built is the count the view was built after, and
+	// building counts the builds of it in flight (buildTickets). A pump is
+	// made with dirty one: its first paint owes a build.
+	dirty, built uint64
+	building     int
 	// reading counts the reads of the ticket begun and not settled
-	// (ticketReads, settleTickets): while one is in flight, the document a
-	// read stored in the mirror is that read's to settle (rebuildTicket).
+	// (ticketReads, settleTickets): the read builds the view as it settles,
+	// so a nudge leaves the pump to it.
 	reading int
-	// view is the view the subscribers were last told of, and shows are
-	// the other issues it shows (showsOf).
-	view  toldView
-	shows []tracker.IssueID
-	// held is the view when the pump, not the mirror, holds the ticket's
-	// content (check.held is its document): the mirror does not keep the
-	// issue or no longer holds its body. Which one holds it is decided on
-	// every successful read. Nothing else of a ticket is held.
-	held *heldDetail
+	// settled is when the last read settled into the pump began
+	// (nextStampLocked), zero before the first. due is when the round reads
+	// the ticket next. nudged is the stamp of the last request to read it at
+	// once (readNowLocked): a read that began before it neither undoes it nor
+	// counts as its read. owedFor is the card version a view behind its card
+	// last made the ticket due at once for (installViewLocked).
+	settled, nudged uint64
+	due             time.Time
+	owedFor         int64
+	// view is the view the subscribers were last told of.
+	view toldView
 	// failure is the failure the subscribers were last told of; changed and
 	// pending are what the next event carries.
 	failure          *FailureView
@@ -82,27 +74,21 @@ type ticketPump struct {
 	over             bool
 }
 
-// toldView is what a ticket's subscribers were last told of its view:
-// whether it is loaded and a digest of its content, and what it was built
-// from: the document (ticketPump.docs) and the stamp its build began at,
-// which a later change of another input outdates.
+// toldView is what a ticket's subscribers were last told of its view: the
+// view (nil: not loaded), a digest of it, the other issues it shows
+// (showsOf), and the bookkeeping of the record's body it was built from,
+// whose read time a read that found the same body moves (noteBodyLocked).
 type toldView struct {
-	loaded   bool
-	digest   uint64
-	docs, at uint64
-}
-
-// heldDetail is a view a ticket pump holds, with the wall time its read
-// began.
-type heldDetail struct {
-	view DetailView
-	wall int64
+	detail *DetailView
+	digest uint64
+	shows  []tracker.IssueID
+	body   store.MirrorBodyState
 }
 
 // TicketView is an open ticket as its subscribers were last told of it:
-// its detail when the mirror, or the ticket's pump, holds one (Loaded),
-// with when its read began (Unix milliseconds by this computer's wall
-// clock), and its failure, nil while its reads succeed.
+// its detail when the mirror holds one (Loaded), with when the read of its
+// body began (Unix milliseconds by this computer's wall clock), and its
+// failure, nil while its reads succeed.
 type TicketView struct {
 	Loaded  bool         `json:"loaded"`
 	Detail  *DetailView  `json:"detail,omitempty"`
@@ -122,10 +108,12 @@ type TicketSubscription struct {
 }
 
 // SubscribeTicket opens issue on connection id for a client: an answer at
-// once from what the service holds, with no tracker call, then the pump
-// made on the issue's first handle reads it as the tracker says it is now
-// (IssueDetail), interactive, and the connection's round reads it every
-// Cadence.Ticket while shown. It is refused as SubscribeBoard is.
+// once from the mirror, with no tracker call (the first handle's pump
+// builds its first paint from the record; a later handle is answered what
+// the subscribers were last told), then the pump made on the issue's first
+// handle reads it as the tracker says it is now, interactive, and the
+// connection's round reads it every Cadence.Ticket while shown. It is
+// refused as SubscribeBoard is.
 func (s *Service) SubscribeTicket(id string, issue tracker.IssueID) (TicketSubscription, error) {
 	if id == "" || issue == "" {
 		return TicketSubscription{}, fmt.Errorf("%w: a ticket subscribe names its connection and issue", ErrInvalidRequest)
@@ -139,56 +127,26 @@ func (s *Service) SubscribeTicket(id string, issue tracker.IssueID) (TicketSubsc
 		return TicketSubscription{}, err
 	}
 	answer := TicketSubscription{ID: hid, Seq: seq, PollEvery: tp.every.Milliseconds(), TicketView: told}
-	asked := s.stamp()
-	if !answer.Loaded {
-		v, readAt, err := s.MirroredDetail(id, issue)
-		switch {
-		case err == nil:
-			answer.Loaded, answer.Detail, answer.ReadAt = true, &v, readAt
-		case !errors.Is(err, ErrNotMirrored):
-			// Another subscriber may have joined the pump meanwhile: it runs
-			// unless this was its last handle.
-			s.ReleaseSubscription(hid)
-			s.subMu.Lock()
-			if start {
-				s.launchTicketLocked(tp)
-			}
-			s.subMu.Unlock()
-			return TicketSubscription{}, err
-		}
+	if !start {
+		return answer, nil
 	}
-	var digest uint64
-	if start && answer.Loaded {
-		digest = s.digestOf(*answer.Detail)
-	}
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	switch {
-	case start:
-		tp.view.loaded, tp.view.digest = answer.Loaded, digest
+	if err := s.buildTickets(id, 0, []*ticketPump{tp}, false); err != nil {
+		// Another subscriber may have joined the pump meanwhile: it runs
+		// unless this was its last handle, and its goroutine runs either way,
+		// whose exit drops any row a read kept meanwhile.
+		s.ReleaseSubscription(hid)
+		s.subMu.Lock()
 		s.launchTicketLocked(tp)
-	case !answer.Loaded:
-		s.answeredNotLoadedLocked(tp, asked)
+		s.subMu.Unlock()
+		return TicketSubscription{}, err
 	}
-	return answer, nil
-}
-
-// stamp is the next stamp of the ticket pumps' order (nextStampLocked).
-func (s *Service) stamp() uint64 {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
-	return s.nextStampLocked()
-}
-
-// answeredNotLoadedLocked records that a subscriber of tp was answered,
-// from what the pump and the mirror held after stamp asked, that its
-// ticket is not loaded (notLoadedLocked), unless a read that began later
-// settled since: a document held again is told then, whatever its
-// content. The caller holds subMu.
-func (s *Service) answeredNotLoadedLocked(tp *ticketPump, asked uint64) {
-	if tp.settled < asked {
-		s.notLoadedLocked(tp, asked)
-	}
+	s.launchTicketLocked(tp)
+	// Taken after the paint was installed, under the same hold: an event the
+	// install sent is numbered at or below the answer, which shows it.
+	answer.Seq, answer.TicketView = s.nextSeqLocked(), tp.toldLocked()
+	return answer, nil
 }
 
 // launchTicketLocked starts tp's goroutine and follows its connection's
@@ -206,7 +164,7 @@ func (s *Service) launchTicketLocked(tp *ticketPump) {
 
 // takeTicketHandle takes a handle on key's pump, making the pump when
 // there is none; told is the ticket as its subscribers were last told of
-// it, as of seq, its detail only when the pump holds one.
+// it, as of seq.
 func (s *Service) takeTicketHandle(key ticketKey) (id string, tp *ticketPump, start bool, seq uint64, told TicketView, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -230,7 +188,7 @@ func (s *Service) takeTicketHandle(key ticketKey) (id string, tp *ticketPump, st
 		s.subs.pumps++
 		tp = &ticketPump{
 			core: s.newCore(), key: key, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind),
-			exited: make(chan struct{}), viewChanged: make(chan struct{}, 1),
+			exited: make(chan struct{}), viewChanged: make(chan struct{}, 1), dirty: 1,
 		}
 		s.subs.tickets[key] = tp
 		start = true
@@ -245,49 +203,27 @@ func (s *Service) takeTicketHandle(key ticketKey) (id string, tp *ticketPump, st
 	return id, tp, start, s.nextSeqLocked(), tp.toldLocked(), nil
 }
 
-// toldLocked is tp's ticket as its subscribers were last told of it, its
-// detail only when the pump holds it. The caller holds subMu.
+// toldLocked is tp's ticket as its subscribers were last told of it. The
+// caller holds subMu.
 func (tp *ticketPump) toldLocked() TicketView {
 	v := TicketView{Failure: tp.failure}
-	if tp.held != nil {
-		view := tp.held.view
-		v.Loaded, v.Detail, v.ReadAt = true, &view, tp.held.wall
+	if d := tp.view.detail; d != nil {
+		view := *d
+		v.Loaded, v.Detail, v.ReadAt = true, &view, tp.view.body.Wall
 	}
 	return v
 }
 
 // TicketDetail is handle id's ticket as its subscribers were last told of
-// it: its failure, and the view its pump holds or else the mirror's copy
-// (MirroredDetail), not Loaded while neither holds one, which its
-// subscribers are then told when they were told otherwise.
+// it: its failure, and its view or not loaded. It reads nothing.
 func (s *Service) TicketDetail(id string) (TicketView, error) {
 	s.subMu.Lock()
+	defer s.subMu.Unlock()
 	h := s.subs.handles[id]
-	var key ticketKey
-	var told TicketView
-	if h != nil && h.ticket != nil {
-		key, told = h.ticket.key, h.ticket.toldLocked()
-	}
-	asked := s.nextStampLocked()
-	s.subMu.Unlock()
-	switch {
-	case h == nil || h.ticket == nil:
+	if h == nil || h.ticket == nil {
 		return TicketView{}, fmt.Errorf("%w: ticket %s", ErrUnknownSubscription, id)
-	case told.Loaded:
-		return told, nil
 	}
-	v, readAt, err := s.MirroredDetail(key.connection, key.issue)
-	switch {
-	case errors.Is(err, ErrNotMirrored):
-		s.subMu.Lock()
-		s.answeredNotLoadedLocked(h.ticket, asked)
-		s.subMu.Unlock()
-		return told, nil
-	case err != nil:
-		return TicketView{}, err
-	}
-	told.Loaded, told.Detail, told.ReadAt = true, &v, readAt
-	return told, nil
+	return h.ticket.toldLocked(), nil
 }
 
 // digestOf identifies v's content.
@@ -301,8 +237,8 @@ func (s *Service) digestOf(v DetailView) uint64 {
 }
 
 // runTicketPump is a ticket pump's goroutine: an interactive first read
-// that records the opening, a full read on a person's request, and a view
-// rebuild with no tracker call when an input of the view moved, made when
+// that records the opening, a full read on a person's request, and the
+// builds of its connection's views when an input of one moved, made when
 // shown again if it came while hidden. A failed read is retried by the
 // connection's round. The mirror keeps the ticket's issue from the bind
 // its first read makes (bindTickets) until the goroutine returns
@@ -329,15 +265,10 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 			}
 			req.Finish(err)
 		case <-tp.core.Wake():
-			s.subMu.Lock()
-			behind := tp.behindLocked()
-			s.subMu.Unlock()
-			if behind {
-				s.rebuildTicket(tp)
-			}
+			s.buildShown(conn)
 		case <-tp.viewChanged:
 			if !tp.core.Paused() {
-				s.rebuildTicket(tp)
+				s.buildShown(conn)
 			}
 		}
 	}
@@ -376,7 +307,7 @@ func (s *Service) endTicketLocked(tp *ticketPump) {
 	// The end is told before the core stops, as a board's is
 	// (endBoardLocked).
 	s.flushTicketLocked(tp, true)
-	tp.over, tp.held, tp.check = true, nil, nil
+	tp.over = true
 	s.retireTicketLocked(tp)
 	s.endHandlesLocked(&tp.core)
 	s.followRoundLocked(tp.key.connection)

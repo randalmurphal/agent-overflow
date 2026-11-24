@@ -144,7 +144,7 @@ func TestOverlappingDetailReadsStoreTheLatestFullRead(t *testing.T) {
 				if first == "check" {
 					_, _, err = m.svc.IssueDetail(context.Background(), m.conn.ID, "10001", Interactive)
 				} else {
-					_, _, err = m.svc.RefreshIssueDetail(context.Background(), m.conn.ID, "10001", Interactive)
+					_, _, err = m.svc.issueDetail(context.Background(), m.conn.ID, "10001", Interactive, true)
 				}
 				done <- err
 			}()
@@ -205,40 +205,6 @@ func TestARoundReadsADetailOnceAfterTheClockStepsBack(t *testing.T) {
 	m.round(t)
 	if got := countsOf(m.p.callsInOrder()[calls:]); describeCounts(got) != "Cards:1" {
 		t.Fatalf("after the read the round called %s", describeCounts(got))
-	}
-}
-
-// A shown ticket whose stored detail the cap dropped is told it is not
-// loaded, read in full at once by its round and held by its pump (a
-// background read opens nothing), told loaded again, then checked against
-// what the pump holds.
-func TestARoundReadsAnEvictedDetail(t *testing.T) {
-	t.Parallel()
-	m, evict := capFixture(t)
-	m.p.updatedMovesWithDetail(cardsOf)
-	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
-	m.settledTickets(t)
-	m.round(t)
-	calls, events := len(m.p.callsInOrder()), m.issueEventCount()
-	evict()
-	quiet(t, m.svc)
-	if got := countsOf(m.p.callsInOrder()[calls:]); describeCounts(got) != "Details:1" {
-		t.Fatalf("after the eviction the round called %s", describeCounts(got))
-	}
-	got := m.issueEventsSince(events)
-	if len(got) != 2 || !got[0].Changed || !got[1].Changed {
-		t.Fatalf("the eviction and the read told %+v", got)
-	}
-	if _, _, ok := m.storedDetail(t, "40000"); ok {
-		t.Fatal("a background read stored a detail no one opened")
-	}
-	if v := m.ticketView(t, sub.ID); !v.Loaded || v.Detail.Card.ID != "40000" {
-		t.Fatalf("the evicted ticket's view %+v", v)
-	}
-	calls = len(m.p.callsInOrder())
-	m.round(t)
-	if got := countsOf(m.p.callsInOrder()[calls:]); describeCounts(got) != "Cards:1" {
-		t.Fatalf("with the detail held the round called %s", describeCounts(got))
 	}
 }
 

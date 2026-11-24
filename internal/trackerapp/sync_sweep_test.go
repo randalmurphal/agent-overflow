@@ -109,7 +109,7 @@ func TestDetailReadsAgainAfterASweep(t *testing.T) {
 	if err != nil || reads != 2 || v.Card.ID != "10005" {
 		t.Fatalf("detail %+v after %d reads, %v", v.Card, reads, err)
 	}
-	if d, ok, err := m.st.GetMirrorBody(m.root(), "10005"); err != nil || !ok || len(d.Data) == 0 {
+	if d, ok, err := getMirrorBody(m.st, m.root(), "10005"); err != nil || !ok || len(d.Data) == 0 {
 		t.Fatalf("stored detail %+v, %v, %v", d, ok, err)
 	}
 }

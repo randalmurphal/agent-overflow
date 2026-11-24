@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -379,30 +378,6 @@ func TestEveryReadTimeColumnSeedsTheClock(t *testing.T) {
 	}
 }
 
-// A body confirms only in the root it was read from.
-func TestABodyOfOneRootIsRefusedInAnother(t *testing.T) {
-	t.Parallel()
-	s, _, root := newMirror(t)
-	other := mustCreateTrackerConnection(t, s, jiraConnection("https://example2.atlassian.net", "user1@example.com", 10))
-	otherRoot, _, err := s.GetOrCreateMirrorRoot(other.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustReplaceStructure(t, s, root, webStructure(), true)
-	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a")), nil)
-	if _, err := s.StoreMirrorTickets(root, currentSweep(s, root), []MirrorTicket{{Card: webCard("10001", 5), Body: []byte(`{}`)}}, MirrorCatalog{},
-		mirrorReadOf(root, 9), mirrorReadOf(root, 9)); err != nil {
-		t.Fatal(err)
-	}
-	b, ok, err := s.GetMirrorBody(root, "10001")
-	if err != nil || !ok {
-		t.Fatalf("no body: %v, %v", ok, err)
-	}
-	if _, err := s.ConfirmMirrorBody(otherRoot, b, mirrorReadOf(otherRoot, 20)); !errors.Is(err, ErrInvalidTrackerCache) {
-		t.Fatalf("a body of root %d confirmed in root %d: %v; want it refused", root, otherRoot, err)
-	}
-}
-
 // Every writer that takes a read refuses a read of another root, and so
 // writes nothing to its own; the same write with a read of its root is
 // stored.
@@ -465,14 +440,6 @@ func TestEveryMirrorWriterRefusesAReadOfAnotherRoot(t *testing.T) {
 		{"StoreMirrorTickets opening", func(read MirrorRead) error {
 			_, err := s.StoreMirrorTickets(root, sweep, []MirrorTicket{heldTicket(t, s, root, "10001", []byte(`{}`))}, MirrorCatalog{},
 				read, mirrorReadOf(root, 1_000_000))
-			return err
-		}},
-		{"ConfirmMirrorBody", func(read MirrorRead) error {
-			b, ok, err := s.GetMirrorBody(root, "10001")
-			if err != nil || !ok {
-				return fmt.Errorf("no body to confirm: %v, %w", ok, err)
-			}
-			_, err = s.ConfirmMirrorBody(root, b, read)
 			return err
 		}},
 		{"KeepMirrorTicket", func(read MirrorRead) error {

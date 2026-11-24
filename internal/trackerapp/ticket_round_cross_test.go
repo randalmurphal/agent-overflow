@@ -13,12 +13,11 @@ import (
 	"agent-overflow/internal/tracker"
 )
 
-// The crossings of an open ticket's reads and view rebuilds. A view is
-// built from the ticket's document, ordered by when reads began, and from
-// what the mirror holds of other issues, ordered by the change funnel;
-// whichever crosses which, the view told last is the newest document with
-// the newest linked card, and no view is told that an earlier told view
-// already outdated.
+// The crossings of an open ticket's reads and view builds. Every view is
+// built from the record, and a build installs only a view begun after the
+// last change told to the ticket (buildTickets): whichever crosses which,
+// the view told last is the record's, and no view is told that a change
+// told during its build outdated.
 
 // cardsHold holds the next view build at its read of the mirror's cards,
 // once armed, after the read returned: the build has its snapshot of the
@@ -57,16 +56,17 @@ func (h *cardsHold) ListMirrorCards(root int64, ids []string) ([]store.MirrorCar
 	return cards, err
 }
 
-// crossFixture is an open ticket, 10001, that the mirror does not keep
-// (keepsLost), so its pump holds its content, linking 10002,
-// which the mirror keeps, on a tracker that reads every ticket in full. rename stores a new title of
-// 10002 as a board read does; describe sets the description the tracker
+// crossFixture is an open ticket, 10001, linking the issue link names
+// (10002 at first, or 10003), both of which a board keeps, on a tracker
+// that reads every ticket in full. rename stores a new title of the linked
+// issue as a board read does; describe sets the description the tracker
 // answers for 10001; failing fails its reads.
 type crossFixture struct {
 	*mirrorFixture
 	sub     TicketSubscription
 	hold    *cardsHold
-	linked  tracker.Card
+	linked  map[tracker.IssueID]tracker.Card
+	link    atomic.Value
 	desc    atomic.Value
 	failing atomic.Bool
 	// before is the issue events told before the test's crossing.
@@ -76,9 +76,11 @@ type crossFixture struct {
 func newCrossFixture(t *testing.T) *crossFixture {
 	t.Helper()
 	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
-	f := &crossFixture{mirrorFixture: m, linked: card("10002", 1_799_000_000_000)}
+	f := &crossFixture{mirrorFixture: m, linked: map[tracker.IssueID]tracker.Card{
+		"10002": card("10002", 1_799_000_000_000), "10003": card("10003", 1_799_000_000_000)}}
 	f.desc.Store("v1")
-	m.tracks([]tracker.Row{{Card: f.linked, Order: "b"}})
+	f.link.Store(tracker.IssueID("10002"))
+	f.board()
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
 	m.p.set(func(p *scripted) {
 		p.detail = func(tracker.IssueID) (tracker.Detail, error) {
@@ -91,14 +93,15 @@ func newCrossFixture(t *testing.T) *crossFixture {
 			d := enteredAtStatusBegan(detailOfCard(card("10001", 1_799_000_000_000)))
 			d.HistoryTo = d.Card.Updated
 			d.Description = f.desc.Load().(string)
+			d.Links[0].Issue.ID = f.link.Load().(tracker.IssueID)
 			return d, nil
 		}
 	})
 	answerCardsFromDetails(m.p)
-	m.loseKeeps()
 	f.sub = must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "10001"))
 	m.events.issueEvents(t, 1)
 	m.settledTickets(t)
+	quiet(t, m.svc)
 	f.hold = &cardsHold{Store: m.st, ended: make(chan struct{})}
 	t.Cleanup(func() { close(f.hold.ended) })
 	m.svc.store = f.hold
@@ -106,11 +109,18 @@ func newCrossFixture(t *testing.T) *crossFixture {
 	return f
 }
 
-// rename stores title as 10002's, as a board read does.
-func (f *crossFixture) rename(t *testing.T, title string) {
+// board has a board read store the linked issues' cards.
+func (f *crossFixture) board() {
+	f.tracks([]tracker.Row{{Card: f.linked["10002"], Order: "b"}, {Card: f.linked["10003"], Order: "c"}})
+}
+
+// rename stores title as the linked issue id's, as a board read does.
+func (f *crossFixture) rename(t *testing.T, id tracker.IssueID, title string) {
 	t.Helper()
-	f.linked.Title, f.linked.Updated = title, f.linked.Updated.Add(time.Minute)
-	f.tracks([]tracker.Row{{Card: f.linked, Order: "b"}})
+	c := f.linked[id]
+	c.Title, c.Updated = title, c.Updated.Add(time.Minute)
+	f.linked[id] = c
+	f.board()
 	must[Outcome](t)(f.svc.tickDelta(t.Context(), f.scope(), Background))
 }
 
@@ -147,26 +157,13 @@ func (f *crossFixture) shows(t *testing.T, desc, title string, changes int) {
 	}
 }
 
-// A document another read stores in the mirror while the pump holds the
-// ticket's: the view is the document whose read began later. A newer
-// mirror's copy is shown at once, with no tracker call, and the pump lets
-// its own go; an older one, stored by a read that began before the pump's,
-// changes nothing.
-func TestAHeldTicketShowsTheNewerOfItsCopyAndTheMirrors(t *testing.T) {
+// A read of the open ticket that no pump makes (IssueDetail) stores what
+// it found, which the ticket is told as any change: a newer document is
+// shown at once with no tracker call of the ticket's own; an older one,
+// from a read that began before the round's, is superseded in the record
+// and changes nothing.
+func TestADirectReadOfAnOpenTicketReachesItThroughTheRecord(t *testing.T) {
 	t.Parallel()
-	// held is the fixture once a board keeps 10001, whose document the pump
-	// still holds: no read of it since was an opening.
-	held := func(t *testing.T) *crossFixture {
-		f := newCrossFixture(t)
-		f.tracks([]tracker.Row{{Card: card("10001", 1_799_000_000_000), Order: "a"}, {Card: f.linked, Order: "b"}})
-		must[Outcome](t)(f.svc.tickDelta(t.Context(), f.scope(), Background))
-		quiet(t, f.svc)
-		if !f.pumpHolds() {
-			t.Fatal("the pump does not hold the ticket's document")
-		}
-		f.before = f.issueEventCount()
-		return f
-	}
 	changed := func(f *crossFixture) int {
 		n := 0
 		for _, e := range f.issueEventsSince(f.before) {
@@ -176,41 +173,38 @@ func TestAHeldTicketShowsTheNewerOfItsCopyAndTheMirrors(t *testing.T) {
 		}
 		return n
 	}
-	t.Run("the mirror's is newer", func(t *testing.T) {
+	t.Run("a newer document", func(t *testing.T) {
 		t.Parallel()
-		f := held(t)
+		f := newCrossFixture(t)
 		f.desc.Store("v2")
 		calls := len(f.p.callsInOrder())
-		v, ch, err := f.svc.RefreshIssueDetail(t.Context(), f.conn.ID, "10001", Interactive)
+		v, ch, err := f.svc.issueDetail(t.Context(), f.conn.ID, "10001", Interactive, true)
 		if err != nil || v.Description != "v2" || !slices.Contains(ch.Details, tracker.IssueID("10001")) {
-			t.Fatalf("the refresh %+v, %+v, %v", v.Description, ch, err)
+			t.Fatalf("the read %+v, %+v, %v", v.Description, ch, err)
 		}
 		quiet(t, f.svc)
 		if got := f.ticketView(t, f.sub.ID); !got.Loaded || got.Detail.Description != "v2" {
 			t.Fatalf("the open ticket shows %+v", got.Detail)
 		}
-		if f.pumpHolds() {
-			t.Fatal("the pump still holds a copy of the document the mirror holds")
-		}
 		if n := changed(f); n != 1 {
 			t.Fatalf("%d views told; want 1", n)
 		}
 		if got := describeCounts(countsOf(f.p.callsInOrder()[calls:])); got != "Details:1" {
-			t.Fatalf("the refresh and the rebuild called %s", got)
+			t.Fatalf("the read and the build called %s", got)
 		}
 	})
-	t.Run("the mirror's is older", func(t *testing.T) {
+	t.Run("an older document", func(t *testing.T) {
 		t.Parallel()
-		f := held(t)
-		// The refresh begins and is answered v1, the round reads v2 and the
-		// pump holds it, then the refresh stores its answer.
+		f := newCrossFixture(t)
+		// The direct read begins and is answered v1, the round reads v2,
+		// then the direct read stores its answer.
 		call := holdNext(f.p, "Details")
 		done := make(chan error, 1)
 		go func() {
-			_, _, err := f.svc.RefreshIssueDetail(context.Background(), f.conn.ID, "10001", Interactive)
+			_, _, err := f.svc.issueDetail(context.Background(), f.conn.ID, "10001", Interactive, true)
 			done <- err
 		}()
-		<-call.arrived
+		waitClosed(t, "the held call", call.arrived)
 		f.desc.Store("v2")
 		if res := f.round(t); res.failed {
 			t.Fatalf("the read %+v", res)
@@ -219,8 +213,8 @@ func TestAHeldTicketShowsTheNewerOfItsCopyAndTheMirrors(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		if _, d, ok := f.storedDetail(t, "10001"); !ok || d.Description != "v1" {
-			t.Fatalf("the mirror's copy %+v, %v", d.Description, ok)
+		if _, d, ok := f.storedDetail(t, "10001"); !ok || d.Description != "v2" {
+			t.Fatalf("the record's body %+v, %v", d.Description, ok)
 		}
 		quiet(t, f.svc)
 		if got := f.ticketView(t, f.sub.ID); !got.Loaded || got.Detail.Description != "v2" {
@@ -232,47 +226,36 @@ func TestAHeldTicketShowsTheNewerOfItsCopyAndTheMirrors(t *testing.T) {
 	})
 }
 
-// pumpHolds reports whether 10001's pump holds its document.
-func (f *crossFixture) pumpHolds() bool {
-	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
-	f.svc.subMu.Lock()
-	defer f.svc.subMu.Unlock()
-	return tp.check != nil && tp.check.held != nil && tp.held != nil
-}
-
-// A rebuild that crosses a read: the read built its view with the old
-// linked card, a rebuild told the new one with the old document, then the
-// read settles its new document. A read that crosses a rebuild: the
-// rebuild built from the old document, the read settles a new one first.
-// Two rebuilds: the earlier one built with a card a later change replaced.
-// A rebuild that crosses a failed read: the failure moves no document.
+// A build that crosses a change: a board read renames the linked issue
+// while the read's build is between its read of the record and its
+// install, so that build installs nothing and the ticket is built again;
+// a read that crosses a nudge's build likewise; two changes, the second
+// during the first one's build; a build that crosses a failed read, whose
+// failure goes out with the build's view. In each, one view is told, the
+// record's.
 func TestViewBuildsCrossing(t *testing.T) {
 	t.Parallel()
-	t.Run("a rebuild crossing a read", func(t *testing.T) {
+	t.Run("a change crossing a read's build", func(t *testing.T) {
 		t.Parallel()
 		f := newCrossFixture(t)
 		held := f.hold.arm()
 		f.desc.Store("v2")
 		done := make(chan ticketsResult, 1)
 		go func() { done <- f.round(t) }()
-		<-held.arrived
-		events := f.issueEventCount()
-		f.rename(t, "Renamed")
-		f.events.issueEvents(t, events+1)
+		waitClosed(t, "the held build", held.arrived)
+		f.rename(t, "10002", "Renamed")
 		close(held.release)
 		if res := <-done; res.failed {
 			t.Fatalf("the read %+v", res)
 		}
-		// The rename's view, then the new document's: never the read's
-		// view of the old linked card.
-		f.shows(t, "v2", "Renamed", 2)
+		f.shows(t, "v2", "Renamed", 1)
 	})
-	t.Run("a read crossing a rebuild", func(t *testing.T) {
+	t.Run("a read crossing a nudge's build", func(t *testing.T) {
 		t.Parallel()
 		f := newCrossFixture(t)
 		held := f.hold.arm()
-		f.rename(t, "Renamed")
-		<-held.arrived
+		f.rename(t, "10002", "Renamed")
+		waitClosed(t, "the held build", held.arrived)
 		f.desc.Store("v2")
 		if res := f.round(t); res.failed {
 			t.Fatalf("the read %+v", res)
@@ -280,29 +263,99 @@ func TestViewBuildsCrossing(t *testing.T) {
 		close(held.release)
 		f.shows(t, "v2", "Renamed", 1)
 	})
-	t.Run("two rebuilds", func(t *testing.T) {
+	t.Run("two changes", func(t *testing.T) {
 		t.Parallel()
 		f := newCrossFixture(t)
 		held := f.hold.arm()
-		f.rename(t, "Renamed")
-		<-held.arrived
-		f.rename(t, "Renamed again")
+		f.rename(t, "10002", "Renamed")
+		waitClosed(t, "the held build", held.arrived)
+		f.rename(t, "10002", "Renamed again")
 		close(held.release)
 		f.shows(t, "v1", "Renamed again", 1)
 	})
-	t.Run("a rebuild crossing a failed read", func(t *testing.T) {
+	t.Run("a build crossing a failed read", func(t *testing.T) {
 		t.Parallel()
 		f := newCrossFixture(t)
 		held := f.hold.arm()
-		f.rename(t, "Renamed")
-		<-held.arrived
+		f.rename(t, "10002", "Renamed")
+		waitClosed(t, "the held build", held.arrived)
 		f.failing.Store(true)
 		if res := f.round(t); !res.failed {
 			t.Fatalf("the read %+v", res)
 		}
 		close(held.release)
 		f.shows(t, "v1", "Renamed", 1)
+		if v := f.ticketView(t, f.sub.ID); v.Failure == nil {
+			t.Fatal("the failed read's failure was not told")
+		}
 	})
+}
+
+// A build whose view shows an issue the told view does not (the ticket
+// now links 10003) is told every card change of the connection while it
+// is in flight: 10003 renamed between the build's read of the record and
+// its install is not missed though the change named no issue the told
+// view shows, and the ticket is built again.
+func TestABuildIsToldAChangeToAnIssueItAddsToTheView(t *testing.T) {
+	t.Parallel()
+	f := newCrossFixture(t)
+	held := f.hold.arm()
+	f.link.Store(tracker.IssueID("10003"))
+	done := make(chan ticketsResult, 1)
+	go func() { done <- f.round(t) }()
+	waitClosed(t, "the held build", held.arrived)
+	f.rename(t, "10003", "Renamed")
+	close(held.release)
+	if res := <-done; res.failed {
+		t.Fatalf("the read %+v", res)
+	}
+	f.shows(t, "v1", "Renamed", 1)
+}
+
+// A board read that changes the linked issue while the round reads the
+// ticket, after the ticket's read failed: the change waits for the read,
+// which builds the view as it settles, so one event carries the recovery
+// with the new view, never the new view with the failure the read clears.
+// A build of the connection's views made meanwhile (another ticket's
+// nudge, a pane shown again) leaves the ticket to its read.
+func TestAChangeDuringAReadIsToldWithTheReadsOutcome(t *testing.T) {
+	t.Parallel()
+	f := newCrossFixture(t)
+	f.failing.Store(true)
+	if res := f.round(t); !res.failed {
+		t.Fatalf("the failing read %+v", res)
+	}
+	f.failing.Store(false)
+	quiet(t, f.svc)
+	events := f.issueEventCount()
+	call := holdNext(f.p, "Details")
+	done := make(chan ticketsResult, 1)
+	go func() { done <- f.round(t) }()
+	waitClosed(t, "the held call", call.arrived)
+	f.rename(t, "10002", "Renamed")
+	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
+	f.svc.subMu.Lock()
+	owed := tp.dirty != tp.built
+	f.svc.subMu.Unlock()
+	if !owed {
+		t.Fatal("the change was not counted")
+	}
+	f.svc.buildShown(f.conn.ID)
+	if got := f.issueEventsSince(events); len(got) != 0 {
+		t.Fatalf("a build while the read is in flight told %+v", got)
+	}
+	close(call.release)
+	if res := <-done; res.failed {
+		t.Fatalf("the read %+v", res)
+	}
+	quiet(t, f.svc)
+	got := f.issueEventsSince(events)
+	if len(got) != 1 || !got[0].Changed || got[0].Failure != nil {
+		t.Fatalf("the read and the change told %+v; want one event with the new view and no failure", got)
+	}
+	if v := f.ticketView(t, f.sub.ID); v.Detail.Links[0].Issue.Title != "Renamed" {
+		t.Fatalf("the view links %q", v.Detail.Links[0].Issue.Title)
+	}
 }
 
 // changedSince are the issue events after the first n that told a view.
@@ -316,11 +369,12 @@ func (m *mirrorFixture) changedSince(n int) int {
 	return changed
 }
 
-// A rebuild that left the mirror's newer copy to a read of the ticket in
-// flight builds it once that read ends, however it ends: stopped before
-// the tracker answered, or settled behind a read that began later. The
-// pump is hidden, so only the read's settlement rebuilds.
-func TestARebuildLeftToAReadBuildsWhenTheReadEnds(t *testing.T) {
+// A change told while a read of the hidden ticket is in flight is built
+// once that read ends, however it ends: stopped before the tracker
+// answered, or settled behind a read that began later. The pump is hidden
+// and the read in flight, so a nudge builds nothing; the read's
+// settlement builds it.
+func TestAChangeToldDuringAReadIsBuiltWhenTheReadEnds(t *testing.T) {
 	t.Parallel()
 	setup := func(t *testing.T) (*mirrorFixture, *trackerState, *ticketPump) {
 		m, st, issues, subs := newRoundFixture(t, 1, false)
@@ -330,16 +384,17 @@ func TestARebuildLeftToAReadBuildsWhenTheReadEnds(t *testing.T) {
 		return m, st, m.pumpOf(issues[0])
 	}
 	// another stores body as the ticket's document by a read outside the
-	// pump, and rebuilds the view while the pump's read is in flight.
+	// pump, and has a nudge build the connection's views while the pump's
+	// read is in flight.
 	another := func(t *testing.T, m *mirrorFixture, st *trackerState, tp *ticketPump, body string) {
 		st.comment(tp.key.issue, body)
-		if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, tp.key.issue, Interactive); err != nil {
+		if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, tp.key.issue, Interactive, true); err != nil {
 			t.Fatal(err)
 		}
 		events := m.issueEventCount()
-		m.svc.rebuildTicket(tp)
+		m.svc.buildShown(m.conn.ID)
 		if n := m.changedSince(events); n != 0 {
-			t.Fatalf("a rebuild told %d views of another read's document while a read was in flight", n)
+			t.Fatalf("a nudge told %d views while a read was in flight", n)
 		}
 	}
 	t.Run("stopped", func(t *testing.T) {
@@ -349,13 +404,13 @@ func TestARebuildLeftToAReadBuildsWhenTheReadEnds(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan ticketsResult, 1)
 		go func() { done <- m.svc.readTickets(ctx, m.conn.ID, []*ticketPump{tp}, Background, false, false) }()
-		<-call.arrived
+		waitClosed(t, "the held call", call.arrived)
 		events := m.issueEventCount()
 		another(t, m, st, tp, "Second")
 		cancel()
 		<-done
 		if n := m.changedSince(events); n != 1 {
-			t.Fatalf("%d views told once the read stopped; want the mirror's copy", n)
+			t.Fatalf("%d views told once the read stopped; want the record's", n)
 		}
 	})
 	t.Run("settled behind a later read", func(t *testing.T) {
@@ -364,7 +419,7 @@ func TestARebuildLeftToAReadBuildsWhenTheReadEnds(t *testing.T) {
 		call := holdNext(m.p, "Details")
 		done := make(chan ticketsResult, 1)
 		go func() { done <- m.svc.readTickets(t.Context(), m.conn.ID, []*ticketPump{tp}, Background, false, false) }()
-		<-call.arrived
+		waitClosed(t, "the held call", call.arrived)
 		events := m.issueEventCount()
 		st.comment(tp.key.issue, "Second")
 		if res := m.svc.readTickets(t.Context(), m.conn.ID, []*ticketPump{tp}, Background, true, false); res.failed {
@@ -374,7 +429,7 @@ func TestARebuildLeftToAReadBuildsWhenTheReadEnds(t *testing.T) {
 		close(call.release)
 		<-done
 		if n := m.changedSince(events); n != 2 {
-			t.Fatalf("%d views told; want the later read's and the mirror's copy", n)
+			t.Fatalf("%d views told; want the later read's and the record's", n)
 		}
 	})
 }

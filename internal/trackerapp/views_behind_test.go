@@ -12,28 +12,28 @@ import (
 // A returned detail holds a body of the rendered card's version or is
 // marked behind (DetailView.BodyBehind), whichever card the view renders.
 
-// unkeptAfterConfirm is a store that stops keeping every issue of its
-// connection (no board listed) once a body's opening is confirmed: the
-// keep lost between MirroredDetail's confirmation and its card lookup.
-type unkeptAfterConfirm struct {
+// unkeptAfterBodies is a store that stops keeping every issue of its
+// connection (no board listed) once a body is read: the keep lost between
+// a build's read of the body and its card lookup.
+type unkeptAfterBodies struct {
 	*store.Store
 	t    *testing.T
 	conn string
 }
 
-func (s *unkeptAfterConfirm) ConfirmMirrorBody(root int64, b store.MirrorBody, opened store.MirrorRead) (bool, error) {
-	ok, err := s.Store.ConfirmMirrorBody(root, b, opened)
-	if err == nil && ok {
+func (s *unkeptAfterBodies) ListMirrorBodies(root int64, issues []string) ([]store.MirrorBody, error) {
+	bodies, err := s.Store.ListMirrorBodies(root, issues)
+	if err == nil && len(bodies) > 0 {
 		listBoards(s.t, s.Store, s.conn)
 	}
-	return ok, err
+	return bodies, err
 }
 
 // The mirror holds a body of version 1 under a record whose card a board
-// read moved to version 2, and the board stops being listed after the
-// first paint confirmed the body: the lookup finds no record card, so the
-// view renders the card the body was read with, version 2, over the
-// version 1 body, and marks it behind.
+// read moved to version 2, and the board stops being listed after a build
+// read the body: the lookup finds no record card, so the view renders the
+// card the body was read with, version 2, over the version 1 body, and
+// marks it behind.
 func TestAFirstPaintWhoseKeepGoesIsMarkedBehindItsCard(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -50,8 +50,8 @@ func TestAFirstPaintWhoseKeepGoesIsMarkedBehindItsCard(t *testing.T) {
 	moved.Card.Title = "Renamed"
 	m.tracks([]tracker.Row{moved})
 	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
-	m.svc.store = &unkeptAfterConfirm{Store: m.st, t: t, conn: m.conn.ID}
-	v, _, err := m.svc.MirroredDetail(m.conn.ID, "10001")
+	m.svc.store = &unkeptAfterBodies{Store: m.st, t: t, conn: m.conn.ID}
+	v, _, err := m.svc.mirroredDetail(m.conn.ID, "10001")
 	if err != nil {
 		t.Fatal(err)
 	}

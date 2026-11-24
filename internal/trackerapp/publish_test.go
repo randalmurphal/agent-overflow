@@ -181,7 +181,7 @@ func TestARoundsStoredTicketIsToldBeforeItsHistoryRead(t *testing.T) {
 			m.svc.ticketTick(linking, Interactive, true)
 			m.settledTickets(t)
 			m.svc.subMu.Lock()
-			inputs := linking.inputs
+			dirty := linking.dirty
 			m.svc.subMu.Unlock()
 			// The edit is inside the tracker's settle margin, so the read
 			// cannot settle its status time and the round reads its history
@@ -197,7 +197,7 @@ func TestARoundsStoredTicketIsToldBeforeItsHistoryRead(t *testing.T) {
 			deadline := time.Now().Add(10 * time.Second)
 			for {
 				m.svc.subMu.Lock()
-				moved := linking.inputs != inputs
+				moved := linking.dirty != dirty
 				m.svc.subMu.Unlock()
 				if moved {
 					break

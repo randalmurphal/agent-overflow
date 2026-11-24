@@ -22,7 +22,8 @@ import (
 //   - the settlement of the connection's problem by the last tracker call
 //     made;
 //   - the change funnel, so a subscriber hears of a write as of a sync,
-//     and the settlement of the open tickets the refresh read;
+//     and the settlement of the open tickets the refresh read, whose
+//     views are built before the write returns;
 //   - the view of the outcomes, with what could not be refreshed beside
 //     them.
 //
@@ -119,17 +120,10 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 		_ = r.settleCalls(callErr)
 	}
 	if len(f.pumps) > 0 {
-		// Only an open ticket shows a view. One that cannot be built leaves
-		// the stored detail as read: its ticket is told a failure outside
-		// the tracker, and its next read builds it.
-		s.ticketViews(r.root, r.row, f.reads[:len(f.pumps)])
-	}
-	if len(f.pumps) > 0 {
-		// The open tickets settle with everything the write's refresh stored;
-		// one it could not read is due on the connection's retry schedule.
-		d := f.details
-		d.ch = f.ch
-		s.settleTickets(ctx, id, f.pumps, f.began, f.reads[:len(f.pumps)], d, f.detailsErr, millis(s.now()))
+		// The open tickets settle with the outcome of their reads and their
+		// views are built from what the refresh stored; one it could not
+		// read is due on the connection's retry schedule.
+		s.settleTickets(ctx, id, f.pumps, f.began, f.reads[:len(f.pumps)], f.details, f.detailsErr, millis(s.now()))
 	}
 	if ended {
 		view.Ended = true

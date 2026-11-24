@@ -309,9 +309,8 @@ func TestABindOfAnotherIssueOrRootIsRefused(t *testing.T) {
 }
 
 // A read no open ticket made records its own opening alone, never the
-// current bind's, and so does a person's opening confirmed on the cached
-// body (ConfirmMirrorBody, a first paint's): under the bind, a check by
-// card records the later of its opening and the bind's.
+// current bind's: under the bind, a check by card records the later of
+// its opening and the bind's.
 func TestADirectOpeningRecordsItsOwnOpening(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -324,16 +323,6 @@ func TestADirectOpeningRecordsItsOwnOpening(t *testing.T) {
 	checkOf(t, s, root, sweep, "10001", MirrorBind{}, 300, 300)
 	if got := bodyOf(t, s, root, "10001"); got != "5 200 300 direct" {
 		t.Fatalf("after a direct check by card opened at 300 the record holds %s; want its own opening", got)
-	}
-	b, ok, err := s.GetMirrorBody(root, "10001")
-	if err != nil || !ok {
-		t.Fatalf("the cached body: %v, %v", ok, err)
-	}
-	if confirmed, err := s.ConfirmMirrorBody(root, b, mirrorReadAt(350)); err != nil || !confirmed {
-		t.Fatalf("the confirmation: %v, %v", confirmed, err)
-	}
-	if got := bodyOf(t, s, root, "10001"); got != "5 200 350 direct" {
-		t.Fatalf("after a confirmation opened at 350 the record holds %s; want its own opening", got)
 	}
 	checkOf(t, s, root, sweep, "10001", p, 0, 400)
 	if got := bodyOf(t, s, root, "10001"); got != "5 200 500 direct" {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
@@ -130,43 +131,28 @@ func TestARenameDuringATicketReadStillTellsTheBoard(t *testing.T) {
 }
 
 // An open ticket whose bind names no row of the mirror (keepsLost) is not
-// the issue's current bind, so none of its reads stores a body, whatever
-// else keeps the issue: its pump holds the content it shows from its first
-// read, the issue leaving the mirror tells nothing, and kept again by a
-// board, the issue's refresh stores no body either and the view stays the
-// pump's.
+// the issue's current bind, so the record keeps no body of its reads: the
+// read fails loudly, a failure outside the tracker, the view is not
+// loaded, and no copy of the read's document stands in for the record.
 func TestAnOpenTicketWhoseBindIsNotTheIssuesStoresNoBody(t *testing.T) {
 	t.Parallel()
-	m, _, issues, subs := newRoundFixtureThen(t, 1, false, (*mirrorFixture).loseKeeps)
-	held := func() bool {
-		tp := m.svc.ticketPumpOf(m.conn.ID, issues[0])
-		m.svc.subMu.Lock()
-		defer m.svc.subMu.Unlock()
-		return tp.held != nil
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
+	m.p.set(func(p *scripted) {
+		p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
+			return tracker.Detail{Card: card(string(id), 1_799_000_000_000)}, nil
+		}
+	})
+	m.loseKeeps()
+	sub := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "20001"))
+	m.settledTickets(t)
+	if _, _, ok := m.storedDetail(t, "20001"); ok {
+		t.Fatal("the mirror holds the detail of a read under a bind that is not the issue's")
 	}
-	if _, _, ok := m.storedDetail(t, string(issues[0])); ok || !held() {
-		t.Fatalf("after the first read the mirror holds the detail %v, the pump %v; want the pump alone", ok, held())
+	v := m.ticketView(t, sub.ID)
+	if v.Loaded || v.Failure == nil || v.Failure.Kind != string(FailureInternal) {
+		t.Fatalf("the ticket's view %+v; want not loaded, with a failure outside the tracker", v)
 	}
-	events := m.issueEventCount()
-	m.tracks(nil)
-	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
-	if err := m.svc.FinishMirrorCleanup(); err != nil {
-		t.Fatal(err)
-	}
-	quiet(t, m.svc)
-	if got := m.issueEventsSince(events); len(got) != 0 {
-		t.Fatalf("the issue leaving the mirror told %+v", got)
-	}
-	m.tracks([]tracker.Row{row(string(issues[0]), 1_799_000_000_000, "a000")})
-	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
-	quiet(t, m.svc)
-	if err := m.svc.RefreshSubscription(t.Context(), subs[0].ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, ok := m.storedDetail(t, string(issues[0])); ok || !held() {
-		t.Fatalf("after the refresh the mirror holds the detail %v, the pump %v; want the pump alone", ok, held())
-	}
-	if v := m.ticketView(t, subs[0].ID); !v.Loaded || v.Detail.Card.ID != string(issues[0]) {
-		t.Fatalf("the ticket's view %+v", v)
+	if err := m.svc.RefreshSubscription(t.Context(), sub.ID); !errors.Is(err, errBodyNotKept) {
+		t.Fatalf("the refresh: %v; want the body not kept", err)
 	}
 }

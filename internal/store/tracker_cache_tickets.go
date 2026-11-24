@@ -5,10 +5,10 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // The issue record is the one record of an issue: its row in
@@ -38,20 +38,14 @@ func mirrorBodyDigest(data []byte) []byte {
 // be older than the record's card), when that read began (ReadAt, an
 // order time, and Wall, the wall time a person is shown and its age is
 // measured from), when the issue was last opened (OpenedAt, an order
-// time) and the body, with the record's card as GetMirrorBody read it.
+// time) and the body, with the record's card as ListMirrorBodies read it.
 type MirrorBody struct {
 	IssueID      string
 	UpdatedAt    int64
 	ReadAt, Wall int64
 	OpenedAt     int64
 	Data         []byte
-	// digest is the body's digest as the record holds it, part of the
-	// identity ConfirmMirrorBody matches.
-	digest []byte
-	Card   MirrorCard
-	// root and sweep name the body for ConfirmMirrorBody: the root it was
-	// read from and that root's sweep when it was read.
-	root, sweep int64
+	Card         MirrorCard
 }
 
 // MirrorTicket is one ticket as a read found it: its card, its body (nil
@@ -535,70 +529,47 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 	return out, nil
 }
 
-// GetMirrorBody reads the body the record of an issue the mirror keeps
-// holds, if any, with the record's card, in one statement.
-func (s *Store) GetMirrorBody(rootID int64, issueID string) (MirrorBody, bool, error) {
-	b := MirrorBody{IssueID: issueID, root: rootID}
-	var err error
-	b.Card, err = scanMirrorCard(s.reader().QueryRow(`SELECT `+mirrorCardColumns+`,
-		    r.sweep, i.body_updated_at, i.body_read_at, i.body_wall, i.body_opened_at, i.body_digest, d.data
-		FROM tracker_cache_issues i
-		JOIN tracker_cache_issue_bodies d ON d.root_id = i.root_id AND d.issue_id = i.issue_id
-		JOIN tracker_cache_roots r ON r.id = i.root_id
-		WHERE i.root_id = ?1 AND i.issue_id = ?2 AND i.body_read_at > 0 AND `+mirrorIssueKept("?1", "?2"),
-		rootID, issueID), &b.sweep, &b.UpdatedAt, &b.ReadAt, &b.Wall, &b.OpenedAt, &b.digest, &b.Data)
-	if errors.Is(err, sql.ErrNoRows) {
-		return MirrorBody{}, false, nil
-	}
-	if err != nil {
-		return MirrorBody{}, false, fmt.Errorf("store: read tracker mirror %d issue %s body: %w", rootID, issueID, err)
-	}
-	return b, true, nil
-}
+// MirrorMaxBodies bounds the bodies one ListMirrorBodies read returns: a
+// body is up to the transport's answer limit, so a read of every open
+// ticket's body at once is not one statement's work.
+const MirrorMaxBodies = 16
 
-// ConfirmMirrorBody records a person's opening (only forward) of b, a body
-// GetMirrorBody read from rootID (another root's body is refused,
-// ErrInvalidTrackerCache), when the record still holds it: the body of the
-// same identity (its version, read, wall time and digest), of an issue the
-// mirror keeps, with no sweep since b was read. It
-// reports the confirmation; unconfirmed, nothing is written and the caller
-// reads the body again rather than show b, which may predate a sweep. It
-// never adds or changes a body, so it drops none. One statement, and the
-// sweep's check; a second reads whether the record holds b when the
-// opening is no later than the one it holds, which writes nothing.
-func (s *Store) ConfirmMirrorBody(rootID int64, b MirrorBody, opened MirrorRead) (confirmed bool, err error) {
-	opening, err := opened.in(rootID)
+// mirrorBodiesSQL reads the bodies the records of the kept issues among a
+// JSON list of IDs hold, each with its record's card, probing each by key.
+var mirrorBodiesSQL = `SELECT ` + mirrorCardColumns + `, i.body_updated_at, i.body_read_at, i.body_wall, i.body_opened_at, d.data
+	FROM json_each(?2) l
+	CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = l.value
+	JOIN tracker_cache_issue_bodies d ON d.root_id = i.root_id AND d.issue_id = i.issue_id
+	WHERE i.body_read_at > 0 AND ` + mirrorIssueKept("i.root_id", "i.issue_id")
+
+// ListMirrorBodies reads the bodies the records of issueIDs (at most
+// MirrorMaxBodies; a repeated ID is read once) hold, with each record's card, sorted by
+// issue ID, in one statement: an issue the mirror does not keep, or whose
+// record holds no body, is left out. A body read is of an issue kept in
+// the same statement, so the cleanup's sweep, which removes only unkept
+// issues, has removed none of what it returns.
+func (s *Store) ListMirrorBodies(rootID int64, issueIDs []string) ([]MirrorBody, error) {
+	if len(issueIDs) == 0 {
+		return nil, nil
+	}
+	if len(issueIDs) > MirrorMaxBodies {
+		return nil, fmt.Errorf("%w: %d bodies asked, over %d", ErrInvalidTrackerCache, len(issueIDs), MirrorMaxBodies)
+	}
+	encoded, err := encodeMirrorIDs(issueIDs)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	if b.IssueID == "" || b.sweep <= 0 || b.ReadAt <= 0 || opening.at <= 0 {
-		return false, fmt.Errorf("%w: a confirmation needs a body GetMirrorBody read and the time it was opened", ErrInvalidTrackerCache)
-	}
-	if b.root != rootID {
-		return false, fmt.Errorf("%w: a body read from tracker mirror %d confirmed in %d", ErrInvalidTrackerCache, b.root, rootID)
-	}
-	action := fmt.Sprintf("store: confirm tracker mirror %d issue %s body", rootID, b.IssueID)
-	held := `root_id = ?1 AND issue_id = ?2 AND body_read_at = ?3 AND body_updated_at = ?5 AND body_wall = ?6 AND body_digest = ?7 AND ` +
-		mirrorIssueKept("?1", "?2")
-	err = s.mirrorSweptWrite(rootID, b.sweep, action, func(tx *sql.Tx) error {
-		err := tx.QueryRow(`UPDATE tracker_cache_issues SET body_opened_at = ?4 WHERE `+held+` AND body_opened_at < ?4 RETURNING 1`,
-			rootID, b.IssueID, b.ReadAt, opening.at, b.UpdatedAt, b.Wall, b.digest).Scan(&confirmed)
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		// Recorded already: an opening no later than the one held.
-		err = tx.QueryRow(`SELECT 1 FROM tracker_cache_issues WHERE `+held, rootID, b.IssueID, b.ReadAt, opening.at, b.UpdatedAt, b.Wall,
-			b.digest).Scan(&confirmed)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
+	out := make([]MirrorBody, 0, len(issueIDs))
+	err = scanMirrorRows(s.reader(), mirrorBodiesSQL, []any{rootID, encoded}, func(r rowScanner) error {
+		var b MirrorBody
+		card, err := scanMirrorCard(r, &b.UpdatedAt, &b.ReadAt, &b.Wall, &b.OpenedAt, &b.Data)
+		b.IssueID, b.Card = card.IssueID, card
+		out = append(out, b)
 		return err
 	})
-	switch {
-	case errors.Is(err, ErrTrackerCacheSwept):
-		return false, nil
-	case err != nil:
-		return false, err
+	if err != nil {
+		return nil, fmt.Errorf("store: read tracker mirror %d bodies of %d issues: %w", rootID, len(issueIDs), err)
 	}
-	return confirmed, nil
+	slices.SortFunc(out, func(a, b MirrorBody) int { return strings.Compare(a.IssueID, b.IssueID) })
+	return out, nil
 }

@@ -109,24 +109,24 @@ func (r *run) refresh(resources []tracker.Resource, created newIssue) *refreshed
 
 // refreshMirrored refreshes p's structures, rows, cards and details. It
 // returns why the refresh stops, nil to go on.
-func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
+func (r *run) refreshMirrored(f *refreshed, p refreshPlan) (stop error) {
 	if len(p.cards)+len(p.details)+len(p.rows)+len(p.structures) == 0 {
 		return nil
 	}
 	// The open tickets are taken before the targets are read: a ticket
 	// opened after the connection was turned off and on again is one of a
-	// later mirror, which the targets read then refuses.
+	// later mirror, which the targets read then refuses. Their reads span
+	// the refresh (ticketReads), so what it stores before it reads their
+	// details is built into their views as they settle with its outcome
+	// (Service.write), one event each; a refresh that stops before that
+	// read settles them with why it stopped.
 	open := r.s.openTickets(r.row.ID, p.details)
-	// The open tickets settle with everything the refresh stored
-	// (Service.write), so its writes are told to them as their own; a
-	// refresh that stops before its read of them (refreshDetails), which
-	// that settlement follows, tells them what it stored.
-	r.origin = &tickOrigin{tickets: open}
-	var stored Changes
-	r.tell = func(ch Changes) { stored.add(ch) }
+	f.pumps = open
+	f.began, f.reads = r.s.ticketReads(open, true)
+	details := false
 	defer func() {
-		if f.pumps == nil {
-			r.s.tellTickets(r.gen, open, stored)
+		if !details && stop != nil {
+			f.detailsErr = stop
 		}
 	}()
 	boards := slices.Concat(slices.Collect(maps.Keys(p.rows)), p.structures)
@@ -138,11 +138,13 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 	t, err := r.refreshTargets(p.cards, p.details, boards)
 	if errors.Is(err, store.ErrTrackerCacheGone) {
 		f.ended = true
-		return err
+		return fmt.Errorf("%w: %w", errEnded, err)
 	}
 	if err != nil {
 		// Nothing mirrored is read; the worklogs, which need no target, are.
+		// The open tickets' reads fail with it.
 		f.fail(err, f.openWhere(func(res tracker.Resource) bool { return res.Kind() != tracker.ResourceWorklogs })...)
+		f.detailsErr = err
 		return nil
 	}
 	shown, gone := map[tracker.BoardID]bool{}, map[tracker.BoardID]bool{}
@@ -154,8 +156,7 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 			f.covered(tracker.StructureOf(b))
 			continue
 		}
-		ch, err := r.structure(b)
-		f.ch.add(ch)
+		_, err := r.structure(b)
 		switch {
 		case err == nil:
 			f.covered(tracker.StructureOf(b))
@@ -187,6 +188,7 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 	if stop := r.refreshRows(f, p, t, shown, gone); stop != nil {
 		return stop
 	}
+	details = true
 	return r.refreshDetails(f, open, t.Details, p.details)
 }
 
@@ -227,8 +229,7 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	returned := map[tracker.IssueID]bool{}
 	for _, b := range slices.Sorted(maps.Keys(asked)) {
 		ids := sortedUnique(asked[b])
-		ch, read, unread, err := r.boardRows(b, ids, tracker.Eligibility{})
-		f.ch.add(ch)
+		_, read, unread, err := r.boardRows(b, ids, tracker.Eligibility{})
 		for _, id := range read {
 			returned[id] = true
 		}
@@ -265,8 +266,7 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	if len(unread) == 0 {
 		return nil
 	}
-	ch, left, err := r.cards(unread)
-	f.ch.add(ch)
+	_, left, err := r.cards(unread)
 	f.covered(cardResources(unread[:len(unread)-len(left)])...)
 	if err != nil {
 		return r.failedRead(f, err, cardResources(left)...)
@@ -284,8 +284,6 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 			f.covered(tracker.DetailOf(id))
 		}
 	}
-	f.pumps = open
-	f.began, f.reads = r.s.ticketReads(open, true)
 	for _, id := range cached {
 		if !slices.ContainsFunc(open, func(tp *ticketPump) bool { return string(tp.key.issue) == id }) {
 			f.reads = append(f.reads, &ticketRead{issue: tracker.IssueID(id), full: true})
@@ -294,11 +292,8 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 	if len(f.reads) == 0 {
 		return nil
 	}
-	var ch Changes
-	r.tell = func(stored Changes) { ch.add(stored) }
 	err := r.boundDetails(f.reads, false)
-	f.ch.add(ch)
-	f.details = detailsRead{ch: ch, root: r.root, gen: r.gen, kind: r.row.Kind}
+	f.details = detailsRead{root: r.root, kind: r.row.Kind}
 	// A detail whose own read succeeded is refreshed however the others'
 	// did, and one whose own read failed (its bind) is stale with that
 	// failure (ticketRead.failed); the rest owe the read that failed.

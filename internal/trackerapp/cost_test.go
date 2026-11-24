@@ -306,13 +306,13 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 		}},
 		{"detail, none stored", detail, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 1})),
+			with(plus(view, map[string]int{"ListMirrorBodies": 1, "StoreMirrorTickets": 1})),
 		}},
 		// The mirror keeps none of the linked issues: they show what the
 		// detail holds.
 		{"detail, verified unchanged", checked, costOf{
 			map[string]int{"Cards": 1},
-			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 1})),
+			with(plus(view, map[string]int{"ListMirrorBodies": 1, "StoreMirrorTickets": 1})),
 		}},
 		// A read stored the three linked issues' cards, one renamed: the
 		// view shows them from the mirror in its one cards lookup, and the
@@ -333,14 +333,14 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			}
 		}, costOf{
 			map[string]int{"Cards": 1},
-			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 1})),
+			with(plus(view, map[string]int{"ListMirrorBodies": 1, "StoreMirrorTickets": 1})),
 		}},
 		{"detail, verified changed", func(t *testing.T) {
 			held.Updated = held.Updated.Add(time.Minute)
 			checked(t)
 		}, costOf{
 			map[string]int{"Cards": 1, "Details": 1},
-			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 2})),
+			with(plus(view, map[string]int{"ListMirrorBodies": 1, "StoreMirrorTickets": 2})),
 		}},
 		// Sync stored a newer card than the stored detail's: no check.
 		{"detail, the mirror already newer", func(t *testing.T) {
@@ -350,7 +350,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			detail(t)
 		}, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 1})),
+			with(plus(view, map[string]int{"ListMirrorBodies": 1, "StoreMirrorTickets": 1})),
 		}},
 		{"detail, older than the age bound", func(t *testing.T) {
 			sd, _, _ := m.storedDetail(t, string(issue))
@@ -359,11 +359,11 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			detail(t)
 		}, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"GetMirrorBody": 1, "StoreMirrorTickets": 1})),
+			with(plus(view, map[string]int{"ListMirrorBodies": 1, "StoreMirrorTickets": 1})),
 		}},
 		// A person's refresh reads no stored detail first.
 		{"detail, forced refresh", func(t *testing.T) {
-			if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, issue, Interactive); err != nil {
+			if _, _, err := m.svc.issueDetail(t.Context(), m.conn.ID, issue, Interactive, true); err != nil {
 				t.Fatal(err)
 			}
 		}, costOf{
@@ -372,12 +372,12 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 		}},
 		// No run: no sync state read, no client.
 		{"detail, the mirror's copy", func(t *testing.T) {
-			if _, _, err := m.svc.MirroredDetail(m.conn.ID, issue); err != nil {
+			if _, _, err := m.svc.mirroredDetail(m.conn.ID, issue); err != nil {
 				t.Fatal(err)
 			}
 		}, costOf{
 			map[string]int{},
-			plus(view, map[string]int{"GetMirrorRoot": 1, "GetMirrorBody": 1, "ConfirmMirrorBody": 1}),
+			plus(view, map[string]int{"GetMirrorRoot": 1, "ListMirrorBodies": 1}),
 		}},
 		// A tracker whose update time does not move with its detail: read
 		// every time, with no stored detail read first.

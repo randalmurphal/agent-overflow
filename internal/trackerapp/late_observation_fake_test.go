@@ -45,15 +45,15 @@ func TestALateIdenticalObservationReplacesNothing(t *testing.T) {
 			}
 			older := make(chan answer, 1)
 			go func() {
-				_, ch, err := s.svc.RefreshIssueDetail(t.Context(), conn.ID, tc.issue, Interactive)
+				_, ch, err := s.svc.issueDetail(t.Context(), conn.ID, tc.issue, Interactive, true)
 				older <- answer{ch, err}
 			}()
 			waitHeld(t, s.e, route[name])
-			if _, _, err := s.svc.RefreshIssueDetail(t.Context(), conn.ID, tc.issue, Interactive); err != nil {
+			if _, _, err := s.svc.issueDetail(t.Context(), conn.ID, tc.issue, Interactive, true); err != nil {
 				t.Fatal(err)
 			}
 			card := recordOfFake(t, s, conn, tc.issue)
-			body, ok, err := s.st.GetMirrorBody(root, string(tc.issue))
+			body, ok, err := getMirrorBody(s.st, root, string(tc.issue))
 			if err != nil || !ok {
 				t.Fatalf("the later read stored no body: %v, %v", ok, err)
 			}
@@ -75,12 +75,12 @@ func TestALateIdenticalObservationReplacesNothing(t *testing.T) {
 			if after := recordOfFake(t, s, conn, tc.issue); !reflect.DeepEqual(after, card) {
 				t.Fatalf("the late observation replaced the record's card\n%+v\nwith\n%+v", card, after)
 			}
-			after, ok, err := s.st.GetMirrorBody(root, string(tc.issue))
+			after, ok, err := getMirrorBody(s.st, root, string(tc.issue))
 			if err != nil || !ok {
 				t.Fatalf("the body went: %v, %v", ok, err)
 			}
 			// The older read's caller is shown the record's body, the later
-			// read's (issueDetail, MirroredDetail), and that showing is a
+			// read's (issueDetail), and that showing is a
 			// person's opening of it now: the opening time alone moves, and
 			// only forward.
 			if after.OpenedAt < body.OpenedAt {
