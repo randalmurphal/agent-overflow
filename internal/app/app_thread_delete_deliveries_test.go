@@ -610,6 +610,12 @@ func TestAMessageForAClaimedThreadIsQueuedAndWaitsForTheDecision(t *testing.T) {
 					sendID = c.deliver(t)
 					awaitQueuedWake(t, f.app, f.caller.ID, sendID)
 					f.startedNothing(t)
+					if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 1 {
+						t.Errorf("queued on a claimed thread = %+v, want the one message", rows)
+					}
+					if n := waitingAtGates(f.app); n != 1 {
+						t.Errorf("%d starts wait at the delete's gate, want the one the message needs", n)
+					}
 				}
 				switch outcome {
 				case "refused":
@@ -933,9 +939,10 @@ func TestAClaimHeldAcrossManySweepsWritesNothing(t *testing.T) {
 }
 
 // A live session's queue is not dispatched while a delete claims its
-// thread: its dispatch waits for the decision, what the app queues
-// meanwhile stays in the durable queue, a message withdrawn meanwhile leaves
-// it, a refused delete's release sends the rest once in the order they were
+// thread: its one dispatch waits for the decision with the session kept,
+// what the app queues meanwhile (reminders, a workflow wake and a loop's
+// wake) stays in the durable queue, a message withdrawn meanwhile leaves it,
+// a refused delete's release sends the rest once in the order they were
 // queued, and a committed delete's teardown gives them back to their owners.
 func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 	t.Parallel()
@@ -947,6 +954,9 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 				t.Fatal(err)
 			}
 			tokens := []string{"first-" + entityid.New(), "withdrawn-" + entityid.New(), "last-" + entityid.New()}
+			workflowMarker, loopMarker := "workflow-"+entityid.New(), "loop "+entityid.New()
+			loop := registerTestWake(t, f.app, store.AgentWake{ThreadID: f.caller.ID, Kind: store.AgentWakeLoop, Label: "board", Note: loopMarker,
+				IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
 			during := func() {
 				for _, token := range tokens {
 					insertTestReminder(t, f.app, token, f.caller.ID, "remind "+token, time.Now().Add(-time.Second).UnixMilli())
@@ -956,12 +966,29 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 				if _, err := f.app.removeQueuedItem(t.Context(), f.caller.ID, threadWakeSendID(tokens[1])); err != nil {
 					t.Fatalf("withdraw: %v", err)
 				}
+				if err := f.app.queueWorkflowWake(f.caller.ID, "release", wake.Message{Notice: wake.DataNotice, Data: workflowMarker}, nil); err != nil {
+					t.Fatalf("queue the workflow wake: %v", err)
+				}
+				now := time.Now()
+				if err := f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}); err != nil {
+					t.Fatal("the fire did not start")
+				}
+				awaitQueuedWake(t, f.app, f.caller.ID, agentWakeSendID(loop.ID, now.UnixMilli()))
 				quietAtGates(t, f.app)
 				if ids := queuedSendIDsOf(t, f.app, f.caller.ID, threadWakeSendID("")); len(ids) != 2 {
 					t.Errorf("queued while claimed = %q, want the two not withdrawn", ids)
 				}
+				if ids := queuedSendIDsOf(t, f.app, f.caller.ID, workflowWakeSendIDRoot); len(ids) != 1 {
+					t.Errorf("workflow wakes queued while claimed = %q, want one", ids)
+				}
 				if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 					t.Errorf("a claimed thread's live session was written %d messages", n)
+				}
+				if _, live := f.app.sessionManager().get(f.caller.ID); !live {
+					t.Error("the claim ended the thread's live session")
+				}
+				if n := waitingAtGates(f.app); n != 1 {
+					t.Errorf("%d dispatches wait at the delete's gate, want the session's one", n)
 				}
 			}
 			if outcome == "committed" {
@@ -982,6 +1009,8 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 			refusedDelete(t, f.app, f.caller.ID, during)
 			f.deliveredOnce(t, "remind "+tokens[0])
 			f.deliveredOnce(t, "remind "+tokens[2])
+			f.deliveredOnce(t, workflowMarker)
+			f.deliveredOnce(t, loopMarker)
 			if n := f.sent(t, "remind "+tokens[1]); n != 0 {
 				t.Fatalf("the withdrawn reminder reached the provider %d times", n)
 			}
@@ -1016,12 +1045,15 @@ func TestAStoppedWorkerNoticeAndAContinueToAClaimedThreadAreQueued(t *testing.T)
 			t.Errorf("the Stop's failures = %q, want none", result.Failures)
 		}
 		awaitQueuedWake(t, f.app, f.caller.ID, stopped)
+		waitAtGates(t, f.app, 1)
 		if err := f.app.continueAfterUsageLimit(t.Context(), f.caller.ID, func() bool { return true }); err != nil {
 			t.Errorf("the continue = %v, want it queued", err)
 		}
 		if ids := queuedSendIDsOf(t, f.app, f.caller.ID, "usage-continue:"); len(ids) != 1 {
 			t.Errorf("continues queued = %q, want one", ids)
 		}
+		// Each start waits at the delete's gate.
+		waitAtGates(t, f.app, 2)
 		f.startedNothing(t)
 	})
 	f.settle(t)
