@@ -1,17 +1,24 @@
 // The ticket screen's rules as tables: what each write answer means for the
-// person, the comment and history windows, the rail's order, and the row a
-// ticket shows its points from.
+// person, the comment and history windows, the rail's order, the side a
+// new link sends, a poker round's result, the attachment a file in the
+// text names, and the row a ticket shows its points from.
 
 import { describe, expect, it } from 'vitest';
-import type { CommentView, DetailView, EventView, FieldView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { AttachmentView, CommentView, DetailView, EventView, FieldView, PokerVoteView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import {
   commentWindow,
   heldComments,
   historyWindow,
+  INLINE_IMAGE_MAX_BYTES,
+  linkRelations,
+  linkRequest,
+  mediaAttachment,
   moreFields,
   newestHistory,
+  pokerResult,
   refusalSentence,
   sectionFields,
+  showsInline,
   ticketRow,
   writeOutcome,
 } from './trackerTicketModel';
@@ -86,6 +93,14 @@ describe('comments', () => {
     expect(commentWindow(held, 50, 'oldest').hidden).toBe(0);
   });
 
+  it('widens to the oldest comment holding unsent text, keeping the window one run', () => {
+    const held = heldComments(detail, [{ comments: [comment('6', 6), comment('5', 5)] }]);
+    expect(commentWindow(held, 2, 'newest', new Set(['6'])).comments.map((c) => c.id)).toEqual(['9', '8', '7', '6']);
+    expect(commentWindow(held, 2, 'oldest', new Set(['6', '7'])).comments.map((c) => c.id)).toEqual(['6', '7', '8', '9']);
+    // A draft already in the window, or on a comment no longer held, widens nothing.
+    expect(commentWindow(held, 2, 'newest', new Set(['8', 'gone'])).hidden).toBe(3);
+  });
+
   it('mounts the newest changes first', () => {
     const history = [{ at: 1, field: 'status' }, { at: 3, field: 'assignee' }, { at: 2, field: 'priority' }] as EventView[];
     expect(historyWindow(newestHistory(history), 2)).toEqual({ events: [history[1], history[2]], hidden: 1 });
@@ -107,5 +122,50 @@ describe('the rail', () => {
     expect(ticketRow(rows, '2')).toBe(rows[1]);
     expect(ticketRow(rows, '9')).toBe(rows[0]);
     expect(ticketRow([], '1')).toBeNull();
+  });
+});
+
+describe('links', () => {
+  const types = [
+    { id: '10000', name: 'Blocks', outward: 'blocks', inward: 'is blocked by' },
+    { id: '10003', name: 'Relates', outward: 'relates to', inward: 'relates to' },
+  ];
+
+  it('offers each side of a type once, a symmetric type once', () => {
+    expect(linkRelations(types).map((r) => r.phrase)).toEqual(['blocks', 'is blocked by', 'relates to']);
+  });
+
+  it('sends the ticket on the side its phrase reads from', () => {
+    const [blocks, blockedBy] = linkRelations(types);
+    expect(linkRequest(blocks, '10101', '10102')).toEqual({ type: '10000', outward: '10101', inward: '10102' });
+    expect(linkRequest(blockedBy, '10101', '10102')).toEqual({ type: '10000', outward: '10102', inward: '10101' });
+  });
+});
+
+describe('poker', () => {
+  const vote = (value: number | null): PokerVoteView => ({ voter: { id: 'u', name: 'User' }, value } as PokerVoteView);
+
+  it('counts each value shown, most votes first, the lower value first among equals', () => {
+    expect(pokerResult([vote(5), vote(3), vote(5), vote(8), vote(3), vote(null)])).toEqual([
+      { value: 3, count: 2 }, { value: 5, count: 2 }, { value: 8, count: 1 },
+    ]);
+    expect(pokerResult([vote(null)])).toEqual([]);
+  });
+});
+
+describe('files in the text', () => {
+  const file = (id: string, name: string, mime: string, size: number): AttachmentView => ({ id, name, mime_type: mime, size } as AttachmentView);
+
+  it('names the one attachment of that name, and none when several share it', () => {
+    const a = file('1', 'diagram.png', 'image/png', 10);
+    expect(mediaAttachment([a, file('2', 'notes.txt', 'text/plain', 5)], 'diagram.png')).toBe(a);
+    expect(mediaAttachment([a, file('3', 'diagram.png', 'image/png', 10)], 'diagram.png')).toBeNull();
+    expect(mediaAttachment([a], 'missing.png')).toBeNull();
+  });
+
+  it('shows an image in place up to the cap, and anything else as a chip', () => {
+    expect(showsInline(file('1', 'a.png', 'image/png', INLINE_IMAGE_MAX_BYTES))).toBe(true);
+    expect(showsInline(file('1', 'a.png', 'image/png', INLINE_IMAGE_MAX_BYTES + 1))).toBe(false);
+    expect(showsInline(file('1', 'a.pdf', 'application/pdf', 10))).toBe(false);
   });
 });

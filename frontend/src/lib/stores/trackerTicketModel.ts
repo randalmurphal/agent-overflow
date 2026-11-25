@@ -1,16 +1,22 @@
 // The ticket screen's rules that hold no state (docs/specs/issues.md,
 // "Ticket"): what a write's answer means for the person, which comments
 // and changes are mounted, the order of the rail's fields, which fields
-// are sections, how linked tickets group, and the row of the board the
-// ticket shows its points from. The stores and the components call these; each rule is here once.
+// are sections, how linked tickets group and which side a new link sends,
+// what a poker round's votes add up to, which attachment a file in the
+// text names, and the row of the board the ticket shows its points from.
+// The stores and the components call these; each rule is here once.
 
 import type {
+  AttachmentView,
   CommentView,
   DetailView,
   EventView,
   FieldValueView,
   FieldView,
+  LinkRequest,
+  LinkTypeView,
   LinkView,
+  PokerVoteView,
   RefusalView,
   TicketRowView,
   WriteView,
@@ -89,9 +95,26 @@ export function heldComments(detail: DetailView, pages: readonly { readonly comm
 export type CommentOrder = 'oldest' | 'newest';
 
 /** The comments mounted, in the order they read, and the earlier ones not
- * mounted: the newest `shown` of the held (newest first). */
-export function commentWindow(held: readonly CommentView[], shown: number, order: CommentOrder): { readonly comments: readonly CommentView[]; readonly hidden: number } {
-  const take = held.slice(0, Math.max(0, shown));
+ * mounted: the newest `shown` of the held (newest first), widened to the
+ * oldest comment whose edit a person left unsent (`drafted`), so that
+ * text is never hidden behind the reveal control and the window stays
+ * one run. */
+export function commentWindow(
+  held: readonly CommentView[],
+  shown: number,
+  order: CommentOrder,
+  drafted: ReadonlySet<string> = new Set(),
+): { readonly comments: readonly CommentView[]; readonly hidden: number } {
+  let count = Math.max(0, shown);
+  if (drafted.size > 0) {
+    for (let i = held.length - 1; i >= count; i--) {
+      if (drafted.has(held[i].id)) {
+        count = i + 1;
+        break;
+      }
+    }
+  }
+  const take = held.slice(0, count);
   return { comments: order === 'newest' ? take : take.reverse(), hidden: held.length - take.length };
 }
 
@@ -118,6 +141,70 @@ export function linkGroups(links: readonly LinkView[]): readonly { readonly rela
     else groups.set(l.relation, [l]);
   }
   return [...groups].map(([relation, of]) => ({ relation, links: of }));
+}
+
+/** One way the ticket can relate to another: a link type's phrase from
+ * one of its sides. `outward` is whether the ticket is the type's outward
+ * issue ("blocks") or its inward one ("is blocked by"). */
+export interface LinkRelation {
+  readonly type: string;
+  readonly phrase: string;
+  readonly outward: boolean;
+}
+
+/** Every relation the link types offer, in the tracker's order: each
+ * type's outward phrase, then its inward one when it reads differently (a
+ * "relates to" type is one relation either way). */
+export function linkRelations(types: readonly LinkTypeView[]): readonly LinkRelation[] {
+  const out: LinkRelation[] = [];
+  for (const t of types) {
+    out.push({ type: t.id, phrase: t.outward, outward: true });
+    if (t.inward !== t.outward) out.push({ type: t.id, phrase: t.inward, outward: false });
+  }
+  return out;
+}
+
+/** The link that makes `ticket` relate to `other` as `relation` reads,
+ * both named by issue ID. */
+export function linkRequest(relation: LinkRelation, ticket: string, other: string): LinkRequest {
+  return relation.outward
+    ? { type: relation.type, outward: ticket, inward: other }
+    : { type: relation.type, outward: other, inward: ticket };
+}
+
+/** The values the votes show, each with how many chose it, most votes
+ * first and the lower value first among equals. A vote whose value the
+ * read does not show counts toward none. */
+export function pokerResult(votes: readonly PokerVoteView[]): readonly { readonly value: number; readonly count: number }[] {
+  const counts = new Map<number, number>();
+  for (const v of votes) {
+    if (typeof v.value === 'number') counts.set(v.value, (counts.get(v.value) ?? 0) + 1);
+  }
+  return [...counts].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count || a.value - b.value);
+}
+
+/** The largest image the ticket's text shows in place; a larger one stays
+ * a chip with its size and Save, so one image cannot take more than a
+ * quarter of the media cache (utils/mediaBlobCache.ts). */
+export const INLINE_IMAGE_MAX_BYTES = 16 * 1024 * 1024;
+
+/** The attachment a file in the ticket's text names: the one attachment
+ * whose name is the text's, or null when none or several have it. The
+ * tracker's text names a file by its media ID, which no attachment of the
+ * view carries, and by its name. */
+export function mediaAttachment(attachments: readonly AttachmentView[], name: string): AttachmentView | null {
+  let found: AttachmentView | null = null;
+  for (const a of attachments) {
+    if (a.name !== name) continue;
+    if (found) return null;
+    found = a;
+  }
+  return found;
+}
+
+/** Whether the ticket's text shows the attachment as an image in place. */
+export function showsInline(attachment: AttachmentView): boolean {
+  return (attachment.mime_type ?? '').startsWith('image/') && attachment.size <= INLINE_IMAGE_MAX_BYTES;
 }
 
 /** Whether a field holds a value. */
