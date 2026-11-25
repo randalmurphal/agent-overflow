@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,10 +38,12 @@ import (
 // that stops reading the body leaves no page read pending for a deadline
 // to fail, and the timer still fires.
 //
-// What the page is told on a fire is true of what may have happened: a
-// body that did not go out whole cannot have been applied, so it says to
-// send it again; one sent on whole may have been, so it says to check
-// first; a request with no body says to try again.
+// What the page is told when a carry ends before the upstream's headers
+// is true of what may have happened, and one function says it (failed):
+// an upload that did not go out whole cannot have been applied, so it
+// says to send it again; one sent on whole, an empty one included, may
+// have been, so it says to check first; anything else keeps the words a
+// download always had.
 
 // carriedKey carries a request's carriedTransfer to the proxy's
 // ModifyResponse and ErrorHandler.
@@ -55,22 +58,35 @@ const (
 	phaseDone
 )
 
-// transferEnded is the cause a carried transfer's timer ends it with, and
-// what the page is answered when no header was written yet.
-type transferEnded struct {
-	status  int
-	message string
-}
+// ending is how the timer ended a carry; failed words it.
+type ending uint8
 
-func (e *transferEnded) Error() string { return e.message }
+const (
+	// endNone: the timer did not end it, or ended it after the upstream's
+	// headers, when the page's answer is cut and nothing is written.
+	endNone ending = iota
+	endPageStalled
+	endUpstreamStalled
+	endUnanswered
+)
+
+// errTimerEnded is the cause the timer cancels the upstream request with.
+var errTimerEnded = errors.New("the carried transfer's timer ended it")
 
 // carriedTransfer is one carried request's timing.
 type carriedTransfer struct {
 	c      *Carrier
 	rc     *http.ResponseController
 	cancel context.CancelCauseFunc
-	// body is set for a request that carries one.
-	body bool
+	// page is the request's own context, which ends when the page leaves
+	// or this server shuts down.
+	page context.Context
+	// upload is set for a request that may change what the upstream
+	// holds: any method but GET and HEAD, whatever its length.
+	upload bool
+	// reached is set once the request's headers went out to the upstream:
+	// before that, nothing reached it to act on.
+	reached atomic.Bool
 	// stopLeave stops the callback that ends the page's read when the
 	// request's context ends; calls counts that callback and a fire while
 	// they touch rc, which finish waits for.
@@ -85,8 +101,11 @@ type carriedTransfer struct {
 	// is a stale one Reset already replaced.
 	window time.Duration
 	moved  time.Time
-	// whole is set once the page's body was read to its end.
+	// whole is set once the page's body was read to its end, and at once
+	// for an empty one.
 	whole bool
+	// ended is how the timer ended the carry.
+	ended ending
 	// reading is set while a read of the page's body waits: a body phase
 	// that ends with one waiting is the page's stall, and with none the
 	// upstream's, which stopped taking the body.
@@ -97,7 +116,8 @@ type carriedTransfer struct {
 // the transfer and its cancel, and the writer to answer the page with.
 // The caller ends the transfer with finish.
 func (c *Carrier) carry(w http.ResponseWriter, r *http.Request) (*carriedTransfer, http.ResponseWriter, *http.Request) {
-	t := &carriedTransfer{c: c, rc: http.NewResponseController(w)}
+	t := &carriedTransfer{c: c, rc: http.NewResponseController(w), page: r.Context(),
+		upload: r.Method != http.MethodGet && r.Method != http.MethodHead}
 	// Only the timer ends a read of the page: the server's own read
 	// timeout would cut a body still moving, and a read deadline passing
 	// while the answer is awaited ends the request through net/http's
@@ -107,12 +127,14 @@ func (c *Carrier) carry(w http.ResponseWriter, r *http.Request) (*carriedTransfe
 	}
 	ctx, cancel := context.WithCancelCause(r.Context())
 	t.cancel = cancel
-	out := r.WithContext(context.WithValue(ctx, carriedKey{}, t))
-	// The proxy sends no body for a declared length of 0 (ReverseProxy).
-	t.phase, t.window = phaseAwaiting, c.allowance
+	ctx = httptrace.WithClientTrace(context.WithValue(ctx, carriedKey{}, t),
+		&httptrace.ClientTrace{WroteHeaders: func() { t.reached.Store(true) }})
+	out := r.WithContext(ctx)
+	// The proxy sends no body for a declared length of 0 (ReverseProxy),
+	// which is then whole at once.
+	t.phase, t.window, t.whole = phaseAwaiting, c.allowance, true
 	if r.ContentLength != 0 {
-		t.body = true
-		t.phase, t.window = phaseBody, c.stall
+		t.phase, t.window, t.whole = phaseBody, c.stall, false
 		out.Body = &pageBody{ReadCloser: r.Body, t: t}
 	}
 	t.moved = time.Now()
@@ -187,51 +209,64 @@ func (t *carriedTransfer) startLocked(now time.Time, p phase, window time.Durati
 }
 
 // fire ends the transfer when its phase's window passed with nothing
-// moving: the upstream request is canceled with the phase's cause, and a
-// read of the page is ended.
+// moving: it records how, cancels the upstream request and ends a read of
+// the page.
 func (t *carriedTransfer) fire() {
 	t.mu.Lock()
 	if t.phase == phaseDone || time.Since(t.moved) < t.window {
 		t.mu.Unlock()
 		return
 	}
-	cause := t.endedLocked()
+	switch {
+	case t.phase == phaseBody && t.reading.Load():
+		t.ended = endPageStalled
+	case t.phase == phaseBody:
+		t.ended = endUpstreamStalled
+	case t.phase == phaseAwaiting:
+		t.ended = endUnanswered
+	}
 	t.phase = phaseDone
 	t.calls.Add(1)
 	t.mu.Unlock()
 	defer t.calls.Done()
-	t.cancel(cause)
+	t.cancel(errTimerEnded)
 	t.abortRead()
 }
 
-// endedLocked is the cause of a transfer that stopped in its phase,
-// worded for the person at the page and true of what may have happened.
-func (t *carriedTransfer) endedLocked() *transferEnded {
-	waited := spoken(t.window)
-	switch {
-	case t.phase == phaseBody && t.reading.Load():
-		return &transferEnded{http.StatusRequestTimeout,
-			"the file stopped arriving at this computer for " + waited + ", so it was not sent on in full; send it again"}
-	case t.phase == phaseBody:
-		return &transferEnded{http.StatusGatewayTimeout,
-			"the computer that holds it stopped taking the file for " + waited + ", so it did not receive it in full; send it again"}
-	case !t.body && t.phase == phaseAwaiting:
-		return &transferEnded{http.StatusGatewayTimeout,
-			"the computer that holds it did not begin to answer within " + waited + "; try again"}
-	case !t.body:
-		return &transferEnded{http.StatusGatewayTimeout,
-			"the computer that holds it stopped sending for " + waited + "; try again"}
-	case !t.whole:
-		// It answered before the body's end, which therefore never
-		// reached it whole.
-		return &transferEnded{http.StatusGatewayTimeout,
-			"the computer that holds it stopped answering for " + waited + " before the file was sent on in full; send it again"}
-	case t.phase == phaseAwaiting:
-		return &transferEnded{http.StatusGatewayTimeout,
-			"the file was sent on in full, but the computer that holds it did not begin to answer within " + waited + ", so it may have been received; check before sending it again"}
+// failed is the page's status and sentence for a carry that ended before
+// the upstream's headers, from how it ended and what was sent: whether
+// the request is an upload, and whether its body went out whole.
+func (t *carriedTransfer) failed() (int, string) {
+	t.mu.Lock()
+	ended, waited, whole := t.ended, spoken(t.window), t.whole
+	t.mu.Unlock()
+	// mayHave is an upload sent on whole whose answer did not come.
+	mayHave := func(status int, what string) (int, string) {
+		return status, "the file was sent on in full, but " + what + ", so it may have been received; check before sending it again"
 	}
-	return &transferEnded{http.StatusGatewayTimeout,
-		"the file was sent on in full, but the computer that holds it stopped answering for " + waited + ", so it may have been received; check before sending it again"}
+	const unreachable = "backend unreachable"
+	switch {
+	case ended == endPageStalled:
+		return http.StatusRequestTimeout, "the file stopped arriving at this computer for " + waited + ", so it was not sent on in full; send it again"
+	case ended == endUpstreamStalled:
+		return http.StatusGatewayTimeout, "the computer that holds it stopped taking the file for " + waited + ", so it did not receive it in full; send it again"
+	case ended == endUnanswered && !t.upload:
+		return http.StatusGatewayTimeout, "the computer that holds it did not begin to answer within " + waited + "; try again"
+	case ended == endUnanswered:
+		// The answer is awaited only once the body went out whole.
+		return mayHave(http.StatusGatewayTimeout, "the computer that holds it did not begin to answer within "+waited)
+	case !t.upload:
+		return http.StatusServiceUnavailable, unreachable
+	case t.page.Err() != nil && !whole:
+		return http.StatusServiceUnavailable, "this computer stopped before the file was sent on in full; send it again"
+	case t.page.Err() != nil:
+		return mayHave(http.StatusServiceUnavailable, "this computer stopped waiting for its answer")
+	case !t.reached.Load():
+		return http.StatusServiceUnavailable, "the computer that holds it could not be reached, so nothing was sent; send it again"
+	case !whole:
+		return http.StatusBadGateway, "the connection to the computer that holds it ended before the file was sent on in full; send it again"
+	}
+	return mayHave(http.StatusBadGateway, "the connection to the computer that holds it ended before it answered")
 }
 
 // abortRead ends a read of the page's body in progress, and every later
@@ -305,10 +340,9 @@ func (b *upstreamBody) Read(p []byte) (int, error) {
 
 // modifyResponse is the byte proxy's ModifyResponse: the answer began.
 func modifyResponse(resp *http.Response) error {
-	if t, ok := resp.Request.Context().Value(carriedKey{}).(*carriedTransfer); ok {
-		t.answered()
-		resp.Body = &upstreamBody{ReadCloser: resp.Body, t: t}
-	}
+	t := resp.Request.Context().Value(carriedKey{}).(*carriedTransfer)
+	t.answered()
+	resp.Body = &upstreamBody{ReadCloser: resp.Body, t: t}
 	return nil
 }
 

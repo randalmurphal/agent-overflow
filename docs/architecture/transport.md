@@ -332,17 +332,25 @@ its answer's headers. Nothing is sized from a declared length, and
 nothing relies on the backend's timers or on a dialer's keepalive, since
 the backend may be another computer on another version.
 
-What the page is told is true of what may have happened. A page that
-stops sending is answered 408, and an upstream that stops taking the body
-504; neither body went out whole, so both say to send it again. An
-upload sent on whole whose answer does not begin in time is answered 504
-saying the file may have been received and to check before sending it
-again. A download whose answer does not begin in time is answered 504
-saying to try again. Each reason is plain text the page quotes. An
-upstream that stops after its headers has the page's answer cut. An
-upstream that answers before the body's end has its answer carried at
-once: the relay ends its read of the page rather than wait for the rest
-of the body.
+What the page is told when a carry ends before the upstream's headers is
+true of what may have happened, and one function owns it
+(`carriedTransfer.failed`), from how the carry ended and two facts: whether
+the request is an upload (any method but GET and HEAD, whatever its
+length) and whether its body went out whole (an empty one is whole at
+once). An upload not sent on whole cannot have been applied and says to
+send it again: 408 for a page that stopped sending, 504 for an upstream
+that stopped taking the body, 502 for a connection that ended mid-body,
+503 when the request's headers never went out ("could not be reached, so
+nothing was sent") or this computer stopped. An upload sent on whole says
+it may have been received and to check before sending it again, whatever
+ended the wait: 504 for an answer that did not begin in time, 502 for a
+connection that closed or reset, 503 for this computer stopping. A request
+that is not an upload keeps a download's words: 504 "try again" for an
+answer that did not begin in time, and 503 "backend unreachable"
+otherwise. Each reason is plain text the page quotes. An upstream that
+stops after its headers has the page's answer cut. An upstream that
+answers before the body's end has its answer carried at once: the relay
+ends its read of the page rather than wait for the rest of the body.
 
 The request's context ending (the page leaving, this server shutting
 down) ends a blocked read of the page at once, so a shutdown's join does

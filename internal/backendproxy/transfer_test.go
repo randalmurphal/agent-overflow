@@ -271,6 +271,83 @@ func TestCarryTransfer_AnUploadSentWholeWhoseAnswerIsWithheld(t *testing.T) {
 	}
 }
 
+// TestCarryTransfer_AnUploadSentWholeWhoseConnectionCloses — an upstream
+// that took the whole file and closed its connection before answering may
+// have stored it: the page is told so, not that the computer was
+// unreachable.
+func TestCarryTransfer_AnUploadSentWholeWhoseConnectionCloses(t *testing.T) {
+	received := make(chan int64, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			return
+		}
+		received <- n
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(upstream.Close)
+	relay := relayOf(t, carrierFor(t, upstream, time.Minute, time.Minute))
+	conn := sendRaw(t, relay, "PUT /attachments/tracker/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 5\r\n\r\n", []byte("hello"))
+	resp, body := readAnswer(t, conn, 8*time.Second, "an upload sent whole whose connection closed")
+	if n := <-received; n != 5 {
+		t.Fatalf("the upstream received %d bytes", n)
+	}
+	if resp.StatusCode != http.StatusBadGateway ||
+		body != "the file was sent on in full, but the connection to the computer that holds it ended before it answered, so it may have been received; check before sending it again\n" {
+		t.Fatalf("an upload sent whole whose connection closed: %d %q", resp.StatusCode, body)
+	}
+}
+
+// TestCarryTransfer_AnEmptyUploadWhoseAnswerIsWithheld — an empty upload
+// is whole at once: one the upstream took and never answered may have
+// been stored, and the page is told to check, not to try again.
+func TestCarryTransfer_AnEmptyUploadWhoseAnswerIsWithheld(t *testing.T) {
+	asked := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked <- r.Method
+		<-r.Context().Done()
+	}))
+	t.Cleanup(upstream.Close)
+	relay := relayOf(t, carrierFor(t, upstream, time.Minute, 2*time.Second))
+	conn := sendRaw(t, relay, "PUT /attachments/tracker/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 0\r\n\r\n", nil)
+	resp, body := readAnswer(t, conn, 8*time.Second, "an empty upload whose answer is withheld")
+	if m := <-asked; m != http.MethodPut {
+		t.Fatalf("the upstream was asked %s", m)
+	}
+	if resp.StatusCode != http.StatusGatewayTimeout ||
+		body != "the file was sent on in full, but the computer that holds it did not begin to answer within 2 seconds, so it may have been received; check before sending it again\n" {
+		t.Fatalf("an empty upload whose answer is withheld: %d %q", resp.StatusCode, body)
+	}
+}
+
+// TestCarryTransfer_AnUnreachableUpstream — a dial that fails sent nothing:
+// an upload is told so and to send it again, a download keeps its words.
+func TestCarryTransfer_AnUnreachableUpstream(t *testing.T) {
+	gone := httptest.NewServer(http.NotFoundHandler())
+	c := carrierFor(t, gone, time.Minute, time.Minute)
+	gone.Close()
+	for _, tc := range []struct {
+		method string
+		body   string
+		status int
+		want   string
+	}{
+		{http.MethodPut, "hello", http.StatusServiceUnavailable, "the computer that holds it could not be reached, so nothing was sent; send it again\n"},
+		{http.MethodGet, "", http.StatusServiceUnavailable, "backend unreachable\n"},
+	} {
+		rec := httptest.NewRecorder()
+		c.CarryTransfer(rec, httptest.NewRequest(tc.method, "/attachments/upload?ticket=t", strings.NewReader(tc.body)))
+		if rec.Code != tc.status || rec.Body.String() != tc.want {
+			t.Errorf("%s to an upstream that is gone: %d %q", tc.method, rec.Code, rec.Body)
+		}
+	}
+}
+
 // TestCarryTransfer_AServerShuttingDownEndsAStalledUpload — the request's
 // context ending (transport's BaseContext at shutdown) while net/http's
 // transport is blocked reading a page that stopped sending ends that read
@@ -331,6 +408,18 @@ func (g *gatedDeadlines) SetReadDeadline(d time.Time) error {
 
 func (g *gatedDeadlines) SetWriteDeadline(time.Time) error { return nil }
 
+// heldTrip is a round trip that does not return before until is closed.
+type heldTrip struct {
+	inner http.RoundTripper
+	until <-chan struct{}
+}
+
+func (h heldTrip) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := h.inner.RoundTrip(r)
+	<-h.until
+	return resp, err
+}
+
 // TestCarryTransfer_ACarryReturnsAfterItsLeaveCallback — the request's
 // context ending begins a callback that ends the page's read; the carry
 // does not return while that callback runs, so nothing sets a deadline on
@@ -344,6 +433,11 @@ func TestCarryTransfer_ACarryReturnsAfterItsLeaveCallback(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	c := carrierFor(t, upstream, time.Minute, time.Minute)
 	g := &gatedDeadlines{ResponseRecorder: httptest.NewRecorder(), entered: make(chan struct{}), release: make(chan struct{})}
+	// The upstream round trip, which the request's end also cancels, is
+	// held until the callback entered: a round trip that returned first
+	// lets the carry finish before the callback begins, and nothing would
+	// be left to join.
+	c.bytes.Transport = heldTrip{inner: http.DefaultTransport, until: g.entered}
 	ctx, leave := context.WithCancel(context.Background())
 	defer leave()
 	done := make(chan struct{})
@@ -485,11 +579,10 @@ func TestCarriedTransferFireRacesAPhaseSwitch(t *testing.T) {
 			close(start)
 			wg.Wait()
 			tr.mu.Lock()
-			p := tr.phase
+			p, ended := tr.phase, tr.ended
 			tr.mu.Unlock()
-			ended, isEnded := errors.AsType[*transferEnded](context.Cause(ctx))
 			switch {
-			case p == phaseDone && isEnded && ended.status == http.StatusRequestTimeout:
+			case p == phaseDone && errors.Is(context.Cause(ctx), errTimerEnded) && ended == endPageStalled:
 			case p == sw.after && ctx.Err() == nil:
 				tr.fire() // a stale fire after the switch does nothing
 				if ctx.Err() != nil {
@@ -503,30 +596,43 @@ func TestCarriedTransferFireRacesAPhaseSwitch(t *testing.T) {
 	}
 }
 
-// Every sentence a fire answers with is true of what may have happened: a
-// body that did not go out whole says to send it again, one sent on whole
-// that it may have been received and to check first, and a request with
-// no body to try again.
+// Every way a carry ends before the upstream's headers is told by failed,
+// and each sentence is true of what may have happened: an upload sent on
+// whole (an empty one included) says it may have been received and to
+// check, one not sent on whole to send it again, and anything else keeps
+// a download's words (plan: what was sent, against how the carry ended).
 func TestTheRelaysSentencesAreTrue(t *testing.T) {
+	const check = "so it may have been received; check before sending it again"
+	gone, cancelGone := context.WithCancel(context.Background())
+	cancelGone()
 	for _, tc := range []struct {
-		name                 string
-		phase                phase
-		body, whole, reading bool
-		status               int
-		want                 string
+		name                         string
+		ended                        ending
+		upload, whole, reached, left bool
+		status                       int
+		want                         string
 	}{
-		{"a page that stopped sending", phaseBody, true, false, true, http.StatusRequestTimeout, "was not sent on in full; send it again"},
-		{"an upstream that stopped taking the body", phaseBody, true, false, false, http.StatusGatewayTimeout, "did not receive it in full; send it again"},
-		{"a download not answered", phaseAwaiting, false, false, false, http.StatusGatewayTimeout, "did not begin to answer within 60 seconds; try again"},
-		{"a download that stopped", phaseAnswering, false, false, false, http.StatusGatewayTimeout, "stopped sending for 60 seconds; try again"},
-		{"an early answer that stopped", phaseAnswering, true, false, false, http.StatusGatewayTimeout, "before the file was sent on in full; send it again"},
-		{"an upload sent whole not answered", phaseAwaiting, true, true, false, http.StatusGatewayTimeout, "did not begin to answer within 60 seconds, so it may have been received; check before sending it again"},
-		{"an upload sent whole whose answer stopped", phaseAnswering, true, true, false, http.StatusGatewayTimeout, "stopped answering for 60 seconds, so it may have been received; check before sending it again"},
+		{"a page that stopped sending", endPageStalled, true, false, true, false, http.StatusRequestTimeout, "the file stopped arriving at this computer for 60 seconds, so it was not sent on in full; send it again"},
+		{"an upstream that stopped taking the body", endUpstreamStalled, true, false, true, false, http.StatusGatewayTimeout, "the computer that holds it stopped taking the file for 60 seconds, so it did not receive it in full; send it again"},
+		{"a download not answered", endUnanswered, false, true, true, false, http.StatusGatewayTimeout, "the computer that holds it did not begin to answer within 60 seconds; try again"},
+		{"an upload sent whole not answered", endUnanswered, true, true, true, false, http.StatusGatewayTimeout, "the file was sent on in full, but the computer that holds it did not begin to answer within 60 seconds, " + check},
+		{"a download whose connection ended", endNone, false, true, true, false, http.StatusServiceUnavailable, "backend unreachable"},
+		{"an upload whose connection ended mid-body", endNone, true, false, true, false, http.StatusBadGateway, "the connection to the computer that holds it ended before the file was sent on in full; send it again"},
+		{"an upload sent whole whose connection ended", endNone, true, true, true, false, http.StatusBadGateway, "the file was sent on in full, but the connection to the computer that holds it ended before it answered, " + check},
+		{"a download that could not reach it", endNone, false, true, false, false, http.StatusServiceUnavailable, "backend unreachable"},
+		{"an upload that could not reach it", endNone, true, false, false, false, http.StatusServiceUnavailable, "the computer that holds it could not be reached, so nothing was sent; send it again"},
+		{"an empty upload that could not reach it", endNone, true, true, false, false, http.StatusServiceUnavailable, "the computer that holds it could not be reached, so nothing was sent; send it again"},
+		{"a download whose page left", endNone, false, true, true, true, http.StatusServiceUnavailable, "backend unreachable"},
+		{"an upload whose page left mid-body", endNone, true, false, true, true, http.StatusServiceUnavailable, "this computer stopped before the file was sent on in full; send it again"},
+		{"an upload sent whole whose page left", endNone, true, true, true, true, http.StatusServiceUnavailable, "the file was sent on in full, but this computer stopped waiting for its answer, " + check},
 	} {
-		tr := &carriedTransfer{phase: tc.phase, body: tc.body, whole: tc.whole, window: time.Minute}
-		tr.reading.Store(tc.reading)
-		if got := tr.endedLocked(); got.status != tc.status || !strings.HasSuffix(got.message, tc.want) {
-			t.Errorf("%s: %d %q, want %d ending %q", tc.name, got.status, got.message, tc.status, tc.want)
+		tr := &carriedTransfer{ended: tc.ended, upload: tc.upload, whole: tc.whole, window: time.Minute, page: context.Background()}
+		if tc.left {
+			tr.page = gone
+		}
+		tr.reached.Store(tc.reached)
+		if status, message := tr.failed(); status != tc.status || message != tc.want {
+			t.Errorf("%s: %d %q, want %d %q", tc.name, status, message, tc.status, tc.want)
 		}
 	}
 }

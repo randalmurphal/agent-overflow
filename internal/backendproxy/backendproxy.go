@@ -505,17 +505,12 @@ func (c *Carrier) newByteProxy() (*httputil.ReverseProxy, error) {
 		},
 		ModifyResponse: modifyResponse,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			c.logf("attachment proxy: %v", err)
-			// A transfer its timer ended says why, in the plain line the
-			// page quotes (attachmentTransfer.ts, transferFailure).
-			if ended, ok := errors.AsType[*transferEnded](context.Cause(r.Context())); ok {
-				http.Error(w, ended.message, ended.status)
-				return
-			}
-			// An unreachable upstream is a page's ordinary outage; the
-			// composer's own failure path reports it. Same shape the
-			// upgrade relay answers with.
-			http.Error(w, "backend unreachable", http.StatusServiceUnavailable)
+			c.logf("attachment proxy: %v (%v)", err, context.Cause(r.Context()))
+			// Every carry ends here before the upstream's headers, and
+			// says why in the plain line the page quotes
+			// (attachmentTransfer.ts, transferFailure).
+			status, message := r.Context().Value(carriedKey{}).(*carriedTransfer).failed()
+			http.Error(w, message, status)
 		},
 	}
 	if c.cfg.Paired != nil {
