@@ -50,10 +50,10 @@ type TrackerConnection struct {
 	KeyFileState keyfile.State `json:"keyFileState"`
 	// KeyFileProblem says why a refused key file is refused.
 	KeyFileProblem string `json:"keyFileProblem,omitempty"`
-	// KeyFileModifiedAt is when a present key file last changed (unix
-	// milliseconds), 0 when it is not present. Later than VerifiedAt, the
-	// file changed after the last check read it.
-	KeyFileModifiedAt int64 `json:"keyFileModifiedAt"`
+	// CheckedTokenInFile is true while the key file holds the token the
+	// last verification checked; otherwise the verified identity is who
+	// the connection was last checked as.
+	CheckedTokenInFile bool `json:"checkedTokenInFile"`
 	// Problem is the connection's last failure, held in memory until a
 	// call succeeds or the connection is turned off.
 	Problem *TrackerProblem `json:"problem,omitempty"`
@@ -65,11 +65,10 @@ type TrackerConnection struct {
 type TrackerProblem struct {
 	Kind    trackerapp.FailureKind `json:"kind"`
 	Message string                 `json:"message"`
-	// KeyFileModifiedAt is the key file's modification time (unix
-	// milliseconds) when the client read the token the failing call used,
-	// 0 for a call that used none. A present key file with another time
-	// changed since the failure.
-	KeyFileModifiedAt int64 `json:"keyFileModifiedAt"`
+	// Current is true while the failure is about the token in the key
+	// file now, or about no token; otherwise it is about a token, or a
+	// key file read, that the file has since replaced.
+	Current bool `json:"current"`
 }
 
 // NewTrackerConnection is what AddTrackerConnection takes. Site is the
@@ -92,10 +91,10 @@ func trackerConnectionDTO(c trackerapp.Connection) TrackerConnection {
 		VerifiedAccountID: c.VerifiedAccountID, VerifiedName: c.VerifiedName, VerifiedAt: c.VerifiedAt,
 		TokenExpiresAt: c.TokenExpiresAt, CreatedAt: c.CreatedAt,
 		KeyFilePath: c.KeyFilePath, KeyFileState: c.KeyFile.State, KeyFileProblem: c.KeyFile.Problem,
-		KeyFileModifiedAt: c.KeyFile.ModifiedAt,
+		CheckedTokenInFile: c.CheckedTokenInFile,
 	}
 	if c.Problem != nil {
-		out.Problem = &TrackerProblem{Kind: c.Problem.Kind, Message: c.Problem.Message, KeyFileModifiedAt: c.Problem.KeyFileModifiedAt}
+		out.Problem = &TrackerProblem{Kind: c.Problem.Kind, Message: c.Problem.Message, Current: c.Problem.Current}
 	}
 	return out
 }

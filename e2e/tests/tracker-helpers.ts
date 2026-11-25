@@ -6,6 +6,7 @@
 
 import { writeFile } from 'node:fs/promises';
 
+import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
 
@@ -105,4 +106,12 @@ export async function renameJiraIssue(board: ConnectedBoard, key: string, summar
     body: JSON.stringify({ fields: { summary } }),
   });
   if (resp.status !== 204) throw new Error(`the fake Jira refused the rename of ${key}: HTTP ${resp.status} ${await resp.text()}`);
+}
+
+/** Opens Settings > Issues > Connections or Boards on `page`. */
+export async function openIssuesPage(page: Page, name: 'Connections' | 'Boards'): Promise<void> {
+  if (!(await page.getByRole('tablist', { name: 'Settings Sections' }).isVisible())) {
+    await page.getByTestId('sidebar-settings-button').click();
+  }
+  await page.getByRole('tablist', { name: 'Settings Sections' }).getByRole('tab', { name, exact: true }).click();
 }

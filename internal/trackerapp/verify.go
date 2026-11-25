@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker/jiraprovider"
 	"agent-overflow/internal/tracker/trackerapi"
@@ -65,16 +64,15 @@ func (s *Service) Verify(ctx context.Context, id string) (Connection, error) {
 	s.opMu.Unlock()
 
 	// The key file read that shows its state also hands a replaced token
-	// to the client, so the call checks the token in the file. The
-	// verification's time is taken before that read: a file saved after
-	// it, during the call, is newer than the check (Status.ModifiedAt).
-	checkedAt := s.now().UnixMilli()
-	file := s.look(row).KeyFile
+	// to the client, so the call checks the token in the file. The token
+	// the client holds is taken after that read, so a token the read
+	// replaced is not a token that changed during the call (evidenceOf).
+	s.look(row)
+	at.held = c.source.held()
 	verification, callErr := s.identity(ctx, row, c)
-	verification.VerifiedAt = checkedAt
 
 	s.opMu.Lock()
-	out, changed, err := s.settleVerification(row, at, file, verification, callErr)
+	out, changed, err := s.settleVerification(row, at, verification, callErr)
 	s.forgetHolds()
 	s.opMu.Unlock()
 	if changed {
@@ -126,11 +124,12 @@ func (s *Service) identity(ctx context.Context, row store.TrackerConnection, c *
 // settleVerification records the outcome of the verification of row that
 // began at at, through settle: one whose outcome settle does not apply
 // records nothing, its verification row included, and returns the
-// connection as it is. file is the key file's state the verification
-// read, and v carries the time taken before that read. It reports whether
-// what a list shows changed (settle). The caller holds opMu.
-func (s *Service) settleVerification(row store.TrackerConnection, at stamp, file keyfile.Status, v store.TrackerVerification, callErr error) (Connection, bool, error) {
-	record := func() error {
+// connection as it is. A success records who the token belongs to, now,
+// and the token the call used (settle). It reports whether what a list
+// shows changed (settle). The caller holds opMu.
+func (s *Service) settleVerification(row store.TrackerConnection, at stamp, v store.TrackerVerification, callErr error) (Connection, bool, error) {
+	record := func(verified store.TrackerTokenDigest) error {
+		v.VerifiedAt, v.Token = s.now().UnixMilli(), verified
 		recorded, _, err := s.store.RecordTrackerConnectionVerification(row.ID, v)
 		if err != nil {
 			return s.writeError(row.ID, "record the verification of", err)
@@ -143,7 +142,7 @@ func (s *Service) settleVerification(row store.TrackerConnection, at stamp, file
 	case err != nil:
 		return Connection{}, changed, err
 	case applied:
-		return s.viewWith(row, file), changed, nil
+		return s.view(row), changed, nil
 	}
 	current, err := s.get(row.ID)
 	if err != nil {

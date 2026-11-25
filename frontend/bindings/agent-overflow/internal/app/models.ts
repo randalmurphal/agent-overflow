@@ -10384,11 +10384,11 @@ export class TrackerConnection {
     "keyFileProblem"?: string;
 
     /**
-     * KeyFileModifiedAt is when a present key file last changed (unix
-     * milliseconds), 0 when it is not present. Later than VerifiedAt, the
-     * file changed after the last check read it.
+     * CheckedTokenInFile is true while the key file holds the token the
+     * last verification checked; otherwise the verified identity is who
+     * the connection was last checked as.
      */
-    "keyFileModifiedAt": number;
+    "checkedTokenInFile": boolean;
 
     /**
      * Problem is the connection's last failure, held in memory until a
@@ -10437,8 +10437,8 @@ export class TrackerConnection {
         if (!("keyFileState" in $$source)) {
             this["keyFileState"] = keyfile$0.State.$zero;
         }
-        if (!("keyFileModifiedAt" in $$source)) {
-            this["keyFileModifiedAt"] = 0;
+        if (!("checkedTokenInFile" in $$source)) {
+            this["checkedTokenInFile"] = false;
         }
 
         Object.assign(this, $$source);
@@ -10467,12 +10467,11 @@ export class TrackerProblem {
     "message": string;
 
     /**
-     * KeyFileModifiedAt is the key file's modification time (unix
-     * milliseconds) when the client read the token the failing call used,
-     * 0 for a call that used none. A present key file with another time
-     * changed since the failure.
+     * Current is true while the failure is about the token in the key
+     * file now, or about no token; otherwise it is about a token, or a
+     * key file read, that the file has since replaced.
      */
-    "keyFileModifiedAt": number;
+    "current": boolean;
 
     /** Creates a new TrackerProblem instance. */
     constructor($$source: Partial<TrackerProblem> = {}) {
@@ -10482,8 +10481,8 @@ export class TrackerProblem {
         if (!("message" in $$source)) {
             this["message"] = "";
         }
-        if (!("keyFileModifiedAt" in $$source)) {
-            this["keyFileModifiedAt"] = 0;
+        if (!("current" in $$source)) {
+            this["current"] = false;
         }
 
         Object.assign(this, $$source);

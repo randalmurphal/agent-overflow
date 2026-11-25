@@ -70,14 +70,58 @@ type Failure struct {
 	Message string
 }
 
-// Problem is a connection's last failure and the key file the failing
-// call's token came from: the file's modification time (unix
-// milliseconds) when the client read that token, 0 for a call that used
-// none (no client could be built). A key file that changed since is
-// another file, so the failure says nothing about the token in it now.
+// Problem is a connection's last failure and what it is about (settle).
+// Current says whether that is the token in the key file now, or no token
+// at all; the view that reads the file sets it (viewWith).
 type Problem struct {
 	Failure
-	KeyFileModifiedAt int64
+	Current bool
+	about   evidence
+}
+
+// Format prints the failure and whether it is current, never what it is
+// about: fmt reads an unexported field without its Format method, so the
+// token digest evidence holds would print as bytes.
+func (p Problem) Format(f fmt.State, _ rune) {
+	_, _ = fmt.Fprintf(f, "{Kind:%s Message:%q Current:%t}", p.Kind, p.Message, p.Current)
+}
+
+// evidence is what an outcome is about: the token its call used, a key
+// file that could not be read, no token, or a token that changed while
+// the call ran, which could be either.
+type evidence struct {
+	kind  evidenceKind
+	token store.TrackerTokenDigest
+}
+
+type evidenceKind uint8
+
+const (
+	// aboutNoToken is a call that used no token: no client could be
+	// built, or it failed before reading one. It is always current.
+	aboutNoToken evidenceKind = iota
+	// aboutToken is a call made with the token evidence.token names.
+	aboutToken
+	// aboutKeyFile is a key file that gave no token (KeyFileError). It is
+	// current while the file still holds none.
+	aboutKeyFile
+	// aboutChangedToken is a call during which the client's token
+	// changed. It is never current: a check settles it.
+	aboutChangedToken
+)
+
+// currentFor reports whether evidence is about the token in the key file
+// now, whose digest is found (zero when the file holds none).
+func (e evidence) currentFor(found store.TrackerTokenDigest) bool {
+	switch e.kind {
+	case aboutNoToken:
+		return true
+	case aboutToken:
+		return sameToken(e.token, found)
+	case aboutKeyFile:
+		return !found.Known()
+	}
+	return false
 }
 
 // CallFailure is a tracker call of a form read, a download or a write's

@@ -3,8 +3,7 @@
 //
 // A File pairs the file's path with the Label that names it in every
 // message a user reads. Read returns the secret as a secret.Bytes the caller
-// zeroes (ReadModified also says when the file last changed), Inspect
-// reports the file's state without the secret, Create makes
+// zeroes, Inspect reports the file's state without the secret, Create makes
 // the file empty for the user to fill, and Remove deletes it. On Unix an
 // editor that saves by replacing the file can loosen its mode, so every
 // open puts the file back to 0600 and its folder to 0700, and a file AO
@@ -27,7 +26,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/secret"
 )
@@ -167,20 +165,11 @@ func (f File) closeInto(err *error, close func() error, what string) {
 // Read returns the secret for one use. The caller zeroes it when the use
 // no longer needs it. The file must hold one token of printable ASCII,
 // optionally surrounded by whitespace.
-func (f File) Read() (*secret.Bytes, error) {
-	key, _, err := f.ReadModified()
-	return key, err
-}
-
-// ReadModified is Read, with when the file it read last changed: its
-// modification time as the open file reports it. Opening and checking the
-// file never changes it; putting the mode back changes only the inode's
-// change time.
-func (f File) ReadModified() (key *secret.Bytes, modified time.Time, err error) {
+func (f File) Read() (key *secret.Bytes, err error) {
 	f.made()
 	file, err := f.openOwnerOnly()
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, err
 	}
 	defer func() {
 		f.closeInto(&err, file.Close, "file")
@@ -189,16 +178,6 @@ func (f File) ReadModified() (key *secret.Bytes, modified time.Time, err error) 
 			key = nil
 		}
 	}()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, time.Time{}, f.failed("inspect", "file", err)
-	}
-	key, err = f.readSecret(file)
-	return key, info.ModTime(), err
-}
-
-// readSecret reads the open key file's one secret.
-func (f File) readSecret(file *os.File) (*secret.Bytes, error) {
 	// One fixed buffer, so no growing read leaves partial copies behind.
 	buf := make([]byte, maxFileBytes+1)
 	defer clear(buf)
@@ -239,27 +218,23 @@ type Status struct {
 	State State `json:"state"`
 	// Problem says why a refused file is refused.
 	Problem string `json:"problem,omitempty"`
-	// ModifiedAt is when a present file last changed (unix milliseconds),
-	// 0 for a file in any other state.
-	ModifiedAt int64 `json:"modifiedAt,omitempty"`
 }
 
 // Inspect reports the key file's state. It reads the secret to check it
 // and zeroes it before returning.
 func (f File) Inspect() Status {
-	key, modified, err := f.ReadModified()
+	key, err := f.Read()
 	key.Zero()
-	return StatusOf(modified, err)
+	return StatusOf(err)
 }
 
-// StatusOf is the state of a key file whose ReadModified returned
-// modified and err, for a caller that reads the secret and needs the
-// state of the same read.
-func StatusOf(modified time.Time, err error) Status {
+// StatusOf is the state of a key file whose Read returned err, for a
+// caller that reads the secret and needs the state of the same read.
+func StatusOf(err error) Status {
 	var refusal *RefusedError
 	switch {
 	case err == nil:
-		return Status{State: StatePresent, ModifiedAt: modified.UnixMilli()}
+		return Status{State: StatePresent}
 	case errors.Is(err, ErrMissing):
 		return Status{State: StateMissing}
 	case errors.Is(err, ErrEmpty):

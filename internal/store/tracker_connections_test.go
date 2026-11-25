@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -161,6 +162,27 @@ func TestTrackerConnectionWritesReportChanges(t *testing.T) {
 	}
 	if _, _, err := s.RecordTrackerConnectionVerification(c.ID, TrackerVerification{AccountID: "acc-user1"}); !errors.Is(err, ErrInvalidTrackerConnection) {
 		t.Errorf("verification without its time: %v; want ErrInvalidTrackerConnection", err)
+	}
+	// The digest of the token checked is kept with the identity, and only
+	// another token's verification moves it.
+	verification.Token = TrackerTokenDigest{7, 7, 7}
+	row, changed, err = s.RecordTrackerConnectionVerification(c.ID, verification)
+	if row = expectChange("verified with its token", row, changed, err, true); row.VerifiedToken != verification.Token {
+		t.Fatal("the verified token read back differs")
+	}
+	row, changed, err = s.RecordTrackerConnectionVerification(c.ID, verification)
+	expectChange("same token verified", row, changed, err, false)
+	if read, err := s.GetTrackerConnection(c.ID); err != nil || read.VerifiedToken != verification.Token {
+		t.Fatalf("GetTrackerConnection's verified token differs (%v)", err)
+	}
+	// A verification of an unknown token stores none, and prints none.
+	verification.Token = TrackerTokenDigest{}
+	row, changed, err = s.RecordTrackerConnectionVerification(c.ID, verification)
+	if row = expectChange("verified with no known token", row, changed, err, true); row.VerifiedToken.Known() {
+		t.Fatal("an unknown token was stored as known")
+	}
+	if got := fmt.Sprintf("%v %x %+v", TrackerTokenDigest{7}, TrackerTokenDigest{7}, row); strings.Contains(got, "0707") || !strings.Contains(got, "TrackerTokenDigest(set) TrackerTokenDigest(set)") {
+		t.Fatalf("a digest formats as %q", got)
 	}
 
 	row, changed, err = s.SetTrackerConnectionTokenExpiry(c.ID, 0)

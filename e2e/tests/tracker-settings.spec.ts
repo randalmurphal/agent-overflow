@@ -9,16 +9,8 @@
 // TrackerConnectionsSettings.test.ts.
 
 import { writeFile } from 'node:fs/promises';
-import type { Page } from '@playwright/test';
 import { expect, test, type SeedResult } from './fixtures.js';
-import { JIRA_ACCOUNT, JIRA_SITE, JIRA_TOKEN, seedFakeJira } from './tracker-helpers.js';
-
-async function openIssuesPage(page: Page, name: 'Connections' | 'Boards'): Promise<void> {
-  if (!(await page.getByRole('tablist', { name: 'Settings Sections' }).isVisible())) {
-    await page.getByTestId('sidebar-settings-button').click();
-  }
-  await page.getByRole('tablist', { name: 'Settings Sections' }).getByRole('tab', { name, exact: true }).click();
-}
+import { JIRA_ACCOUNT, JIRA_SITE, JIRA_TOKEN, openIssuesPage, seedFakeJira } from './tracker-helpers.js';
 
 test('a Jira connection is set up in Settings and its board listed on a project', async ({ harness, page, context }) => {
   await seedFakeJira(harness);

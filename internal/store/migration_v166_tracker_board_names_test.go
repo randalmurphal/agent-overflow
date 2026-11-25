@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+// v166 clears a verification recorded before it, which names no token, and
+// keeps each connection's other fields; the token column takes an empty
+// digest or a SHA-256 one and refuses any other length.
+func TestTrackerVerifiedTokenMigrationClearsUnboundVerifications(t *testing.T) {
+	db := migrateThrough(t, trackerBoardNamesMigrationVersion-1)
+	mustExec(t, db, `INSERT INTO tracker_connections(id, kind, site, account, label, verified_account_id, verified_name, verified_at, token_expires_at, created_at)
+		VALUES ('c', 'jira', 'https://example.atlassian.net', 'user1@example.com', 'Work', 'acc-user1', 'User 1', 50, 900, 1)`)
+
+	migrateFrom(t, db, trackerBoardNamesMigrationVersion-1)
+
+	assertRows(t, db, `SELECT label || ':' || verified_account_id || ':' || verified_name || ':' || verified_at || ':' || length(verified_token) || ':' || token_expires_at FROM tracker_connections`, "Work:::0:0:900")
+	mustExec(t, db, `UPDATE tracker_connections SET verified_token = randomblob(32)`)
+	if _, err := db.Exec(`UPDATE tracker_connections SET verified_token = randomblob(31)`); err == nil {
+		t.Error("a verified token digest of 31 bytes was accepted, want the CHECK to refuse it")
+	}
+}
+
 // v166 names a project's boards. A listing stored before it keeps its
 // place and opens-first with empty text, and the columns refuse text past
 // their bound.

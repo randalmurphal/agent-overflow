@@ -88,13 +88,12 @@ function signedInAs(connection: TrackerConnection): string {
 }
 
 /**
- * What a row says about its token, and whether it shows the setup steps.
- * Evidence about a token is history once the key file changed after it:
- * a check is older than the file when `keyFileModifiedAt > verifiedAt`, a
- * failure when the file is not the one its call's token came from
- * (`problem.keyFileModifiedAt`; 0 is a failure that read no token). The
- * steps follow the token, not the failure: they show while the file holds
- * no token, or one no check has verified, or the failure is a setup one.
+ * What a row says about its token, and whether it shows the setup steps,
+ * from what the computer answered: whether the key file holds the token
+ * the last check verified (`checkedTokenInFile`) and whether the last
+ * failure is about the token in the file now (`problem.current`). The
+ * computer holds the tokens and makes both comparisons; this compares
+ * nothing.
  */
 export function trackerConnectionStatus(connection: TrackerConnection): TrackerConnectionStatus {
   if (!connection.enabled) {
@@ -109,41 +108,49 @@ export function trackerConnectionStatus(connection: TrackerConnection): TrackerC
     return { tone: 'warning', label: 'Needs a token', detail: keyFileSentence(connection), needsSetup: true };
   }
   const who = signedInAs(connection);
-  const unverified = connection.verifiedAt === 0 || connection.keyFileModifiedAt > connection.verifiedAt;
+  const lastChecked = connection.verifiedAt > 0 && who ? ` It was last checked as ${who}.` : '';
   const problem = connection.problem;
-  if (problem) {
+  if (problem?.current) {
     const known = PROBLEM_LABELS[problem.kind] ?? { label: 'Failed', tone: 'error' as const };
-    const before = connection.verifiedAt > 0 && who ? ` It was signed in as ${who}.` : '';
-    const sentence = `${problem.message}${/[.!?]$/.test(problem.message) ? '' : '.'}${before}`;
-    if (problem.keyFileModifiedAt > 0 && problem.keyFileModifiedAt !== connection.keyFileModifiedAt) {
-      return {
-        tone: 'muted',
-        label: 'Key file changed since the last failure',
-        detail: `The token in it now has not been checked. Before the change: ${sentence}`,
-        needsSetup: true,
-      };
-    }
-    return { tone: known.tone, label: known.label, detail: sentence, needsSetup: problem.kind === 'setup' || unverified };
+    return {
+      tone: known.tone,
+      label: known.label,
+      detail: `${sentence(problem.message)}${lastChecked}`,
+      needsSetup: problem.kind === 'setup' || !connection.checkedTokenInFile,
+    };
+  }
+  if (connection.checkedTokenInFile) {
+    return { tone: 'ok', label: who ? `Signed in as ${who}` : 'Token checked', detail: '', needsSetup: false };
+  }
+  if (problem) {
+    return {
+      tone: 'muted',
+      label: 'Key file changed since the last failure',
+      detail: `The token in it now has not been checked. Before the change: ${sentence(problem.message)}${lastChecked}`,
+      needsSetup: true,
+    };
   }
   if (connection.verifiedAt === 0) {
     return {
       tone: 'muted',
-      label: 'Not checked yet',
+      label: 'Not checked',
       detail: 'The key file holds a token. Check the connection to see whose it is.',
       needsSetup: true,
     };
   }
-  if (unverified) {
-    return {
-      tone: 'muted',
-      label: 'Key file changed after the last check',
-      detail: who
-        ? `It was checked as ${who}. Check the connection to see whose token it holds now.`
-        : 'Check the connection to test the token it holds now.',
-      needsSetup: true,
-    };
-  }
-  return { tone: 'ok', label: who ? `Signed in as ${who}` : 'Token checked', detail: '', needsSetup: false };
+  return {
+    tone: 'muted',
+    label: 'Token not checked',
+    detail: who
+      ? `It was last checked as ${who}. The key file holds another token now; check the connection to see whose.`
+      : 'The key file holds another token than the one last checked; check the connection to test it.',
+    needsSetup: true,
+  };
+}
+
+/** A sentence ending in its own stop. */
+function sentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
 /** What the row says about the token's recorded expiry; null when none is recorded. */

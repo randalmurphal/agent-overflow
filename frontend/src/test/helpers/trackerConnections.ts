@@ -22,8 +22,7 @@ export function trackerConnection(overrides: Partial<TrackerConnection> = {}): T
     createdAt: 1_690_000_000_000,
     keyFilePath: '/home/user/.config/agent-overflow/tracker-keys/jira-1',
     keyFileState: KeyFileState.StatePresent,
-    // Written before the check.
-    keyFileModifiedAt: KEY_FILE_SAVED_AT,
+    checkedTokenInFile: true,
     ...overrides,
   };
 }
@@ -31,12 +30,9 @@ export function trackerConnection(overrides: Partial<TrackerConnection> = {}): T
 type TrackerProblem = NonNullable<TrackerConnection['problem']>;
 type TrackerProblemKind = TrackerProblem['kind'];
 
-/** When trackerConnection's key file was saved. */
-export const KEY_FILE_SAVED_AT = 1_699_000_000_000;
-
-/** A failure of a call whose token came from the key file saved at `keyFileModifiedAt` (trackerConnection's by default). */
-export function trackerProblem(kind: TrackerProblemKind, message: string, keyFileModifiedAt = KEY_FILE_SAVED_AT): TrackerProblem {
-  return { kind, message, keyFileModifiedAt };
+/** A failure, about the token in the key file now unless `current` is false. */
+export function trackerProblem(kind: TrackerProblemKind, message: string, current = true): TrackerProblem {
+  return { kind, message, current };
 }
 
 /** A board a project lists, as ProjectTrackerBoards answers it. */

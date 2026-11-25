@@ -33,76 +33,70 @@ describe('a connection row’s status', () => {
   });
 
   it('shows the setup steps until a token is in the key file and checked', () => {
-    const fresh = trackerConnection({ verifiedAt: 0, verifiedName: '', verifiedAccountId: '', keyFileState: KeyFileState.StateEmpty });
+    const fresh = trackerConnection({ verifiedAt: 0, verifiedName: '', verifiedAccountId: '', checkedTokenInFile: false, keyFileState: KeyFileState.StateEmpty });
     expect(trackerConnectionStatus(fresh)).toMatchObject({ tone: 'warning', label: 'Needs a token', detail: 'The key file is empty.', needsSetup: true });
     const refused = { ...fresh, keyFileState: KeyFileState.StateRefused, keyFileProblem: 'the key file can be read by other users; make it owner-only' };
     expect(trackerConnectionStatus(refused).detail).toBe('the key file can be read by other users; make it owner-only');
     const unchecked = { ...fresh, keyFileState: KeyFileState.StatePresent };
-    expect(trackerConnectionStatus(unchecked)).toMatchObject({ label: 'Not checked yet', needsSetup: true });
-  });
-
-  // The last check is history once the file changed: an editor may have
-  // put another person's token in it, or rewritten the same one.
-  it('says the key file changed after the last check, keeping who it was checked as, until a check after the change', () => {
-    const changed = trackerConnection({ keyFileModifiedAt: 1_700_000_000_001 });
-    expect(trackerConnectionStatus(changed)).toEqual({
+    expect(trackerConnectionStatus(unchecked)).toEqual({
       tone: 'muted',
-      label: 'Key file changed after the last check',
-      detail: 'It was checked as User 1 (user1@example.com). Check the connection to see whose token it holds now.',
+      label: 'Not checked',
+      detail: 'The key file holds a token. Check the connection to see whose it is.',
       needsSetup: true,
     });
-    const tempo = trackerConnection({ kind: 'tempo', account: '', verifiedAccountId: '', verifiedName: '', keyFileModifiedAt: 1_700_000_000_001 });
-    expect(trackerConnectionStatus(tempo)).toMatchObject({ label: 'Key file changed after the last check', detail: 'Check the connection to test the token it holds now.' });
-    // A check that read the file after the change stamps a later time.
-    expect(trackerConnectionStatus({ ...changed, verifiedAt: 1_700_000_000_002 }).label).toBe('Signed in as User 1 (user1@example.com)');
-    expect(trackerConnectionStatus(trackerConnection({ keyFileModifiedAt: 1_700_000_000_000 })).tone).toBe('ok');
   });
 
-  it('shows a problem as its kind and the app’s sentence, keeping who it was signed in as', () => {
+  // The computer says whether the file holds the token the check verified;
+  // a replaced token, whatever its file's times, is not signed in.
+  it('says who the file was last checked as while it holds another token', () => {
+    expect(trackerConnectionStatus(trackerConnection({ checkedTokenInFile: false }))).toEqual({
+      tone: 'muted',
+      label: 'Token not checked',
+      detail: 'It was last checked as User 1 (user1@example.com). The key file holds another token now; check the connection to see whose.',
+      needsSetup: true,
+    });
+    const tempo = trackerConnection({ kind: 'tempo', account: '', verifiedAccountId: '', verifiedName: '', checkedTokenInFile: false });
+    expect(trackerConnectionStatus(tempo)).toMatchObject({
+      label: 'Token not checked',
+      detail: 'The key file holds another token than the one last checked; check the connection to test it.',
+    });
+  });
+
+  it('shows a current problem as its kind and the app’s sentence, keeping who it was last checked as', () => {
     const refused = trackerConnection({ problem: trackerProblem(FailureKind.FailureSetup, 'Jira refused the token; make a new one') });
     expect(trackerConnectionStatus(refused)).toEqual({
       tone: 'error',
       label: 'Needs setup',
-      detail: 'Jira refused the token; make a new one. It was signed in as User 1 (user1@example.com).',
+      detail: 'Jira refused the token; make a new one. It was last checked as User 1 (user1@example.com).',
       needsSetup: true,
     });
-    // The steps follow the token, not the failure: one never checked keeps them.
+    // The steps follow the token, not the failure: one no check verified keeps them.
     const slow = trackerConnection({ problem: trackerProblem(FailureKind.FailureTransient, 'Jira did not answer.') });
-    expect(trackerConnectionStatus(slow)).toMatchObject({ tone: 'warning', label: 'Cannot reach the tracker', detail: 'Jira did not answer. It was signed in as User 1 (user1@example.com).', needsSetup: false });
-    expect(trackerConnectionStatus({ ...slow, verifiedAt: 0 })).toMatchObject({ label: 'Cannot reach the tracker', detail: 'Jira did not answer.', needsSetup: true });
+    expect(trackerConnectionStatus(slow)).toMatchObject({ tone: 'warning', label: 'Cannot reach the tracker', detail: 'Jira did not answer. It was last checked as User 1 (user1@example.com).', needsSetup: false });
+    expect(trackerConnectionStatus({ ...slow, verifiedAt: 0, checkedTokenInFile: false })).toMatchObject({ label: 'Cannot reach the tracker', detail: 'Jira did not answer.', needsSetup: true });
   });
 
-  // A failure is about the token its call read. Once the key file changed
-  // after that read, the failure is history and the token in the file now
-  // has not been tried; a failure of the token in the file now is not.
-  it('reads a failure of an earlier key file as history, and one of the key file now as today', () => {
-    const before = trackerProblem(FailureKind.FailureSetup, 'Jira refused the token in the key file; put a valid token in it');
-    const edited = trackerConnection({ keyFileModifiedAt: 1_700_000_005_000, problem: before });
+  // A failure the computer says is about a token the file no longer holds,
+  // or a key file read from before the file held a token, is history.
+  it('reads a failure that is not about the token in the file now as history', () => {
+    const before = trackerProblem(FailureKind.FailureSetup, 'Jira refused the token in the key file; put a valid token in it', false);
+    const edited = trackerConnection({ checkedTokenInFile: false, problem: before });
     expect(trackerConnectionStatus(edited)).toEqual({
       tone: 'muted',
       label: 'Key file changed since the last failure',
       detail:
-        'The token in it now has not been checked. Before the change: Jira refused the token in the key file; put a valid token in it. It was signed in as User 1 (user1@example.com).',
+        'The token in it now has not been checked. Before the change: Jira refused the token in the key file; put a valid token in it. It was last checked as User 1 (user1@example.com).',
       needsSetup: true,
     });
-    // The new token refused too, by a check or a sync call.
-    const refusedAgain = { ...edited, problem: { ...before, keyFileModifiedAt: 1_700_000_005_000 } };
-    expect(trackerConnectionStatus(refusedAgain)).toMatchObject({ tone: 'error', label: 'Needs setup', needsSetup: true });
-    // A tracker that could not be reached, then a new token saved.
-    const unreachable = trackerConnection({ keyFileModifiedAt: 1_700_000_005_000, problem: trackerProblem(FailureKind.FailureTransient, 'Jira did not answer') });
-    expect(trackerConnectionStatus(unreachable)).toMatchObject({
-      label: 'Key file changed since the last failure',
-      detail: 'The token in it now has not been checked. Before the change: Jira did not answer. It was signed in as User 1 (user1@example.com).',
-      needsSetup: true,
-    });
-    // A failure that read no token (no client could be built) is never history.
-    const noClient = trackerConnection({ keyFileModifiedAt: 1_700_000_005_000, problem: trackerProblem(FailureKind.FailureSetup, 'Agent Overflow cannot connect to Jira from this computer', 0) });
-    expect(trackerConnectionStatus(noClient)).toMatchObject({ tone: 'error', label: 'Needs setup' });
+    const empty = trackerConnection({ verifiedAt: 0, verifiedName: '', verifiedAccountId: '', checkedTokenInFile: false, problem: trackerProblem(FailureKind.FailureSetup, 'the Jira API token file is empty', false) });
+    expect(trackerConnectionStatus(empty).detail).toBe('The token in it now has not been checked. Before the change: the Jira API token file is empty.');
+    // The checked token back in the file: signed in, whatever failed for another token.
+    expect(trackerConnectionStatus({ ...edited, checkedTokenInFile: true }).label).toBe('Signed in as User 1 (user1@example.com)');
   });
 
   // No token is the fact to act on, whatever the last failure was.
   it('asks for a token when the key file holds none, over any earlier failure', () => {
-    const gone = trackerConnection({ keyFileState: KeyFileState.StateMissing, keyFileModifiedAt: 0, problem: trackerProblem(FailureKind.FailureTransient, 'Jira did not answer') });
+    const gone = trackerConnection({ keyFileState: KeyFileState.StateMissing, checkedTokenInFile: false, problem: trackerProblem(FailureKind.FailureTransient, 'Jira did not answer') });
     expect(trackerConnectionStatus(gone)).toEqual({ tone: 'warning', label: 'Needs a token', detail: 'There is no key file yet.', needsSetup: true });
   });
 

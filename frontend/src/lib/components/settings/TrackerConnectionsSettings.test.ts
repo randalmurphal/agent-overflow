@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 const fresh = (overrides: Partial<TrackerConnection> = {}): TrackerConnection =>
-  trackerConnection({ verifiedAt: 0, verifiedName: '', verifiedAccountId: '', keyFileState: KeyFileState.StateEmpty, ...overrides });
+  trackerConnection({ verifiedAt: 0, verifiedName: '', verifiedAccountId: '', checkedTokenInFile: false, keyFileState: KeyFileState.StateEmpty, ...overrides });
 
 async function openMenu(rowId: string): Promise<void> {
   const row = await screen.findByTestId(`tracker-connection-${rowId}`);
@@ -94,7 +94,7 @@ describe('<TrackerConnectionsSettings>', () => {
     });
     render(TrackerConnectionsSettings);
     const row = await screen.findByTestId('tracker-connection-jira-1');
-    expect(within(row).getByTestId('tracker-connection-status').textContent).toContain('Not checked yet');
+    expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Not checked');
     await fireEvent.click(within(row).getByTestId('tracker-connection-setup-check'));
     await waitFor(() => expect(within(row).getByTestId('tracker-connection-status').textContent).toContain('Signed in as User 1 (user1@example.com)'));
     expect(verify).toHaveBeenCalledWith('jira-1');
@@ -176,17 +176,17 @@ describe('<TrackerConnectionsSettings>', () => {
     await waitFor(() => expect(within(row).queryByTestId('tracker-connection-setup')).toBeNull());
   });
 
-  it('says a key file replaced after the last check is unchecked, with its Check step, until a check reads it', async () => {
-    rows = [trackerConnection({ keyFileModifiedAt: 1_700_000_005_000 })];
+  it('says a token in the key file that the last check did not verify is not checked, with its Check step, until a check verifies it', async () => {
+    rows = [trackerConnection({ checkedTokenInFile: false })];
     const verify = setBindingMock('VerifyTrackerConnection', async () => {
-      rows = [trackerConnection({ keyFileModifiedAt: 1_700_000_005_000, verifiedAt: 1_700_000_006_000, verifiedName: 'User 2', verifiedAccountId: 'acc-user2' })];
+      rows = [trackerConnection({ verifiedAt: 1_700_000_006_000, verifiedName: 'User 2', verifiedAccountId: 'acc-user2' })];
       return rows[0];
     });
     render(TrackerConnectionsSettings);
     const row = await screen.findByTestId('tracker-connection-jira-1');
-    expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Key file changed after the last check');
+    expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Token not checked');
     expect(within(row).getByTestId('tracker-connection-detail').textContent).toBe(
-      'It was checked as User 1 (user1@example.com). Check the connection to see whose token it holds now.',
+      'It was last checked as User 1 (user1@example.com). The key file holds another token now; check the connection to see whose.',
     );
     await fireEvent.click(within(row).getByTestId('tracker-connection-setup-check'));
     await waitFor(() => expect(verify).toHaveBeenCalledWith('jira-1'));
@@ -196,17 +196,17 @@ describe('<TrackerConnectionsSettings>', () => {
 
   it('reads a refusal as history once a new token is saved, and shows the new token refused when a check refuses it', async () => {
     const refused = trackerProblem(FailureKind.FailureSetup, 'Jira refused the token in the key file; put a valid token in it');
-    rows = [trackerConnection({ problem: refused })];
+    rows = [trackerConnection({ checkedTokenInFile: false, problem: refused })];
     render(TrackerConnectionsSettings);
     const row = await screen.findByTestId('tracker-connection-jira-1');
     expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Needs setup');
     // The person saves a new token in the editor and comes back.
-    rows = [trackerConnection({ keyFileModifiedAt: 1_700_000_005_000, problem: refused })];
+    rows = [trackerConnection({ checkedTokenInFile: false, problem: { ...refused, current: false } })];
     window.dispatchEvent(new Event('focus'));
     await waitFor(() => expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Key file changed since the last failure'));
     expect(within(row).getByTestId('tracker-connection-detail').textContent).toMatch(/^The token in it now has not been checked\. Before the change: Jira refused/);
     const verify = setBindingMock('VerifyTrackerConnection', async () => {
-      rows = [trackerConnection({ keyFileModifiedAt: 1_700_000_005_000, problem: { ...refused, keyFileModifiedAt: 1_700_000_005_000 } })];
+      rows = [trackerConnection({ checkedTokenInFile: false, problem: refused })];
       return rows[0];
     });
     await fireEvent.click(within(row).getByTestId('tracker-connection-setup-check'));

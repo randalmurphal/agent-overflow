@@ -2,14 +2,13 @@ package trackerapp
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/secret"
@@ -52,23 +51,44 @@ func (c *clients) forgetCredential() {
 	}
 }
 
-// syncCredential compares the token one read of the key file found
-// (token nil when the read failed, which matches no token) with the token
-// the client was last handed, and makes the client read the file again
-// only when they differ. A list, a key file open or a verification
+// syncCredential compares the digest of the token one read of the key
+// file found (zero when the read failed, which matches no token) with the
+// token the client was last handed, and makes the client read the file
+// again only when they differ. A list, a key file open or a verification
 // thereby picks up a replaced token without disturbing calls in flight
 // when nothing changed.
-func (c *clients) syncCredential(token []byte) {
+func (c *clients) syncCredential(found store.TrackerTokenDigest) {
 	c.source.mu.Lock()
 	defer c.source.mu.Unlock()
-	if c.source.handed == nil {
+	if !c.source.handed.Known() {
 		return // the client holds no credential, or one already dropped
 	}
-	if hmac.Equal(c.source.handed, c.source.digest(token)) {
+	if sameToken(c.source.handed, found) {
 		return
 	}
-	c.source.handed = nil
+	c.source.handed = store.TrackerTokenDigest{}
 	c.forgetCredential()
+}
+
+// tokenDigest is all the service keeps of a token: SHA-256 over a fixed
+// domain, the connection's ID and the token, stored only for a token a
+// tracker verified, whose random length leaves the digest nothing to give
+// away.
+func tokenDigest(id string, token []byte) store.TrackerTokenDigest {
+	h := sha256.New()
+	_, _ = h.Write([]byte("agent-overflow tracker token v1\x00")) // a hash.Hash never fails a write
+	_, _ = h.Write([]byte(id))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(token)
+	var d store.TrackerTokenDigest
+	h.Sum(d[:0])
+	return d
+}
+
+// sameToken reports whether two digests name one token, in constant time;
+// a zero digest names none.
+func sameToken(a, b store.TrackerTokenDigest) bool {
+	return a.Known() && subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }
 
 func (c *clients) close() {
@@ -94,17 +114,17 @@ func (s *Service) keyFile(row store.TrackerConnection) keyfile.File {
 // readToken reads the token in a connection of kind's key file. A token
 // shorter than trackerapi.MinSecretLen, which the transport refuses, is
 // refused here, worded for the person who pasted it.
-func readToken(file keyfile.File, kind string) (*secret.Bytes, time.Time, error) {
-	token, modified, err := file.ReadModified()
+func readToken(file keyfile.File, kind string) (*secret.Bytes, error) {
+	token, err := file.Read()
 	if err != nil {
-		return nil, modified, err
+		return nil, err
 	}
 	if token.Len() < trackerapi.MinSecretLen {
 		token.Zero()
 		l := keyFileLabel(kind)
-		return nil, modified, fmt.Errorf("the %s API %s file holds too little to be a %s; paste the whole %s into it", l.Service, l.Kind, l.Kind, l.Kind)
+		return nil, fmt.Errorf("the %s API %s file holds too little to be a %s; paste the whole %s into it", l.Service, l.Kind, l.Kind, l.Kind)
 	}
-	return token, modified, nil
+	return token, nil
 }
 
 // keyFileSource is the trackerapi.CredentialSource of one connection: its
@@ -113,42 +133,31 @@ func readToken(file keyfile.File, kind string) (*secret.Bytes, time.Time, error)
 type keyFileSource struct {
 	file keyfile.File
 	kind string
+	// id is the connection's, which every digest of its tokens carries.
+	id string
 	// account is the Jira account email Basic authentication carries.
 	account string
-	// key is the service's per-process HMAC key the digests are made with.
-	key []byte
 
 	mu sync.Mutex
-	// handed is the keyed digest of the token the source last read for the
-	// client, and the client holds that token or holds nothing. It is nil
+	// handed is the digest of the token the source last read for the
+	// client, and the client holds that token or holds nothing. It is zero
 	// before the first read and after the client was made to drop it. A
 	// read that found no token leaves it, and the client then holds
 	// nothing: the transport drops the held token when a refresh fails. A
 	// token the client refuses (Linear's workspace check) or discards (a
 	// read ForgetCredential overtook) also leaves it holding nothing.
 	// Never the token, and never logged.
-	handed []byte
-	// handedModified is the key file's modification time (unix
-	// milliseconds) at the read that found the token last handed, 0 before
-	// the first read.
-	handedModified int64
+	handed store.TrackerTokenDigest
 	// reads counts the file reads the client asked for, for tests.
 	reads atomic.Int64
 }
 
-// tokenFile is the key file's modification time when the source last
-// handed the client a token, 0 before it handed one.
-func (k *keyFileSource) tokenFile() int64 {
+// held is the digest of the token the source last handed the client, zero
+// when it holds none.
+func (k *keyFileSource) held() store.TrackerTokenDigest {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	return k.handedModified
-}
-
-// digest is token's keyed digest. The caller holds mu.
-func (k *keyFileSource) digest(token []byte) []byte {
-	m := hmac.New(sha256.New, k.key)
-	_, _ = m.Write(token) // a hash.Hash never fails a write
-	return m.Sum(nil)
+	return k.handed
 }
 
 func (k *keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential, error) {
@@ -156,13 +165,12 @@ func (k *keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential,
 		return nil, err
 	}
 	k.reads.Add(1)
-	token, modified, err := readToken(k.file, k.kind)
+	token, err := readToken(k.file, k.kind)
 	if err != nil {
 		return nil, &KeyFileError{Path: k.file.Path(), Err: err}
 	}
 	k.mu.Lock()
-	k.handed = k.digest(token.Reveal())
-	k.handedModified = modified.UnixMilli()
+	k.handed = tokenDigest(k.id, token.Reveal())
 	k.mu.Unlock()
 	switch k.kind {
 	case store.TrackerKindJira:
@@ -180,7 +188,7 @@ func (s *Service) buildClients(row store.TrackerConnection) (*clients, error) {
 	if err != nil {
 		return nil, &ClientError{Kind: row.Kind, Err: err}
 	}
-	source := &keyFileSource{file: s.keyFile(row), kind: row.Kind, account: row.Account, key: s.digestKey}
+	source := &keyFileSource{file: s.keyFile(row), kind: row.Kind, id: row.ID, account: row.Account}
 	c := clients{source: source, parentID: row.ParentID}
 	switch row.Kind {
 	case store.TrackerKindJira:

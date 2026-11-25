@@ -219,11 +219,13 @@ to the computer and are rows in `tracker_connections`.
   not secret and are columns.
 - `trackerapp` gives each client a `trackerapi.CredentialSource` that reads
   the key file. The client reads it at first use and after one 401. The
-  source keeps a keyed digest of the token it last read, never the token.
-  A list, a key file open and a verification each read the file once,
-  compare it with that digest and call `ForgetCredential` only when the
-  token changed or the file stopped giving one, so a replaced token is
-  picked up without a restart and a list never disturbs a call in flight.
+  source keeps the digest of the token it last read (`tokenDigest`:
+  SHA-256 over a fixed domain, the connection ID and the token), never the
+  token. A list, a key file open and a verification each read the file
+  once, compare its digest with that one and call `ForgetCredential` only
+  when the token changed or the file stopped giving one, so a replaced
+  token is picked up without a restart and a list never disturbs a call
+  in flight.
   A key file whose token is shorter than `trackerapi.MinSecretLen` is
   refused as a setup problem and nothing is sent.
 - A connection's problem is the outcome of the latest call whose outcome
@@ -231,28 +233,43 @@ to the computer and are rows in `tracker_connections`.
   applies an outcome unless a call begun later on the same client already
   applied its own. A failure that arrives late cannot replace a newer
   success, and nothing is applied once the service stopped.
+- Each outcome is bound to what it is about, where it is applied
+  (`settle`): the token the client holds then, a key file that gave no
+  token, no token (no client, or a failure before a token was read), or a
+  token that changed during the call. The stamp holds the client's token
+  when the call began (a verification takes it after its key file read),
+  and a different one at the end means either token could have answered:
+  a failure is then about neither and a success records no token. A
+  verification stores its token's digest beside the identity
+  (`tracker_connections.verified_token`). Each read of the key file for a
+  list or a status compares the token in the file with that evidence: the
+  verification counts while the file holds the token it checked, and a
+  failure is current while it is about that token, about no token, or
+  about a key file read and the file still holds no token. The same token
+  saved again changes nothing; any other token, however the file was
+  written, makes the verification and a token failure history.
 - Adding a connection creates the row and the empty key file. Opening the
   tracker's token page, opening the key file on that computer and
   verifying (one identity call to the tracker) are separate calls. The row
-  records who the token belongs to and when it was verified, a time taken
-  before the verification reads the key file. A Linear client is bound to the
+  records who the token belongs to, when it was verified and the digest of
+  the token checked. A Linear client is bound to the
   connection's workspace: every key it reads is checked before any request
   carries it, and a key for another workspace fails every read and write.
   Tempo's API has no read that names the Jira site a token belongs to, so
   a Tempo token from another site is not detected. No tracker reports when
   a token expires, so the
   expiry is the date the user enters from the token page. A status call returns
-  the file's state, when a present file last changed (its modification
-  time), the last verification and the last failure with the modification
-  time of the key file its call's token came from, never the token.
+  the file's state, the last verification and whether the file holds the
+  token it checked, and the last failure and whether it is current, never
+  the token or its digest.
 - Settings > Issues > Connections runs that sequence as steps on the new
   row: open the token page, open the key file, the optional expiry date
   (the start of that day on the screen that entered it) and Check. The
   steps show while the key file holds no token or one no check has
-  verified (the row never verified, or the file changed after the last
-  check), or the problem is a setup one. A check, or a failure, older
-  than the key file's last change reads as history: the identity that
-  check found, or the failure's sentence after "Before the change". The row warns from 14
+  verified, or the current problem is a setup one. A verification of
+  another token reads as who the connection was last checked as, and a
+  failure that is not current as history after "Before the change". The
+  row compares nothing itself (`trackerConnectionStatus`). The row warns from 14
   days before the expiry and shows a passed one as an error, each with
   Renew, which shows the steps again until a check verifies or Done. Away from the computer the two opens are absent
   and the row names the key file's path to copy.
@@ -310,7 +327,7 @@ Durable records, restored and kept like other application records:
 
 | Table | Holds |
 |---|---|
-| `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity and time, and the token expiry the user entered. |
+| `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity, time and token digest (v166 cleared the verifications recorded before it, which name no token), and the token expiry the user entered. |
 | `project_tracker_boards` | Which boards an app project lists, in order, and which opens first, with the board's name and tracker project as the picker showed them (v166). Keyed by project, connection and board; the project and the connection cascade. |
 | `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
 
