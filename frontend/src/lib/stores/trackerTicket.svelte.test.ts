@@ -228,7 +228,7 @@ describe('the ticket subscription', () => {
     await flush();
     trackerIssueUpdated(event(11, { changed: true }), HOME_BACKEND);
     await flush();
-    expect((ticket.current?.readError as Error).message).toBe('the copy could not be read');
+    expect((ticket.current!.readError as Error).message).toBe('the copy could not be read');
     await refreshTrackerTicket(ticket.key);
     await flush();
     expect(mocks.refresh).toHaveBeenCalledWith('sub-1');

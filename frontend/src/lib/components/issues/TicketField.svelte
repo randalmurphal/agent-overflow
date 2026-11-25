@@ -31,6 +31,8 @@
   import TicketPicker from './TicketPicker.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import { ticketWrite } from '../../stores/trackerTicketWrites.svelte';
+  import { isLocalEnter } from '../../utils/localEnter';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
 
   interface Props {
     label: string;
@@ -70,8 +72,8 @@
   }
 
   function onKeydown(event: KeyboardEvent): void {
-    if (editor?.kind !== 'type') return;
-    if (event.key === 'Enter') {
+    if (editor?.kind !== 'type' || isImeComposingEvent(event)) return;
+    if (isLocalEnter(event)) {
       event.preventDefault();
       typing = false;
       if (draft.trim() !== editor.text) editor.onSave(draft.trim());

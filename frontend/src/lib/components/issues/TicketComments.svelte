@@ -116,6 +116,7 @@
   }
 
   let menu = $state<{ x: number; y: number; comment: CommentView } | null>(null);
+  const menuPending = $derived(menu ? (ticketWrite(ctx.key, commentTarget(menu.comment.id))?.pending ?? false) : false);
 
   function openMenu(event: MouseEvent, comment: CommentView): void {
     event.preventDefault();
@@ -235,10 +236,9 @@
 </section>
 
 {#if menu}
-  {@const pending = ticketWrite(ctx.key, commentTarget(menu.comment.id))?.pending ?? false}
   <ContextMenu x={menu.x} y={menu.y} ariaLabel="Comment actions" onDismiss={() => { menu = null; }}>
-    <MenuItem label="Edit" disabled={pending} testId="ticket-comment-menu-edit" onSelect={() => fromMenu(startEdit)} />
-    <MenuItem label="Delete" variant="danger" disabled={pending} testId="ticket-comment-menu-delete" onSelect={() => fromMenu((c) => { editing = null; confirming = c.id; })} />
+    <MenuItem label="Edit" disabled={menuPending} testId="ticket-comment-menu-edit" onSelect={() => fromMenu(startEdit)} />
+    <MenuItem label="Delete" variant="danger" disabled={menuPending} testId="ticket-comment-menu-delete" onSelect={() => fromMenu((c) => { editing = null; confirming = c.id; })} />
     <MenuDivider />
     <MenuItem label="Copy text" testId="ticket-comment-menu-copy" onSelect={() => fromMenu((c) => { void copy(c); })} />
   </ContextMenu>
