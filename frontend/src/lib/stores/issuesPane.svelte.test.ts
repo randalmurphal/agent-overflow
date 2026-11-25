@@ -13,6 +13,8 @@ import {
   savedOnlyMine,
   setCardFieldShown,
   setCompactColumn,
+  setTicketPlacement,
+  ticketPlacement,
 } from './issuesPane.svelte';
 import type { ComputerChoices } from './trackerBoardChoices.svelte';
 import type { TrackerBoardRef } from './trackerBoard.svelte';
@@ -92,6 +94,13 @@ describe('what the pane remembers', () => {
     expect(pickedBoard()).toEqual(board);
     localStorage.setItem('agent-overflow:frontend:issues-board', JSON.stringify({ backend: '', projectId: '', connection: 'c1', board: '1' }));
     expect(pickedBoard()).toBeNull();
+  });
+
+  it('opens a ticket over the board and beside Time until the person chooses, per screen', () => {
+    expect([ticketPlacement('board'), ticketPlacement('time')]).toEqual(['over', 'beside']);
+    setTicketPlacement('time', 'over');
+    expect([ticketPlacement('board'), ticketPlacement('time')]).toEqual(['over', 'over']);
+    expect(JSON.parse(localStorage.getItem('agent-overflow:frontend:issues-ticket-placement')!)).toEqual({ time: 'over' });
   });
 
   it('keeps Display per board on its computer, whichever project lists it', () => {
