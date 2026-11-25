@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -62,14 +63,14 @@ func TestReplaceMirrorStructureReportsWhatCommittedBeforeAFailure(t *testing.T) 
 	st := webStructure()
 	st.Board.EstimateUnit, st.ReadAt, st.Complete = MirrorEstimateTime, mirrorReadAt(30), true
 	got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st))
-	if err == nil || got != (MirrorStructureWrite{MirrorWrite: MirrorWrite{Changed: true}, EstimateResetAt: 30}) {
+	if err == nil || !reflect.DeepEqual(got, MirrorStructureWrite{MirrorWrite: MirrorWrite{Changed: true}, EstimateResetAt: 30}) {
 		t.Fatalf("a structure whose marks failed = %+v, %v; want the failure with the change and the reset", got, err)
 	}
 	assertRows(t, s.db, `SELECT estimate_unit || ':' || estimate_reset_at FROM tracker_cache_boards WHERE board_id = '10'`, "2:30")
 	assertRows(t, s.db, `SELECT named_at FROM tracker_cache_board_unexplained`, "2")
 	mustExec(t, s.db, `DROP TRIGGER test_fail_write`)
 	st.ReadAt = mirrorReadAt(40)
-	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil || got != (MirrorStructureWrite{EstimateResetAt: 30}) {
+	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil || !reflect.DeepEqual(got, MirrorStructureWrite{EstimateResetAt: 30}) {
 		t.Fatalf("the same structure again = %+v, %v", got, err)
 	}
 	assertRows(t, s.db, `SELECT named_at FROM tracker_cache_board_unexplained`, "0")

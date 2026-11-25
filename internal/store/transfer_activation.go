@@ -108,6 +108,11 @@ WHERE thread_id = ? AND id <> ? AND phase <> 'canceled' ORDER BY rowid DESC LIMI
 	} else if err := s.importThreadHistoryTx(ctx, tx, target, history, row.Kind == "move"); err != nil {
 		return ThreadTransfer{}, err
 	}
+	// The thread arrives with the ticket link it carries, or with none:
+	// the link a returning thread held here is replaced either way.
+	if err := replaceThreadTicketTx(tx, target.ID, target.TicketLink); err != nil {
+		return ThreadTransfer{}, err
+	}
 	row.Phase, row.Error, row.UpdatedAt = "complete", "", nextTransferStamp(row.UpdatedAt)
 	if _, err := tx.Exec(`UPDATE thread_transfers SET phase = 'complete', error = '', updated_at = ? WHERE id = ?`, row.UpdatedAt, id); err != nil {
 		return ThreadTransfer{}, err

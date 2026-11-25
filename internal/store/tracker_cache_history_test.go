@@ -357,7 +357,7 @@ func TestMirrorHistoryReadStoresItsCatalog(t *testing.T) {
 		if err == nil && len(hs) > 0 && !results[0].Changed {
 			t.Fatalf("the history did not change: %+v", results)
 		}
-		return changed, s.CommitCount() - commits, err
+		return changed.Changed, s.CommitCount() - commits, err
 	}
 	if _, _, err := write([]MirrorHistory{webHistory("10001")}, user("User 2"), 0); !errors.Is(err, ErrInvalidTrackerCache) || named() != fmt.Sprint(MirrorCatalog{}) {
 		t.Fatalf("a catalog with no read time: %v, stored %s", err, named())

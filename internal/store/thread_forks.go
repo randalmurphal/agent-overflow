@@ -110,7 +110,7 @@ type forkCut struct {
 // writer transaction. The fork copies no history: it records its source and
 // cut, and every timeline read resolves the rows before the cut from the
 // source (docs/architecture/sqlite-store.md#pointer-forks). The writes are
-// the thread row, one lineage row per level, the rows the fork must own
+// the thread row, its source's ticket link, one lineage row per level, the rows the fork must own
 // because they are still running in the source (settled as interrupted)
 // or sit in a cut turn the source is still running, the cut turn's row
 // and the question state of inherited rows. The fork's
@@ -141,6 +141,10 @@ func (s *Store) CreatePointerFork(fork Thread, sourceID string, cut ForkCut, sum
 		return fmt.Errorf("store: create fork thread: %w", err)
 	}
 	if err := s.linkPointerForkTx(tx, prepared.ID, sourceID, cut, summarise, now); err != nil {
+		return err
+	}
+	// A fork starts with its source's ticket link, whatever its cut.
+	if err := copyThreadTicketTx(tx, prepared.ID, sourceID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

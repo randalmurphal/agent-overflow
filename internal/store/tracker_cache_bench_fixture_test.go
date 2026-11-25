@@ -150,8 +150,8 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 		if err := s.CreateThread(makeThread("linked-"+id, "claude")); err != nil {
 			return err
 		}
-		if _, err := s.SetThreadTicket(ThreadTicket{ThreadID: "linked-" + id, Ticket: TicketRef{Kind: TrackerKindJira, Site: mirrorSite, IssueID: id},
-			IssueKey: "WEB-" + id, Origin: TicketOriginManual, LinkedAt: 10}); err != nil {
+		if _, err := s.db.Exec(`INSERT INTO thread_tickets(thread_id, kind, site, issue_id, issue_key, origin, linked_at) VALUES (?, ?, ?, ?, ?, ?, 10)`,
+			"linked-"+id, TrackerKindJira, mirrorSite, id, "WEB-"+id, TicketOriginManual); err != nil {
 			return err
 		}
 		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{benchCard(id, 1000, 0, i)}, MirrorCatalog{}, mirrorReadAt(1)); err != nil {

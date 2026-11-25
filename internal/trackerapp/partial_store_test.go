@@ -16,7 +16,7 @@ import (
 type partialStore struct{ *store.Store }
 
 func (s *partialStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog,
-	read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error) {
+	read store.MirrorRead) ([]store.MirrorHistoryResult, store.MirrorCatalogWrite, error) {
 	res, changed, err := s.Store.ReplaceMirrorHistories(root, sweep, hs[:1], catalog, read)
 	if err != nil {
 		return res, changed, err

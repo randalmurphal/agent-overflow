@@ -121,6 +121,11 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		t.Fatal(err)
 	}
 	linkIssue(t, s, "linked", "10001")
+	// A link from a read, and one from the card the mirror then holds.
+	mustCreateThread(t, s, "link-read")
+	mustSetThreadTicket(t, s, readLink(s, root, "link-read", titledCard("10005", 5, "Read")))
+	mustCreateThread(t, s, "link-held")
+	mustSetThreadTicket(t, s, heldLink(root, "link-held", "10005"))
 	for name, write := range mirrorWriters(s) {
 		if err := write(root); err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -295,6 +300,19 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"every entry of the partial index is due a history read, and the listing stops at a page"},
 	{"WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))", "SCAN h",
 		"a write's bound list (the ticket move's, the history times'), read once; it drives the issue lookups by primary key"},
+	{threadTicketLinkColumn, "", "a thread row read, which names the mirror only in its link column: the read's plan is its own, " +
+		"and the column's is TestThreadLinkColumnReadsByKey"},
+	{"FROM tracker_cache_issue_missing m\n\t  JOIN tracker_cache_roots r ON r.id = m.root_id AND r.connection_id IS NOT NULL", "SCAN m",
+		"the cleanup's walk of every absence, which are of linked issues a read missed, to find those no longer kept"},
+	{"WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_missing g WHERE g.root_id = ?1))", "SEARCH g EXISTS USING PRIMARY KEY (root_id=?)",
+		"a card write's guard that the root has an absence, which stops at the first"},
+	{"WHERE EXISTS (SELECT 1 FROM tracker_cache_issue_missing g WHERE g.root_id = ?1))", "SCAN c",
+		"a card write's admitted issues, read once when the root has an absence; they drive the absence lookups by key"},
+	{threadTicketLinksSQL, "", "a thread list read, which names the mirror only in its links CTE: the read's plan is its own, " +
+		"and the CTE's is TestThreadLinkColumnReadsByKey"},
+	{"FROM json_each(CASE WHEN EXISTS (SELECT 1 FROM tracker_cache_roots gr", "SCAN c",
+		"a card write's bound cards, read once when the root's site has a link and the root is its link reader's, " +
+			"and an empty list otherwise (TestTheLinkWritersOfNoLinkParseNoList); they drive the link lookups by tracker, site and issue"},
 	{"i.status_id IN (SELECT value FROM json_each(?2))", "SEARCH i USING COVERING INDEX idx_tracker_cache_issues_status (root_id=?)",
 		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's statuses once, " +
 			"in the index the counts read"},

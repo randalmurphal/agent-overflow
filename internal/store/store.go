@@ -758,6 +758,11 @@ type Thread struct {
 	// by reading like Interrupted, superseded by the next turn. It is not
 	// a persisted threads column.
 	HasFailedTurn bool `json:"hasFailedTurn"`
+	// TicketLink is the tracker ticket the thread is linked to
+	// (thread_tickets), nil for none. Its State and ConnectionID are
+	// derived by the computer that reads the row; nothing stores them from
+	// a row, and a transfer's receiver derives its own.
+	TicketLink *ThreadTicketLink `json:"ticketLink,omitempty"`
 	// IsDraft is true when no items have been persisted for the thread.
 	// Used by the sidebar to render a draft indicator and by the project
 	// sort projection to exclude drafts from "last activity" so creating

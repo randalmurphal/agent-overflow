@@ -329,8 +329,12 @@ interval is measured from or a person is shown
 and the issue record's status finality and ticket body
 (`tracker_cache_issues.status_final_for` and `body_*`, with
 `tracker_cache_issue_bodies` in place of v162's
-`tracker_cache_issue_details`, dropped with its documents); a later
-tracker table or column is a later migration.
+`tracker_cache_issue_details`, dropped with its documents), and v167,
+which adds the link's last-seen status, the card's title column
+(`tracker_cache_issues.title`, which the card blob no longer carries)
+and `tracker_cache_issue_missing`, and empties the mirror as a restore
+does, so every card is read again whole; a later tracker table or column
+is a later migration.
 
 Durable records, restored and kept like other application records:
 
@@ -338,7 +342,7 @@ Durable records, restored and kept like other application records:
 |---|---|
 | `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity, time and token digest (empty for a verification recorded before v166 or one whose token changed during its call), and the token expiry the user entered. |
 | `project_tracker_boards` | Which boards an app project lists, in order, and which opens first, with the board's name and tracker project as the picker showed them (v166). Keyed by project, connection and board; the project and the connection cascade. |
-| `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
+| `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key, title and status as the link reader's mirror last held them ([Thread links](#thread-links)). Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
 
 The mirror is every table named `tracker_cache_*`. The name is the
 classification:
@@ -372,6 +376,7 @@ classification:
 | `tracker_cache_worklog_days` | The latest read of an author's day, an unchanged or empty day included; a replace from an earlier read leaves the day. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
 | `tracker_cache_open_tickets` | One row per open ticket's pump, named by the process's session and the pump's number: the issue it keeps in the mirror while the ticket is open. |
+| `tracker_cache_issue_missing` | The latest read of a linked issue that did not return it, while no card the mirror holds is from a later read ([Thread links](#thread-links)). |
 
 Metric queries will read versioned views over these tables, never the
 tables; no view is built yet.
@@ -1594,6 +1599,103 @@ totals; with the totals held it reads only the named rows. Tests pin
 the bytes, the calls and `ReadMirrorBoardPatch`'s statements. The full read is only for the first paint, a reconnect and
 `ReadAgain`.
 
+### Thread links
+
+A thread links to at most one ticket (`thread_tickets`), named by kind,
+site and issue ID, so the link means the same ticket on every computer.
+
+- **The link reader.** A site's links are read, written and kept by one
+  connection here, the site's link reader: its lowest connection ID
+  turned on (`ticketSiteReaderSQL`). The row's state and `connectionId`,
+  `TicketConnection`, the copy, the missing mark and the links' keep
+  (`mirrorLinksSQL`) all read that one expression, so a second account of
+  the site neither writes a link nor keeps or polls an issue only a link
+  names. A link the reader cannot see reads not found, whatever another
+  account of the site can see.
+- **What a row shows.** A thread row computes its link when it is read,
+  on the computer that answers, from the link reader's mirror
+  (`threadTicketLinkJSON`): while that mirror holds the issue
+  (`mirrorIssueHeldSQL`: a card, and no read that missed the issue began
+  after the card's latest read) the row shows the card's key, title and
+  status, the status's name and group from that root's catalog, and
+  `current`; while a read that missed it is in force
+  (`mirrorIssueGoneSQL`) it shows `not_found`; otherwise the link's
+  last-seen copy and, from the site's connections, `not_checked` (one is
+  on), `turned_off` (all are off) or `no_connection`. `connectionId` is
+  the link reader. A reader change, a detached root or a restore needs no
+  write: the row reads whichever mirror reads the site now, and a lower ID
+  turned on reads not checked until its first linked read.
+- **The copy.** The link's key, title and status (ID, name, group) are
+  what the row shows while the reader's mirror holds no card. One
+  statement writes it (`linkCopySQL`), run by the setter and by every
+  card write that stores a card or clears an absence
+  (`storeMirrorCardsTx`: row pages, card reads, ticket reads; a card the
+  mirror keeps from a later read is not stored, so it copies nothing),
+  and by a catalog write that renames or regroups a status a linked card
+  has (`mirrorStatusLinkCopySQL`). With no link of the site, or on a root
+  that is not the reader's, the copy parses no bound list
+  (`mirrorReaderIssuesSQL`). A card write that stores cards runs two link
+  statements, the absence clear and the copy; one that stores none runs
+  the clear alone, which stops at its guard while the root has no
+  absence.
+- **Absences.** A read that does not return a linked issue records an
+  absence at its read (`MarkMirrorIssuesMissing`,
+  `tracker_cache_issue_missing`), unless a card is from a later read, and
+  names the links it makes not found. A card write deletes the absences
+  its read supersedes (`mirrorAbsencesClearSQL`), so a missing issue read
+  again is current in the write that stores it. The cleanup deletes the
+  absences of issues no link keeps.
+- **The row.** `threadColumns` carries the link as one JSON column
+  (`threadTicketLinkColumn`), guarded by one `EXISTS` on
+  `thread_tickets` that runs once per statement, and each row probes
+  its link by thread. The whole-catalog lists (`ListThreads`,
+  `ListThreadsWithItems`, the sidebar's) compute every link once in a
+  materialized CTE (`threadListSelect`), which each thread probes by key
+  (`BenchmarkListThreadsLinked`); a list of part of the catalog (a
+  project's, the archive's) reads the column per row, so its link work is
+  its own rows' (`TestSelectiveThreadListsProjectTheirOwnLinks`,
+  `TestThreadLinkColumnReadsByKey`).
+- **Writes.** `SetThreadTicket` (bound, `threads:operate`, and
+  `tracker:read` since it reads the ticket) links through
+  `trackerapp.Service.LinkThread`: the connection `TicketConnection`
+  names, the card the mirror holds with no request when it holds the
+  issue, otherwise one card read stored with the link in one transaction.
+  The store's transaction checks that the root's connection is still the
+  link reader (`ErrThreadTicketNotReader`, error code
+  `thread_ticket_connection_changed`) and that the mirror holds the issue
+  after the read card is stored (`ErrThreadTicketNotHeld`; for a read,
+  error code `thread_ticket_not_found_since`), so a link through an
+  account that lost the site, and a cached link of an issue a later read
+  missed, are refused. A refusal leaves the link and the mirror as they
+  were. `ClearThreadTicket` unlinks;
+  `ThreadsForTicket` (`threads:read`, route selected) lists a ticket's
+  threads by the issue index, as search lists threads: an ask's copy and
+  a side chat before Keep, which carry their source's link, are left out.
+- **Frames.** A method announces its own thread's row. Every other
+  thread whose link a write moved (a stored card of its issue, whatever
+  of the card changed, a cleared or recorded absence, or a renamed or
+  regrouped status of its card), and every thread linked to a site
+  whose connection was added, turned on or off, or removed
+  (`ListThreadsLinkedToSite`), is told to `Deps.LinksChanged`, which the
+  app announces on one serial queue (`announceThreadLinks`), one job per
+  call; the announcer has no batching, so it is one `thread:updated`
+  frame per thread.
+- **Keep.** A link keeps its issue in the mirror (`mirrorIssueKept`).
+  When links end (an unlink, a link replaced, a thread's delete commit,
+  a move away), `LinksEnded` tells the issues no longer kept as
+  `Changes.Visibility`, as an open ticket's drop does.
+- **Fork and transfer.** `CreatePointerFork` copies the link in its
+  transaction. A transfer's manifest carries `store.Thread`, link
+  included; `CommitIncomingThreadTransfer` replaces the receiver's link
+  with the carried ticket, key, title, status, origin and time, never a
+  carried state or connection; the row shows the card a mirror here
+  holds, if any, with no write. A receiver too old to read the link
+  drops it; a sender too old to carry one leaves the thread unlinked.
+
+A delete claims its family before it reads the family's links, and every
+link write checks the claim in its transaction, so a link set during a
+delete is refused and the links the delete read are the ones it ends.
+
 ## Agent tools
 
 The tools read, search, create, edit, move, comment, move between sprints
@@ -1671,10 +1773,15 @@ Not built, owed by the app layer:
 - The Time screen's bound methods: `Worklogs`, `RefreshWorklogs`,
   `EditWorklog` and `DeleteWorklog`. `EditSprint` is bound when a screen
   edits a sprint.
-- A thread's ticket link carried by a fork, which starts with its
-  source's link, and by a transfer, whose header carries it and whose
-  receiver replaces the link it held (a receiver too old to read it drops
-  it). The table and its accessors exist; nothing writes it.
+- Sidebar search by a linked ticket's key and title: the frontend's
+  `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
+  `ticketLink.key` and `ticketLink.title` to what it matches.
+- A status renamed or moved to another group in the tracker reaches a
+  link's copy at the ticket's next card change, not at the catalog write
+  ([Thread links](#thread-links)).
+- A link on a thread with nothing sent does not keep the thread: clearing
+  its composer deletes the thread, link included. The slice that first
+  lets a person link such a thread decides it.
 - The project's tracker setup: one file in the project's app directory
   (`project.ConfigDir`), beside its workflow profile, that `trackerapp`
   reads and replaces whole, holding status-group overrides (a status's

@@ -338,6 +338,11 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	if _, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
 		t.Fatal(err)
 	}
+	// A linked issue a read missed, kept by its link.
+	linkIssue(t, s, "seed-absent", "10009")
+	if _, err := s.MarkMirrorIssuesMissing(root, mirrorReadOf(root, 8), []string{"10009"}); err != nil {
+		t.Fatal(err)
+	}
 	for table, n := range countMirrorRows(t, s.db) {
 		if n == 0 && table != "tracker_cache_roots" {
 			t.Fatalf("seed left %s empty", table)

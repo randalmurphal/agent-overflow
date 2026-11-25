@@ -269,7 +269,7 @@ type historyGate struct {
 	once             sync.Once
 }
 
-func (g *historyGate) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error) {
+func (g *historyGate) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, store.MirrorCatalogWrite, error) {
 	g.once.Do(func() {
 		close(g.arrived)
 		<-g.release

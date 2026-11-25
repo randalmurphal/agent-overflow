@@ -9997,6 +9997,41 @@ export class ThreadRequestState {
 }
 
 /**
+ * ThreadTicketRef names the ticket a thread links to: its tracker kind
+ * (jira or linear), the site as the tracker connections name it, and the
+ * tracker's own issue ID. It names no connection: the computer that holds
+ * the thread reads the ticket through its own.
+ */
+export class ThreadTicketRef {
+    "kind": string;
+    "site": string;
+    "issueId": string;
+
+    /** Creates a new ThreadTicketRef instance. */
+    constructor($$source: Partial<ThreadTicketRef> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("site" in $$source)) {
+            this["site"] = "";
+        }
+        if (!("issueId" in $$source)) {
+            this["issueId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadTicketRef instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadTicketRef {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadTicketRef($$parsedSource as Partial<ThreadTicketRef>);
+    }
+}
+
+/**
  * ThreadTransferIntent is a public challenge, not authority to resume a thread.
  * The source keeps the activation secret until its retirement is durable.
  */

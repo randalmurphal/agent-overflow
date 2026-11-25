@@ -322,6 +322,9 @@ func (r *run) ticketCards(reads []*ticketRead, opening store.MirrorRead) ([]trac
 	if err != nil {
 		return nil, nil, fmt.Errorf("trackerapp: read %d cards: %w", len(issues), call(err))
 	}
+	if err := r.markMissing(began, read.Missing); err != nil {
+		return nil, nil, err
+	}
 	if len(read.Cards) == 0 {
 		return nil, nil, nil
 	}
@@ -384,10 +387,15 @@ func (r *run) details(reads []*ticketRead, opening store.MirrorRead) error {
 		}
 		return reads[i]
 	}
+	var missing []tracker.IssueID
 	for _, issue := range got.Missing {
 		if rd := readOf(issue); rd != nil {
 			rd.err = ErrIssueNotFound
+			missing = append(missing, issue)
 		}
+	}
+	if err := r.markMissing(began, missing); err != nil {
+		return err
 	}
 	settle := r.p.Capabilities().HistorySettle
 	tickets := make([]store.MirrorTicket, 0, len(got.Details))
@@ -464,7 +472,7 @@ func (r *run) details(reads []*ticketRead, opening store.MirrorRead) error {
 // path stored, the issues whose bodies it stored new or changed (Details)
 // or dropped for the cap, and those whose status time it moved, which the
 // views of their cards show as a history read's (History).
-func ticketChanges(tickets []store.MirrorTicket, w store.MirrorTicketsWrite) Changes {
+func ticketChanges(tickets []store.MirrorTicket, w store.MirrorTicketsWrite) written {
 	ch := changesOf(w.Changes)
 	ch.Dropped = issueIDs(w.Dropped)
 	var bodies, status []string

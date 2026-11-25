@@ -262,7 +262,6 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 			return Identity{}, fmt.Errorf("store: restore: copy sqlite_sequence: %w", err)
 		}
 	}
-
 	// Re-install what the copy ran without, from the same var the latest
 	// trigger migration installs, so the two can never describe different
 	// contracts.
