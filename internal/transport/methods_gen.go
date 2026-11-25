@@ -162,6 +162,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteThreadGroup", ID: 4104302889, Scope: "threads:operate", Route: "home"},                                                     // main.App.DeleteThreadGroup
 	{Name: "DeleteThreads", ID: 362983967, Scope: "threads:operate", Route: "home"},                                                          // main.App.DeleteThreads
 	{Name: "DeleteTrackerComment", ID: 1742610839, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                         // main.App.DeleteTrackerComment
+	{Name: "DeleteTrackerWorklog", ID: 2679403039, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                         // main.App.DeleteTrackerWorklog
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                                                       // main.App.DevicePairingStatus
 	{Name: "DictationSources", ID: 1721991996, Scope: "threads:operate", Route: "selected"},                                                  // main.App.DictationSources
 	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                                                  // main.App.DisallowPreviewPort
@@ -178,6 +179,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "EditTrackerComment", ID: 3416415152, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                           // main.App.EditTrackerComment
 	{Name: "EditTrackerIssue", ID: 2133356294, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                             // main.App.EditTrackerIssue
 	{Name: "EditTrackerKeyFile", ID: 1347598600, Scope: "host", Route: "home"},                                                               // main.App.EditTrackerKeyFile
+	{Name: "EditTrackerSprint", ID: 3891799979, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                            // main.App.EditTrackerSprint
+	{Name: "EditTrackerWorklog", ID: 670991272, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                            // main.App.EditTrackerWorklog
 	{Name: "FetchForgeAttachment", ID: 1594348919, Scope: "git:operate", Route: "selected", Budget: 11 * time.Minute},                        // main.App.FetchForgeAttachment
 	{Name: "FinishDictation", ID: 2178028847, Scope: "threads:operate", Route: "selected", Budget: 3 * time.Minute},                          // main.App.FinishDictation
 	{Name: "FinishLiveDictation", ID: 3774452621, Scope: "threads:operate", Route: "selected"},                                               // main.App.FinishLiveDictation
@@ -433,6 +436,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RefreshProviderAccountUsage", ID: 2539237007, Scope: "access:admin", Route: "home"},                                              // main.App.RefreshProviderAccountUsage
 	{Name: "RefreshTerminal", ID: 2618043580, Scope: "terminal:operate", Route: "home"},                                                      // main.App.RefreshTerminal
 	{Name: "RefreshTrackerSubscription", ID: 247632441, Scope: "tracker:read", Route: "home"},                                                // main.App.RefreshTrackerSubscription
+	{Name: "RefreshTrackerWorklogs", ID: 2905282814, Scope: "tracker:read", Route: "home"},                                                   // main.App.RefreshTrackerWorklogs
 	{Name: "RegenerateThreadTitle", ID: 3682640111, Scope: "threads:operate", Route: "thread"},                                               // main.App.RegenerateThreadTitle
 	{Name: "RegisterOwnDevice", ID: 111779378, Scope: "session", Route: "home", Remote: true},                                                // main.App.RegisterOwnDevice
 	{Name: "RegisterPushToken", ID: 2641306153, Scope: "session", Route: "home", Remote: true},                                               // main.App.RegisterPushToken
@@ -600,6 +604,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "TrackerSearch", ID: 1584024747, Scope: "tracker:read", Route: "home"},                                                            // main.App.TrackerSearch
 	{Name: "TrackerSectionRows", ID: 4150293291, Scope: "tracker:read", Route: "home"},                                                       // main.App.TrackerSectionRows
 	{Name: "TrackerTicket", ID: 105684651, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerTicket
+	{Name: "TrackerWorklogs", ID: 1862710581, Scope: "tracker:read", Route: "home"},                                                          // main.App.TrackerWorklogs
 	{Name: "TriggerMcpAuth", ID: 1291217507, Scope: "settings:write", Route: "thread", Budget: 90 * time.Second},                             // main.App.TriggerMcpAuth
 	{Name: "TriggerWorkspaceMcpAuth", ID: 417766274, Scope: "settings:write", Route: "selected", Budget: 90 * time.Second},                   // main.App.TriggerWorkspaceMcpAuth
 	{Name: "UnapprovePR", ID: 2161888729, Scope: "git:operate", Route: "selected"},                                                           // main.App.UnapprovePR
