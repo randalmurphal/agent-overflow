@@ -1,10 +1,9 @@
 <script module lang="ts">
-  // The ticket's code loads on the first ticket pane, once per page.
-  let bodyModule: Promise<typeof import('../issues/TicketPaneBody.svelte')> | null = null;
-  function loadBody(): Promise<typeof import('../issues/TicketPaneBody.svelte')> {
-    bodyModule ??= import('../issues/TicketPaneBody.svelte');
-    return bodyModule;
-  }
+  import { createCachedComponentLoader } from '../../utils/lazyComponent';
+
+  // The ticket's code loads on the first ticket pane; a later pane renders
+  // it at once.
+  const bodyLoader = createCachedComponentLoader(() => import('../issues/TicketPaneBody.svelte'));
 </script>
 
 <script lang="ts">
@@ -27,14 +26,13 @@
   let { paneId, onPaneDragStart }: Props = $props();
   const known = $derived(ticketPaneRecord(paneId) !== null);
 
-  type Body = typeof import('../issues/TicketPaneBody.svelte');
-  let body = $state.raw<Body | null>(null);
+  let Body = $state.raw(bodyLoader.peek());
   let loadError = $state.raw<unknown>(null);
   $effect(() => {
-    if (!known || body) return;
+    if (!known || Body) return;
     let current = true;
-    loadBody().then(
-      (mod) => { if (current) body = mod; },
+    bodyLoader.load().then(
+      (component) => { if (current) Body = component; },
       (err: unknown) => { if (current) loadError = err; },
     );
     return () => { current = false; };
@@ -43,8 +41,8 @@
 
 <RenderBoundary label="This ticket pane" testId="pane-render-error">
   <div class="flex h-full min-h-0 flex-col" data-testid="ticket-pane">
-    {#if known && body}
-      <body.default {paneId} {onPaneDragStart} />
+    {#if known && Body}
+      <Body {paneId} {onPaneDragStart} />
     {:else}
       <ToolPaneHeader {paneId} title="Ticket" titleTestId="ticket-key" {onPaneDragStart} />
       {#if !known}
