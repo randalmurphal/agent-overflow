@@ -348,6 +348,22 @@ func TestCarryTransfer_AnUnreachableUpstream(t *testing.T) {
 	}
 }
 
+// TestCarryTransfer_APartUploadToAClosedPort — a dial refused while the page
+// is still sending sent nothing, and the page is told that the computer
+// that holds it could not be reached, not that this computer stopped:
+// ending the page's read after the refusal ends the page's context too.
+func TestCarryTransfer_APartUploadToAClosedPort(t *testing.T) {
+	gone := httptest.NewServer(http.NotFoundHandler())
+	c := carrierFor(t, gone, time.Minute, time.Minute)
+	gone.Close()
+	relay := relayOf(t, c)
+	conn := sendRaw(t, relay, "PUT /attachments/upload?ticket=t HTTP/1.1\r\nHost: relay\r\nContent-Length: 65536\r\n\r\n", make([]byte, 1024))
+	resp, body := readAnswer(t, conn, 8*time.Second, "a part upload to a closed port")
+	if resp.StatusCode != http.StatusServiceUnavailable || body != "the computer that holds it could not be reached, so nothing was sent; send it again\n" {
+		t.Fatalf("a part upload to a closed port: %d %q", resp.StatusCode, body)
+	}
+}
+
 // TestCarryTransfer_AServerShuttingDownEndsAStalledUpload — the request's
 // context ending (transport's BaseContext at shutdown) while net/http's
 // transport is blocked reading a page that stopped sending ends that read
@@ -622,6 +638,7 @@ func TestTheRelaysSentencesAreTrue(t *testing.T) {
 		{"a download that could not reach it", endNone, false, true, false, false, http.StatusServiceUnavailable, "backend unreachable"},
 		{"an upload that could not reach it", endNone, true, false, false, false, http.StatusServiceUnavailable, "the computer that holds it could not be reached, so nothing was sent; send it again"},
 		{"an empty upload that could not reach it", endNone, true, true, false, false, http.StatusServiceUnavailable, "the computer that holds it could not be reached, so nothing was sent; send it again"},
+		{"an upload that could not reach it, its page's context ended by the cleanup", endNone, true, false, false, true, http.StatusServiceUnavailable, "the computer that holds it could not be reached, so nothing was sent; send it again"},
 		{"a download whose page left", endNone, false, true, true, true, http.StatusServiceUnavailable, "backend unreachable"},
 		{"an upload whose page left mid-body", endNone, true, false, true, true, http.StatusServiceUnavailable, "this computer stopped before the file was sent on in full; send it again"},
 		{"an upload sent whole whose page left", endNone, true, true, true, true, http.StatusServiceUnavailable, "the file was sent on in full, but this computer stopped waiting for its answer, " + check},

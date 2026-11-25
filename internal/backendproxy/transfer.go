@@ -257,12 +257,15 @@ func (t *carriedTransfer) failed() (int, string) {
 		return mayHave(http.StatusGatewayTimeout, "the computer that holds it did not begin to answer within "+waited)
 	case !t.upload:
 		return http.StatusServiceUnavailable, unreachable
+	case !t.reached.Load():
+		// Before the page's context: ending the page's read after a
+		// refused dial (pageBody.Close) ends that context too, and with
+		// nothing gone out this is true whoever is left to read it.
+		return http.StatusServiceUnavailable, "the computer that holds it could not be reached, so nothing was sent; send it again"
 	case t.page.Err() != nil && !whole:
 		return http.StatusServiceUnavailable, "this computer stopped before the file was sent on in full; send it again"
 	case t.page.Err() != nil:
 		return mayHave(http.StatusServiceUnavailable, "this computer stopped waiting for its answer")
-	case !t.reached.Load():
-		return http.StatusServiceUnavailable, "the computer that holds it could not be reached, so nothing was sent; send it again"
 	case !whole:
 		return http.StatusBadGateway, "the connection to the computer that holds it ended before the file was sent on in full; send it again"
 	}
