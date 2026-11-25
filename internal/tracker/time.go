@@ -44,16 +44,31 @@ var ErrNoTimeZone = errors.New("tracker: the tracker does not show the person's 
 // Worklog is time logged on an issue. Day is the calendar day the work
 // started on in the author's own zone, which a timesheet groups by.
 // Description is Markdown; a tracker that stores plain text stores it as
-// written.
+// written. IssueKey and IssueTitle name the issue as the read found it,
+// both empty when the tracker did not return the issue (one the user may
+// no longer see); a write ignores them.
 type Worklog struct {
 	ID          WorklogID
 	Issue       IssueID
+	IssueKey    string
+	IssueTitle  string
 	Author      UserID
 	Day         Date
 	Spent       time.Duration
 	Description string
 	Updated     time.Time
 }
+
+// ErrWorklogNames is matched by the error of a worklog read whose request
+// for its issues' keys and titles failed: a Jira connection's Tempo
+// worklogs are named by Jira, not by Tempo.
+var ErrWorklogNames = errors.New("tracker: the tracker did not name the worklogs' issues")
+
+// ErrWorklogJira is matched by the failure of a request that a Jira
+// connection's Tempo time makes to Jira: naming the worklogs' issues
+// (ErrWorklogNames matches it too) and reading who logs the time. Every
+// other failure of that time is Tempo's.
+var ErrWorklogJira = errors.New("tracker: Jira, not Tempo, failed")
 
 // WorklogQuery selects one author's worklogs by day.
 type WorklogQuery struct {

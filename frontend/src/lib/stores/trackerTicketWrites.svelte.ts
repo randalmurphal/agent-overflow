@@ -15,23 +15,13 @@
 // target, or its ticket leaving every pane's open ticket and Back trail
 // (`holdTicketDrafts`): Close, another board, the trail's cap.
 //
-// Loss consent. What must hold, for every write a loss can refuse (a
-// section's text, a comment's edit, a move's form):
-// - Save anyway is offered only for the draft that was sent and refused,
-//   as it stands then;
-// - any change to that draft, its replacement, or Cancel withdraws the
-//   offer, so what is sent next is checked again;
-// - a write that is made, by Save or by Save anyway, drops its target's
-//   draft, which closes the editor or form showing it.
-// A draft takes no change while its write is out: every editor and the
-// move's form, its pickers included, are disabled while their target's
-// write is pending, so what a write sends is what its editor shows. The
-// draft can still go while its write is out (its ticket closed, which
-// keeps the write), and a reopened ticket holds a new draft or none. So
-// `write` keeps the revision of the draft it sent and offers Save anyway
-// only when the target still holds that revision once the refusal lands;
-// every change to a draft after that is `putDraft`, which gives it a new
-// revision and withdraws the offer.
+// Loss consent is `trackerWriteOutcome.ts#LossConsent`'s, for every write
+// a loss can refuse (a section's text, a comment's edit, a move's form):
+// every change of a draft here is `putDraft`, or a prune of a ticket no
+// pane holds, and each revises the target's consent. A write that is made,
+// by Save or by Save anyway, drops its target's draft, which closes the
+// editor or form showing it. Every editor and the move's form, its pickers
+// included, are disabled while their target's write is pending.
 //
 // A write's outcome is held here under its ticket and target, not in the
 // component, so a person who closed the ticket while it ran still learns
@@ -42,7 +32,7 @@
 // read by then, or the read failed. The view changes only from the
 // tracker's answer; nothing is written over it before.
 //
-// What each outcome shows is in `trackerTicketModel.ts#writeOutcome`.
+// The send and what each outcome shows are `trackerWriteOutcome.ts`'s.
 
 import { SvelteMap } from 'svelte/reactivity';
 import type {
@@ -72,9 +62,8 @@ import {
   type CommentChange,
   type TrackerTicketRef,
 } from './trackerTicket.svelte';
-import { lostWriteSentence, refusalSentence, writeOutcome, type WriteOutcome } from './trackerTicketModel';
+import { LossConsent, refusalSentence, sendWrite, TICKET_SUBJECT, type WriteOutcome } from './trackerWriteOutcome';
 import { withBackendTarget } from '../transport/backends';
-import { DisconnectedError } from '../transport/wsClient';
 
 /** The ticket a write is made to, as the screen holds it. */
 export interface TicketWriteContext {
@@ -126,8 +115,7 @@ export interface TicketMoveDraft {
 
 type Draft = TicketDraft | TicketMoveDraft;
 
-const drafts = new SvelteMap<string, { readonly draft: Draft; readonly revision: number }>();
-let nextRevision = 1;
+const drafts = new SvelteMap<string, { readonly draft: Draft }>();
 // The tickets each pane holds open or on its Back trail, by holder.
 const draftHolders = new Map<number, ReadonlySet<string>>();
 let nextDraftHolder = 0;
@@ -157,17 +145,17 @@ export function dismissTicketWrite(ticket: string, target: string): void {
   if (writes.get(k)?.pending === false) writes.delete(k);
 }
 
-/** Withdraws a Save anyway offer: the draft it was for changed or was
- * canceled. Other outcomes stay, a lost answer among them. */
-function withdrawLossConsent(k: string): void {
+// A withdrawn offer drops its outcome; other outcomes stay, a lost answer
+// among them.
+const consent = new LossConsent((k) => {
   if (writes.get(k)?.saveAnyway) writes.delete(k);
-}
+});
 
 /** The one change of a draft: a new revision, and no Save anyway for the
  * one before. */
 function putDraft(k: string, draft: Draft | null): void {
-  withdrawLossConsent(k);
-  if (draft) drafts.set(k, { draft, revision: nextRevision++ });
+  consent.revise(k);
+  if (draft) drafts.set(k, { draft });
   else drafts.delete(k);
 }
 
@@ -215,7 +203,7 @@ export function holdTicketDrafts(): { set(tickets: readonly string[]): void; rel
   draftHolders.set(id, new Set());
   const prune = () => {
     for (const [k, { draft }] of drafts) {
-      if (![...draftHolders.values()].some((held) => held.has(draft.ticket))) drafts.delete(k);
+      if (![...draftHolders.values()].some((held) => held.has(draft.ticket))) putDraft(k, null);
     }
   };
   return {
@@ -251,23 +239,15 @@ async function write(
 ): Promise<WriteOutcome | null> {
   const k = writeKey(t.key, target);
   if (writes.get(k)?.pending) return null;
-  // The draft as it was sent: Save anyway is for it alone.
-  const sent = drafts.get(k)?.revision;
+  // The draft as it is sent: Save anyway is for it alone.
+  consent.sending(k);
   writes.set(k, { pending: true, outcome: null, saveAnyway: null });
-  let outcome: WriteOutcome;
-  try {
-    const view = await withBackendTarget(t.ref.backend, () => send(acceptLoss));
-    outcome = writeOutcome(view);
-  } catch (err) {
-    outcome = err instanceof DisconnectedError
-      ? { kind: 'lost', message: lostWriteSentence(computerName(t.ref.backend)) }
-      : { kind: 'failed', error: err };
-  }
+  const outcome = await sendWrite(t.ref.backend, computerName(t.ref.backend), TICKET_SUBJECT, () => send(acceptLoss));
   if (outcome.kind === 'applied') await trackerTicketSettled(t.key, comment);
   // The ticket changed since it was read: read it again, so the person
   // sees what the tracker holds before trying again.
   if (outcome.kind === 'refused' && outcome.refusal.reason === 'stale') void refreshTrackerTicket(t.key);
-  const loss = outcome.kind === 'refused' && outcome.refusal.reason === 'loss' && !acceptLoss && drafts.get(k)?.revision === sent;
+  const loss = consent.landed(k, outcome, acceptLoss);
   if (outcome.kind === 'applied') drafts.delete(k);
   if (!isTrackerTicketHeld(t.key)) {
     writes.delete(k);
@@ -346,4 +326,5 @@ export function resetTicketWritesForTest(): void {
   writes.clear();
   drafts.clear();
   draftHolders.clear();
+  consent.clear();
 }

@@ -229,3 +229,63 @@ func TestWorklogsWithNoTimeTracking(t *testing.T) {
 		t.Fatalf("calls %v, problem %q", got, f.problem())
 	}
 }
+
+// A worklog read of a Jira connection whose time is in Tempo names the
+// tracker each request went to when it could not be reached: Tempo for
+// the worklogs, Jira for the read that names their issues.
+func TestAWorklogReadNamesTheTrackerItCouldNotReach(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.addTempo(f.conn.ID)
+	reset := &trackerapi.TransientError{Err: errors.New("reset")}
+	for _, tc := range []struct {
+		name    string
+		err     error
+		message string
+	}{
+		{"a Tempo reset", reset, "Tempo could not be reached; try again"},
+		{"a reset of the read that names the issues", fmt.Errorf("jiraprovider: the issues of the Tempo worklogs: %w: %w: %w", tracker.ErrWorklogNames, tracker.ErrWorklogJira, reset),
+			"Jira could not be reached; try again"},
+	} {
+		f.w.time.mu.Lock()
+		f.w.time.fail = tc.err
+		f.w.time.mu.Unlock()
+		got := must[WorklogDays](t)(f.svc.RefreshWorklogs(t.Context(), f.conn.ID, "acc-user2", "2026-11-01", "2026-11-02"))
+		if got.Failure == nil || got.Failure.Message != tc.message {
+			t.Errorf("%s: the refresh answered %+v; want %q", tc.name, got.Failure, tc.message)
+		}
+	}
+}
+
+// A worklog write of a Jira connection whose time is in Tempo names the
+// tracker each request went to when it failed: Tempo for its own read and
+// write, whose answer may also not arrive, Jira for the read of who logs
+// the time.
+func TestAWorklogWriteNamesTheTrackerThatFailed(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.addTempo(f.conn.ID)
+	reset := &trackerapi.TransientError{Err: errors.New("reset")}
+	day, err := tracker.NewDate(2026, 11, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := func(o tracker.Outcome) tracker.Result {
+		return tracker.Result{Parts: []tracker.Part{{Issue: "10001", Step: tracker.StepWorklog, Outcome: o, Changed: []tracker.Resource{tracker.WorklogsOf("acc-user1", day)}}}}
+	}
+	for _, tc := range []struct {
+		name    string
+		res     tracker.Result
+		message string
+	}{
+		{"Tempo's read of the worklog reset", part(tracker.NotSent(reset)), "Tempo could not be reached; try again"},
+		{"Tempo's answer lost", part(tracker.Unknown(reset)), "Tempo's answer did not arrive in full, so this change may or may not have been made; " + LostWriteCheck(tracker.StepWorklog)},
+		{"Jira's read of who logs the time reset", part(tracker.NotSent(fmt.Errorf("jiraprovider: who logs the time: %w: %w", tracker.ErrWorklogJira, reset))), "Jira could not be reached; try again"},
+	} {
+		f.answer(tc.res)
+		v, err := f.svc.EditWorklog(t.Context(), f.conn.ID, WorklogEditRequest{From: WorklogView{ID: "w1", Issue: "10001", Author: "acc-user1", Day: "2026-11-02", SpentSeconds: 60}, SpentSeconds: new(int64(120))})
+		if err != nil || len(v.Parts) != 1 || v.Parts[0].Failure == nil || v.Parts[0].Failure.Message != tc.message {
+			t.Errorf("%s: %+v, %v; want %q", tc.name, v, err, tc.message)
+		}
+	}
+}

@@ -33,10 +33,12 @@ board methods, events and the patch read in
   picked last and Only mine as saved for the next pane, Display per board,
   and the compact column for the session. Only a pick is saved; another
   window's change never moves an open pane. Its selection also holds the
-  open ticket, its subscription and the trail Back steps through, and
-  decides whether the board is shown (`boardShown`: the pane is on screen
-  and no ticket covers it), which is the board's vote. The ticket's
-  placement, its folds and the comment order are remembered here too.
+  screen (Board or Time, saved for the next pane), the open ticket, its
+  subscription and the trail Back steps through, and decides whether the
+  board and the week are shown (`boardShown`, `timeShown`: the pane is on
+  screen on that screen and no ticket covers it), which are their votes.
+  The ticket's placement per screen, its folds, the comment order and
+  the Time layout are remembered here too.
 - `stores/trackerTicket.svelte.ts` holds each open ticket's subscription,
   one per ticket for every surface showing it: subscribe with the vote,
   the `tracker:issue_updated` fold, the one view read in flight, the gap
@@ -51,20 +53,45 @@ board methods, events and the patch read in
   base, or a move's form with the base of each long field, which the
   editors and the form show, so a draft outlives its editor; a pane's
   selection holds the drafts of its open ticket and Back trail
-  (`holdTicketDrafts`). The loss consent rules ("Loss consent") are
-  written at the top of the store.
-- `stores/trackerTicketModel.ts` is the pure part: what a write's answer
-  means for the person (`writeOutcome`), the comment and history windows,
-  the rail's order and the board row a ticket shows its points from.
+  (`holdTicketDrafts`).
+- `stores/trackerTicketModel.ts` is the pure part: the comment and
+  history windows, the rail's order and the board row a ticket shows its
+  points from.
+- `stores/trackerWriteOutcome.ts` is what a tracker write's answer means
+  for the person (`writeOutcome`, worded per subject), the one runner
+  of a write (`sendWrite`) and the loss consent rule (`LossConsent`,
+  its rules written beside it), shared by the ticket's and the Time
+  screen's writes; each write store holds its own consent and revises it
+  on every change of a draft.
+- `stores/trackerTime.svelte.ts` holds the weeks the Time screen reads,
+  one per computer, connection, person and Monday, the five used last:
+  the stored read and the refresh when a week shows, Refresh, the
+  reconnect's refresh, the reads a write owes its days and their order,
+  and the receipts of writes the week has not caught up with. Its rules
+  are written at the top of the store. `stores/trackerTimeModel.ts` is
+  the pure part: the days of a week, what a day's total leaves out, and
+  the By ticket rows (`weekTickets`, derived only while By ticket or the
+  form reads them).
+- `stores/trackerTimeWrites.svelte.ts` makes the Time screen's writes
+  (log, change, delete), one pending write per entry or per ticket and
+  day, and holds each outcome, with a toast for one that settles after
+  its form and entry are gone. It does not import the weeks: the weeks'
+  store takes what a write asks of them (`takeWorklogWrites`), so a
+  surface that only logs time loads no week.
 
 These stores load with the pane (`ToolPane.svelte` imports it on demand),
-and `TicketScreen.svelte` loads on the first open of a ticket.
+`TicketScreen.svelte` loads on the first open of a ticket and
+`TimeScreen.svelte` on the first switch to Time.
 The always-loaded stores reach them only through
 `stores/trackerBoardEvents.ts`, where the board and ticket stores take
 `tracker:board_updated`, `tracker:issue_updated` and their gaps and the
 choices store hears that a computer's board lists may have changed;
 `lib/architecture.test.ts` fails when one of them enters the startup
 graph.
+
+`TicketFinder.svelte` finds a ticket by key or words on one or more
+connections, and `WorklogForm.svelte` logs, changes and deletes one
+entry; both serve any surface that logs time.
 
 ## Rendering
 

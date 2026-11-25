@@ -138,6 +138,14 @@ export function resetBindingMocks(): void {
 // answer with setBindingMock, which holds until the next reset.
 let gitStatusSubscriptions = 0;
 let browserStates = 0;
+/** The days from `from` to `to`, YYYY-MM-DD, both included. */
+function daysFromTo(from: string, to: string): string[] {
+  const out: string[] = [];
+  for (let ms = Date.parse(`${from}T00:00:00Z`); ms <= Date.parse(`${to}T00:00:00Z`); ms += 86_400_000) {
+    out.push(new Date(ms).toISOString().slice(0, 10));
+  }
+  return out;
+}
 const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // A computer's sign-in state and accounts (stores/computerAccounts). With
   // no sign-in running the backend answers idle for the provider asked
@@ -158,6 +166,11 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // (stores/trackerBoardChoices): none for a computer whose projects list
   // no board (store ListTrackerBoardChoices).
   TrackerBoardChoices: async () => [],
+  // A week of the Time screen, read when it shows (stores/trackerTime): no
+  // worklogs, and every day unread, as a computer that never read the
+  // person's time answers (trackerapp Service.Worklogs).
+  TrackerWorklogs: async (_connection: string, _author: string, from: string, to: string) => ({ worklogs: [], unread: daysFromTo(from, to) }),
+  RefreshTrackerWorklogs: async () => ({ worklogs: [] }),
   // A thread the pane opens, as the backend holds an idle thread with no
   // history: resuming it does nothing (app_session_bindings.go), and its
   // ticks, plans, turns, tray tasks, wakes and pending requests are empty

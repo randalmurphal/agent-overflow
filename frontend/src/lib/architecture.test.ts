@@ -409,9 +409,10 @@ const HARNESS_STATIC_IMPORT_ALLOWLIST: Record<string, string> = {};
 // ---------------------------------------------------------------------------
 // Rule 4b — the Issues pane's stores load with the pane, not at startup.
 //
-// The board store, its model, the board choices, the pane's state and the
-// ticket's store, model and writes hold a visibility listener, a pump-vote
-// queue and every rule of the board and the ticket, which a person who
+// The board store, its model, the board choices, the pane's state, the
+// ticket's store, model and writes, and the Time screen's weeks and
+// writes hold visibility and connection listeners, a pump-vote queue and
+// every rule of the board, the ticket and logged time, which a person who
 // never opens Issues has no use for. The pane is the
 // dynamic `import('../issues/IssuesPane.svelte')` in ToolPane.svelte, and
 // the always-loaded stores reach those stores only through
@@ -428,6 +429,11 @@ const ISSUES_LAZY_MODULES = [
   'lib/stores/trackerTicket.svelte.ts',
   'lib/stores/trackerTicketModel.ts',
   'lib/stores/trackerTicketWrites.svelte.ts',
+  'lib/stores/trackerTime.svelte.ts',
+  'lib/stores/trackerTimeModel.ts',
+  'lib/stores/trackerTimeWrites.svelte.ts',
+  'lib/stores/trackerWriteOutcome.ts',
+  'lib/utils/timeSpent.ts',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -1180,6 +1186,38 @@ describe('architecture', () => {
       offenders,
       'An Issues store is in the startup graph. Reach it through stores/trackerBoardEvents.ts or the pane\'s dynamic import; see frontend/CLAUDE.md → Performance-sensitive rules.',
     ).toEqual([]);
+  });
+
+  it('keeps the week cache out of what the log form imports', () => {
+    // The ticket screen imports the log form; the weeks the Time screen
+    // holds, and their listeners, load with the Time screen alone.
+    const byModule = new Map<string, (typeof sources)[number][]>();
+    for (const source of sources) {
+      const names = [source.file.replace(/\.(ts|svelte)$/, '')];
+      if (source.file.endsWith('.svelte.ts')) names.push(source.file.slice(0, -'.svelte.ts'.length));
+      for (const name of names) byModule.set(name, [...(byModule.get(name) ?? []), source]);
+    }
+    const form = sources.find((source) => source.path === 'lib/components/issues/WorklogForm.svelte');
+    expect(form, 'the walk starts from the log form').toBeDefined();
+    const reached = new Map<string, string>([[form!.path, '']]);
+    const queue = [form!];
+    while (queue.length > 0) {
+      const source = queue.shift()!;
+      for (const parsed of source.imports) {
+        if (parsed.dynamic || parsed.typeOnly) continue;
+        const local = resolveLocalModule(source.file, parsed.specifier);
+        if (local === null) continue;
+        for (const target of byModule.get(local) ?? []) {
+          if (reached.has(target.path)) continue;
+          reached.set(target.path, source.path);
+          queue.push(target);
+        }
+      }
+    }
+    expect(reached.has('lib/stores/trackerTimeWrites.svelte.ts'), 'the walk reaches the worklog writes').toBe(true);
+    const chain: string[] = [];
+    for (let at: string | undefined = 'lib/stores/trackerTime.svelte.ts'; at && reached.has(at); at = reached.get(at)) chain.unshift(at);
+    expect(chain, 'The log form imports the week cache; the Time host owns the weeks and their invalidation.').toEqual([]);
   });
 
   it('keeps event-driven refresh on the rate-bounded scheduler', () => {

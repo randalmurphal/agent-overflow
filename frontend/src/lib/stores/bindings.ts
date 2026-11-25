@@ -649,6 +649,16 @@ export {
   AddTrackerComment,
   EditTrackerComment,
   DeleteTrackerComment,
+  // A person's logged time and its writes (stores/trackerTime.svelte.ts,
+  // stores/trackerTimeWrites.svelte.ts).
+  TrackerWorklogs,
+  RefreshTrackerWorklogs,
+  AddTrackerWorklog,
+  EditTrackerWorklog,
+  DeleteTrackerWorklog,
+  // The tickets a person finds by key or by words (components/issues/TicketFinder.svelte).
+  TrackerLookup,
+  TrackerSearch,
   ListLiveBackgroundTasks,
   GetThreadWakeDetail,
   WakeThreadWakeNow,

@@ -1366,14 +1366,23 @@ selected computer.
   removed, and a tracker with no time tracking (Linear, decided by kind,
   which `TestTheMirrorReadOfWorklogsRefusesWhatTheRefreshRefuses` holds
   to the providers' answer). `RefreshTrackerWorklogs` reads at most 31
-  days at the default budget, as a form read does. Its requests grow with
-  the time logged: Tempo answers in pages; Jira looks the author up
+  days at the default budget, as a form read does. Each worklog carries
+  its issue's key and title (`key`, `title`) as that read found them,
+  stored with it (`tracker_cache_worklogs.issue_key`, `issue_title`),
+  both empty for an issue the tracker did not return. Its requests grow
+  with the time logged: Tempo answers in pages, and Jira names their
+  issues in one bulk read of the summary (500 issues a request), since
+  a Tempo worklog names its issue by ID alone; Jira looks the author up
   unless its client has the user cached, pages the issues the author
-  logged time on with the worklogs each embeds (up to 20), and reads an
-  issue with more in pages of its own. On `jiraprovider`'s cost fixture, a
-  month of 20 worklogs on 20 issues, that is 1 Tempo request of about
-  11.8 KB or 2 Jira requests of about 28.0 KB (`TestRequestCost`,
-  `TestRequestCostJiraWorklogs`). A longer range is
+  logged time on with the worklogs each embeds (up to 20) and each one's
+  summary, and reads an issue with more in pages of its own. On
+  `jiraprovider`'s cost fixture, a month of 20 worklogs on 20 issues,
+  that is 2 requests of about 15.4 KB through Tempo (1 Tempo, 1 Jira; it
+  was 1 Tempo request of 11.8 KB before the issues were named) or 2 Jira
+  requests of about 29.1 KB (`TestRequestCost`,
+  `TestRequestCostJiraWorklogs`). A read that names the issues and fails
+  fails the refresh with Jira's sentence, the worklogs stored as they
+  were. A longer range is
   `tracker_request_invalid` before anything is sent, a tracker with no
   time tracking is `tracker_unsupported` ("this tracker has no time
   tracking"), and a read the tracker fails is the answer's `failure`,
@@ -1927,7 +1936,10 @@ board subscription's methods and `tracker:board_updated`'s TypeScript
 type, and its ticket screen, with the wrappers of the ticket
 subscription's methods, `TrackerComments`, the issue and comment writes,
 `TrackerAssignableUsers` and `TrackerChoices`, and
-`tracker:issue_updated`'s TypeScript type (`components/issues/AGENTS.md`).
+`tracker:issue_updated`'s TypeScript type, and its Time screen, with the
+wrappers of `TrackerWorklogs`, `RefreshTrackerWorklogs`,
+`AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog`,
+`TrackerLookup` and `TrackerSearch` (`components/issues/AGENTS.md`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
@@ -1936,12 +1948,10 @@ Not built, owed by the app layer:
 
 - The ticket screen's attachments, links, planning poker and Log time,
   and a ticket in a pane of its own: the `bindings.ts` wrappers of the
-  attachment mints, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`,
-  `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog` and the
-  planning poker methods ship with them.
-- The Time screen and a sprint edit on the Backlog screen: the
-  `bindings.ts` wrappers of the worklog methods and `EditTrackerSprint`
-  ship with them.
+  attachment mints, `TrackerLinkTypes`, `LinkTrackerIssues`,
+  `UnlinkTrackerIssues` and the planning poker methods ship with them.
+- A sprint edit on the Backlog screen: the `bindings.ts` wrapper of
+  `EditTrackerSprint` ships with it.
 - Sidebar search by a linked ticket's key and title: the frontend's
   `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
   `ticketLink.key` and `ticketLink.title` to what it matches.

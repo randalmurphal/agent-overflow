@@ -83,6 +83,16 @@ func TestClassifyFailureSortsEveryKind(t *testing.T) {
 			FailureTracker, "Tempo answered HTTP 500"},
 		"Tempo's answer too large on a Jira connection's time": {"jira", &trackerapi.BodyTooLargeError{Tracker: "tempo", Limit: 1},
 			FailureTracker, "Tempo sent an answer larger"},
+		// A call to a Jira connection's linked Tempo that carries no
+		// tracker of its own names Tempo, as the worklog read marks it.
+		"Tempo's reset on a Jira connection's time": {"jira", &answeredBy{tracker: "tempo", err: &trackerapi.TransientError{Err: errors.New(secret)}},
+			FailureTransient, "Tempo could not be reached"},
+		"Tempo's timeout on a Jira connection's time": {"jira", &answeredBy{tracker: "tempo", err: fmt.Errorf("%w", context.DeadlineExceeded)},
+			FailureTransient, "Tempo could not be reached"},
+		"Tempo's dial failure on a Jira connection's time": {"jira", &answeredBy{tracker: "tempo", err: &trackerapi.NotSentError{Err: errors.New(secret)}},
+			FailureTransient, "Tempo could not be reached"},
+		"Tempo's credential replaced on a Jira connection's time": {"jira", &answeredBy{tracker: "tempo", err: trackerapi.ErrCredentialChanged},
+			FailureTransient, "Tempo answered as the token in the key file was being replaced"},
 		"a reset": {"jira", &trackerapi.TransientError{Err: errors.New(secret)},
 			FailureTransient, "Jira could not be reached"},
 		"a dial failure": {"linear", &trackerapi.NotSentError{Err: errors.New(secret)},

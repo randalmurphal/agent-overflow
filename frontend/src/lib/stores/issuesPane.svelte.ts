@@ -59,8 +59,10 @@ const BOARD_KEY = 'issues-board';
 const HIDDEN_FIELDS_KEY = 'issues-hidden-fields';
 const ONLY_MINE_KEY = 'issues-only-mine';
 const PLACEMENT_KEY = 'issues-ticket-placement';
+const SCREEN_KEY = 'issues-screen';
 const SECTIONS_KEY = 'issues-ticket-folds';
 const COMMENT_ORDER_KEY = 'issues-ticket-comment-order';
+const TIME_LAYOUT_KEY = 'issues-time-layout';
 // Boards whose Display was changed, newest last; the oldest goes past this.
 const MAX_BOARDS_REMEMBERED = 200;
 // Sections whose fold was changed, newest last; the oldest goes past this.
@@ -141,6 +143,18 @@ export function saveOnlyMine(on: boolean): void {
   writeFrontendValue(ONLY_MINE_KEY, on);
 }
 
+/** How the Time screen lays out a week. */
+export type TimeLayout = 'day' | 'ticket';
+
+/** The layout this client last picked: what a Time screen opens with. */
+export function savedTimeLayout(): TimeLayout {
+  return readFrontendValue(TIME_LAYOUT_KEY) === 'ticket' ? 'ticket' : 'day';
+}
+
+export function saveTimeLayout(layout: TimeLayout): void {
+  writeFrontendValue(TIME_LAYOUT_KEY, layout);
+}
+
 /** The column a compact screen shows of a board, null before one was
  * picked this session. */
 export function compactColumn(ref: TrackerBoardRef): number | null {
@@ -151,26 +165,54 @@ export function setCompactColumn(ref: TrackerBoardRef, column: number): void {
   compactColumns.set(trackerBoardOnComputer(ref), column);
 }
 
+/** The pane's screens: the tabs of its top bar. */
+export type IssuesScreen = 'board' | 'time';
+
+export const ISSUES_SCREENS: readonly { readonly screen: IssuesScreen; readonly label: string }[] = [
+  { screen: 'board', label: 'Board' },
+  { screen: 'time', label: 'Time' },
+];
+
+function isScreen(v: unknown): v is IssuesScreen {
+  return v === 'board' || v === 'time';
+}
+
+/** The screen this client last switched to: what a pane opens on. */
+export function savedScreen(): IssuesScreen {
+  const v = readFrontendValue(SCREEN_KEY);
+  return isScreen(v) ? v : 'board';
+}
+
 /** Where a screen shows a ticket: over the list, or beside it. */
 export type TicketPlacement = 'over' | 'beside';
 
-/** The screens that open a ticket; only the Board is built. */
-type TicketScreen = 'board';
+function isPlacement(v: unknown): v is TicketPlacement {
+  return v === 'over' || v === 'beside';
+}
 
-function readPlacements(): Partial<Record<TicketScreen, TicketPlacement>> {
+function readPlacements(): Partial<Record<IssuesScreen, TicketPlacement>> {
   const v = readFrontendValue(PLACEMENT_KEY) as Record<string, unknown> | null;
-  return v && typeof v === 'object' && (v.board === 'over' || v.board === 'beside') ? { board: v.board } : {};
+  if (!v || typeof v !== 'object') return {};
+  const out: Partial<Record<IssuesScreen, TicketPlacement>> = {};
+  for (const { screen } of ISSUES_SCREENS) {
+    const p = v[screen];
+    if (isPlacement(p)) out[screen] = p;
+  }
+  return out;
 }
 
 let placements = $state.raw(readPlacements());
 
+// A ticket opens over the board and beside every list (docs/specs/issues.md, "Pane").
+const DEFAULT_PLACEMENT: Readonly<Record<IssuesScreen, TicketPlacement>> = { board: 'over', time: 'beside' };
+
 /** Where the screen shows a ticket when the pane is wide enough for
- * beside; over until the person chose. Reactive. */
-export function ticketPlacement(screen: TicketScreen): TicketPlacement {
-  return placements[screen] ?? 'over';
+ * beside; the screen's default until the person chose. Reactive. */
+export function ticketPlacement(screen: IssuesScreen): TicketPlacement {
+  return placements[screen] ?? DEFAULT_PLACEMENT[screen];
 }
 
-export function setTicketPlacement(screen: TicketScreen, placement: TicketPlacement): void {
+export function setTicketPlacement(screen: IssuesScreen, placement: TicketPlacement): void {
   const next = { ...placements, [screen]: placement };
   if (writeFrontendValue(PLACEMENT_KEY, next)) placements = next;
 }
@@ -300,21 +342,30 @@ export interface BoardSelection {
   readonly ticket: OpenTicket | null;
   /** Its subscription, null with no ticket. Reactive. */
   readonly ticketAttachment: TrackerTicketAttachment | null;
+  /** The screen the pane shows: the Board or Time. Reactive. */
+  readonly screen: IssuesScreen;
   /** Where the ticket shows now: beside only when the pane fits it and the
-   * person chose it. Reactive. */
+   * screen's placement is beside. Reactive. */
   readonly placement: TicketPlacement;
-  /** Whether the person sees the board: the pane is on screen and no
-   * ticket covers it. The board's subscription votes this. Reactive. */
+  /** Whether the person sees the board: the pane is on screen, shows the
+   * Board and no ticket covers it. The board's subscription votes this.
+   * Reactive. */
   readonly boardShown: boolean;
+  /** Whether the person sees the Time screen, by the same rule. Its week
+   * is read only while it is. Reactive. */
+  readonly timeShown: boolean;
   /** How many tickets Back steps through before it closes the ticket.
    * Reactive. */
   readonly trail: number;
   /** The person picked `ref`: shown and saved for the next pane. A pick of
    * the board shown while it has ended subscribes it again. */
   pick(ref: TrackerBoardRef): void;
-  /** Opens issue `issue` of the board's connection: from the board, or
-   * from the ticket open now, which Back then returns to. */
-  openTicket(issue: string, seed: TicketSeed, from: 'board' | 'ticket'): void;
+  /** Switches the screen: saved for the next pane; the ticket open and
+   * its trail close. */
+  setScreen(screen: IssuesScreen): void;
+  /** Opens issue `issue` of the board's connection: from the screen's
+   * list, or from the ticket open now, which Back then returns to. */
+  openTicket(issue: string, seed: TicketSeed, from: 'list' | 'ticket'): void;
   /** Back: the ticket this one was opened from, else closes it. */
   stepBack(): void;
   /** Close: the ticket goes, and the tickets it was opened from. */
@@ -377,10 +428,13 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   let ticket = $state.raw<OpenTicket | null>(null);
   let trail = $state.raw<readonly OpenTicket[]>([]);
   let ticketAttachment = $state.raw<TrackerTicketAttachment | null>(null);
-  const placement: TicketPlacement = $derived(opts.besideFits() ? ticketPlacement('board') : 'over');
-  // The one rule for whether the board is seen: the pane on screen, and no
-  // ticket over it.
-  const boardShown = $derived(opts.shown() && !(ticket && placement === 'over'));
+  let screen = $state<IssuesScreen>(savedScreen());
+  const placement: TicketPlacement = $derived(opts.besideFits() ? ticketPlacement(screen) : 'over');
+  // The one rule for whether a screen is seen: the pane on screen, showing
+  // it, and no ticket over it.
+  const listShown = $derived(opts.shown() && !(ticket && placement === 'over'));
+  const boardShown = $derived(listShown && screen === 'board');
+  const timeShown = $derived(listShown && screen === 'time');
   // The board on its computer: the ticket and its trail go when it changes,
   // and stay when only the project listing it does.
   const boardOnComputer = $derived(board ? trackerBoardOnComputer(board) : null);
@@ -500,9 +554,18 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     get choosing() { return choosing; },
     get ticket() { return ticket; },
     get ticketAttachment() { return ticketAttachment; },
+    get screen() { return screen; },
     get placement() { return placement; },
     get boardShown() { return boardShown; },
+    get timeShown() { return timeShown; },
     get trail() { return trail.length; },
+    setScreen(next) {
+      writeFrontendValue(SCREEN_KEY, next);
+      if (next === screen) return;
+      screen = next;
+      ticket = null;
+      trail = [];
+    },
     openTicket(issue, seed, from) {
       if (!board || ticket?.ref.issue === issue) return;
       const next: OpenTicket = { ref: { backend: board.backend, connection: board.connection, issue }, seed };
