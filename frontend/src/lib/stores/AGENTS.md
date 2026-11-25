@@ -49,7 +49,10 @@ exists. Use `transport/entityScopes.ts` for entity scope checks and
 
 Scope grants are transport facts, not store state. Import `hasScope` directly
 from `transport/scopes.ts`; do not wrap or re-export it. A passive loader checks
-the exact RPC scope before firing. Mount effects may rely on scope reactivity,
+the exact RPC scope before firing, except a read whose answer is what says
+a computer lacks the feature or refuses this device (the tracker
+connections): it asks whatever the grant, and that answer stands until the
+computer connects again (`trackerConnections.svelte.ts`). Mount effects may rely on scope reactivity,
 but one-shot startup work must await `pageGrantsResolved()`. A thread switch can
 run before the manifest from the replica catalog and must not wait for it: its
 gated legs check `pageGrantsKnown()` and run from `pageGrantsResolved()`.

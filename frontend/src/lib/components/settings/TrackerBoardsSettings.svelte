@@ -82,7 +82,7 @@
   let choosable = $derived(connections.filter((c) => c.enabled && c.kind !== 'tempo'));
   let listed = $derived(new Set(list.map((b) => `${b.connection}\u0000${b.board}`)));
 
-  let gate = $derived(trackerReadGate(connectionsView, scopeGrant('tracker:read')));
+  let gate = $derived(trackerReadGate(connectionsView));
   let operateGrant = $derived(scopeGrant('tracker:operate'));
   let operateReason = $derived(
     operateGrant === 'granted'
@@ -125,17 +125,9 @@
     return connectionById.get(board.connection)?.enabled ?? board.connection_enabled;
   }
 
-  // Why Add cannot open, '' when it can: the picker lists the held
-  // connections, so a list that failed or has not loaded is said as that.
-  let addUnavailable = $derived(
-    connectionsView.error !== null && !connectionsView.loaded
-      ? 'The connections could not be read; try again.'
-      : !connectionsView.loaded
-        ? 'Loading the connections…'
-        : choosable.length === 0
-          ? 'Add a Jira or Linear connection first, and turn it on.'
-          : '',
-  );
+  // Why Add cannot open, '' when it can. The page shows its boards only
+  // once the computer answered its connections (trackerReadGate).
+  let addUnavailable = $derived(choosable.length === 0 ? 'Add a Jira or Linear connection first, and turn it on.' : '');
 </script>
 
 <div class="settings-sections flex flex-col gap-4" data-testid="settings-tracker-boards">
@@ -147,6 +139,8 @@
     </p>
   {:else if gate === 'waiting'}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-waiting">Asking this computer about its trackers…</p>
+  {:else if gate === 'failed'}
+    {@render connectionsFailure()}
   {:else if projectsLoaded && projects.length === 0}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-boards-no-projects">
       No projects yet. Add one from the sidebar first.
@@ -260,15 +254,7 @@
           <p class="text-[0.75rem] text-error" role="alert" data-testid="settings-tracker-boards-save-error">{userFacingError(saveError)}</p>
         {/if}
         {#if connectionsView.error !== null}
-          <div class="flex flex-wrap items-center gap-2" role="alert">
-            <p class="text-[0.75rem] text-error" data-testid="settings-tracker-boards-connections-error">{userFacingError(connectionsView.error)}</p>
-            <button
-              type="button"
-              class={GHOST_BUTTON_CLASS}
-              onclick={() => void refreshTrackerConnections(backend)}
-              data-testid="settings-tracker-boards-connections-retry"
-            >Try again</button>
-          </div>
+          {@render connectionsFailure()}
         {/if}
         {#if boards.loaded}
           {#key selectedId}
@@ -287,3 +273,15 @@
     {/if}
   {/if}
 </div>
+
+{#snippet connectionsFailure()}
+  <div class="flex flex-wrap items-center gap-2" role="alert">
+    <p class="text-[0.75rem] text-error" data-testid="settings-tracker-boards-connections-error">{userFacingError(connectionsView.error)}</p>
+    <button
+      type="button"
+      class={GHOST_BUTTON_CLASS}
+      onclick={() => void refreshTrackerConnections(backend)}
+      data-testid="settings-tracker-boards-connections-retry"
+    >Try again</button>
+  </div>
+{/snippet}

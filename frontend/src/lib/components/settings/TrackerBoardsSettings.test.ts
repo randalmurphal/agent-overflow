@@ -8,7 +8,7 @@ import { trackerBoardChoice, trackerConnection } from '../../../test/helpers/tra
 import { noteProject } from '../../transport/entityIndex';
 import { getPinnedBackend } from '../../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
-import { TransportError } from '../../transport/wsClient';
+import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { setCarriedSessionScopes } from '../../transport/scopes';
 import { SCOPES_AT_V0_0_19, answerAsV0019, methodNotFound } from '../../../test/helpers/olderComputer';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
@@ -274,19 +274,20 @@ describe('<TrackerBoardsSettings>', () => {
     expect(screen.getByTestId('tracker-board-row').textContent).toContain('WEB · Work');
   });
 
-  it('says the connections could not be read, with Try again, rather than asking for a connection', async () => {
+  it('says the connections could not be read, with Try again, and offers nothing until they are', async () => {
     const answers: (() => Promise<unknown>)[] = [
       async () => { throw new TransportError('method_error', 'store: disk I/O error', { detail: { ref: 'r', method: 'TrackerConnections', at: 1, chain: ['store: disk I/O error'] } }); },
       async () => [trackerConnection()],
     ];
     setBindingMock('TrackerConnections', () => answers.shift()!());
-    await renderOnP1();
+    render(TrackerBoardsSettings);
     expect((await screen.findByTestId('settings-tracker-boards-connections-error')).textContent).toBe('Store: disk I/O error.');
-    const add = screen.getByTestId('tracker-board-add-open') as HTMLButtonElement;
-    expect(add.disabled).toBe(true);
-    expect(add.title).not.toContain('Add a Jira or Linear connection');
+    // Nothing is offered from connections that were never read.
+    expect(screen.queryByTestId('settings-tracker-boards-project')).toBeNull();
+    expect(screen.queryByTestId('tracker-board-add-open')).toBeNull();
     await fireEvent.click(screen.getByTestId('settings-tracker-boards-connections-retry'));
-    await waitFor(() => expect(add.disabled).toBe(false));
+    const add = (await screen.findByTestId('tracker-board-add-open')) as HTMLButtonElement;
+    expect(add.disabled).toBe(false);
     expect(screen.queryByTestId('settings-tracker-boards-connections-error')).toBeNull();
   });
 
@@ -317,6 +318,15 @@ describe('<TrackerBoardsSettings>', () => {
       expect(view.queryByTestId('settings-tracker-boards-refused')).toBeNull();
       refuse(methodNotFound());
       expect((await view.findByTestId('settings-older-computer')).textContent).toBe('Laptop runs an older version: it has no issue trackers.');
+      expect(view.queryByTestId('settings-tracker-boards-refused')).toBeNull();
+    });
+
+    it('shows an unreachable computer whose grant lacks the tracker scopes as a failure with Try again', async () => {
+      setCarriedSessionScopes('laptop', SCOPES_AT_V0_0_19);
+      setBindingMock('TrackerConnections', async () => { throw new DisconnectedError('socket closed'); });
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: TrackerBoardsSettings, needsComputer: false } });
+      await view.findByTestId('settings-tracker-boards-connections-error');
+      expect(view.getByTestId('settings-tracker-boards-connections-retry')).toBeTruthy();
       expect(view.queryByTestId('settings-tracker-boards-refused')).toBeNull();
     });
 

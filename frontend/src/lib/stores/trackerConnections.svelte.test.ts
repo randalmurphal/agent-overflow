@@ -7,6 +7,7 @@ import {
   removeTrackerConnection,
   setTrackerConnectionEnabled,
   trackerConnectionsOf,
+  trackerReadGate,
   verifyTrackerConnection,
 } from './trackerConnections.svelte';
 import { setupEventListeners } from './events';
@@ -58,7 +59,7 @@ describe('a held connection list', () => {
     expect(trackerConnectionsOf(HOME_BACKEND).loaded).toBe(true);
     second();
     second();
-    expect(trackerConnectionsOf(HOME_BACKEND)).toEqual({ list: [], loaded: false, error: null, older: false });
+    expect(trackerConnectionsOf(HOME_BACKEND)).toEqual({ list: [], loaded: false, error: null, answer: 'none' });
 
     // Nobody holds it: a nudge reads nothing.
     applyTrackerConnectionsChanged(HOME_BACKEND);
@@ -159,17 +160,39 @@ describe('a held connection list', () => {
     answerAsV0019();
     acquireTrackerConnections(HOME_BACKEND);
     await vi.waitFor(() => expect(trackerConnectionsOf(HOME_BACKEND).loaded).toBe(true));
-    expect(trackerConnectionsOf(HOME_BACKEND)).toMatchObject({ list: [], error: null, older: true });
+    expect(trackerConnectionsOf(HOME_BACKEND)).toMatchObject({ list: [], error: null, answer: 'older' });
+    expect(trackerReadGate(trackerConnectionsOf(HOME_BACKEND))).toBe('older');
   });
 
-  it('asks nothing of a computer that does not grant tracker:read', async () => {
+  // A phone's packaged bundle can be newer than its home computer: the
+  // page's own computer is asked as any other, its grant regardless.
+  it('says a home computer on v0.0.19 lacks trackers, with the grants that release gives', async () => {
+    await pairWithScopes(SCOPES_AT_V0_0_19);
+    try {
+      answerAsV0019();
+      acquireTrackerConnections(HOME_BACKEND);
+      await vi.waitFor(() => expect(trackerReadGate(trackerConnectionsOf(HOME_BACKEND))).toBe('older'));
+    } finally {
+      resetToLocalPage();
+    }
+  });
+
+  it('says a typed refusal is a refusal, and asks no more until the computer connects again', async () => {
     await pairWithScopes(['threads:read']);
     try {
-      const read = setBindingMock('TrackerConnections', async () => [trackerConnection()]);
+      const read = setBindingMock('TrackerConnections', async () => {
+        throw new TransportError('scope_required', 'tracker:read required', { scope: 'tracker:read' });
+      });
       acquireTrackerConnections(HOME_BACKEND);
-      await vi.waitFor(() => expect(trackerConnectionsOf(HOME_BACKEND).loaded).toBe(true));
-      expect(read).not.toHaveBeenCalled();
-      expect(trackerConnectionsOf(HOME_BACKEND).list).toEqual([]);
+      await vi.waitFor(() => expect(trackerReadGate(trackerConnectionsOf(HOME_BACKEND))).toBe('refused'));
+      expect(trackerConnectionsOf(HOME_BACKEND)).toMatchObject({ list: [], error: null });
+      expect(read).toHaveBeenCalledTimes(1);
+      window.dispatchEvent(new Event('focus'));
+      await applyAndSettle();
+      expect(read).toHaveBeenCalledTimes(1);
+      __setBackendStatusForTest(HOME_BACKEND, { status: 'reconnecting', nextAttemptAt: null } as never);
+      __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null } as never);
+      await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
     } finally {
       resetToLocalPage();
     }
@@ -275,7 +298,18 @@ describe('two computers', () => {
     answerAsV0019();
     acquireTrackerConnections('laptop');
     await vi.waitFor(() => expect(trackerConnectionsOf('laptop').loaded).toBe(true));
-    expect(trackerConnectionsOf('laptop')).toMatchObject({ older: true, list: [], error: null });
+    expect(trackerConnectionsOf('laptop')).toMatchObject({ answer: 'older', list: [], error: null });
+  });
+
+  // Its grant, cached from an earlier session, holds no tracker scope; the
+  // failed ask says nothing about whether it may.
+  it('shows an unreachable computer whose grant lacks tracker:read as a failure, never as a refusal', async () => {
+    setCarriedSessionScopes('laptop', SCOPES_AT_V0_0_19);
+    setBindingMock('TrackerConnections', async () => { throw new DisconnectedError('socket closed'); });
+    acquireTrackerConnections('laptop');
+    await vi.waitFor(() => expect(trackerConnectionsOf('laptop').error).toBeInstanceOf(DisconnectedError));
+    expect(trackerConnectionsOf('laptop')).toMatchObject({ loaded: false, answer: 'none' });
+    expect(trackerReadGate(trackerConnectionsOf('laptop'))).toBe('failed');
   });
 
   it('keeps a current computer’s refusal of tracker:read a refusal', async () => {
@@ -285,7 +319,7 @@ describe('two computers', () => {
     });
     acquireTrackerConnections('laptop');
     await vi.waitFor(() => expect(trackerConnectionsOf('laptop').loaded).toBe(true));
-    expect(trackerConnectionsOf('laptop')).toMatchObject({ older: false, list: [], error: null });
+    expect(trackerConnectionsOf('laptop')).toMatchObject({ answer: 'refused', list: [], error: null });
   });
 
   it('drops a computer’s list when it is detached', async () => {

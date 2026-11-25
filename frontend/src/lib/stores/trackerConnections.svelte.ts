@@ -16,13 +16,16 @@
 // ID names a connection on the computer that answered it, and nothing
 // else says which computer that is.
 //
-// Whether an attached computer has trackers at all is its answer's to
-// say: a release before them (v0.0.19) has no tracker scope to grant, so
-// its grant never holds tracker:read, and it answers a method it lacks
-// before it checks a grant. So the read goes to an attached computer
-// whatever its grant, and a current one's scope_required is the refusal
-// the page already shows from the grant. The page's own computer runs
-// this release, so there the grant alone decides.
+// Whether a computer has trackers, and whether this device may read them,
+// are its answer's to say, so every computer is asked whatever its grant,
+// the page's own included (a phone's packaged bundle can be newer than its
+// home computer). A release before trackers (v0.0.19) has no tracker
+// scope to grant and answers a method it lacks before it checks a grant:
+// the wrapper answers null, and the answer is `older`. A typed
+// scope_required is `refused`. Either holds until the computer connects
+// again, its only way to another release or another grant, so neither an
+// event nor the window's return asks again. Any other failure is a
+// failure, never a refusal (trackerReadGate).
 
 import { SvelteMap } from 'svelte/reactivity';
 import {
@@ -40,19 +43,18 @@ import {
 } from './bindings';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { attachedBackends, onBackendsChanged, withBackendTarget } from '../transport/backends';
-import { hasScope, pageGrantsResolved, type ScopeGrant } from '../transport/scopes';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { isScopeRefusal } from '../transport/scopeRefusal';
 import { onBackendStatusChange } from './transportStatus.svelte';
 
 class HeldConnections {
   list = $state<TrackerConnection[]>([]);
-  /** A read answered (or there is nothing this session may read); a failed one never sets it. */
+  /** The computer answered: a list, that it has no trackers, or a refusal; a failed read never sets it. */
   loaded = $state(false);
   /** The last read's failure, cleared by the next read that lands. */
   error = $state<unknown>(null);
-  /** The computer's release has no trackers: it does not have the read. */
-  older = $state(false);
+  /** What the computer last answered (`none` before it answered). */
+  answer = $state<TrackerReadAnswer>('none');
   holders = 0;
   dropped = false;
   private running: Promise<void> | null = null;
@@ -78,22 +80,21 @@ class HeldConnections {
     return run;
   }
 
+  /** The computer said no (no trackers, or a refusal) and has not connected again since. */
+  get saidNo(): boolean {
+    return this.answer === 'older' || this.answer === 'refused';
+  }
+
   private async fetch(): Promise<void> {
-    if (this.backend === HOME_BACKEND) await pageGrantsResolved();
     if (this.dropped) return;
-    const granted = hasScope('tracker:read', this.backend);
-    if (!granted && this.backend === HOME_BACKEND) {
-      this.settle([], false);
-      return;
-    }
     try {
       const list = await withBackendTarget(this.backend, () => TrackerConnections());
       if (this.dropped) return;
-      this.settle(list ?? [], list === null);
+      this.settle(list ?? [], list === null ? 'older' : 'list');
     } catch (err) {
       if (this.dropped) return;
-      if (!granted && isScopeRefusal(err)) {
-        this.settle([], false);
+      if (isScopeRefusal(err)) {
+        this.settle([], 'refused');
         return;
       }
       // Once a list was read, a dropped connection keeps it: it is not
@@ -104,9 +105,9 @@ class HeldConnections {
     }
   }
 
-  private settle(list: TrackerConnection[], older: boolean): void {
+  private settle(list: TrackerConnection[], answer: TrackerReadAnswer): void {
     this.list = list;
-    this.older = older;
+    this.answer = answer;
     this.error = null;
     this.loaded = true;
   }
@@ -119,7 +120,9 @@ const held = new SvelteMap<BackendKey, HeldConnections>();
 // list is held.
 function readHeldOnReturn(): void {
   if (document.visibilityState !== 'visible') return;
-  for (const entry of held.values()) void entry.read();
+  for (const entry of held.values()) {
+    if (!entry.saidNo) void entry.read();
+  }
 }
 
 let listening = false;
@@ -144,29 +147,30 @@ function drop(backend: BackendKey, entry: HeldConnections): void {
   syncReturnListener();
 }
 
+/** What a computer answered when asked for its connections. */
+export type TrackerReadAnswer = 'none' | 'list' | 'older' | 'refused';
+
 /** What a surface shows for a computer's connections. */
 export interface TrackerConnectionsView {
   list: readonly TrackerConnection[];
   loaded: boolean;
   error: unknown;
-  /** The computer's release has no trackers. */
-  older: boolean;
+  answer: TrackerReadAnswer;
 }
 
-const NONE: TrackerConnectionsView = { list: [], loaded: false, error: null, older: false };
+const NONE: TrackerConnectionsView = { list: [], loaded: false, error: null, answer: 'none' };
 
 /**
- * What a tracker page shows for its computer, from its connections and
- * its grant of tracker:read: `older` when the computer's release has no
- * trackers, `refused` once a current computer answered while its grant
- * refuses, `waiting` while an attached computer whose grant refuses has
- * not answered (only its answer says which of the two it is), otherwise
- * `open`.
+ * What a tracker page shows for its computer, from its answer alone:
+ * `older` when its release has no trackers, `refused` when it refused this
+ * device, `failed` when no answer came and the ask failed (shown with Try
+ * again, never as a refusal), `waiting` before any answer, otherwise
+ * `open` (a later failure shows beside the list).
  */
-export function trackerReadGate(view: TrackerConnectionsView, grant: ScopeGrant): 'older' | 'refused' | 'waiting' | 'open' {
-  if (view.older) return 'older';
-  if (grant !== 'refused') return 'open';
-  return view.loaded || view.error !== null ? 'refused' : 'waiting';
+export function trackerReadGate(view: TrackerConnectionsView): 'older' | 'refused' | 'failed' | 'waiting' | 'open' {
+  if (view.answer === 'older' || view.answer === 'refused') return view.answer;
+  if (view.answer === 'list') return 'open';
+  return view.error !== null ? 'failed' : 'waiting';
 }
 
 /**
@@ -197,9 +201,13 @@ export function trackerConnectionsOf(backend: BackendKey): TrackerConnectionsVie
   return held.get(backend) ?? NONE;
 }
 
-/** Read `backend`'s connections again if a surface holds them. */
+/**
+ * Read `backend`'s connections again if a surface holds them, unless the
+ * computer said no: that holds until it connects again.
+ */
 export function refreshTrackerConnections(backend: BackendKey): Promise<void> {
-  return held.get(backend)?.read() ?? Promise.resolve();
+  const entry = held.get(backend);
+  return entry && !entry.saidNo ? entry.read() : Promise.resolve();
 }
 
 /** `tracker:connections_updated`, or a gap on it, from `backend`. */
@@ -252,8 +260,10 @@ export function removeTrackerConnection(backend: BackendKey, id: string): Promis
 
 // A reconnect may follow a restart, which forgets every problem a row
 // showed, and the events missed while away are not all replayed.
+// Connecting again is the one way a computer that said no can answer
+// otherwise (another release, another session's grant).
 onBackendStatusChange((backend, status) => {
-  if (status.status === 'connected') void refreshTrackerConnections(backend);
+  if (status.status === 'connected') void held.get(backend)?.read();
 });
 
 // A computer detached: its list goes with it.

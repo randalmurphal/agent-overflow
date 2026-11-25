@@ -23,7 +23,7 @@
   onMount(() => acquireTrackerConnections(backend));
 
   let view = $derived(trackerConnectionsOf(backend));
-  let gate = $derived(trackerReadGate(view, scopeGrant('tracker:read')));
+  let gate = $derived(trackerReadGate(view));
   let operateGrant = $derived(scopeGrant('tracker:operate'));
   let operateReason = $derived(
     operateGrant === 'granted'

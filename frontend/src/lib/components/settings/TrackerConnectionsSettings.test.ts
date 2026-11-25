@@ -7,7 +7,7 @@ import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { KeyFileState, trackerConnection } from '../../../test/helpers/trackerConnections';
 import { SCOPES_AT_V0_0_19, answerAsV0019 } from '../../../test/helpers/olderComputer';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { TransportError } from '../../transport/wsClient';
+import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { setCarriedSessionScopes } from '../../transport/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
@@ -317,12 +317,22 @@ describe('<TrackerConnectionsSettings>', () => {
     expect((screen.getByTestId('tracker-connection-add') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('says so to a device that may not read the connections, and asks nothing', async () => {
+  it('says so to a device the computer refuses, once it refused', async () => {
     await pairWithScopes(['threads:read']);
-    const read = setBindingMock('TrackerConnections', vi.fn(async () => rows));
+    const read = setBindingMock('TrackerConnections', vi.fn(async () => {
+      throw new TransportError('scope_required', 'tracker:read required', { scope: 'tracker:read' });
+    }));
     render(TrackerConnectionsSettings);
     await screen.findByTestId('settings-tracker-connections-refused');
-    expect(read).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a home computer on v0.0.19 has no issue trackers, with the grants that release gives', async () => {
+    await pairWithScopes(SCOPES_AT_V0_0_19);
+    answerAsV0019();
+    render(TrackerConnectionsSettings);
+    expect((await screen.findByTestId('settings-older-computer')).textContent).toBe('This computer runs an older version: it has no issue trackers.');
+    expect(screen.queryByTestId('settings-tracker-connections-refused')).toBeNull();
   });
 
   it('shows a failed read with Try again', async () => {
@@ -358,6 +368,20 @@ describe('<TrackerConnectionsSettings>', () => {
       expect((await view.findByTestId('settings-older-computer')).textContent).toBe('Laptop runs an older version: it has no issue trackers.');
       expect(view.queryByTestId('settings-tracker-connections-refused')).toBeNull();
       expect(view.queryByTestId('tracker-connection-add')).toBeNull();
+    });
+
+    it('shows an unreachable computer whose grant lacks the tracker scopes as a failure with Try again', async () => {
+      setCarriedSessionScopes('laptop', SCOPES_AT_V0_0_19);
+      const answers: (() => Promise<TrackerConnection[] | null>)[] = [
+        async () => { throw new DisconnectedError('socket closed'); },
+        async () => [trackerConnection()],
+      ];
+      setBindingMock('TrackerConnections', () => answers.shift()!());
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: TrackerConnectionsSettings, needsComputer: false } });
+      await view.findByTestId('settings-tracker-connections-error');
+      expect(view.queryByTestId('settings-tracker-connections-refused')).toBeNull();
+      await fireEvent.click(view.getByRole('button', { name: 'Try again' }));
+      await view.findByTestId('tracker-connection-jira-1');
     });
 
     it('keeps a current computer’s refusal of tracker:read a refusal', async () => {
