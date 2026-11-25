@@ -42,7 +42,7 @@
 // read by then, or the read failed. The view changes only from the
 // tracker's answer; nothing is written over it before.
 //
-// What each outcome shows is in `trackerTicketModel.ts#writeOutcome`.
+// The send and what each outcome shows are `trackerWriteOutcome.ts`'s.
 
 import { SvelteMap } from 'svelte/reactivity';
 import type {
@@ -72,9 +72,8 @@ import {
   type CommentChange,
   type TrackerTicketRef,
 } from './trackerTicket.svelte';
-import { lostWriteSentence, refusalSentence, writeOutcome, type WriteOutcome } from './trackerTicketModel';
+import { refusalSentence, sendWrite, TICKET_SUBJECT, type WriteOutcome } from './trackerWriteOutcome';
 import { withBackendTarget } from '../transport/backends';
-import { DisconnectedError } from '../transport/wsClient';
 
 /** The ticket a write is made to, as the screen holds it. */
 export interface TicketWriteContext {
@@ -254,15 +253,7 @@ async function write(
   // The draft as it was sent: Save anyway is for it alone.
   const sent = drafts.get(k)?.revision;
   writes.set(k, { pending: true, outcome: null, saveAnyway: null });
-  let outcome: WriteOutcome;
-  try {
-    const view = await withBackendTarget(t.ref.backend, () => send(acceptLoss));
-    outcome = writeOutcome(view);
-  } catch (err) {
-    outcome = err instanceof DisconnectedError
-      ? { kind: 'lost', message: lostWriteSentence(computerName(t.ref.backend)) }
-      : { kind: 'failed', error: err };
-  }
+  const outcome = await sendWrite(t.ref.backend, computerName(t.ref.backend), TICKET_SUBJECT, () => send(acceptLoss));
   if (outcome.kind === 'applied') await trackerTicketSettled(t.key, comment);
   // The ticket changed since it was read: read it again, so the person
   // sees what the tracker holds before trying again.

@@ -53,6 +53,7 @@ import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app
 import { getToasts } from '../../stores/toast.svelte';
 import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
 import { ticketDraft } from '../../stores/trackerTicketWrites.svelte';
+import { localDay, mondayOf } from '../../stores/trackerTimeModel';
 
 // The project of the thread the pane was opened from (toolPanes owns it).
 const openedFrom = vi.hoisted(() => ({ project: null as string | null }));
@@ -2141,5 +2142,114 @@ describe('the ticket in the pane', () => {
     expect(page).toHaveBeenCalledWith('c1', '1', 'page-2');
     expect(mounted()[0]).toBe('old9');
     expect(within(screen).queryByTestId('ticket-comments-earlier')).toBeNull();
+  });
+});
+
+/** Switches the pane to `label` through its folded tab picker (jsdom
+ * measures the pane 0 wide). */
+async function switchTo(view: ReturnType<typeof mount>, label: 'Board' | 'Time'): Promise<void> {
+  await fireEvent.click(await view.findByTestId('issues-tabs-picker'));
+  const option = within(menu()).getAllByTestId('issues-tab-option').find((o) => o.textContent?.includes(label))!;
+  await fireEvent.click(option);
+}
+
+describe('the Time screen in the pane', () => {
+  beforeAll(async () => {
+    await import('./TimeScreen.svelte');
+    await import('./TicketScreen.svelte');
+  });
+
+  // On this week's Monday, which the screen opens on.
+  const worklog = { id: '501', issue: '1', key: 'WEB-1', title: 'Issue 1', author: 'acc-user1', day: mondayOf(localDay(new Date())), spent_seconds: 3600, updated: 1 };
+
+  it('switches to Time, reads the person\'s week on the board\'s connection, votes the board hidden, and opens on Time next', async () => {
+    const mocks = install();
+    const stored = setBindingMock('TrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-screen');
+    await waitFor(() => expect(stored).toHaveBeenCalled());
+    expect(stored.mock.calls[0].slice(0, 2)).toEqual(['c1', 'acc-user1']);
+    // The board is not mounted on Time, and its subscription is voted hidden.
+    expect(view.queryAllByTestId('issues-card')).toHaveLength(0);
+    await waitFor(() => expect(votes(mocks.visible, 'sub-')).toEqual([false]));
+    // Only mine, Display and Search are the board's.
+    expect(view.queryByTestId('issues-only-mine')).toBeNull();
+    expect(view.queryByTestId('issues-display')).toBeNull();
+    expect(view.queryByTestId('issues-search')).toBeNull();
+    expect(view.getByTestId('issues-tabs-picker')).toHaveTextContent('Time');
+    view.unmount();
+    const again = mount();
+    expect(await again.findByTestId('time-screen')).toBeInTheDocument();
+    again.unmount();
+  });
+
+  it("switches to the Board on the ticket's board for a ticket asked for from outside the pane, and opens on Time next", async () => {
+    const mocks = install({ choices: [choice('1', { opens_first: true }), choice('5', { connection: 'c2', project: 'p2' })] });
+    installTicket();
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-screen');
+    const ask = (connection: string, issue: string) => requestTicketOpen({
+      ref: { backend: HOME_BACKEND, connection, issue }, seed: { key: `WEB-${issue}`, title: 'Linked', card: null }, project: null, unplaced: vi.fn(),
+    });
+    // Of the board shown.
+    ask('c1', '77');
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('77'));
+    expect(view.getByTestId('issues-tabs-picker')).toHaveTextContent('Board');
+    expect(view.queryByTestId('time-screen')).toBeNull();
+    // Of another connection's board, from Time again.
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-screen');
+    ask('c2', '88');
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('88'));
+    expect(mocks.subscribe).toHaveBeenLastCalledWith('p2', 'c2', '5', [], false);
+    expect(view.getByTestId('issues-tabs-picker')).toHaveTextContent('Board');
+    view.unmount();
+    // The person's screen stays Time; the switch was the request's.
+    const again = mount();
+    expect(await again.findByTestId('time-screen')).toBeInTheDocument();
+    again.unmount();
+  });
+
+  it('refreshes the week from the header', async () => {
+    install();
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [] }));
+    const refresh = setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [] }));
+    const view = mount();
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-toolbar');
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await fireEvent.click(view.getByTestId('issues-refresh'));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  });
+
+  it('opens an entry\'s ticket through the pane\'s one ticket host, and a switch of screen closes it', async () => {
+    install();
+    const ticket = installTicket();
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    const view = mount();
+    await switchTo(view, 'Time');
+    await fireEvent.click(await view.findByTestId('time-entry-key'));
+    await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1'));
+    expect(ticket.subscribe).toHaveBeenCalledWith('c1', '1', true);
+    await switchTo(view, 'Board');
+    await waitFor(() => expect(view.queryByTestId('issues-ticket')).toBeNull());
+    await view.findAllByTestId('issues-card');
+  });
+
+  it('says a Linear board has no time tracking, and reads nothing', async () => {
+    install({ choices: [choice('1', { opens_first: true, connection_kind: 'linear' })] });
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Time');
+    expect(await view.findByTestId('time-linear')).toBeInTheDocument();
+    expect(getBindingMock('TrackerWorklogs')?.mock.calls ?? []).toHaveLength(0);
   });
 });

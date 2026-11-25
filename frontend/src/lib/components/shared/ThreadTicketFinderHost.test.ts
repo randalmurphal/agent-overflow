@@ -64,6 +64,25 @@ describe('<ThreadTicketFinderHost>', () => {
     expect(body().queryByTestId('ticket-picker-find')).toBeNull();
   });
 
+  it('links a ticket one connection found while another refused the search, naming the one that refused', async () => {
+    const thread = makeThread();
+    prependThread(thread);
+    setBindingMock('TrackerConnections', async () => CONNECTIONS);
+    setBindingMock('TrackerLookup', async (connection: string): Promise<LookupView> => {
+      if (connection === 'jira-on') throw new Error('the token was refused');
+      return { found: [{ key: 'APP-2', card: { id: 'lin-2', key: 'APP-2', title: 'Login page' } as CardView }] } as LookupView;
+    });
+    const set = setBindingMock('SetThreadTicket', async () => ({ ...thread, ticketLink: { key: 'APP-2' } }));
+    open(thread);
+    await fireEvent.input(await body().findByTestId('ticket-picker-find'), { target: { value: 'app-2' } });
+    await waitFor(() => expect(body().getAllByTestId('ticket-picker-item')).toHaveLength(1));
+    expect(body().getByTestId('ticket-picker-partial')).toHaveTextContent('Work Jira');
+    await fireEvent.click(body().getByTestId('ticket-picker-item'));
+    await waitFor(() => expect(set).toHaveBeenCalledWith('thread-1', { kind: 'linear', site: 'example', issueId: 'lin-2' }));
+    await waitFor(() => expect(getThreadById('thread-1')?.ticketLink?.key).toBe('APP-2'));
+    expect(toastTexts()).toEqual([]);
+  });
+
   it('says the computer has no connection to link through, and closes', async () => {
     setBindingMock('TrackerConnections', async () => [CONNECTIONS[2], CONNECTIONS[3]]);
     open(makeThread());
