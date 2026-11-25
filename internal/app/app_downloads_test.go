@@ -159,9 +159,15 @@ func TestASaveCutAfterItsFirstByteLeavesNoFile(t *testing.T) {
 			t.Errorf("hijack: %v", err)
 			return
 		}
-		defer conn.Close()
-		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
-		_ = buf.Flush()
+		if _, err := buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial"); err != nil {
+			t.Errorf("write the partial answer: %v", err)
+		}
+		if err := buf.Flush(); err != nil {
+			t.Errorf("flush the partial answer: %v", err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Errorf("cut the answer: %v", err)
+		}
 	}))
 	defer srv.Close()
 	app := &App{configDir: t.TempDir(), downloadsIsolated: true}
@@ -172,8 +178,10 @@ func TestASaveCutAfterItsFirstByteLeavesNoFile(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
 		wrote, err = io.Copy(w, resp.Body)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("close the cut answer: %v", closeErr)
+		}
 		return err
 	})
 	if err == nil || wrote != int64(len("partial")) {
