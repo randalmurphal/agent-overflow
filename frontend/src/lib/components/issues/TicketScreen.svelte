@@ -42,6 +42,7 @@
   import TicketField, { type FieldEditor } from './TicketField.svelte';
   import TicketHistory from './TicketHistory.svelte';
   import TicketText from './TicketText.svelte';
+  import TicketWriteNote from './TicketWriteNote.svelte';
   import TypeIcon from './TypeIcon.svelte';
   import type { PickItem } from './TicketPicker.svelte';
   import { formatEstimate } from './boardFormat';
@@ -115,6 +116,9 @@
   const linear = $derived(kind === 'linear');
   const ctx: TicketWriteContext = $derived({ key: attachment.key, ref: attachment.ref, label: card?.key || seed.key });
   const section = (id: string) => ({ backend: attachment.ref.backend, connection: attachment.ref.connection, section: id });
+
+  // The targets of the narrow row's fields, whose notes the row shows.
+  const CARD_TARGETS = ['status', fieldTarget('assignee'), fieldTarget('priority'), 'points'] as const;
 
   let width = $state(0);
   const narrow = $derived(width > 0 && width < NARROW_PX);
@@ -371,15 +375,15 @@
 </script>
 
 {#snippet cardFields(rail: boolean)}
-  <TicketField bind:this={() => (rail ? statusField : statusRow), (v) => { if (rail) statusField = v; else statusRow = v; }} label="Status" field="status" value={card?.status.name ?? ''} editor={statusEditor} ticketKey={ctx.key} target="status" {fieldName}>
+  <TicketField bind:this={() => (rail ? statusField : statusRow), (v) => { if (rail) statusField = v; else statusRow = v; }} label="Status" field="status" value={card?.status.name ?? ''} editor={statusEditor} ticketKey={ctx.key} target="status" {fieldName} inline={!rail}>
     {#snippet mark()}<StatusMark group={card?.status.group} />{/snippet}
   </TicketField>
-  <TicketField bind:this={() => (rail ? assigneeField : assigneeRow), (v) => { if (rail) assigneeField = v; else assigneeRow = v; }} label="Assignee" field="assignee" value={card?.assignee ? card.assignee.name || 'Unknown user' : ''} editor={assigneeEditor} ticketKey={ctx.key} target={fieldTarget('assignee')} {fieldName} />
-  <TicketField bind:this={() => (rail ? priorityField : priorityRow), (v) => { if (rail) priorityField = v; else priorityRow = v; }} label="Priority" field="priority" value={card?.priority?.name ?? ''} editor={priorityEditor} ticketKey={ctx.key} target={fieldTarget('priority')} {fieldName}>
+  <TicketField bind:this={() => (rail ? assigneeField : assigneeRow), (v) => { if (rail) assigneeField = v; else assigneeRow = v; }} label="Assignee" field="assignee" value={card?.assignee ? card.assignee.name || 'Unknown user' : ''} editor={assigneeEditor} ticketKey={ctx.key} target={fieldTarget('assignee')} {fieldName} inline={!rail} />
+  <TicketField bind:this={() => (rail ? priorityField : priorityRow), (v) => { if (rail) priorityField = v; else priorityRow = v; }} label="Priority" field="priority" value={card?.priority?.name ?? ''} editor={priorityEditor} ticketKey={ctx.key} target={fieldTarget('priority')} {fieldName} inline={!rail}>
     {#snippet mark()}<PriorityIcon priority={card?.priority} testId="ticket-priority-mark" />{/snippet}
   </TicketField>
   {#if row && row.unit !== 'none'}
-    <TicketField bind:this={() => (rail ? pointsField : pointsRow), (v) => { if (rail) pointsField = v; else pointsRow = v; }} label={pointsLabel} field="points" value={pointsText} editor={pointsEditor} ticketKey={ctx.key} target="points" {fieldName} />
+    <TicketField bind:this={() => (rail ? pointsField : pointsRow), (v) => { if (rail) pointsField = v; else pointsRow = v; }} label={pointsLabel} field="points" value={pointsText} editor={pointsEditor} ticketKey={ctx.key} target="points" {fieldName} inline={!rail} />
   {/if}
 {/snippet}
 
@@ -444,8 +448,13 @@
     </section>
   {/if}
   {#if narrow}
-    <div class="grid grid-cols-1 gap-x-3 border-b border-border-subtle pb-2 min-[480px]:grid-cols-2" data-testid="ticket-narrow-row">
-      {@render cardFields(false)}
+    <div class="flex flex-col gap-0.5 border-b border-border-subtle pb-2" data-testid="ticket-narrow-row">
+      <div class="flex min-w-0 items-center gap-1">
+        {@render cardFields(false)}
+      </div>
+      {#each CARD_TARGETS as target (target)}
+        <TicketWriteNote ticketKey={ctx.key} {target} {fieldName} />
+      {/each}
     </div>
   {/if}
   {#if detail}

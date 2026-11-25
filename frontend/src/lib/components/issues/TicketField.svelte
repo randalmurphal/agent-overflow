@@ -31,6 +31,9 @@
   // is not a number or not a whole date holds an empty value, as a
   // cleared one does; Enter on it saves nothing and says what the field
   // takes, so a typo never clears the field.
+  //
+  // `inline` is a field of the narrow ticket's one row: its value alone
+  // (the label when empty), and its write's note left to the row.
   import type { Snippet } from 'svelte';
   import TicketPicker from './TicketPicker.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
@@ -50,9 +53,11 @@
     ticketKey: string;
     target: string;
     fieldName: (id: string) => string;
+    inline?: boolean;
   }
 
-  let { label, field, value, mark, editor, ticketKey, target, fieldName }: Props = $props();
+  let { label, field, value, mark, editor, ticketKey, target, fieldName, inline = false }: Props = $props();
+  const empty = $derived(inline ? label : 'None');
 
   const pending = $derived(ticketWrite(ticketKey, target)?.pending ?? false);
   let trigger: HTMLButtonElement | undefined = $state();
@@ -101,9 +106,11 @@
   }
 </script>
 
-<div class="flex flex-col gap-0.5 py-1" data-testid="ticket-field" data-field={field}>
+<div class="flex min-w-0 flex-col gap-0.5 {inline ? 'flex-1' : 'py-1'}" data-testid="ticket-field" data-field={field} title={inline ? label : undefined}>
   <div class="flex min-w-0 items-center gap-2 text-sm">
-    <span class="w-24 shrink-0 truncate text-xs text-fg-muted" title={label}>{label}</span>
+    {#if !inline}
+      <span class="w-24 shrink-0 truncate text-xs text-fg-muted" title={label}>{label}</span>
+    {/if}
     {#if typing && editor?.kind === 'type'}
       <input
         bind:this={input}
@@ -129,19 +136,21 @@
         onclick={edit}
       >
         {@render mark?.()}
-        <span class="min-w-0 truncate {value ? '' : 'text-fg-muted'}">{value || 'None'}</span>
+        <span class="min-w-0 truncate {value ? '' : 'text-fg-muted'}">{value || empty}</span>
       </button>
     {:else}
       <span class="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 text-fg" data-testid="ticket-field-value">
         {@render mark?.()}
-        <span class="min-w-0 truncate {value ? '' : 'text-fg-muted'}">{value || 'None'}</span>
+        <span class="min-w-0 truncate {value ? '' : 'text-fg-muted'}">{value || empty}</span>
       </span>
     {/if}
   </div>
   {#if typing && invalid}
-    <p class="pl-26 text-xs text-error" role="alert" data-testid="ticket-field-invalid">{invalid}</p>
+    <p class="text-xs text-error {inline ? '' : 'pl-26'}" role="alert" data-testid="ticket-field-invalid">{invalid}</p>
   {/if}
-  <div class="pl-26"><TicketWriteNote {ticketKey} {target} {fieldName} /></div>
+  {#if !inline}
+    <div class="pl-26"><TicketWriteNote {ticketKey} {target} {fieldName} /></div>
+  {/if}
 </div>
 {#if editor?.kind === 'pick'}
   <TicketPicker
