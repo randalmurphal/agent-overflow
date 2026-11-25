@@ -1135,6 +1135,26 @@ describe('the ticket in the pane', () => {
     __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
   });
 
+  it('changes the type from the mark in the ticket\'s header', async () => {
+    install();
+    installTicket();
+    const choices = setBindingMock('TrackerChoices', async () => ({ choices: [{ id: 't1', name: 'Task' }, { id: 't2', name: 'Bug' }] }));
+    const edit = setBindingMock('EditTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'edit', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const mark = within(screen).getByTestId('ticket-type-mark');
+    expect(mark.tagName).toBe('BUTTON');
+    await fireEvent.click(mark);
+    const items = await waitFor(() => {
+      const found = within(menu()).getAllByTestId('ticket-picker-item');
+      expect(found).toHaveLength(2);
+      return found;
+    });
+    expect(choices).toHaveBeenCalledWith('c1', { issue: '1' }, 'type', '');
+    await fireEvent.click(items[1]);
+    await waitFor(() => expect(edit).toHaveBeenCalledWith('c1', { issue: '1', fields: [{ field: 'type', value: { kind: 'option', choices: [{ id: 't2' }] } }], accept_loss: false }));
+  });
+
   it('opens a card\'s ticket from the card\'s menu, and copies its key from it', async () => {
     install();
     installTicket();

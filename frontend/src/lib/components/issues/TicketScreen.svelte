@@ -1,9 +1,9 @@
 <script lang="ts">
   // One ticket (docs/specs/issues.md, "Ticket"), loaded on its first open
-  // in its own chunk. The header holds the type mark, key, parent and
-  // title, with Back or Close, over or beside at 900 or wider, Open in the
-  // tracker, Refresh and the ticket's menu (also on a right-click or long
-  // press of the header). At 720 or wider the content is on the left and
+  // in its own chunk. The header holds the type mark (which changes the
+  // type), key, parent and title, with Back or Close, over or beside at
+  // 900 or wider, Open in the tracker, Refresh and the ticket's menu (also
+  // on a right-click or long press of the header). At 720 or wider the content is on the left and
   // the rail of fields on the right; narrower, one row of status,
   // assignee, priority and points sits over the content and Details
   // slides the rail over it. The content is the description, the other
@@ -44,7 +44,7 @@
   import TicketText from './TicketText.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import TypeIcon from './TypeIcon.svelte';
-  import type { PickItem } from './TicketPicker.svelte';
+  import TicketPicker, { type PickItem } from './TicketPicker.svelte';
   import { formatEstimate } from './boardFormat';
   import type {
     CardView,
@@ -212,6 +212,9 @@
 
   const priorityEditor: FieldEditor | null = $derived(detail ? choiceEditor('priority', card?.priority ? [card.priority] : [], { kindName: 'option' }) : null);
   const typeEditor: FieldEditor | null = $derived(detail && !linear ? choiceEditor('type', card?.type ? [card.type] : [], { kindName: 'option' }) : null);
+  // The header's type mark opens the same picker as the rail's Type row.
+  let typeMarkButton: HTMLButtonElement | undefined = $state();
+  let typeMarkPicking = $state(false);
 
   // Points are the row of the board the ticket was opened from, else the
   // first board the mirror shows it on.
@@ -555,7 +558,30 @@
         </IconButton>
       {/if}
       {#if !linear}
-        <TypeIcon type={card?.type} testId="ticket-type-mark" />
+        <button
+          bind:this={typeMarkButton}
+          type="button"
+          class="inline-flex shrink-0 items-center rounded-[var(--radius-control)] p-0.5 hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60 compact:min-h-9 compact:min-w-9 compact:justify-center"
+          aria-label="Type: {card?.type?.name || 'None'}"
+          aria-haspopup="menu"
+          disabled={!typeEditor || (ticketWrite(ctx.key, fieldTarget('type'))?.pending ?? false)}
+          data-testid="ticket-type-mark"
+          onclick={() => { typeMarkPicking = true; }}
+        >
+          <TypeIcon type={card?.type} testId="ticket-type-mark-icon" />
+        </button>
+        {#if typeEditor?.kind === 'pick'}
+          <TicketPicker
+            anchor={typeMarkButton}
+            open={typeMarkPicking}
+            label="Type"
+            load={typeEditor.load}
+            checked={typeEditor.checked}
+            multi={false}
+            onPick={typeEditor.onPick}
+            onClose={() => { typeMarkPicking = false; }}
+          />
+        {/if}
       {/if}
       <span class="shrink-0 text-sm tabular-nums text-fg-muted" data-testid="ticket-key">{card?.key || seed.key}</span>
       {#if card?.parent}
