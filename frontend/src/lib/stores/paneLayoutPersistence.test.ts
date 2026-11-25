@@ -277,7 +277,8 @@ describe('pane layout persistence', () => {
     const thread = makeThread({ id: 'thread-a' });
     installPaneMocks();
     seedPane('left', thread);
-    const saved = { backend: HOME_BACKEND, connection: 'c1', issue: '10001', key: 'WEB-1', title: 'Issue 1', board: '1', kind: 'jira' };
+    // What names the ticket, and nothing a tracker wrote.
+    const saved = { backend: HOME_BACKEND, connection: 'c1', issue: '10001' };
     restoreTicketPane('ticket-a', saved);
     setPaneLayoutItemsForTest([
       { id: 'ticket-a', paneId: 'ticket-a', kind: 'ticket', widthPx: 640 },
@@ -305,11 +306,24 @@ describe('pane layout persistence', () => {
     expect(ticketPaneCarrier('ticket-a')).toEqual(saved);
   });
 
+  it('reads a ticket pane saved with its key, title, board and tracker, and saves it back with none of them', async () => {
+    await installUIStateMock(makeSavedLayout([
+      { paneId: 'ticket-a', kind: 'ticket', widthPx: 640, ticket: { backend: HOME_BACKEND, connection: 'c1', issue: '10001', key: 'WEB-1', title: 'Issue 1', board: '1', kind: 'jira' } },
+    ], 'ticket-a'));
+    await loadPersistedPaneLayout([]);
+    expect(ticketPaneRecord('ticket-a')?.ticket).toEqual({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '10001' }, seed: { key: '', title: '', card: null } });
+    persistPaneLayout();
+    await waitForPaneLayoutPersistenceForTest();
+    expect((persistedPaneLayout() as PaneLayoutPersistedSettings).panes).toEqual([
+      { paneId: 'ticket-a', kind: 'ticket', ticket: { backend: HOME_BACKEND, connection: 'c1', issue: '10001' }, widthPx: 640 },
+    ]);
+  });
+
   it('keeps a ticket pane whose saved ticket does not read back, with no ticket, and saves it so; drops one wearing another id', async () => {
     await installUIStateMock(makeSavedLayout([
-      { paneId: 'ticket-a', kind: 'ticket', widthPx: 640, ticket: { backend: HOME_BACKEND, connection: '', issue: '1', key: 'WEB-1', title: 'x', board: '1', kind: 'jira' } },
+      { paneId: 'ticket-a', kind: 'ticket', widthPx: 640, ticket: { backend: HOME_BACKEND, connection: '', issue: '1' } },
       { paneId: 'ticket-b', kind: 'ticket', widthPx: 640 },
-      { paneId: 'pane-9', kind: 'ticket', widthPx: 640, ticket: { backend: HOME_BACKEND, connection: 'c1', issue: '1', key: 'WEB-1', title: 'x', board: '1', kind: 'jira' } },
+      { paneId: 'pane-9', kind: 'ticket', widthPx: 640, ticket: { backend: HOME_BACKEND, connection: 'c1', issue: '1' } },
     ], null));
     await loadPersistedPaneLayout([]);
     expect(getPaneLayoutItems()).toEqual([

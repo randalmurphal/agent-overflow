@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { OpenTicket } from './issuesPane.svelte';
+import { createTicketTrail, ticketPaneTrailState, type OpenTicket } from './issuesPane.svelte';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
 import { getPaneLayoutItems, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { focusPane, getFocusedPaneId } from './panes.svelte';
@@ -20,7 +20,7 @@ function ticket(issue: string): OpenTicket {
   return { ref: { backend: HOME_BACKEND, connection: 'c1', issue }, seed: { key: `WEB-${issue}`, title: `Issue ${issue}`, card: null } };
 }
 
-const OPTIONS = { board: '1', kind: 'jira' };
+const OPTIONS = { board: '1' };
 
 describe('ticket panes', () => {
   beforeEach(() => {
@@ -42,7 +42,6 @@ describe('ticket panes', () => {
     expect(record.ticket).toBe(open);
     expect(record.trail).toEqual([]);
     expect(record.board).toBe('1');
-    expect(record.kind).toBe('jira');
     expect(record.focus.askedFor(open)).toBe(true);
     record.focus.end();
   });
@@ -105,15 +104,27 @@ describe('ticket panes', () => {
     const paneId = openTicketPane(ticket('1'), OPTIONS);
     setTicketPaneTicket(paneId, ticket('2'), [ticket('1')]);
     expect(ticketPaneRefs().map((ref) => ref.issue)).toEqual(['2', '1']);
-    expect(ticketPaneCarrier(paneId)).toEqual({ backend: HOME_BACKEND, connection: 'c1', issue: '2', key: 'WEB-2', title: 'Issue 2', board: '1', kind: 'jira' });
+    expect(ticketPaneCarrier(paneId)).toEqual({ backend: HOME_BACKEND, connection: 'c1', issue: '2' });
     expect(() => setTicketPaneTicket('tool-issues', ticket('3'), [])).toThrow(/not a ticket pane/);
   });
 
+  it('closes the pane when its trail closes, and refuses to close what is not a ticket pane', () => {
+    const paneId = openTicketPane(ticket('1'), OPTIONS);
+    const trail = createTicketTrail({ state: ticketPaneTrailState(paneId), shown: () => true });
+    trail.close();
+    expect(ticketPaneRecord(paneId)).toBeNull();
+    expect(getPaneLayoutItems().some((item) => item.paneId === paneId)).toBe(false);
+    trail.destroy();
+    expect(() => closeTicketPane('tool-issues')).toThrow(/not a ticket pane/);
+    expect(getPaneLayoutItems().some((item) => item.paneId === 'tool-issues')).toBe(true);
+  });
+
   it('restores a pane on its saved ticket with no trail, asking no focus', () => {
-    restoreTicketPane('ticket-a', { backend: HOME_BACKEND, connection: 'c1', issue: '7', key: 'WEB-7', title: 'Issue 7', board: '1', kind: 'linear' });
+    restoreTicketPane('ticket-a', { backend: HOME_BACKEND, connection: 'c1', issue: '7' });
     const record = ticketPaneRecord('ticket-a')!;
-    expect(record.ticket).toEqual({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '7' }, seed: { key: 'WEB-7', title: 'Issue 7', card: null } });
-    expect(record.kind).toBe('linear');
+    // Its key and title come with its subscription's first answer.
+    expect(record.ticket).toEqual({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '7' }, seed: { key: '', title: '', card: null } });
+    expect(record.board).toBeNull();
     expect(record.focus.askedFor(record.ticket)).toBe(false);
   });
 });

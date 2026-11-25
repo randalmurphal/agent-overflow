@@ -113,6 +113,57 @@ test('a ticket opens in a pane of its own from a card and a link, steps back on 
   await expect.poll(releases).toBe(releasedAfterReload + 1);
 });
 
+test('the pane-navigation chord moves the keyboard focus into a ticket pane while it loads and once it shows a short ticket', async ({ harness, page }) => {
+  test.setTimeout(120_000);
+  // Holds the ticket pane's code, so the pane is still loading when the
+  // chord reaches it.
+  let releaseBody: (() => void) | undefined;
+  const bodyHeld = new Promise<void>((resolve) => { releaseBody = resolve; });
+  await page.route(/\/TicketPaneBody-[^/]*\.js$/, async (route) => {
+    await bodyHeld;
+    await route.continue();
+  });
+  await connectFakeJiraBoard(harness, 'issues-ticket-pane-nav', LINKED, [{
+    title: 'Nav source', provider: 'claude', turns: [{ userText: 'Earlier prompt', items: [{ kind: 'assistant_text', summary: 'Earlier answer' }] }],
+  }]);
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: 'Nav source' }).click();
+  const source = page.locator('section[data-pane-kind="thread"]');
+  const composer = source.getByLabel('Message Input');
+  await expect(composer).toBeVisible();
+  // Beside the thread, not in its place.
+  await page.getByTestId('sidebar-tool-issues').click({ modifiers: ['ControlOrMeta'] });
+  const issues = page.getByTestId('issues-pane');
+  await expect(card(issues, '10105')).toBeVisible({ timeout: 30_000 });
+  await card(issues, '10105').getByTestId('issues-card-open').click({ modifiers: ['ControlOrMeta'] });
+  await expect(page.locator('section[data-pane-id]')).toHaveCount(3);
+  const ticketPane = page.locator('section[data-pane-kind="ticket"]');
+  await expect(ticketPane).toHaveCount(1);
+  const focusInTicketPane = () => page.evaluate(() => !!document.activeElement?.closest('section[data-pane-kind="ticket"]'));
+
+  // Loading: the chord from the composer, through the Issues pane.
+  await composer.click();
+  await composer.fill('kept draft');
+  await page.keyboard.press('Alt+l');
+  await page.keyboard.press('Alt+l');
+  await expect(ticketPane).toHaveAttribute('data-pane-focused', 'true');
+  await expect.poll(focusInTicketPane).toBe(true);
+  await page.keyboard.type('stray');
+  await expect(composer).toHaveValue('kept draft');
+
+  // Shown, a ticket whose content fits: back to the composer, and over again.
+  releaseBody!();
+  await expect(ticketPane.getByTestId('ticket-screen')).toHaveAttribute('data-issue', '10105');
+  await expect(ticketPane.getByTestId('ticket-title')).toHaveText('Moved into a pane');
+  await composer.click();
+  await page.keyboard.press('Alt+l');
+  await page.keyboard.press('Alt+l');
+  await expect(ticketPane).toHaveAttribute('data-pane-focused', 'true');
+  await expect.poll(focusInTicketPane).toBe(true);
+  await page.keyboard.type('stray');
+  await expect(composer).toHaveValue('kept draft');
+});
+
 test('In its own pane moves the ticket open in the Issues pane, with what was typed on it, and the board shows again', async ({ harness, page }) => {
   test.setTimeout(120_000);
   const subscribes = sentCalls(page, 'SubscribeTrackerTicket');

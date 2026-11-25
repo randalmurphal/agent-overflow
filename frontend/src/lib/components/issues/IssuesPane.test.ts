@@ -45,10 +45,11 @@ import {
   requestedTrackerBoardsProject,
 } from '../../stores/settingsOverlay.svelte';
 import { addProjectLocal } from '../../stores/projects.svelte';
-import { demotePane, getPaneLayoutItems, promotePane, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { demotePane, getPaneLayoutItems, getPromotedPaneId, promotePane, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { focusPane, getFocusedPaneId } from '../../stores/panes.svelte';
 import TicketPane from '../panes/TicketPane.svelte';
-import { closeTicketPane, restoreTicketPane, ticketPaneRecord } from '../../stores/ticketPanes.svelte';
+import { closeTicketPane, restoreTicketPane, ticketPaneCarrier, ticketPaneRecord } from '../../stores/ticketPanes.svelte';
+import type { TrackerConnection } from '../../stores/bindings';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 import { SCOPES_AT_V0_0_19 } from '../../../test/helpers/olderComputer';
 import { noteProject } from '../../transport/entityIndex';
@@ -968,7 +969,13 @@ function ticketDetail(id: string, opts: { parent?: string; comments?: number; mo
   } as unknown as DetailView;
 }
 
+/** A connection of this computer, as TrackerConnections lists it. */
+function connection(id: string, kind: 'jira' | 'linear'): TrackerConnection {
+  return { id, kind, site: 'https://example.atlassian.net', account: 'user1@example.com', label: 'Work', enabled: true, verifiedAccountId: 'acc-user1', verifiedName: 'User 1', verifiedAt: 1 } as TrackerConnection;
+}
+
 function installTicket(detailOf: (issue: string) => DetailView = (issue) => ticketDetail(issue)) {
+  setBindingMock('TrackerConnections', async () => [connection('c1', 'jira')]);
   let n = 0;
   const subscribe = setBindingMock('SubscribeTrackerTicket', async (_c: string, issue: string): Promise<TicketSubscription> => {
     n += 1;
@@ -3065,5 +3072,145 @@ describe('a ticket in a pane of its own', () => {
     } finally {
       resetToLocalPage();
     }
+  });
+
+  it('keeps the pane\'s header and its close in every state of its body: a computer gone, too old, or not connected while its grants are pending', async () => {
+    install();
+    const ticket = installTicket();
+    const closes = async (paneId: string, sentence: string) => {
+      setPaneLayoutItemsForTest([{ id: paneId, paneId, kind: 'ticket', widthPx: 600 }]);
+      const pane = mountTicketPane(paneId);
+      expect(await within(pane.container).findByTestId(sentence)).toBeInTheDocument();
+      expect(within(pane.container).getByTestId('tool-pane-header')).toBeInTheDocument();
+      expect(within(pane.container).getByTestId('pane-promote')).toBeInTheDocument();
+      await fireEvent.click(within(pane.container).getByTestId('pane-close'));
+      expect(ticketPaneIds()).toEqual([]);
+      pane.unmount();
+    };
+
+    restoreTicketPane('ticket-g', { backend: 'remote-gone', connection: 'c1', issue: '5' });
+    await closes('ticket-g', 'ticket-computer-gone');
+
+    stageBackend({ status: 'reconnecting' });
+    try {
+      restoreTicketPane('ticket-w', { backend: 'laptop', connection: 'c1', issue: '5' });
+      await closes('ticket-w', 'ticket-computer-offline');
+    } finally {
+      resetStagedBackends();
+    }
+
+    await pairWithScopes([...SCOPES_AT_V0_0_19]);
+    try {
+      restoreTicketPane('ticket-o', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
+      await closes('ticket-o', 'ticket-computer-gone');
+    } finally {
+      resetToLocalPage();
+    }
+    expect(ticket.subscribe).not.toHaveBeenCalled();
+  });
+
+  it('says so in the pane when its computer is not connected, and not that the ticket is opening', async () => {
+    install();
+    installTicket();
+    stageBackend({ status: 'reconnecting' });
+    try {
+      restoreTicketPane('ticket-w', { backend: 'laptop', connection: 'c1', issue: '5' });
+      setPaneLayoutItemsForTest([{ id: 'ticket-w', paneId: 'ticket-w', kind: 'ticket', widthPx: 600 }]);
+      const pane = mountTicketPane('ticket-w');
+      expect(await within(pane.container).findByTestId('ticket-computer-offline')).toHaveTextContent('Laptop is not connected');
+      expect(within(pane.container).queryByText(/Opening the ticket/)).toBeNull();
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  it('maximizes from its header: the shared control, and a double-click on its key', async () => {
+    placeIssuesPane();
+    install();
+    installTicket();
+    const view = mount();
+    await within(view.container).findAllByTestId('issues-card');
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    const [paneId] = ticketPaneIds();
+    const pane = mountTicketPane(paneId);
+    const screen = await paneScreen(pane, '1');
+    await fireEvent.click(within(pane.container).getByTestId('pane-promote'));
+    expect(getPromotedPaneId()).toBe(paneId);
+    await fireEvent.click(within(pane.container).getByTestId('pane-promote'));
+    expect(getPromotedPaneId()).toBeNull();
+    await fireEvent.dblClick(within(screen).getByTestId('ticket-key'));
+    expect(getPromotedPaneId()).toBe(paneId);
+    await fireEvent.dblClick(within(screen).getByTestId('ticket-key'));
+    expect(getPromotedPaneId()).toBeNull();
+  });
+
+  it('reads its tracker from the connection: no Jira control on a Linear ticket opened before the board list answered, and none of either before the connection is known', async () => {
+    placeIssuesPane();
+    writeFromAnotherWindow(BOARD_KEY, boardRef('1'));
+    let listBoards: ((choices: BoardChoice[]) => void) | undefined;
+    install();
+    installTicket();
+    setBindingMock('TrackerBoardChoices', () => new Promise<BoardChoice[]>((resolve) => { listBoards = resolve; }));
+    let listConnections: ((list: TrackerConnection[]) => void) | undefined;
+    setBindingMock('TrackerConnections', () => new Promise<TrackerConnection[]>((resolve) => { listConnections = resolve; }));
+    const view = mount();
+    await within(view.container).findAllByTestId('issues-card');
+    expect(listBoards).toBeDefined();
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    const [paneId] = ticketPaneIds();
+    const pane = mountTicketPane(paneId);
+    const screen = await paneScreen(pane, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-title')).toHaveTextContent('Issue 1'));
+    // Not known yet: neither tracker's own controls.
+    expect(within(screen).queryByTestId('ticket-type-mark')).toBeNull();
+    expect(within(screen).queryByTestId('ticket-estimate')).toBeNull();
+    await waitFor(() => expect(listConnections).toBeDefined());
+    listConnections!([connection('c1', 'linear')]);
+    listBoards!([choice('1', { opens_first: true, connection_kind: 'linear' })]);
+    await waitFor(() => expect(within(screen).getByTestId('ticket-comment-input')).toBeInTheDocument());
+    await tick();
+    expect(within(screen).queryByTestId('ticket-type-mark')).toBeNull();
+    expect(within(screen).queryByTestId('ticket-estimate')).toBeNull();
+    // Nothing of the tracker is kept with the pane.
+    expect(ticketPaneCarrier(paneId)).toEqual({ backend: HOME_BACKEND, connection: 'c1', issue: '1' });
+  });
+
+  it('shows a restored pane\'s key and title once its subscription answers, and names it Ticket before', async () => {
+    install();
+    let answer: ((sub: TicketSubscription) => void) | undefined;
+    setBindingMock('SubscribeTrackerTicket', () => new Promise<TicketSubscription>((resolve) => { answer = resolve; }));
+    setBindingMock('TrackerConnections', async () => [connection('c1', 'jira')]);
+    restoreTicketPane('ticket-r', { backend: HOME_BACKEND, connection: 'c1', issue: '5' });
+    setPaneLayoutItemsForTest([{ id: 'ticket-r', paneId: 'ticket-r', kind: 'ticket', widthPx: 600 }]);
+    const pane = mountTicketPane('ticket-r');
+    const screen = await paneScreen(pane, '5');
+    expect(within(screen).getByTestId('ticket-key')).toHaveTextContent('Ticket');
+    expect(within(screen).getByTestId('ticket-title')).toHaveTextContent('');
+    await waitFor(() => expect(answer).toBeDefined());
+    answer!({ id: 'ticket-5-1', seq: 10, poll_every: 10_000, loaded: true, detail: ticketDetail('5'), read_at: Date.now() } as TicketSubscription);
+    await waitFor(() => expect(within(screen).getByTestId('ticket-key')).toHaveTextContent('WEB-5'));
+    expect(within(screen).getByTestId('ticket-title')).toHaveTextContent('Issue 5');
+  });
+
+  it('offers the parent\'s own actions on a right-click of it, in the Issues pane and in a ticket pane, never the ticket that shows it', async () => {
+    placeIssuesPane();
+    install();
+    installTicket((issue) => ticketDetail(issue, { parent: String(Number(issue) + 10) }));
+    const view = mount();
+    const here = await openHere(view, '1');
+    await fireEvent.contextMenu(within(here).getByTestId('ticket-parent'));
+    expect(within(document.body).queryByTestId('ticket-menu-own-pane')).toBeNull();
+    expect(await within(document.body).findByTestId('ticket-parent-menu-copy-key')).toHaveTextContent('Copy key');
+    await fireEvent.click(within(document.body).getByTestId('ticket-parent-menu-own-pane'));
+    expect(ticketPaneIds().map((id) => ticketPaneRecord(id)!.ticket.ref.issue)).toEqual(['11']);
+    expect(issuesTicket(view)?.dataset.issue).toBe('1');
+
+    const pane = mountTicketPane(ticketPaneIds()[0]);
+    const inPane = await paneScreen(pane, '11');
+    await fireEvent.contextMenu(within(inPane).getByTestId('ticket-parent'));
+    await fireEvent.click(await within(document.body).findByTestId('ticket-parent-menu-open'));
+    await paneScreen(pane, '21');
+    expect(ticketPaneIds()).toHaveLength(1);
+    expect(issuesTicket(view)?.dataset.issue).toBe('1');
   });
 });
