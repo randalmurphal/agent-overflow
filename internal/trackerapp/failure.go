@@ -299,6 +299,8 @@ func timeAnsweredParts(timeBy string, res tracker.Result) tracker.Result {
 			parts[i].Outcome = tracker.Unknown(err)
 		case tracker.StateNotSent:
 			parts[i].Outcome = tracker.NotSent(err)
+		case tracker.StateApplied:
+			// An applied part has no error, so the loop skipped it.
 		}
 	}
 	res.Parts = parts
