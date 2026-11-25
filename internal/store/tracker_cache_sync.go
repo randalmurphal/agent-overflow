@@ -143,7 +143,7 @@ var (
 	// mirrorWorklogSourceGenSQL is live root ?1's connection's time source
 	// generation (migration v168).
 	mirrorWorklogSourceGenSQL = `SELECT c.time_source_gen FROM tracker_cache_roots r
-		JOIN tracker_connections c ON c.id = r.connection_id WHERE r.id = ?1`
+		JOIN tracker_connections c ON c.id = r.connection_id WHERE r.id = CAST(?1 AS INTEGER)`
 )
 
 // ReplaceMirrorWorklogs makes logs the whole of authorID's worklogs whose
@@ -244,7 +244,7 @@ const mirrorRootLiveSQL = `EXISTS (SELECT 1 FROM tracker_cache_roots live_root W
 // mirrorAuthorWorklogsSQL reads root ?1's worklogs of author ?2 from day
 // ?3 to ?4, by day and ID, at most mirrorWorklogLimit and one more.
 var mirrorAuthorWorklogsSQL = `SELECT ` + mirrorWorklogColumns + ` FROM tracker_cache_worklogs w
-	WHERE w.root_id = ?1 AND w.author_id = ?2 AND w.day BETWEEN ?3 AND ?4 AND ` + mirrorRootLiveSQL + `
+	WHERE w.root_id = CAST(?1 AS INTEGER) AND w.author_id = ?2 AND w.day BETWEEN ?3 AND ?4 AND ` + mirrorRootLiveSQL + `
 	ORDER BY w.day, w.worklog_id LIMIT ` + strconv.Itoa(mirrorWorklogLimit+1)
 
 // MirrorWorklogDays is a connection's time of an author's days as one
@@ -287,7 +287,7 @@ func (s *Store) ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay str
 			return out, fmt.Errorf("read the mirror root: %w", err)
 		}
 		if out.ReadDays, err = queryIDs(q, `SELECT day FROM tracker_cache_worklog_days
-			WHERE root_id = ?1 AND author_id = ?2 AND day BETWEEN ?3 AND ?4 ORDER BY day`, root, authorID, fromDay, toDay); err != nil {
+			WHERE root_id = CAST(?1 AS INTEGER) AND author_id = ?2 AND day BETWEEN ?3 AND ?4 ORDER BY day`, root, authorID, fromDay, toDay); err != nil {
 			return out, fmt.Errorf("read the days read: %w", err)
 		}
 		if out.Logs, out.More, err = queryMirrorWorklogs(q, mirrorAuthorWorklogsSQL, root, authorID, fromDay, toDay); err != nil {
