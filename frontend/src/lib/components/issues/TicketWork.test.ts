@@ -53,7 +53,7 @@ const WORK = {
   problems: [{ projectId: 'p2', error: 'git for-each-ref failed: not a git repository' }],
 };
 
-async function mountWork(opts: { backend?: string; first?: DetailView | null; work?: () => Promise<unknown> } = {}) {
+async function mountWork(opts: { backend?: string; first?: DetailView | null; work?: () => Promise<unknown>; archived?: boolean } = {}) {
   const backend = opts.backend ?? HOME_BACKEND;
   const first = opts.first === undefined ? DETAIL : opts.first;
   setBindingMock('SubscribeTrackerTicket', async () => ({ id: 'sub-1', seq: 1, poll_every: 10_000, loaded: first !== null, detail: first ?? undefined, read_at: first ? 1 : 0 } as TicketSubscription));
@@ -63,7 +63,7 @@ async function mountWork(opts: { backend?: string; first?: DetailView | null; wo
   setBindingMock('TrackerConnections', async () => [{ id: 'c1', kind: 'jira', site: SITE, label: 'Work', enabled: true, account: 'User 1' }]);
   const reads = setBindingMock('GetTicketWork', opts.work ?? (async () => WORK));
   noteProject('p1', backend);
-  addProjectLocal({ id: 'p1', path: '/tmp/widgets', name: 'widgets', archived: false } as never);
+  addProjectLocal({ id: 'p1', path: '/tmp/widgets', name: 'widgets', archived: opts.archived ?? false } as never);
   listThread(makeThread({ id: 't-linked', projectId: 'p1', title: 'WEB-1 Retry cursor', ticketLink: link('10101') }));
   listThread(makeThread({ id: 't-other', projectId: 'p1', title: 'WEB-2 Other', ticketLink: link('10102', 'ask') }));
   listThread(makeThread({ id: 't-plain', projectId: 'p1', title: 'No ticket' }));
@@ -179,6 +179,46 @@ describe('Work', () => {
     const form = await waitFor(formOf);
     await waitFor(() => expect((form.querySelector('[data-testid="start-work-branch"]') as HTMLInputElement).value).toBe('WEB-1-spike'));
     view.unmount();
+  });
+
+  it('lists the archived project of the ticket in the form\'s picker and submits only a project the picker lists', async () => {
+    setBindingMock('ProjectTrackerSetup', async () => ({ revision: 'r1', setup: { status_groups: [], ticket_pins: [], start_work: [] } } as SetupView));
+    const start = setBindingMock('StartTicketThread', async () => { throw new Error('stop here'); });
+    // A branch of an archived project that is not the ticket's.
+    noteProject('p8', HOME_BACKEND);
+    addProjectLocal({ id: 'p8', path: '/tmp/old', name: 'old', archived: true } as never);
+    const view = await mountWork({
+      archived: true,
+      work: async () => ({ key: 'WEB-1', pullRequests: [], problems: [], branches: [{ projectId: 'p8', name: 'WEB-1-old' }] }),
+    });
+    await waitFor(() => expect((view.getByTestId('ticket-work-start') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByTestId('ticket-work-start'));
+    const form = await waitFor(formOf);
+    const picker = form.querySelector('[data-testid="start-work-repository"]') as HTMLSelectElement;
+    const go = form.querySelector('[data-testid="start-work-go"]') as HTMLButtonElement;
+    await waitFor(() => expect(go.disabled).toBe(false));
+    expect([...picker.options].map((o) => o.value)).toEqual(['p1']);
+    expect(picker.value).toBe('p1');
+    await fireEvent.click(go);
+    await waitFor(() => expect(start).toHaveBeenCalledWith('p1', expect.objectContaining({ origin: 'start_work' })));
+    view.unmount();
+    ticket?.release();
+
+    // The archived branch's project is not listed, so its form does not start.
+    start.mockClear();
+    const again = await mountWork({
+      archived: true,
+      work: async () => ({ key: 'WEB-1', pullRequests: [], problems: [], branches: [{ projectId: 'p8', name: 'WEB-1-old' }] }),
+    });
+    await fireEvent.click(await waitFor(() => again.getByTestId('ticket-work-branch')));
+    const branchForm = await waitFor(formOf);
+    const branchGo = branchForm.querySelector('[data-testid="start-work-go"]') as HTMLButtonElement;
+    await settle();
+    expect(branchGo.disabled).toBe(true);
+    expect(branchGo.title).toBe('Pick the repository the thread runs in');
+    await fireEvent.click(branchGo);
+    expect(start).not.toHaveBeenCalled();
+    again.unmount();
   });
 
   it('says why Ask and Start work cannot run when this device may not start threads or use git there', async () => {

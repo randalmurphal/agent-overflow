@@ -12,7 +12,7 @@
   import { INPUT_CLASS, SELECT_CLASS } from '../settings/styles';
   import type { DetailView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { TicketBranch } from '../../stores/bindings';
-  import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
+  import { getProjectLabelText } from '../../stores/projects.svelte';
   import {
     defaultsAt,
     loadStartWorkDefaults,
@@ -20,9 +20,7 @@
     type DefaultsPlace,
     type StartWorkPlan,
   } from '../../stores/ticketWork.svelte';
-  import { projectBackend } from '../../transport/entityIndex';
-  import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
-  import type { Thread } from '../../types/models';
+  import type { Project, Thread } from '../../types/models';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import { userFacingError } from '../../utils/userFacingError';
@@ -34,7 +32,9 @@
     /** The ticket's entry key (trackerTicketKey). */
     ticket: string;
     detail: DetailView;
-    backend: BackendKey;
+    /** The projects a thread of the ticket can be made in (Work's): the
+     * picker lists them, and only one of them is submitted. */
+    projects: readonly Project[];
     /** The ticket's project: its setup holds the defaults, and the thread
      * runs in it unless another is picked. */
     project: string;
@@ -55,7 +55,7 @@
     onClose: () => void;
   }
 
-  let { anchor, open, ticket, detail, backend, project, place, me, branches, started, branch: givenBranch, onStart, onOpenThread, onClose }: Props = $props();
+  let { anchor, open, ticket, detail, projects, project, place, me, branches, started, branch: givenBranch, onStart, onOpenThread, onClose }: Props = $props();
 
   const card = $derived(detail.card);
   const defaults = $derived(startWorkDefaults(ticket));
@@ -66,8 +66,6 @@
     const at = { ticket, project };
     untrack(() => loadStartWorkDefaults(at.ticket, at.project));
   });
-
-  const projects = $derived(getProjects().map((p) => p.project).filter((p) => !p.archived && (projectBackend(p.id) ?? HOME_BACKEND) === backend));
 
   // The rows as the person set them; null is "as the defaults say".
   let status = $state<string | null>(null);
@@ -111,7 +109,9 @@
 
   const savedRepository = $derived(saved?.repository ?? '');
   const savedRepositoryGone = $derived(!!savedRepository && !projects.some((p) => p.id === savedRepository));
-  const chosenRepository = $derived(repository ?? givenBranch?.projectId ?? (savedRepository && !savedRepositoryGone ? savedRepository : project));
+  const candidate = $derived(repository ?? givenBranch?.projectId ?? (savedRepository && !savedRepositoryGone ? savedRepository : project));
+  // Only a project the picker lists is submitted.
+  const chosenRepository = $derived(projects.some((p) => p.id === candidate) ? candidate : '');
   const existing = $derived(branches.find((b) => b.projectId === chosenRepository && b.name === chosenBranch) ?? null);
 
   const projectName = $derived(getProjectLabelText(project));
@@ -209,7 +209,7 @@
 
     <div class="flex justify-end gap-2 pt-1">
       <Button size="sm" variant="ghost" testId="start-work-cancel" onclick={() => close()}>Cancel</Button>
-      <Button size="sm" variant="primary" type="submit" disabled={!chosenBranch || !chosenRepository || !defaultsSettled} title={defaultsSettled ? undefined : 'Waiting for the saved defaults'} testId="start-work-go">Start work</Button>
+      <Button size="sm" variant="primary" type="submit" disabled={!chosenBranch || !chosenRepository || !defaultsSettled} title={!chosenRepository ? 'Pick the repository the thread runs in' : defaultsSettled ? undefined : 'Waiting for the saved defaults'} testId="start-work-go">Start work</Button>
     </div>
   </form>
 </Popover>

@@ -361,7 +361,7 @@
     open={formOpen}
     ticket={attachment.key}
     {detail}
-    backend={ref.backend}
+    {projects}
     {project}
     {place}
     me={me ?? ''}
