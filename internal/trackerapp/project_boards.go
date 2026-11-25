@@ -52,12 +52,14 @@ type BoardRef struct {
 }
 
 // BoardChoice is one board a project lists as its board picker shows it:
-// the listing, its connection's kind, label, whether it is on and the
-// account it was verified as, and the board's name, which is this
-// computer's copy of the name once the board has been read and the name
-// the listing stored until then (store ListTrackerBoardChoices).
+// the listing, whether its project is archived, its connection's kind,
+// label, whether it is on and the account it was verified as, and the
+// board's name, which is this computer's copy of the name once the board
+// has been read and the name the listing stored until then (store
+// ListTrackerBoardChoices).
 type BoardChoice struct {
 	Project           string `json:"project"`
+	ProjectArchived   bool   `json:"project_archived"`
 	Connection        string `json:"connection"`
 	ConnectionKind    string `json:"connection_kind"`
 	ConnectionLabel   string `json:"connection_label"`
@@ -84,7 +86,9 @@ func (s *Service) ProjectBoards(projectID string) ([]BoardChoice, error) {
 
 // BoardChoices lists the boards every project of this computer lists, by
 // project name, then project ID, then picker order: the Issues pane's
-// board picker.
+// board picker, which lists an archived project's boards too. The pane
+// opens a board on its own from this order, passing over an archived
+// project's (ProjectArchived) while another project lists one it can open.
 func (s *Service) BoardChoices() ([]BoardChoice, error) {
 	if err := s.enter(); err != nil {
 		return nil, err
@@ -106,7 +110,7 @@ func (s *Service) boardChoices(projectID string) ([]BoardChoice, error) {
 	out := make([]BoardChoice, len(rows))
 	for i, r := range rows {
 		out[i] = BoardChoice{
-			Project: r.ProjectID, Connection: r.ConnectionID, ConnectionKind: r.ConnectionKind,
+			Project: r.ProjectID, ProjectArchived: r.ProjectArchived, Connection: r.ConnectionID, ConnectionKind: r.ConnectionKind,
 			ConnectionLabel: r.ConnectionLabel, ConnectionEnabled: r.ConnectionEnabled, VerifiedAccount: r.ConnectionVerifiedAccount,
 			Board: r.BoardID, Name: r.BoardName, TrackerProject: r.TrackerProject, OpensFirst: r.OpensFirst,
 		}

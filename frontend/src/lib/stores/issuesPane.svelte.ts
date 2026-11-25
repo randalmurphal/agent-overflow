@@ -151,10 +151,12 @@ export interface OpeningDecision {
  * the order the app lists them): the board that opens first of the project
  * the pane was opened from, else that project's first openable one, as soon
  * as its computer answered; else, once every computer has answered or
- * could not be read, the same of the first project that lists an openable
- * board, in the computers' order and each computer's own (by project name,
- * then project ID, then the project's order of its boards); else none. A
- * board that cannot be opened (`isBoardChoiceOpenable`) is never chosen.
+ * could not be read, the same of the first project that is not archived
+ * and lists an openable board, in the computers' order and each computer's
+ * own (by project name, then project ID, then the project's order of its
+ * boards), or of the first archived one when no other lists one; else
+ * none. A board that cannot be opened (`isBoardChoiceOpenable`) is never
+ * chosen.
  */
 export function openingBoard(
   computers: readonly { readonly backend: string; readonly state: ComputerChoices }[],
@@ -173,7 +175,8 @@ export function openingBoard(
     if (board) return { board, waiting: false };
   }
   if (computers.some((c) => c.state.kind === 'reading')) return { board: null, waiting: true };
-  const first = choices.find((c) => isBoardChoiceOpenable(c.choice));
+  const openable = choices.filter((c) => isBoardChoiceOpenable(c.choice));
+  const first = openable.find((c) => !c.choice.project_archived) ?? openable[0];
   return { board: first ? firstOf(first.backend, first.choice.project) : null, waiting: false };
 }
 

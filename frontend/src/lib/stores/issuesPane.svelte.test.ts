@@ -70,6 +70,14 @@ describe('the board the pane opens on when none was picked', () => {
     expect(openingBoard([answered('', [choice('p1', '1', { connection_enabled: false })]), laptop], null).board).toEqual(ref('laptop', 'p3', '4'));
   });
 
+  it("passes over an archived project's boards on every computer, unless no other project lists one", () => {
+    const archivedHome = answered('', [choice('p1', '1', { project_archived: true }), choice('p2', '3', { connection_enabled: false })]);
+    expect(openingBoard([archivedHome, laptop], null).board).toEqual(ref('laptop', 'p3', '4'));
+    expect(openingBoard([archivedHome], null).board).toEqual(ref('', 'p1', '1'));
+    // The project it was opened from opens, archived or not.
+    expect(openingBoard([archivedHome, laptop], 'p1').board).toEqual(ref('', 'p1', '1'));
+  });
+
   it('is none when no project lists a board', () => {
     expect(openingBoard([answered('', [])], 'p1')).toEqual({ board: null, waiting: false });
   });

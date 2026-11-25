@@ -234,7 +234,8 @@ Widths are CSS pixels of the pane, not the window.
   opens first of the project it was opened from, else of the first project
   by name that lists one, on this computer first and then on the others in
   the order the app lists them, once each computer has answered or could
-  not be read. With no board listed, its way to Settings is the project it
+  not be read. An archived project's board opens this way only when no
+  other project lists one; the picker lists it, and a pick of it opens. With no board listed, its way to Settings is the project it
   was opened from, else the first project by name. A board whose connection is turned
   off is listed in the picker but not offered, and the pane never opens it
   on its own. While the board's computer is not connected, the pane says so

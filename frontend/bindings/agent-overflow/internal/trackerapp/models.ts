@@ -52,13 +52,15 @@ export class AttachmentView {
 
 /**
  * BoardChoice is one board a project lists as its board picker shows it:
- * the listing, its connection's kind, label, whether it is on and the
- * account it was verified as, and the board's name, which is this
- * computer's copy of the name once the board has been read and the name
- * the listing stored until then (store ListTrackerBoardChoices).
+ * the listing, whether its project is archived, its connection's kind,
+ * label, whether it is on and the account it was verified as, and the
+ * board's name, which is this computer's copy of the name once the board
+ * has been read and the name the listing stored until then (store
+ * ListTrackerBoardChoices).
  */
 export class BoardChoice {
     "project": string;
+    "project_archived": boolean;
     "connection": string;
     "connection_kind": string;
     "connection_label": string;
@@ -73,6 +75,9 @@ export class BoardChoice {
     constructor($$source: Partial<BoardChoice> = {}) {
         if (!("project" in $$source)) {
             this["project"] = "";
+        }
+        if (!("project_archived" in $$source)) {
+            this["project_archived"] = false;
         }
         if (!("connection" in $$source)) {
             this["connection"] = "";

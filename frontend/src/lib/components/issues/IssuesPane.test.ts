@@ -562,6 +562,15 @@ describe('which board the pane holds', () => {
     }
   });
 
+  it("opens an active project's board before an archived one's that its computer lists first", async () => {
+    // Alpha is archived; its computer still lists it first, by name.
+    const mocks = install({ choices: [choice('1', { project: 'alpha', project_archived: true }), choice('2', { project: 'zulu' })] });
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    expect(mocks.subscribe.mock.calls.map((c) => [c[0], c[2]])).toEqual([['zulu', '2']]);
+    view.unmount();
+  });
+
   it("opens the first project's board in the order its computer lists them, whatever the sidebar shows", async () => {
     // The sidebar shows widgets first; the computer lists by name.
     project('p1', 'widgets', 0, 5);
