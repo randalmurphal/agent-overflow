@@ -212,6 +212,9 @@ type trackerBoardSetup struct {
 	// arrive, when set, sees each request to the Jira site as it arrives,
 	// before its body is read.
 	arrive func(*http.Request)
+	// store, when set, is the App's store: a test that opens its file
+	// gives the store it made at a path it knows.
+	store *store.Store
 }
 
 func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoardFixture {
@@ -245,7 +248,11 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 			t.Errorf("unhandled request %s %s: %s", r.Method, r.Path, r.Detail)
 		}
 	})
-	a := newTrackerTestApp(t, func(a *App) {
+	st := setup.store
+	if st == nil {
+		st = storetest.Clone(t)
+	}
+	a := newTrackerTestAppOn(t, st, func(a *App) {
 		ConfigureIsolation(a, IsolationConfig{TrackerOrigin: func(_, site string) (string, error) {
 			if strings.TrimPrefix(site, "https://") == "example.atlassian.net" {
 				return jiraURL, nil
