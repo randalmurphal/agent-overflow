@@ -75,7 +75,8 @@ type File struct {
 // sent and held nowhere; Jira refuses more than 60 files at once, and a
 // file over the site's attachment size setting (at most
 // MaxAttachmentBytes). A content that fails or does not hold its Size is
-// a *trackerapi.SourceError, not applied. An
+// a *trackerapi.SourceError, and a request cut before its whole body went
+// out a *trackerapi.CutError, both not applied. An
 // upload whose answer could not be read in full is a StepUpload
 // *StepError: Applied, with the stored attachments by ID, when the answer
 // names them, and an unknown outcome otherwise.

@@ -315,6 +315,82 @@ func TestUploadSourceFailureIsNotApplied(t *testing.T) {
 	}
 }
 
+// An upload whose round trip fails before the transport was handed its
+// whole body stopped short of its declared length, so the write was not
+// applied (*CutError), whichever way the cut came: the call's context
+// ending or the client closing while the body goes out. One that fails
+// after the whole body was handed over stays unknown.
+func TestUploadCutWhileSendingIsNotApplied(t *testing.T) {
+	t.Parallel()
+	started, read := make(chan struct{}, 1), make(chan struct{}, 1)
+	release := make(chan struct{})
+	tr := newTracker(t, route{
+		// Takes the request and reads none of its body; the tracker's
+		// socket buffers fill and the transport blocks writing it.
+		"POST /unread": func(w http.ResponseWriter, r *http.Request) {
+			started <- struct{}{}
+			<-release
+		},
+		// Reads the whole body and never answers.
+		"POST /silent": func(w http.ResponseWriter, r *http.Request) {
+			if _, err := io.Copy(io.Discard, r.Body); err != nil {
+				return
+			}
+			read <- struct{}{}
+			<-r.Context().Done()
+		},
+	})
+	// A handler that reads no body never sees its connection close, so it
+	// is released before the server's Close waits on it.
+	t.Cleanup(func() { close(release) })
+	for _, tc := range []struct {
+		name       string
+		path       string
+		content    io.Reader
+		size       int64
+		gate       chan struct{}
+		close      bool
+		notApplied bool
+	}{
+		{"the call's context ended with the body going out", "unread", endless{}, 64 << 20, started, false, true},
+		{"the client closed with the body going out", "unread", endless{}, 64 << 20, started, true, true},
+		{"the call's context ended after the whole body was read", "silent", strings.NewReader("abc"), 3, read, false, false},
+	} {
+		c, _ := loopbackClient(t, testOptions(tr.url()))
+		ctx, cancel := context.WithCancel(t.Context())
+		body, err := Multipart([]Part{{FieldName: "file", FileName: "a", Content: tc.content, Size: tc.size}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := c.Do(ctx, Request{Method: http.MethodPost, Path: tc.path, Body: body, Transfer: true})
+			done <- err
+		}()
+		<-tc.gate
+		if tc.close {
+			c.Close()
+		} else {
+			cancel()
+		}
+		select {
+		case err := <-done:
+			_, cut := errors.AsType[*CutError](err)
+			if WriteNotApplied(err) != tc.notApplied || cut != tc.notApplied {
+				t.Errorf("%s: %T %v: not applied %t, want %t", tc.name, err, err, WriteNotApplied(err), tc.notApplied)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: no answer within 10s", tc.name)
+		}
+		cancel()
+	}
+}
+
+// endless is a content that always has bytes ready and is no io.Closer.
+type endless struct{}
+
+func (endless) Read(p []byte) (int, error) { return len(p), nil }
+
 // A body read once is never sent again: not after a refused credential
 // that was replaced, which sends a seekable body again, and the call
 // answers with the refusal.

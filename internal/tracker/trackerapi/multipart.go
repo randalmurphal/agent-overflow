@@ -99,6 +99,7 @@ func (u *Upload) open() (*uploadBody, error) {
 	}
 	u.opened = true
 	b := &uploadBody{}
+	b.left.Store(u.size)
 	readers := make([]io.Reader, 0, 2*len(u.parts)+1)
 	for i, part := range u.parts {
 		if s, ok := part.Content.(io.Seeker); ok {
@@ -120,17 +121,34 @@ func (u *Upload) open() (*uploadBody, error) {
 }
 
 // uploadBody is one attempt's body of an Upload. It records the first
-// failure of a part's content, which hop reports as a *SourceError.
+// failure of a part's content, which hop reports as a *SourceError, and
+// whether the transport was handed every byte the request declared, which
+// hop asks of a round trip that failed (*CutError).
 type uploadBody struct {
 	r io.Reader
 	// closers are the parts abort closes: read once, and io.Closers.
 	closers []*exactReader
+	// left is how many of the declared bytes, framing included, the
+	// transport has not read yet. The transport reads on its own
+	// goroutine.
+	left atomic.Int64
 
 	mu     sync.Mutex
 	failed error
 }
 
-func (b *uploadBody) Read(p []byte) (int, error) { return b.r.Read(p) }
+func (b *uploadBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.left.Add(-int64(n))
+	return n, err
+}
+
+// handedOver reports whether the transport read every byte the request
+// declared: until it has, the tracker cannot have had the whole request.
+// True for no body.
+func (b *uploadBody) handedOver() bool {
+	return b == nil || b.left.Load() <= 0
+}
 
 // fail records err as the source's failure and returns it.
 func (b *uploadBody) fail(err error) error {

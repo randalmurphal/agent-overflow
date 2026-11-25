@@ -226,6 +226,7 @@ error body's message and per-field messages, a rate limit that is not a
 | 429, or the dialect's limit, once retries are spent or for a background call | `*RateLimitedError{Until}` |
 | Any other status of 400 or above, or a 3xx answering a write | `*StatusError{Method, URL, Status, Message, Fields, Body, Location, Header}`: the URL redacted, the body bounded to 4 KiB, `Fields` the per-field messages, `Header` the answer headers `Options.ErrorHeaders` names. A 404 matches `errors.Is(err, ErrNotFound)`. |
 | An upload part's content failed, ended short of its size or ran past it | `*SourceError` wrapping the cause; the write was not applied |
+| An upload's round trip failed before the transport was handed its whole body (the connection broke, the call ended or the client closed while it went out) | `*CutError` wrapping the cause; the write was not applied. One that fails after the whole body was handed over is unknown. |
 | Timeout, reset, a body cut short | `*TransientError` wrapping the cause. A write's 4xx whose body is cut short stays the status's error, with the body that arrived. |
 | A body over its bound | `*BodyTooLargeError` |
 | A 2xx whose credential was dropped while its body was read, so the body cannot be checked for it | `ErrCredentialChanged`, returned with a `Response` that has the status, header and `CredentialMark` and no body. A write it answered has an unknown outcome. |

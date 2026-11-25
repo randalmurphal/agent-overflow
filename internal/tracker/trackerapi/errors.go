@@ -43,6 +43,17 @@ type SourceError struct{ Err error }
 func (e *SourceError) Error() string { return e.Err.Error() }
 func (e *SourceError) Unwrap() error { return e.Err }
 
+// CutError is an upload whose round trip failed before the transport was
+// handed its whole body, though its content did not fail: the connection
+// broke, the call ended or the client closed while the body went out. The
+// request stopped short of the Content-Length it declared, so the tracker
+// cannot have acted on it: the write was not applied. A round trip that
+// fails after the whole body was handed over leaves the outcome unknown.
+type CutError struct{ Err error }
+
+func (e *CutError) Error() string { return e.Err.Error() }
+func (e *CutError) Unwrap() error { return e.Err }
+
 // ErrInvalidInput is matched, through errors.Is, by the error of a call
 // a tracker client refused before sending because its input is wrong or
 // cannot apply as given. Such an error is also a *NotSentError; this
@@ -225,12 +236,13 @@ func (e *BodyTooLargeError) Error() string {
 }
 
 // WriteNotApplied reports whether err, the error of one write, proves the
-// tracker did not apply it: the request was never sent, or the tracker
-// answered it in full with a 4xx (a refusal, a refused credential, a
-// 429). A 4xx whose body was cut short counts as answered: the status
+// tracker did not apply it: the request was never sent, an upload's
+// stopped short of the length it declared (*SourceError, *CutError), or
+// the tracker answered it in full with a 4xx (a refusal, a refused
+// credential, a 429). A 4xx whose body was cut short counts as answered: the status
 // arrived in full, and the error is the status's with the body that came.
 // Every other failure leaves the outcome unknown (a timeout or reset
-// after the request may have been written, a 3xx, a 5xx, a 2xx cut short
+// after the whole request may have been written, a 3xx, a 5xx, a 2xx cut short
 // or that did not decode, a refused login marked on a 2xx), and the
 // caller reads the tracker again before it offers the write again.
 //
@@ -253,6 +265,7 @@ type outcome interface {
 
 func (e *NotSentError) notApplied() bool { return true }
 func (e *SourceError) notApplied() bool  { return true }
+func (e *CutError) notApplied() bool     { return true }
 func (e *AuthError) notApplied() bool    { return clientError(e.Status) }
 func (e *StatusError) notApplied() bool  { return clientError(e.Status) }
 

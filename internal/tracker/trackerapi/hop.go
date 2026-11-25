@@ -172,6 +172,10 @@ func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.U
 			// The body stopped short of the length it declared, so the
 			// tracker never had the whole request to act on.
 			failure = &SourceError{Err: fmt.Errorf("%s: %w", c.where(k.method, target), source)}
+		case !sent.handedOver():
+			// So did this one, though its content did not fail: the
+			// connection broke, or the call ended, while it went out.
+			failure = &CutError{Err: failure}
 		}
 		return fail(failure)
 	}
