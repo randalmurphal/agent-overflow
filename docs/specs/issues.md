@@ -2,8 +2,9 @@
 
 Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
-(Connections, Boards). The Issues pane is not, and the tool row has no
-Issues entry until it is.
+(Connections, Boards), and the backend of a project's status groups and
+ticket pins, which no screen shows yet. The Issues pane is not, and the
+tool row has no Issues entry until it is.
 
 ## Goal
 
