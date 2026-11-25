@@ -6,9 +6,9 @@
 
 import { writeFile } from 'node:fs/promises';
 
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
-import type { SeedResult } from './fixtures.js';
+import { expect, type SeedResult } from './fixtures.js';
 
 export const JIRA_SITE = 'example.atlassian.net';
 export const JIRA_ACCOUNT = 'user1@example.com';
@@ -128,17 +128,91 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
   return jiraURL;
 }
 
-/** Renames an issue in the fake Jira, as a person editing it there would. */
-export async function renameJiraIssue(board: ConnectedBoard, key: string, summary: string): Promise<void> {
-  const resp = await fetch(`${board.jiraURL}/rest/api/3/issue/${key}`, {
-    method: 'PUT',
+/** A request to the fake Jira as the seeded user, as a person working in Jira makes it. */
+async function inJira(jiraURL: string, method: string, path: string, body: unknown): Promise<Response> {
+  return fetch(`${jiraURL}/rest/api/3/${path}`, {
+    method,
     headers: {
       'Content-Type': 'application/json',
       authorization: `Basic ${Buffer.from(`${JIRA_ACCOUNT}:${JIRA_TOKEN}`).toString('base64')}`,
     },
-    body: JSON.stringify({ fields: { summary } }),
+    body: JSON.stringify(body),
   });
+}
+
+/** Renames an issue in the fake Jira, as a person editing it there would. */
+export async function renameJiraIssue(board: ConnectedBoard, key: string, summary: string): Promise<void> {
+  const resp = await inJira(board.jiraURL, 'PUT', `issue/${key}`, { fields: { summary } });
   if (resp.status !== 204) throw new Error(`the fake Jira refused the rename of ${key}: HTTP ${resp.status} ${await resp.text()}`);
+}
+
+/**
+ * Logs `seconds` on `key` in the fake Jira at 09:00 UTC of `day`
+ * (YYYY-MM-DD), the seeded user's zone, and answers the worklog's ID.
+ */
+export async function logJiraWork(jiraURL: string, key: string, day: string, seconds: number): Promise<string> {
+  const resp = await inJira(jiraURL, 'POST', `issue/${key}/worklog`, { started: `${day}T09:00:00.000+0000`, timeSpentSeconds: seconds });
+  if (resp.status !== 201) throw new Error(`the fake Jira refused the worklog on ${key}: HTTP ${resp.status} ${await resp.text()}`);
+  return ((await resp.json()) as { id: string }).id;
+}
+
+/** Changes a worklog's time in the fake Jira, as a person editing it there would. */
+export async function editJiraWorklog(jiraURL: string, key: string, id: string, seconds: number): Promise<void> {
+  const resp = await inJira(jiraURL, 'PUT', `issue/${key}/worklog/${id}`, { timeSpentSeconds: seconds });
+  if (resp.status !== 200) throw new Error(`the fake Jira refused the edit of worklog ${id}: HTTP ${resp.status} ${await resp.text()}`);
+}
+
+/** The fake Linear workspace's one team, which is its one board. */
+export const LINEAR_TEAM = '00000000-0000-4000-8000-00000000000a';
+
+/**
+ * Seeds a fake Linear workspace with one team and its states, then seeds
+ * a project, adds and verifies a Linear connection to it, and lists the
+ * team's board on the project, opening first.
+ */
+export async function connectFakeLinearBoard(harness: HarnessApp, name: string): Promise<{ projectId: string; connectionId: string }> {
+  const viewer = '00000000-0000-4000-8000-000000000001';
+  const apiKey = 'lin_api_fake_key_1';
+  const state = (n: number, stateName: string, type: string) => ({ id: `00000000-0000-4000-8000-0000000000${20 + n}`, team: LINEAR_TEAM, name: stateName, type, position: n });
+  await harness.rpc('HarnessTrackerSeed', {
+    linear: [{
+      urlKey: 'example', name: 'Example', apiKey, viewer,
+      users: [{ id: viewer, name: 'User 1', email: JIRA_ACCOUNT }],
+      teams: [{ id: LINEAR_TEAM, key: 'WEB', name: 'Web', timezone: 'UTC', members: [viewer] }],
+      states: [state(0, 'Todo', 'unstarted'), state(1, 'In Progress', 'started'), state(2, 'Done', 'completed')],
+    }],
+  });
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {} }] });
+  const projectId = seed.projects[0].projectId;
+  const added = await harness.rpc<TrackerConnection>('AddTrackerConnection', { kind: 'linear', site: 'example' });
+  await writeFile(added.keyFilePath, apiKey, { mode: 0o600 });
+  const verified = await harness.rpc<TrackerConnection>('VerifyTrackerConnection', added.id);
+  if (verified.problem) throw new Error(`the fake Linear refused the connection: ${JSON.stringify(verified.problem)}`);
+  await harness.rpc('SetProjectTrackerBoards', projectId, [], [{ connection: added.id, board: LINEAR_TEAM, opens_first: true, name: 'Web', tracker_project: LINEAR_TEAM }]);
+  return { projectId, connectionId: added.id };
+}
+
+/** Opens the Issues pane from the tools row; on compact the thread screen holds it. */
+export async function openIssuesPane(page: Page, compact: boolean): Promise<Locator> {
+  await page.getByTestId('sidebar-tool-issues').click();
+  if (compact) await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
+  const pane = page.getByTestId('issues-pane');
+  await expect(pane).toBeVisible();
+  return pane;
+}
+
+/** A click, or a tap on compact. */
+export async function press(target: Locator, compact: boolean): Promise<void> {
+  await (compact ? target.tap() : target.click());
+}
+
+/** One request the fake trackers logged (trackerfake.Request). */
+export interface LoggedRequest { route?: string; path: string; query?: Record<string, string[]>; status: number; held?: boolean; body?: unknown }
+
+/** The fake's requests to `route`; with `issue` ([key, ID]), those naming it either way. */
+export async function trackerRequests(harness: HarnessApp, route: string, issue?: readonly [string, string]): Promise<LoggedRequest[]> {
+  const log = await harness.rpc<{ requests: LoggedRequest[] }>('HarnessTrackerRequests', 0);
+  return log.requests.filter((r) => r.route === route && (!issue || r.path.split('/').some((part) => issue.includes(part))));
 }
 
 /** Opens Settings > Issues > Connections or Boards on `page`. */
