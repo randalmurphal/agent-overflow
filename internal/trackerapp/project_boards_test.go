@@ -208,6 +208,17 @@ func TestProjectBoardsAreNamedAsTheyWereChosen(t *testing.T) {
 	if got, err := m.svc.ProjectBoards(""); !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("ProjectBoards of no project = %+v, %v; want ErrProjectNotFound", got, err)
 	}
+	// An archived project's boards say so, in both reads.
+	if _, _, err := m.st.ArchiveProject(m.project()); err != nil {
+		t.Fatal(err)
+	}
+	want[0].ProjectArchived = true
+	if got, err := m.svc.BoardChoices(); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("BoardChoices of an archived project = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := m.svc.ProjectBoards(m.project()); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("ProjectBoards of an archived project = %+v, %v; want %+v", got, err, want)
+	}
 }
 
 // A save built from a list that is no longer the stored one is refused as
