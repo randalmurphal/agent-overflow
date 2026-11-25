@@ -304,7 +304,7 @@ func TestPokerWriteDuringAReadIsReadAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitClosed(t, "the first read's answer", arrived)
-	v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: 3})
+	v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: new(3.0)})
 	appliedView(t, "vote", v, err)
 	close(release)
 	waitPoker(t, s.svc, sub.ID, "my vote", func(v PokerView) bool { return len(v.Votes) == 1 })
@@ -322,7 +322,7 @@ func TestPokerWritesReadAtOnce(t *testing.T) {
 	}
 	waitPoker(t, s.svc, sub.ID, "the first read", func(v PokerView) bool { return v.Loaded })
 
-	v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: 3})
+	v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: new(3.0)})
 	appliedView(t, "vote", v, err)
 	got := waitPoker(t, s.svc, sub.ID, "my vote", func(v PokerView) bool { _, ok := voteOf(v, "acc-user1"); return ok })
 	if mine, _ := voteOf(got, "acc-user1"); !mine.Mine || mine.Value == nil || *mine.Value != 3 || mine.Voter.Name != "User 1" {
@@ -403,7 +403,7 @@ func TestPokerWriteOutcomes(t *testing.T) {
 	t.Run("without the add-on", func(t *testing.T) {
 		t.Parallel()
 		s, conn := pokerScenario(t, Cadence{}, jiraSeed)
-		v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: 3})
+		v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: new(3.0)})
 		if err != nil || v.Parts[0].State != "refused" || v.Parts[0].Refusal.Message != jiraprovider.PokerAbsent {
 			t.Fatalf("vote %+v, %v", v, err)
 		}
@@ -414,11 +414,11 @@ func TestPokerWriteOutcomes(t *testing.T) {
 	t.Run("with it", func(t *testing.T) {
 		t.Parallel()
 		s, conn := pokerScenario(t, Cadence{}, pokerSite)
-		v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: 1001})
+		v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: new(1001.0)})
 		if err != nil || v.Parts[0].State != "refused" || v.Parts[0].Refusal.Reason != "invalid" || len(s.e.Requests(0).Requests) != 0 {
 			t.Fatalf("a vote of 1001: %+v, %v", v, err)
 		}
-		v, err = s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: 3})
+		v, err = s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: new(3.0)})
 		appliedView(t, "vote", v, err)
 		for status, want := range map[int]string{400: "refused", 503: "unknown"} {
 			if err := s.e.AddFault(trackerfake.Fault{Origin: trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: pokerSiteName},
@@ -450,7 +450,7 @@ func TestPokerOnLinear(t *testing.T) {
 	if _, err := s.svc.FollowPoker(sub.ID, true); !errors.Is(err, tracker.ErrUnsupported) {
 		t.Fatalf("follow: %v", err)
 	}
-	v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: lid(60), Vote: 3})
+	v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: lid(60), Vote: new(3.0)})
 	if err != nil || v.Parts[0].State != "refused" || v.Parts[0].Refusal.Reason != "unsupported" {
 		t.Fatalf("vote %+v, %v", v, err)
 	}
@@ -466,7 +466,7 @@ func TestPokerReadFailureIsPokersOwn(t *testing.T) {
 	if _, err := s.svc.FollowPoker(sub.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: 3})
+	v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: new(3.0)})
 	appliedView(t, "vote", v, err)
 	waitPoker(t, s.svc, sub.ID, "my vote", func(v PokerView) bool { return len(v.Votes) == 1 })
 
@@ -541,7 +541,7 @@ func TestPokerTokenStaysInMemory(t *testing.T) {
 	var answers []any
 	sub := s.openTicket(t, conn, "10101")
 	answers = append(answers, sub, must[PokerSupport](t)(s.svc.PokerSupport(t.Context(), conn.ID)), must[PokerView](t)(s.svc.FollowPoker(sub.ID, true)))
-	v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: 3})
+	v, err := s.svc.PokerVote(t.Context(), conn.ID, PokerVoteRequest{Issue: "10101", Vote: new(3.0)})
 	appliedView(t, "vote", v, err)
 	answers = append(answers, v, waitPoker(t, s.svc, sub.ID, "my vote", func(v PokerView) bool { return len(v.Votes) == 1 }))
 

@@ -2,7 +2,8 @@
 // add-on and back: a client asks whether the site has it, follows a
 // subscribed ticket's votes and gets their first read as
 // tracker:issue_updated with poker set, votes, reveals and clears, each
-// shown with no refresh, and no event or request the fake logged carries
+// shown with no refresh, a vote request with no value is refused and the
+// vote cast stays, and no event or request the fake logged carries
 // the add-on's context token. A site without the add-on answers that it
 // has none, and refuses a vote with a sentence.
 //
@@ -37,6 +38,12 @@ test('planning poker reaches its client: read, vote, reveal and clear', async ({
   expect(vote.parts.map((p) => [p.step, p.state])).toEqual([['poker', 'applied']]);
   await expect.poll(async () => (await poker()).votes, { message: 'the ticket shows my vote' })
     .toEqual([{ voter: expect.objectContaining({ id: 'acc-user1', name: 'User 1' }), value: 5, mine: true }]);
+
+  // A request with no vote, or a null one, is refused before anything is
+  // sent, and the vote cast stays.
+  await expect(harness.rpc('VoteTrackerPoker', board.connectionId, { issue: '10101' })).rejects.toThrow(/^tracker_request_invalid: /);
+  await expect(harness.rpc('VoteTrackerPoker', board.connectionId, { issue: '10101', vote: null })).rejects.toThrow(/^tracker_request_invalid: /);
+  expect((await poker()).votes?.map((v) => v.value)).toEqual([5]);
 
   const reveal = await harness.rpc<WriteView>('RevealTrackerPoker', board.connectionId, '10101');
   expect(reveal.parts.map((p) => p.state)).toEqual(['applied']);

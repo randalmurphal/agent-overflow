@@ -82,7 +82,7 @@ func TestTrackerPokerReachesItsClient(t *testing.T) {
 	f.issueEvent(t, "for the votes' first read", func(e trackerapp.IssueEvent) bool { return e.Issue == "10101" && e.Poker })
 	f.pokerShows(t, ctx, sub.ID, "no votes", func(v trackerapp.PokerView) bool { return v.Loaded && len(v.Votes) == 0 })
 
-	v, err := f.a.VoteTrackerPoker(ctx, f.conn.ID, trackerapp.PokerVoteRequest{Issue: "10101", Vote: 5})
+	v, err := f.a.VoteTrackerPoker(ctx, f.conn.ID, trackerapp.PokerVoteRequest{Issue: "10101", Vote: new(5.0)})
 	if err != nil || !appliedOnly(v) {
 		t.Fatalf("VoteTrackerPoker = %+v, %v", v, err)
 	}
