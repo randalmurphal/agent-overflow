@@ -59,4 +59,3 @@ func keyEnd(text string, start int) (int, bool) {
 func isASCIILetter(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
 
 func isASCIIAlnum(c byte) bool { return isASCIILetter(c) || c >= '0' && c <= '9' }
-
