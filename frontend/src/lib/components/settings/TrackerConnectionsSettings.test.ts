@@ -287,6 +287,9 @@ describe('<TrackerConnectionsSettings>', () => {
     setBindingMock('TrackerConnections', () => answers.shift()!());
     render(TrackerConnectionsSettings);
     expect((await screen.findByTestId('settings-tracker-connections-error')).textContent).toBe('Store: disk I/O error.');
+    // A read that failed is not "no connections", and nothing can be added from it.
+    expect(screen.queryByTestId('settings-tracker-connections-empty')).toBeNull();
+    expect(screen.queryByTestId('tracker-connection-add')).toBeNull();
     await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByTestId('tracker-connection-jira-1');
     expect(screen.queryByTestId('settings-tracker-connections-error')).toBeNull();

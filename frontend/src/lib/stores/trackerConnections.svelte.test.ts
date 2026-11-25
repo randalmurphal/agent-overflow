@@ -141,6 +141,20 @@ describe('a held connection list', () => {
     expect(trackerConnectionsOf(HOME_BACKEND).list[0].label).toBe('Work');
   });
 
+  it('shows a failed first read as a failure, never as an empty list, a dropped connection included', async () => {
+    const answers: (() => Promise<TrackerConnection[]>)[] = [
+      async () => { throw new DisconnectedError('socket closed'); },
+      async () => [trackerConnection()],
+    ];
+    setBindingMock('TrackerConnections', () => answers.shift()!());
+    acquireTrackerConnections(HOME_BACKEND);
+    await vi.waitFor(() => expect(trackerConnectionsOf(HOME_BACKEND).error).toBeInstanceOf(DisconnectedError));
+    expect(trackerConnectionsOf(HOME_BACKEND).loaded).toBe(false);
+    await applyAndSettle();
+    expect(trackerConnectionsOf(HOME_BACKEND)).toMatchObject({ loaded: true, error: null });
+    expect(trackerConnectionsOf(HOME_BACKEND).list).toHaveLength(1);
+  });
+
   it('reads as empty on a computer whose release has no trackers', async () => {
     answerAsV0019();
     acquireTrackerConnections(HOME_BACKEND);

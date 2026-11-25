@@ -47,7 +47,9 @@
       </div>
     {/if}
     {#if !view.loaded}
-      <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-connections-loading">Loading connections…</p>
+      {#if view.error === null}
+        <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-connections-loading">Loading connections…</p>
+      {/if}
     {:else if roots.length === 0}
       <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-connections-empty">
         No connections yet. Add a Jira site or a Linear workspace to see its boards in a project's Issues pane.

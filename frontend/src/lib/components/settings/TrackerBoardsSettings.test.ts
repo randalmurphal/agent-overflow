@@ -10,6 +10,7 @@ import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { addProjectLocal } from '../../stores/projects.svelte';
 import { openTrackerBoardsSettings } from '../../stores/settingsOverlay.svelte';
+import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import type { TrackerBoardChoice, TrackerProjectBoard } from '../../stores/bindings';
 
 /** Each project's stored list: what ProjectTrackerBoards answers and SetProjectTrackerBoards replaces. */
@@ -196,6 +197,34 @@ describe('<TrackerBoardsSettings>', () => {
 
     await fireEvent.change(select, { target: { value: 'p2' } });
     await screen.findByTestId('settings-tracker-boards-empty');
+  });
+
+  it('shows a listed board’s connection as the connection list has it, which follows another window', async () => {
+    stored.p1 = [trackerBoardChoice({ board: '1', name: 'A', opens_first: true, connection_label: '' })];
+    await renderOnP1();
+    await waitFor(() => expect(names()).toEqual(['A']));
+    expect(screen.queryByTestId('tracker-board-connection-off')).toBeNull();
+    // Another window turns the connection off and renames it; this page hears the nudge.
+    setBindingMock('TrackerConnections', async () => [trackerConnection({ enabled: false, label: 'Work' })]);
+    applyTrackerConnectionsChanged(HOME_BACKEND);
+    await screen.findByTestId('tracker-board-connection-off');
+    expect(screen.getByTestId('tracker-board-row').textContent).toContain('WEB · Work');
+  });
+
+  it('says the connections could not be read, with Try again, rather than asking for a connection', async () => {
+    const answers: (() => Promise<unknown>)[] = [
+      async () => { throw new TransportError('method_error', 'store: disk I/O error', { detail: { ref: 'r', method: 'TrackerConnections', at: 1, chain: ['store: disk I/O error'] } }); },
+      async () => [trackerConnection()],
+    ];
+    setBindingMock('TrackerConnections', () => answers.shift()!());
+    await renderOnP1();
+    expect((await screen.findByTestId('settings-tracker-boards-connections-error')).textContent).toBe('Store: disk I/O error.');
+    const add = screen.getByTestId('tracker-board-add-open') as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    expect(add.title).not.toContain('Add a Jira or Linear connection');
+    await fireEvent.click(screen.getByTestId('settings-tracker-boards-connections-retry'));
+    await waitFor(() => expect(add.disabled).toBe(false));
+    expect(screen.queryByTestId('settings-tracker-boards-connections-error')).toBeNull();
   });
 
   it('names a board that was never read by its id', async () => {

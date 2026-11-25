@@ -24,6 +24,7 @@
     listed,
     disabled,
     disabledReason,
+    unavailable,
     onAdd,
   }: {
     backend: BackendKey;
@@ -33,6 +34,8 @@
     listed: ReadonlySet<string>;
     disabled: boolean;
     disabledReason?: string;
+    /** Why the picker cannot open, '' when it can. */
+    unavailable: string;
     onAdd: (board: Omit<TrackerProjectBoard, 'opens_first'>) => Promise<boolean>;
   } = $props();
 
@@ -135,8 +138,8 @@
       <button
         type="button"
         class={SECONDARY_BUTTON_CLASS}
-        disabled={disabled || connections.length === 0}
-        title={disabledReason ?? (connections.length === 0 ? 'Add a Jira or Linear connection first, and turn it on.' : undefined)}
+        disabled={disabled || unavailable !== ''}
+        title={disabledReason ?? (unavailable || undefined)}
         onclick={start}
         data-testid="tracker-board-add-open"
       >Add a board</button>

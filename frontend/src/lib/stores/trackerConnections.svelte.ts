@@ -38,7 +38,7 @@ import { onBackendStatusChange } from './transportStatus.svelte';
 
 class HeldConnections {
   list = $state<TrackerConnection[]>([]);
-  /** The first read landed (or there is nothing this session may read). */
+  /** A read answered (or there is nothing this session may read); a failed one never sets it. */
   loaded = $state(false);
   /** The last read's failure, cleared by the next read that lands. */
   error = $state<unknown>(null);
@@ -80,13 +80,15 @@ class HeldConnections {
       if (this.dropped) return;
       this.list = list;
       this.error = null;
+      this.loaded = true;
     } catch (err) {
       if (this.dropped) return;
-      // A dropped connection keeps the last list: it is not evidence the
-      // connections changed, and the reconnect's gap reads again.
-      if (!isPassiveConnectionFailure(err)) this.error = err;
+      // Once a list was read, a dropped connection keeps it: it is not
+      // evidence the connections changed, and the reconnect reads again.
+      // Before any read answered, every failure is shown, since there is
+      // no list to keep and an empty one would read as "no connections".
+      if (!this.loaded || !isPassiveConnectionFailure(err)) this.error = err;
     }
-    this.loaded = true;
   }
 }
 

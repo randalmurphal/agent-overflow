@@ -12,7 +12,7 @@
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { projectBackend } from '../../transport/entityIndex';
   import { getProjects, isLoaded } from '../../stores/projects.svelte';
-  import { acquireTrackerConnections, trackerConnectionsOf } from '../../stores/trackerConnections.svelte';
+  import { acquireTrackerConnections, refreshTrackerConnections, trackerConnectionsOf } from '../../stores/trackerConnections.svelte';
   import {
     acquireTrackerProjectBoards,
     saveTrackerProjectBoards,
@@ -26,7 +26,7 @@
     requestedTrackerBoardsProject,
     takeRequestedTrackerBoardsProject,
   } from '../../stores/settingsOverlay.svelte';
-  import type { TrackerBoardChoice, TrackerProjectBoard } from '../../stores/bindings';
+  import type { TrackerBoardChoice, TrackerConnection, TrackerProjectBoard } from '../../stores/bindings';
   import { disambiguatedPathLabels, formatPathLabel } from '../../utils/pathDisplay';
   import { userFacingError } from '../../utils/userFacingError';
   import IconButton from '../primitives/IconButton.svelte';
@@ -67,7 +67,13 @@
     return untrack(() => acquireTrackerProjectBoards(backend, id));
   });
 
-  let connections = $derived(trackerConnectionsOf(backend).list);
+  let connectionsView = $derived(trackerConnectionsOf(backend));
+  let connections = $derived(connectionsView.list);
+  // A listed board's connection, as the held connection list has it: the
+  // one source of its name and of whether it is on, which follows every
+  // change of the connections. Until that list loads, the board answer's
+  // copy stands in.
+  let connectionById = $derived(new Map<string, TrackerConnection>(connections.map((c) => [c.id, c])));
   let boards = $derived(selectedId ? trackerProjectBoardsOf(backend, selectedId) : null);
   let list = $derived(boards?.list ?? []);
   let choosable = $derived(connections.filter((c) => c.enabled && c.kind !== 'tempo'));
@@ -105,10 +111,26 @@
   }
 
   function connectionNameOf(board: TrackerBoardChoice): string {
-    const connection = connections.find((c) => c.id === board.connection);
+    const connection = connectionById.get(board.connection);
     if (connection) return trackerConnectionName(connection);
     return board.connection_label || trackerKindName(board.connection_kind);
   }
+
+  function connectionOn(board: TrackerBoardChoice): boolean {
+    return connectionById.get(board.connection)?.enabled ?? board.connection_enabled;
+  }
+
+  // Why Add cannot open, '' when it can: the picker lists the held
+  // connections, so a list that failed or has not loaded is said as that.
+  let addUnavailable = $derived(
+    connectionsView.error !== null && !connectionsView.loaded
+      ? 'The connections could not be read; try again.'
+      : !connectionsView.loaded
+        ? 'Loading the connections…'
+        : choosable.length === 0
+          ? 'Add a Jira or Linear connection first, and turn it on.'
+          : '',
+  );
 </script>
 
 <div class="settings-sections flex flex-col gap-4" data-testid="settings-tracker-boards">
@@ -165,7 +187,7 @@
                   {#if board.opens_first}
                     <span class="text-[0.6875rem] text-accent" data-testid="tracker-board-opens-first">Opens first</span>
                   {/if}
-                  {#if !board.connection_enabled}
+                  {#if !connectionOn(board)}
                     <span class="text-[0.6875rem] text-warning" data-testid="tracker-board-connection-off">Connection off</span>
                   {/if}
                 </div>
@@ -217,6 +239,17 @@
         {#if saveError !== null}
           <p class="text-[0.75rem] text-error" role="alert" data-testid="settings-tracker-boards-save-error">{userFacingError(saveError)}</p>
         {/if}
+        {#if connectionsView.error !== null}
+          <div class="flex flex-wrap items-center gap-2" role="alert">
+            <p class="text-[0.75rem] text-error" data-testid="settings-tracker-boards-connections-error">{userFacingError(connectionsView.error)}</p>
+            <button
+              type="button"
+              class={GHOST_BUTTON_CLASS}
+              onclick={() => void refreshTrackerConnections(backend)}
+              data-testid="settings-tracker-boards-connections-retry"
+            >Try again</button>
+          </div>
+        {/if}
         {#if boards.loaded}
           {#key selectedId}
             <TrackerBoardAdd
@@ -225,6 +258,7 @@
               {listed}
               disabled={locked}
               disabledReason={operateReason || undefined}
+              unavailable={addUnavailable}
               onAdd={(board) => save(withBoardAdded(list, board))}
             />
           {/key}
