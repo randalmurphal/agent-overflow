@@ -5,10 +5,11 @@
   // Refresh; under compact Only mine moves into the Display menu. Notices
   // under the header say what the board's computer last told about it: a
   // failure with when it last read the board, what a Refresh answered, a
-  // board that ended. The board's subscription is held while the pane
-  // shows it, and voted hidden while the window is hidden or the pane is
-  // not on screen (`isPaneOnScreen`: another pane promoted, or a compact
-  // screen showing something else).
+  // board that ended. Which board it shows, and its subscription, are the
+  // pane's board selection (`createBoardSelection`); the subscription is
+  // voted hidden while the window is hidden or the pane is not on screen
+  // (`isPaneOnScreen`: another pane promoted, or a compact screen showing
+  // something else).
   import { onDestroy, untrack } from 'svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
@@ -27,37 +28,29 @@
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { isPaneOnScreen } from '../../stores/paneLayout.svelte';
-  import { isSettingsOpen, openTrackerBoardsSettings } from '../../stores/settingsOverlay.svelte';
+  import { openSettingsOverlay, openTrackerBoardsSettings } from '../../stores/settingsOverlay.svelte';
   import { openPaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
-  import { getProject, getProjects, projectOrderPosition } from '../../stores/projects.svelte';
+  import { getProject } from '../../stores/projects.svelte';
   import { projectBackend } from '../../transport/entityIndex';
+  import { sidebarProjectOrder } from '../sidebar/sidebarEntries';
   import { scopeGrant } from '../../transport/scopes';
   import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
   import { toolOpenedFromProject } from '../../stores/toolPanes.svelte';
   import {
     choiceRef,
+    createBoardSelection,
     hiddenCardFields,
-    lastShownBoard,
-    onlyMineOn,
-    openingBoard,
     sameBoard,
+    saveOnlyMine,
+    savedOnlyMine,
     setCardFieldShown,
-    setOnlyMine,
-    showBoard,
   } from '../../stores/issuesPane.svelte';
+  import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
   import {
-    attachTrackerBoard,
-    dismissTrackerRefreshNotice,
-    refreshTrackerBoard,
-    setTrackerBoardShown,
-    type TrackerBoardAttachment,
-    type TrackerBoardRef,
-  } from '../../stores/trackerBoard.svelte';
-  import {
+    isBoardChoiceOpenable,
     readTrackerBoardChoices,
-    trackerBoardChoiceErrors,
+    trackerBoardChoiceComputers,
     trackerBoardChoices,
-    trackerBoardChoicesPending,
   } from '../../stores/trackerBoardChoices.svelte';
   import { cardMatches, filtering, screenColumns, searchWords, type CardFilter } from '../../stores/trackerBoardModel';
   import { relativeTime } from '../../utils/format';
@@ -73,59 +66,16 @@
   // Read once: the project of the thread this pane was opened from.
   const openedFrom = toolOpenedFromProject('issues');
 
-  void readTrackerBoardChoices();
-  // Settings may have changed the boards a project lists.
-  let settingsWasOpen = untrack(() => isSettingsOpen());
-  $effect(() => {
-    const open = isSettingsOpen();
-    if (settingsWasOpen && !open) void readTrackerBoardChoices();
-    settingsWasOpen = open;
-  });
+  const shown = $derived(isPaneOnScreen(paneId));
+  const selection = createBoardSelection({ openedFromProject: openedFrom, shown: () => shown, projectOrder: sidebarProjectOrder });
+  onDestroy(() => selection.destroy());
 
   const choices = $derived(trackerBoardChoices());
-  const pending = $derived(trackerBoardChoicesPending());
-
-  function projectOrder(_backend: string, projectId: string): number {
-    const row = getProject(projectId);
-    return row ? projectOrderPosition(row) : Number.POSITIVE_INFINITY;
-  }
-
-  // The last board this client showed opens at once, before the boards
-  // are listed; once they are, a board no project lists any more gives way.
-  const board = $derived.by((): TrackerBoardRef | null => {
-    const last = lastShownBoard();
-    if (pending && last) return last;
-    return openingBoard(choices, last, openedFrom, projectOrder);
-  });
+  const computers = $derived(trackerBoardChoiceComputers());
+  const board = $derived(selection.board);
+  const attachment = $derived(selection.attachment);
+  const pending = $derived(selection.choosing);
   const boardChoice = $derived(choices.find((c) => sameBoard(choiceRef(c), board)) ?? null);
-
-  $effect(() => {
-    if (board) untrack(() => showBoard(board));
-  });
-
-  const shown = $derived(isPaneOnScreen(paneId));
-
-  // One subscription, held while the pane shows the board.
-  let attachment = $state.raw<TrackerBoardAttachment | null>(null);
-  const boardIdentity = $derived(board ? `${board.backend}\n${board.projectId}\n${board.connection}\n${board.board}` : '');
-  $effect(() => {
-    void boardIdentity;
-    const ref = untrack(() => board);
-    if (!ref) {
-      attachment = null;
-      return;
-    }
-    // The subscribe carries whether the pane shows the board, so a board
-    // opened hidden reads nothing from the tracker until it shows.
-    const held = attachTrackerBoard(ref, untrack(() => shown));
-    attachment = held;
-    return () => held.release();
-  });
-
-  $effect(() => {
-    const key = attachment?.key;
-    if (key) setTrackerBoardShown(key, shown);
-  });
 
   const boardState = $derived(attachment?.current ?? null);
   const held = $derived(boardState?.held ?? null);
@@ -133,7 +83,12 @@
   // Search is the pane's find bar, filtering the board.
   let query = $state('');
   const me = $derived(boardChoice?.choice.verified_account || null);
-  const onlyMine = $derived(onlyMineOn());
+  // This pane's own; the next pane opens with it.
+  let onlyMine = $state(savedOnlyMine());
+  function setOnlyMine(on: boolean): void {
+    onlyMine = on;
+    saveOnlyMine(on);
+  }
   const filter: CardFilter = $derived({ mine: onlyMine ? me : null, words: searchWords(query) });
   const matchCount = $derived.by(() => {
     if (!held || !filtering(filter)) return 0;
@@ -181,7 +136,12 @@
     readFailureOf = err;
     readFailure = err ? captureError(err, { context: "Could not read the board from this computer's copy" }) : null;
   });
-  const choiceFailures = $derived(trackerBoardChoiceErrors());
+  const choiceFailures = $derived(computers.flatMap((c) => (c.state.kind === 'failed' ? [{ backend: c.backend, error: c.state.error }] : [])));
+  const offlineComputers = $derived(computers.flatMap((c) => (c.state.kind === 'offline' ? [c.backend] : [])));
+  // Every computer answered: only then can the pane say what the boards are.
+  const allAnswered = $derived(computers.every((c) => c.state.kind === 'answered'));
+  const anyListed = $derived(choices.length > 0);
+  const offTarget = $derived(choices.find((c) => !isBoardChoiceOpenable(c.choice))?.backend ?? null);
   let dismissedChoiceFailures = $state.raw<readonly unknown[]>([]);
 
   // The way to Settings > Issues > Boards, for a project on a computer
@@ -194,9 +154,9 @@
   // No project lists a board: the project the pane was opened from, else
   // the first in sidebar order.
   const emptyTarget = $derived.by(() => {
-    if (board || pending) return null;
-    const first = [...getProjects()].sort((x, y) => projectOrderPosition(x) - projectOrderPosition(y))[0];
-    const projectId = (openedFrom && getProject(openedFrom) ? openedFrom : first?.project.id) ?? null;
+    if (board || pending || !allAnswered || anyListed) return null;
+    const first = untrack(() => [...sidebarProjectOrder()].sort((x, y) => x[1] - y[1])[0]?.[0]);
+    const projectId = (openedFrom && getProject(openedFrom) ? openedFrom : first) ?? null;
     return boardsSettingsFor(projectId, projectId ? projectBackend(projectId) : undefined);
   });
   const endedTarget = $derived(boardState?.ended && board ? boardsSettingsFor(board.projectId, board.backend) : null);
@@ -218,8 +178,11 @@
         current={board}
         {computerName}
         {projectName}
-        onPick={showBoard}
-        onOpen={() => void readTrackerBoardChoices()}
+        currentName={held?.shape.name || null}
+        emptyLabel={pending ? 'Listing boards…' : allAnswered ? 'No boards' : 'Boards'}
+        emptyText={pending ? 'Listing boards…' : allAnswered ? 'No project lists a board yet.' : 'The boards could not all be listed; see the notice under the header.'}
+        onPick={(ref) => selection.pick(ref)}
+        onOpen={readTrackerBoardChoices}
       />
       <span class="flex-1"></span>
       {#if !compact}
@@ -310,10 +273,23 @@
     <RenderBoundary label="The board" testId="issues-board-render-error">
       {#if !board}
         <div class="flex flex-col items-start gap-2 px-4 py-6 text-sm text-fg-muted" data-testid="issues-empty">
-          <p>{pending ? 'Listing boards…' : 'No project lists a board yet. A project lists its boards in Settings.'}</p>
-          {#if emptyTarget}
-            {@const target = emptyTarget}
-            <button type="button" class="text-accent hover:underline" data-testid="issues-empty-settings" onclick={() => openTrackerBoardsSettings(target.projectId, target.backend)}>Choose boards in Settings</button>
+          {#if pending}
+            <p>Listing boards…</p>
+          {:else}
+            {#each offlineComputers as backend (backend)}
+              <p data-testid="issues-empty-offline">{computerName(backend)} is not connected. Its boards show when it connects.</p>
+            {/each}
+            {#if allAnswered && !anyListed}
+              <p data-testid="issues-empty-none">No project lists a board yet. A project lists its boards in Settings.</p>
+              {#if emptyTarget}
+                {@const target = emptyTarget}
+                <button type="button" class="text-accent hover:underline" data-testid="issues-empty-settings" onclick={() => openTrackerBoardsSettings(target.projectId, target.backend)}>Choose boards in Settings</button>
+              {/if}
+            {:else if anyListed && offTarget !== null}
+              {@const target = offTarget}
+              <p data-testid="issues-empty-off">Every board listed here is on a connection that is turned off. Turn one on in Settings, then pick its board.</p>
+              <button type="button" class="text-accent hover:underline" data-testid="issues-empty-connections" onclick={() => openSettingsOverlay('tracker-connections', target)}>Open the tracker connections</button>
+            {/if}
           {/if}
         </div>
       {:else if held && attachment}

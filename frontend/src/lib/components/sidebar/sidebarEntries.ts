@@ -46,6 +46,8 @@ import {
   sidebarEntryGroups,
   sidebarEntryRowOf,
 } from '../../stores/sidebarEntryContinuity.svelte';
+import { getProjectSortMode, type ProjectSortMode } from '../../stores/sidebar.svelte';
+import { sidebarBackendVisible } from '../../stores/sidebarDevices.svelte';
 
 /** A member whose identity its own computer could not verify. */
 export interface SidebarEntryWarning {
@@ -190,6 +192,39 @@ export function rankOf(entry: SidebarEntry): number {
     updated = Math.max(updated, member.project.updatedAt);
   }
   return activity > 0 ? activity : updated;
+}
+
+/**
+ * The entries in the sidebar's order `mode`. Last activity ranks each entry
+ * once per sort: a rank scans the members and reads their live activity,
+ * which the comparator would otherwise repeat for every pair it compares.
+ */
+export function sortSidebarEntries(entries: readonly SidebarEntry[], mode: ProjectSortMode): SidebarEntry[] {
+  switch (mode) {
+    case 'manual':
+      return [...entries].sort((a, b) => (a.position - b.position) || (a.createdAt - b.createdAt));
+    case 'createdAt':
+      return [...entries].sort((a, b) => b.createdAt - a.createdAt);
+    case 'lastActivity': {
+      const rank = new Map(entries.map((entry) => [entry, rankOf(entry)]));
+      return [...entries].sort((a, b) => (rank.get(b)! - rank.get(a)!) || a.name.localeCompare(b.name));
+    }
+  }
+}
+
+/**
+ * Each project's position in the sidebar as it shows now, every checkout of
+ * an entry at the entry's position, with no search applied; a project the
+ * sidebar does not show has none. Builds and sorts the entries on each
+ * call, so a caller reads it once per decision, outside a reactive read.
+ */
+export function sidebarProjectOrder(): ReadonlyMap<string, number> {
+  const entries = sortSidebarEntries(buildSidebarEntries({ visible: sidebarBackendVisible, previous: [] }), getProjectSortMode());
+  const out = new Map<string, number>();
+  entries.forEach((entry, i) => {
+    for (const member of entry.members) out.set(member.project.id, i);
+  });
+  return out;
 }
 
 /**

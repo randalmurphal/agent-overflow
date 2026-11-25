@@ -7,16 +7,22 @@ import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardChoice, BoardView, RowView, Section, SectionPage } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
 import IssuesPane from './IssuesPane.svelte';
 import { applyTrackerBoardEvent } from '../../stores/trackerBoard.svelte';
-import { hiddenCardFields, lastShownBoard, showBoard } from '../../stores/issuesPane.svelte';
+import { hiddenCardFields } from '../../stores/issuesPane.svelte';
+import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
+import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { takePinnedBackend } from '../../transport/backends';
+import { listCatalogTreesForTest } from '../../stores/sidebarCatalogs';
+import { setCarriedSessionScopes } from '../../transport/scopes';
+import { DisconnectedError } from '../../transport/wsClient';
 import { openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from '../../stores/layoutMode.svelte';
 import {
-  closeSettingsOverlay,
   getSettingsSection,
   isSettingsOpen,
-  openSettingsOverlay,
   requestedTrackerBoardsProject,
 } from '../../stores/settingsOverlay.svelte';
 import { addProjectLocal } from '../../stores/projects.svelte';
@@ -36,6 +42,23 @@ vi.mock('../../stores/toolPanes.svelte', async (importOriginal) => ({
 
 const PANE = 'tool-issues';
 const DAY = 86_400_000;
+const BOARD_KEY = 'agent-overflow:frontend:issues-board';
+
+/** The board this client's person picked last, as storage holds it. */
+function picked(): TrackerBoardRef | null {
+  const raw = localStorage.getItem(BOARD_KEY);
+  return raw === null ? null : JSON.parse(raw);
+}
+
+/** Another window of this client saves `value` under `key`. */
+function writeFromAnotherWindow(key: string, value: unknown): void {
+  localStorage.setItem(key, JSON.stringify(value));
+  window.dispatchEvent(new StorageEvent('storage', { key, storageArea: localStorage }));
+}
+
+function boardRef(board: string, projectId = 'p1', backend: string = HOME_BACKEND): TrackerBoardRef {
+  return { backend, projectId, connection: 'c1', board };
+}
 
 function choice(board: string, extra: Partial<BoardChoice> = {}): BoardChoice {
   return {
@@ -90,9 +113,9 @@ function install(opts: { choices?: BoardChoice[]; view?: BoardView | null; failu
 }
 
 /** A project of this computer, as its catalog read lists it. */
-function project(id: string, name: string, sortPosition: number): void {
+function project(id: string, name: string, sortPosition: number, updatedAt = 1): void {
   noteProject(id, HOME_BACKEND);
-  addProjectLocal({ id, name, path: `/repos/${name}`, createdAt: 1, updatedAt: 1, sortPosition, archived: false });
+  addProjectLocal({ id, name, path: `/repos/${name}`, createdAt: 1, updatedAt, sortPosition, archived: false });
 }
 
 function mount() {
@@ -122,22 +145,29 @@ describe('the Issues pane', () => {
       { name: 'In Progress', count: '1 · 2 pts', cards: ['2'] },
     ]);
     expect(view.getByTestId('issues-board-picker')).toHaveTextContent('Board 1');
-    expect(lastShownBoard()).toEqual({ backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '1' });
+    // A board the pane chose is not a pick: nothing is saved.
+    expect(picked()).toBeNull();
     view.unmount();
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('sub-1-1'));
   });
 
-  it('opens the board shown last before the boards are listed, and leaves it once none lists it', async () => {
+  it('opens the board picked last before the boards are listed, and lets it go when its computer refuses it', async () => {
     const mocks = install();
-    showBoard({ backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '2' });
+    writeFromAnotherWindow(BOARD_KEY, boardRef('2'));
     let list: (rows: BoardChoice[]) => void = () => {};
     setBindingMock('TrackerBoardChoices', () => new Promise<BoardChoice[]>((resolve) => { list = resolve; }));
+    mocks.subscribe.mockImplementationOnce(async () => {
+      throw new TransportError('tracker_board_not_listed', 'no project lists this board any more');
+    });
     const view = mount();
     await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '2', [], true));
     list([choice('1', { opens_first: true })]);
     await waitFor(() => expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '1', [], true));
-    await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('sub-2-1'));
-    expect(lastShownBoard()?.board).toBe('1');
+    await view.findAllByTestId('issues-card');
+    // The refusal is the computer's last word: no retry of board 2.
+    expect(mocks.subscribe.mock.calls.filter((c) => c[2] === '2')).toHaveLength(1);
+    expect(view.queryByTestId('issues-board-ended')).toBeNull();
+    expect(picked()?.board).toBe('2');
     view.unmount();
   });
 
@@ -286,8 +316,10 @@ describe('the Issues pane', () => {
 
   it('says no project lists a board when none does, with the way to the first project\'s boards', async () => {
     const mocks = install({ choices: [] });
-    project('p2', 'gadgets', 1);
-    project('p1', 'widgets', 0);
+    // The sidebar shows the project changed last first.
+    project('p2', 'gadgets', 0, 1);
+    project('p1', 'widgets', 1, 5);
+    listCatalogTreesForTest();
     const view = mount();
     await waitFor(() => expect(view.getByTestId('issues-empty')).toHaveTextContent('No project lists a board yet.'));
     expect(mocks.subscribe).not.toHaveBeenCalled();
@@ -332,19 +364,21 @@ describe('the Issues pane', () => {
     await fireEvent.click(items[1]);
     await waitFor(() => expect(mocks.subscribe).toHaveBeenLastCalledWith('p1', 'c1', '2', [], true));
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('sub-1-1'));
-    expect(lastShownBoard()?.board).toBe('2');
+    expect(picked()?.board).toBe('2');
   });
 
-  it('lists the boards again when Settings closes over the pane', async () => {
+  it("lists the boards again when the computer's connections change", async () => {
     const mocks = install();
     const view = mount();
     await view.findAllByTestId('issues-card');
     expect(mocks.choices).toHaveBeenCalledTimes(1);
-    openSettingsOverlay();
-    await tick();
-    expect(mocks.choices).toHaveBeenCalledTimes(1);
-    closeSettingsOverlay();
+    applyTrackerConnectionsChanged(HOME_BACKEND);
     await waitFor(() => expect(mocks.choices).toHaveBeenCalledTimes(2));
+    view.unmount();
+    // Nothing is read while no pane holds the boards.
+    applyTrackerConnectionsChanged(HOME_BACKEND);
+    await tick();
+    expect(mocks.choices).toHaveBeenCalledTimes(2);
   });
 
   it('shows one column under compact, picked from a strip, and votes hidden while another screen shows', async () => {
@@ -398,5 +432,147 @@ describe('the Issues pane', () => {
     await waitFor(() => expect(mocks.visible).toHaveBeenCalledWith('sub-1-1', false));
     demotePane();
     await waitFor(() => expect(mocks.visible).toHaveBeenLastCalledWith('sub-1-1', true));
+  });
+});
+
+describe('which board the pane holds', () => {
+  it('does not open on its own a board whose connection is turned off', async () => {
+    const mocks = install({ choices: [choice('1', { opens_first: true, connection_enabled: false }), choice('2')] });
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    expect(mocks.subscribe.mock.calls.map((c) => c[2])).toEqual(['2']);
+    view.unmount();
+  });
+
+  it('lets the board picked last go when its connection is turned off, with no retry', async () => {
+    writeFromAnotherWindow(BOARD_KEY, boardRef('1'));
+    const mocks = install({ choices: [choice('1', { connection_enabled: false }), choice('2')] });
+    mocks.subscribe.mockImplementation(async (...args: unknown[]) => {
+      const board = args[2] as string;
+      if (board === '1') throw new TransportError('tracker_connection_off', 'this connection is turned off');
+      return { id: `sub-${board}`, seq: 10, loaded: true, view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }), poll_every: 10_000 };
+    });
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    expect(mocks.subscribe.mock.calls.map((c) => c[2])).toEqual(['1', '2']);
+    view.unmount();
+  });
+
+  it('subscribes an ended board again once its connection is turned back on, and on a pick of it', async () => {
+    const mocks = install();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    applyTrackerBoardEvent({ scope: { connection: 'c1', board: '1' }, seq: 11, ended: true }, HOME_BACKEND);
+    await view.findByTestId('issues-board-ended');
+    // The answer the pane holds was read before the end: it renews nothing.
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+    // The connection is turned back on: its computer says so.
+    applyTrackerConnectionsChanged(HOME_BACKEND);
+    await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(view.queryByTestId('issues-board-ended')).toBeNull());
+    await view.findAllByTestId('issues-card');
+
+    // Ended again; the picker's list answers nothing new, and the person
+    // picks the board shown.
+    applyTrackerBoardEvent({ scope: { connection: 'c1', board: '1' }, seq: 12, ended: true }, HOME_BACKEND);
+    await view.findByTestId('issues-board-ended');
+    setBindingMock('TrackerBoardChoices', () => new Promise<BoardChoice[]>(() => {}));
+    await fireEvent.click(view.getByTestId('issues-board-picker'));
+    await fireEvent.click(within(menu()).getAllByTestId('issues-board-choice')[0]);
+    await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(view.queryByTestId('issues-board-ended')).toBeNull());
+    view.unmount();
+  });
+
+  it('waits for the computer of the project it was opened from, and saves nothing it chose', async () => {
+    stageBackend();
+    setCarriedSessionScopes('laptop', ['tracker:read']);
+    const mocks = install();
+    let laptop: (rows: BoardChoice[]) => void = () => {};
+    setBindingMock('TrackerBoardChoices', () => {
+      if (takePinnedBackend() === 'laptop') return new Promise<BoardChoice[]>((resolve) => { laptop = resolve; });
+      return Promise.resolve([choice('1', { opens_first: true })]);
+    });
+    openedFrom.project = 'p9';
+    try {
+      const view = mount();
+      await waitFor(() => expect(view.getByTestId('issues-empty')).toHaveTextContent('Listing boards…'));
+      await tick();
+      expect(mocks.subscribe).not.toHaveBeenCalled();
+      laptop([choice('7', { project: 'p9', opens_first: true })]);
+      await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledWith('p9', 'c1', '7', [], true));
+      expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+      expect(picked()).toBeNull();
+      view.unmount();
+    } finally {
+      openedFrom.project = null;
+      resetStagedBackends();
+    }
+  });
+
+  it('opens the first project in the order the sidebar shows', async () => {
+    project('p1', 'widgets', 0, 1);
+    project('p2', 'gadgets', 1, 5);
+    listCatalogTreesForTest();
+    const mocks = install({ choices: [choice('1'), choice('3', { project: 'p2' })] });
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    // Last activity, the sidebar's default: gadgets changed last.
+    expect(mocks.subscribe.mock.calls.map((c) => c[2])).toEqual(['3']);
+    view.unmount();
+  });
+
+  it('keeps its board and Only mine when another window of this client changes them', async () => {
+    const mocks = install();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    writeFromAnotherWindow(BOARD_KEY, boardRef('2'));
+    writeFromAnotherWindow('agent-overflow:frontend:issues-only-mine', true);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.subscribe.mock.calls.map((c) => c[2])).toEqual(['1']);
+    expect(view.getByTestId('issues-only-mine')).toHaveAttribute('aria-pressed', 'false');
+    view.unmount();
+  });
+
+  it('says a computer it could not reach is not connected, and lists its boards when it connects', async () => {
+    const mocks = install();
+    setBindingMock('TrackerBoardChoices', async () => {
+      throw new DisconnectedError('offline');
+    });
+    const view = mount();
+    await view.findByTestId('issues-empty-offline');
+    expect(view.getByTestId('issues-empty')).not.toHaveTextContent('No project lists a board');
+    setBindingMock('TrackerBoardChoices', async () => [choice('1')]);
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'disconnected', nextAttemptAt: null });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await view.findAllByTestId('issues-card');
+    expect(mocks.subscribe).toHaveBeenCalledWith('p1', 'c1', '1', [], true);
+    view.unmount();
+  });
+
+  it('says only that the boards could not be listed when the first read fails', async () => {
+    install();
+    setBindingMock('TrackerBoardChoices', async () => {
+      throw new TransportError('method_error', 'database is locked');
+    });
+    const view = mount();
+    await view.findByTestId('issues-choices-error');
+    expect(view.getByTestId('issues-empty')).not.toHaveTextContent('No project lists a board');
+    view.unmount();
+  });
+
+  it("lists a computer's boards once its grant arrives", async () => {
+    stageBackend();
+    const mocks = install();
+    setBindingMock('TrackerBoardChoices', () => Promise.resolve(takePinnedBackend() === 'laptop' ? [choice('7', { project: 'p9', opens_first: true })] : []));
+    const view = mount();
+    await waitFor(() => expect(view.getByTestId('issues-empty')).toHaveTextContent('Listing boards…'));
+    setCarriedSessionScopes('laptop', ['tracker:read']);
+    await waitFor(() => expect(mocks.subscribe).toHaveBeenCalledWith('p9', 'c1', '7', [], true));
+    view.unmount();
+    resetStagedBackends();
   });
 });

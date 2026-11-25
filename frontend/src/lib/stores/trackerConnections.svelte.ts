@@ -48,6 +48,7 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { isScopeRefusal } from '../transport/scopeRefusal';
 import { onBackendStatusChange } from './transportStatus.svelte';
 import { readTrackerProjectBoardsOf } from './trackerProjectBoards.svelte';
+import { trackerBoardListsChanged } from './trackerBoardEvents';
 
 class HeldConnections {
   list = $state<TrackerConnection[]>([]);
@@ -234,6 +235,7 @@ export function refreshTrackerConnections(backend: BackendKey): Promise<void> {
 export function applyTrackerConnectionsChanged(backend: BackendKey): void {
   void refreshTrackerConnections(backend);
   readTrackerProjectBoardsOf(backend);
+  trackerBoardListsChanged(backend);
 }
 
 /** Runs `call` on `backend`, then waits for a read that starts after its reply. */

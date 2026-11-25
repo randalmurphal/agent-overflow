@@ -12,13 +12,15 @@ import type { ProjectWithCounts } from '../../../types/models';
 
 const ranked = vi.hoisted(() => ({ calls: 0 }));
 
-vi.mock('../sidebarEntries', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../sidebarEntries')>();
+// A rank reads each member's live activity once; every entry here has one
+// member, so the reads count the ranks.
+vi.mock('../../../stores/projects.svelte', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../../stores/projects.svelte')>();
   return {
     ...real,
-    rankOf: (entry: Parameters<typeof real.rankOf>[0]) => {
+    getProjectLiveActivityAt: (row: Parameters<typeof real.getProjectLiveActivityAt>[0]) => {
       ranked.calls += 1;
-      return real.rankOf(entry);
+      return real.getProjectLiveActivityAt(row);
     },
   };
 });

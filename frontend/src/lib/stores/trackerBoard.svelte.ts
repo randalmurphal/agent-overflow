@@ -108,8 +108,9 @@ export interface TrackerBoardState {
   readonly failure: FailureView | null;
   /** When the board was last read (Unix ms by its computer), 0 for never. */
   readonly readAt: number;
-  /** The subscription ended: its connection was turned off or removed, or
-   * no project lists the board any more. */
+  /** The subscription ended, or its computer refused it: its connection
+   * was turned off or removed, or no project lists the board any more.
+   * `renewEndedTrackerBoard` subscribes again. */
   readonly ended: boolean;
   /** The sections (sectionKey) with a page asked for and not yet held. */
   readonly paging: ReadonlySet<string>;
@@ -152,6 +153,14 @@ const MAX_PATCH_IDS = 100;
 
 const NO_SECTIONS: ReadonlySet<string> = new Set();
 
+const FIRST_STATE: TrackerBoardState = {
+  held: null, failure: null, readAt: 0, ended: false, paging: NO_SECTIONS, refreshing: false, refreshNotice: null, readError: null,
+};
+
+// The subscribe refusals that hold until the board's lists change: the
+// entity store does not retry them (`renewEndedTrackerBoard` does).
+const ENDING_REFUSALS: ReadonlySet<string> = new Set(['tracker_connection_off', 'tracker_connection_missing', 'tracker_board_not_listed']);
+
 const lives = new Map<string, Live>();
 // Whether the pane shows each held board, before the window's own
 // visibility; kept across a re-subscribe.
@@ -192,7 +201,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   const ref = getCtx();
   const live: Live = {
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
-    state: { held: null, failure: null, readAt: 0, ended: false, paging: NO_SECTIONS, refreshing: false, refreshNotice: null, readError: null },
+    state: FIRST_STATE,
     pending: new Set(), readAgain: false, wantPage: new Set(), staleAt: -1,
     intern: createRowInterner(), running: null, voted: visibleOf(key),
   };
@@ -206,6 +215,10 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     answer = await withBackendTarget(ref.backend, () => SubscribeTrackerBoard(ref.projectId, ref.connection, ref.board, [], live.voted));
   } catch (err) {
     if (lives.get(key) === live) lives.delete(key);
+    if (err instanceof TransportError && ENDING_REFUSALS.has(err.code) && !signal.aborted) {
+      apply({ ...FIRST_STATE, ended: true });
+      return async () => {};
+    }
     throw err;
   }
   const id = answer.id;
@@ -526,6 +539,12 @@ export async function refreshTrackerBoard(key: string): Promise<void> {
   if (lives.get(key) !== live) return;
   update(live, { refreshing: false, refreshNotice: notice });
   void drain(live);
+}
+
+/** Subscribes an ended board again: its computer lists it as openable
+ * again. Nothing for a board that has not ended. */
+export function renewEndedTrackerBoard(key: string): void {
+  if (store.snapshot(key)?.ended) store.invalidate(key);
 }
 
 /** Drops what a Refresh answered. */

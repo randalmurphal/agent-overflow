@@ -2,8 +2,9 @@
   // The Issues pane's board picker: every board some project lists, on
   // every attached computer. Grouped by computer when more than one lists
   // boards, then by project with its tracker; the board shown is checked.
-  // Opening it reads the boards again (`onOpen`). A board whose connection
-  // is turned off is listed, not offered.
+  // Opening it reads the boards again (`onOpen`). A board that cannot be
+  // opened (`isBoardChoiceOpenable`: its connection is turned off) is
+  // listed, not offered.
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Kanban from '@lucide/svelte/icons/kanban';
   import Icon from '../primitives/Icon.svelte';
@@ -15,7 +16,7 @@
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import { choiceRef, sameBoard } from '../../stores/issuesPane.svelte';
   import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
-  import type { ListedBoardChoice } from '../../stores/trackerBoardChoices.svelte';
+  import { isBoardChoiceOpenable, type ListedBoardChoice } from '../../stores/trackerBoardChoices.svelte';
 
   interface Props {
     choices: readonly ListedBoardChoice[];
@@ -24,11 +25,18 @@
     computerName: (backend: string) => string;
     /** The name a project is shown by. */
     projectName: (backend: string, projectId: string) => string;
+    /** The shown board's name as its subscription read it, for a board
+     * shown before the boards are listed. */
+    currentName: string | null;
+    /** What the trigger says with no board shown and none listed. */
+    emptyLabel: string;
+    /** What the open picker says with none listed. */
+    emptyText: string;
     onPick: (ref: TrackerBoardRef) => void;
     onOpen: () => void;
   }
 
-  let { choices, current, computerName, projectName, onPick, onOpen }: Props = $props();
+  let { choices, current, computerName, projectName, currentName, emptyLabel, emptyText, onPick, onOpen }: Props = $props();
 
   const KIND_NAMES: Readonly<Record<string, string>> = { jira: 'Jira', linear: 'Linear' };
 
@@ -36,7 +44,11 @@
   let triggerEl: HTMLButtonElement | undefined = $state();
 
   const currentChoice = $derived(choices.find((c) => sameBoard(choiceRef(c), current)) ?? null);
-  const label = $derived(currentChoice ? boardName(currentChoice) : choices.length === 0 ? 'No boards' : 'Pick a board');
+  const label = $derived.by(() => {
+    if (currentChoice) return boardName(currentChoice);
+    if (current) return currentName ?? 'Board';
+    return choices.length === 0 ? emptyLabel : 'Pick a board';
+  });
   const severalComputers = $derived(new Set(choices.map((c) => c.backend)).size > 1);
 
   interface Group {
@@ -108,15 +120,15 @@
       {#each group.boards as c (c.choice.board)}
         <MenuItem
           label={boardName(c)}
-          description={c.choice.connection_enabled ? c.choice.tracker_project || undefined : 'Its connection is turned off'}
+          description={isBoardChoiceOpenable(c.choice) ? c.choice.tracker_project || undefined : 'Its connection is turned off'}
           checked={c === currentChoice}
-          disabled={!c.choice.connection_enabled}
+          disabled={!isBoardChoiceOpenable(c.choice)}
           onSelect={() => pick(c)}
           testId="issues-board-choice"
         />
       {/each}
     {:else}
-      <p class="px-3 py-2 text-sm text-fg-muted">No project lists a board yet.</p>
+      <p class="px-3 py-2 text-sm text-fg-muted">{emptyText}</p>
     {/each}
   </Menu>
 </Popover>

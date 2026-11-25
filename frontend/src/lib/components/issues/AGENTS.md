@@ -20,11 +20,19 @@ board methods, events and the patch read in
   the Go model writes), the grouping of sprint rows into columns
   (`screenColumns`) and the Only mine and Search match (`cardMatches`).
 - `stores/trackerBoardChoices.svelte.ts` lists the boards to pick from, one
-  `TrackerBoardChoices` answer per computer, read when the pane mounts, when
-  the picker opens and when Settings closes.
-- `stores/issuesPane.svelte.ts` holds what this client remembers: the board
-  shown, Display per board, Only mine, and the compact column for the
-  session. The open rule is `openingBoard`.
+  `TrackerBoardChoices` answer per computer with its state (reading,
+  answered, offline, failed), held while a pane shows it. It starts its own
+  reads: on the hold, when a computer gains tracker:read, on reconnect, on
+  `trackerBoardEvents.ts#trackerBoardListsChanged` (a computer's
+  connections changed, or this window saved a project's boards) and when
+  the picker opens. `isBoardChoiceOpenable` is the one rule for which board
+  may be opened, by the picker and by the pane on its own.
+- `stores/issuesPane.svelte.ts` owns the board a pane shows and its
+  subscription (`createBoardSelection`, one per pane, created by
+  `IssuesPane.svelte`), the opening rule (`openingBoard`), the board
+  picked last and Only mine as saved for the next pane, Display per board,
+  and the compact column for the session. Only a pick is saved; another
+  window's change never moves an open pane.
 
 ## Rendering
 

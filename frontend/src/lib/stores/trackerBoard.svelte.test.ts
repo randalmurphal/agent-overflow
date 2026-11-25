@@ -18,6 +18,7 @@ import {
   dismissTrackerRefreshNotice,
   loadMoreOfSection,
   refreshTrackerBoard,
+  renewEndedTrackerBoard,
   resyncTrackerBoardsAfterGap,
   setTrackerBoardFiltered,
   setTrackerBoardShown,
@@ -26,6 +27,7 @@ import {
   type TrackerBoardRef,
 } from './trackerBoard.svelte';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
+import { DEFAULT_RETRY } from './entityStore.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { takePinnedBackend } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
@@ -437,6 +439,36 @@ describe('the board subscription', () => {
     expect(mocks.patch).not.toHaveBeenCalled();
     expect(mocks.board).not.toHaveBeenCalled();
     board.release();
+  });
+
+  it('ends a board its computer refuses as unlisted or turned off, retries nothing, and subscribes again on renewal', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const mocks = install();
+      mocks.subscribe.mockImplementationOnce(async () => {
+        throw new TransportError('tracker_connection_off', 'this connection is turned off');
+      });
+      const board = attachTrackerBoard(REF, true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(board.current?.ended).toBe(true);
+      expect(board.error).toBeNull();
+      // Past the entity store's longest retry wait, nothing subscribes again.
+      await vi.advanceTimersByTimeAsync(DEFAULT_RETRY.maxMs * 2);
+      expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+      renewEndedTrackerBoard(board.key);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.subscribe).toHaveBeenCalledTimes(2);
+      expect(board.current?.ended).toBe(false);
+      expect(heldIds(board)).toEqual([['1']]);
+      // A board that has not ended is not subscribed again.
+      renewEndedTrackerBoard(board.key);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.subscribe).toHaveBeenCalledTimes(2);
+      board.release();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('subscribes again when its handle is gone, and on reconnect', async () => {
