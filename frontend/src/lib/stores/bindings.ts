@@ -636,6 +636,13 @@ export {
   SetTrackerSubscriptionVisible,
   RefreshTrackerSubscription,
   ReleaseTrackerSubscription,
+  // A person's logged time and its writes (stores/trackerTime.svelte.ts,
+  // stores/trackerTimeWrites.svelte.ts).
+  TrackerWorklogs,
+  RefreshTrackerWorklogs,
+  AddTrackerWorklog,
+  EditTrackerWorklog,
+  DeleteTrackerWorklog,
   ListLiveBackgroundTasks,
   GetThreadWakeDetail,
   WakeThreadWakeNow,
