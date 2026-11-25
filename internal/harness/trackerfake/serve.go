@@ -3,6 +3,7 @@ package trackerfake
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -173,6 +174,9 @@ func (e *Engine) decide(svc service, x *exchange, readErr error) (answer, *hold)
 	case e.faults.offline[x.origin]:
 		x.entry.Route, x.entry.Fault = "offline", FaultOffline
 		x.entry.Detail = "the origin is offline: connection closed"
+		return answer{abort: true}, nil
+	case errors.Is(readErr, errBodyCutShort):
+		x.entry.Route, x.entry.Detail = "cut short", readErr.Error()
 		return answer{abort: true}, nil
 	case readErr != nil:
 		return e.unhandled(svc, x, readErr.Error()), nil

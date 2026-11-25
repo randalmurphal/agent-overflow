@@ -41,6 +41,10 @@ type appProviderBinaryWatchState struct {
 	// binary whose version was read successfully; a failed read leaves the
 	// previous entry (or none) in place so the next tick retries.
 	installed map[string]providerBinaryVersion
+	// drained tracks the latest binary identity for which pooled connections
+	// were already drained, so a transient catalog refresh failure does not
+	// re-drain healthy pools on every watch tick.
+	drained map[string]providerBinaryIdentity
 	// stale is keyed by thread id, holding the two versions the banner
 	// shows. GetThreadLiveState reads it so a reconnecting webview
 	// converges without waiting for the next push.
@@ -181,6 +185,19 @@ func (a *App) recordProbedProviderVersion(providerName string, identity provider
 		return
 	}
 
+	// Drain pooled servers once per upgraded binary identity before catalog
+	// refresh so new sessions immediately launch on the upgraded binary even
+	// if catalog refresh fails transiently, without re-draining healthy pools
+	// on subsequent retry ticks.
+	if a.providerBinaries.markDrainedIfNew(providerName, identity) {
+		switch providerName {
+		case string(provider.Codex):
+			a.drainCodexConnections()
+		case string(provider.Agy):
+			a.drainAgyConnections()
+		}
+	}
+
 	if err := a.refreshProviderCatalogAfterUpgrade(providerName); err != nil {
 		// The catalog is still describing the old binary. Leaving the old
 		// entry in place means the next tick re-probes and retries the
@@ -193,12 +210,6 @@ func (a *App) recordProbedProviderVersion(providerName string, identity provider
 	log.Printf("provider binary watch: %s upgraded %s -> %s; model catalog refreshed",
 		providerName, previous.version, version)
 	a.providerBinaries.storeInstalled(providerName, providerBinaryVersion{identity: identity, version: version})
-	switch providerName {
-	case string(provider.Codex):
-		a.drainCodexConnections()
-	case string(provider.Agy):
-		a.drainAgyConnections()
-	}
 }
 
 // refreshProviderCatalogAfterUpgrade re-reads everything the app cached
@@ -375,6 +386,19 @@ func (s *appProviderBinaryWatchState) storeInstalled(providerName string, entry 
 		s.installed = make(map[string]providerBinaryVersion, 2)
 	}
 	s.installed[providerName] = entry
+}
+
+func (s *appProviderBinaryWatchState) markDrainedIfNew(providerName string, identity providerBinaryIdentity) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prev, ok := s.drained[providerName]; ok && prev == identity {
+		return false
+	}
+	if s.drained == nil {
+		s.drained = make(map[string]providerBinaryIdentity, 2)
+	}
+	s.drained[providerName] = identity
+	return true
 }
 
 // reconcileStale swaps in the tick's flagged set and reports the two

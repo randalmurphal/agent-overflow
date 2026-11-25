@@ -75,12 +75,15 @@ const (
 	// and the provider-account surface (billing identity).
 	ScopeAccessAdmin Scope = "access:admin"
 	// ScopeTrackerRead covers reads of this computer's issue tracker
-	// connections: each one's site, account, verified identity, key file
-	// state and last problem, never its token. Observe tier.
+	// connections (each one's site, account, verified identity, key file
+	// state and last problem, never its token) and of the boards,
+	// tickets, attachments and form choices they reach. Observe tier.
 	ScopeTrackerRead Scope = "tracker:read"
 	// ScopeTrackerOperate covers adding, renaming, turning on and off,
-	// verifying and removing tracker connections and recording a token's
-	// expiry. Execute tier: a verification sends the token to the tracker.
+	// verifying and removing tracker connections, recording a token's
+	// expiry, and writes to tickets and sprints as the connection's user
+	// (comments, fields, moves, ranks, links, attachments, worklogs).
+	// Execute tier: each sends the token to the tracker.
 	ScopeTrackerOperate Scope = "tracker:operate"
 	// ScopeSession is the FLOOR: any connection that named a live session
 	// may call it (docs/specs/remote-access.md §6, "The session floor").

@@ -447,7 +447,21 @@ func (m *Manager) reconcileObservedAccountLocked(
 	if email != "" {
 		updated = AccountFromInfo(target.ID, providerName, info)
 	}
-	account, err = m.store.UpsertAndActivateCredential(updated)
+	// Antigravity refreshes its 1-hour OAuth access token in-process using the
+	// same refresh token and writes the rotated access token to the canonical
+	// store. When the login continues the already-selected account's refresh
+	// token, the live agy acp process already holds the refreshed token in
+	// memory: advancing Generation would treat a routine hourly token refresh
+	// as an account switch, blocking mid-turn steers until turn end and
+	// restarting the live session afterwards.
+	sameAgyTokenRefresh := providerName == string(provider.Agy) &&
+		found && hasActive && target.ID == active.ID &&
+		agyLoginContinues(credential.Bytes(), previous)
+	if sameAgyTokenRefresh {
+		account, err = m.store.UpsertAndActivate(updated)
+	} else {
+		account, err = m.store.UpsertAndActivateCredential(updated)
+	}
 	if err != nil {
 		return provideraccounts.Account{}, SignIn{}, false, fmt.Errorf(
 			"activate externally selected %s account metadata: %w",
@@ -464,6 +478,9 @@ func (m *Manager) reconcileObservedAccountLocked(
 		Renewed:  found && CredentialLoginRenewed(providerName, previous, credential.Bytes()),
 		Switched: hasActive && active.ID != account.ID,
 		Active:   true,
+	}
+	if sameAgyTokenRefresh {
+		return account, signIn, false, nil
 	}
 	// Reaching this point means the canonical credential fingerprint changed.
 	// Publish the new generation even when provider identity metadata stayed

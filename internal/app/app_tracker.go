@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"path/filepath"
 	"testing"
 	"time"
@@ -18,7 +17,11 @@ import (
 // these are their bound methods and wire shapes. A token never crosses
 // the wire: the person pastes it into the connection's key file on this
 // computer (EditTrackerKeyFile), and every answer carries the file's
-// state only.
+// state only. A connection ID is minted on one computer, so a method that
+// names one is routed by its client to the computer whose answer named
+// it (methodFamilies.ts, family "trackerConnection"); its generated route
+// is home. TrackerConnections and AddTrackerConnection name none and go
+// to the selected computer.
 
 // TrackerConnection is one tracker connection as a client sees it.
 type TrackerConnection struct {
@@ -117,13 +120,9 @@ func (a *App) initTrackers() error {
 		Now:            time.Now,
 		Life:           a.appCtx,
 		EmitBoard:      func(e trackerapp.BoardEvent) { a.emit(eventchan.TrackerBoardUpdated, e) },
-		// No bound method subscribes to a ticket yet, so its event has no
-		// channel: one arriving means a subscription was made without it.
-		EmitIssue: func(e trackerapp.IssueEvent) {
-			log.Printf("tracker: an issue event of connection %s has no channel to its clients", e.Connection)
-		},
-		Settled: a.awaitFirstReadsSettled,
-		Cadence: a.trackerCadence,
+		EmitIssue:      func(e trackerapp.IssueEvent) { a.emit(eventchan.TrackerIssueUpdated, e) },
+		Settled:        a.awaitFirstReadsSettled,
+		Cadence:        a.trackerCadence,
 		ClientConnected: func() bool {
 			bus := a.eventBus.Load()
 			return bus != nil && bus.SubscriberCount() > 0
@@ -223,7 +222,7 @@ func (a *App) AddTrackerConnection(ctx context.Context, connection NewTrackerCon
 // RenameTrackerConnection sets a connection's label.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 func (a *App) RenameTrackerConnection(ctx context.Context, connectionID, label string) (TrackerConnection, error) {
 	return a.trackerCall(func(svc *trackerapp.Service) (trackerapp.Connection, error) {
 		return svc.Rename(connectionID, label)
@@ -234,7 +233,7 @@ func (a *App) RenameTrackerConnection(ctx context.Context, connectionID, label s
 // row and key file and closes its client.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 func (a *App) SetTrackerConnectionEnabled(ctx context.Context, connectionID string, enabled bool) (TrackerConnection, error) {
 	return a.trackerCall(func(svc *trackerapp.Service) (trackerapp.Connection, error) {
 		return svc.SetEnabled(connectionID, enabled)
@@ -246,7 +245,7 @@ func (a *App) SetTrackerConnectionEnabled(ctx context.Context, connectionID stri
 // 0 clears it.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 func (a *App) SetTrackerConnectionTokenExpiry(ctx context.Context, connectionID string, expiresAt int64) (TrackerConnection, error) {
 	return a.trackerCall(func(svc *trackerapp.Service) (trackerapp.Connection, error) {
 		return svc.SetTokenExpiry(connectionID, expiresAt)
@@ -257,7 +256,7 @@ func (a *App) SetTrackerConnectionTokenExpiry(ctx context.Context, connectionID 
 // belongs to it, their key files and their rows.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 func (a *App) RemoveTrackerConnection(ctx context.Context, connectionID string) error {
 	svc, err := a.trackerService()
 	if err != nil {
@@ -271,7 +270,7 @@ func (a *App) RemoveTrackerConnection(ctx context.Context, connectionID string) 
 // not an error.
 //
 //ao:scope tracker:operate
-//ao:route selected
+//ao:route home
 func (a *App) VerifyTrackerConnection(ctx context.Context, connectionID string) (TrackerConnection, error) {
 	return a.trackerCall(func(svc *trackerapp.Service) (trackerapp.Connection, error) {
 		return svc.Verify(ctx, connectionID)
@@ -283,7 +282,7 @@ func (a *App) VerifyTrackerConnection(ctx context.Context, connectionID string) 
 // this computer.
 //
 //ao:scope host
-//ao:route selected
+//ao:route home
 func (a *App) EditTrackerKeyFile(ctx context.Context, connectionID string) (TrackerConnection, error) {
 	svc, err := a.trackerService()
 	if err != nil {
@@ -303,7 +302,7 @@ func (a *App) EditTrackerKeyFile(ctx context.Context, connectionID string) (Trac
 // the person makes the connection's token.
 //
 //ao:scope host
-//ao:route selected
+//ao:route home
 func (a *App) OpenTrackerTokenPage(ctx context.Context, connectionID string) error {
 	svc, err := a.trackerService()
 	if err != nil {

@@ -168,7 +168,7 @@
   // handed to the loaded payload rather than a loading line; a row that
   // completed before it was ever listed here never attaches one.
   let liveTailWhileRunning = $derived.by(() => {
-    if (provider !== PROVIDER_DEFINITIONS.claude.id || presentation.kind !== 'command') return null;
+    if ((provider !== PROVIDER_DEFINITIONS.claude.id && provider !== PROVIDER_DEFINITIONS.agy.id) || presentation.kind !== 'command') return null;
     const launch = task.launch;
     if (!launch || !launch.isBackground || task.status !== 'running') return null;
     return claudeTaskTailAvailable(launch) ? { threadId: launch.threadId, launchId: launch.id } : null;
@@ -262,7 +262,9 @@
       />
     {:else if presentation.kind === 'agent'}
       <AgentRow
+        {pane}
         agentLayout
+        showOpenPane={opensAgentPane}
         headerMetrics={toolCountLabel || tokensLabel ? metrics : undefined}
         headerDetails={activityLine ? activity : undefined}
         {disclosure}

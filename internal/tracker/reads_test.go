@@ -50,12 +50,10 @@ func TestReadInputChecks(t *testing.T) {
 			"page too big":  SearchQuery{Text: "x", Limit: MaxSearchPage + 1},
 		}},
 		{SearchQuery{Project: "p"}, nil},
-		{DownloadInput{Issue: "i", Attachment: "a", To: io.Discard, Limit: 1}, map[string]checker{
-			"no issue":      DownloadInput{Attachment: "a", To: io.Discard, Limit: 1},
-			"no attachment": DownloadInput{Issue: "i", To: io.Discard, Limit: 1},
-			"no writer":     DownloadInput{Issue: "i", Attachment: "a", Limit: 1},
-			"zero limit":    DownloadInput{Issue: "i", Attachment: "a", To: io.Discard},
-			"negative":      DownloadInput{Issue: "i", Attachment: "a", To: io.Discard, Limit: -1},
+		{DownloadInput{Issue: "i", Attachment: "a", To: io.Discard}, map[string]checker{
+			"no issue":      DownloadInput{Attachment: "a", To: io.Discard},
+			"no attachment": DownloadInput{Issue: "i", To: io.Discard},
+			"no writer":     DownloadInput{Issue: "i", Attachment: "a"},
 		}},
 		{UnlinkInput{Issue: "1", Link: "10001", Other: "2"}, map[string]checker{
 			"no issue":  UnlinkInput{Link: "l", Other: "2"},

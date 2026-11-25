@@ -213,7 +213,7 @@ func TestRequestCost(t *testing.T) {
 		return p.Unlink(ctx, tracker.UnlinkInput{Issue: costIDs(5, 1)[0], Link: d.Links[0].ID, Other: costIDs(6, 1)[0]})
 	})
 	r.result("Attach", func() tracker.Result {
-		return p.Attach(ctx, tracker.AttachInput{Issue: first, Files: []tracker.File{{Name: "notes.txt", Content: strings.NewReader("hello")}}})
+		return p.Attach(ctx, tracker.AttachInput{Issue: first, Files: []tracker.File{{Name: "notes.txt", Content: strings.NewReader("hello"), Size: 5}}})
 	})
 	d, err = p.Detail(ctx, first)
 	if err != nil || len(d.Attachments) == 0 {
@@ -221,7 +221,7 @@ func TestRequestCost(t *testing.T) {
 	}
 	r.measure("Download", func() error {
 		var got bytes.Buffer
-		return p.Download(ctx, tracker.DownloadInput{Issue: first, Attachment: d.Attachments[0].ID, To: &got, Limit: 1 << 20})
+		return p.Download(ctx, tracker.DownloadInput{Issue: first, Attachment: d.Attachments[0].ID, To: &got})
 	})
 	r.result("CreateSprint", func() tracker.Result {
 		return p.CreateSprint(ctx, tracker.SprintInput{Board: costBoard, Name: "Sprint new"})

@@ -149,7 +149,7 @@ func TestAttachSeveralFiles(t *testing.T) {
 	f, p := newSite(t)
 	f.On("POST", uploadPath, jiratest.Reply(200, `[{"id":"501","filename":"a.txt","mimeType":"text/plain","size":1},{"id":"502","filename":"b.txt","mimeType":"text/plain","size":1}]`))
 	res := checked(t, p.Attach(t.Context(), tracker.AttachInput{Issue: "10001", Files: []tracker.File{
-		{Name: "a.txt", Content: strings.NewReader("a")}, {Name: "b.txt", Content: strings.NewReader("b")},
+		{Name: "a.txt", Content: strings.NewReader("a"), Size: 1}, {Name: "b.txt", Content: strings.NewReader("b"), Size: 1},
 	}}))
 	if states(res) != "upload:applied" || f.Count("POST", uploadPath) != 1 {
 		t.Errorf("got %s, %d requests", states(res), f.Count("POST", uploadPath))

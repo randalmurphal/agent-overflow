@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -38,6 +39,83 @@ var runtimeModeLabels = map[provider.RuntimeMode]string{
 // Shutdown joins it (permissionModeFollowWG).
 func (a *App) followClaudePermissionMode(threadID, sessionToken string) {
 	a.permissionModeFollowWG.Go(func() { a.applyClaudePermissionMode(threadID, sessionToken) })
+}
+
+func (a *App) followAgyPermissionMode(threadID, sessionToken string) {
+	a.permissionModeFollowWG.Go(func() { a.applyAgyPermissionMode(threadID, sessionToken) })
+}
+
+func (a *App) applyAgyPermissionMode(threadID, sessionToken string) {
+	unlockThread, err := a.threadApplication().LockMutable(a.lifeCtx(), threadID)
+	if err != nil {
+		log.Printf("thread %s: follow agy permission mode: %v", threadID, err)
+		return
+	}
+	defer unlockThread()
+	unlock := a.configApplyLocks().Lock(threadID)
+	defer unlock()
+	if a.lifeCtx().Err() != nil {
+		return
+	}
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok || sess.Token != sessionToken || sess.ACP == nil {
+		return
+	}
+	// Read the authoritative runtime and interaction modes from the ACP session
+	// under lock rather than trusting event payload ordering across goroutines.
+	nextRT, nextIM := sess.ACP.Modes()
+	prevRT := provider.NormalizeRuntimeMode(string(sess.LaunchOptions.RuntimeMode))
+	prevIM := provider.NormalizeInteractionMode(string(sess.LaunchOptions.Mode))
+	if nextRT == "" {
+		nextRT = prevRT
+	}
+	if nextIM == "" {
+		nextIM = prevIM
+	}
+	if nextRT == prevRT && nextIM == prevIM {
+		return
+	}
+	opts := sess.LaunchOptions
+	if nextRT != prevRT {
+		opts.RuntimeMode = nextRT
+		a.sessionManager().updateLaunchOpts(threadID, sessionToken, opts)
+		changed, err := a.store.SwapRuntimeMode(threadID, string(prevRT), string(nextRT))
+		if err != nil {
+			log.Printf("thread %s: follow agy runtime mode %q: %v", threadID, nextRT, err)
+			a.emitErrorToThread(threadID, fmt.Sprintf(
+				"Antigravity now runs %s, but the thread's access could not be updated: %v", runtimeModeLabels[nextRT], err))
+		} else if changed {
+			a.emitRuntimeModeChanged(threadID, nextRT)
+		}
+	}
+	if nextIM != prevIM {
+		// Re-read the thread's stored mode under lock so a concurrent user mode
+		// selection is not overwritten by an asynchronous provider notification,
+		// and only update LaunchOptions.Mode after UpdateMode accepts the mode.
+		thread, getErr := a.store.GetThread(threadID)
+		if getErr != nil {
+			log.Printf("thread %s: follow agy interaction mode %q: read thread: %v", threadID, nextIM, getErr)
+			a.emitErrorToThread(threadID, fmt.Sprintf(
+				"Antigravity switched to %s mode, but the thread could not be updated: %v", nextIM, getErr))
+			return
+		}
+		if provider.NormalizeInteractionMode(thread.Mode) != prevIM {
+			log.Printf("thread %s: agy moved to %q on its own; thread mode changed meanwhile to %q and stays", threadID, nextIM, thread.Mode)
+			return
+		}
+		update, err := a.threadApplication().UpdateMode(threadID, string(nextIM))
+		if err != nil {
+			log.Printf("thread %s: follow agy interaction mode %q: %v", threadID, nextIM, err)
+			a.emitErrorToThread(threadID, fmt.Sprintf(
+				"Antigravity switched to %s mode, but the thread mode could not be updated: %v", nextIM, err))
+			return
+		}
+		opts.Mode = nextIM
+		a.sessionManager().updateLaunchOpts(threadID, sessionToken, opts)
+		a.emitEvent(eventchan.ThreadModeChanged, ThreadModeChangedEvent{
+			ThreadID: threadID, Mode: update.Mode, NeedsReconnect: false,
+		})
+	}
 }
 
 // applyClaudePermissionMode converges the session's launch options and the

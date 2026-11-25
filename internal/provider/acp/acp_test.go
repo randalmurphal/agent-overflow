@@ -1447,3 +1447,485 @@ func TestBuildPromptBlocksPreservesInlineImageOrderAndApprovalDiffPreview(t *tes
 		t.Fatalf("approval input missing path/diff preview: %s", string(cls.Approval.Input))
 	}
 }
+
+func TestSessionSteeredPromptConfirmsOnFirstUpdateAfterPredecessorEnds(t *testing.T) {
+	t.Parallel()
+	const steerConfirmScript = `#!/usr/bin/env python3
+import json, sys
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    msg = json.loads(raw)
+    mid = msg.get("id")
+    method = msg.get("method")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"agentInfo":{"name":"mock","version":"1.0"}}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"s-steer","modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"}]}}}), flush=True)
+    elif method == "session/prompt":
+        sid = params.get("sessionId")
+        prompt = params.get("prompt") or []
+        text = prompt[0].get("text", "") if prompt else ""
+        if text == "PROMPT_A":
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"from-a"}}}}), flush=True)
+            b_msg = json.loads(sys.stdin.readline().strip())
+            b_id = b_msg.get("id")
+            # Prompt A resolves when steered prompt B arrives, then B streams updates while staying open until cancelled.
+            print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn"}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking-b"}}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"from-b"}}}}), flush=True)
+            # Hold B open until session/cancel arrives so we prove B confirms BEFORE finishPrompt(B).
+            for next_raw in sys.stdin:
+                next_raw = next_raw.strip()
+                if not next_raw:
+                    continue
+                next_msg = json.loads(next_raw)
+                if next_msg.get("method") == "session/cancel":
+                    print(json.dumps({"jsonrpc":"2.0","id":b_id,"result":{"stopReason":"cancelled"}}), flush=True)
+                    break
+    elif method == "session/close":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{}}), flush=True)
+`
+	bin := writeFakeACPServer(t, steerConfirmScript)
+	conn, err := Dial(context.Background(), ConnConfig{
+		Binary:       bin,
+		WorkDir:      t.TempDir(),
+		Reaper:       procutiltest.Reaper(),
+		ProviderName: "agy",
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ev := newEventCollector()
+	sess, err := conn.Open(context.Background(), "t-steer-confirm", SessionConfig{
+		WorkDir:     t.TempDir(),
+		RuntimeMode: provider.RuntimeApprovalRequired,
+	}, ev.record)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.Send(context.Background(), "PROMPT_A", provider.SendOptions{UserMessageUUID: "uuid-a"}); err != nil {
+		t.Fatalf("Send PROMPT_A: %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventTextDelta && strings.Contains(e.Content, "from-a")
+	})
+
+	if err := sess.Send(context.Background(), "PROMPT_B", provider.SendOptions{UserMessageUUID: "uuid-b"}); err != nil {
+		t.Fatalf("Send PROMPT_B: %v", err)
+	}
+	// Steered prompt B must confirm while B is STILL running (before EventTurnComplete).
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventUserText && strings.Contains(string(e.Meta), "uuid-b")
+	})
+	for _, e := range ev.all() {
+		if e.Kind == provider.EventTurnComplete {
+			t.Fatalf("expected uuid-b confirmation before turn completion, but turn already completed")
+		}
+	}
+
+	if err := sess.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventTurnComplete
+	})
+}
+
+func TestACPEarlyReturningSteerStaysStagedUntilToolCompletesAndModelReplies(t *testing.T) {
+	t.Parallel()
+	// Models real agy 1.5.16 steering: Prompt A stays open running cmd-1 while
+	// steered Prompt B returns {"stopReason":"end_turn"} immediately. Prompt B
+	// must stay unconfirmed (staged above the composer) until cmd-1 finishes and
+	// the model begins its next step reacting to Prompt B.
+	earlySteerScript := `#!/usr/bin/env python3
+import json, sys, time
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    msg = json.loads(raw)
+    mid = msg.get("id")
+    method = msg.get("method")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"agentInfo":{"name":"mock","version":"1.0"}}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"s-early-steer","modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"}]}}}), flush=True)
+    elif method == "session/prompt":
+        sid = params.get("sessionId")
+        prompt = params.get("prompt") or []
+        text = prompt[0].get("text", "") if prompt else ""
+        if text == "PROMPT_A":
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"tool_call","toolCallId":"cmd-1","title":"run_command","kind":"execute","status":"in_progress"}}}), flush=True)
+            b_msg = json.loads(sys.stdin.readline().strip())
+            b_id = b_msg.get("id")
+            # Prompt B returns immediately while cmd-1 is still running!
+            print(json.dumps({"jsonrpc":"2.0","id":b_id,"result":{"stopReason":"end_turn"}}), flush=True)
+            time.sleep(0.15)
+            # Now cmd-1 finishes, and then the model starts replying to Prompt B.
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"tool_call_update","toolCallId":"cmd-1","title":"run_command","kind":"execute","status":"completed"}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"reply-to-b"}}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn"}}), flush=True)
+    elif method == "session/close":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{}}), flush=True)
+`
+	bin := writeFakeACPServer(t, earlySteerScript)
+	conn, err := Dial(context.Background(), ConnConfig{
+		Binary:       bin,
+		WorkDir:      t.TempDir(),
+		Reaper:       procutiltest.Reaper(),
+		ProviderName: "agy",
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ev := newEventCollector()
+	sess, err := conn.Open(context.Background(), "t-early-steer", SessionConfig{
+		WorkDir:     t.TempDir(),
+		RuntimeMode: provider.RuntimeApprovalRequired,
+	}, ev.record)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.Send(context.Background(), "PROMPT_A", provider.SendOptions{UserMessageUUID: "uuid-a"}); err != nil {
+		t.Fatalf("Send PROMPT_A: %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventToolStart && e.ItemID == "cmd-1"
+	})
+
+	if err := sess.Steer(context.Background(), "PROMPT_B", provider.SendOptions{UserMessageUUID: "uuid-b"}); err != nil {
+		t.Fatalf("Steer PROMPT_B: %v", err)
+	}
+
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventTurnComplete
+	})
+
+	all := ev.all()
+	cmdCompleteIdx := -1
+	uuidBIdx := -1
+	replyBIdx := -1
+	for i, e := range all {
+		if e.Kind == provider.EventToolComplete && e.ItemID == "cmd-1" && cmdCompleteIdx < 0 {
+			cmdCompleteIdx = i
+		}
+		if e.Kind == provider.EventUserText && strings.Contains(string(e.Meta), "uuid-b") && uuidBIdx < 0 {
+			uuidBIdx = i
+		}
+		if e.Kind == provider.EventTextDelta && strings.Contains(e.Content, "reply-to-b") && replyBIdx < 0 {
+			replyBIdx = i
+		}
+	}
+	if cmdCompleteIdx < 0 || uuidBIdx < 0 || replyBIdx < 0 {
+		t.Fatalf("missing expected events: cmdComplete=%d uuidB=%d replyB=%d; all=%+v", cmdCompleteIdx, uuidBIdx, replyBIdx, all)
+	}
+	if cmdCompleteIdx >= uuidBIdx || uuidBIdx >= replyBIdx {
+		t.Fatalf("steered prompt B confirmed out of order: want cmdComplete (%d) < uuidB (%d) < replyB (%d)", cmdCompleteIdx, uuidBIdx, replyBIdx)
+	}
+}
+
+func TestACPAgySteerHandoffStaysStagedWhileForegroundToolOrStreamRuns(t *testing.T) {
+	t.Parallel()
+	// Models real agy 1.5.16 FinishSteer handoff: when steered Prompt B (and
+	// then Prompt C) arrive while cmd-1 is still running, agy immediately
+	// returns the PREDECESSOR prompt's RPC (Prompt A, then Prompt B) and keeps
+	// Prompt C open until the cascade finishes. Even if a stray update arrives
+	// while cmd-1 is open, both B and C must stay staged until cmd-1 finishes
+	// and the model starts its next step reacting to them.
+	handoffScript := `#!/usr/bin/env python3
+import json, sys, time
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    msg = json.loads(raw)
+    mid = msg.get("id")
+    method = msg.get("method")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"agentInfo":{"name":"mock","version":"1.0"}}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"s-agy-handoff","modes":{"currentModeId":"auto","availableModes":[{"id":"auto","name":"Auto"}]}}}), flush=True)
+    elif method == "session/prompt":
+        sid = params.get("sessionId")
+        prompt = params.get("prompt") or []
+        text = prompt[0].get("text", "") if prompt else ""
+        if text == "PROMPT_A":
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"tool_call","toolCallId":"cmd-1","title":"run_command","kind":"execute","status":"in_progress"}}}), flush=True)
+            b_msg = json.loads(sys.stdin.readline().strip())
+            b_id = b_msg.get("id")
+            # FinishSteer hands off turn from Prompt A to Prompt B: Prompt A returns immediately!
+            print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn"}}), flush=True)
+            # Stray tool_call / usage update while cmd-1 is still running must NOT confirm B early.
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"usage_update","used":1000,"size":200000}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"tool_call","toolCallId":"cmd-1","title":"run_command","kind":"execute","status":"in_progress"}}}), flush=True)
+            c_msg = json.loads(sys.stdin.readline().strip())
+            c_id = c_msg.get("id")
+            # Second FinishSteer hands off from Prompt B to Prompt C while cmd-1 still runs!
+            print(json.dumps({"jsonrpc":"2.0","id":b_id,"result":{"stopReason":"end_turn"}}), flush=True)
+            time.sleep(0.1)
+            # Now cmd-1 completes, then the model thinks and replies to B and C.
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"tool_call_update","toolCallId":"cmd-1","title":"run_command","kind":"execute","status":"completed"}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking-bc"}}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"reply-bc"}}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","id":c_id,"result":{"stopReason":"end_turn"}}), flush=True)
+    elif method == "session/close":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{}}), flush=True)
+`
+	bin := writeFakeACPServer(t, handoffScript)
+	conn, err := Dial(context.Background(), ConnConfig{
+		Binary:       bin,
+		WorkDir:      t.TempDir(),
+		Reaper:       procutiltest.Reaper(),
+		ProviderName: "agy",
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ev := newEventCollector()
+	sess, err := conn.Open(context.Background(), "t-agy-handoff", SessionConfig{
+		WorkDir:     t.TempDir(),
+		RuntimeMode: provider.RuntimeFullAccess,
+	}, ev.record)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.Send(context.Background(), "PROMPT_A", provider.SendOptions{UserMessageUUID: "uuid-a"}); err != nil {
+		t.Fatalf("Send PROMPT_A: %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventToolStart && e.ItemID == "cmd-1"
+	})
+
+	if err := sess.Steer(context.Background(), "PROMPT_B", provider.SendOptions{UserMessageUUID: "uuid-b"}); err != nil {
+		t.Fatalf("Steer PROMPT_B: %v", err)
+	}
+	// Wait briefly to ensure B's handoff settles before sending C.
+	time.Sleep(50 * time.Millisecond)
+	if err := sess.Steer(context.Background(), "PROMPT_C", provider.SendOptions{UserMessageUUID: "uuid-c"}); err != nil {
+		t.Fatalf("Steer PROMPT_C: %v", err)
+	}
+
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventTurnComplete
+	})
+
+	all := ev.all()
+	cmdCompleteIdx, uuidBIdx, uuidCIdx, thinkIdx := -1, -1, -1, -1
+	for i, e := range all {
+		if e.Kind == provider.EventToolComplete && e.ItemID == "cmd-1" && cmdCompleteIdx < 0 {
+			cmdCompleteIdx = i
+		}
+		if e.Kind == provider.EventUserText && strings.Contains(string(e.Meta), "uuid-b") && uuidBIdx < 0 {
+			uuidBIdx = i
+		}
+		if e.Kind == provider.EventUserText && strings.Contains(string(e.Meta), "uuid-c") && uuidCIdx < 0 {
+			uuidCIdx = i
+		}
+		if e.Kind == provider.EventThinking && strings.Contains(e.Content, "thinking-bc") && thinkIdx < 0 {
+			thinkIdx = i
+		}
+	}
+	if cmdCompleteIdx < 0 || uuidBIdx < 0 || uuidCIdx < 0 || thinkIdx < 0 {
+		t.Fatalf("missing expected events: cmdComplete=%d uuidB=%d uuidC=%d think=%d; all=%+v", cmdCompleteIdx, uuidBIdx, uuidCIdx, thinkIdx, all)
+	}
+	if cmdCompleteIdx >= uuidBIdx || uuidBIdx >= uuidCIdx || uuidCIdx >= thinkIdx {
+		t.Fatalf("steered prompts confirmed out of order: want cmdComplete (%d) < uuidB (%d) < uuidC (%d) < think (%d)", cmdCompleteIdx, uuidBIdx, uuidCIdx, thinkIdx)
+	}
+}
+
+func TestACPAgySteerHandoffPromotesWhenToolBackgroundsAndCancelsAllStaged(t *testing.T) {
+	t.Parallel()
+	// 1. Steer staged while a foreground Bash command runs must promote once
+	//    the command is backgrounded (model can now react to the steer while
+	//    the background command continues running).
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(DefaultFlavor{Kind: provider.Agy}, &events, &mu)
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+	s.startedTools["cmd-1"] = NormalizedToolStart{ToolName: "Bash", ItemType: "command_execution"}
+
+	c0 := &pendingPromptConfirm{uuid: "u0", content: "first"}
+	c0.confirmed.Store(true)
+	c1 := &pendingPromptConfirm{uuid: "u1", content: "steered-bg"}
+	s.wireInFlightPrompts = 2
+	s.inFlightConfirms = []*pendingPromptConfirm{c0, c1}
+
+	settle0 := s.makeWirePromptSettler(c0)
+	settle0([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`))
+	if len(s.armedConfirms) != 0 || len(s.stagedSteerConfirms) != 1 || s.stagedSteerConfirms[0] != c1 {
+		t.Fatalf("after FinishSteer with foreground tool, armed=%v staged=%v, want armed=[] staged=[c1]", s.armedConfirms, s.stagedSteerConfirms)
+	}
+
+	s.promoteBackgroundCommand("cmd-1", "", "turn-1", BackgroundCommandInfo{TaskID: "task-1", OutputFile: "/tmp/task-1.log"})
+	if len(s.stagedSteerConfirms) != 0 || len(s.armedConfirms) != 1 || s.armedConfirms[0] != c1 {
+		t.Fatalf("after background promotion, armed=%v staged=%v, want armed=[c1] staged=[]", s.armedConfirms, s.stagedSteerConfirms)
+	}
+	s.confirmArmedPrompt()
+	mu.Lock()
+	var sawU1 bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventUserText && strings.Contains(string(ev.Meta), "u1") {
+			sawU1 = true
+		}
+	}
+	mu.Unlock()
+	if !sawU1 {
+		t.Fatalf("expected EventUserText for u1 after background promotion, got %+v", events)
+	}
+
+	// 2. When two steers are staged during a foreground tool and a permission
+	//    cancel aborts the turn, BOTH staged steers must receive
+	//    EventCommandLifecycle(cancelled) so neither strands above the composer.
+	var mu2 sync.Mutex
+	var events2 []provider.ProviderEvent
+	s2 := newUnitSession(DefaultFlavor{Kind: provider.Agy}, &events2, &mu2)
+	s2.sessionID = "sess-2"
+	s2.turnOpen = true
+	s2.activeTurnID = "turn-2"
+	s2.startedTools["cmd-2"] = NormalizedToolStart{ToolName: "Bash", ItemType: "command_execution"}
+
+	p0 := &pendingPromptConfirm{uuid: "p0", content: "first"}
+	p0.confirmed.Store(true)
+	p1 := &pendingPromptConfirm{uuid: "p1", content: "steer-1"}
+	p2 := &pendingPromptConfirm{uuid: "p2", content: "steer-2"}
+	s2.inFlightPrompts = 3
+	s2.activeFinishers = 3
+	s2.wireInFlightPrompts = 3
+	s2.inFlightConfirms = []*pendingPromptConfirm{p0, p1, p2}
+
+	settleP0 := s2.makeWirePromptSettler(p0)
+	settleP1 := s2.makeWirePromptSettler(p1)
+	settleP2 := s2.makeWirePromptSettler(p2)
+
+	settleP0([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`))
+	s2.finishPrompt(json.RawMessage(`{"stopReason":"end_turn"}`), nil, nil, p0)
+	settleP1([]byte(`{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}`))
+	s2.finishPrompt(json.RawMessage(`{"stopReason":"end_turn"}`), nil, nil, p1)
+	settleP2([]byte(`{"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}}`))
+	s2.finishPrompt(json.RawMessage(`{"stopReason":"cancelled"}`), nil, nil, p2)
+
+	mu2.Lock()
+	defer mu2.Unlock()
+	cancelled := map[string]bool{}
+	for _, ev := range events2 {
+		if ev.Kind == provider.EventCommandLifecycle {
+			var meta provider.CommandLifecycleMeta
+			if json.Unmarshal(ev.Meta, &meta) == nil && meta.State == provider.CommandCancelled {
+				cancelled[meta.CommandUUID] = true
+			}
+		}
+	}
+	if !cancelled["p1"] || !cancelled["p2"] {
+		t.Fatalf("expected CommandCancelled for both p1 and p2, got %v (events=%+v)", cancelled, events2)
+	}
+}
+
+type stepAnchorFlavor struct {
+	DefaultFlavor
+	gotSessionID string
+	gotContent   string
+	gotBefore    any
+	anchor       string
+}
+
+func (f *stepAnchorFlavor) ResolvePromptStepAnchor(_ context.Context, sessionID, content string, beforeToken any) string {
+	f.gotSessionID = sessionID
+	f.gotContent = content
+	f.gotBefore = beforeToken
+	return f.anchor
+}
+
+func TestEmitPromptConfirmationAttachesResolvedStepAnchor(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	fl := &stepAnchorFlavor{
+		DefaultFlavor: DefaultFlavor{Kind: provider.Agy},
+		anchor:        "agy-step:8428:8873ac7c582f494d9896cf0e640961ab",
+	}
+	s := newUnitSession(fl, &events, &mu)
+	s.sessionID = "sess-anchor"
+	c := &pendingPromptConfirm{
+		uuid:        "u-anchor-1",
+		content:     "Ok now go",
+		beforeToken: 8427,
+	}
+	s.emitPromptConfirmation(c)
+
+	if fl.gotSessionID != "sess-anchor" || fl.gotContent != "Ok now go" || fl.gotBefore != 8427 {
+		t.Fatalf("ResolvePromptStepAnchor args = (%q, %q, %v), want (sess-anchor, Ok now go, 8427)", fl.gotSessionID, fl.gotContent, fl.gotBefore)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 1 || events[0].Kind != provider.EventUserText {
+		t.Fatalf("expected 1 EventUserText, got %+v", events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["provider_item_id"] != "u-anchor-1" || meta["parent_uuid"] != "agy-step:8428:8873ac7c582f494d9896cf0e640961ab" {
+		t.Fatalf("unexpected EventUserText meta: %+v", meta)
+	}
+}
+
+func TestFailedSteeredPromptIsNeverArmedOrConfirmed(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var events []provider.ProviderEvent
+	s := newUnitSession(DefaultFlavor{Kind: provider.Agy}, &events, &mu)
+	s.sessionID = "sess-steer-err"
+	s.turnOpen = true
+	s.activeTurnID = "turn-1"
+	s.startedTools["fg-1"] = NormalizedToolStart{ToolName: "Bash", ItemType: "command_execution"}
+
+	p1 := &pendingPromptConfirm{uuid: "u-p1", content: "first"}
+	p1.confirmed.Store(true)
+	p2 := &pendingPromptConfirm{uuid: "u-p2", content: "bad steer"}
+	s.inFlightPrompts = 2
+	s.activeFinishers = 2
+	s.wireInFlightPrompts = 2
+	s.inFlightConfirms = []*pendingPromptConfirm{p1, p2}
+
+	settleP2 := s.makeWirePromptSettler(p2)
+	settleP2([]byte(`{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"steer rejected"}}`))
+	s.finishPrompt(nil, errors.New("steer rejected"), nil, p2)
+
+	if len(s.armedConfirms) != 0 || len(s.stagedSteerConfirms) != 0 {
+		t.Fatalf("errored steered prompt remained armed=%v staged=%v, want empty", s.armedConfirms, s.stagedSteerConfirms)
+	}
+
+	// Completing P1 (with an orphaned foreground tool) must scrub fg-1 and never confirm P2.
+	settleP1 := s.makeWirePromptSettler(p1)
+	settleP1([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`))
+	s.finishPrompt(json.RawMessage(`{"stopReason":"end_turn"}`), nil, nil, p1)
+
+	if s.hasForegroundStartedToolsLocked() {
+		t.Fatal("expected orphaned foreground tool fg-1 to be scrubbed on turn completion")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range events {
+		if ev.Kind == provider.EventUserText && strings.Contains(string(ev.Meta), "u-p2") {
+			t.Fatalf("errored steered prompt u-p2 was falsely confirmed as EventUserText: %+v", ev)
+		}
+	}
+}

@@ -25,16 +25,12 @@ func TestAttachUploadsWithTheAntiXSRFHeader(t *testing.T) {
 		}
 		jiratest.Reply(200, `[{"id":"501","filename":"log.txt","mimeType":"text/plain","size":9,"created":"2026-11-16T10:00:00.000+0000","author":`+userOneJSON+`}]`)(w, r, b)
 	})
-	got, err := c.Attach(t.Context(), "WEB-1", File{Name: "log.txt", Content: strings.NewReader("line one\n")})
+	got, err := c.Attach(t.Context(), "WEB-1", File{Name: "log.txt", Content: strings.NewReader("line one\n"), Size: 9})
 	if err != nil || len(got) != 1 || got[0].ID != "501" || got[0].Author == nil || got[0].Created.IsZero() {
 		t.Fatalf("got %+v %v", got, err)
 	}
-	c.maxUpload = 1 << 10
-	_, err = c.Attach(t.Context(), "WEB-1", File{Name: "big.bin", Content: bytes.NewReader(make([]byte, 2<<10))})
-	if !errors.Is(err, trackerapi.ErrUploadTooLarge) || !trackerapi.WriteNotApplied(err) {
-		t.Errorf("an upload over the limit: %v", err)
-	}
-	for _, bad := range []File{{Name: "", Content: strings.NewReader("x")}, {Name: "a\nb", Content: strings.NewReader("x")}, {Name: "x"}} {
+	for _, bad := range []File{{Name: "", Content: strings.NewReader("x"), Size: 1}, {Name: "a\nb", Content: strings.NewReader("x"), Size: 1}, {Name: "x"},
+		{Name: "x", Content: strings.NewReader("x"), Size: -1}} {
 		if _, err := c.Attach(t.Context(), "WEB-1", bad); !trackerapi.WriteNotApplied(err) {
 			t.Errorf("%+v: %v", bad, err)
 		}
@@ -50,7 +46,7 @@ func TestAttachUnreadableAnswerKeepsTheIDs(t *testing.T) {
 	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	f.On("POST", "/rest/api/3/issue/WEB-1/attachments", jiratest.Reply(200, `[{"id":"501","size":"big"},{"id":502,"size":"big"}]`))
-	got, err := c.Attach(t.Context(), "WEB-1", File{Name: "a.txt", Content: strings.NewReader("a")})
+	got, err := c.Attach(t.Context(), "WEB-1", File{Name: "a.txt", Content: strings.NewReader("a"), Size: 1})
 	se, ok := errors.AsType[*StepError](err)
 	if !ok || !se.Applied() || len(got) != 2 || got[0].ID != "501" || got[1].ID != "502" {
 		t.Fatalf("got %+v %v", got, err)

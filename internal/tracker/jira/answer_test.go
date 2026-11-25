@@ -174,7 +174,7 @@ func TestOtherWritesWithUnknownAnswers(t *testing.T) {
 		body   string
 	}{{200, `{"not":"a list"}`}, {200, `[]`}, {200, `[{"id":"x"}]`}, {201, `[{"id":"501"}]`}, {200, `<html>stored</html>`}} {
 		f.On("POST", "/rest/api/3/issue/WEB-1/attachments", jiratest.Reply(answer.status, answer.body))
-		got, err := c.Attach(t.Context(), "WEB-1", File{Name: "a.txt", Content: strings.NewReader("x")})
+		got, err := c.Attach(t.Context(), "WEB-1", File{Name: "a.txt", Content: strings.NewReader("x"), Size: 1})
 		unknown("Attach answered "+answer.body, StepUpload, err)
 		if got != nil {
 			t.Errorf("Attach answered %s: reported %+v", answer.body, got)

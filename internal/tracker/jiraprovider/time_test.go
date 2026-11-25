@@ -2,6 +2,7 @@ package jiraprovider
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -288,5 +289,21 @@ func TestTempoIssues(t *testing.T) {
 	f.On("POST", bulkFetchPath, jiratest.Reply(400, `{}`))
 	if _, err := ti.IDs(t.Context(), []string{"WEB-1"}); err == nil {
 		t.Error("a failed read was taken")
+	}
+}
+
+// A Jira connection's time is logged in Tempo once Jira says who logs it:
+// a Tempo refusal of its token after Jira answered is a refusal whose
+// error names Tempo, which the sentence a person reads is built from.
+func TestATempoRefusalAfterJiraNamesTempo(t *testing.T) {
+	t.Parallel()
+	_, ts, p := tempoSite(t)
+	refused := `{"errors":[{"message":"invalid token"}]}`
+	ts.On("GET", "/4/work-attributes", values("offset", "0", "limit", "1000"), "", 401, refused).Repeat = true
+	ts.On("GET", "/4/timesheet-approvals/user/acc-user1", values("from", "2026-11-10", "to", "2026-11-10"), "", 401, refused).Repeat = true
+	res := checked(t, p.Time().AddWorklog(t.Context(), tracker.WorklogInput{Issue: "10001", Day: day(t, 2026, 11, 10), Spent: time.Hour}))
+	auth, ok := errors.AsType[*trackerapi.AuthError](res.Parts[0].Outcome.Err())
+	if reason(res, 0) != tracker.ReasonTracker || !ok || auth.Tracker != "tempo" {
+		t.Fatalf("a Tempo refusal: %s, %v", states(res), res.Parts[0].Outcome.Err())
 	}
 }

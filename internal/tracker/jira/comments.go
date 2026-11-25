@@ -256,7 +256,7 @@ func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult
 			return res, notSentErr(fmt.Errorf("jira: comment on %s: %w", in.Issue, err))
 		}
 	}
-	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxUpload)}
+	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxImages)}
 	doc, _, err := b.markdown(ctx, in.Markdown, nil)
 	if err != nil {
 		return res, notSentErr(fmt.Errorf("jira: comment on %s: %w", in.Issue, err))
@@ -386,7 +386,7 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 		}
 	}
 	cur := base
-	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxUpload)}
+	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxImages)}
 	doc, ws, err := b.markdown(ctx, in.Markdown, base.Body)
 	if err == nil {
 		err = adf.CheckLoss(ws, in.AcceptLoss)

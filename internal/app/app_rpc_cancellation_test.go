@@ -49,6 +49,7 @@ var callerBoundMethods = map[string]string{
 	"WatchBackgroundTaskOutput": "store read; local file tail released by cleanup",
 	"ProviderTerminalAttach":    "in-memory attachment released by cleanup",
 	"SubscribeTrackerBoard":     "store read; board subscription released by cleanup",
+	"SubscribeTrackerTicket":    "store read; ticket subscription released by cleanup",
 	// A cut before the save leaves nothing stored, and the far side revokes
 	// the session it issued at its next mint; once the save has begun the
 	// cut changes only the caller's answer (attachedbackends enroll).

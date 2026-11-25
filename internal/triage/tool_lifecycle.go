@@ -211,12 +211,16 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 		}
 		mergedMeta = keepFirstLaunchStamps(existing.Meta, mergedMeta)
 		parentChanged := parentToolUseID != "" && existing.ParentID == ""
-		if mergedMeta == existing.Meta && !parentChanged {
+		backgroundChanged := meta.IsBackground && !existing.IsBackground && existing.Status == statusRunning
+		if mergedMeta == existing.Meta && !parentChanged && !backgroundChanged {
 			return existing, true, nil
 		}
 		existing.Meta = mergedMeta
 		if parentChanged {
 			existing.ParentID = parentToolUseID
+		}
+		if backgroundChanged {
+			existing.IsBackground = true
 		}
 		existing.UpdatedAt = now
 		// Re-shape after the merge: a metaUpdateOnly never carries

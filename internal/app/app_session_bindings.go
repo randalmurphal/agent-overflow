@@ -277,6 +277,30 @@ func (a *App) reconnectSessionLocked(ctx context.Context, threadID string) error
 	return a.startSession(ctx, threadID)
 }
 
+// reconnectSessionPreservingQueueLocked replaces the thread's session without
+// restoring or discarding its flush queue. Used by the pre-send account switch
+// gate, which can run inside dispatchFlushGroup while a multi-item batch is
+// actively dispatching on this thread: stopSessionForRestart would bump the
+// dispatch generation, restore the in-flight batch into the composer draft,
+// still send the current item, and drop the remaining items.
+func (a *App) reconnectSessionPreservingQueueLocked(ctx context.Context, threadID string) error {
+	if a.shuttingDown.Load() {
+		return ErrShuttingDown
+	}
+	if !a.acquireReconnect(threadID) {
+		return nil
+	}
+	defer a.releaseReconnect(threadID)
+	if a.stopSessionFn != nil {
+		if err := a.stopSessionFn(threadID); err != nil {
+			return err
+		}
+	} else if err := a.stopExistingSessionLocked(threadID); err != nil {
+		return err
+	}
+	return a.startSession(ctx, threadID)
+}
+
 func (a *App) acquireReconnect(threadID string) bool {
 	return a.sessionManager().runtime.BeginReconnect(threadID)
 }

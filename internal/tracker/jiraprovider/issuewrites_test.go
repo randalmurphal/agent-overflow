@@ -308,12 +308,12 @@ func TestLinksAndAttachments(t *testing.T) {
 			t.Errorf("%s: %s", name, states(res))
 		}
 	}
-	res = checked(t, p.Attach(t.Context(), tracker.AttachInput{Issue: "10001", Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("hello")}}}))
+	res = checked(t, p.Attach(t.Context(), tracker.AttachInput{Issue: "10001", Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("hello"), Size: 5}}}))
 	if states(res) != "upload:applied" || !slices.Equal(res.Parts[0].Changed, []tracker.Resource{tracker.DetailOf("10001")}) {
 		t.Errorf("attach: %s %v", states(res), res.Parts[0].Outcome.Err())
 	}
 	f.On("POST", uploadPath, jiratest.Reply(413, `{"errorMessages":["too large"]}`))
-	res = checked(t, p.Attach(t.Context(), tracker.AttachInput{Issue: "10001", Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("hello")}}}))
+	res = checked(t, p.Attach(t.Context(), tracker.AttachInput{Issue: "10001", Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("hello"), Size: 5}}}))
 	if states(res) != "upload:refused" || reason(res, 0) != tracker.ReasonTracker {
 		t.Errorf("a refused upload: %s", states(res))
 	}

@@ -26,7 +26,17 @@ import (
 
 const remoteMCPName = "ao-remote-tools"
 
-type remoteMCPAccess struct{ ThreadID, SessionToken string }
+type remoteMCPAccess struct {
+	ThreadID, SessionToken string
+	MaxWaitSeconds         int
+}
+
+func (a remoteMCPAccess) maxWaitSeconds() int {
+	if a.MaxWaitSeconds > 0 && a.MaxWaitSeconds < maxRemoteWaitSeconds {
+		return a.MaxWaitSeconds
+	}
+	return maxRemoteWaitSeconds
+}
 
 type appRemoteMCP struct {
 	revision atomic.Uint64
@@ -62,7 +72,12 @@ func (a *App) remoteMCPConfigForThread(thread store.Thread, sessionToken string)
 	if !enabled || !a.remoteMCPServer().ThreadEnabled(thread.ID) {
 		return nil, nil
 	}
-	return a.remoteMCPServer().RegisterThread(thread.ID, sessionToken, remoteMCPAccess{thread.ID, sessionToken})
+	maxWait := provider.CapabilitiesForProvider(thread.Provider).EffectiveMaxMCPWaitSeconds(maxRemoteWaitSeconds)
+	return a.remoteMCPServer().RegisterThread(thread.ID, sessionToken, remoteMCPAccess{
+		ThreadID:       thread.ID,
+		SessionToken:   sessionToken,
+		MaxWaitSeconds: maxWait,
+	})
 }
 
 func (a *App) remoteMCPTools(access remoteMCPAccess) []map[string]any {
@@ -73,7 +88,7 @@ func (a *App) remoteMCPTools(access remoteMCPAccess) []map[string]any {
 	if err != nil || !enabled {
 		return nil
 	}
-	return remoteToolDefinitions
+	return remoteToolDefinitionsFor(access.maxWaitSeconds())
 }
 
 // An explicit destination opt-in controls registration and discovery. A saved
@@ -144,6 +159,9 @@ func remoteMCPServerConfig(providerName string, config any) any {
 		out["timeout"] = remoteMCPCallCeiling.Milliseconds()
 	case string(provider.Codex):
 		out["tool_timeout_sec"] = int(remoteMCPCallCeiling.Seconds())
+		// agy 1.5.16 ACP session/new has no timeoutSeconds override and enforces
+		// a hardcoded 180s default; provider.Capabilities.MaxMCPWaitSeconds caps
+		// wait_seconds at 150s for agy threads instead.
 	}
 	return out
 }
@@ -178,10 +196,11 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 	// Every refusal names the computer and request it addressed, so the model
 	// can inspect or retry the right job.
 	var computerID, requestID string
+	maxWait := access.maxWaitSeconds()
 	decode := func(args any) bool {
 		if err = mcpargs.Decode(call.Arguments, args); err == nil {
-			if options, ok := args.(interface{ validate() error }); ok {
-				err = options.validate()
+			if options, ok := args.(interface{ validateWithMaxWait(int) error }); ok {
+				err = options.validateWithMaxWait(maxWait)
 			}
 		}
 		if err != nil {
@@ -257,7 +276,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		if decode(&args) {
 			computerID, requestID = args.ComputerID, args.RequestID
 			if args.WaitSeconds == nil {
-				wait := float64(defaultRemoteRunWaitSeconds)
+				wait := float64(min(defaultRemoteRunWaitSeconds, maxWait))
 				args.WaitSeconds = &wait
 			}
 			var command RemoteCommand
@@ -347,43 +366,57 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 	threadmcp.WriteToolJSON(w, req.ID, result)
 }
 
-func remoteTool(name, description string, properties map[string]any, required ...string) map[string]any {
+func remoteToolWithMaxWait(name, description string, maxWait int, properties map[string]any, required ...string) map[string]any {
 	if required == nil {
 		required = []string{}
+	}
+	if maxWait <= 0 || maxWait > maxRemoteWaitSeconds {
+		maxWait = maxRemoteWaitSeconds
 	}
 	if name == "remote_run" || name == "remote_status" || name == "remote_cancel" {
 		properties["max_output_bytes"] = map[string]any{"type": "integer", "minimum": 0, "maximum": store.RemoteJobOutputLimit, "default": defaultRemoteOutputBytes, "description": "Maximum output tail in this reply; zero returns metadata only. A short outputHead accompanies the tail when the tail did not cover the start. omittedOutputBytes counts retained bytes omitted from this reply; truncated separately means the destination discarded older log data."}
 		waitDefault := 0
 		waitDescription := "Wait up to this many seconds for completion before returning a running receipt."
 		if name == "remote_run" {
-			waitDefault = defaultRemoteRunWaitSeconds
+			waitDefault = min(defaultRemoteRunWaitSeconds, maxWait)
 			waitDescription = "Wait up to this many seconds for the command to finish, like an ordinary tool call. A command still running afterwards returns backgrounded: true and its result arrives later as a message. Zero returns immediately."
 		}
-		properties["wait_seconds"] = map[string]any{"type": "number", "minimum": 0, "maximum": maxRemoteWaitSeconds, "default": waitDefault, "description": waitDescription}
+		properties["wait_seconds"] = map[string]any{"type": "number", "minimum": 0, "maximum": maxWait, "default": waitDefault, "description": waitDescription}
 	}
 	return map[string]any{"name": name, "description": description, "inputSchema": map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}}
 }
 
-var remoteToolDefinitions = []map[string]any{
-	remoteTool("remote_computers", "List explicitly enabled computers, execution OS/architecture (including Windows host versus Linux WSL), available executable paths, and registered projects/worktrees. No automatic version or GPU probes. Offline computers return an error; never substitute another destination.", map[string]any{}),
-	remoteTool("remote_run", "Execute exact argv or a script in the selected computer's project/workspace and wait for its result. Files and environment belong to that computer: explicitly sync changes and verify the checkout before testing; worktrees are optional. Shell syntax is literal unless you invoke a shell. Choose request_id before calling; after a lost reply, use remote_status or retry identical execution arguments with the SAME ID. A command that outlasts wait_seconds keeps running: the reply says backgrounded and the finished result arrives as a message in this conversation, so do not poll for completion. Keep the process in the foreground: no &, nohup, or shell detachment. Processes a command leaves behind are stopped when it exits and the receipt says so; run a server or watcher as its own remote_run instead. AO stops jobs on request, on their timeout, and when this conversation stops checking on them; four jobs run per computer. Output is saved; use remote_read_log/remote_search_log for omitted output, remote_fetch_log for the whole log, and remote_fetch_artifact to inspect generated files locally.", map[string]any{
-		"computer_id":     map[string]any{"type": "string", "description": "Destination ID from remote_computers."},
-		"project_id":      map[string]any{"type": "string", "description": "Registered project ID on that destination."},
-		"workspace_path":  map[string]any{"type": "string", "description": "Optional registered workspace on the destination; defaults to the project checkout."},
-		"request_id":      map[string]any{"type": "string", "format": "uuid", "description": "New UUID for this command; reuse for retries."},
-		"label":           map[string]any{"type": "string", "maxLength": remoteJobLabelMaxRunes, "description": "Optional concise single-line job name, e.g. Windows integration tests. Defaults to the command. Presentation only: retries retain the original label."},
-		"argv":            map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "description": "Executable plus arguments, at most 64 KiB total. For larger commands use script with an explicit interpreter.", "items": map[string]any{"type": "string"}},
-		"script":          map[string]any{"type": "string", "description": "Alternative to argv: exact script text up to 1 MiB, written privately on the destination and removed after execution. Requires interpreter; no automatic shell selection."},
-		"interpreter":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Executable plus interpreter flags, e.g. [bash, -e] or [python3, -u]. AO appends the script file path."},
-		"timeout_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": remotejobs.MaxTimeoutSeconds, "default": 0, "description": "Optional run time limit for the command itself; zero (default) means no limit. Independent of wait_seconds."},
-	}, "computer_id", "project_id", "request_id"),
-	remoteTool("remote_status", "Read a remote command receipt and retained output, optionally waiting for it to finish. Use the original computer and request IDs after a disconnect or lost reply. Only this conversation's commands are accessible, including after destination opt-out.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),
-	remoteTool("remote_cancel", "Stop this conversation's remote command by its original computer and request IDs: SIGTERM to its process group, then SIGKILL after a few seconds. Cancellation remains available after destination opt-out.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),
-	remoteTool("remote_jobs", "List this conversation’s tracked remote jobs, pending first, up to 256 recent jobs, including completed jobs. Recovers original computer/request IDs after context loss. notification=queued means the normal message queue owns delivery/recovery, not proof the agent read it; dismissed means a tool reply already carried the result, or, with wakeIssue, that delivery was given up and the result is here. Receipts reflect the latest observation; use remote_status for a fresh check when needed. Connectivity errors do not mean the destination process stopped.", map[string]any{}),
-	remoteTool("remote_read_log", "Read a bounded log range, or its tail (offset=-1, default), of a running or finished command. Output is retained on the destination up to 4 GiB/job and 20 GiB total. Offsets are absolute output byte offsets; nextOffset resumes reading. startOffset identifies expired/discarded prefix; expired means the log is no longer retained. Never page a large log into context; search it, or fetch it with remote_fetch_log and inspect the local file.", remoteLogProperties(false), "computer_id", "request_id"),
-	remoteTool("remote_search_log", "Search literal case-sensitive text in a bounded log page, with bounded match context. Continue at nextOffset until done. Search is not a regular expression.", remoteLogProperties(true), "computer_id", "request_id", "query"),
-	remoteTool("remote_fetch_log", "Copy a finished command's whole retained log to this computer and return the local path, size and SHA-256 (no inline bytes), then inspect it with normal local tools. Refused while the command is running; use remote_read_log for a running job. log.startOffset is non-zero when the destination discarded older output.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),
-	remoteTool("remote_fetch_artifact", "Copy one file from the job’s original workspace to this computer, returning a local path, size and SHA-256 (no inline bytes). Use for images, HTML, reports and large outputs, then inspect the returned local file with normal tools. Relative path only; symlinks escaping the workspace and special files are refused. Maximum 1 GiB/file. Partial or changing transfers fail without publishing a mixed file. This does not sync checkouts or execute the artifact.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}, "path": map[string]any{"type": "string", "description": "Relative file path within the original job workspace."}}, "computer_id", "request_id", "path"),
+func remoteToolDefinitionsFor(maxWait int) []map[string]any {
+	if maxWait <= 0 || maxWait >= maxRemoteWaitSeconds {
+		return remoteToolDefinitions
+	}
+	return buildRemoteToolDefinitions(maxWait)
+}
+
+var remoteToolDefinitions = buildRemoteToolDefinitions(maxRemoteWaitSeconds)
+
+func buildRemoteToolDefinitions(maxWait int) []map[string]any {
+	return []map[string]any{
+		remoteToolWithMaxWait("remote_computers", "List explicitly enabled computers, execution OS/architecture (including Windows host versus Linux WSL), available executable paths, and registered projects/worktrees. No automatic version or GPU probes. Offline computers return an error; never substitute another destination.", maxWait, map[string]any{}),
+		remoteToolWithMaxWait("remote_run", "Execute exact argv or a script in the selected computer's project/workspace and wait for its result. Files and environment belong to that computer: explicitly sync changes and verify the checkout before testing; worktrees are optional. Shell syntax is literal unless you invoke a shell. Choose request_id before calling; after a lost reply, use remote_status or retry identical execution arguments with the SAME ID. A command that outlasts wait_seconds keeps running: the reply says backgrounded and the finished result arrives as a message in this conversation, so do not poll for completion. Keep the process in the foreground: no &, nohup, or shell detachment. Processes a command leaves behind are stopped when it exits and the receipt says so; run a server or watcher as its own remote_run instead. AO stops jobs on request, on their timeout, and when this conversation stops checking on them; four jobs run per computer. Output is saved; use remote_read_log/remote_search_log for omitted output, remote_fetch_log for the whole log, and remote_fetch_artifact to inspect generated files locally.", maxWait, map[string]any{
+			"computer_id":     map[string]any{"type": "string", "description": "Destination ID from remote_computers."},
+			"project_id":      map[string]any{"type": "string", "description": "Registered project ID on that destination."},
+			"workspace_path":  map[string]any{"type": "string", "description": "Optional registered workspace on the destination; defaults to the project checkout."},
+			"request_id":      map[string]any{"type": "string", "format": "uuid", "description": "New UUID for this command; reuse for retries."},
+			"label":           map[string]any{"type": "string", "maxLength": remoteJobLabelMaxRunes, "description": "Optional concise single-line job name, e.g. Windows integration tests. Defaults to the command. Presentation only: retries retain the original label."},
+			"argv":            map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "description": "Executable plus arguments, at most 64 KiB total. For larger commands use script with an explicit interpreter.", "items": map[string]any{"type": "string"}},
+			"script":          map[string]any{"type": "string", "description": "Alternative to argv: exact script text up to 1 MiB, written privately on the destination and removed after execution. Requires interpreter; no automatic shell selection."},
+			"interpreter":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Executable plus interpreter flags, e.g. [bash, -e] or [python3, -u]. AO appends the script file path."},
+			"timeout_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": remotejobs.MaxTimeoutSeconds, "default": 0, "description": "Optional run time limit for the command itself; zero (default) means no limit. Independent of wait_seconds."},
+		}, "computer_id", "project_id", "request_id"),
+		remoteToolWithMaxWait("remote_status", "Read a remote command receipt and retained output, optionally waiting for it to finish. Use the original computer and request IDs after a disconnect or lost reply. Only this conversation's commands are accessible, including after destination opt-out.", maxWait, map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),
+		remoteToolWithMaxWait("remote_cancel", "Stop this conversation's remote command by its original computer and request IDs: SIGTERM to its process group, then SIGKILL after a few seconds. Cancellation remains available after destination opt-out.", maxWait, map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),
+		remoteToolWithMaxWait("remote_jobs", "List this conversation’s tracked remote jobs, pending first, up to 256 recent jobs, including completed jobs. Recovers original computer/request IDs after context loss. notification=queued means the normal message queue owns delivery/recovery, not proof the agent read it; dismissed means a tool reply already carried the result, or, with wakeIssue, that delivery was given up and the result is here. Receipts reflect the latest observation; use remote_status for a fresh check when needed. Connectivity errors do not mean the destination process stopped.", maxWait, map[string]any{}),
+		remoteToolWithMaxWait("remote_read_log", "Read a bounded log range, or its tail (offset=-1, default), of a running or finished command. Output is retained on the destination up to 4 GiB/job and 20 GiB total. Offsets are absolute output byte offsets; nextOffset resumes reading. startOffset identifies expired/discarded prefix; expired means the log is no longer retained. Never page a large log into context; search it, or fetch it with remote_fetch_log and inspect the local file.", maxWait, remoteLogProperties(false), "computer_id", "request_id"),
+		remoteToolWithMaxWait("remote_search_log", "Search literal case-sensitive text in a bounded log page, with bounded match context. Continue at nextOffset until done. Search is not a regular expression.", maxWait, remoteLogProperties(true), "computer_id", "request_id", "query"),
+		remoteToolWithMaxWait("remote_fetch_log", "Copy a finished command's whole retained log to this computer and return the local path, size and SHA-256 (no inline bytes), then inspect it with normal local tools. Refused while the command is running; use remote_read_log for a running job. log.startOffset is non-zero when the destination discarded older output.", maxWait, map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),
+		remoteToolWithMaxWait("remote_fetch_artifact", "Copy one file from the job’s original workspace to this computer, returning a local path, size and SHA-256 (no inline bytes). Use for images, HTML, reports and large outputs, then inspect the returned local file with normal tools. Relative path only; symlinks escaping the workspace and special files are refused. Maximum 1 GiB/file. Partial or changing transfers fail without publishing a mixed file. This does not sync checkouts or execute the artifact.", maxWait, map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}, "path": map[string]any{"type": "string", "description": "Relative file path within the original job workspace."}}, "computer_id", "request_id", "path"),
+	}
 }
 
 func (a *App) withRemoteMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool) []ThreadMCPServer {

@@ -6,6 +6,51 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * AttachmentView is a file attached to the ticket.
+ */
+export class AttachmentView {
+    "id": string;
+    "name": string;
+    "mime_type"?: string;
+    "size": number;
+    "created": number;
+    "author": UserView;
+
+    /** Creates a new AttachmentView instance. */
+    constructor($$source: Partial<AttachmentView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("size" in $$source)) {
+            this["size"] = 0;
+        }
+        if (!("created" in $$source)) {
+            this["created"] = 0;
+        }
+        if (!("author" in $$source)) {
+            this["author"] = (new UserView());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AttachmentView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AttachmentView {
+        const $$createField5_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("author" in $$parsedSource) {
+            $$parsedSource["author"] = $$createField5_0($$parsedSource["author"]);
+        }
+        return new AttachmentView($$parsedSource as Partial<AttachmentView>);
+    }
+}
+
+/**
  * BoardInfoView is a board a project has, for picking the boards it
  * lists.
  */
@@ -79,8 +124,8 @@ export class BoardPatch {
      * Creates a new BoardPatch instance from a string or object.
      */
     static createFrom($$source: any = {}): BoardPatch {
-        const $$createField2_0 = $$createType1;
-        const $$createField3_0 = $$createType3;
+        const $$createField2_0 = $$createType2;
+        const $$createField3_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("totals" in $$parsedSource) {
             $$parsedSource["totals"] = $$createField2_0($$parsedSource["totals"]);
@@ -132,8 +177,8 @@ export class BoardSubscription {
      * Creates a new BoardSubscription instance from a string or object.
      */
     static createFrom($$source: any = {}): BoardSubscription {
-        const $$createField3_0 = $$createType5;
-        const $$createField4_0 = $$createType7;
+        const $$createField3_0 = $$createType6;
+        const $$createField4_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("view" in $$parsedSource) {
             $$parsedSource["view"] = $$createField3_0($$parsedSource["view"]);
@@ -175,10 +220,10 @@ export class BoardTotals {
      * Creates a new BoardTotals instance from a string or object.
      */
     static createFrom($$source: any = {}): BoardTotals {
-        const $$createField1_0 = $$createType8;
-        const $$createField2_0 = $$createType8;
-        const $$createField3_0 = $$createType10;
-        const $$createField4_0 = $$createType12;
+        const $$createField1_0 = $$createType9;
+        const $$createField2_0 = $$createType9;
+        const $$createField3_0 = $$createType11;
+        const $$createField4_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("all" in $$parsedSource) {
             $$parsedSource["all"] = $$createField1_0($$parsedSource["all"]);
@@ -268,13 +313,13 @@ export class BoardView {
      * Creates a new BoardView instance from a string or object.
      */
     static createFrom($$source: any = {}): BoardView {
-        const $$createField7_0 = $$createType13;
-        const $$createField8_0 = $$createType15;
-        const $$createField9_0 = $$createType17;
-        const $$createField10_0 = $$createType8;
-        const $$createField11_0 = $$createType8;
-        const $$createField12_0 = $$createType18;
-        const $$createField13_0 = $$createType20;
+        const $$createField7_0 = $$createType14;
+        const $$createField8_0 = $$createType16;
+        const $$createField9_0 = $$createType18;
+        const $$createField10_0 = $$createType9;
+        const $$createField11_0 = $$createType9;
+        const $$createField12_0 = $$createType19;
+        const $$createField13_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("estimate" in $$parsedSource) {
             $$parsedSource["estimate"] = $$createField7_0($$parsedSource["estimate"]);
@@ -350,8 +395,8 @@ export class CardView {
      * Creates a new CardView instance from a string or object.
      */
     static createFrom($$source: any = {}): CardView {
-        const $$createField3_0 = $$createType22;
-        const $$createField4_0 = $$createType23;
+        const $$createField3_0 = $$createType23;
+        const $$createField4_0 = $$createType24;
         const $$createField5_0 = $$createType25;
         const $$createField6_0 = $$createType27;
         const $$createField7_0 = $$createType28;
@@ -380,6 +425,36 @@ export class CardView {
             $$parsedSource["sprints"] = $$createField9_0($$parsedSource["sprints"]);
         }
         return new CardView($$parsedSource as Partial<CardView>);
+    }
+}
+
+/**
+ * ChoiceListView is the values a pick list offers, with More as
+ * UserListView has it.
+ */
+export class ChoiceListView {
+    "choices": ChoiceView[];
+    "more"?: boolean;
+
+    /** Creates a new ChoiceListView instance. */
+    constructor($$source: Partial<ChoiceListView> = {}) {
+        if (!("choices" in $$source)) {
+            this["choices"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChoiceListView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ChoiceListView {
+        const $$createField0_0 = $$createType28;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("choices" in $$parsedSource) {
+            $$parsedSource["choices"] = $$createField0_0($$parsedSource["choices"]);
+        }
+        return new ChoiceListView($$parsedSource as Partial<ChoiceListView>);
     }
 }
 
@@ -431,7 +506,7 @@ export class ColumnTotal {
      * Creates a new ColumnTotal instance from a string or object.
      */
     static createFrom($$source: any = {}): ColumnTotal {
-        const $$createField1_0 = $$createType8;
+        const $$createField1_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("total" in $$parsedSource) {
             $$parsedSource["total"] = $$createField1_0($$parsedSource["total"]);
@@ -468,7 +543,7 @@ export class ColumnView {
      */
     static createFrom($$source: any = {}): ColumnView {
         const $$createField1_0 = $$createType32;
-        const $$createField2_0 = $$createType8;
+        const $$createField2_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("statuses" in $$parsedSource) {
             $$parsedSource["statuses"] = $$createField1_0($$parsedSource["statuses"]);
@@ -477,6 +552,345 @@ export class ColumnView {
             $$parsedSource["total"] = $$createField2_0($$parsedSource["total"]);
         }
         return new ColumnView($$parsedSource as Partial<ColumnView>);
+    }
+}
+
+/**
+ * CommentDeleteRequest deletes a comment of an issue.
+ */
+export class CommentDeleteRequest {
+    "issue": string;
+    "comment": string;
+
+    /** Creates a new CommentDeleteRequest instance. */
+    constructor($$source: Partial<CommentDeleteRequest> = {}) {
+        if (!("issue" in $$source)) {
+            this["issue"] = "";
+        }
+        if (!("comment" in $$source)) {
+            this["comment"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentDeleteRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentDeleteRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CommentDeleteRequest($$parsedSource as Partial<CommentDeleteRequest>);
+    }
+}
+
+/**
+ * CommentEditRequest replaces a comment's body; From is the body as read
+ * when the edit was written.
+ */
+export class CommentEditRequest {
+    "issue": string;
+    "comment": string;
+    "markdown": string;
+    "from": string;
+    "accept_loss"?: boolean;
+
+    /** Creates a new CommentEditRequest instance. */
+    constructor($$source: Partial<CommentEditRequest> = {}) {
+        if (!("issue" in $$source)) {
+            this["issue"] = "";
+        }
+        if (!("comment" in $$source)) {
+            this["comment"] = "";
+        }
+        if (!("markdown" in $$source)) {
+            this["markdown"] = "";
+        }
+        if (!("from" in $$source)) {
+            this["from"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentEditRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentEditRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CommentEditRequest($$parsedSource as Partial<CommentEditRequest>);
+    }
+}
+
+/**
+ * CommentPageView is a page of an issue's comments, newest first; Next is
+ * empty on the last page.
+ */
+export class CommentPageView {
+    "comments": CommentView[];
+    "next"?: string;
+
+    /** Creates a new CommentPageView instance. */
+    constructor($$source: Partial<CommentPageView> = {}) {
+        if (!("comments" in $$source)) {
+            this["comments"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentPageView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentPageView {
+        const $$createField0_0 = $$createType34;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("comments" in $$parsedSource) {
+            $$parsedSource["comments"] = $$createField0_0($$parsedSource["comments"]);
+        }
+        return new CommentPageView($$parsedSource as Partial<CommentPageView>);
+    }
+}
+
+/**
+ * CommentRequest is a new comment, its body as Markdown. Audience is
+ * public or internal on a project that chooses who a comment reaches,
+ * and empty elsewhere.
+ */
+export class CommentRequest {
+    "issue": string;
+    "markdown": string;
+    "audience"?: string;
+
+    /** Creates a new CommentRequest instance. */
+    constructor($$source: Partial<CommentRequest> = {}) {
+        if (!("issue" in $$source)) {
+            this["issue"] = "";
+        }
+        if (!("markdown" in $$source)) {
+            this["markdown"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CommentRequest($$parsedSource as Partial<CommentRequest>);
+    }
+}
+
+/**
+ * CommentView is a comment, its body as Markdown.
+ */
+export class CommentView {
+    "id": string;
+    "author": UserView;
+    "body": string;
+    "created": number;
+    "updated"?: number;
+    "internal"?: boolean;
+
+    /** Creates a new CommentView instance. */
+    constructor($$source: Partial<CommentView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("author" in $$source)) {
+            this["author"] = (new UserView());
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+        if (!("created" in $$source)) {
+            this["created"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommentView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CommentView {
+        const $$createField1_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("author" in $$parsedSource) {
+            $$parsedSource["author"] = $$createField1_0($$parsedSource["author"]);
+        }
+        return new CommentView($$parsedSource as Partial<CommentView>);
+    }
+}
+
+/**
+ * CreateRequest makes an issue from a section of Board: an issue made is
+ * read through that board, and a create of unknown outcome runs the
+ * board's tick at once. Type is the issue type, empty on a tracker
+ * without issue types.
+ */
+export class CreateRequest {
+    "board": string;
+    "project": string;
+    "type"?: string;
+    "title": string;
+    "fields"?: FieldEditInput[];
+
+    /** Creates a new CreateRequest instance. */
+    constructor($$source: Partial<CreateRequest> = {}) {
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+        if (!("project" in $$source)) {
+            this["project"] = "";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CreateRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CreateRequest {
+        const $$createField4_0 = $$createType36;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("fields" in $$parsedSource) {
+            $$parsedSource["fields"] = $$createField4_0($$parsedSource["fields"]);
+        }
+        return new CreateRequest($$parsedSource as Partial<CreateRequest>);
+    }
+}
+
+/**
+ * DetailView is one ticket as its view shows it: the issue record's card
+ * (the one every view of the issue shows) with its body. Comments is the
+ * first page, newest first; MoreComments is the token of the next page,
+ * empty when there is none. History is complete from HistoryFrom (Unix
+ * milliseconds, 0 for from creation). BodyBehind reports a body read for
+ * an older version of the issue than its card: a read of the card found a
+ * change the body does not show yet, and the next read of the ticket
+ * reads it.
+ */
+export class DetailView {
+    "card": CardView;
+    "body_behind"?: boolean;
+    "url": string;
+    "description": string;
+    "fields": FieldView[];
+    "comments": CommentView[];
+    "more_comments"?: string;
+    "links": LinkView[];
+    "attachments": AttachmentView[];
+    "history": EventView[];
+    "history_from"?: number;
+    "moves": MoveView[];
+
+    /** Creates a new DetailView instance. */
+    constructor($$source: Partial<DetailView> = {}) {
+        if (!("card" in $$source)) {
+            this["card"] = (new CardView());
+        }
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+        if (!("description" in $$source)) {
+            this["description"] = "";
+        }
+        if (!("fields" in $$source)) {
+            this["fields"] = [];
+        }
+        if (!("comments" in $$source)) {
+            this["comments"] = [];
+        }
+        if (!("links" in $$source)) {
+            this["links"] = [];
+        }
+        if (!("attachments" in $$source)) {
+            this["attachments"] = [];
+        }
+        if (!("history" in $$source)) {
+            this["history"] = [];
+        }
+        if (!("moves" in $$source)) {
+            this["moves"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DetailView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DetailView {
+        const $$createField0_0 = $$createType37;
+        const $$createField4_0 = $$createType39;
+        const $$createField5_0 = $$createType34;
+        const $$createField7_0 = $$createType41;
+        const $$createField8_0 = $$createType43;
+        const $$createField9_0 = $$createType45;
+        const $$createField11_0 = $$createType47;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("card" in $$parsedSource) {
+            $$parsedSource["card"] = $$createField0_0($$parsedSource["card"]);
+        }
+        if ("fields" in $$parsedSource) {
+            $$parsedSource["fields"] = $$createField4_0($$parsedSource["fields"]);
+        }
+        if ("comments" in $$parsedSource) {
+            $$parsedSource["comments"] = $$createField5_0($$parsedSource["comments"]);
+        }
+        if ("links" in $$parsedSource) {
+            $$parsedSource["links"] = $$createField7_0($$parsedSource["links"]);
+        }
+        if ("attachments" in $$parsedSource) {
+            $$parsedSource["attachments"] = $$createField8_0($$parsedSource["attachments"]);
+        }
+        if ("history" in $$parsedSource) {
+            $$parsedSource["history"] = $$createField9_0($$parsedSource["history"]);
+        }
+        if ("moves" in $$parsedSource) {
+            $$parsedSource["moves"] = $$createField11_0($$parsedSource["moves"]);
+        }
+        return new DetailView($$parsedSource as Partial<DetailView>);
+    }
+}
+
+/**
+ * EditRequest changes fields of an issue. AcceptLoss is the person's
+ * acceptance that a rich text edit loses what a refusal of reason loss
+ * named.
+ */
+export class EditRequest {
+    "issue": string;
+    "fields": FieldEditInput[];
+    "accept_loss"?: boolean;
+
+    /** Creates a new EditRequest instance. */
+    constructor($$source: Partial<EditRequest> = {}) {
+        if (!("issue" in $$source)) {
+            this["issue"] = "";
+        }
+        if (!("fields" in $$source)) {
+            this["fields"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EditRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EditRequest {
+        const $$createField1_0 = $$createType36;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("fields" in $$parsedSource) {
+            $$parsedSource["fields"] = $$createField1_0($$parsedSource["fields"]);
+        }
+        return new EditRequest($$parsedSource as Partial<EditRequest>);
     }
 }
 
@@ -506,6 +920,36 @@ export class EstimateChoiceView {
 }
 
 /**
+ * EstimateRequest sets an issue's estimate on a board, in the board's
+ * unit; no Value clears it.
+ */
+export class EstimateRequest {
+    "board": string;
+    "issue": string;
+    "value"?: number | null;
+
+    /** Creates a new EstimateRequest instance. */
+    constructor($$source: Partial<EstimateRequest> = {}) {
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+        if (!("issue" in $$source)) {
+            this["issue"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EstimateRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EstimateRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EstimateRequest($$parsedSource as Partial<EstimateRequest>);
+    }
+}
+
+/**
  * EstimateView is a board's estimate: its unit (none, points or time in
  * seconds) and the values a person picks from when the tracker fixes
  * them.
@@ -527,12 +971,48 @@ export class EstimateView {
      * Creates a new EstimateView instance from a string or object.
      */
     static createFrom($$source: any = {}): EstimateView {
-        const $$createField1_0 = $$createType34;
+        const $$createField1_0 = $$createType49;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("choices" in $$parsedSource) {
             $$parsedSource["choices"] = $$createField1_0($$parsedSource["choices"]);
         }
         return new EstimateView($$parsedSource as Partial<EstimateView>);
+    }
+}
+
+/**
+ * EventView is one change in the ticket's history; Author is nil for a
+ * change the tracker made itself.
+ */
+export class EventView {
+    "at": number;
+    "author"?: UserView | null;
+    "field": string;
+    "from"?: string;
+    "to"?: string;
+
+    /** Creates a new EventView instance. */
+    constructor($$source: Partial<EventView> = {}) {
+        if (!("at" in $$source)) {
+            this["at"] = 0;
+        }
+        if (!("field" in $$source)) {
+            this["field"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EventView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EventView {
+        const $$createField1_0 = $$createType25;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("author" in $$parsedSource) {
+            $$parsedSource["author"] = $$createField1_0($$parsedSource["author"]);
+        }
+        return new EventView($$parsedSource as Partial<EventView>);
     }
 }
 
@@ -585,6 +1065,13 @@ export enum FailureKind {
     FailureNotFound = "not_found",
 
     /**
+     * FailureUpload is a file that stopped arriving from the client
+     * uploading it before its end, so the tracker got nothing complete:
+     * nothing the tracker or the connection did.
+     */
+    FailureUpload = "upload",
+
+    /**
      * FailureInternal is a read or write of this computer's copy of the
      * tracker that failed: nothing the tracker or the person did.
      */
@@ -626,6 +1113,192 @@ export class FailureView {
 }
 
 /**
+ * FieldEditInput sets one field: with Value, to a value given as a ticket
+ * shows one (FieldValueView), with Typed, to text a person or an agent
+ * typed, which the tracker resolves by the field's kind, or with Markdown,
+ * a rich text field's new Markdown and the Markdown it held when the edit
+ * was written. Exactly one is set.
+ */
+export class FieldEditInput {
+    "field": string;
+    "value"?: FieldValueView | null;
+    "typed"?: string[];
+    "markdown"?: MarkdownEditInput | null;
+
+    /** Creates a new FieldEditInput instance. */
+    constructor($$source: Partial<FieldEditInput> = {}) {
+        if (!("field" in $$source)) {
+            this["field"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FieldEditInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FieldEditInput {
+        const $$createField1_0 = $$createType51;
+        const $$createField2_0 = $$createType31;
+        const $$createField3_0 = $$createType53;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("value" in $$parsedSource) {
+            $$parsedSource["value"] = $$createField1_0($$parsedSource["value"]);
+        }
+        if ("typed" in $$parsedSource) {
+            $$parsedSource["typed"] = $$createField2_0($$parsedSource["typed"]);
+        }
+        if ("markdown" in $$parsedSource) {
+            $$parsedSource["markdown"] = $$createField3_0($$parsedSource["markdown"]);
+        }
+        return new FieldEditInput($$parsedSource as Partial<FieldEditInput>);
+    }
+}
+
+/**
+ * FieldMessageView is a message about one field.
+ */
+export class FieldMessageView {
+    "field": string;
+    "message": string;
+
+    /** Creates a new FieldMessageView instance. */
+    constructor($$source: Partial<FieldMessageView> = {}) {
+        if (!("field" in $$source)) {
+            this["field"] = "";
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FieldMessageView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FieldMessageView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new FieldMessageView($$parsedSource as Partial<FieldMessageView>);
+    }
+}
+
+/**
+ * FieldScopeInput is where a pick list's values are asked for: an existing
+ * Issue's fields, or a create's in Project with Type.
+ */
+export class FieldScopeInput {
+    "issue"?: string;
+    "project"?: string;
+    "type"?: string;
+
+    /** Creates a new FieldScopeInput instance. */
+    constructor($$source: Partial<FieldScopeInput> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FieldScopeInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FieldScopeInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new FieldScopeInput($$parsedSource as Partial<FieldScopeInput>);
+    }
+}
+
+/**
+ * FieldValueView is a field's value: its kind (tracker.Kind's name) and
+ * its values of that kind. Dates are YYYY-MM-DD and times Unix
+ * milliseconds. An empty value has no kind.
+ */
+export class FieldValueView {
+    "kind"?: string;
+    "texts"?: string[];
+    "numbers"?: number[];
+    "dates"?: string[];
+    "times"?: number[];
+    "choices"?: ChoiceView[];
+
+    /** Creates a new FieldValueView instance. */
+    constructor($$source: Partial<FieldValueView> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FieldValueView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FieldValueView {
+        const $$createField1_0 = $$createType31;
+        const $$createField2_0 = $$createType54;
+        const $$createField3_0 = $$createType31;
+        const $$createField4_0 = $$createType55;
+        const $$createField5_0 = $$createType28;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("texts" in $$parsedSource) {
+            $$parsedSource["texts"] = $$createField1_0($$parsedSource["texts"]);
+        }
+        if ("numbers" in $$parsedSource) {
+            $$parsedSource["numbers"] = $$createField2_0($$parsedSource["numbers"]);
+        }
+        if ("dates" in $$parsedSource) {
+            $$parsedSource["dates"] = $$createField3_0($$parsedSource["dates"]);
+        }
+        if ("times" in $$parsedSource) {
+            $$parsedSource["times"] = $$createField4_0($$parsedSource["times"]);
+        }
+        if ("choices" in $$parsedSource) {
+            $$parsedSource["choices"] = $$createField5_0($$parsedSource["choices"]);
+        }
+        return new FieldValueView($$parsedSource as Partial<FieldValueView>);
+    }
+}
+
+/**
+ * FieldView is one field of a ticket with its metadata.
+ */
+export class FieldView {
+    "id": string;
+    "name": string;
+    "kind": string;
+    "list"?: boolean;
+    "required"?: boolean;
+    "editable"?: boolean;
+    "value": FieldValueView;
+
+    /** Creates a new FieldView instance. */
+    constructor($$source: Partial<FieldView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("value" in $$source)) {
+            this["value"] = (new FieldValueView());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FieldView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FieldView {
+        const $$createField6_0 = $$createType50;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("value" in $$parsedSource) {
+            $$parsedSource["value"] = $$createField6_0($$parsedSource["value"]);
+        }
+        return new FieldView($$parsedSource as Partial<FieldView>);
+    }
+}
+
+/**
  * IssueTypeView is an issue's type; Level is -1 for a subtask, 0 for a
  * standard issue and 1 for an epic.
  */
@@ -652,6 +1325,332 @@ export class IssueTypeView {
     static createFrom($$source: any = {}): IssueTypeView {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new IssueTypeView($$parsedSource as Partial<IssueTypeView>);
+    }
+}
+
+/**
+ * KeyMatchView is a key and the issue it names; Card.Key differs from Key
+ * when the issue had that key before it moved.
+ */
+export class KeyMatchView {
+    "key": string;
+    "card": CardView;
+
+    /** Creates a new KeyMatchView instance. */
+    constructor($$source: Partial<KeyMatchView> = {}) {
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+        if (!("card" in $$source)) {
+            this["card"] = (new CardView());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new KeyMatchView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): KeyMatchView {
+        const $$createField1_0 = $$createType37;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("card" in $$parsedSource) {
+            $$parsedSource["card"] = $$createField1_0($$parsedSource["card"]);
+        }
+        return new KeyMatchView($$parsedSource as Partial<KeyMatchView>);
+    }
+}
+
+/**
+ * LinkRequest links Outward to Inward by the link type's outward phrase
+ * ("WEB-1 blocks WEB-2").
+ */
+export class LinkRequest {
+    "type": string;
+    "outward": string;
+    "inward": string;
+
+    /** Creates a new LinkRequest instance. */
+    constructor($$source: Partial<LinkRequest> = {}) {
+        if (!("type" in $$source)) {
+            this["type"] = "";
+        }
+        if (!("outward" in $$source)) {
+            this["outward"] = "";
+        }
+        if (!("inward" in $$source)) {
+            this["inward"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LinkRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LinkRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LinkRequest($$parsedSource as Partial<LinkRequest>);
+    }
+}
+
+/**
+ * LinkTypeView is a kind of link: the outward issue relates to the inward
+ * one by Outward ("blocks"), the inward to the outward by Inward.
+ */
+export class LinkTypeView {
+    "id": string;
+    "name": string;
+    "outward": string;
+    "inward": string;
+
+    /** Creates a new LinkTypeView instance. */
+    constructor($$source: Partial<LinkTypeView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("outward" in $$source)) {
+            this["outward"] = "";
+        }
+        if (!("inward" in $$source)) {
+            this["inward"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LinkTypeView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LinkTypeView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LinkTypeView($$parsedSource as Partial<LinkTypeView>);
+    }
+}
+
+/**
+ * LinkView is a link from the ticket to Issue: Relation is how the ticket
+ * relates to it ("blocks", "is blocked by"), from the link type's side
+ * the ticket is on.
+ */
+export class LinkView {
+    "id": string;
+    "type": string;
+    "relation": string;
+    "issue": LinkedIssueView;
+
+    /** Creates a new LinkView instance. */
+    constructor($$source: Partial<LinkView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("type" in $$source)) {
+            this["type"] = "";
+        }
+        if (!("relation" in $$source)) {
+            this["relation"] = "";
+        }
+        if (!("issue" in $$source)) {
+            this["issue"] = (new LinkedIssueView());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LinkView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LinkView {
+        const $$createField3_0 = $$createType56;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("issue" in $$parsedSource) {
+            $$parsedSource["issue"] = $$createField3_0($$parsedSource["issue"]);
+        }
+        return new LinkView($$parsedSource as Partial<LinkView>);
+    }
+}
+
+/**
+ * LinkedIssueView is the other issue of a link.
+ */
+export class LinkedIssueView {
+    "id": string;
+    "key": string;
+    "title": string;
+    "status": StatusView;
+
+    /** Creates a new LinkedIssueView instance. */
+    constructor($$source: Partial<LinkedIssueView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = (new StatusView());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LinkedIssueView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LinkedIssueView {
+        const $$createField3_0 = $$createType24;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("status" in $$parsedSource) {
+            $$parsedSource["status"] = $$createField3_0($$parsedSource["status"]);
+        }
+        return new LinkedIssueView($$parsedSource as Partial<LinkedIssueView>);
+    }
+}
+
+/**
+ * LookupView is what a lookup found: a match for each key that names an
+ * issue the user can see, in the order asked, and the other keys.
+ */
+export class LookupView {
+    "found": KeyMatchView[];
+    "unmatched"?: string[];
+
+    /** Creates a new LookupView instance. */
+    constructor($$source: Partial<LookupView> = {}) {
+        if (!("found" in $$source)) {
+            this["found"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LookupView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LookupView {
+        const $$createField0_0 = $$createType58;
+        const $$createField1_0 = $$createType31;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("found" in $$parsedSource) {
+            $$parsedSource["found"] = $$createField0_0($$parsedSource["found"]);
+        }
+        if ("unmatched" in $$parsedSource) {
+            $$parsedSource["unmatched"] = $$createField1_0($$parsedSource["unmatched"]);
+        }
+        return new LookupView($$parsedSource as Partial<LookupView>);
+    }
+}
+
+/**
+ * MarkdownEditInput is a rich text field's new Markdown and From, the
+ * Markdown the field held when the edit was written ("" for an empty
+ * field or a create).
+ */
+export class MarkdownEditInput {
+    "markdown": string;
+    "from": string;
+
+    /** Creates a new MarkdownEditInput instance. */
+    constructor($$source: Partial<MarkdownEditInput> = {}) {
+        if (!("markdown" in $$source)) {
+            this["markdown"] = "";
+        }
+        if (!("from" in $$source)) {
+            this["from"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MarkdownEditInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MarkdownEditInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MarkdownEditInput($$parsedSource as Partial<MarkdownEditInput>);
+    }
+}
+
+/**
+ * MoveRequest moves an issue by one of the moves its ticket lists, with
+ * the fields the move takes.
+ */
+export class MoveRequest {
+    "issue": string;
+    "move": string;
+    "fields"?: FieldEditInput[];
+    "accept_loss"?: boolean;
+
+    /** Creates a new MoveRequest instance. */
+    constructor($$source: Partial<MoveRequest> = {}) {
+        if (!("issue" in $$source)) {
+            this["issue"] = "";
+        }
+        if (!("move" in $$source)) {
+            this["move"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MoveRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MoveRequest {
+        const $$createField2_0 = $$createType36;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("fields" in $$parsedSource) {
+            $$parsedSource["fields"] = $$createField2_0($$parsedSource["fields"]);
+        }
+        return new MoveRequest($$parsedSource as Partial<MoveRequest>);
+    }
+}
+
+/**
+ * MoveView is a move the ticket's workflow allows now and the fields it
+ * takes.
+ */
+export class MoveView {
+    "id": string;
+    "name": string;
+    "to": StatusView;
+    "fields"?: FieldView[];
+
+    /** Creates a new MoveView instance. */
+    constructor($$source: Partial<MoveView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("to" in $$source)) {
+            this["to"] = (new StatusView());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MoveView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MoveView {
+        const $$createField2_0 = $$createType24;
+        const $$createField3_0 = $$createType39;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("to" in $$parsedSource) {
+            $$parsedSource["to"] = $$createField2_0($$parsedSource["to"]);
+        }
+        if ("fields" in $$parsedSource) {
+            $$parsedSource["fields"] = $$createField3_0($$parsedSource["fields"]);
+        }
+        return new MoveView($$parsedSource as Partial<MoveView>);
     }
 }
 
@@ -683,6 +1682,49 @@ export class ParentView {
 }
 
 /**
+ * PartView is one part of a write. Step is create, upload, edit, move,
+ * estimate, rank, sprint_move, sprint, comment, link or worklog; State is
+ * applied, refused, unknown (sent and not answered in full: it may have
+ * happened) or not_sent. Refusal is why a refused part was refused, and
+ * Failure why an unknown or unsent part is so, as a person reads it.
+ */
+export class PartView {
+    "issue"?: string;
+    "step": string;
+    "state": string;
+    "refusal"?: RefusalView | null;
+    "failure"?: FailureView | null;
+
+    /** Creates a new PartView instance. */
+    constructor($$source: Partial<PartView> = {}) {
+        if (!("step" in $$source)) {
+            this["step"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PartView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PartView {
+        const $$createField3_0 = $$createType60;
+        const $$createField4_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("refusal" in $$parsedSource) {
+            $$parsedSource["refusal"] = $$createField3_0($$parsedSource["refusal"]);
+        }
+        if ("failure" in $$parsedSource) {
+            $$parsedSource["failure"] = $$createField4_0($$parsedSource["failure"]);
+        }
+        return new PartView($$parsedSource as Partial<PartView>);
+    }
+}
+
+/**
  * PatchSection is the rows of one section of a patch; Stale is as
  * SectionPage has it.
  */
@@ -707,8 +1749,8 @@ export class PatchSection {
      * Creates a new PatchSection instance from a string or object.
      */
     static createFrom($$source: any = {}): PatchSection {
-        const $$createField0_0 = $$createType35;
-        const $$createField1_0 = $$createType37;
+        const $$createField0_0 = $$createType61;
+        const $$createField1_0 = $$createType63;
         const $$createField2_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("section" in $$parsedSource) {
@@ -788,6 +1830,122 @@ export class ProjectView {
 }
 
 /**
+ * RankRequest places Issues, in order, on Board between Prev, the issue
+ * they go just after, and Next, the issue they go just before; one of the
+ * two may be empty for an end of the list.
+ */
+export class RankRequest {
+    "board": string;
+    "issues": string[];
+    "prev"?: string;
+    "next"?: string;
+
+    /** Creates a new RankRequest instance. */
+    constructor($$source: Partial<RankRequest> = {}) {
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+        if (!("issues" in $$source)) {
+            this["issues"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RankRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RankRequest {
+        const $$createField1_0 = $$createType31;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("issues" in $$parsedSource) {
+            $$parsedSource["issues"] = $$createField1_0($$parsedSource["issues"]);
+        }
+        return new RankRequest($$parsedSource as Partial<RankRequest>);
+    }
+}
+
+/**
+ * RefusalView is why a part was refused. Reason is tracker (the tracker
+ * answered Message, with Fields its messages by field), invalid,
+ * unsupported, stale (read again and retry), loss (Lost names what a rich
+ * text edit would lose; the same write accepting the loss makes it),
+ * no_match or ambiguous (Candidates are the values offered), or missing
+ * (Fields names the required fields left unset).
+ */
+export class RefusalView {
+    "reason": string;
+    "message": string;
+    "fields"?: FieldMessageView[];
+    "candidates"?: ChoiceView[];
+    "lost"?: string[];
+
+    /** Creates a new RefusalView instance. */
+    constructor($$source: Partial<RefusalView> = {}) {
+        if (!("reason" in $$source)) {
+            this["reason"] = "";
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RefusalView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RefusalView {
+        const $$createField2_0 = $$createType65;
+        const $$createField3_0 = $$createType28;
+        const $$createField4_0 = $$createType31;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("fields" in $$parsedSource) {
+            $$parsedSource["fields"] = $$createField2_0($$parsedSource["fields"]);
+        }
+        if ("candidates" in $$parsedSource) {
+            $$parsedSource["candidates"] = $$createField3_0($$parsedSource["candidates"]);
+        }
+        if ("lost" in $$parsedSource) {
+            $$parsedSource["lost"] = $$createField4_0($$parsedSource["lost"]);
+        }
+        return new RefusalView($$parsedSource as Partial<RefusalView>);
+    }
+}
+
+/**
+ * ResourceView names something the mirror holds. Kind is card (an issue's
+ * card on every board), row (Issue on Board), detail (an open or cached
+ * ticket), structure (Board's columns and sprints), worklogs (Author's
+ * worklogs of Day, YYYY-MM-DD) or delta (Board's changed rows, read after
+ * a create of unknown outcome).
+ */
+export class ResourceView {
+    "kind": string;
+    "issue"?: string;
+    "board"?: string;
+    "author"?: string;
+    "day"?: string;
+
+    /** Creates a new ResourceView instance. */
+    constructor($$source: Partial<ResourceView> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ResourceView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ResourceView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ResourceView($$parsedSource as Partial<ResourceView>);
+    }
+}
+
+/**
  * RowView is a card on one board, with that board's order key (compared
  * bytewise, never read) and estimate in the board's unit.
  */
@@ -812,12 +1970,68 @@ export class RowView {
      * Creates a new RowView instance from a string or object.
      */
     static createFrom($$source: any = {}): RowView {
-        const $$createField0_0 = $$createType38;
+        const $$createField0_0 = $$createType37;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("card" in $$parsedSource) {
             $$parsedSource["card"] = $$createField0_0($$parsedSource["card"]);
         }
         return new RowView($$parsedSource as Partial<RowView>);
+    }
+}
+
+/**
+ * SearchPageView is a page of the cards a search matched, in the order the
+ * tracker ranks them; Next is empty on the last page.
+ */
+export class SearchPageView {
+    "cards": CardView[];
+    "next"?: string;
+
+    /** Creates a new SearchPageView instance. */
+    constructor($$source: Partial<SearchPageView> = {}) {
+        if (!("cards" in $$source)) {
+            this["cards"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SearchPageView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SearchPageView {
+        const $$createField0_0 = $$createType66;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("cards" in $$parsedSource) {
+            $$parsedSource["cards"] = $$createField0_0($$parsedSource["cards"]);
+        }
+        return new SearchPageView($$parsedSource as Partial<SearchPageView>);
+    }
+}
+
+/**
+ * SearchRequest is a search for issues by free text, optionally within
+ * one project; Page is the token the previous page returned, empty for the
+ * first, and Limit the most cards a page holds (0: the most there are).
+ */
+export class SearchRequest {
+    "text"?: string;
+    "project"?: string;
+    "limit"?: number;
+    "page"?: string;
+
+    /** Creates a new SearchRequest instance. */
+    constructor($$source: Partial<SearchRequest> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SearchRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SearchRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SearchRequest($$parsedSource as Partial<SearchRequest>);
     }
 }
 
@@ -915,9 +2129,9 @@ export class SectionPage {
      * Creates a new SectionPage instance from a string or object.
      */
     static createFrom($$source: any = {}): SectionPage {
-        const $$createField0_0 = $$createType35;
-        const $$createField1_0 = $$createType37;
-        const $$createField2_0 = $$createType40;
+        const $$createField0_0 = $$createType61;
+        const $$createField1_0 = $$createType63;
+        const $$createField2_0 = $$createType68;
         const $$createField3_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("section" in $$parsedSource) {
@@ -967,6 +2181,140 @@ export class SectionTotal {
 }
 
 /**
+ * SprintCompleteRequest closes an active sprint of Board once its
+ * unfinished issues moved to MoveTo, an open sprint, or to the backlog
+ * when MoveTo is empty.
+ */
+export class SprintCompleteRequest {
+    "board": string;
+    "sprint": string;
+    "move_to"?: string;
+
+    /** Creates a new SprintCompleteRequest instance. */
+    constructor($$source: Partial<SprintCompleteRequest> = {}) {
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+        if (!("sprint" in $$source)) {
+            this["sprint"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SprintCompleteRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SprintCompleteRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SprintCompleteRequest($$parsedSource as Partial<SprintCompleteRequest>);
+    }
+}
+
+/**
+ * SprintMoveRequest moves Issues into Sprint, an open sprint of Board, or
+ * to the board's backlog when Sprint is empty.
+ */
+export class SprintMoveRequest {
+    "board": string;
+    "sprint"?: string;
+    "issues": string[];
+
+    /** Creates a new SprintMoveRequest instance. */
+    constructor($$source: Partial<SprintMoveRequest> = {}) {
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+        if (!("issues" in $$source)) {
+            this["issues"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SprintMoveRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SprintMoveRequest {
+        const $$createField2_0 = $$createType31;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("issues" in $$parsedSource) {
+            $$parsedSource["issues"] = $$createField2_0($$parsedSource["issues"]);
+        }
+        return new SprintMoveRequest($$parsedSource as Partial<SprintMoveRequest>);
+    }
+}
+
+/**
+ * SprintRequest is a new future sprint of Board. Start and End are Unix
+ * milliseconds, both set or both 0.
+ */
+export class SprintRequest {
+    "board": string;
+    "name": string;
+    "goal"?: string;
+    "start"?: number;
+    "end"?: number;
+
+    /** Creates a new SprintRequest instance. */
+    constructor($$source: Partial<SprintRequest> = {}) {
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SprintRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SprintRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SprintRequest($$parsedSource as Partial<SprintRequest>);
+    }
+}
+
+/**
+ * SprintStartRequest starts a future sprint of Board, Start to End in Unix
+ * milliseconds.
+ */
+export class SprintStartRequest {
+    "board": string;
+    "sprint": string;
+    "start": number;
+    "end": number;
+
+    /** Creates a new SprintStartRequest instance. */
+    constructor($$source: Partial<SprintStartRequest> = {}) {
+        if (!("board" in $$source)) {
+            this["board"] = "";
+        }
+        if (!("sprint" in $$source)) {
+            this["sprint"] = "";
+        }
+        if (!("start" in $$source)) {
+            this["start"] = 0;
+        }
+        if (!("end" in $$source)) {
+            this["end"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SprintStartRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SprintStartRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SprintStartRequest($$parsedSource as Partial<SprintStartRequest>);
+    }
+}
+
+/**
  * SprintTotal is a sprint's total in a patch.
  */
 export class SprintTotal {
@@ -989,7 +2337,7 @@ export class SprintTotal {
      * Creates a new SprintTotal instance from a string or object.
      */
     static createFrom($$source: any = {}): SprintTotal {
-        const $$createField1_0 = $$createType8;
+        const $$createField1_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("total" in $$parsedSource) {
             $$parsedSource["total"] = $$createField1_0($$parsedSource["total"]);
@@ -1035,12 +2383,49 @@ export class SprintView {
      * Creates a new SprintView instance from a string or object.
      */
     static createFrom($$source: any = {}): SprintView {
-        const $$createField7_0 = $$createType8;
+        const $$createField7_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("total" in $$parsedSource) {
             $$parsedSource["total"] = $$createField7_0($$parsedSource["total"]);
         }
         return new SprintView($$parsedSource as Partial<SprintView>);
+    }
+}
+
+/**
+ * StaleView is resources a write may have changed that were not read
+ * again, and the failure that stopped their read.
+ */
+export class StaleView {
+    "resources": ResourceView[];
+    "failure": FailureView;
+
+    /** Creates a new StaleView instance. */
+    constructor($$source: Partial<StaleView> = {}) {
+        if (!("resources" in $$source)) {
+            this["resources"] = [];
+        }
+        if (!("failure" in $$source)) {
+            this["failure"] = (new FailureView());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StaleView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): StaleView {
+        const $$createField0_0 = $$createType70;
+        const $$createField1_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("resources" in $$parsedSource) {
+            $$parsedSource["resources"] = $$createField0_0($$parsedSource["resources"]);
+        }
+        if ("failure" in $$parsedSource) {
+            $$parsedSource["failure"] = $$createField1_0($$parsedSource["failure"]);
+        }
+        return new StaleView($$parsedSource as Partial<StaleView>);
     }
 }
 
@@ -1093,12 +2478,100 @@ export class SyncView {
      * Creates a new SyncView instance from a string or object.
      */
     static createFrom($$source: any = {}): SyncView {
-        const $$createField2_0 = $$createType7;
+        const $$createField2_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("failure" in $$parsedSource) {
             $$parsedSource["failure"] = $$createField2_0($$parsedSource["failure"]);
         }
         return new SyncView($$parsedSource as Partial<SyncView>);
+    }
+}
+
+/**
+ * TicketSubscription is a ticket subscribe's answer: the handle, the
+ * sequence number the answer is as of, and the ticket as of it. With no
+ * detail loaded, the pump's first read follows, and its event says so.
+ * PollEvery is the connection's round interval in milliseconds.
+ */
+export class TicketSubscription {
+    "id": string;
+    "seq": number;
+    "poll_every": number;
+    "loaded": boolean;
+    "detail"?: DetailView | null;
+    "read_at"?: number;
+    "failure"?: FailureView | null;
+
+    /** Creates a new TicketSubscription instance. */
+    constructor($$source: Partial<TicketSubscription> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("seq" in $$source)) {
+            this["seq"] = 0;
+        }
+        if (!("poll_every" in $$source)) {
+            this["poll_every"] = 0;
+        }
+        if (!("loaded" in $$source)) {
+            this["loaded"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TicketSubscription instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TicketSubscription {
+        const $$createField4_0 = $$createType72;
+        const $$createField6_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("detail" in $$parsedSource) {
+            $$parsedSource["detail"] = $$createField4_0($$parsedSource["detail"]);
+        }
+        if ("failure" in $$parsedSource) {
+            $$parsedSource["failure"] = $$createField6_0($$parsedSource["failure"]);
+        }
+        return new TicketSubscription($$parsedSource as Partial<TicketSubscription>);
+    }
+}
+
+/**
+ * TicketView is an open ticket as its subscribers were last told of it:
+ * its detail when the mirror holds one (Loaded), with when the read of its
+ * body began (Unix milliseconds by this computer's wall clock), and its
+ * failure, nil while its reads succeed.
+ */
+export class TicketView {
+    "loaded": boolean;
+    "detail"?: DetailView | null;
+    "read_at"?: number;
+    "failure"?: FailureView | null;
+
+    /** Creates a new TicketView instance. */
+    constructor($$source: Partial<TicketView> = {}) {
+        if (!("loaded" in $$source)) {
+            this["loaded"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TicketView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TicketView {
+        const $$createField1_0 = $$createType72;
+        const $$createField3_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("detail" in $$parsedSource) {
+            $$parsedSource["detail"] = $$createField1_0($$parsedSource["detail"]);
+        }
+        if ("failure" in $$parsedSource) {
+            $$parsedSource["failure"] = $$createField3_0($$parsedSource["failure"]);
+        }
+        return new TicketView($$parsedSource as Partial<TicketView>);
     }
 }
 
@@ -1133,6 +2606,70 @@ export class TotalsAt {
 }
 
 /**
+ * UnlinkRequest removes Link, as Issue's ticket shows it, whose other side
+ * is Other.
+ */
+export class UnlinkRequest {
+    "issue": string;
+    "link": string;
+    "other": string;
+
+    /** Creates a new UnlinkRequest instance. */
+    constructor($$source: Partial<UnlinkRequest> = {}) {
+        if (!("issue" in $$source)) {
+            this["issue"] = "";
+        }
+        if (!("link" in $$source)) {
+            this["link"] = "";
+        }
+        if (!("other" in $$source)) {
+            this["other"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UnlinkRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UnlinkRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UnlinkRequest($$parsedSource as Partial<UnlinkRequest>);
+    }
+}
+
+/**
+ * UserListView is the users a pick list offers; More reports that the
+ * tracker may hold matches it leaves out, so a user missing from it may
+ * still exist.
+ */
+export class UserListView {
+    "users": UserView[];
+    "more"?: boolean;
+
+    /** Creates a new UserListView instance. */
+    constructor($$source: Partial<UserListView> = {}) {
+        if (!("users" in $$source)) {
+            this["users"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UserListView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UserListView {
+        const $$createField0_0 = $$createType73;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("users" in $$parsedSource) {
+            $$parsedSource["users"] = $$createField0_0($$parsedSource["users"]);
+        }
+        return new UserListView($$parsedSource as Partial<UserListView>);
+    }
+}
+
+/**
  * UserView is a user as a card or ticket names one.
  */
 export class UserView {
@@ -1158,45 +2695,189 @@ export class UserView {
     }
 }
 
+/**
+ * WorklogRequest is a new worklog of the credential's own user.
+ */
+export class WorklogRequest {
+    "issue": string;
+    "day": string;
+    "spent_seconds": number;
+    "description"?: string;
+
+    /** Creates a new WorklogRequest instance. */
+    constructor($$source: Partial<WorklogRequest> = {}) {
+        if (!("issue" in $$source)) {
+            this["issue"] = "";
+        }
+        if (!("day" in $$source)) {
+            this["day"] = "";
+        }
+        if (!("spent_seconds" in $$source)) {
+            this["spent_seconds"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorklogRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorklogRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorklogRequest($$parsedSource as Partial<WorklogRequest>);
+    }
+}
+
+/**
+ * WriteView is what became of a write, as the tracker answered it: every
+ * part with its outcome, the issue a create made, and what the mirror
+ * could not be refreshed with afterwards.
+ */
+export class WriteView {
+    /**
+     * Parts are the write's parts in the order they were sent or would
+     * have been: one per issue of a rank or a sprint move, one per step of
+     * a create.
+     */
+    "parts": PartView[];
+
+    /**
+     * Created is the issue a create made, when the tracker confirmed it,
+     * even when a later step of the create failed.
+     */
+    "created"?: string;
+
+    /**
+     * CreateUnknown reports a create whose answer was lost: the tracker
+     * may hold a new issue nobody can name, and a second attempt may make
+     * a second one. Nothing retried it; the board's tick ran at once.
+     */
+    "create_unknown"?: boolean;
+
+    /**
+     * NotOnBoard is the board the create was made from when the tracker
+     * says that board does not hold the new issue (its filter leaves it
+     * out, its status is in no column, or it is an epic on a Jira scrum
+     * board): the issue was created, no row was stored, and the board
+     * will not show it.
+     */
+    "not_on_board"?: string;
+
+    /**
+     * Stale names what the write may have changed that the mirror could
+     * not be refreshed with, and why. The write stands: the views of it
+     * are stale until the next sync reads it.
+     */
+    "stale"?: StaleView[];
+
+    /**
+     * Ended reports a connection turned off or removed while the write was
+     * made: its mirror was cleared, so nothing was refreshed.
+     */
+    "ended"?: boolean;
+
+    /** Creates a new WriteView instance. */
+    constructor($$source: Partial<WriteView> = {}) {
+        if (!("parts" in $$source)) {
+            this["parts"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WriteView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WriteView {
+        const $$createField0_0 = $$createType75;
+        const $$createField4_0 = $$createType77;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("parts" in $$parsedSource) {
+            $$parsedSource["parts"] = $$createField0_0($$parsedSource["parts"]);
+        }
+        if ("stale" in $$parsedSource) {
+            $$parsedSource["stale"] = $$createField4_0($$parsedSource["stale"]);
+        }
+        return new WriteView($$parsedSource as Partial<WriteView>);
+    }
+}
+
 // Private type creation functions
-const $$createType0 = BoardTotals.createFrom;
-const $$createType1 = $Create.Nullable($$createType0);
-const $$createType2 = PatchSection.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = BoardView.createFrom;
-const $$createType5 = $Create.Nullable($$createType4);
-const $$createType6 = FailureView.createFrom;
-const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = SectionTotal.createFrom;
-const $$createType9 = SprintTotal.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = ColumnTotal.createFrom;
-const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = EstimateView.createFrom;
-const $$createType14 = ColumnView.createFrom;
-const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = SprintView.createFrom;
-const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = SyncView.createFrom;
-const $$createType19 = SectionPage.createFrom;
-const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = IssueTypeView.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = StatusView.createFrom;
-const $$createType24 = UserView.createFrom;
-const $$createType25 = $Create.Nullable($$createType24);
+const $$createType0 = UserView.createFrom;
+const $$createType1 = BoardTotals.createFrom;
+const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = PatchSection.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = BoardView.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = FailureView.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = SectionTotal.createFrom;
+const $$createType10 = SprintTotal.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = ColumnTotal.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = EstimateView.createFrom;
+const $$createType15 = ColumnView.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = SprintView.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = SyncView.createFrom;
+const $$createType20 = SectionPage.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = IssueTypeView.createFrom;
+const $$createType23 = $Create.Nullable($$createType22);
+const $$createType24 = StatusView.createFrom;
+const $$createType25 = $Create.Nullable($$createType0);
 const $$createType26 = ChoiceView.createFrom;
 const $$createType27 = $Create.Nullable($$createType26);
 const $$createType28 = $Create.Array($$createType26);
 const $$createType29 = ParentView.createFrom;
 const $$createType30 = $Create.Nullable($$createType29);
 const $$createType31 = $Create.Array($Create.Any);
-const $$createType32 = $Create.Array($$createType23);
-const $$createType33 = EstimateChoiceView.createFrom;
+const $$createType32 = $Create.Array($$createType24);
+const $$createType33 = CommentView.createFrom;
 const $$createType34 = $Create.Array($$createType33);
-const $$createType35 = Section.createFrom;
-const $$createType36 = RowView.createFrom;
-const $$createType37 = $Create.Array($$createType36);
-const $$createType38 = CardView.createFrom;
-const $$createType39 = SectionCursor.createFrom;
-const $$createType40 = $Create.Nullable($$createType39);
+const $$createType35 = FieldEditInput.createFrom;
+const $$createType36 = $Create.Array($$createType35);
+const $$createType37 = CardView.createFrom;
+const $$createType38 = FieldView.createFrom;
+const $$createType39 = $Create.Array($$createType38);
+const $$createType40 = LinkView.createFrom;
+const $$createType41 = $Create.Array($$createType40);
+const $$createType42 = AttachmentView.createFrom;
+const $$createType43 = $Create.Array($$createType42);
+const $$createType44 = EventView.createFrom;
+const $$createType45 = $Create.Array($$createType44);
+const $$createType46 = MoveView.createFrom;
+const $$createType47 = $Create.Array($$createType46);
+const $$createType48 = EstimateChoiceView.createFrom;
+const $$createType49 = $Create.Array($$createType48);
+const $$createType50 = FieldValueView.createFrom;
+const $$createType51 = $Create.Nullable($$createType50);
+const $$createType52 = MarkdownEditInput.createFrom;
+const $$createType53 = $Create.Nullable($$createType52);
+const $$createType54 = $Create.Array($Create.Any);
+const $$createType55 = $Create.Array($Create.Any);
+const $$createType56 = LinkedIssueView.createFrom;
+const $$createType57 = KeyMatchView.createFrom;
+const $$createType58 = $Create.Array($$createType57);
+const $$createType59 = RefusalView.createFrom;
+const $$createType60 = $Create.Nullable($$createType59);
+const $$createType61 = Section.createFrom;
+const $$createType62 = RowView.createFrom;
+const $$createType63 = $Create.Array($$createType62);
+const $$createType64 = FieldMessageView.createFrom;
+const $$createType65 = $Create.Array($$createType64);
+const $$createType66 = $Create.Array($$createType37);
+const $$createType67 = SectionCursor.createFrom;
+const $$createType68 = $Create.Nullable($$createType67);
+const $$createType69 = ResourceView.createFrom;
+const $$createType70 = $Create.Array($$createType69);
+const $$createType71 = DetailView.createFrom;
+const $$createType72 = $Create.Nullable($$createType71);
+const $$createType73 = $Create.Array($$createType0);
+const $$createType74 = PartView.createFrom;
+const $$createType75 = $Create.Array($$createType74);
+const $$createType76 = StaleView.createFrom;
+const $$createType77 = $Create.Array($$createType76);

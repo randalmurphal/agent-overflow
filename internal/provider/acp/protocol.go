@@ -24,6 +24,10 @@ const (
 	ErrCodeResourceNotFnd = -32002
 )
 
+// ErrNoActiveTurn is returned by Session.Steer when no turn is currently active
+// on the session, signalling the caller to start a fresh turn instead.
+var ErrNoActiveTurn = errors.New("acp: no active turn to steer")
+
 // RPCError represents a JSON-RPC 2.0 error returned by an ACP agent.
 type RPCError struct {
 	Method  string

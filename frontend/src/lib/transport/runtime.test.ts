@@ -396,6 +396,20 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
     __resetEntityIndexForTest();
   });
 
+  // A ticket subscribe and every call naming a tracker connection go to
+  // the computer they are pinned to, as does a call on the ticket's handle.
+  it('routes a tracker ticket subscribe, a write and its handle by the pin', async () => {
+    const SUBSCRIBE_TRACKER_TICKET = 3193179933;
+    const ADD_TRACKER_COMMENT = 790914661;
+    const TRACKER_TICKET = 105684651;
+    const callByID = remoteClient({ id: 'handle-1' });
+    await withBackendTarget(REMOTE, () => Call.ByID(SUBSCRIBE_TRACKER_TICKET, 'conn', '10101'));
+    await withBackendTarget(REMOTE, () => Call.ByID(ADD_TRACKER_COMMENT, 'conn', { issue: '10101', markdown: 'x' }));
+    await withBackendTarget(REMOTE, () => Call.ByID(TRACKER_TICKET, 'handle-1'));
+    expect(callByID.mock.calls.map(([method]) => method)).toEqual([SUBSCRIBE_TRACKER_TICKET, ADD_TRACKER_COMMENT, TRACKER_TICKET]);
+    expect(mockClient.callByID).not.toHaveBeenCalled();
+  });
+
   it('notes a single minted id against the pinned backend', async () => {
     const callByID = remoteClient({ terminalID: 'term-1' });
 
@@ -406,12 +420,16 @@ describe('Call.ByID indexes what a pinned call answers with', () => {
   });
 
   // From 1078249699 on they name a subscription id, which every caller
-  // pins: the PR updates', git status's and a tracker board's (TrackerBoard,
-  // TrackerSectionRows, TrackerBoardPatch, SetTrackerSubscriptionVisible,
-  // RefreshTrackerSubscription, ReleaseTrackerSubscription).
+  // pins: the PR updates', git status's and a tracker board's or ticket's
+  // (TrackerBoard, TrackerSectionRows, TrackerBoardPatch,
+  // SetTrackerSubscriptionVisible, RefreshTrackerSubscription,
+  // ReleaseTrackerSubscription, TrackerTicket,
+  // MintTrackerAttachmentDownloadTicket). The rest name a tracker
+  // connection, which every caller pins too.
   it.each([
     1098302047, 3632185196, 1186337974, 70120675, 1078249699, 2888550814, 3263989430,
-    3524633257, 4150293291, 2847247437, 2154788414, 247632441, 1393115131,
+    3524633257, 4150293291, 2847247437, 2154788414, 247632441, 1393115131, 105684651, 3749273758,
+    611052833, 3921109066, 2967721565, 21628411, 1424176184, 1347598600, 4215069807, 2816087609, 2450480430, 3193179933, 118334031, 2749961211, 440800234, 3632796459, 3346989894, 1109598697, 2754714292, 2194444141, 1584024747, 1808895141, 3981856226, 2133356294, 3688074763, 2301582015, 4067581165, 3001763889, 759363647, 1961738625, 3259977090, 790914661, 3416415152, 1742610839, 4036611847, 1599312374, 2437411241,
   ])('refuses unknown entity ownership with two computers for method %s', async (method) => {
     const callByID = remoteClient(null);
     await expect(Call.ByID(method, 'unseen')).rejects.toThrow('computer that owns');

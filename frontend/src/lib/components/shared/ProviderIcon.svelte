@@ -28,7 +28,7 @@
 {:else if providerID === 'claude'}
   <ClaudeIcon {size} class="text-provider-claude opacity-95 {className}" />
 {:else if providerID === 'agy'}
-  <AntigravityIcon {size} class="text-provider-agy opacity-95 {className}" />
+  <AntigravityIcon {size} class="opacity-95 {className}" />
 {:else}
   <span
     class="inline-flex items-center justify-center rounded-sm bg-surface-2 text-[0.625rem] font-semibold uppercase text-fg-muted {className}"

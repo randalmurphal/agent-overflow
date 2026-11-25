@@ -73,14 +73,15 @@ func (c *Client) redirectError(k *call, a *answer) *StatusError {
 // afterRefusal reads the credential again after the first refusal and
 // sends the call once more when that replaced the credential the refusal
 // answered. A refusal marked on an answer that is not a 4xx may have run
-// a write, so a write goes again only after a 4xx.
+// a write, so a write goes again only after a 4xx, and a body read once
+// (Upload) never goes again.
 func (c *Client) afterRefusal(ctx context.Context, k *call, state *retries, a *answer) (bool, error) {
 	problem, _ := c.answerText(a)
 	refusal := &AuthError{
 		Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status,
 		Message: problem.Message, scrub: c.scrubRef(a.sent),
 	}
-	if state.reread || (!k.read && !clientError(a.status)) {
+	if state.reread || k.once || (!k.read && !clientError(a.status)) {
 		return false, refusal
 	}
 	state.reread = true
@@ -104,7 +105,7 @@ func (c *Client) afterRefusal(ctx context.Context, k *call, state *retries, a *a
 // may be sent again, has retries left and the gate opens within what is
 // left of its gate-wait budget: the next attempt then waits for the gate
 // in admit. A write is sent again only after a 429, which the tracker
-// answers before it applies anything.
+// answers before it applies anything, and never with a body read once.
 func (c *Client) afterLimit(ctx context.Context, k *call, state *retries, a *answer) (bool, error) {
 	now := c.now()
 	until := a.until
@@ -114,7 +115,7 @@ func (c *Client) afterLimit(ctx context.Context, k *call, state *retries, a *ans
 	until = c.gate.close(until)
 	limited := &RateLimitedError{Tracker: c.name, Until: until, Status: a.status}
 	wait := until.Sub(now)
-	resend := k.read || a.status == http.StatusTooManyRequests
+	resend := !k.once && (k.read || a.status == http.StatusTooManyRequests)
 	if !resend || !IsInteractive(ctx) || state.count >= maxRetries || wait > interactiveGateWait-state.gateWaited || pastDeadline(ctx, wait) {
 		return false, limited
 	}

@@ -86,7 +86,8 @@ a field that is empty for the other.
   (`ReasonStale`), never read as a name.
 - **Capabilities** say what a connection supports beyond what every
   tracker does: issue types, custom fields, moves that take fields, sprint
-  writes and attachments, and whether an issue's update time moves with
+  writes, the largest attachment it stores (none on Linear), and whether
+  an issue's update time moves with
   everything its detail shows. Time tracking is the presence of a time
   tracker, not a flag.
 
@@ -1118,20 +1119,31 @@ added with the agent tools.
 
 ## Methods and events
 
-The connection methods (`internal/app/app_tracker.go`) and the board
-methods (`internal/app/app_tracker_boards.go`) are bound: each takes a
-leading context and carries a scope, `tracker:read` at the observe tier
-or `tracker:operate` at the execute tier, and a route. Their events are
-`tracker:connections_updated`, sent when a connection or its problem
-changed, and `tracker:board_updated` (`trackerapp.BoardEvent`), both at
-`tracker:read`. The ticket, write and form-read methods below, but for
-`Projects` and `Boards`, are `trackerapp.Service` methods that no bound
-method wraps (see [Build order](#build-order)).
+The connection methods (`internal/app/app_tracker.go`), the board
+methods (`app_tracker_boards.go`), the ticket and form-read methods
+(`app_tracker_ticket.go`) and the writes (`app_tracker_writes.go`) are
+bound: each takes a leading context and carries a scope, `tracker:read`
+at the observe tier or `tracker:operate` at the execute tier, and a
+route. Their events are `tracker:connections_updated`, sent when a
+connection or its problem changed, `tracker:board_updated`
+(`trackerapp.BoardEvent`) and `tracker:issue_updated`
+(`trackerapp.IssueEvent`), all at `tracker:read`. `EditSprint`,
+`EditWorklog`, `DeleteWorklog`, `Worklogs` and `RefreshWorklogs` are
+`trackerapp.Service` methods that no bound method wraps yet (see
+[Build order](#build-order)).
+
+A connection ID is minted on one computer. Every method whose first
+argument is one is generated with the route home and routed by its client
+to the computer whose answer named the connection (`methodFamilies.ts`,
+family `trackerConnection`, which the caller pins as it pins a
+subscription handle); the table says `connection` for those.
+`TrackerConnections` and `AddTrackerConnection` name none and go to the
+selected computer.
 
 | Bound method | Service method | Scope | Route |
 |---|---|---|---|
-| `TrackerProjects(connectionID)` | `Projects` | read | selected |
-| `TrackerBoards(connectionID, project)` | `Boards` | read | selected |
+| `TrackerProjects(connectionID)` | `Projects` | read | connection |
+| `TrackerBoards(connectionID, project)` | `Boards` | read | connection |
 | `ProjectTrackerBoards(projectID)` | `ProjectBoards` | read | project |
 | `SetProjectTrackerBoards(projectID, boards)` | `SetProjectBoards` | operate | project |
 | `SubscribeTrackerBoard(projectID, connectionID, boardID, sections)` | `SubscribeBoard` | read | project, caller-bound |
@@ -1141,13 +1153,96 @@ method wraps (see [Build order](#build-order)).
 | `SetTrackerSubscriptionVisible(subscriptionID, visible)` | `SetSubscriptionVisible` | read | home |
 | `RefreshTrackerSubscription(subscriptionID)` | `RefreshSubscription` | read | home |
 | `ReleaseTrackerSubscription(subscriptionID)` | `ReleaseSubscription` | read | home |
+| `SubscribeTrackerTicket(connectionID, issue)` | `SubscribeTicket` | read | connection, caller-bound |
+| `TrackerTicket(subscriptionID)` | `TicketDetail` | read | home |
+| `MintTrackerAttachmentUploadTicket(connectionID, issue, filename, size)` | `AttachmentCeiling`, then the upload route's `Attach` | operate | connection |
+| `MintTrackerAttachmentDownloadTicket(subscriptionID, attachmentID)` | `TicketAttachment`, then the download route's `Download` | read | home |
+| `TrackerIssueTypes`, `TrackerCreateFields`, `TrackerMoves`, `TrackerAssignableUsers`, `TrackerChoices`, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`, `TrackerComments` | the form reads of the same names | read | connection |
+| `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog` | operate | connection, budget 3m |
 
-- **The picker's lists** (`TrackerProjects`, `TrackerBoards`) walk the
-  tracker's pages, each bounded by the tracker client, and the whole walk
-  ends at the method's default budget (`trackerCatalogRun`), so the
-  answer arrives before the client stops waiting and says the tracker was
-  too slow and to try again. Their context reaches the network, so they
-  are not caller-bound.
+- **The picker's lists and the form reads** (`TrackerProjects`,
+  `TrackerBoards`, `TrackerMoves` and the rest) ask the tracker, each
+  request bounded by the tracker client, and the whole call ends at the
+  method's default budget (`trackerRun`), so the answer arrives before
+  the client stops waiting and says the tracker was too slow and to try
+  again. Their context reaches the network, so they are not caller-bound.
+- **A write** answers its `WriteView` within its 3 minute budget
+  (`trackerRun`). On Jira the provider's call makes 1 to 7 requests
+  (`jiraprovider`'s `TestRequestCost` pins each: 7 for a create with two
+  images or a sprint completion that moves 125 issues, 1 to 3 for the
+  others), and the refresh after it 1 or 2 per board the write changed
+  and 2 per open ticket it read. The tracker client bounds each request
+  at 45 seconds with its retries (`trackerapi` `ReadTimeout`); an image
+  upload is a transfer, bounded by its stall timers instead. The 3
+  minutes is four requests at that bound: a tracker that answers in
+  seconds finishes far inside it, and one slow enough to reach it has
+  the run cut, each part then told as applied, unknown or not sent. A
+  part whose answer was lost says the change may or may not have been
+  made and where to look before trying again, by what the write was
+  (`trackerapp.LostWriteCheck`): a created issue is searched for, since
+  its board's filter may leave it out; a sprint is among the board's
+  sprints, a worklog in the day's logged time, a rank in the board's
+  order, and any other change on its ticket. The budget's sentence and a
+  result the provider may not give (`tracker_write_unclear`) say the
+  same. A part refused for its credential says what the connection's
+  problem says. A write's context is the server's, not the caller's.
+- **A ticket subscription** belongs to its client connection as a
+  board's does: `SubscribeTrackerTicket` ties its handle inside the
+  service's publication, and the board's visibility, refresh and release
+  methods take its handle. `TrackerTicket` is the ticket as its
+  subscribers were last told, from memory, read after an event that says
+  it changed.
+- **A file attached to a ticket** crosses a ticketed upload route,
+  `PUT /attachments/tracker/upload` (`internal/transport/trackerroutes.go`),
+  one file a request. The mint refuses a tracker that stores no files
+  (Linear, `tracker_attachments_unsupported`) and a file over the largest
+  its tracker stores (`tracker_attachment_too_large`; Jira Cloud's per-file
+  ceiling, `jira.MaxAttachmentBytes`, 2 GB), before any byte crosses the
+  network. An issue ID over 64 bytes (`tracker.CheckIssueID`; Jira's
+  are numbers, Linear's 36-byte UUIDs) and a file name over 1,024 bytes
+  (`tracker.CheckFileName`) are refused there too, and a ticket
+  subscribe refuses the same issue IDs. The ticket names the connection,
+  the issue, the file name and its exact size; the route refuses a
+  declared length that differs (`tracker_upload_size_changed`: select
+  the file again), caps the body at the size and passes it to
+  `Service.Attach` as it arrives, which streams it to Jira under that
+  length (`trackerapi.Multipart`). A body that ends short, runs long or
+  stops arriving fails the Jira request before it completes: its part is
+  `not_sent` with the failure kind `upload`, which is not the
+  connection's problem and does not clear one. A client that stops
+  sending is not waited on: when the Jira request ends (its 90 second
+  stall timer, `Service.Stop`, or the write's bound), the tracker client
+  closes the body it did not read to its end (`trackerapi.Part`), which
+  ends the route's read of the request by moving its read deadline to
+  now. The write runs with the request's values and not its end, so a
+  client that leaves after its last byte still has the file attached,
+  and its whole run is bounded by the transfer window for the file's
+  size plus the answer's allowance (`transport.AnswerAllowance`:
+  the 5 minutes Jira has to answer, `trackerapi.AnswerTimeout`, a
+  write's 3 minute budget for the refresh, and a minute for the answer
+  to cross the relays; `trackerAttachBound`): 14
+  minutes up to 10 MiB, about 17 hours for 2 GB. The answer is the
+  write's `WriteView` as JSON, written within `transport.UploadWindow`;
+  a relay gives that answer the same allowance from the upload's last
+  byte, so an answer that comes late still reaches the page
+  ([byte route deadlines](transport.md#byte-route-deadlines)). A download that declares a body is
+  refused (`tracker_download_has_body`) and its connection closed.
+- **An attachment is saved** through `GET /attachments/tracker/{attachmentID}`.
+  The mint asks the tracker nothing: the attachment must be on the
+  ticket as the subscription last showed it (`tracker_attachment_unknown`
+  otherwise), and its name becomes the download's. The route streams
+  `Service.Download` as `application/octet-stream` with an attachment
+  disposition and no declared length, read up to the largest file the
+  tracker stores, and bounded by its progress, not a total
+  (`transport.DownloadByProgress`): it ends 90 seconds after its last
+  byte moved, here and on each relay, and a relay ends one whose first
+  byte has not come `transport.AnswerAllowance` after the request. Its status waits for the first
+  byte, so a failure before it answers the refusal's code and sentence
+  as JSON; one after it ends the response short, which the relays carry
+  as a cut transfer.
+- **Limits of these routes:** the Android shell refuses an upload over
+  50 MiB and a download over 128 MiB, and says the file is over its
+  limit.
 - **A project's boards** are the boards its picker shows, in order, and
   the one that opens first (store `project_tracker_boards`). The list is
   replaced whole, and the change takes effect before the save answers,
@@ -1187,7 +1282,13 @@ method wraps (see [Build order](#build-order)).
   `tracker_connection_off`, `tracker_connection_missing`,
   `tracker_connection_tempo`, `tracker_board_not_listed`,
   `tracker_board_not_read`, `tracker_page_stale`,
-  `tracker_project_missing` and `tracker_boards_refused`.
+  `tracker_project_missing`, `tracker_boards_refused`,
+  `tracker_attachment_unknown`, `tracker_write_unclear`,
+  `tracker_unsupported` and `tracker_request_invalid` (whose sentence
+  quotes what the request got wrong). A tracker call that failed is
+  `tracker_failed_<kind>` with `trackerapp`'s sentence for its kind
+  (`CallFailure`). The byte routes answer the same code and sentence as
+  JSON with a 400.
 
 A board answer is bounded: the subscribe returns the board's structure,
 its sprints and the cards of the sections on screen, and a section's
@@ -1195,14 +1296,16 @@ remaining cards are read by page.
 
 ### Subscriptions
 
-- `SubscribeBoard(projectID, scope, sections)` answers from the mirror
+- `SubscribeBoard(projectID, scope, sections, tie)` answers from the mirror
   alone, before any tracker call: a handle, a sequence number, the view of
   the sections or "not loaded", and the poll interval. It is refused for a
   board the project does not list, a connection turned off, removed or
   Tempo, and past 64 board handles.
-- `SubscribeTicket(connection, issue)` answers the same way with the
-  ticket's view built from the record, or the view its subscribers were
-  last told when its pump runs already; at most 64 ticket handles.
+- `SubscribeTicket(connection, issue, tie)` answers the same way with
+  the ticket's view built from the record, or the view its subscribers
+  were last told when its pump runs already; at most 64 ticket handles.
+  Both subscribes call their tie after the cap check and before a pump
+  is made, and every removal of the handle unties it.
 - Both answers carry the failure the subscribers were last told, the
   tracker's or one outside it, so a subscriber that joins while reads fail
   shows the failure.
@@ -1393,21 +1496,22 @@ guide and each read tool say so.
 
 Built: `internal/tracker` and the two providers, `internal/keyfile`, the
 tracker tables and their accessors, `trackerfake`, and `trackerapp` with
-its sync, pumps, reads and writes; the connection and board bound
-methods, `tracker:board_updated`, the app's calls at start, and the
-harness's fake trackers (`HarnessTrackerSeed`). Not built, owed by the app
-layer:
+its sync, pumps, reads and writes; the connection, board, ticket, write
+and form-read bound methods, the ticket file routes,
+`tracker:board_updated` and `tracker:issue_updated`, the app's calls at
+start, and the harness's fake trackers (`HarnessTrackerSeed`). Not built,
+owed by the app layer:
 
-- The board screen: the `bindings.ts` wrappers of the board methods and
-  the `tracker:board_updated` event's TypeScript type ship with it, as the
-  connection methods' wrappers ship with the Issues settings screen.
+- The board and ticket screens: the `bindings.ts` wrappers of the board,
+  ticket, write and form-read methods and the two events' TypeScript
+  types ship with them, as the connection methods' wrappers ship with the
+  Issues settings screen.
+- The Time screen's bound methods: `Worklogs`, `RefreshWorklogs`,
+  `EditWorklog` and `DeleteWorklog`. `EditSprint` is bound when a screen
+  edits a sprint.
 - A failure of the linked-issues loop after boot reaches only the log
   (`Deps.LoopFailed`); its user-facing surface is owed with the Issues
   settings screen.
-- The ticket and write bound methods, a ticket subscription tied to its
-  client as a board's is, and the `tracker:issue_updated`
-  (`trackerapp.IssueEvent`) channel with the read scope's policy.
-  `Deps.EmitIssue` only logs.
 - The sequence that follows adding a connection: open the token page,
   open the key file, verify. The three bound methods exist; the sequence
   is the frontend's.

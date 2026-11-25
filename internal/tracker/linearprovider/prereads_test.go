@@ -124,7 +124,7 @@ func preReads() []preRead {
 			return p.EditSprint(ctx, tracker.SprintEdit{Board: web, Sprint: "cycle-1", Name: &name})
 		})),
 		withMethod("Attach", sprint(func(ctx context.Context, p *Provider) tracker.Result {
-			return p.Attach(ctx, tracker.AttachInput{Issue: one, Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("a")}}})
+			return p.Attach(ctx, tracker.AttachInput{Issue: one, Files: []tracker.File{{Name: "a.txt", Content: strings.NewReader("a"), Size: 1}}})
 		})),
 	}
 }

@@ -146,11 +146,15 @@ takes a `trackerapi.Request`; the comments on those types, and on the
 - **Writes are never replayed**, but for two answers the tracker gives
   before it applies anything: a 429 on an interactive call, and a 4xx
   refusing the credential when reading the credential again replaced it,
-  which sends the write once more.
+  which sends the write once more. A write whose upload reads a part's
+  content once (a stream, not a seekable reader) is sent once and gets
+  neither resend.
   No request can be resent by `net/http` underneath: a request carries no
   replayable body, and the `Idempotency-Key` headers are refused.
   `WriteNotApplied(err)` reports the failures that prove a write did not
-  happen: it was never sent, or the tracker answered it with a 4xx. Every
+  happen: it was never sent, the tracker answered it with a 4xx, or its
+  upload's content failed or did not hold its declared size, so the
+  request stopped short of its `Content-Length` and could not complete. Every
   other failure of a write (a timeout or reset after the transport held a
   connection for it, a 3xx, a 5xx, a 2xx whose body was cut short or does
   not decode) leaves the outcome unknown, and the caller reads the ticket
@@ -187,6 +191,15 @@ takes a `trackerapi.Request`; the comments on those types, and on the
   connections close with the last client sharing them. It refuses another
   origin than the peer's, a `Proxy` (the connections take the peer's) and
   a closed peer.
+- **Uploads.** `Multipart` builds an `Upload` body from parts of known
+  size. `mime/multipart` writes its framing once; each part's content is
+  read only as the request is sent, so an upload holds none of it, and
+  its length is declared as the `Content-Length`. A content read once
+  that is an `io.Closer` is closed when its attempt ends before reading
+  it to its end (the call's context, a stall, `Close`, or an early
+  answer), because net/http's HTTP/1 transport neither closes a body on
+  a cancel nor returns before its write loop stops reading it; closing
+  must end a read in progress. One read to its end is never closed.
 - **Transfers.** A `Transfer` request has no total timeout. It fails when
   no byte moves for the stall timeout, or when the answer's headers take
   longer than the header timeout after the request is sent. The timers
@@ -212,6 +225,8 @@ error body's message and per-field messages, a rate limit that is not a
 | 401 after the credential was read again, or an answer the dialect marks as a refused login | `*AuthError` |
 | 429, or the dialect's limit, once retries are spent or for a background call | `*RateLimitedError{Until}` |
 | Any other status of 400 or above, or a 3xx answering a write | `*StatusError{Method, URL, Status, Message, Fields, Body, Location, Header}`: the URL redacted, the body bounded to 4 KiB, `Fields` the per-field messages, `Header` the answer headers `Options.ErrorHeaders` names. A 404 matches `errors.Is(err, ErrNotFound)`. |
+| An upload part's content failed, ended short of its size or ran past it | `*SourceError` wrapping the cause; the write was not applied |
+| An upload's round trip failed before the transport was handed its whole body (the connection broke, the call ended or the client closed while it went out) | `*CutError` wrapping the cause; the write was not applied. One that fails after the whole body was handed over is unknown. |
 | Timeout, reset, a body cut short | `*TransientError` wrapping the cause. A write's 4xx whose body is cut short stays the status's error, with the body that arrived. |
 | A body over its bound | `*BodyTooLargeError` |
 | A 2xx whose credential was dropped while its body was read, so the body cannot be checked for it | `ErrCredentialChanged`, returned with a `Response` that has the status, header and `CredentialMark` and no body. A write it answered has an unknown outcome. |

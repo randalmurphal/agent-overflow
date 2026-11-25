@@ -560,6 +560,8 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		DictationTransfer: appservice.DictationTransfer(appService.App),
 		// Read-aloud audio, synthesized when its URL is fetched.
 		SpeechTransfer: appservice.ReadAloudTransfer(appService.App),
+		// Ticket attachments, streamed between the client and the tracker.
+		TrackerTransfer: appservice.TrackerTransfer(appService.App),
 		// The SPA a paired phone shell downloads from this backend
 		// (internal/bundle, docs/specs/remote-access.md §9). Nil on a
 		// dev-server boot, which leaves the two routes answering 404 and

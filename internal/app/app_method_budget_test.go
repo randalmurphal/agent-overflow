@@ -105,6 +105,22 @@ var methodServerBounds = map[string]time.Duration{
 	// reviewSubmitFinish before its budget.
 	"SubmitPRReview":           transport.MethodBudget("SubmitPRReview"),
 	"GetPRReviewSubmitOutcome": transport.MethodBudget("SubmitPRReview"),
+	// trackerRun: the write and its refresh, cut at the budget.
+	"CreateTrackerIssue":        transport.MethodBudget("CreateTrackerIssue"),
+	"EditTrackerIssue":          transport.MethodBudget("EditTrackerIssue"),
+	"MoveTrackerIssue":          transport.MethodBudget("MoveTrackerIssue"),
+	"SetTrackerEstimate":        transport.MethodBudget("SetTrackerEstimate"),
+	"RankTrackerIssues":         transport.MethodBudget("RankTrackerIssues"),
+	"MoveTrackerIssuesToSprint": transport.MethodBudget("MoveTrackerIssuesToSprint"),
+	"CreateTrackerSprint":       transport.MethodBudget("CreateTrackerSprint"),
+	"StartTrackerSprint":        transport.MethodBudget("StartTrackerSprint"),
+	"CompleteTrackerSprint":     transport.MethodBudget("CompleteTrackerSprint"),
+	"AddTrackerComment":         transport.MethodBudget("AddTrackerComment"),
+	"EditTrackerComment":        transport.MethodBudget("EditTrackerComment"),
+	"DeleteTrackerComment":      transport.MethodBudget("DeleteTrackerComment"),
+	"LinkTrackerIssues":         transport.MethodBudget("LinkTrackerIssues"),
+	"UnlinkTrackerIssues":       transport.MethodBudget("UnlinkTrackerIssues"),
+	"AddTrackerWorklog":         transport.MethodBudget("AddTrackerWorklog"),
 }
 
 // hooked is one git or forge CLI command that runs a user's hook, stopped.
