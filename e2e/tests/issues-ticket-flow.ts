@@ -214,6 +214,9 @@ function cardField(ticket: Locator, id: string): Locator {
 /** Opens a comment's menu: a right click, a long press on the phone. */
 async function commentMenu(page: Page, comment: Locator, compact: boolean): Promise<Locator> {
   const menu = page.getByRole('menu', { name: 'Comment actions' });
+  // The comment box stays in view over the comments' end: a person presses
+  // a comment they scrolled clear of it.
+  await comment.evaluate((el) => el.scrollIntoView({ block: 'center' }));
   if (compact) await longPress(page, comment.getByTestId('ticket-comment-body'), menu);
   else await comment.getByTestId('ticket-comment-body').click({ button: 'right' });
   await expect(menu).toBeVisible();
