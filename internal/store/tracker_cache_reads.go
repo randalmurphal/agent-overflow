@@ -367,7 +367,7 @@ type MirrorTicketRow struct {
 var mirrorTicketRowsSQL = `SELECT b.issue_id, b.board_id, ` + mirrorRowEstimate("r.estimate_reset_at") + `, r.estimate_unit
 	FROM tracker_cache_board_issues b
 	JOIN tracker_cache_boards r ON r.root_id = b.root_id AND r.board_id = b.board_id
-	WHERE b.root_id = ?1 AND b.issue_id IN (SELECT value FROM json_each(?2)) AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `
+	WHERE b.root_id = ` + intParam("?1") + ` AND b.issue_id IN (SELECT value FROM json_each(?2)) AND ` + mirrorBoardShown("b.root_id", "b.board_id") + `
 	ORDER BY b.issue_id, b.board_id`
 
 // ListMirrorTicketRows reads, in one statement, the rows of up to
