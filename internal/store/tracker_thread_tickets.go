@@ -113,13 +113,41 @@ const threadTicketLinkColumn = `CASE WHEN EXISTS (SELECT 1 FROM thread_tickets) 
         'statusId', tt.status_id, 'statusName', tt.status_name, 'statusGroup', tt.status_group,
         'origin', tt.origin, 'linkedAt', tt.linked_at,
         'state', CASE WHEN seen.connection_id IS NOT NULL THEN iif(tt.missing, 'not_found', 'current')
-          ELSE CASE (SELECT MAX(c.enabled) FROM tracker_connections c
-                      WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL)
-            WHEN 1 THEN 'not_checked' WHEN 0 THEN 'turned_off' ELSE 'no_connection' END END,
-        'connectionId', COALESCE(seen.connection_id, (SELECT MIN(c.id) FROM tracker_connections c
-          WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL AND c.enabled = 1), ''))
+          ELSE ` + ticketSiteStateSQL + ` END,
+        'connectionId', COALESCE(seen.connection_id, ` + ticketSiteConnectionSQL + `, ''))
       FROM thread_tickets tt LEFT JOIN tracker_cache_roots seen ON seen.id = tt.seen_root
      WHERE tt.thread_id = threads.id) END`
+
+// ticketSiteStateSQL is the state of a link to a ticket of tracker
+// tt.kind's site tt.site that no live mirror here has read, and
+// ticketSiteConnectionSQL the connection here that reads that site: the
+// lowest ID of those turned on, NULL when none is. The thread row's link
+// and TicketConnection both read them, so a link and the call that makes
+// one name the same connection.
+const (
+	ticketSiteStateSQL = `CASE (SELECT MAX(c.enabled) FROM tracker_connections c
+            WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL)
+          WHEN 1 THEN 'not_checked' WHEN 0 THEN 'turned_off' ELSE 'no_connection' END`
+	ticketSiteConnectionSQL = `(SELECT MIN(c.id) FROM tracker_connections c
+          WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL AND c.enabled = 1)`
+)
+
+// TicketConnection is the connection of this computer that reads ticket,
+// "" when none of its tracker and site is turned on, and the state a link
+// to it shows before a read: TicketLinkNotChecked when one is on,
+// TicketLinkTurnedOff when every one is off, TicketLinkNoConnection when
+// there is none.
+func (s *Store) TicketConnection(ticket TicketRef) (id, state string, err error) {
+	if err := ticket.validate(); err != nil {
+		return "", "", err
+	}
+	err = s.reader().QueryRow(`SELECT COALESCE(`+ticketSiteConnectionSQL+`, ''), `+ticketSiteStateSQL+`
+		FROM (SELECT ? AS kind, ? AS site) AS tt`, ticket.Kind, ticket.Site).Scan(&id, &state)
+	if err != nil {
+		return "", "", fmt.Errorf("store: read the %s connection of %s: %w", ticket.Kind, ticket.Site, err)
+	}
+	return id, state, nil
+}
 
 func (r TicketRef) validate() error {
 	switch {

@@ -97,7 +97,7 @@ func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
 	sprints := idStrings(c.Sprints)
 	slices.Sort(sprints)
 	return store.MirrorCard{
-		IssueID: string(c.ID), Key: c.Key, ProjectID: string(c.Project),
+		IssueID: string(c.ID), Key: c.Key, Title: c.Title, ProjectID: string(c.Project),
 		TypeID: string(c.Type.ID), TypeLevel: c.Type.Level,
 		StatusID: string(c.Status), AssigneeID: string(c.Assignee),
 		PriorityID: c.Priority.ID, ParentID: string(c.Parent),

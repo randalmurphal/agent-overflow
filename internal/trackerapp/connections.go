@@ -53,6 +53,7 @@ func (s *Service) Add(c NewConnection) (Connection, error) {
 		out = s.view(row)
 		var exited []<-chan struct{}
 		s.followConnectionsLocked(&exited)
+		s.siteLinksChanged(row)
 		return true, nil
 	})
 	return out, err
@@ -114,6 +115,11 @@ func (s *Service) setEnabled(id string, enabled bool) (_ Connection, changed, de
 	row, changed, err := s.store.SetTrackerConnectionEnabled(id, enabled)
 	if err != nil {
 		return Connection{}, false, false, nil, s.writeError(id, "turn on or off", err)
+	}
+	if changed {
+		// After the detach below: a link shows its copy current while its
+		// root is attached.
+		defer s.siteLinksChanged(row)
 	}
 	if row.Enabled {
 		s.followConnectionsLocked(&exited)
@@ -217,6 +223,7 @@ func (s *Service) Remove(id string) error {
 		}
 		deleted = true
 		s.followConnectionsLocked(&exited)
+		s.siteLinksChanged(row)
 		return true, nil
 	})
 	if deleted {

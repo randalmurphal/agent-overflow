@@ -57,6 +57,7 @@ type MirrorStore interface {
 	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, read store.MirrorRead) ([]store.MirrorHistoryResult, bool, error)
 	ListMirrorHistoryDue(rootID int64, now int64, first ...string) ([]store.MirrorHistoryDue, bool, error)
 	StoreMirrorTickets(rootID, sweep int64, tickets []store.MirrorTicket, catalog store.MirrorCatalog, opened, read store.MirrorRead) (store.MirrorTicketsWrite, error)
+	MarkMirrorLinksMissing(rootID int64, read store.MirrorRead, issueIDs []string) ([]string, error)
 
 	ListMirrorBodies(rootID int64, issueIDs []string) ([]store.MirrorBody, error)
 	GetMirrorBoard(rootID int64, boardID string) (store.MirrorStructure, bool, error)
@@ -228,9 +229,17 @@ type Changes struct {
 	// that shows one as another's parent or link shows it without or with
 	// its card.
 	Visibility []tracker.IssueID `json:"visibility,omitempty"`
+	// Threads are the threads whose ticket link the write moved: its key,
+	// title or status, or whether it is current (store
+	// MirrorChanges.Threads, MarkMirrorLinksMissing). They are told to
+	// Deps.LinksChanged as the write returns (run.told), whether or not a
+	// board or ticket of the connection is subscribed; no view of the
+	// mirror shows them.
+	Threads []string `json:"threads,omitempty"`
 }
 
-// Empty reports changes that name nothing.
+// Empty reports changes that name nothing a view of the mirror shows:
+// Threads go to Deps.LinksChanged, not to a subscription.
 func (c Changes) Empty() bool {
 	return len(c.Cards)+len(c.Rows)+len(c.Removed)+len(c.History)+len(c.Details)+len(c.Dropped)+len(c.Visibility) == 0 &&
 		!c.Catalog && !c.Structure
@@ -247,6 +256,7 @@ func (c *Changes) add(o Changes) {
 	c.Details = unite(c.Details, o.Details)
 	c.Dropped = unite(c.Dropped, o.Dropped)
 	c.Visibility = unite(c.Visibility, o.Visibility)
+	c.Threads = unite(c.Threads, o.Threads)
 	c.Catalog = c.Catalog || o.Catalog
 	c.Structure = c.Structure || o.Structure
 }
@@ -267,6 +277,7 @@ func (l *changeLog) add(o Changes) {
 	l.c.Details = append(l.c.Details, o.Details...)
 	l.c.Dropped = append(l.c.Dropped, o.Dropped...)
 	l.c.Visibility = append(l.c.Visibility, o.Visibility...)
+	l.c.Threads = append(l.c.Threads, o.Threads...)
 	l.c.Catalog = l.c.Catalog || o.Catalog
 	l.c.Structure = l.c.Structure || o.Structure
 }
@@ -276,11 +287,12 @@ func (l *changeLog) changes() Changes {
 	c := &l.c
 	c.Cards, c.Rows, c.Added, c.Removed = ordered(c.Cards), ordered(c.Rows), ordered(c.Added), ordered(c.Removed)
 	c.History, c.Details, c.Dropped, c.Visibility = ordered(c.History), ordered(c.Details), ordered(c.Dropped), ordered(c.Visibility)
+	c.Threads = ordered(c.Threads)
 	return *c
 }
 
 // unite is the sorted union of a and b without repeats.
-func unite(a, b []tracker.IssueID) []tracker.IssueID {
+func unite[T ~string](a, b []T) []T {
 	if len(b) == 0 {
 		return a
 	}
@@ -288,7 +300,7 @@ func unite(a, b []tracker.IssueID) []tracker.IssueID {
 }
 
 // ordered is ids sorted without repeats, in place.
-func ordered(ids []tracker.IssueID) []tracker.IssueID {
+func ordered[T ~string](ids []T) []T {
 	slices.Sort(ids)
 	return slices.Compact(ids)
 }
@@ -297,6 +309,7 @@ func ordered(ids []tracker.IssueID) []tracker.IssueID {
 func changesOf(ch store.MirrorChanges) Changes {
 	return Changes{
 		Cards: issueIDs(ch.Cards), Rows: issueIDs(ch.Rows), Added: issueIDs(ch.Added), Removed: issueIDs(ch.Removed), Catalog: ch.Catalog,
+		Threads: ch.Threads,
 	}
 }
 

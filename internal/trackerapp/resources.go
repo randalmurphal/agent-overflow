@@ -143,7 +143,27 @@ func (r *run) cardsOf(batch []tracker.IssueID) (Changes, error) {
 		return Changes{}, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
 	}
 	r.told("", changesOf(stored))
-	return changesOf(stored), nil
+	ch := changesOf(stored)
+	missing, err := r.markMissing(began, read.Missing)
+	ch.add(missing)
+	return ch, err
+}
+
+// markMissing records that the read begun at began did not return the
+// issues missing: the links to them show not found until a read returns
+// them (store MarkMirrorLinksMissing). What it moved is told and
+// returned as any write's.
+func (r *run) markMissing(began store.MirrorRead, missing []tracker.IssueID) (Changes, error) {
+	if len(missing) == 0 {
+		return Changes{}, nil
+	}
+	threads, err := r.s.store.MarkMirrorLinksMissing(r.root, began, idStrings(missing))
+	if err != nil {
+		return Changes{}, fmt.Errorf("trackerapp: mark the links to %d issues the tracker did not return: %w", len(missing), err)
+	}
+	ch := Changes{Threads: threads}
+	r.told("", ch)
+	return ch, nil
 }
 
 // againIfSwept runs read, a read of content outside a board and its

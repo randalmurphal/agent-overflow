@@ -17,6 +17,8 @@ type eventLog struct {
 	boards   []BoardEvent
 	issues   []IssueEvent
 	loopErrs []error
+	// links are the thread IDs of each Deps.LinksChanged call, in order.
+	links [][]string
 	// changed is closed and replaced on every record.
 	changed chan struct{}
 	// settled is closed when the first reads have settled; open until a
@@ -61,6 +63,18 @@ func (l *eventLog) emitted(e any) {
 }
 func (l *eventLog) loopFailed(err error) {
 	l.record(func() { l.loopErrs = append(l.loopErrs, err) })
+}
+
+func (l *eventLog) linksChanged(threads []string) {
+	l.record(func() { l.links = append(l.links, slices.Clone(threads)) })
+}
+
+// linkedThreads is every thread Deps.LinksChanged was told, sorted
+// without repeats, and the number of calls.
+func (l *eventLog) linkedThreads() ([]string, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Compact(slices.Sorted(slices.Values(slices.Concat(l.links...)))), len(l.links)
 }
 
 // holdSettle makes the first reads unsettled until the returned func runs.

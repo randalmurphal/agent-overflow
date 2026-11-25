@@ -72,6 +72,9 @@ type run struct {
 // the write's read went through, none for a read of cards or tickets;
 // every write of a board's tick is its board's (ownOf).
 func (r *run) told(board tracker.BoardID, ch Changes) {
+	if len(ch.Threads) > 0 {
+		r.s.linksChanged(ch.Threads)
+	}
 	if r.scope.Board != "" {
 		board = r.scope.Board
 	}

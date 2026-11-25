@@ -23,10 +23,7 @@ import (
 
 // ask runs read, one provider read and what it reads of the mirror, on a
 // hold of connection id for a person, and settles the connection's
-// problem with the provider read's outcome: its failure, which read marks
-// with call, or a success. An input the provider refused before any
-// request, a read the tracker cannot serve, and a read whose context ended
-// leave the problem as it is. A failure is returned as a *CallFailure.
+// problem with the provider read's outcome (run.answer).
 func ask[T any](s *Service, ctx context.Context, id string, read func(r *run) (T, error)) (T, error) {
 	r, err := s.interact(ctx, id)
 	if err != nil {
@@ -35,6 +32,16 @@ func ask[T any](s *Service, ctx context.Context, id string, read func(r *run) (T
 	}
 	defer r.finish()
 	v, err := read(r)
+	return v, r.answer(err)
+}
+
+// answer settles the connection's problem with err, the outcome of the
+// one provider read the run made for a person: its failure, which the
+// read marks with call, or a success. An input the provider refused
+// before any request, a read the tracker cannot serve, and a read whose
+// context ended leave the problem as it is. It returns err as the person
+// reads it: a failure as a *CallFailure.
+func (r *run) answer(err error) error {
 	c, failed := errors.AsType[*callError](err)
 	var callErr error
 	if failed {
@@ -48,7 +55,7 @@ func ask[T any](s *Service, ctx context.Context, id string, read func(r *run) (T
 		// stands.
 		_ = r.settleCalls(callErr)
 	}
-	return v, err
+	return err
 }
 
 // ProjectView is a tracker project: a Jira project or a Linear team.

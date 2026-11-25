@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"slices"
 	"testing"
 )
@@ -172,6 +173,17 @@ func TestThreadRowLinkStateFollowsTheConnections(t *testing.T) {
 		t.Fatalf("an unlinked thread beside a link = %+v, %v", row.TicketLink, err)
 	}
 
+	// TicketConnection names the connection a new link reads through.
+	site := func(wantID, wantState string) {
+		t.Helper()
+		if id, state, err := s.TicketConnection(webTicket); err != nil || id != wantID || state != wantState {
+			t.Fatalf("ticket connection = %q, %q, %v; want %q, %q", id, state, err, wantID, wantState)
+		}
+	}
+	site(c.ID, TicketLinkNotChecked)
+	if _, _, err := s.TicketConnection(TicketRef{Kind: TrackerKindTempo, Site: mirrorSite, IssueID: "1"}); !errors.Is(err, ErrInvalidThreadTicket) {
+		t.Fatalf("ticket connection of a Tempo ticket: %v", err)
+	}
 	if _, err := s.DetachMirror(c.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -182,10 +194,12 @@ func TestThreadRowLinkStateFollowsTheConnections(t *testing.T) {
 	if state, id := linkState(t, s, "a"), connection(); state != TicketLinkTurnedOff || id != "" {
 		t.Fatalf("off = %q on %q; want turned off on none", state, id)
 	}
+	site("", TicketLinkTurnedOff)
 	second := mustCreateTrackerConnection(t, s, jiraConnection(mirrorSite, "user2@example.com", 20))
 	if state, id := linkState(t, s, "a"), connection(); state != TicketLinkNotChecked || id != second.ID {
 		t.Fatalf("another on = %q on %q; want not checked on %q", state, id, second.ID)
 	}
+	site(second.ID, TicketLinkNotChecked)
 	for _, id := range []string{second.ID, c.ID} {
 		if _, err := s.DeleteTrackerConnection(id); err != nil {
 			t.Fatal(err)
@@ -194,6 +208,7 @@ func TestThreadRowLinkStateFollowsTheConnections(t *testing.T) {
 	if state, id := linkState(t, s, "a"), connection(); state != TicketLinkNoConnection || id != "" {
 		t.Fatalf("removed = %q on %q; want no connection on none", state, id)
 	}
+	site("", TicketLinkNoConnection)
 }
 
 // The issues a mirror holds that no link, board or open ticket keeps any

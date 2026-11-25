@@ -322,6 +322,9 @@ func (r *run) ticketCards(reads []*ticketRead, opening store.MirrorRead) ([]trac
 	if err != nil {
 		return nil, nil, fmt.Errorf("trackerapp: read %d cards: %w", len(issues), call(err))
 	}
+	if _, err := r.markMissing(began, read.Missing); err != nil {
+		return nil, nil, err
+	}
 	if len(read.Cards) == 0 {
 		return nil, nil, nil
 	}
@@ -384,10 +387,15 @@ func (r *run) details(reads []*ticketRead, opening store.MirrorRead) error {
 		}
 		return reads[i]
 	}
+	var missing []tracker.IssueID
 	for _, issue := range got.Missing {
 		if rd := readOf(issue); rd != nil {
 			rd.err = ErrIssueNotFound
+			missing = append(missing, issue)
 		}
+	}
+	if _, err := r.markMissing(began, missing); err != nil {
+		return err
 	}
 	settle := r.p.Capabilities().HistorySettle
 	tickets := make([]store.MirrorTicket, 0, len(got.Details))
