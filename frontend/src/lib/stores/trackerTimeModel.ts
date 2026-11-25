@@ -175,6 +175,14 @@ export function uncountedText(reason: UncountedReason): string {
   return reason === 'unread' ? 'Not read yet' : 'Not all shown';
 }
 
+/** A ticket time is logged on, as a read named it. */
+export interface WorklogTicket {
+  readonly issue: string;
+  /** Empty for an issue the tracker did not name. */
+  readonly key: string;
+  readonly title: string;
+}
+
 /** A ticket as an entry names it: its key, or the issue ID Jira did not
  * name. */
 export function ticketLabel(w: { readonly issue: string; readonly key?: string }): string {

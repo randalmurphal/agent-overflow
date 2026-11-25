@@ -52,6 +52,7 @@ const FIELD_NAMES: ReadonlySet<string> = new Set(CARD_FIELDS.map((f) => f.field)
 const BOARD_KEY = 'issues-board';
 const HIDDEN_FIELDS_KEY = 'issues-hidden-fields';
 const ONLY_MINE_KEY = 'issues-only-mine';
+const TIME_LAYOUT_KEY = 'issues-time-layout';
 // Boards whose Display was changed, newest last; the oldest goes past this.
 const MAX_BOARDS_REMEMBERED = 200;
 
@@ -126,6 +127,18 @@ export function savedOnlyMine(): boolean {
 
 export function saveOnlyMine(on: boolean): void {
   writeFrontendValue(ONLY_MINE_KEY, on);
+}
+
+/** How the Time screen lays out a week. */
+export type TimeLayout = 'day' | 'ticket';
+
+/** The layout this client last picked: what a Time screen opens with. */
+export function savedTimeLayout(): TimeLayout {
+  return readFrontendValue(TIME_LAYOUT_KEY) === 'ticket' ? 'ticket' : 'day';
+}
+
+export function saveTimeLayout(layout: TimeLayout): void {
+  writeFrontendValue(TIME_LAYOUT_KEY, layout);
 }
 
 /** The column a compact screen shows of a board, null before one was
