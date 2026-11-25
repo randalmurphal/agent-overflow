@@ -38,7 +38,39 @@ func (t *tempoTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]tra
 	if err != nil {
 		return nil, fmt.Errorf("jiraprovider: Tempo worklogs of %s: %w", q.Author, err)
 	}
+	if err := t.name(ctx, out); err != nil {
+		return nil, fmt.Errorf("jiraprovider: the issues of %s's Tempo worklogs: %w: %w", q.Author, tracker.ErrWorklogNames, err)
+	}
 	return out, nil
+}
+
+// name sets each worklog's issue key and title from Jira, which Tempo
+// does not give: a bulk read of the distinct issues with one field, in
+// the client's batches (500 issues a request). An issue Jira does not
+// return, or lists as failed (one the user may no longer see), keeps no
+// name; a request that fails fails the read.
+func (t *tempoTime) name(ctx context.Context, logs []tracker.Worklog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	ids := make([]string, len(logs))
+	for i, w := range logs {
+		ids[i] = string(w.Issue)
+	}
+	res, err := t.jira.BulkFetchByID(ctx, ids, "summary")
+	if err != nil {
+		return err
+	}
+	names := make(map[tracker.IssueID]*jira.Issue, len(res.Issues))
+	for _, is := range res.Issues {
+		names[tracker.IssueID(is.ID)] = is
+	}
+	for i := range logs {
+		if is := names[logs[i].Issue]; is != nil {
+			logs[i].IssueKey, logs[i].IssueTitle = is.Key, is.Summary
+		}
+	}
+	return nil
 }
 
 // AddWorklog logs time for the credential's own user.

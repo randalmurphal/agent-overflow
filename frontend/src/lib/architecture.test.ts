@@ -409,9 +409,10 @@ const HARNESS_STATIC_IMPORT_ALLOWLIST: Record<string, string> = {};
 // ---------------------------------------------------------------------------
 // Rule 4b — the Issues pane's stores load with the pane, not at startup.
 //
-// The board store, its model, the board choices, the pane's state and the
-// ticket's store, model and writes hold a visibility listener, a pump-vote
-// queue and every rule of the board and the ticket, which a person who
+// The board store, its model, the board choices, the pane's state, the
+// ticket's store, model and writes, and the Time screen's weeks and
+// writes hold visibility and connection listeners, a pump-vote queue and
+// every rule of the board, the ticket and logged time, which a person who
 // never opens Issues has no use for. The pane is the
 // dynamic `import('../issues/IssuesPane.svelte')` in ToolPane.svelte, and
 // the always-loaded stores reach those stores only through
@@ -428,6 +429,11 @@ const ISSUES_LAZY_MODULES = [
   'lib/stores/trackerTicket.svelte.ts',
   'lib/stores/trackerTicketModel.ts',
   'lib/stores/trackerTicketWrites.svelte.ts',
+  'lib/stores/trackerTime.svelte.ts',
+  'lib/stores/trackerTimeModel.ts',
+  'lib/stores/trackerTimeWrites.svelte.ts',
+  'lib/stores/trackerWriteOutcome.ts',
+  'lib/utils/timeSpent.ts',
 ] as const;
 
 // ---------------------------------------------------------------------------

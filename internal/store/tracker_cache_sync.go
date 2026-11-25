@@ -28,9 +28,12 @@ const (
 var ErrTooManyWorklogs = errors.New("store: more worklogs than one replace stores")
 
 // MirrorWorklog is time logged on an issue. Day is YYYY-MM-DD in the
-// author's own zone; SpentSeconds is positive.
+// author's own zone; SpentSeconds is positive. IssueKey and IssueTitle
+// name the issue as the read found it, empty when the tracker did not
+// return it.
 type MirrorWorklog struct {
 	ID, IssueID, AuthorID, Day string
+	IssueKey, IssueTitle       string
 	SpentSeconds               int64
 	Description                string
 	UpdatedAt                  int64
@@ -97,6 +100,8 @@ func checkMirrorWorklogRange(authorID, fromDay, toDay string, readAt int64, logs
 type mirrorWorklogRow struct {
 	ID          string `json:"i"`
 	Issue       string `json:"s"`
+	Key         string `json:"k"`
+	Title       string `json:"n"`
 	Day         string `json:"y"`
 	Spent       int64  `json:"t"`
 	Description string `json:"d"`
@@ -116,17 +121,18 @@ var (
 		WHERE root_id = CAST(?1 AS INTEGER) AND author_id = ?2 AND day BETWEEN ?3 AND ?4 AND read_at > ?5 ORDER BY day`
 	mirrorWorklogCountSQL = `SELECT count(*) FROM (SELECT 1 FROM tracker_cache_worklogs
 		WHERE root_id = CAST(?1 AS INTEGER) AND author_id = ?2 AND day BETWEEN ?3 AND ?4 LIMIT ` + strconv.Itoa(clearMirrorChunk+1) + `)`
-	mirrorWorklogsUpsertSQL = `INSERT INTO tracker_cache_worklogs(root_id, worklog_id, issue_id, author_id, day,
+	mirrorWorklogsUpsertSQL = `INSERT INTO tracker_cache_worklogs(root_id, worklog_id, issue_id, issue_key, issue_title, author_id, day,
 		        spent_seconds, description, updated_at)
-		SELECT ?1, w.value ->> 'i', w.value ->> 's', ?2, w.value ->> 'y', w.value ->> 't', w.value ->> 'd', w.value ->> 'u'
+		SELECT ?1, w.value ->> 'i', w.value ->> 's', w.value ->> 'k', w.value ->> 'n', ?2, w.value ->> 'y', w.value ->> 't', w.value ->> 'd', w.value ->> 'u'
 		  FROM json_each(?6) w
 		 WHERE NOT ` + fmt.Sprintf(mirrorWorklogDaySupersededSQL, `w.value ->> 'y'`) + `
 		   AND NOT EXISTS (SELECT 1 FROM tracker_cache_worklogs o WHERE o.root_id = CAST(?1 AS INTEGER) AND o.worklog_id = w.value ->> 'i'
 		                    AND ` + fmt.Sprintf(mirrorWorklogDaySupersededSQL, `o.day`) + `)
-		ON CONFLICT(root_id, worklog_id) DO UPDATE SET issue_id = excluded.issue_id, author_id = excluded.author_id,
-		    day = excluded.day, spent_seconds = excluded.spent_seconds, description = excluded.description,
+		ON CONFLICT(root_id, worklog_id) DO UPDATE SET issue_id = excluded.issue_id, issue_key = excluded.issue_key,
+		    issue_title = excluded.issue_title, author_id = excluded.author_id, day = excluded.day, spent_seconds = excluded.spent_seconds, description = excluded.description,
 		    updated_at = excluded.updated_at
-		WHERE issue_id IS NOT excluded.issue_id OR author_id IS NOT excluded.author_id OR day IS NOT excluded.day
+		WHERE issue_id IS NOT excluded.issue_id OR issue_key IS NOT excluded.issue_key OR issue_title IS NOT excluded.issue_title
+		   OR author_id IS NOT excluded.author_id OR day IS NOT excluded.day
 		   OR spent_seconds IS NOT excluded.spent_seconds OR description IS NOT excluded.description
 		   OR updated_at IS NOT excluded.updated_at
 		RETURNING worklog_id, day`
@@ -174,7 +180,7 @@ func (s *Store) ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay
 	}
 	rows := make([]mirrorWorklogRow, len(logs))
 	for i, w := range logs {
-		rows[i] = mirrorWorklogRow{ID: w.ID, Issue: w.IssueID, Day: w.Day, Spent: w.SpentSeconds, Description: w.Description, UpdatedAt: w.UpdatedAt}
+		rows[i] = mirrorWorklogRow{ID: w.ID, Issue: w.IssueID, Key: w.IssueKey, Title: w.IssueTitle, Day: w.Day, Spent: w.SpentSeconds, Description: w.Description, UpdatedAt: w.UpdatedAt}
 	}
 	encoded, err := encodeMirrorJSON(rows)
 	if err != nil {
@@ -236,7 +242,7 @@ func (s *Store) ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay
 	return changes, nil
 }
 
-const mirrorWorklogColumns = `w.worklog_id, w.issue_id, w.author_id, w.day, w.spent_seconds, w.description, w.updated_at`
+const mirrorWorklogColumns = `w.worklog_id, w.issue_id, w.issue_key, w.issue_title, w.author_id, w.day, w.spent_seconds, w.description, w.updated_at`
 
 // mirrorRootLiveSQL holds for a live root ?1.
 const mirrorRootLiveSQL = `EXISTS (SELECT 1 FROM tracker_cache_roots live_root WHERE live_root.id = CAST(?1 AS INTEGER) AND live_root.connection_id IS NOT NULL)`
@@ -313,7 +319,7 @@ func queryMirrorWorklogs(q sqlQueryer, query string, args ...any) ([]MirrorWorkl
 	var logs []MirrorWorklog
 	err := scanMirrorRows(q, query, args, func(r rowScanner) error {
 		var w MirrorWorklog
-		err := r.Scan(&w.ID, &w.IssueID, &w.AuthorID, &w.Day, &w.SpentSeconds, &w.Description, &w.UpdatedAt)
+		err := r.Scan(&w.ID, &w.IssueID, &w.IssueKey, &w.IssueTitle, &w.AuthorID, &w.Day, &w.SpentSeconds, &w.Description, &w.UpdatedAt)
 		logs = append(logs, w)
 		return err
 	})

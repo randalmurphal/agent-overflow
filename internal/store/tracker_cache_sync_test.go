@@ -8,7 +8,7 @@ import (
 )
 
 func webWorklog(id, day string, spent int64) MirrorWorklog {
-	return MirrorWorklog{ID: id, IssueID: "10001", AuthorID: "acc-user1", Day: day, SpentSeconds: spent, Description: "Review", UpdatedAt: 5}
+	return MirrorWorklog{ID: id, IssueID: "10001", IssueKey: "WEB-1", IssueTitle: "First story", AuthorID: "acc-user1", Day: day, SpentSeconds: spent, Description: "Review", UpdatedAt: 5}
 }
 
 func mustReplaceWorklogs(t *testing.T, s *Store, root int64, from, to string, readAt int64, logs []MirrorWorklog, want MirrorWorklogChanges) {
@@ -40,7 +40,14 @@ func TestReplaceMirrorWorklogs(t *testing.T) {
 	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-09", 10, week, MirrorWorklogChanges{})
 	edited := webWorklog("w2", "2026-01-06", 2700)
 	mustReplaceWorklogs(t, s, root, "2026-01-06", "2026-01-07", 11, []MirrorWorklog{edited}, MirrorWorklogChanges{Changed: []string{"w2"}})
-	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-06", 12, nil, MirrorWorklogChanges{Removed: []string{"w1", "w2"}})
+	// The issue renamed, the worklog unchanged: the stored name follows.
+	renamed := edited
+	renamed.IssueKey, renamed.IssueTitle = "APP-7", "Moved story"
+	mustReplaceWorklogs(t, s, root, "2026-01-06", "2026-01-06", 12, []MirrorWorklog{renamed}, MirrorWorklogChanges{Changed: []string{"w2"}})
+	if logs, _, err := readWorklogs(s, c.ID, "2026-01-06", "2026-01-06"); err != nil || !reflect.DeepEqual(logs, []MirrorWorklog{renamed}) {
+		t.Fatalf("after the rename = %+v, %v", logs, err)
+	}
+	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-06", 13, nil, MirrorWorklogChanges{Removed: []string{"w1", "w2"}})
 	logs, more, err := readWorklogs(s, c.ID, "2026-01-01", "2026-01-31")
 	if err != nil || more || !reflect.DeepEqual(logs, []MirrorWorklog{week[2]}) {
 		t.Fatalf("author's month = %+v, %v, %v", logs, more, err)

@@ -271,7 +271,7 @@ func TestRequestCost(t *testing.T) {
 		"MoveToSprint (30)": 3, "MoveToSprint backlog (30)": 2, "AddComment": 2, "EditComment": 2, "DeleteComment": 2,
 		"Link": 1, "Unlink": 2, "Attach": 1, "Download": 2,
 		"CreateSprint": 1, "EditSprint": 2, "CompleteSprint (125 issues)": 7, "StartSprint": 2,
-		"Tempo Worklogs (month)": 1, "Tempo AddWorklog": 3, "Tempo EditWorklog": 4, "Tempo DeleteWorklog": 2,
+		"Tempo Worklogs (month)": 2, "Tempo AddWorklog": 3, "Tempo EditWorklog": 4, "Tempo DeleteWorklog": 2,
 	})
 	// A full bulk fetch batch's answer fits the transport's pooled answer
 	// buffer (trackerapi's answerBufferKeep, 2 MiB), so reading it keeps the
@@ -296,7 +296,7 @@ func TestRequestCost(t *testing.T) {
 		"Detail (60 comments)": 159140, "Comments (next page)": 15510, // 151643, 14763
 		"Moves": 1350, "CreateFields": 3340, "AssignableUsers": 1410, "Choices (priority)": 3190, // 1283, 3180, 1342, 3036
 		"Lookup (10 keys, 3 missing)": 13160, "Search": 89730, // 12533, 85454
-		"Tempo Worklogs (month)": 12430, // 11837
+		"Tempo Worklogs (month)": 16160, // 15389: the Tempo page and the Jira read that names its issues
 	})
 }
 
@@ -325,8 +325,9 @@ func TestRequestCostJiraWorklogs(t *testing.T) {
 	r.result("Jira DeleteWorklog", func() tracker.Result { return tt.DeleteWorklog(ctx, tracker.WorklogDelete{From: wls[1]}) })
 	r.log()
 	r.pin(map[string]int{"Jira Worklogs (month)": 2, "Jira AddWorklog": 2, "Jira EditWorklog": 2, "Jira DeleteWorklog": 2})
-	// Measured 28014 bytes; bound as in TestRequestCost.
-	r.pinBytes(map[string]int{"Jira Worklogs (month)": 29420})
+	// Measured 29075 bytes, the search carrying each issue's summary; bound as
+	// in TestRequestCost.
+	r.pinBytes(map[string]int{"Jira Worklogs (month)": 30530})
 }
 
 func mustDate(t *testing.T, at time.Time) tracker.Date {
