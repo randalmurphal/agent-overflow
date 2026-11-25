@@ -3,7 +3,7 @@
 // app fetches none.
 
 import type { ChoiceView, IssueTypeView, SectionTotal } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
-import type { ScreenColumn } from '../../stores/trackerBoardModel';
+import type { ScreenColumn, ShownColumn } from '../../stores/trackerBoardModel';
 
 const DAY_MS = 86_400_000;
 
@@ -28,15 +28,16 @@ function formatTotal(total: SectionTotal, unit: string): string {
   return sum === null ? String(total.rows) : `${total.rows} · ${sum}${unit === 'points' ? ' pts' : ''}`;
 }
 
-/** A column's header count: its total while unfiltered; under a filter the
- * cards that match, or how much of the column's counted rows has loaded
+/** A column's header count, every number of it a count of the rows a
+ * total counts: its total, or the held rows while it has none; under a
+ * filter the matching rows (`shown`), or how much of the column has loaded
  * while it has more. */
-export function columnCount(col: ScreenColumn, matching: number, filtered: boolean, unit: string): string {
+export function columnCount(col: ScreenColumn, shown: ShownColumn, filtered: boolean, unit: string): string {
   if (filtered) {
-    if (col.moreFrom === null) return String(matching);
+    if (col.moreFrom === null) return String(shown.counted);
     return col.total ? `${col.counted} of ${col.total.rows} loaded` : `${col.counted} loaded`;
   }
-  return col.total ? formatTotal(col.total, unit) : String(col.rows.length);
+  return col.total ? formatTotal(col.total, unit) : String(col.counted);
 }
 
 /** Whole days since the card entered its status; 0 when unknown. */

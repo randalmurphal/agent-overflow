@@ -51,6 +51,7 @@ function mountColumn(rows: RowView[], more: boolean) {
   const props = rawProps({
     column: column(rows, more),
     rows: rows as readonly RowView[],
+    count: String(rows.length),
     filtered: false,
     unit: 'points',
     hidden: new Set<CardField>() as ReadonlySet<CardField>,

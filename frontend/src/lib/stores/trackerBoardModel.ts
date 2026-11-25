@@ -364,6 +364,19 @@ export function cardMatches(card: CardView, filter: CardFilter): boolean {
   return filter.words.every((w) => text.includes(w));
 }
 
+/** A column's cards as the Board screen shows them: those that pass the
+ * filter, and how many of them a total counts (`counts`). */
+export interface ShownColumn {
+  readonly rows: readonly RowView[];
+  readonly counted: number;
+}
+
+export function shownColumn(held: HeldBoard, col: ScreenColumn, filter: CardFilter): ShownColumn {
+  if (!filtering(filter)) return { rows: col.rows, counted: col.counted };
+  const rows = col.rows.filter((r) => cardMatches(r.card, filter));
+  return { rows, counted: countedOf(held, rows) };
+}
+
 /**
  * Shares the parts of rows that many rows repeat (a type, a status, a
  * person, a priority, a label, a parent) by their content, so a board of
