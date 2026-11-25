@@ -1366,14 +1366,23 @@ selected computer.
   removed, and a tracker with no time tracking (Linear, decided by kind,
   which `TestTheMirrorReadOfWorklogsRefusesWhatTheRefreshRefuses` holds
   to the providers' answer). `RefreshTrackerWorklogs` reads at most 31
-  days at the default budget, as a form read does. Its requests grow with
-  the time logged: Tempo answers in pages; Jira looks the author up
+  days at the default budget, as a form read does. Each worklog carries
+  its issue's key and title (`key`, `title`) as that read found them,
+  stored with it (`tracker_cache_worklogs.issue_key`, `issue_title`),
+  both empty for an issue the tracker did not return. Its requests grow
+  with the time logged: Tempo answers in pages, and Jira names their
+  issues in one bulk read of the summary (500 issues a request), since
+  a Tempo worklog names its issue by ID alone; Jira looks the author up
   unless its client has the user cached, pages the issues the author
-  logged time on with the worklogs each embeds (up to 20), and reads an
-  issue with more in pages of its own. On `jiraprovider`'s cost fixture, a
-  month of 20 worklogs on 20 issues, that is 1 Tempo request of about
-  11.8 KB or 2 Jira requests of about 28.0 KB (`TestRequestCost`,
-  `TestRequestCostJiraWorklogs`). A longer range is
+  logged time on with the worklogs each embeds (up to 20) and each one's
+  summary, and reads an issue with more in pages of its own. On
+  `jiraprovider`'s cost fixture, a month of 20 worklogs on 20 issues,
+  that is 2 requests of about 15.4 KB through Tempo (1 Tempo, 1 Jira; it
+  was 1 Tempo request of 11.8 KB before the issues were named) or 2 Jira
+  requests of about 29.1 KB (`TestRequestCost`,
+  `TestRequestCostJiraWorklogs`). A read that names the issues and fails
+  fails the refresh with Jira's sentence, the worklogs stored as they
+  were. A longer range is
   `tracker_request_invalid` before anything is sent, a tracker with no
   time tracking is `tracker_unsupported` ("this tracker has no time
   tracking"), and a read the tracker fails is the answer's `failure`,

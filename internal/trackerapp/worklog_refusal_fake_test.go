@@ -56,3 +56,44 @@ func TestWorklogRefusalsOnTheWire(t *testing.T) {
 	read("Tempo's 400", "acc-user2", refuse(tempoOrigin, "GET 4/worklogs/user/{account}", 400), FailureTracker,
 		"Tempo refused the worklogs of acc-user2 from "+s.from+" to "+s.to+" (HTTP 400); check the person and the days")
 }
+
+// A worklog read names each worklog's ticket by its key and title, from
+// Jira's own search or, for Tempo's worklogs, from one Jira read of their
+// issues. A refusal of that read fails the refresh with Jira's sentence,
+// not Tempo's, and leaves the worklogs stored as they were.
+func TestTheWorklogsNameTheirTickets(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"jira", "tempo"} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			s := newTimeScenario(t)
+			want := "20001"
+			if source == "tempo" {
+				s.addTempoOn(t)
+				want = "7001"
+			}
+			s.refreshed(t, "the refresh", want)
+			named := func(what string) {
+				t.Helper()
+				got := must[WorklogDays](t)(s.svc.Worklogs(s.conn.ID, "acc-user1", s.from, s.to))
+				if len(got.Worklogs) != 1 || got.Worklogs[0].ID != want || got.Worklogs[0].Key != "WEB-1" || got.Worklogs[0].Title != "First story" {
+					t.Fatalf("%s: the mirror reads %+v; want worklog %s on WEB-1, First story", what, got.Worklogs, want)
+				}
+			}
+			named("after the refresh")
+			if source != "tempo" {
+				return
+			}
+			jira := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
+			if err := s.e.AddFault(trackerfake.Fault{Origin: jira, Route: "POST rest/api/3/issue/bulkfetch", Kind: trackerfake.FaultRefuse, Times: 1,
+				Status: 403, Body: json.RawMessage(`{"errorMessages":["refused"],"errors":{}}`)}); err != nil {
+				t.Fatal(err)
+			}
+			got := must[WorklogDays](t)(s.svc.RefreshWorklogs(t.Context(), s.conn.ID, "acc-user1", s.from, s.to))
+			if got.Failure == nil || got.Failure.Message != "Jira refused access (HTTP 403): the token may not make this request" {
+				t.Fatalf("a refused read of the issues answered %+v", got.Failure)
+			}
+			named("after the refused read of the issues")
+		})
+	}
+}

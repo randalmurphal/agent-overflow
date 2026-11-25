@@ -185,8 +185,10 @@ func (e *ClientError) Unwrap() error { return e.Err }
 // errors choose the other kinds. The message is built from the error's
 // type and status alone, so neither the token nor tracker text reaches
 // it. An answer names the tracker that gave it (a Jira connection's
-// linked Tempo connection answers for its time), any other failure the
-// connection's kind.
+// linked Tempo connection answers for its time); a call the caller marked
+// with the tracker it went to (answeredBy) names that tracker when it
+// could not be read, reached or answered as the token changed; any other
+// failure names the connection's kind.
 func ClassifyFailure(kind string, err error) Failure {
 	name := trackerName(kind)
 	answered := func(responder string) string {
@@ -194,6 +196,11 @@ func ClassifyFailure(kind string, err error) Failure {
 			return name
 		}
 		return trackerName(responder)
+	}
+	// The tracker a call that carries none of its own was made to.
+	responder := ""
+	if by, ok := errors.AsType[*answeredBy](err); ok {
+		responder = by.tracker
 	}
 	var keyErr *KeyFileError
 	var wrong *linear.WrongWorkspaceError
@@ -238,14 +245,10 @@ func ClassifyFailure(kind string, err error) Failure {
 	case errors.Is(err, trackerapi.ErrCredentialChanged):
 		// The token in the key file was replaced while the answer was
 		// read; asking again uses the new one.
-		return Failure{Kind: FailureTransient, Message: name + " answered as the token in the key file was being replaced; try again"}
+		return Failure{Kind: FailureTransient, Message: answered(responder) + " answered as the token in the key file was being replaced; try again"}
 	case errors.As(err, &transient), errors.Is(err, context.DeadlineExceeded),
 		errors.As(err, &notSent) && !errors.Is(err, trackerapi.ErrInvalidInput):
-		return Failure{Kind: FailureTransient, Message: name + " could not be reached; try again"}
-	}
-	responder := ""
-	if by, ok := errors.AsType[*answeredBy](err); ok {
-		responder = by.tracker
+		return Failure{Kind: FailureTransient, Message: answered(responder) + " could not be reached; try again"}
 	}
 	return Failure{Kind: FailureTracker, Message: answered(responder) + " answered in a way Agent Overflow could not use"}
 }

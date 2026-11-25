@@ -20,6 +20,9 @@ const addHour = 9
 // Markdown.
 type jiraTime struct {
 	jira *jira.Client
+	// searched, set only by tests, is told the worklog search's error as
+	// soon as the search returns, before the read waits for it.
+	searched func(error)
 }
 
 // zone is u's time zone; an account whose zone is hidden (matching
@@ -37,9 +40,9 @@ func zone(u jira.User) (*time.Location, error) {
 }
 
 // Worklogs finds the issues the author logged time on around the days
-// asked, with the worklogs Jira embeds in each, while it reads the
-// author's time zone, and keeps the author's worklogs whose day is q.From
-// to q.To. Jira embeds an issue's first 20 worklogs with their total
+// asked, with the worklogs Jira embeds in each and each issue's key and
+// summary, while it reads the author's time zone, and keeps the author's
+// worklogs whose day is q.From to q.To. Jira embeds an issue's first 20 worklogs with their total
 // (measured), so only an issue with more is read again, its worklogs
 // that started around the days. worklogDate is a date field, with no
 // time to give as milliseconds, and JQL reads a date in the reader's
@@ -61,10 +64,11 @@ func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]trac
 		// Paged in an order that cannot change between pages: Jira returns
 		// an unordered search in no stable order (measured).
 		" ORDER BY id ASC"
-	// The lookup's failure wins over the search's: a person Jira will not
-	// look up is the answer whichever request Jira answers first, so the
-	// search's failure does not end the lookup, and the lookup's ends the
-	// search.
+	// The person's answer wins over the search's: a person Jira will not
+	// look up, or whose time zone it hides, is the answer whichever
+	// request Jira answers first, so the search's failure does not end
+	// the lookup, and the lookup's refusal or a hidden zone ends the
+	// search at once.
 	var (
 		res       jira.SearchResult
 		searchErr error
@@ -73,9 +77,19 @@ func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]trac
 	searched := make(chan struct{})
 	go func() {
 		defer close(searched)
-		res, searchErr = t.jira.SearchAll(searchCtx, jira.SearchQuery{JQL: jql, Fields: []string{"worklog"}}, 0)
+		res, searchErr = t.jira.SearchAll(searchCtx, jira.SearchQuery{JQL: jql, Fields: []string{"worklog", "summary"}}, 0)
+		if t.searched != nil {
+			t.searched(searchErr)
+		}
 	}()
 	author, err := t.jira.User(ctx, string(q.Author))
+	if err != nil {
+		err = fmt.Errorf("jiraprovider: worklogs of %s: %w: %w", q.Author, tracker.ErrWorklogAuthor, err)
+	}
+	var loc *time.Location
+	if err == nil {
+		loc, err = zone(author)
+	}
 	if err != nil {
 		stopSearch()
 	}
@@ -83,16 +97,12 @@ func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]trac
 	stopSearch()
 	switch {
 	case err != nil:
-		return nil, fmt.Errorf("jiraprovider: worklogs of %s: %w: %w", q.Author, tracker.ErrWorklogAuthor, err)
+		return nil, err
 	case searchErr != nil:
 		return nil, fmt.Errorf("jiraprovider: issues %s logged time on: %w: %w", q.Author, tracker.ErrWorklogSearch, searchErr)
 	}
 	if !res.Complete {
 		return nil, fmt.Errorf("jiraprovider: issues %s logged time on: Jira warned that the search is incomplete", q.Author)
-	}
-	loc, err := zone(author)
-	if err != nil {
-		return nil, err
 	}
 	from := time.Date(q.From.Year(), q.From.Month(), q.From.Day(), 0, 0, 0, 0, loc)
 	to := time.Date(q.To.Year(), q.To.Month(), q.To.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
@@ -115,6 +125,7 @@ func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]trac
 			if err != nil {
 				return nil, err
 			}
+			n.IssueKey, n.IssueTitle = is.Key, is.Summary
 			if n.Day.Compare(q.From) >= 0 && n.Day.Compare(q.To) <= 0 {
 				out = append(out, n)
 			}

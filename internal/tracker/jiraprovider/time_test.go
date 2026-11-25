@@ -1,6 +1,7 @@
 package jiraprovider
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,30 +60,65 @@ func worklogSite(t *testing.T) (*jiratest.Server, *Provider) {
 // TestJiraWorklogsSayWhichStepRefused proves a worklog read's error says
 // which request Jira refused: the person's lookup (tracker.ErrWorklogAuthor),
 // the search for the issues (tracker.ErrWorklogSearch), or neither for an
-// issue's own worklogs. The lookup's refusal wins over the search's, even
-// when the search is refused first.
+// issue's own worklogs. The person's answer wins over the search's, even
+// when the read already holds the search's refusal: a lookup refused, and
+// a profile that hides its time zone, which also ends a search still
+// running.
 func TestJiraWorklogsSayWhichStepRefused(t *testing.T) {
 	q := tracker.WorklogQuery{Author: "acc-user1", From: day(t, 2026, 11, 10), To: day(t, 2026, 11, 10)}
 	refused := jiratest.Reply(400, `{"errorMessages":["refused"],"errors":{}}`)
-	t.Run("the lookup refused after the search", func(t *testing.T) {
+	hidden := `{"accountId":"acc-user1","displayName":"User 1","active":true,"accountType":"atlassian"}`
+	// afterSearch serves the person's lookup with answer once the read
+	// holds the search's error.
+	afterSearch := func(t *testing.T, answer func(w http.ResponseWriter, r *http.Request, b []byte)) *Provider {
 		f, p := newSite(t)
 		searched := make(chan struct{})
-		f.On("POST", searchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
-			refused(w, r, b)
+		p.time.(*jiraTime).searched = func(err error) {
+			if err == nil {
+				t.Error("the search was not refused")
+			}
 			close(searched)
-		})
+		}
+		f.On("POST", searchPath, refused)
 		f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
 			select {
 			case <-searched:
 			case <-r.Context().Done():
 				return
 			}
-			jiratest.Reply(404, `{"errorMessages":["Specified user does not exist"],"errors":{}}`)(w, r, b)
+			answer(w, r, b)
 		})
+		return p
+	}
+	t.Run("the lookup refused after the search", func(t *testing.T) {
+		p := afterSearch(t, jiratest.Reply(404, `{"errorMessages":["Specified user does not exist"],"errors":{}}`))
 		_, err := p.Time().Worklogs(t.Context(), q)
 		if status, ok := errors.AsType[*trackerapi.StatusError](err); !errors.Is(err, tracker.ErrWorklogAuthor) || !ok || status.Status != 404 {
 			t.Fatalf("a lookup refused after the search refused: %v", err)
 		}
+	})
+	t.Run("a hidden time zone after the search refused", func(t *testing.T) {
+		p := afterSearch(t, jiratest.Reply(200, hidden))
+		if _, err := p.Time().Worklogs(t.Context(), q); !errors.Is(err, tracker.ErrNoTimeZone) || errors.Is(err, tracker.ErrWorklogSearch) {
+			t.Fatalf("a hidden zone after the search refused: %v", err)
+		}
+	})
+	t.Run("a hidden time zone ends the search", func(t *testing.T) {
+		f, p := newSite(t)
+		ended := make(chan struct{})
+		// The search answers only once the read gives it up.
+		f.On("POST", searchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+			<-r.Context().Done()
+			close(ended)
+		})
+		f.On("GET", "/rest/api/3/user", jiratest.Reply(200, hidden))
+		// A read that waits for the search ends at this bound instead.
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		if _, err := p.Time().Worklogs(ctx, q); !errors.Is(err, tracker.ErrNoTimeZone) || ctx.Err() != nil {
+			t.Fatalf("a hidden zone with the search running: %v, bound %v", err, ctx.Err())
+		}
+		<-ended
 	})
 	t.Run("the search refused", func(t *testing.T) {
 		f, p := newSite(t)
@@ -125,7 +162,7 @@ func TestJiraWorklogs(t *testing.T) {
 		if jql := v["jql"]; jql != `worklogAuthor = "acc-user1" AND worklogDate >= "2026-11-09" AND worklogDate <= "2026-11-11" ORDER BY id ASC` {
 			t.Errorf("jql %v", jql)
 		}
-		if fmt.Sprint(v["fields"]) != "[worklog]" {
+		if fmt.Sprint(v["fields"]) != "[worklog summary]" {
 			t.Errorf("fields %v", v["fields"])
 		}
 		// 10001 has more worklogs than Jira embeds, so it is read again;
@@ -144,9 +181,10 @@ func TestJiraWorklogs(t *testing.T) {
 	}
 	var ids []string
 	for _, w := range got {
-		ids = append(ids, fmt.Sprintf("%s %s %s %v %q", w.ID, w.Issue, w.Day, w.Spent, strings.TrimSpace(w.Description)))
+		ids = append(ids, fmt.Sprintf("%s %s %s %q %s %v %q", w.ID, w.Issue, w.IssueKey, w.IssueTitle, w.Day, w.Spent, strings.TrimSpace(w.Description)))
 	}
-	if want := []string{`300 10001 2026-11-10 1h0m0s "Review"`, `301 10001 2026-11-10 30m0s "Late"`, `310 10002 2026-11-10 15m0s "Embedded"`}; !slices.Equal(ids, want) {
+	if want := []string{`300 10001 WEB-1 "Issue WEB-1" 2026-11-10 1h0m0s "Review"`, `301 10001 WEB-1 "Issue WEB-1" 2026-11-10 30m0s "Late"`,
+		`310 10002 WEB-2 "Issue WEB-2" 2026-11-10 15m0s "Embedded"`}; !slices.Equal(ids, want) {
 		t.Errorf("worklogs %q", ids)
 	}
 	if n := f.Count("GET", worklogsPath); n != 1 {
@@ -281,8 +319,84 @@ func TestTempoWorklogs(t *testing.T) {
 	if err != nil || len(got) != 2 {
 		t.Fatalf("got %+v %v", got, err)
 	}
-	if w := got[0]; w.ID != "70" || w.Issue != "10001" || w.Author != "acc-user1" || w.Day != day(t, 2026, 11, 10) || w.Spent != time.Hour || w.Description != "Planning" {
+	if w := got[0]; w.ID != "70" || w.Issue != "10001" || w.IssueKey != "WEB-1" || w.IssueTitle != "Issue WEB-1" || w.Author != "acc-user1" ||
+		w.Day != day(t, 2026, 11, 10) || w.Spent != time.Hour || w.Description != "Planning" {
 		t.Errorf("worklog %+v", w)
+	}
+}
+
+// TestTempoWorklogsAreNamedByJira proves Tempo's worklogs take their
+// issues' keys and titles from Jira, the distinct issues in bulk reads of
+// 500 with the summary alone; an issue Jira omits or lists as failed
+// keeps no name, and a read Jira refuses fails the worklogs with
+// tracker.ErrWorklogNames.
+func TestTempoWorklogsAreNamedByJira(t *testing.T) {
+	t.Parallel()
+	f, ts, p := tempoSite(t)
+	const n = 650
+	var logs []string
+	for i := range n {
+		logs = append(logs, tempoWL(int64(70+i), int64(20000+i), "2026-11-10", "13:00:00", 60, "x"))
+	}
+	// Two worklogs on the first issue: it is asked once.
+	logs = append(logs, tempoWL(69, 20000, "2026-11-10", "14:00:00", 60, "again"))
+	ts.On("GET", "/4/worklogs/user/acc-user1", values("from", "2026-11-10", "to", "2026-11-10", "limit", "1000", "offset", "0"), "", 200, tempoPage(logs...)).Repeat = true
+	var (
+		mu      sync.Mutex
+		batches []int
+	)
+	f.On("POST", bulkFetchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		var body struct {
+			IDs    []string `json:"issueIdsOrKeys"`
+			Fields []string `json:"fields"`
+		}
+		if err := json.Unmarshal(b, &body); err != nil {
+			t.Error(err)
+		}
+		if !slices.Equal(body.Fields, []string{"summary"}) {
+			t.Errorf("fields %v", body.Fields)
+		}
+		mu.Lock()
+		batches = append(batches, len(body.IDs))
+		mu.Unlock()
+		var issues []map[string]any
+		var failed []map[string]any
+		for _, id := range body.IDs {
+			switch id {
+			case "20001":
+				// Omitted: the user may not see it.
+			case "20002":
+				failed = append(failed, map[string]any{"id": id, "errorMessage": "gone"})
+			default:
+				issues = append(issues, issue(id, "WEB-"+id, updatedAt, nil))
+			}
+		}
+		if failed == nil {
+			failed = []map[string]any{}
+		}
+		jiratest.Reply(200, mustJSON(map[string]any{"issues": issues, "issueErrors": failed}))(w, r, b)
+	})
+	q := tracker.WorklogQuery{Author: "acc-user1", From: day(t, 2026, 11, 10), To: day(t, 2026, 11, 10)}
+	got, err := p.Time().Worklogs(t.Context(), q)
+	if err != nil || len(got) != n+1 {
+		t.Fatalf("got %d worklogs, %v", len(got), err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(batches, []int{500, 150}) {
+		t.Errorf("bulk reads of %v issues; want 500 then 150", batches)
+	}
+	names := map[tracker.IssueID]string{}
+	for _, w := range got {
+		names[w.Issue] = w.IssueKey + " " + w.IssueTitle
+	}
+	if names["20000"] != "WEB-20000 Issue WEB-20000" || names["20649"] != "WEB-20649 Issue WEB-20649" || names["20001"] != " " || names["20002"] != " " {
+		t.Errorf("names %q %q %q %q", names["20000"], names["20649"], names["20001"], names["20002"])
+	}
+	f.On("POST", bulkFetchPath, jiratest.Reply(403, `{"errorMessages":["refused"],"errors":{}}`))
+	_, err = p.Time().Worklogs(t.Context(), q)
+	if status, ok := errors.AsType[*trackerapi.StatusError](err); !errors.Is(err, tracker.ErrWorklogNames) || !ok || status.Tracker != "jira" || status.Status != 403 {
+		t.Fatalf("a refused read of the issues: %v", err)
 	}
 }
 

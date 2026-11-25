@@ -372,11 +372,15 @@ func (in UnlinkRequest) model() tracker.UnlinkInput {
 
 // WorklogView is time logged on an issue: Day is YYYY-MM-DD in the
 // author's own zone, Updated the tracker's revision in Unix milliseconds.
-// A worklog edit or delete names the worklog as read, Updated included: a
-// worklog whose revision moved since is refused as stale.
+// Key and Title name the issue as the read found it, both empty when the
+// tracker did not return it; a write ignores them. A worklog edit or
+// delete names the worklog as read, Updated included: a worklog whose
+// revision moved since is refused as stale.
 type WorklogView struct {
 	ID           string `json:"id"`
 	Issue        string `json:"issue"`
+	Key          string `json:"key,omitempty"`
+	Title        string `json:"title,omitempty"`
 	Author       string `json:"author"`
 	Day          string `json:"day"`
 	SpentSeconds int64  `json:"spent_seconds"`
@@ -385,7 +389,7 @@ type WorklogView struct {
 }
 
 func worklogView(w tracker.Worklog) WorklogView {
-	return WorklogView{ID: string(w.ID), Issue: string(w.Issue), Author: string(w.Author), Day: w.Day.String(),
+	return WorklogView{ID: string(w.ID), Issue: string(w.Issue), Key: w.IssueKey, Title: w.IssueTitle, Author: string(w.Author), Day: w.Day.String(),
 		SpentSeconds: int64(w.Spent / time.Second), Description: w.Description, Updated: millis(w.Updated)}
 }
 
