@@ -5,7 +5,7 @@
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BoardChoice, BoardView, RowView, Section, SectionPage } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import IssuesPane from './IssuesPane.svelte';
 import { applyTrackerBoardEvent } from '../../stores/trackerBoard.svelte';
@@ -25,6 +25,13 @@ import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+
+// The project of the thread the pane was opened from (toolPanes owns it).
+const openedFrom = vi.hoisted(() => ({ project: null as string | null }));
+vi.mock('../../stores/toolPanes.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/toolPanes.svelte')>()),
+  toolOpenedFromProject: () => openedFrom.project,
+}));
 
 const PANE = 'tool-issues';
 const DAY = 86_400_000;
@@ -267,6 +274,20 @@ describe('the Issues pane', () => {
     expect(isSettingsOpen()).toBe(true);
     expect(getSettingsSection()).toBe('tracker-boards');
     expect(requestedTrackerBoardsProject()).toBe('p1');
+  });
+
+  it('opens the Boards page of the project the pane was opened from when no project lists a board', async () => {
+    install({ choices: [] });
+    project('p1', 'widgets', 0);
+    project('p2', 'gadgets', 1);
+    openedFrom.project = 'p2';
+    try {
+      const view = mount();
+      await fireEvent.click(await view.findByTestId('issues-empty-settings'));
+      expect(requestedTrackerBoardsProject()).toBe('p2');
+    } finally {
+      openedFrom.project = null;
+    }
   });
 
   it('offers no way to Settings to a window that may not change a project\'s boards', async () => {
