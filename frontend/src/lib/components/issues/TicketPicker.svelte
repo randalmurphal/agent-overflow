@@ -24,6 +24,7 @@
   // An answer that lands after a later read was asked is dropped. A read's failure shows
   // its sentence in the list. The values a field holds now are checked; a
   // pick closes the list unless the field holds several.
+  import { untrack } from 'svelte';
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
@@ -88,7 +89,9 @@
     list = null;
     listFor = '';
     remote = false;
-    void read('');
+    // One read per opening: a field holding several values gets a new
+    // load with each pick, which must not read again.
+    untrack(() => void read(''));
     return () => {
       asked += 1;
       if (timer) clearTimeout(timer);

@@ -202,9 +202,12 @@ export function assignableUsers(t: TicketWriteContext, text: string): Promise<Us
   return withBackendTarget(t.ref.backend, () => TrackerAssignableUsers(t.ref.connection, { issue: t.ref.issue }, text));
 }
 
-/** The values `field` allows on the ticket whose name starts with `text`. */
-export function fieldChoices(t: TicketWriteContext, field: string, text: string): Promise<ChoiceListView> {
-  return withBackendTarget(t.ref.backend, () => TrackerChoices(t.ref.connection, { issue: t.ref.issue }, field, text));
+/** The values `field` allows on the ticket whose name starts with `text`:
+ * on the ticket, or on the screen of its move `move`, whose values can
+ * differ (MoveView.fields). */
+export function fieldChoices(t: TicketWriteContext, field: string, text: string, move?: string): Promise<ChoiceListView> {
+  const scope = move ? { issue: t.ref.issue, move } : { issue: t.ref.issue };
+  return withBackendTarget(t.ref.backend, () => TrackerChoices(t.ref.connection, scope, field, text));
 }
 
 export function resetTicketWritesForTest(): void {

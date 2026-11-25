@@ -26,7 +26,6 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import X from '@lucide/svelte/icons/x';
   import { tick } from 'svelte';
-  import Button from '../primitives/Button.svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
@@ -44,7 +43,9 @@
   import TicketText from './TicketText.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
   import TypeIcon from './TypeIcon.svelte';
+  import TicketMoveForm from './TicketMoveForm.svelte';
   import TicketPicker, { type PickItem } from './TicketPicker.svelte';
+  import { fieldEditor, pickEditor, ticketTarget, type EditorTarget } from './ticketEditors';
   import { formatEstimate } from './boardFormat';
   import type {
     CardView,
@@ -143,25 +144,13 @@
     return detail?.fields.find((f) => f.id === id)?.name ?? CARD_NAMES[id] ?? id;
   }
 
-  // Picks and typed values, as the writes send them.
-  function pickValue(kindName: string, items: readonly { id: string }[]): FieldValueView {
-    return items.length === 0 ? {} as FieldValueView : { kind: kindName, choices: items.map((i) => ({ id: i.id })) } as FieldValueView;
-  }
-
-  function choicesOf(load: (text: string) => Promise<{ choices: { id: string; name?: string }[]; more?: boolean }>) {
-    return async (text: string) => {
-      const got = await load(text);
-      return { items: (got.choices ?? []).map((c) => ({ id: c.id, name: c.name || c.id })), more: got.more ?? false };
-    };
-  }
-
   function editField(field: string, edit: FieldEditInput): void {
     void editTicketFields(ctx, fieldTarget(field), [edit]);
   }
 
   // The status: the moves the view holds, no tracker call. A move whose
   // screen takes fields opens their form first.
-  let moveForm = $state<{ move: MoveView; values: Map<string, FieldEditInput> } | null>(null);
+  let moveForm = $state<MoveView | null>(null);
   const statusEditor: FieldEditor | null = $derived(detail ? {
     kind: 'pick',
     checked: new Set<string>(),
@@ -172,46 +161,26 @@
     onPick: (item: PickItem | null) => {
       const move = item && detail.moves.find((m) => m.id === item.id);
       if (!move) return;
-      if (move.fields?.length) moveForm = { move, values: new Map() };
+      if (move.fields?.length) moveForm = move;
       else void moveTicket(ctx, move.id);
     },
   } : null);
 
-  function submitMove(): void {
-    const form = moveForm;
-    if (!form) return;
-    moveForm = null;
-    void moveTicket(ctx, form.move.id, [...form.values.values()]);
+  // A field the ticket holds: its edit is saved at once.
+  function targetOf(field: string, value: FieldValueView): EditorTarget {
+    return ticketTarget(value, (text) => fieldChoices(ctx, field, text), (edit) => editField(field, edit));
   }
+  const choiceValue = (c: { id: string; name?: string } | null | undefined): FieldValueView => (c ? { kind: 'option', choices: [c] } : {}) as FieldValueView;
 
-  const assigneeEditor: FieldEditor | null = $derived(detail ? {
-    kind: 'pick',
-    clearLabel: 'Unassigned',
-    checked: new Set(card?.assignee ? [card.assignee.id] : []),
-    load: async (text: string) => {
+  const assigneeEditor: FieldEditor | null = $derived(detail ? pickEditor('assignee', 'user', {
+    ...targetOf('assignee', choiceValue(card?.assignee)),
+    choices: async (text) => {
       const got = await assignableUsers(ctx, text);
-      return { items: (got.users ?? []).map((u) => ({ id: u.id, name: u.name || u.id })), more: got.more ?? false };
+      return { choices: (got.users ?? []).map((u) => ({ id: u.id, name: u.name })), more: got.more };
     },
-    onPick: (item: PickItem | null) => editField('assignee', { field: 'assignee', value: pickValue('user', item ? [item] : []) }),
-  } : null);
-
-  function choiceEditor(field: string, current: readonly { id: string }[], opts: { clear?: string; multi?: boolean; kindName: string }): FieldEditor {
-    return {
-      kind: 'pick',
-      clearLabel: opts.clear,
-      multi: opts.multi,
-      checked: new Set(current.map((c) => c.id)),
-      load: choicesOf((text) => fieldChoices(ctx, field, text)),
-      onPick: (item) => {
-        let next: readonly { id: string }[] = item ? [item] : [];
-        if (opts.multi && item) next = current.some((c) => c.id === item.id) ? current.filter((c) => c.id !== item.id) : [...current, item];
-        editField(field, { field, value: pickValue(opts.kindName, next) });
-      },
-    };
-  }
-
-  const priorityEditor: FieldEditor | null = $derived(detail ? choiceEditor('priority', card?.priority ? [card.priority] : [], { kindName: 'option' }) : null);
-  const typeEditor: FieldEditor | null = $derived(detail && !linear ? choiceEditor('type', card?.type ? [card.type] : [], { kindName: 'option' }) : null);
+  }, { clear: 'Unassigned' }) : null);
+  const priorityEditor: FieldEditor | null = $derived(detail ? pickEditor('priority', 'option', targetOf('priority', choiceValue(card?.priority))) : null);
+  const typeEditor: FieldEditor | null = $derived(detail && !linear ? pickEditor('type', 'option', targetOf('type', choiceValue(card?.type))) : null);
   // The header's type mark opens the same picker as the rail's Type row.
   let typeMarkButton: HTMLButtonElement | undefined = $state();
   let typeMarkPicking = $state(false);
@@ -231,49 +200,8 @@
   } : null);
   const pointsText = $derived(row ? formatEstimate(row.estimate, row.unit) ?? '' : '');
 
-  // A field of the ticket's own: changed in place when it takes values a
-  // person picks or types one at a time; a date and time, a read-only
-  // value or several typed values (which one line of text cannot hold
-  // apart) is shown.
-  function editorOf(f: FieldView): FieldEditor | null {
-    if (!f.editable) return null;
-    switch (f.kind) {
-      case 'option':
-      case 'user':
-        return choiceEditor(f.id, f.value.choices ?? [], { kindName: f.kind, multi: f.list, clear: f.required ? undefined : 'None' });
-      case 'text':
-      case 'number':
-      case 'date':
-        if (f.list) return null;
-        return {
-          kind: 'type',
-          input: f.kind,
-          text: fieldText(f.value),
-          onSave: (text) => editField(f.id, text ? { field: f.id, typed: [text] } : { field: f.id, value: {} as FieldValueView }),
-        };
-      default:
-        return null;
-    }
-  }
-
-  // Fields in the move form collect the values the move sends.
-  function formEditorOf(f: FieldView): FieldEditor | null {
-    const base = editorOf({ ...f, editable: true });
-    if (!base || !moveForm) return base;
-    const form = moveForm;
-    const put = (edit: FieldEditInput) => {
-      form.values.set(f.id, edit);
-      moveForm = { ...form };
-    };
-    if (base.kind === 'type') return { ...base, onSave: (text) => put(text ? { field: f.id, typed: [text] } : { field: f.id, value: {} as FieldValueView }) };
-    return { ...base, onPick: (item) => put({ field: f.id, value: pickValue(f.kind, item ? [item] : []) }) };
-  }
-
-  function formValueText(f: FieldView): string {
-    const edit = moveForm?.values.get(f.id);
-    if (!edit) return fieldText(f.value);
-    return edit.typed?.join(', ') ?? (edit.value?.choices?.length ? 'Picked' : '');
-  }
+  // A field of the ticket's own, changed in place.
+  const editorOf = (f: FieldView): FieldEditor | null => fieldEditor(f, targetOf(f.id, f.value));
 
   const sections = $derived(detail ? sectionFields(detail.fields) : []);
   const links = $derived(detail ? linkGroups(detail.links ?? []) : []);
@@ -437,18 +365,10 @@
 {/snippet}
 
 {#snippet content()}
-  {#if moveForm}
-    {@const form = moveForm}
-    <section class="flex flex-col gap-1.5 rounded-[var(--radius-field)] border border-border-subtle p-2.5" data-testid="ticket-move-form">
-      <p class="text-sm text-fg">Moving to {form.move.to.name || form.move.name} takes these fields:</p>
-      {#each form.move.fields ?? [] as f (f.id)}
-        <TicketField label={f.required ? `${f.name} (required)` : f.name} field={f.id} value={formValueText(f)} editor={formEditorOf(f)} ticketKey={ctx.key} target="move-form" {fieldName} />
-      {/each}
-      <div class="flex items-center gap-1.5">
-        <Button size="sm" variant="primary" testId="ticket-move-submit" onclick={submitMove}>Move</Button>
-        <Button size="sm" variant="ghost" onclick={() => { moveForm = null; }}>Cancel</Button>
-      </div>
-    </section>
+  {#if moveForm && detail}
+    {#key moveForm}
+      <TicketMoveForm {ctx} move={moveForm} fields={detail.fields} {fieldName} onOpenTracker={() => { void openInTracker(); }} onClose={() => { moveForm = null; }} />
+    {/key}
   {/if}
   {#if narrow}
     <div class="flex flex-col gap-0.5 border-b border-border-subtle pb-2" data-testid="ticket-narrow-row">

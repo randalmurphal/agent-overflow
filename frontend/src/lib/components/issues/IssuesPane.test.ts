@@ -1181,6 +1181,119 @@ describe('the ticket in the pane', () => {
     expect(first.queryByTestId('ticket-menu-back')).toBeNull();
   });
 
+  it('fills a move\'s own fields from that move\'s values, one read per picker, and sends the move once with them', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      fields: [{ id: 'environment', name: 'Environment', kind: 'rich_text', editable: true, value: { kind: 'rich_text', texts: ['Old notes'] } }],
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [
+          { id: 'resolution', name: 'Resolution', kind: 'option', required: true, editable: true, value: {} },
+          { id: 'versions', name: 'Fix versions', kind: 'option', list: true, editable: true, value: {} },
+          { id: 'environment', name: 'Environment', kind: 'rich_text', editable: true, value: {} },
+        ],
+      }],
+    }) as unknown as DetailView);
+    const choices = setBindingMock('TrackerChoices', async (_c: string, _scope: unknown, field: string) => (field === 'resolution'
+      ? { choices: [{ id: '1', name: 'Fixed' }, { id: '2', name: 'Won\'t do' }] }
+      : { choices: [{ id: 'v1', name: '1.0' }, { id: 'v2', name: '1.1' }, { id: 'v3', name: '2.0' }] }));
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'move', state: 'applied' }] }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    const form = await within(screen).findByTestId('ticket-move-form');
+    const formField = (id: string) => within(form).getAllByTestId('ticket-field').find((f) => f.dataset.field === id)!;
+    // Resolution: the move's values, filtered here as the person types.
+    await fireEvent.click(within(formField('resolution')).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item')).toHaveLength(2));
+    await fireEvent.input(within(document.body).getByTestId('ticket-picker-find'), { target: { value: 'fix' } });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(within(menu()).getAllByTestId('ticket-picker-item').map((i) => i.textContent?.trim())).toEqual(['Fixed']);
+    await fireEvent.click(within(menu()).getByTestId('ticket-picker-item'));
+    expect(choices.mock.calls).toEqual([['c1', { issue: '1', move: '31' }, 'resolution', '']]);
+    expect(within(formField('resolution')).getByTestId('ticket-field-value')).toHaveTextContent('Fixed');
+    // Fix versions holds several: each pick adds one.
+    await fireEvent.click(within(formField('versions')).getByTestId('ticket-field-value'));
+    await waitFor(() => expect(within(menu()).getAllByTestId('ticket-picker-item')).toHaveLength(3));
+    await fireEvent.click(within(menu()).getAllByTestId('ticket-picker-item')[0]);
+    await fireEvent.click(within(menu()).getAllByTestId('ticket-picker-item')[2]);
+    await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    expect(within(formField('versions')).getByTestId('ticket-field-value')).toHaveTextContent('1.0, 2.0');
+    expect(choices).toHaveBeenCalledTimes(2);
+    // Environment is written as Markdown, from the text the ticket holds.
+    const environment = within(form).getByTestId('ticket-move-text');
+    expect(environment).toHaveValue('Old notes');
+    await fireEvent.input(environment, { target: { value: 'New notes' } });
+    await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+    await waitFor(() => expect(move).toHaveBeenCalledWith('c1', {
+      issue: '1', move: '31', accept_loss: false, fields: [
+        { field: 'resolution', value: { kind: 'option', choices: [{ id: '1' }] } },
+        { field: 'versions', value: { kind: 'option', choices: [{ id: 'v1' }, { id: 'v3' }] } },
+        { field: 'environment', markdown: { markdown: 'New notes', from: 'Old notes' } },
+      ],
+    }));
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-move-form')).toBeNull());
+    expect(move).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a move\'s form and what it holds when the tracker refuses the move', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      moves: [{ id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' }, fields: [{ id: 'resolution', name: 'Resolution', kind: 'option', required: true, editable: true, value: {} }] }],
+    }) as unknown as DetailView);
+    setBindingMock('TrackerChoices', async () => ({ choices: [{ id: '1', name: 'Fixed' }] }));
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({
+      parts: [{ step: 'move', state: 'refused', refusal: { reason: 'tracker', message: 'The workflow refused this move.' } }],
+    }) as WriteView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+    await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    const form = await within(screen).findByTestId('ticket-move-form');
+    const resolution = within(form).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'resolution')!;
+    await fireEvent.click(within(resolution).getByTestId('ticket-field-value'));
+    await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+    await fireEvent.click(within(form).getByTestId('ticket-move-submit'));
+    await waitFor(() => expect(within(status).getByTestId('ticket-write-outcome')).toHaveTextContent('The workflow refused this move.'));
+    expect(within(screen).getByTestId('ticket-move-form')).toBe(form);
+    expect(within(resolution).getByTestId('ticket-field-value')).toHaveTextContent('Fixed');
+    expect(move).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a move needs a field the app cannot set, with the way to the tracker, and offers no Move', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      moves: [{
+        id: '31', name: 'Resolve', to: { id: 's3', name: 'Done', group: 'done' },
+        fields: [{ id: 'attachment', name: 'Attachment', kind: 'read_only', required: true, editable: false, value: {} }],
+      }],
+    }) as unknown as DetailView);
+    const move = setBindingMock('MoveTrackerIssue', async (): Promise<WriteView> => ({ parts: [{ step: 'move', state: 'applied' }] }) as WriteView);
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    const host = setBindingMock('OpenExternalURL', async () => undefined);
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      const status = within(screen).getAllByTestId('ticket-field').find((f) => f.dataset.field === 'status')!;
+      await fireEvent.click(within(status).getByTestId('ticket-field-value'));
+      await fireEvent.click(await waitFor(() => within(menu()).getByTestId('ticket-picker-item')));
+      const form = await within(screen).findByTestId('ticket-move-form');
+      expect(within(form).getByTestId('ticket-move-unsettable')).toHaveTextContent('Moving to Done needs Attachment, which the app cannot set. Open the ticket in the tracker to make this move.');
+      expect(within(form).queryByTestId('ticket-move-submit')).toBeNull();
+      await fireEvent.click(within(form).getByTestId('ticket-move-open-tracker'));
+      await waitFor(() => expect([...host.mock.calls, ...open.mock.calls].map((c) => c[0])).toEqual(['https://example.atlassian.net/browse/WEB-1']));
+      expect(move).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
   it('opens a card\'s ticket from the card\'s menu, and copies its key from it', async () => {
     install();
     installTicket();

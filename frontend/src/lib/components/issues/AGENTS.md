@@ -68,6 +68,11 @@ touch keep their objects, so their cards do not re-render; keep that when
 deriving rows (filter into new arrays, never copy rows). Marks are picked
 by name or level in `boardFormat.ts`; no tracker image is fetched.
 
+`ticketEditors.ts` is the one rule for which ticket fields take an
+editor in place and what a pick or a typed value sends; the ticket saves
+each edit at once, and `TicketMoveForm.svelte` collects them for a move
+whose screen takes fields, its pickers asking that move's values.
+
 `TicketMarkdown.svelte` is the one renderer of a ticket's text, its long
 text fields and comments: ChatMarkdown with embedded HTML and
 `trackerMedia`, which shows a tracker's `media:` image or attachment as a
