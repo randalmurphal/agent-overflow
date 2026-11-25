@@ -326,8 +326,12 @@ interval is measured from or a person is shown
 and the issue record's status finality and ticket body
 (`tracker_cache_issues.status_final_for` and `body_*`, with
 `tracker_cache_issue_bodies` in place of v162's
-`tracker_cache_issue_details`, dropped with its documents); a later
-tracker table or column is a later migration.
+`tracker_cache_issue_details`, dropped with its documents), and v167,
+which adds the link's last-seen status, the card's title column
+(`tracker_cache_issues.title`, which the card blob no longer carries)
+and `tracker_cache_issue_missing`, and empties the mirror as a restore
+does, so every card is read again whole; a later tracker table or column
+is a later migration.
 
 Durable records, restored and kept like other application records:
 
@@ -335,7 +339,7 @@ Durable records, restored and kept like other application records:
 |---|---|
 | `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity, time and token digest (empty for a verification recorded before v166 or one whose token changed during its call), and the token expiry the user entered. |
 | `project_tracker_boards` | Which boards an app project lists, in order, and which opens first, with the board's name and tracker project as the picker showed them (v166). Keyed by project, connection and board; the project and the connection cascade. |
-| `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key, title and status as last seen, and the mirror root whose card that copy equals ([Thread links](#thread-links)). Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
+| `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key, title and status as the link reader's mirror last held them ([Thread links](#thread-links)). Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
 
 The mirror is every table named `tracker_cache_*`. The name is the
 classification:
@@ -369,6 +373,7 @@ classification:
 | `tracker_cache_worklog_days` | The latest read of an author's day, an unchanged or empty day included; a replace from an earlier read leaves the day. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
 | `tracker_cache_open_tickets` | One row per open ticket's pump, named by the process's session and the pump's number: the issue it keeps in the mirror while the ticket is open. |
+| `tracker_cache_issue_missing` | The latest read of a linked issue that did not return it, while no card the mirror holds is from a later read ([Thread links](#thread-links)). |
 
 Metric queries will read versioned views over these tables, never the
 tables; no view is built yet.
@@ -1508,48 +1513,66 @@ site and issue ID, so the link means the same ticket on every computer.
   the site neither writes a link nor keeps or polls an issue only a link
   names. A link the reader cannot see reads not found, whatever another
   account of the site can see.
-- **The copy.** The link holds the ticket's key, title and status (ID,
-  name, group) as the link reader's mirror last stored its card, and
-  `seen_root`, that mirror's root. Every card write
-  (`storeMirrorCardsTx`: row pages, card reads, ticket reads) runs one
-  more statement, `mirrorLinkCopySQL`, which copies the cards the mirror
-  kept (`mirrorCardSupersededSQL`, the card statements' own rule) to the
-  writable links of their tickets and returns the threads whose shown
-  values, root or not-found mark moved; a card that moves none of them
-  writes no link and names no thread, and an older read's card a later
-  one superseded copies nothing. With no link of the site, or for another
-  account's mirror, it stops at its guard. A read that does not return an
-  issue marks its links not found (`MarkMirrorLinksMissing`), unless a
-  later read stored its card.
-- **The state** is derived when the row is read, on the computer that
-  answers: `current` or `not_found` while `seen_root` names an attached
-  root of the link reader, else from the site's connections,
-  `not_checked` (one is on), `turned_off` (all are off) or
-  `no_connection`. `connectionId` is the link reader. A turn off or a
-  removal detaches the root, and no root ID returns, so no write resets a
-  copy; a lower ID added or turned on becomes the reader, and its links
-  read not checked through it until its first linked read. Each of those
-  changes sends the site's links' rows (Frames, below). A restore, whose snapshot's root IDs are
-  another database's, sets every link's root to none in its transaction.
+- **What a row shows.** A thread row computes its link when it is read,
+  on the computer that answers, from the link reader's mirror
+  (`threadTicketLinkJSON`): while that mirror holds the issue
+  (`mirrorIssueHeldSQL`: a card, and no read that missed the issue began
+  after the card's latest read) the row shows the card's key, title and
+  status, the status's name and group from that root's catalog, and
+  `current`; while a read that missed it is in force
+  (`mirrorIssueGoneSQL`) it shows `not_found`; otherwise the link's
+  last-seen copy and, from the site's connections, `not_checked` (one is
+  on), `turned_off` (all are off) or `no_connection`. `connectionId` is
+  the link reader. A reader change, a detached root or a restore needs no
+  write: the row reads whichever mirror reads the site now, and a lower ID
+  turned on reads not checked until its first linked read.
+- **The copy.** The link's key, title and status (ID, name, group) are
+  what the row shows while the reader's mirror holds no card. One
+  statement writes it (`linkCopySQL`), run by the setter and by every
+  card write that stores a card or clears an absence
+  (`storeMirrorCardsTx`: row pages, card reads, ticket reads; a card the
+  mirror keeps from a later read is not stored, so it copies nothing),
+  and by a catalog write that renames or regroups a status a linked card
+  has (`mirrorStatusLinkCopySQL`). With no link of the site, or on a root
+  that is not the reader's, the copy parses no bound list
+  (`mirrorReaderIssuesSQL`). A card write that stores cards runs two link
+  statements, the absence clear and the copy; one that stores none runs
+  the clear alone, which stops at its guard while the root has no
+  absence.
+- **Absences.** A read that does not return a linked issue records an
+  absence at its read (`MarkMirrorIssuesMissing`,
+  `tracker_cache_issue_missing`), unless a card is from a later read, and
+  names the links it makes not found. A card write deletes the absences
+  its read supersedes (`mirrorAbsencesClearSQL`), so a missing issue read
+  again is current in the write that stores it. The cleanup deletes the
+  absences of issues no link keeps.
 - **The row.** `threadColumns` carries the link as one JSON column
   (`threadTicketLinkColumn`), guarded by one `EXISTS` on
-  `thread_tickets` that runs once per statement: a full thread list read
-  of 5,000 threads costs about 0.1% more with no link and 5% to 13%
-  more with 500, a median of about 9% (`BenchmarkListThreadsLinked`).
+  `thread_tickets` that runs once per statement. A list of threads
+  computes every link once in a materialized CTE
+  (`threadListSelect`), which each thread probes by key, so the sidebar
+  list waits on no per-thread projection (`BenchmarkListThreadsLinked`,
+  `TestThreadLinkColumnReadsByKey`).
 - **Writes.** `SetThreadTicket` (bound, `threads:operate`, and
   `tracker:read` since it reads the ticket) links through
   `trackerapp.Service.LinkThread`: the connection `TicketConnection`
-  names, the card the mirror holds with no request when the mirror still
-  holds all of its content (`mirrorCardDiffersSQL`), otherwise one card
-  read stored with the link in one transaction (a card the mirror
-  replaced meanwhile, or a later read's card that supersedes the read
-  one, is read from the mirror once more). A refusal leaves
-  the link and the mirror as they were. `ClearThreadTicket` unlinks;
+  names, the card the mirror holds with no request when it holds the
+  issue, otherwise one card read stored with the link in one transaction.
+  The store's transaction checks that the root's connection is still the
+  link reader (`ErrThreadTicketNotReader`, error code
+  `thread_ticket_connection_changed`) and that the mirror holds the issue
+  after the read card is stored (`ErrThreadTicketNotHeld`; for a read,
+  error code `thread_ticket_not_found_since`), so a link through an
+  account that lost the site, and a cached link of an issue a later read
+  missed, are refused. A refusal leaves the link and the mirror as they
+  were. `ClearThreadTicket` unlinks;
   `ThreadsForTicket` (`threads:read`, route selected) lists a ticket's
   threads by the issue index, as search lists threads: an ask's copy and
   a side chat before Keep, which carry their source's link, are left out.
 - **Frames.** A method announces its own thread's row. Every other
-  thread whose link a write moved, and every thread linked to a site
+  thread whose link a write moved (a stored card of its issue, whatever
+  of the card changed, a cleared or recorded absence, or a renamed or
+  regrouped status of its card), and every thread linked to a site
   whose connection was added, turned on or off, or removed
   (`ListThreadsLinkedToSite`), is told to `Deps.LinksChanged`, which the
   app announces on one serial queue (`announceThreadLinks`), one job per
@@ -1563,8 +1586,8 @@ site and issue ID, so the link means the same ticket on every computer.
   transaction. A transfer's manifest carries `store.Thread`, link
   included; `CommitIncomingThreadTransfer` replaces the receiver's link
   with the carried ticket, key, title, status, origin and time, never a
-  carried state, connection or root, and the app then takes the card a
-  mirror here holds (`AdoptLinks`). A receiver too old to read the link
+  carried state or connection; the row shows the card a mirror here
+  holds, if any, with no write. A receiver too old to read the link
   drops it; a sender too old to carry one leaves the thread unlinked.
 
 A delete claims its family before it reads the family's links, and every
