@@ -129,6 +129,10 @@ func customKind(s JiraSchema) fieldKind {
 			return kindOptions
 		case s.Items == "string" && custom == "labels":
 			return kindLabels
+		case s.Items == "string":
+			// A list of strings of another custom type is read and written
+			// as labels are (unverified).
+			return kindLabels
 		}
 	}
 	return kindUnsupported

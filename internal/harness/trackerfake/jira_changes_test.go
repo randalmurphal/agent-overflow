@@ -308,3 +308,22 @@ func TestTransitionScreenResolution(t *testing.T) {
 	}
 	w.write(t, "POST", "/rest/api/3/issue/WEB-1/transitions", `{"transition":{"id":"31"},"fields":{"resolution":{"id":"99"}}}`, 400)
 }
+
+// TestCustomTextList proves a custom field holding a list of strings is
+// seeded, read back and offered on the edit screen.
+func TestCustomTextList(t *testing.T) {
+	f := changeFixture()
+	s := &f.Jira[0]
+	s.Fields = append(s.Fields, JiraField{ID: "customfield_10070", Name: "Tags", Schema: JiraSchema{Type: "array", Items: "string", Custom: "com.example.fake:texts", CustomID: 10070}})
+	s.Issues[0].Values["customfield_10070"] = json.RawMessage(`["A","B"]`)
+	w := newWorld(t)
+	if err := w.e.Seed(f); err != nil {
+		t.Fatal(err)
+	}
+	if body := w.jira(t, "GET", "/rest/api/3/issue/WEB-1?fields=customfield_10070", "").body; !strings.Contains(body, `"customfield_10070":["A","B"]`) {
+		t.Fatalf("the issue: %s", body)
+	}
+	if body := w.jira(t, "GET", "/rest/api/3/issue/WEB-1/editmeta", "").body; !strings.Contains(body, `"customfield_10070"`) {
+		t.Fatalf("the edit screen: %s", body)
+	}
+}
