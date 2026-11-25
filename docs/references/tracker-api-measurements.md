@@ -664,13 +664,37 @@ SELECT json_group_array(json_array(c1, ..., cn)) FROM r
 ```
 
 and decodes the one JSON value. The column list renames the columns, so
-duplicate names do not matter. `SQLITE_LIMIT_LENGTH` on the evaluator's
-connection bounds the result. Two limits:
+duplicate names do not matter. A row cap goes inside the wrapper
+(`SELECT ... LIMIT n` as the CTE body); a `LIMIT` on the outer `SELECT`
+caps the one aggregate row, not the rows.
 
-- A BLOB column fails the statement ("JSON cannot hold BLOB values"); the
-  agent's SQL must convert it, for example with `hex()`.
-- A row cap goes inside the wrapper (`SELECT ... LIMIT n` as the CTE body).
-  A `LIMIT` on the outer `SELECT` caps the one aggregate row, not the rows.
+`SQLITE_LIMIT_LENGTH` bounds single values, not the memory the wrapper
+uses. With the limit at 1 KiB, a stored value of 2,000 bytes failed the
+statement with `SQLITE_TOOBIG` before any row was read. The aggregate
+checks the limit only on its finished result and grows without it while it
+collects: over 160 values of 400 bytes it read all 160 rows, about 65 KB
+of JSON, before it failed. An evaluator with a memory budget therefore
+counts bytes while the rows are collected. A Go function in the wrapper's
+`WHERE` does it inside the same first step:
+
+```sql
+... FROM r WHERE within_budget(length(json_array(c1, ..., cn)))
+```
+
+where `within_budget` adds its argument to the statement's running total
+and returns an error once the total passes the budget. With a 2,048-byte
+budget over the same 160 rows, it stopped the statement at the sixth row.
+
+`json_array` takes a BLOB as SQLite JSONB when the bytes parse as JSONB,
+and fails the statement otherwise ("JSON cannot hold BLOB values"). So
+`x'00'` became `null`, `jsonb('[1,2]')` became the array `[1,2]`, and
+`x'00ff'` and `zeroblob(0)` failed. Text that holds JSON stays a string:
+`'[1,2]'` and `json('[1,2]')` both became `"[1,2]"`. An evaluator decides
+by SQL type, writing each column as
+`iif(typeof(ck) = 'blob', json_array(hex(ck)), ck)`. A BLOB then decodes as
+a one-element array of its hex digits, which no text, number or `NULL`
+decodes to. An evaluator that rejects BLOBs instead fails on the first
+such array it decodes.
 
 ## Planning poker add-on
 
