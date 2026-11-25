@@ -53,7 +53,7 @@ func instructionsFinding(shape Shape) string {
 // name another provider only where one is offered (spawnWhen).
 func instructionsStarting(shape Shape) string {
 	if !shape.Spawn.CanSpawn() {
-		return fmt.Sprintf("Starting. You are %s of sub-threads below the user's thread (the deepest allowed); you cannot spawn threads or subagents. `thread_send` queues a follow-up `message` on an existing thread; `thread_ask` asks a question of a hidden read-only fork (full context without touching or interrupting the real thread). Both return a `token`; neither targets self.", LevelCount(shape.Spawn.Level))
+		return fmt.Sprintf("Starting. You are %s of sub-threads below the user's thread (the deepest allowed, so you cannot open new threads or subagents). `thread_send` queues a follow-up `message` on an existing thread; `thread_ask` asks a question of a hidden read-only fork (full context without touching or interrupting the real thread). Both return a `token`; neither targets self.", LevelCount(shape.Spawn.Level))
 	}
 	homeFiles := " Standing agents can attach `home_files`."
 	if shape.AssistantsOff {

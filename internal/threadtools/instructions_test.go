@@ -193,7 +193,7 @@ func TestTheGuideReadsCorrectlyWithOneProvider(t *testing.T) {
 func TestTheGuideCountsOneLevelInTheSingular(t *testing.T) {
 	shape := soloShape()
 	shape.Spawn = SpawnShape{Level: 1, Limit: 1, Providers: []string{"codex"}}
-	if text := instructionsFor(shape); !strings.Contains(text, "You are 1 level of sub-threads below the user's thread (the deepest allowed)") {
+	if text := instructionsFor(shape); !strings.Contains(text, "You are 1 level of sub-threads below the user's thread (the deepest allowed, so you cannot open new threads or subagents)") {
 		t.Fatalf("the guide at level 1 reads %q", text)
 	}
 }
@@ -215,7 +215,7 @@ func TestASessionAtTheLimitHasNoSpawnAndReadsNoWordOfIt(t *testing.T) {
 				t.Errorf("paired=%v: the guide at the limit says %q", shape.Paired(), forbidden)
 			}
 		}
-		if !strings.Contains(text, "You are 2 levels of sub-threads below the user's thread (the deepest allowed)") {
+		if !strings.Contains(text, "You are 2 levels of sub-threads below the user's thread (the deepest allowed, so you cannot open new threads or subagents)") {
 			t.Errorf("paired=%v: the guide at the limit does not say why it cannot spawn", shape.Paired())
 		}
 		shape.Spawn.Level = 1
