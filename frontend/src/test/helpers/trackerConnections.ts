@@ -39,6 +39,7 @@ export function trackerProblem(kind: TrackerProblemKind, message: string, curren
 export function trackerBoardChoice(overrides: Partial<TrackerBoardChoice> = {}): TrackerBoardChoice {
   return {
     project: 'p1',
+    project_archived: false,
     connection: 'jira-1',
     connection_kind: 'jira',
     connection_label: '',

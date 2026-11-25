@@ -582,6 +582,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ThreadToolWatch", ID: 515024442, Scope: "threads:read", Route: "selected", CallerBound: true, Budget: 1 * time.Minute},           // main.App.ThreadToolWatch
 	{Name: "TrackerAssignableUsers", ID: 3346989894, Scope: "tracker:read", Route: "home"},                                                   // main.App.TrackerAssignableUsers
 	{Name: "TrackerBoard", ID: 3524633257, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerBoard
+	{Name: "TrackerBoardChoices", ID: 1666670763, Scope: "tracker:read", Route: "all"},                                                       // main.App.TrackerBoardChoices
 	{Name: "TrackerBoardPatch", ID: 2847247437, Scope: "tracker:read", Route: "home"},                                                        // main.App.TrackerBoardPatch
 	{Name: "TrackerBoards", ID: 2450480430, Scope: "tracker:read", Route: "home"},                                                            // main.App.TrackerBoards
 	{Name: "TrackerChoices", ID: 1109598697, Scope: "tracker:read", Route: "home"},                                                           // main.App.TrackerChoices

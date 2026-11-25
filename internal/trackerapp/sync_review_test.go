@@ -136,8 +136,8 @@ type syncBetween struct {
 	between func()
 }
 
-func (s *syncBetween) ReadMirrorBoardView(rootID int64, boardID string, regroup store.MirrorRegroup, sections []store.MirrorSection) (store.MirrorBoardView, bool, error) {
-	v, ok, err := s.Store.ReadMirrorBoardView(rootID, boardID, regroup, sections)
+func (s *syncBetween) ReadMirrorBoardView(rootID int64, boardID string, regroup store.MirrorRegroup, pick func(store.MirrorStructure) []store.MirrorSection) (store.MirrorBoardView, bool, error) {
+	v, ok, err := s.Store.ReadMirrorBoardView(rootID, boardID, regroup, pick)
 	s.once.Do(s.between)
 	return v, ok, err
 }

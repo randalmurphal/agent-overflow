@@ -98,6 +98,21 @@ func (a *App) ProjectTrackerBoards(ctx context.Context, projectID string) ([]tra
 	return out, trackerError(err)
 }
 
+// TrackerBoardChoices lists the boards every project of this computer
+// lists, as ProjectTrackerBoards names each: the Issues pane's board
+// picker, which asks every attached computer.
+//
+//ao:scope tracker:read
+//ao:route all
+func (a *App) TrackerBoardChoices(ctx context.Context) ([]trackerapp.BoardChoice, error) {
+	svc, err := a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.BoardChoices()
+	return out, trackerError(err)
+}
+
 // SetProjectTrackerBoards makes boards, in order, the boards a project's
 // picker shows, and answers the list stored as ProjectTrackerBoards reads
 // it. held is the list the picker showed and built boards from; a save
@@ -117,15 +132,17 @@ func (a *App) SetProjectTrackerBoards(ctx context.Context, projectID string, hel
 }
 
 // SubscribeTrackerBoard subscribes the calling client to a board its
-// project lists, with the first page of each section asked for. The
+// project lists, with the first page of each section asked for, or of the
+// Board screen's sections when none is (trackerapp.Service.Board). The
 // answer comes from this computer's copy of the board; the board's reads
-// of the tracker follow it, and tracker:board_updated tells what they
-// change. The subscription is released by ReleaseTrackerSubscription or
-// when the client's connection ends.
+// of the tracker follow it once a subscription shows it (visible here, or
+// SetTrackerSubscriptionVisible later), and tracker:board_updated tells
+// what they change. The subscription is released by
+// ReleaseTrackerSubscription or when the client's connection ends.
 //
 //ao:scope tracker:read
 //ao:callerbound
-func (a *App) SubscribeTrackerBoard(ctx context.Context, projectID, connectionID, boardID string, sections []trackerapp.Section) (trackerapp.BoardSubscription, error) {
+func (a *App) SubscribeTrackerBoard(ctx context.Context, projectID, connectionID, boardID string, sections []trackerapp.Section, visible bool) (trackerapp.BoardSubscription, error) {
 	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return trackerapp.BoardSubscription{}, err
@@ -135,7 +152,7 @@ func (a *App) SubscribeTrackerBoard(ctx context.Context, projectID, connectionID
 		return trackerapp.BoardSubscription{}, err
 	}
 	scope := trackerapp.Scope{Connection: connectionID, Board: tracker.BoardID(boardID)}
-	sub, err := svc.SubscribeBoard(projectID, scope, sections, trackerSubscriptionTie(conn, svc))
+	sub, err := svc.SubscribeBoard(projectID, scope, sections, visible, trackerSubscriptionTie(conn, svc))
 	return sub, trackerError(err)
 }
 
@@ -155,8 +172,9 @@ func trackerSubscriptionTie(conn *transport.ConnState, svc *trackerapp.Service) 
 func trackerSubscriptionCleanupKey(id string) string { return "tracker-subscription:" + id }
 
 // TrackerBoard reads a subscribed board whole again, with the first page
-// of each section asked for: after an event that says to read it again,
-// a reconnect, or a page that went stale.
+// of each section asked for, or of the Board screen's sections when none
+// is (trackerapp.Service.Board): after an event that says to read it
+// again, a reconnect, or a page that went stale.
 //
 //ao:scope tracker:read
 //ao:route home
@@ -252,7 +270,7 @@ func (a *App) RefreshTrackerSubscription(ctx context.Context, subscriptionID str
 	case errors.Is(err, pump.ErrNotTaken):
 		return errorsx.Public("tracker_refresh_not_run", "this view was busy with an earlier read from the tracker, so this refresh did not run; refresh again", err)
 	default:
-		return errorsx.Public("tracker_refresh_waiting", "this view is still reading from the tracker; it updates as each read finishes, so refresh again if what you expect does not appear", err)
+		return errorsx.Public("tracker_refresh_waiting", "this refresh was still reading from the tracker when its answer was due; what it finds shows as it lands, so refresh again if what you expect does not appear", err)
 	}
 	return trackerError(err)
 }

@@ -79,7 +79,7 @@ func (m *mirrorFixture) listIn(t *testing.T, id string) {
 // every later event is one a test caused.
 func (m *mirrorFixture) subscribeShown(t *testing.T, id string) BoardSubscription {
 	t.Helper()
-	sub, err := m.svc.SubscribeBoard(id, m.scope(), []Section{{Kind: SectionBacklog}}, untied)
+	sub, err := m.svc.SubscribeBoard(id, m.scope(), []Section{{Kind: SectionBacklog}}, true, untied)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestAnUnreadableSetupRefusesItsProjectOnly(t *testing.T) {
 			if after, _ := os.ReadFile(path); string(after) != data {
 				t.Fatal("a save overwrote the unreadable setup file")
 			}
-			if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, untied); !errors.Is(err, ErrSetupUnreadable) {
+			if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, true, untied); !errors.Is(err, ErrSetupUnreadable) {
 				t.Fatalf("a subscribe of the project with the unreadable setup: %v", err)
 			}
 			if boards, _, _, _ := m.svc.SubscriptionCountsForTesting(); boards != 0 {

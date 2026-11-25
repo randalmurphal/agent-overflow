@@ -87,7 +87,7 @@ func TestASaveThatUnlistsABoardEndsItsViews(t *testing.T) {
 			m := newMirrorFixture(t)
 			m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
 			ties := &tieLog{}
-			sub, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, ties.tie)
+			sub, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, true, ties.tie)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -202,8 +202,22 @@ func TestProjectBoardsAreNamedAsTheyWereChosen(t *testing.T) {
 	if got, err := m.svc.ProjectBoards(m.project()); err != nil || !slices.Equal(got, want) {
 		t.Fatalf("ProjectBoards = %+v, %v; want %+v", got, err, want)
 	}
+	if got, err := m.svc.BoardChoices(); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("BoardChoices = %+v, %v; want %+v", got, err, want)
+	}
 	if got, err := m.svc.ProjectBoards(""); !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("ProjectBoards of no project = %+v, %v; want ErrProjectNotFound", got, err)
+	}
+	// An archived project's boards say so, in both reads.
+	if _, _, err := m.st.ArchiveProject(m.project()); err != nil {
+		t.Fatal(err)
+	}
+	want[0].ProjectArchived = true
+	if got, err := m.svc.BoardChoices(); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("BoardChoices of an archived project = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := m.svc.ProjectBoards(m.project()); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("ProjectBoards of an archived project = %+v, %v; want %+v", got, err, want)
 	}
 }
 

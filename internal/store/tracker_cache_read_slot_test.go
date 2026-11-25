@@ -137,7 +137,7 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 	}
 	reads = append(reads,
 		read{"ReadMirrorBoardView", func() error {
-			_, _, err := s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, patchSections)
+			_, _, err := s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, theseSections(patchSections))
 			return err
 		}},
 		read{"ListMirrorSection", func() error {

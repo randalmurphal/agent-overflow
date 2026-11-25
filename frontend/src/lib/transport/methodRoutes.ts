@@ -530,6 +530,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	515024442: 'selected', // ThreadToolWatch
 	3346989894: 'home', // TrackerAssignableUsers
 	3524633257: 'home', // TrackerBoard
+	1666670763: 'all', // TrackerBoardChoices
 	2847247437: 'home', // TrackerBoardPatch
 	2450480430: 'home', // TrackerBoards
 	1109598697: 'home', // TrackerChoices

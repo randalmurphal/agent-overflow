@@ -9,6 +9,11 @@ import (
 	"testing"
 )
 
+// theseSections picks sections whatever the board's structure.
+func theseSections(sections []MirrorSection) func(MirrorStructure) []MirrorSection {
+	return func(MirrorStructure) []MirrorSection { return sections }
+}
+
 // A board view is one snapshot: a sync that commits between its reads
 // changes none of it, so its totals count the rows its pages hold, its
 // names are those the rows had, and a page continued from it at the
@@ -45,12 +50,12 @@ func TestMirrorBoardViewIsOneSnapshot(t *testing.T) {
 	var view MirrorBoardView
 	var ok bool
 	var err error
-	statements := countMirrorStatements(t, func() { view, ok, err = s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, sections) })
+	statements := countMirrorStatements(t, func() { view, ok, err = s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, theseSections(sections)) })
 	if err != nil || !ok || statements != 11 {
 		t.Fatalf("view = %v, %v in %d statements; want 11", ok, err, statements)
 	}
 	armed.Store(true)
-	view, ok, err = s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, sections)
+	view, ok, err = s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, theseSections(sections))
 	if err != nil || !ok || armed.Load() {
 		t.Fatalf("view = %v, %v; the sync ran %v", ok, err, !armed.Load())
 	}

@@ -129,11 +129,15 @@ var isolationConsumers = map[string]func(a *App) time.Duration{
 	"UsagePollInterval":       func(a *App) time.Duration { return a.usagePollInterval },
 	"ThreadWakeRetryBase":     func(a *App) time.Duration { return a.threadWakeRetryDelay(1) },
 	"AgentSettledWindow":      (*App).agentSettledWindowSpan,
+	"TrackerPollInterval":     func(a *App) time.Duration { return a.trackerCadence.Delta },
+	"TrackerTicketPoll":       func(a *App) time.Duration { return a.trackerCadence.Ticket },
 }
 
 // isolationDerived names the consumers that follow another interval by
-// design: an unset log wait paces at the PR update cadence.
-var isolationDerived = map[string]string{"PRCILogWaitInterval": "PRUpdateInterval"}
+// design: an unset log wait paces at the PR update cadence, and the open
+// tickets' round polls at the tracker poll interval, as a board's delta
+// does.
+var isolationDerived = map[string]string{"PRCILogWaitInterval": "PRUpdateInterval", "TrackerTicketPoll": "TrackerPollInterval"}
 
 // TestEveryIsolationIntervalReachesItsConsumer: an interval set through
 // ConfigureIsolation is the one its consumer runs on, it moves no other

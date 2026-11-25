@@ -136,7 +136,7 @@ func TestTrackerSetupRefusalsSayWhatToDo(t *testing.T) {
 		!strings.Contains(message, path) {
 		t.Fatalf("an unreadable setup = %v (code %q, %q)", err, code, message)
 	}
-	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil); !hasCode(err, "tracker_setup_unreadable") {
+	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil, true); !hasCode(err, "tracker_setup_unreadable") {
 		t.Fatalf("a subscribe of a project with an unreadable setup = %v", err)
 	}
 	if err := os.WriteFile(path, []byte(`{"status_groups": {"version": 2}}`), 0o600); err != nil {

@@ -188,6 +188,7 @@ import {
 } from './threadTitleGeneration.svelte';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from './eventsPRReview';
 import { applyPipelineUpdated, applyPullsUpdated } from './eventsPulls';
+import { applyTrackerBoardUpdated } from './eventsTracker';
 import { setupSessionImportEvents } from './eventsSessionImport';
 import {
   applyHighlightDiffSeed,
@@ -807,6 +808,8 @@ export function setupEventListeners(): () => void {
   // pumps' frames (a pipeline's logs ride pr:ci_log above).
   const cancelPullsUpdated = wailsEventOn('pulls:updated', applyPullsUpdated);
   const cancelPipelineUpdated = wailsEventOn('ci:pipeline_updated', applyPipelineUpdated);
+  // The Issues pane's tracker board: what a sync changed, read as a patch.
+  const cancelTrackerBoardUpdated = wailsEventOn('tracker:board_updated', applyTrackerBoardUpdated);
   // workflow:* — the typed run-record channel. Item/phase transitions keep
   // the overlay's run cache live (and the sidebar's needs-attention badge
   // authoritative) without polling; engine-state carries the one global pause
@@ -924,6 +927,7 @@ export function setupEventListeners(): () => void {
     cancelPRCILog();
     cancelPullsUpdated();
     cancelPipelineUpdated();
+    cancelTrackerBoardUpdated();
     cancelWorkflowError();
     cancelWorkflowItemState();
     cancelWorkflowPhaseState();

@@ -370,7 +370,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	}{{"", MirrorRegroup{}}, {", 30 regrouped, none used", benchRegroup(t, false)}, {", 30 regrouped, 2 used", benchRegroup(t, true)}} {
 		regroup := regrouped.regroup
 		out["board view, 3 sections"+regrouped.name] = measureScale(t, rec, nil, func(int) error {
-			_, _, err := s.ReadMirrorBoardView(root, board, regroup, sections)
+			_, _, err := s.ReadMirrorBoardView(root, board, regroup, theseSections(sections))
 			return err
 		})
 		out["section page, middle of a column"+regrouped.name] = measureScale(t, rec, func(int) {

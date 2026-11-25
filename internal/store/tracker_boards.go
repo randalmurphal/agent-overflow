@@ -304,12 +304,14 @@ func listProjectTrackerBoards(q sqlQueryer, projectID string) ([]ProjectTrackerB
 }
 
 // TrackerBoardChoice is one board a project lists, as a board picker shows
-// it: the listing, its connection's kind, label, state and verified
-// account, and the board's name, which is this computer's copy of the
-// board's name once the board has been read and the name the listing
-// stored until then (or when the copy is detached or retired).
+// it: the listing, whether its project is archived, its connection's kind,
+// label, state and verified account, and the board's name, which is this
+// computer's copy of the board's name once the board has been read and the
+// name the listing stored until then (or when the copy is detached or
+// retired).
 type TrackerBoardChoice struct {
 	ProjectID                 string
+	ProjectArchived           bool
 	ConnectionID              string
 	ConnectionKind            string
 	ConnectionLabel           string
@@ -327,9 +329,10 @@ type TrackerBoardChoice struct {
 // names a board. The UNIQUE (root_id, board_id) of tracker_cache_boards
 // and the UNIQUE connection_id of tracker_cache_roots make each listing
 // one row.
-const trackerBoardChoicesSQL = `SELECT p.project_id, p.connection_id, c.kind, c.label, c.enabled, c.verified_account_id,
+const trackerBoardChoicesSQL = `SELECT p.project_id, j.archived, p.connection_id, c.kind, c.label, c.enabled, c.verified_account_id,
 	p.board_id, COALESCE(NULLIF(b.name, ''), p.name), p.tracker_project, p.opens_first
 	FROM project_tracker_boards p
+	JOIN projects j ON j.id = p.project_id
 	JOIN tracker_connections c ON c.id = p.connection_id
 	LEFT JOIN tracker_cache_roots r ON r.connection_id = p.connection_id
 	LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = p.board_id AND b.retired = 0`
@@ -341,7 +344,7 @@ const trackerBoardChoicesSQL = `SELECT p.project_id, p.connection_id, c.kind, c.
 func (s *Store) ListTrackerBoardChoices(projectID string) ([]TrackerBoardChoice, error) {
 	query, args := trackerBoardChoicesSQL+` WHERE p.project_id = ? ORDER BY p.position`, []any{projectID}
 	if projectID == "" {
-		query, args = trackerBoardChoicesSQL+` JOIN projects j ON j.id = p.project_id ORDER BY j.name, j.id, p.position`, nil
+		query, args = trackerBoardChoicesSQL+` ORDER BY j.name, j.id, p.position`, nil
 	}
 	rows, err := s.reader().Query(query, args...)
 	if err != nil {
@@ -350,7 +353,7 @@ func (s *Store) ListTrackerBoardChoices(projectID string) ([]TrackerBoardChoice,
 	var out []TrackerBoardChoice
 	for rows.Next() {
 		var c TrackerBoardChoice
-		if err := rows.Scan(&c.ProjectID, &c.ConnectionID, &c.ConnectionKind, &c.ConnectionLabel, &c.ConnectionEnabled,
+		if err := rows.Scan(&c.ProjectID, &c.ProjectArchived, &c.ConnectionID, &c.ConnectionKind, &c.ConnectionLabel, &c.ConnectionEnabled,
 			&c.ConnectionVerifiedAccount, &c.BoardID, &c.BoardName, &c.TrackerProject, &c.OpensFirst); err != nil {
 			return nil, errors.Join(fmt.Errorf("store: scan tracker board choice: %w", err), rows.Close())
 		}

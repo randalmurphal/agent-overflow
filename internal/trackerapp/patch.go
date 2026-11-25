@@ -71,17 +71,19 @@ type PatchSection struct {
 }
 
 // BoardPatch reads scope's board's patch for issues (at most
-// maxEventIssues) in sections (at most maxViewSections), read with groups,
-// with the totals unless held names the ones the board has now. It fails
-// with ErrNotMirrored for a board the mirror does not show, and with
-// ErrStalePage when the client's sections were read with other status
-// groups (held.Groups): the client reads the board view again.
+// maxEventIssues) in sections (at most store.MirrorMaxViewSections, every
+// section a board can have, since a patch reads only the named issues'
+// rows of each), read with groups, with the totals unless held names the
+// ones the board has now. It fails with ErrNotMirrored for a board the
+// mirror does not show, and with ErrStalePage when the client's sections
+// were read with other status groups (held.Groups): the client reads the
+// board view again.
 func (s *Service) BoardPatch(scope Scope, groups StatusGroups, sections []Section, issues []tracker.IssueID, held TotalsAt) (BoardPatch, error) {
 	if err := scope.boardOnly(); err != nil {
 		return BoardPatch{}, err
 	}
-	if len(sections) > maxViewSections || len(issues) > maxEventIssues {
-		return BoardPatch{}, fmt.Errorf("%w: a patch reads at most %d sections and %d issues", ErrInvalidRequest, maxViewSections, maxEventIssues)
+	if len(sections) > store.MirrorMaxViewSections || len(issues) > maxEventIssues {
+		return BoardPatch{}, fmt.Errorf("%w: a patch reads at most %d sections and %d issues", ErrInvalidRequest, store.MirrorMaxViewSections, maxEventIssues)
 	}
 	if held.Groups != groups.version {
 		return BoardPatch{}, fmt.Errorf("%w: board %s: the sections were read with status groups %q, and the project's are %q now",
