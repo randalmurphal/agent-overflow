@@ -22,6 +22,9 @@
     holds(index: number): boolean;
     /** A held row's scroll offset. Throws for a row that is not held. */
     getItemOffset(index: number): number;
+    /** A held row's height, measured once it was drawn. Throws for a row
+     * that is not held. */
+    getItemSize(index: number): number;
   }
 </script>
 
@@ -262,6 +265,11 @@
   export function getItemOffset(index: number): number {
     if (!holds(index)) throw new RangeError(`LongListVirtualizer: row ${index} is not held`);
     return list?.getItemOffset(index - heldStart) ?? 0;
+  }
+
+  export function getItemSize(index: number): number {
+    if (!holds(index)) throw new RangeError(`LongListVirtualizer: row ${index} is not held`);
+    return list?.sizeAt(index - heldStart) ?? 0;
   }
 </script>
 

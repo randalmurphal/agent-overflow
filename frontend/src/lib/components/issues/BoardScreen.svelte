@@ -33,20 +33,23 @@
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import { columnCount } from './boardFormat';
+  import { setTicketWriteSurface } from './ticketWriteSurface';
   import type { Carry, CarryColumn, CarryHost } from './boardCarry';
   import type { CardEditField } from './ticketEditors';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { compactColumn, setCompactColumn, type CardField } from '../../stores/issuesPane.svelte';
   import { loadMoreOfSection, setTrackerBoardFiltered, type TrackerBoardRef } from '../../stores/trackerBoard.svelte';
-  import { cardMovePending, cardWriteContext, moveCard, rankCard, waitingCards } from '../../stores/trackerBoardCarry.svelte';
+  import { cardBusy, cardWriteContext, moveCard, rankCard, startDrop, waitingCards, type CardDrop } from '../../stores/trackerBoardCarry.svelte';
   import { moveTicketToSprint, ticketMoves, type TicketWriteContext } from '../../stores/trackerTicketWrites.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { MoveView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import {
+    cardMatches,
     cardURL,
     columnsReached,
     columnWith,
     filtering,
+    rowOf,
     screenColumns,
     sectionKey,
     shownColumn,
@@ -83,6 +86,7 @@
   }
 
   let { boardKey, boardRef, held, paging, sectionErrors, filter, hidden, compact, shown, openIssue, typed, onOpenCard, onMoveWithFields }: Props = $props();
+  setTicketWriteSurface(() => shown);
 
   // The last columns, so a rebuild keeps the rows arrays nothing changed.
   let previous: ScreenColumn[] = [];
@@ -98,7 +102,7 @@
 
   // The cards waiting where they were dropped, drawn there.
   const waiting = $derived(waitingCards(boardKey));
-  const drawn = $derived(withWaiting(visible, waiting));
+  const drawn = $derived(withWaiting(columns, visible, waiting, filter));
 
   // A carry under way: the card, the column it came from, the column under
   // it and the drop slot in its own column, and what the moves read said.
@@ -125,22 +129,30 @@
   }
 
   // The cards counted in a column other than the one holding them: each
-  // waiting card, and a carried card over a column that may take it.
+  // waiting card, and a carried card over a column that may take it, with
+  // the statuses it may have there (its move's, else any of the column's).
   const moved = $derived.by(() => {
-    const out: { row: RowView; from: number; to: number }[] = [];
+    const out: { row: RowView; from: number; to: number; statuses: readonly string[] }[] = [];
     for (const w of waiting) {
-      const from = columns.findIndex((col) => col.rows.some((r) => r.card.id === w.row.card.id));
-      if (from !== w.column) out.push({ row: w.row, from, to: w.column });
+      const at = rowOf(columns, w.issue);
+      if (at && at.column !== w.column) out.push({ row: at.row, from: at.column, to: w.column, statuses: w.status ? [w.status] : statusesOf(w.column) });
     }
     const c = carrying;
-    if (c && c.over !== null && c.over !== c.from && reaches(c, c.over) !== false) out.push({ row: c.row, from: c.from, to: c.over });
+    if (c && c.over !== null && c.over !== c.from && reaches(c, c.over) !== false) {
+      const into = c.moves?.state === 'read' ? c.moves.reached.get(c.over) : undefined;
+      out.push({ row: c.row, from: c.from, to: c.over, statuses: into ? into.map((m) => m.to.id) : statusesOf(c.over) });
+    }
     return out;
   });
+  function statusesOf(column: number): string[] {
+    return held.shape.columns[column]?.statuses.map((st) => st.id) ?? [];
+  }
   const heads = $derived(columns.map((col, i) => {
     let head: { col: ScreenColumn; shown: ShownColumn } = { col, shown: drawn[i] };
     for (const m of moved) {
-      if (m.from === i) head = columnWith(held, head.col, head.shown, m.row, -1);
-      if (m.to === i) head = columnWith(held, head.col, head.shown, m.row, 1);
+      const inShown = !filtered || cardMatches(m.row.card, filter);
+      if (m.from === i) head = columnWith(held, head.col, head.shown, m.row, -1, [m.row.card.status.id], inShown);
+      if (m.to === i) head = columnWith(held, head.col, head.shown, m.row, 1, m.statuses, inShown);
     }
     return head;
   }));
@@ -211,17 +223,24 @@
   }
 
   /** Moves the card by `move` into `column`: with its form when the move
-   * takes fields, else at once, the card waiting there. */
-  function moveTo(row: RowView, column: number, move: MoveView): void {
+   * takes fields, else at once, the card waiting there; as the drop
+   * `drop` when one decided it. */
+  function moveTo(row: RowView, column: number, move: MoveView, drop?: CardDrop): void {
     if (move.fields?.length) {
       onMoveWithFields(row, move);
       return;
     }
-    void moveCard(boardKey, cardWriteContext(boardRef, row), row, column, move);
+    if (drop) void drop.move(column, move);
+    else void moveCard(boardKey, cardWriteContext(boardRef, row), column, move);
   }
 
-  // Several moves reach the column a card was dropped on: which.
-  let dropChoice = $state.raw<{ x: number; y: number; row: RowView; column: number; moves: readonly MoveView[] } | null>(null);
+  // Several moves reach the column a card was dropped on: which. The drop
+  // holds the card until a move is chosen or the choice is dismissed.
+  let dropChoice = $state.raw<{ x: number; y: number; row: RowView; column: number; moves: readonly MoveView[]; drop: CardDrop } | null>(null);
+  function endChoice(): void {
+    dropChoice?.drop.end();
+    dropChoice = null;
+  }
 
   // A press on a card, until it moves far enough to pick the card up or
   // ends as the click that opens the ticket.
@@ -253,7 +272,7 @@
     if (!el || !issue) return;
     const from = columnShowing(issue);
     const row = from >= 0 ? drawn[from].rows.find((r) => r.card.id === issue) : undefined;
-    if (!row || cardMovePending(cardWriteContext(boardRef, row))) return;
+    if (!row || cardBusy(boardKey, cardWriteContext(boardRef, row))) return;
     void loadCarry().catch(() => {});
     press = { id: event.pointerId, el, row, from, level: target.closest('[data-grab]') !== null, sx: event.clientX, sy: event.clientY, x: event.clientX, y: event.clientY, carry: null, starting: false };
     window.addEventListener('pointermove', onPressMove);
@@ -362,34 +381,43 @@
     if (column === null) return shownAt(row.card.id);
     if (column === from) {
       if (slot === null) return shownAt(row.card.id);
-      // The neighbors among the cards shown, the carried one left out.
+      // The card shown after the slot, the carried one left out; the rank
+      // names it and the one the board holds before it when it is sent.
       const rows = drawn[from].rows;
       const own = rows.findIndex((r) => r.card.id === row.card.id);
       const k = own >= 0 && own < slot ? slot - 1 : slot;
       if (k === own) return shownAt(row.card.id);
       const rest = rows.filter((r) => r.card.id !== row.card.id);
-      void rankCard(boardKey, ctx, boardRef.board, row, from, rest[k - 1]?.card.id ?? '', rest[k]?.card.id ?? '');
+      void rankCard(boardKey, ctx, boardRef.board, from, rest[k]?.card.id ?? null);
       return shownAt(row.card.id);
     }
-    const known = carrying?.moves?.state === 'read' || carrying?.moves?.state === 'failed';
-    let moves: MoveView[];
+    const hold = startDrop(boardKey, ctx);
+    if (!hold) return shownAt(row.card.id);
+    let handed = false;
     try {
-      moves = await (movesRead ?? readMoves());
-    } catch (err) {
-      if (!known) addErrorToast(`Could not read where ${row.card.key} can move.`, err);
+      const known = carrying?.moves?.state === 'read' || carrying?.moves?.state === 'failed';
+      let moves: MoveView[];
+      try {
+        moves = await (movesRead ?? readMoves());
+      } catch (err) {
+        if (!known) addErrorToast(`Could not read where ${row.card.key} can move.`, err);
+        return shownAt(row.card.id);
+      }
+      const into = columnsReached(held.shape.columns, moves).get(column) ?? [];
+      if (into.length === 0) {
+        if (!known) addToast('info', `No move of ${row.card.key} reaches ${columns[column].name}.`);
+        return shownAt(row.card.id);
+      }
+      if (into.length > 1) {
+        dropChoice = { x: at.x, y: at.y, row, column, moves: into, drop: hold };
+        handed = true;
+        return shownAt(row.card.id);
+      }
+      moveTo(row, column, into[0], hold);
       return shownAt(row.card.id);
+    } finally {
+      if (!handed) hold.end();
     }
-    const into = columnsReached(held.shape.columns, moves).get(column) ?? [];
-    if (into.length === 0) {
-      if (!known) addToast('info', `No move of ${row.card.key} reaches ${columns[column].name}.`);
-      return shownAt(row.card.id);
-    }
-    if (into.length > 1) {
-      dropChoice = { x: at.x, y: at.y, row, column, moves: into };
-      return shownAt(row.card.id);
-    }
-    moveTo(row, column, into[0]);
-    return shownAt(row.card.id);
   }
 
   function onPressUp(event: PointerEvent): void {
@@ -404,7 +432,7 @@
     };
     window.addEventListener('click', swallow, { capture: true, once: true });
     setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
-    p.carry.up();
+    p.carry.up(event.clientX, event.clientY);
   }
 
   function onPressCancel(event: PointerEvent): void {
@@ -418,6 +446,7 @@
     const p = press;
     endPress();
     p?.carry?.cancel();
+    untrack(endChoice);
   });
 
   const picked = $derived.by(() => {
@@ -529,7 +558,7 @@
       from={open.from}
       {typed}
       url={cardURL(held.shape, open.row.card)}
-      moving={cardMovePending(ctx)}
+      moving={cardBusy(boardKey, ctx)}
       atMove={open.atMove}
       onOpen={() => onOpenCard(open.row)}
       onOpenURL={() => { void handleExternalURL(cardURL(held.shape, open.row.card)); }}
@@ -544,13 +573,13 @@
 
 {#if dropChoice}
   {@const choice = dropChoice}
-  <ContextMenu x={choice.x} y={choice.y} ariaLabel="Move {choice.row.card.key} by" onDismiss={() => { dropChoice = null; }}>
+  <ContextMenu x={choice.x} y={choice.y} ariaLabel="Move {choice.row.card.key} by" onDismiss={endChoice}>
     {#each choice.moves as move (move.id)}
       <MenuItem
         label={move.name}
         description={move.fields?.length ? 'Asks for fields' : undefined}
         testId="issues-card-drop-move"
-        onSelect={() => { moveTo(choice.row, choice.column, move); dropChoice = null; }}
+        onSelect={() => { moveTo(choice.row, choice.column, move, choice.drop); endChoice(); }}
       />
     {/each}
   </ContextMenu>

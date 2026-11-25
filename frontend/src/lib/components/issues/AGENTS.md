@@ -26,7 +26,9 @@ board methods, events and the patch read in
 - `stores/trackerBoardCarry.svelte.ts` holds the cards waiting where they
   were dropped while their move or rank is out, a picture that never
   changes what the board holds, and makes those writes (`moveCard`,
-  `rankCard`) through the ticket's write store. A card writes under its
+  `rankCard`) through the ticket's write store: one drop per card from
+  its release (`startDrop`, `cardBusy`), and the ranks of a column one at
+  a time, each naming the neighbors the board holds when it is sent. A card writes under its
   ticket's key (`cardWriteContext`), so the card and the ticket screen
   show one write.
 - `components/shared/ActionMenu.svelte` draws the card's menu
@@ -65,7 +67,10 @@ board methods, events and the patch read in
 - `stores/trackerTicketWrites.svelte.ts` makes every write and picker read
   of the ticket screen and holds each write's outcome by ticket and target:
   one pending write per target, Save anyway as the person's second press,
-  and a toast for a write that settles after its ticket closed. It also
+  and each outcome kept under a control the person sees or said in a
+  toast, never both (its rules at the top; a control registers through
+  `ticketWriteSurface.ts`). Each ticket's writes are one box, so a write
+  wakes that ticket's readers only. It also
   holds what is being written to each target (the drafts): a text with its
   base, or a move's form with the base of each long field, which the
   editors and the form show, so a draft outlives its editor; a pane's

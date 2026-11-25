@@ -25,7 +25,6 @@ import {
   renewEndedTrackerBoard,
   setTrackerBoardFiltered,
   setTrackerBoardShown,
-  trackerBoardShowsIssue,
   trackerBoardsSettled,
   type TrackerBoardAttachment,
   type TrackerBoardRef,
@@ -904,10 +903,17 @@ describe('a write waiting on the board', () => {
     board.release();
   });
 
-  it('ends when the board is released, or the connection drops, during the read', async () => {
+  it('ends when the board is released, its subscription ends, or the connection drops, during the read', async () => {
     const released = await waitingOnPatch();
     released.board.release();
     expect(await settledBy(released.wait)).toBe(true);
+
+    // Ended with the connection up and the patch still out.
+    const ended = await waitingOnPatch();
+    applyTrackerBoardEvent(event(12, { ended: true }), HOME_BACKEND);
+    expect(await settledBy(ended.wait)).toBe(true);
+    expect(ended.board.current?.ended).toBe(true);
+    ended.board.release();
 
     const dropped = await waitingOnPatch();
     dropped.patches.fail(new DisconnectedError('client closed'));
@@ -941,18 +947,6 @@ describe('a write waiting on the board', () => {
     expect(await settledBy(wait)).toBe(true);
     expect(pages.calls.length).toBe(2);
     board.release();
-  });
-
-  it('says whether a held board shows an issue, and stops once it is released', async () => {
-    install();
-    const board = attachTrackerBoard(REF, true);
-    await flush();
-    expect(trackerBoardShowsIssue(HOME_BACKEND, 'c1', '1')).toBe(true);
-    expect(trackerBoardShowsIssue(HOME_BACKEND, 'c1', '2')).toBe(false);
-    expect(trackerBoardShowsIssue(HOME_BACKEND, 'c2', '1')).toBe(false);
-    board.release();
-    await flush();
-    expect(trackerBoardShowsIssue(HOME_BACKEND, 'c1', '1')).toBe(false);
   });
 });
 

@@ -251,34 +251,53 @@ describe('a moved card on the Board screen', () => {
     expect(columnsReached(held.shape.columns, []).size).toBe(0);
   });
 
-  it('draws a waiting card where it waits, in its order or before the card named, and keeps the columns it does not touch', () => {
+  it('draws a waiting card where it waits, from the row the board holds, in its order or before the card named, and keeps the columns it does not touch', () => {
     const held = kanban();
+    const cols = screenColumns(held);
     const shown = shownOf(held);
-    expect(withWaiting(shown, [])).toBe(shown);
-    const moved = withWaiting(shown, [{ row: held.sections[0].rows[0], column: 1 }]);
+    const all = { mine: null, words: [] };
+    expect(withWaiting(cols, shown, [], all)).toBe(shown);
+    const moved = withWaiting(cols, shown, [{ issue: '1', column: 1 }], all);
     expect(moved.map(ids)).toEqual([['2'], ['1', '3'], []]);
     expect(moved[2]).toBe(shown[2]);
+    // The row drawn is the board's, not a copy taken at the drop.
+    expect(moved[1].rows[0]).toBe(held.sections[0].rows[0]);
     // Counts stay the board's: the headers count a moved card by columnWith.
     expect(moved.map((c) => c.counted)).toEqual([2, 1, 0]);
-    expect(withWaiting(shown, [{ row: held.sections[0].rows[1], column: 0, before: '1' }]).map(ids)).toEqual([['2', '1'], ['3'], []]);
-    expect(withWaiting(shown, [{ row: held.sections[0].rows[0], column: 0, before: null }]).map(ids)).toEqual([['2', '1'], ['3'], []]);
-    // A column the board no longer has: nothing drawn.
-    expect(withWaiting(shown, [{ row: held.sections[0].rows[0], column: 5 }])).toBe(shown);
+    expect(withWaiting(cols, shown, [{ issue: '2', column: 0, before: '1' }], all).map(ids)).toEqual([['2', '1'], ['3'], []]);
+    expect(withWaiting(cols, shown, [{ issue: '1', column: 0, before: null }], all).map(ids)).toEqual([['2', '1'], ['3'], []]);
+    // A card the filter hides is drawn nowhere; one the board no longer
+    // holds, and a column the board no longer has, draw nothing.
+    const words = { mine: null, words: ['issue 3'] };
+    expect(withWaiting(cols, cols.map((col) => shownColumn(held, col, words)), [{ issue: '1', column: 1 }], words).map(ids)).toEqual([[], ['3'], []]);
+    expect(withWaiting(cols, shown, [{ issue: '9', column: 1 }], all)).toBe(shown);
+    expect(withWaiting(cols, shown, [{ issue: '1', column: 5 }], all)).toBe(shown);
   });
 
-  it('counts a card into one column and out of another, unless its status is left out of counts', () => {
+  it('counts a card into a column by the statuses it may have there and out of another by its own, unless one is left out of counts', () => {
     const held = kanban();
     const cols = screenColumns(held);
     const shown = shownOf(held);
     const card = held.sections[0].rows[0];
-    const into = columnWith(held, cols[1], shown[1], card, 1);
+    const into = columnWith(held, cols[1], shown[1], card, 1, ['s2'], true);
     expect(into.col.total).toEqual({ rows: 2, estimate: 4 });
     expect([into.col.counted, into.shown.counted]).toEqual([2, 2]);
-    const out = columnWith(held, cols[0], shown[0], card, -1);
+    const out = columnWith(held, cols[0], shown[0], card, -1, ['s1'], true);
     expect(out.col.total).toEqual({ rows: 1, estimate: 2 });
+    // A card the filter hides changes the column, not what it shows.
+    expect(columnWith(held, cols[1], shown[1], card, 1, ['s2'], false).shown).toBe(shown[1]);
+    // From a status left out of counts into one counted: it counts there.
     const leftOut = kanban(['s1']);
     const doing = screenColumns(leftOut)[1];
-    expect(columnWith(leftOut, doing, shownOf(leftOut)[1], card, 1).col).toBe(doing);
+    expect(columnWith(leftOut, doing, shownOf(leftOut)[1], card, 1, ['s2'], true).col.counted).toBe(doing.counted + 1);
+    const todo = screenColumns(leftOut)[0];
+    expect(columnWith(leftOut, todo, shownOf(leftOut)[0], card, -1, ['s1'], true).col).toBe(todo);
+    // Into a status left out: nothing; into a column whose statuses are not
+    // all counted, before its move is known: nothing either.
+    const nine = kanban(['s9']);
+    const mixed = screenColumns(nine)[1];
+    expect(columnWith(nine, mixed, shownOf(nine)[1], card, 1, ['s9'], true).col).toBe(mixed);
+    expect(columnWith(nine, mixed, shownOf(nine)[1], card, 1, ['s2', 's9'], true).col).toBe(mixed);
   });
 
   it('answers a card\'s address: its own, else its board\'s with its key', () => {

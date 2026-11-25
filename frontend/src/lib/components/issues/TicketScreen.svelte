@@ -67,6 +67,7 @@
   import TicketText from './TicketText.svelte';
   import Popover from '../primitives/Popover.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
+  import { setTicketWriteSurface } from './ticketWriteSurface';
   import TypeIcon from './TypeIcon.svelte';
   import TicketMoveForm from './TicketMoveForm.svelte';
   import TicketPicker, { type PickItem } from './TicketPicker.svelte';
@@ -130,6 +131,9 @@
     /** The ticket's computer is not connected now. */
     offline: boolean;
     compact: boolean;
+    /** The person sees the ticket now (its pane is on screen): what its
+     * controls draw counts as shown (`ticketWriteSurface.ts`). */
+    shown: boolean;
     /** Tickets Back steps through before it closes this one. */
     trail: number;
     placement: TicketPlacement;
@@ -145,7 +149,8 @@
     onOpenIssue: (issue: string, seed: TicketSeed) => void;
   }
 
-  let { attachment, seed, board, kind, computerName, account, offline, compact, trail, placement, besideFits, onPlacement, takeFocus, onBack, onClose, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, kind, computerName, account, offline, compact, shown, trail, placement, besideFits, onPlacement, takeFocus, onBack, onClose, onOpenIssue }: Props = $props();
+  setTicketWriteSurface(() => shown);
 
   // The ticket a person opened takes the focus, so a key or a paste of
   // files goes to it (IssuesPane `showTicket`).

@@ -577,6 +577,7 @@
               account={me}
               offline={boardOffline}
               {compact}
+              {shown}
               trail={selection.trail}
               placement={selection.placement}
               {besideFits}

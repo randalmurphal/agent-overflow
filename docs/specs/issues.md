@@ -271,12 +271,16 @@ writes, so the card and an open ticket show one write; carrying a card
 with a mouse or pen to another column, which moves it by the move that
 reaches that column (a column no move reaches says so and takes no drop,
 several moves ask which, a move that takes fields opens the ticket with
-its form), or within its column, which ranks it; under compact, the
+its form), or within its column, which ranks it (a card let go anywhere
+but over a column's cards goes home and changes nothing; several cards
+ranked one after another in a column are sent in turn); under compact, the
 status mark's Move to…; and the card's menu: Open, Open in the tracker,
 Move to…, Move to sprint…, the four fields, Copy key and Copy link, some
 at once and the rest behind Show more, the set shown at once chosen in
 the menu and kept on the device. A dropped card waits where it was
-dropped, dimmed, until its write settles. Not built: the summary row,
+dropped, dimmed, until its write settles, and is not moved again until
+then. A refusal shows under the card or the ticket when one is in view,
+else in a toast. Not built: the summary row,
 and the thread actions (Ask, Start work) on the card's menu. A sprint on the board is read whole, and while Only mine
 or Search is on every column is read whole, so a board of thousands of
 cards holds them all. A card's state line shows days in the status but not a

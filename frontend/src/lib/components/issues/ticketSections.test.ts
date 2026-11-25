@@ -10,6 +10,7 @@ import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AttachmentView, PokerView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import TicketAttachments from './TicketAttachments.svelte';
+import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import TicketPoker from './TicketPoker.svelte';
 import TicketMarkdown from './TicketMarkdown.svelte';
 import { TRACKER_MEDIA_CONTEXT, type TrackerMediaReader } from '../chat/markdown/trackerMediaContext';
@@ -46,7 +47,7 @@ describe('the attachments section', () => {
 
   it('lists the attachments newest first, with their size and author', () => {
     const { getAllByTestId } = render(TicketAttachments, {
-      props: { ctx: CTX, ticket: TICKET, attachments: [file('a1', 'old.pdf', 1), file('a2', 'new.pdf', 2, 4_100_000)], canAttach: true, open: true, onFold: () => {} },
+      context: ticketWriteSurfaceContext(() => true), props: { ctx: CTX, ticket: TICKET, attachments: [file('a1', 'old.pdf', 1), file('a2', 'new.pdf', 2, 4_100_000)], canAttach: true, open: true, onFold: () => {} },
     });
     const rows = getAllByTestId('ticket-attachment');
     expect(rows.map((r) => r.dataset.name)).toEqual(['new.pdf', 'old.pdf']);
@@ -66,7 +67,7 @@ describe('the attachments section', () => {
     const held = attachTrackerTicket(REF, true);
     const ctx = { ...CTX, key: held.key };
     const { getByTestId, queryByTestId } = render(TicketAttachments, {
-      props: { ctx, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
+      context: ticketWriteSurfaceContext(() => true), props: { ctx, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
     });
     const input = getByTestId('ticket-attach-input') as HTMLInputElement;
     const picked = [new File(['x'.repeat(4_100_000)], 'report.pdf'), new File(['y'], 'notes.txt')];
@@ -100,7 +101,7 @@ describe('the attachments section', () => {
     const held = attachTrackerTicket(REF, true);
     const ctx = { ...CTX, key: held.key };
     const { getByTestId, queryByTestId, container } = render(TicketAttachments, {
-      props: { ctx, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
+      context: ticketWriteSurfaceContext(() => true), props: { ctx, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
     });
     const input = getByTestId('ticket-attach-input') as HTMLInputElement;
     Object.defineProperty(input, 'files', { configurable: true, value: [new File(['a'], 'unclear.txt'), new File(['b'], 'changed.txt'), new File(['c'], 'unsent.txt')] });
@@ -130,7 +131,7 @@ describe('the attachments section', () => {
     setBindingMock('ReleaseTrackerSubscription', async () => {});
     const held = attachTrackerTicket(REF, true);
     const { getByTestId, findByTestId } = render(TicketAttachments, {
-      props: { ctx: { ...CTX, key: held.key }, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
+      context: ticketWriteSurfaceContext(() => true), props: { ctx: { ...CTX, key: held.key }, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
     });
     const input = getByTestId('ticket-attach-input') as HTMLInputElement;
     Object.defineProperty(input, 'files', { configurable: true, value: [new File(['a'], 'huge.zip')] });
@@ -149,7 +150,7 @@ describe('the attachments section', () => {
     const held = attachTrackerTicket(REF, true);
     const ctx = { ...CTX, key: held.key };
     const { getByTestId, unmount } = render(TicketAttachments, {
-      props: { ctx, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
+      context: ticketWriteSurfaceContext(() => true), props: { ctx, ticket: { ...TICKET, key: held.key }, attachments: [], canAttach: true, open: true, onFold: () => {} },
     });
     const input = getByTestId('ticket-attach-input') as HTMLInputElement;
     Object.defineProperty(input, 'files', { configurable: true, value: [new File(['a'], 'report.pdf')] });
@@ -169,7 +170,7 @@ describe('the attachments section', () => {
     const held = attachTrackerTicket(REF, true);
     await flush();
     const { getAllByTestId } = render(TicketAttachments, {
-      props: { ctx: { ...CTX, key: held.key }, ticket: { ...TICKET, key: held.key }, attachments: [file('a1', 'old.pdf', 1), file('a2', 'new.pdf', 2)], canAttach: true, open: true, onFold: () => {} },
+      context: ticketWriteSurfaceContext(() => true), props: { ctx: { ...CTX, key: held.key }, ticket: { ...TICKET, key: held.key }, attachments: [file('a1', 'old.pdf', 1), file('a2', 'new.pdf', 2)], canAttach: true, open: true, onFold: () => {} },
     });
     await fireEvent.click(getAllByTestId('ticket-attachment-menu')[0]);
     await fireEvent.click(await waitFor(() => document.body.querySelector<HTMLElement>('[data-testid="ticket-attachment-save"]')!));
@@ -179,7 +180,7 @@ describe('the attachments section', () => {
 
   it('offers Open only for an image small enough to preview here, and Save or the tracker for a larger one', async () => {
     const { getAllByTestId } = render(TicketAttachments, {
-      props: {
+      context: ticketWriteSurfaceContext(() => true), props: {
         ctx: CTX, ticket: TICKET, canAttach: true, open: true, onFold: () => {},
         attachments: [file('a1', 'small.png', 2, 1_000_000, 'image/png'), file('a2', 'huge.png', 1, 40 * 1024 * 1024, 'image/png')],
       },
@@ -202,7 +203,7 @@ describe('the attachments section', () => {
     await pairWithScopes(['threads:read', 'tracker:read']);
     try {
       const { getAllByTestId } = render(TicketAttachments, {
-        props: { ctx: CTX, ticket: TICKET, canAttach: true, open: true, onFold: () => {}, attachments: [file('a1', 'huge.zip', 1, BROWSER_SAVE_MAX_BYTES + 1, 'application/zip')] },
+        context: ticketWriteSurfaceContext(() => true), props: { ctx: CTX, ticket: TICKET, canAttach: true, open: true, onFold: () => {}, attachments: [file('a1', 'huge.zip', 1, BROWSER_SAVE_MAX_BYTES + 1, 'application/zip')] },
       });
       await fireEvent.click(getAllByTestId('ticket-attachment-menu')[0]);
       const save = await waitFor(() => document.body.querySelector<HTMLElement>('[data-testid="ticket-attachment-save"]')!);
@@ -216,7 +217,7 @@ describe('the attachments section', () => {
 
   it('offers no Attach where the tracker stores no files', () => {
     const { queryByTestId } = render(TicketAttachments, {
-      props: { ctx: CTX, ticket: TICKET, attachments: [], canAttach: false, open: true, onFold: () => {} },
+      context: ticketWriteSurfaceContext(() => true), props: { ctx: CTX, ticket: TICKET, attachments: [], canAttach: false, open: true, onFold: () => {} },
     });
     expect(queryByTestId('ticket-attach')).toBeNull();
   });
@@ -241,7 +242,7 @@ describe('the poker section', () => {
       disconnect(): void {}
     });
     const onScreen: boolean[] = [];
-    const { getAllByTestId, unmount } = render(TicketPoker, {
+    const { getAllByTestId, unmount } = render(TicketPoker, { context: ticketWriteSurfaceContext(() => true),
       props: { attachment: attachment(onScreen), ctx: CTX, poker: { view: view(false, [['User 1', 5, true], ['User 2', null]]), error: null }, onSetEstimate: null, hours: false },
     });
     expect(getAllByTestId('ticket-poker-vote').map((v) => v.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['User 1 (you) 5', 'User 2 voted']);
@@ -256,7 +257,7 @@ describe('the poker section', () => {
 
   it('clears everyone\'s votes only on the second press', async () => {
     const clear = setBindingMock('ClearTrackerPokerVotes', async () => ({ parts: [{ step: 'poker', state: 'applied' }] }));
-    const { getByTestId } = render(TicketPoker, {
+    const { getByTestId } = render(TicketPoker, { context: ticketWriteSurfaceContext(() => true),
       props: { attachment: attachment([]), ctx: CTX, poker: { view: view(false, []), error: null }, onSetEstimate: null, hours: false },
     });
     await fireEvent.click(getByTestId('ticket-poker-clear'));
@@ -269,7 +270,7 @@ describe('the poker section', () => {
   it('offers the estimate from each value voted once revealed, most votes first, or says where to set it', async () => {
     const set = vi.fn();
     const poker = { view: view(true, [['User 1', 3], ['User 2', 5], ['User 3', 5]]), error: null };
-    const { getAllByTestId, rerender, getByTestId } = render(TicketPoker, { props: { attachment: attachment([]), ctx: CTX, poker, onSetEstimate: set, hours: false } });
+    const { getAllByTestId, rerender, getByTestId } = render(TicketPoker, { context: ticketWriteSurfaceContext(() => true), props: { attachment: attachment([]), ctx: CTX, poker, onSetEstimate: set, hours: false } });
     const offers = getAllByTestId('ticket-poker-set-estimate');
     expect(offers.map((o) => o.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['Set estimate to 5 (2 votes)', 'Set estimate to 3 (1 vote)']);
     await fireEvent.click(offers[0]);
@@ -285,7 +286,7 @@ describe('the poker section', () => {
     setBindingMock('VoteTrackerPoker', () => new Promise<WriteView>((resolve) => answers.push(resolve)));
     setBindingMock('SetTrackerEstimate', () => new Promise<WriteView>((resolve) => answers.push(resolve)));
     const poker = { view: view(true, [['User 1', 3, true]]), error: null };
-    const { getAllByTestId, getByTestId } = render(TicketPoker, { props: { attachment: attachment([]), ctx: CTX, poker, onSetEstimate: (v: number) => { void setTicketPoints(CTX, '1', v); }, hours: false } });
+    const { getAllByTestId, getByTestId } = render(TicketPoker, { context: ticketWriteSurfaceContext(() => true), props: { attachment: attachment([]), ctx: CTX, poker, onSetEstimate: (v: number) => { void setTicketPoints(CTX, '1', v); }, hours: false } });
     await fireEvent.click(getAllByTestId('ticket-poker-card')[1]);
     expect(getAllByTestId('ticket-poker-card').every((c) => (c as HTMLButtonElement).disabled)).toBe(true);
     expect((getByTestId('ticket-poker-typed') as HTMLInputElement).disabled).toBe(true);
@@ -298,7 +299,7 @@ describe('the poker section', () => {
 
   it('refuses a typed vote outside 0 to 1000 and sends one inside', async () => {
     const vote = setBindingMock('VoteTrackerPoker', async () => ({ parts: [{ step: 'poker', state: 'applied' }] }));
-    const { getByTestId } = render(TicketPoker, { props: { attachment: attachment([]), ctx: CTX, poker: { view: view(false, []), error: null }, onSetEstimate: null, hours: false } });
+    const { getByTestId } = render(TicketPoker, { context: ticketWriteSurfaceContext(() => true), props: { attachment: attachment([]), ctx: CTX, poker: { view: view(false, []), error: null }, onSetEstimate: null, hours: false } });
     const typed = getByTestId('ticket-poker-typed') as HTMLInputElement;
     await fireEvent.input(typed, { target: { value: '1001' } });
     expect(getByTestId('ticket-poker-typed-invalid').textContent).toBe('A vote is a number from 0 to 1000.');

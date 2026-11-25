@@ -744,11 +744,6 @@ export function trackerTicketSubscription(key: string): string | null {
   return lives.get(key)?.id || null;
 }
 
-/** Whether any surface holds the ticket now. */
-export function isTrackerTicketHeld(key: string): boolean {
-  return surfaces.has(key);
-}
-
 /** The ticket's detail as last applied; null before its first view. */
 export function trackerTicketDetail(key: string): DetailView | null {
   return lives.get(key)?.state.detail ?? null;

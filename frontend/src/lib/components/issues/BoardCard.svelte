@@ -34,8 +34,9 @@
   import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { CardField } from '../../stores/issuesPane.svelte';
   import type { TrackerBoardRef } from '../../stores/trackerBoard.svelte';
-  import { cardMovePending, cardWriteContext } from '../../stores/trackerBoardCarry.svelte';
-  import { BOARD_CARD_TARGETS, fieldTarget, ticketWrite } from '../../stores/trackerTicketWrites.svelte';
+  import { cardWriteContext, movePending } from '../../stores/trackerBoardCarry.svelte';
+  import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
+  import { BOARD_CARD_TARGETS, fieldTarget, ticketWrites } from '../../stores/trackerTicketWrites.svelte';
   import { cardFieldName, type CardEditField } from './ticketEditors';
   import { daysInStatus, formatEstimate } from './boardFormat';
 
@@ -67,19 +68,21 @@
   let { row, boardRef, hidden, unit, typed, compact, now, open, carried, editing, onOpen, onMenu, onEdit, onMove }: Props = $props();
 
   const card = $derived(row.card);
-  // The ticket's own write context, so a write shows on both surfaces.
-  const ctx = $derived(cardWriteContext(boardRef, row));
+  // The ticket's writes, one read for every target the card draws; under
+  // the ticket's own key, so a write shows on both surfaces.
+  const ticketKey = $derived(trackerTicketKey({ backend: boardRef.backend, connection: boardRef.connection, issue: card.id }));
+  const writes = $derived(ticketWrites(ticketKey));
   const estimate = $derived(formatEstimate(row.estimate, unit));
   const days = $derived(daysInStatus(card.status_since, now));
   const parentText = $derived(card.parent ? card.parent.title || card.parent.key || '' : '');
   const assigneeName = $derived(card.assignee ? card.assignee.name || 'Unknown user' : '');
-  const moving = $derived(cardMovePending(ctx));
-  const notes = $derived(BOARD_CARD_TARGETS.filter((t) => ticketWrite(ctx.key, t) !== null));
+  const moving = $derived(movePending(writes));
+  const notes = $derived(writes.size === 0 ? [] : BOARD_CARD_TARGETS.filter((t) => writes.has(t)));
 
   const TARGETS: Readonly<Record<CardEditField, string>> = {
     type: fieldTarget('type'), priority: fieldTarget('priority'), points: 'points', assignee: fieldTarget('assignee'),
   };
-  const pending = (field: CardEditField) => ticketWrite(ctx.key, TARGETS[field])?.pending ?? false;
+  const pending = (field: CardEditField) => writes.get(TARGETS[field])?.pending ?? false;
   // Marks edit on a pointer screen; under compact the menu does.
   const marks = $derived(!compact);
 
@@ -208,14 +211,14 @@
   {#if notes.length > 0}
     <div class="relative z-[1] flex flex-col gap-0.5" data-card-mark data-testid="issues-card-notes">
       {#each notes as target (target)}
-        <TicketWriteNote ticketKey={ctx.key} {target} fieldName={cardFieldName} />
+        <TicketWriteNote {ticketKey} {target} fieldName={cardFieldName} />
       {/each}
     </div>
   {/if}
 </article>
 {#if editing && anchor}
   {#await loadFieldEditor() then mod}
-    <mod.default {ctx} {row} field={editing} {unit} board={boardRef.board} {typed} {anchor} onClose={() => onEdit(row, null)} />
+    <mod.default ctx={cardWriteContext(boardRef, row)} {row} field={editing} {unit} board={boardRef.board} {typed} {anchor} onClose={() => onEdit(row, null)} />
   {:catch err}
     <p class="text-xs text-error" role="alert" data-testid="issues-card-editor-error">The editor could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
   {/await}

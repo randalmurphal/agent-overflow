@@ -193,9 +193,6 @@ const lives = new Map<string, Live>();
 const shownByKey = new Map<string, boolean>();
 // Whether a filter is on over each held board; kept across a re-subscribe.
 const filteredByKey = new Map<string, boolean>();
-// Each held board's ref, for the listeners told when it is let go.
-const refByKey = new Map<string, TrackerBoardRef>();
-const droppedListeners = new Set<(ref: TrackerBoardRef) => void>();
 
 const votes = createPumpVotes('trackerBoard', (id, visible) => SetTrackerSubscriptionVisible(id, visible));
 
@@ -224,9 +221,6 @@ const store = createEntityStore<TrackerBoardState, TrackerBoardRef>({
     lives.delete(key);
     shownByKey.delete(key);
     filteredByKey.delete(key);
-    const ref = refByKey.get(key);
-    refByKey.delete(key);
-    if (ref) for (const listener of droppedListeners) listener(ref);
   },
 });
 
@@ -308,6 +302,8 @@ function fold(live: Live, event: TrackerBoardEvent): void {
     live.pending.clear();
     live.readAgain = false;
     update(live, next);
+    // A read still out reads a subscription that ended: no write waits on it.
+    settleWaiters(live);
     return;
   }
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
@@ -585,21 +581,10 @@ export function trackerBoardsSettled(backend: BackendKey, connection: string): P
   return waits.length === 0 ? Promise.resolve() : Promise.all(waits).then(() => undefined);
 }
 
-/** Whether a held board of `connection` on `backend` holds a row of
- * `issue`: its card shows there. */
-export function trackerBoardShowsIssue(backend: BackendKey, connection: string, issue: string): boolean {
-  for (const live of lives.values()) {
-    if (live.ref.backend !== backend || live.ref.connection !== connection) continue;
-    for (const sec of live.state.held?.sections ?? []) {
-      if (sec.rows.some((r) => r.card.id === issue)) return true;
-    }
-  }
-  return false;
-}
-
-/** Runs `listener` with a board whenever this client lets it go. */
-export function onTrackerBoardDropped(listener: (ref: TrackerBoardRef) => void): void {
-  droppedListeners.add(listener);
+/** The board `key` (trackerBoardKey) holds now; null when it is not held
+ * or not read. Not reactive: for a write deciding what it sends. */
+export function heldTrackerBoard(key: string): HeldBoard | null {
+  return lives.get(key)?.state.held ?? null;
 }
 
 /** Asks for the next page of a held section, once: a demand trigger. A
@@ -718,7 +703,6 @@ export interface TrackerBoardAttachment {
 export function attachTrackerBoard(ref: TrackerBoardRef, shown: boolean): TrackerBoardAttachment {
   const key = trackerBoardKey(ref);
   shownByKey.set(key, shown);
-  refByKey.set(key, ref);
   const handle = store.attach(key, ref);
   return {
     key,
@@ -741,6 +725,5 @@ export function resetTrackerBoardsForTest(): void {
   lives.clear();
   shownByKey.clear();
   filteredByKey.clear();
-  refByKey.clear();
   votes.resetForTest();
 }

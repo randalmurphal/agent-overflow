@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
 import '../../../app.css';
 import BoardColumn from './BoardColumn.svelte';
+import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 import type { RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { ScreenColumn } from '../../stores/trackerBoardModel';
 import type { CardField } from '../../stores/issuesPane.svelte';
@@ -74,7 +75,7 @@ function mountColumn(rows: RowView[], more: boolean) {
     onEditCard: () => {},
     onMoveCard: () => {},
   });
-  const app = mount(BoardColumn, { target: host, props });
+  const app = mount(BoardColumn, { target: host, props, context: ticketWriteSurfaceContext(() => true) });
   mounted.push({ app, host });
   const scrollEl = host.querySelector<HTMLElement>('[data-testid="issues-column-cards"]')!;
   return { props, asks, scrollEl };

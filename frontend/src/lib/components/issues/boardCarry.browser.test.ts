@@ -5,24 +5,34 @@
 // takes it, so no card renders per pointer move; a drop in the card's own
 // column ranks it between the cards either side of the slot.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { page } from 'vitest/browser';
 import { flushSync, mount, unmount } from 'svelte';
 import '../../../app.css';
 import BoardScreen from './BoardScreen.svelte';
 import type { BoardView, RowView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { CardField } from '../../stores/issuesPane.svelte';
-import { heldFromView } from '../../stores/trackerBoardModel';
+import { attachTrackerBoard } from '../../stores/trackerBoard.svelte';
+import { trackerBoardUpdated } from '../../stores/trackerBoardEvents';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { waitFor } from '../../../test/helpers/browserFrames';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 const mounted: { app: object; host: HTMLElement }[] = [];
+const releases: (() => void)[] = [];
+
+// The board's 1200 by 700 px within the page, so a release's hit test
+// finds what is under it.
+beforeEach(async () => {
+  await page.viewport(1280, 800);
+});
 
 afterEach(() => {
   for (const { app, host } of mounted.splice(0)) {
     unmount(app);
     host.remove();
   }
+  for (const release of releases.splice(0)) release();
 });
 
 const REF = { backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '1' };
@@ -56,14 +66,22 @@ function board(): BoardView {
   } as unknown as BoardView;
 }
 
-function mountBoard() {
+/** The Board screen over the board store holding `view`, as the pane
+ * mounts it. */
+async function mountBoard(view: BoardView = board()): Promise<HTMLElement> {
+  setBindingMock('SubscribeTrackerBoard', async () => ({ id: 'sub', seq: 10, loaded: true, view, poll_every: 10_000 }));
+  setBindingMock('SetTrackerSubscriptionVisible', async () => {});
+  setBindingMock('ReleaseTrackerSubscription', async () => {});
+  const held = attachTrackerBoard(REF, true);
+  releases.push(() => held.release());
+  await waitFor(() => held.current?.held != null, 'the board held');
   const host = document.createElement('div');
   host.style.cssText = 'position: fixed; top: 0; left: 0; width: 1200px; height: 700px; display: flex; flex-direction: column;';
   document.body.appendChild(host);
   const app = mount(BoardScreen, {
     target: host,
     props: {
-      boardKey: 'board', boardRef: REF, held: heldFromView(board(), (r) => r), paging: new Set<string>(), sectionErrors: new Map(),
+      boardKey: held.key, boardRef: REF, get held() { return held.current!.held!; }, paging: new Set<string>(), sectionErrors: new Map(),
       filter: { mine: null, words: [] }, hidden: new Set<CardField>() as ReadonlySet<CardField>, compact: false, shown: true,
       openIssue: null, typed: true, onOpenCard: () => {}, onMoveWithFields: () => {},
     },
@@ -114,7 +132,7 @@ describe('carrying a Board card', () => {
   it('renders no card per pointer move while carried, and ranks it at the slot it is dropped on', async () => {
     const moves = setBindingMock('TrackerMoves', async () => [{ id: '11', name: 'To Do', to: { id: 's1', name: 'To Do' } }]);
     const rank = setBindingMock('RankTrackerIssues', async () => ({ parts: [{ step: 'rank', state: 'applied' }] }));
-    const host = mountBoard();
+    const host = await mountBoard();
     await waitFor(() => cardEl(host, '5003') !== null, 'the In Progress cards');
     const carried = cardEl(host, '5003');
     const first = cardEl(host, '5001').getBoundingClientRect();
@@ -160,7 +178,7 @@ describe('carrying a Board card', () => {
 
   it('keeps a card carried while the copy of the one dropped before it glides home', async () => {
     setBindingMock('TrackerMoves', async () => []);
-    const host = mountBoard();
+    const host = await mountBoard();
     await waitFor(() => cardEl(host, '5003') !== null, 'the In Progress cards');
     const pickUp = async (id: string) => {
       const r = cardEl(host, id).getBoundingClientRect();
@@ -185,5 +203,163 @@ describe('carrying a Board card', () => {
     expect(cardEl(host, '5001').hasAttribute('data-carried')).toBe(true);
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     await waitFor(() => !cardEl(host, '5001').hasAttribute('data-carried'), 'the carry cancelled');
+  });
+
+  it('sends nothing for a card let go above the cards, over another column or its own', async () => {
+    const moves = setBindingMock('TrackerMoves', async () => [{ id: '31', name: 'Done', to: { id: 's3', name: 'Done' } }]);
+    const move = setBindingMock('MoveTrackerIssue', async () => ({ parts: [{ step: 'move', state: 'applied' }] }));
+    const rank = setBindingMock('RankTrackerIssues', async () => ({ parts: [{ step: 'rank', state: 'applied' }] }));
+    const host = await mountBoard();
+    await waitFor(() => cardEl(host, '5003') !== null, 'the In Progress cards');
+    for (const over of ['Done', 'In Progress']) {
+      const start = cardEl(host, '5003').getBoundingClientRect();
+      pointer('pointerdown', cardEl(host, '5003').querySelector('[data-testid="issues-card-title"]')!, start.left + 20, start.top + 20);
+      pointer('pointermove', window, start.left + 40, start.top + 30);
+      await waitFor(() => cardEl(host, '5003').hasAttribute('data-carried'), 'the card carried');
+      // Up over the column's header, above its cards.
+      const head = column(host, over).getBoundingClientRect();
+      const cards = column(host, over).querySelector('[data-testid="issues-column-cards"]')!.getBoundingClientRect();
+      const x = head.left + head.width / 2;
+      const y = (head.top + cards.top) / 2;
+      expect(y).toBeLessThan(cards.top);
+      // Straight up out of its own cards, then along above the columns.
+      for (let k = 1; k <= 6; k += 1) {
+        pointer('pointermove', window, start.left + 40, start.top + 30 + (y - start.top - 30) * k / 6);
+        await frames(1);
+      }
+      for (let k = 1; k <= 6; k += 1) {
+        pointer('pointermove', window, start.left + 40 + (x - start.left - 40) * k / 6, y);
+        await frames(1);
+      }
+      await frames(2);
+      pointer('pointerup', window, x, y);
+      await waitFor(() => document.querySelector('[data-testid="issues-card-carried"]') === null, 'the copy home');
+      expect(cardEl(host, '5003').hasAttribute('data-carried')).toBe(false);
+    }
+    expect(move).not.toHaveBeenCalled();
+    expect(rank).not.toHaveBeenCalled();
+    expect(moves).not.toHaveBeenCalled();
+  });
+
+  it('lets a card be picked up again only once its drop is decided, and sends the one move it decided', async () => {
+    let answer: (moves: unknown[]) => void = () => {};
+    const moves = setBindingMock('TrackerMoves', () => new Promise((resolve) => { answer = resolve; }));
+    const move = setBindingMock('MoveTrackerIssue', async () => ({ parts: [{ step: 'move', state: 'applied' }] }));
+    const host = await mountBoard();
+    await waitFor(() => cardEl(host, '5003') !== null, 'the In Progress cards');
+    const carry = async (to: string) => {
+      const start = cardEl(host, '5003').getBoundingClientRect();
+      pointer('pointerdown', cardEl(host, '5003').querySelector('[data-testid="issues-card-title"]')!, start.left + 20, start.top + 20);
+      pointer('pointermove', window, start.left + 40, start.top + 30);
+      await frames(4);
+      const r = column(host, to).querySelector('[data-testid="issues-column-cards"]')!.getBoundingClientRect();
+      pointer('pointermove', window, r.left + r.width / 2, r.top + 100);
+      await frames(2);
+      pointer('pointerup', window, r.left + r.width / 2, r.top + 100);
+    };
+    // Let go over Done while its moves are being read: the drop waits.
+    await carry('Done');
+    await waitFor(() => moves.mock.calls.length === 1, 'the moves read');
+    await frames(2);
+    expect(document.querySelectorAll('[data-testid="issues-card-carried"]')).toHaveLength(1);
+    // Picked up again meanwhile and let go over To Do: no second carry.
+    await carry('To Do');
+    await frames(4);
+    expect(document.querySelectorAll('[data-testid="issues-card-carried"]')).toHaveLength(1);
+    expect(moves).toHaveBeenCalledTimes(1);
+    answer([{ id: '11', name: 'To Do', to: { id: 's1', name: 'To Do' } }, { id: '31', name: 'Done', to: { id: 's3', name: 'Done' } }]);
+    await waitFor(() => move.mock.calls.length === 1, 'the move');
+    expect(move.mock.calls[0]).toEqual(['c1', { issue: '5003', move: '31', fields: undefined, accept_loss: false }]);
+    await waitFor(() => document.querySelector('[data-testid="issues-card-carried"]') === null, 'the copy landed');
+    await frames(4);
+    expect(move).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads no layout per frame while the card is over the end of its column', async () => {
+    setBindingMock('TrackerMoves', async () => []);
+    const host = await mountBoard();
+    await waitFor(() => cardEl(host, '5003') !== null, 'the In Progress cards');
+    const start = cardEl(host, '5001').getBoundingClientRect();
+    pointer('pointerdown', cardEl(host, '5001').querySelector('[data-testid="issues-card-title"]')!, start.left + 20, start.top + 20);
+    pointer('pointermove', window, start.left + 40, start.top + 30);
+    await waitFor(() => cardEl(host, '5001').hasAttribute('data-carried'), 'the card carried');
+    const last = cardEl(host, '5003').getBoundingClientRect();
+    pointer('pointermove', window, start.left + 40, last.bottom - 4);
+    await waitFor(() => column(host, 'In Progress').querySelector('[data-testid="issues-column-slot"]') !== null, 'the slot at the end');
+    const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')!;
+    let reads = 0;
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        reads += 1;
+        return height.get!.call(this);
+      },
+    });
+    try {
+      for (let k = 0; k < 10; k += 1) {
+        pointer('pointermove', window, start.left + 40, last.bottom - 4 - (k % 2));
+        await frames(1);
+      }
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', height);
+    }
+    expect(reads).toBe(0);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await waitFor(() => document.querySelector('[data-testid="issues-card-carried"]') === null, 'the carry cancelled');
+  });
+});
+
+describe('ranking cards one after another in a column', () => {
+  const COLUMN = { kind: 'column', column: 0 } as const;
+  const A = row(1, 's1');
+  const B = row(2, 's1');
+  const C = row(3, 's1');
+  const D = row(4, 's1');
+
+  function rankedBoard(rows: RowView[]): BoardView {
+    return {
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
+      columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 4, estimate: 8 } }],
+      sprints: [], all: { rows: 4, estimate: 8 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 1 },
+      screen: [COLUMN], sections: [{ section: COLUMN, rows, next: null }],
+    } as unknown as BoardView;
+  }
+
+  it('sends a rank only once the one before it in the column settled, naming the neighbors the board then holds', async () => {
+    // The first rank's refresh tells the board D moved between A and B.
+    const reordered = { ...D, order: 'k00001m' } as RowView;
+    setBindingMock('TrackerBoardPatch', async () => ({ lifetime: 1, revision: 2, sections: [{ section: COLUMN, rows: [reordered] }] }));
+    const answers: ((view: unknown) => void)[] = [];
+    const rank = setBindingMock('RankTrackerIssues', () => new Promise((resolve) => answers.push(resolve)));
+    const host = await mountBoard(rankedBoard([A, B, C, D]));
+    await waitFor(() => cardEl(host, '4') !== null, 'the cards');
+    const drag = async (id: string, before: string) => {
+      const start = cardEl(host, id).getBoundingClientRect();
+      pointer('pointerdown', cardEl(host, id).querySelector('[data-testid="issues-card-title"]')!, start.left + 20, start.top + 20);
+      pointer('pointermove', window, start.left + 40, start.top + 30);
+      await waitFor(() => cardEl(host, id).hasAttribute('data-carried'), `${id} carried`);
+      const to = cardEl(host, before).getBoundingClientRect();
+      pointer('pointermove', window, start.left + 40, to.top + 4);
+      await waitFor(() => host.querySelector('[data-testid="issues-column-slot"]') !== null, 'the slot');
+      await frames(2);
+      pointer('pointerup', window, start.left + 40, to.top + 4);
+      await waitFor(() => document.querySelector('[data-testid="issues-card-carried"]') === null, 'the copy landed');
+    };
+    // D between A and B; its rank is out.
+    await drag('4', '2');
+    await waitFor(() => rank.mock.calls.length === 1, 'the first rank');
+    expect(rank.mock.calls[0]).toEqual(['c1', { board: '1', issues: ['4'], prev: '1', next: '2' }]);
+    // C between D, drawn where it waits, and B: nothing goes yet.
+    await drag('3', '2');
+    await frames(4);
+    expect(rank).toHaveBeenCalledTimes(1);
+    expect(cardEl(host, '3').hasAttribute('data-moving')).toBe(true);
+    // The first lands, its event read first; then the second names D and B.
+    trackerBoardUpdated({ scope: { connection: 'c1', board: '1' }, seq: 11, changed: ['4'] }, HOME_BACKEND);
+    answers[0]({ parts: [{ step: 'rank', state: 'applied' }] });
+    await waitFor(() => rank.mock.calls.length === 2, 'the second rank');
+    expect(rank.mock.calls[1]).toEqual(['c1', { board: '1', issues: ['3'], prev: '4', next: '2' }]);
+    answers[1]({ parts: [{ step: 'rank', state: 'applied' }] });
+    await waitFor(() => !cardEl(host, '3').hasAttribute('data-moving'), 'the second settled');
   });
 });

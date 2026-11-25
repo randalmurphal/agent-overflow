@@ -9,7 +9,7 @@
 // removed; the poker writes' one target; a connection's link types.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { tick } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import type {
   BoardPatch,
   BoardView,
@@ -37,6 +37,7 @@ import {
   attachTicketFiles,
   clearTicketPokerVotes,
   dismissTicketWrite,
+  drawTicketWrite,
   editTicketComment,
   editTicketFields,
   fieldTarget,
@@ -571,6 +572,8 @@ describe('a ticket write', () => {
     setBindingMock('AddTrackerComment', async () => { throw new DisconnectedError('client closed'); });
     const ticket = attachTrackerTicket(REF, true);
     await flush();
+    // Its comment box is on screen.
+    drawTicketWrite(ticket.key, 'new-comment', () => true);
     const outcome = await addTicketComment(ctxOf(ticket), 'Looks good');
     expect(outcome?.kind).toBe('lost');
     expect(ticketWrite(ticket.key, 'new-comment')?.outcome).toEqual({
@@ -609,6 +612,7 @@ describe('a ticket write', () => {
     const ticket = attachTrackerTicket(REF, true);
     await flush();
     const target = 'comment:7';
+    drawTicketWrite(ticket.key, target, () => true);
     const first = editTicketComment(ctxOf(ticket), '7', 'new body', 'old body');
     edits.answer({ parts: [{ step: 'comment', state: 'refused', refusal: { reason: 'loss', message: 'This edit would lose formatting.', lost: ['a table'] } }] } as WriteView);
     expect((await first)?.kind).toBe('refused');
@@ -662,7 +666,7 @@ describe('a write from a Board card', () => {
   const refused = (message: string): WriteView => ({ parts: [{ step: 'edit', state: 'refused', refusal: { reason: 'tracker', message } }] }) as WriteView;
   const priority = [{ field: 'priority', value: { kind: 'option', choices: [{ id: '2' }] } as never }];
 
-  it('keeps a card write saying Saving until the board shows it, and its refusal on the card with no ticket open', async () => {
+  it('keeps a card write saying Saving until the board shows it, and its refusal where a shown control draws it', async () => {
     installBoard();
     const patches = held<BoardPatch>('TrackerBoardPatch');
     setBindingMock('EditTrackerIssue', async () => {
@@ -673,6 +677,7 @@ describe('a write from a Board card', () => {
     const board = attachTrackerBoard(BOARD, true);
     await flush();
     const target = fieldTarget('priority');
+    const release = drawTicketWrite(CARD_CTX.key, target, () => true);
     const made = editTicketFields(CARD_CTX, target, priority);
     await flush();
     expect(ticketWrite(CARD_CTX.key, target)?.pending).toBe(true);
@@ -686,37 +691,64 @@ describe('a write from a Board card', () => {
     expect((await editTicketFields(CARD_CTX, target, priority))?.kind).toBe('refused');
     expect(ticketWrite(CARD_CTX.key, target)?.outcome?.kind).toBe('refused');
     expect(getToasts().length).toBe(before);
+    release();
     board.release();
   });
 
-  it("keeps the card's outcomes when the ticket closes while the board still shows the card, and drops the others", async () => {
-    install();
-    installBoard();
+  it('says in a toast, and keeps nowhere, a write that settles while no control of its target is on a shown surface', async () => {
     setBindingMock('EditTrackerIssue', async () => refused('Not allowed'));
-    const board = attachTrackerBoard(BOARD, true);
-    const ticket = attachTrackerTicket(REF, true);
-    await flush();
-    await editTicketFields(ctxOf(ticket), fieldTarget('priority'), priority);
-    await editTicketFields(ctxOf(ticket), fieldTarget('description'), [{ field: 'description', markdown: { markdown: 'b', from: 'a' } }]);
-    ticket.release();
-    await flush();
-    expect(ticketWrite(ticket.key, fieldTarget('priority'))?.outcome?.kind).toBe('refused');
-    expect(ticketWrite(ticket.key, fieldTarget('description'))).toBeNull();
-    // Once the board is let go too, nothing draws the card: its outcome goes.
-    board.release();
-    await flush();
-    expect(ticketWrite(ticket.key, fieldTarget('priority'))).toBeNull();
+    const target = fieldTarget('priority');
+    const cases: { name: string; drawers: (() => boolean)[] }[] = [
+      { name: 'nothing draws it', drawers: [] },
+      { name: 'a control under a covered or hidden surface draws it', drawers: [() => false] },
+    ];
+    for (const c of cases) {
+      const releases = c.drawers.map((shown) => drawTicketWrite(CARD_CTX.key, target, shown));
+      const before = getToasts().length;
+      expect((await editTicketFields(CARD_CTX, target, priority))?.kind, c.name).toBe('refused');
+      expect(getToasts().slice(before).map((t) => t.message), c.name).toEqual(['The tracker refused the change to WEB-1: Not allowed']);
+      expect(ticketWrite(CARD_CTX.key, target), c.name).toBeNull();
+      for (const release of releases) release();
+    }
   });
 
-  it('settles into a toast when the board is released while the write is out, and drops a held outcome with the board', async () => {
-    installBoard();
-    const ranks = held<WriteView>('RankTrackerIssues');
-    let board = attachTrackerBoard(BOARD, true);
+  it('keeps an outcome while any mounted control of it remains, once on every one, and lets it go with the last, said nowhere', async () => {
+    setBindingMock('EditTrackerIssue', async () => refused('Not allowed'));
+    const target = fieldTarget('priority');
+    // The card under a ticket that covers the board, and the ticket.
+    const card = drawTicketWrite(CARD_CTX.key, target, () => false);
+    const ticket = drawTicketWrite(CARD_CTX.key, target, () => true);
+    const before = getToasts().length;
+    await editTicketFields(CARD_CTX, target, priority);
+    expect(ticketWrite(CARD_CTX.key, target)?.outcome?.kind).toBe('refused');
+    ticket();
     await flush();
-    const ranked = rankTicket(CARD_CTX, '1', '10102', '');
+    expect(ticketWrite(CARD_CTX.key, target)?.outcome?.kind).toBe('refused');
+    // The last control goes and another mounts in the same update: kept.
+    card();
+    const again = drawTicketWrite(CARD_CTX.key, target, () => true);
+    await flush();
+    expect(ticketWrite(CARD_CTX.key, target)?.outcome?.kind).toBe('refused');
+    again();
+    await flush();
+    expect(ticketWrite(CARD_CTX.key, target)).toBeNull();
+    // Dismissed by the person, it goes while its control stays.
+    const shown = drawTicketWrite(CARD_CTX.key, target, () => true);
+    await editTicketFields(CARD_CTX, target, priority);
+    dismissTicketWrite(CARD_CTX.key, target);
+    expect(ticketWrite(CARD_CTX.key, target)).toBeNull();
+    shown();
+    expect(getToasts().length).toBe(before);
+  });
+
+  it('settles into a toast when the control drawing it goes while the write is out', async () => {
+    const ranks = held<WriteView>('RankTrackerIssues');
+    const place = () => ({ prev: '10102', next: '' });
+    let release = drawTicketWrite(CARD_CTX.key, 'rank', () => true);
+    const ranked = rankTicket(CARD_CTX, '1', place);
     await flush();
     expect(ranks.calls).toEqual([['c1', { board: '1', issues: ['10101'], prev: '10102', next: undefined }]]);
-    board.release();
+    release();
     await flush();
     const before = getToasts().length;
     ranks.answer({ parts: [{ step: 'rank', state: 'refused', refusal: { reason: 'tracker', message: 'The neighbor moved' } }] } as WriteView);
@@ -724,31 +756,38 @@ describe('a write from a Board card', () => {
     expect(getToasts().slice(before).map((t) => t.message)).toEqual(['The tracker refused the change to WEB-1: The neighbor moved']);
     expect(ticketWrite(CARD_CTX.key, 'rank')).toBeNull();
 
-    board = attachTrackerBoard(BOARD, true);
-    await flush();
-    const again = rankTicket(CARD_CTX, '1', '10102', '');
+    release = drawTicketWrite(CARD_CTX.key, 'rank', () => true);
+    const again = rankTicket(CARD_CTX, '1', place);
     ranks.answer({ parts: [{ step: 'rank', state: 'refused', refusal: { reason: 'tracker', message: 'The neighbor moved' } }] } as WriteView);
     await again;
     expect(ticketWrite(CARD_CTX.key, 'rank')?.outcome?.kind).toBe('refused');
-    board.release();
+    release();
     await flush();
     expect(ticketWrite(CARD_CTX.key, 'rank')).toBeNull();
   });
 
-  it('shows a card outcome on the open ticket with no board, and drops it with the ticket as before', async () => {
-    install();
-    setBindingMock('EditTrackerIssue', async () => refused('Not allowed'));
-    const ticket = attachTrackerTicket(REF, true);
-    await flush();
-    await editTicketFields(ctxOf(ticket), fieldTarget('priority'), priority);
-    expect(ticketWrite(ticket.key, fieldTarget('priority'))?.outcome?.kind).toBe('refused');
-    dismissTicketWrite(ticket.key, fieldTarget('priority'));
-    expect(ticketWrite(ticket.key, fieldTarget('priority'))).toBeNull();
-    await editTicketFields(ctxOf(ticket), fieldTarget('priority'), priority);
-    ticket.release();
-    await flush();
-    expect(ticketWrite(ticket.key, fieldTarget('priority'))).toBeNull();
+  it("wakes only the written ticket's readers once that ticket has been written", async () => {
+    const other = trackerTicketKey({ ...REF, issue: '10102' });
+    setBindingMock('EditTrackerIssue', async () => applied());
+    await editTicketFields(CARD_CTX, fieldTarget('priority'), priority);
+    let runs = 0;
+    const stop = $effect.root(() => {
+      $effect(() => {
+        void ticketWrite(other, 'status');
+        runs += 1;
+      });
+    });
+    flushSync();
+    expect(runs).toBe(1);
+    const made = editTicketFields(CARD_CTX, fieldTarget('priority'), priority);
+    flushSync();
+    expect(ticketWrite(CARD_CTX.key, fieldTarget('priority'))?.pending).toBe(true);
+    await made;
+    flushSync();
+    expect(runs).toBe(1);
+    stop();
   });
+
 });
 
 describe('attaching files', () => {
@@ -783,13 +822,13 @@ describe('attaching files', () => {
     const ctx = ctxOf(ticket);
     attachTicketFiles(ctx, [file('report.pdf', 4_100_000), file('notes.txt', 10)]);
     await flush();
-    expect(ticketUploads(ticket.key)).toEqual({ name: 'report.pdf', size: 4_100_000, index: 1, total: 2 });
+    expect(ticketUploads(ticket.key)).toMatchObject({ name: 'report.pdf', size: 4_100_000, index: 1, total: 2 });
     expect(puts.names).toEqual(['report.pdf']);
     attachTicketFiles(ctx, [file('shot.png', 20)]);
-    expect(ticketUploads(ticket.key)).toEqual({ name: 'report.pdf', size: 4_100_000, index: 1, total: 3 });
+    expect(ticketUploads(ticket.key)).toMatchObject({ name: 'report.pdf', size: 4_100_000, index: 1, total: 3 });
     puts.answer(json(applied()));
     await flush();
-    expect(ticketUploads(ticket.key)).toEqual({ name: 'notes.txt', size: 10, index: 2, total: 3 });
+    expect(ticketUploads(ticket.key)).toMatchObject({ name: 'notes.txt', size: 10, index: 2, total: 3 });
     expect(puts.names).toEqual(['report.pdf', 'notes.txt']);
     puts.answer(json(applied()));
     await flush();
@@ -811,6 +850,18 @@ describe('attaching files', () => {
     const puts = heldPuts();
     const ticket = attachTrackerTicket(REF, true);
     await flush();
+    // The attachments section on screen: the row of the file being sent
+    // draws its write, and each outcome's note draws it after.
+    const stop = $effect.root(() => {
+      $effect(() => {
+        const target = ticketUploads(ticket.key)?.target;
+        if (target) return drawTicketWrite(ticket.key, target, () => true);
+      });
+      $effect(() => {
+        const releases = ticketAttachOutcomes(ticket.key).map((o) => drawTicketWrite(ticket.key, o.target, () => true));
+        return () => releases.forEach((release) => release());
+      });
+    });
     attachTicketFiles(ctxOf(ticket), [file('huge.zip', 1), file('changed.pdf', 1), file('cut.pdf', 1), file('later.pdf', 1)]);
     await flush();
     // The refused mint sent no byte; the next file went.
@@ -828,6 +879,7 @@ describe('attaching files', () => {
       { name: 'cut.pdf', kind: 'unknown', said: 'The file may or may not be attached; look at the ticket\'s attachments before attaching it again.' },
       { name: 'later.pdf', kind: 'refused', said: 'Jira refused the file' },
     ]);
+    stop();
     ticket.release();
   });
 });

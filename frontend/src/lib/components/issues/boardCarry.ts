@@ -6,14 +6,17 @@
 // status mark.
 //
 // Cost while carried, per animation frame: the plate's step
-// (boardCarryPhysics.ts), the hit test against column rectangles read once
-// at pick-up (offset by the board's sideways scroll), and one transform
+// (boardCarryPhysics.ts), the hit test against the columns' cards areas
+// read once at pick-up (offset by the board's sideways scroll), and one transform
 // written to the card's copy on `document.body`. The host is told only
 // when the column under the card or the drop slot in its own column
 // changes, so no card of the board renders while it is carried. Near an
 // edge the board scrolls sideways and the card's own column up or down.
 // The frame loop ends when the card lands or the carry is cancelled
-// (Escape, a lost pointer, the window losing focus).
+// (Escape, a lost pointer, the window losing focus). A release counts only
+// where it is let go over a column's cards as they are on screen then
+// (`document.elementFromPoint`); anywhere else the card goes home and
+// nothing is sent.
 
 import { motionReduced } from '../../utils/reducedMotion';
 import { plateAt, stepPlate, type Plate } from './boardCarryPhysics';
@@ -26,7 +29,8 @@ const LAND_MS = 400;
 
 /** A column as the carry tests it. */
 export interface CarryColumn {
-  readonly rect: DOMRect;
+  /** The element of its cards, which a release must be over. */
+  readonly cards: HTMLElement;
   /** Where the card would go among the column's cards at `clientY` (an
    * index into its shown rows, the carried card's own place included),
    * and where to draw the slot; null outside its cards. */
@@ -58,7 +62,8 @@ export interface CarryHost {
 
 export interface Carry {
   move(x: number, y: number): void;
-  up(): void;
+  /** Let go at (x, y). */
+  up(x: number, y: number): void;
   cancel(): void;
 }
 
@@ -98,7 +103,14 @@ export function startCarry(card: HTMLElement, sx: number, sy: number, x: number,
 
   function columnAt(): number | null {
     const shift = host.scroller.scrollLeft - scroll0;
-    const i = host.columns.findIndex((c) => px >= c.rect.left - shift && px <= c.rect.right - shift);
+    const i = host.columns.findIndex((c) => px >= c.cardsRect.left - shift && px <= c.cardsRect.right - shift && py >= c.cardsRect.top && py <= c.cardsRect.bottom);
+    return i < 0 ? null : i;
+  }
+
+  /** The column whose cards are under (x, y) on screen now. */
+  function columnUnder(x: number, y: number): number | null {
+    const cards = document.elementFromPoint(x, y)?.closest('[data-testid="issues-column-cards"]');
+    const i = cards ? host.columns.findIndex((c) => c.cards === cards) : -1;
     return i < 0 ? null : i;
   }
 
@@ -184,9 +196,11 @@ export function startCarry(card: HTMLElement, sx: number, sy: number, x: number,
       px = nx;
       py = ny;
     },
-    up() {
+    up(x, y) {
       if (done) return;
-      const column = columnAt();
+      px = x;
+      py = y;
+      const column = columnUnder(x, y);
       const at = column === host.from ? host.columns[host.from].slotAt(py) : null;
       finish();
       void host.drop(column, at, { x: px, y: py }).then(land, () => land(null));

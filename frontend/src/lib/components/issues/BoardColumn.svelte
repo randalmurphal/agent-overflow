@@ -87,26 +87,24 @@
   let scrollEl: HTMLElement | undefined = $state();
   let listRef: LongListHandle | undefined = $state();
 
-  let sectionEl: HTMLElement | undefined = $state();
 
   /** The scroll offset of the gap before row `index` (`rows.length`: after
-   * the last), or null when the virtualizer does not hold that row. */
+   * the last), from the virtualizer's geometry, or null when it does not
+   * hold that row. */
   function slotOffset(index: number): number | null {
     const ref = listRef;
     if (!ref || rows.length === 0) return null;
     if (index < rows.length) return ref.holds(index) ? ref.getItemOffset(index) : null;
     const last = rows.length - 1;
-    if (!ref.holds(last)) return null;
-    const el = scrollEl?.querySelector<HTMLElement>(`[data-issue="${CSS.escape(rows[last].card.id)}"]`);
-    return ref.getItemOffset(last) + (el?.offsetHeight ?? CARD_ESTIMATE_PX);
+    return ref.holds(last) ? ref.getItemOffset(last) + ref.getItemSize(last) : null;
   }
 
   /** The column as a carry tests it, read once at pick-up. */
   export function carryColumn(): CarryColumn {
-    const rect = sectionEl!.getBoundingClientRect();
-    const cardsRect = scrollEl!.getBoundingClientRect();
+    const cards = scrollEl!;
+    const cardsRect = cards.getBoundingClientRect();
     return {
-      rect,
+      cards,
       cardsRect,
       slotAt(clientY) {
         const ref = listRef;
@@ -173,7 +171,6 @@
 </script>
 
 <section
-  bind:this={sectionEl}
   class="relative flex min-h-0 flex-col {wide ? 'min-w-0 flex-1' : 'w-72 shrink-0'}"
   aria-label={column.name}
   data-testid="issues-column"
