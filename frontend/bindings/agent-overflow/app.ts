@@ -2743,7 +2743,8 @@ export function GetThreadWorktreeSetup(threadID: string): $CancellablePromise<ap
  * refs, with no forge or tracker request: the stored Pull requests list
  * (open pull requests), the pull requests its linked threads were last
  * seen with (merged and closed ones too), and the branches of the projects
- * that list a board of the connection or hold one of those pull requests.
+ * that list a board of the connection, hold one of those pull requests or
+ * hold a thread linked to the ticket.
  * The ticket's key is the one its mirror holds, so the ticket must have
  * been read on this computer, as an open ticket has.
  */
@@ -6471,9 +6472,16 @@ export function StartTerminal(opts: app$0.StartTerminalOptions): $CancellablePro
  * linked to the ticket with the request's origin, with the ticket file
  * (trackerapp.TicketFileText, KEY.md) attached to its draft, unsent, and,
  * for Start work, the draft's text "Work on KEY: title." and a worktree on
- * the branch: the worktree that already has the branch checked out, else
- * a new one on the branch, made from the project's current branch when the
- * branch does not exist. The ticket is read before anything is made (from
+ * exactly the branch named: the worktree that already has the branch
+ * checked out, else a new one on the branch, made from the project's
+ * current branch when the branch does not exist; never a tag of that name.
+ * A Start work for a ticket, project and branch that already has a Start
+ * work thread, not archived, answers that thread and makes nothing, so
+ * asking again after a lost reply is safe; one ticket's Start works in a
+ * project run one at a time, so two at once make one thread. An archived
+ * one leaves the branch and its worktree as they are: the new thread runs
+ * in the worktree that still has the branch checked out, or in a new one
+ * on it. The ticket is read before anything is made (from
  * the mirror, or once from the tracker when it holds no body); a failure
  * at any later step deletes the thread, which ends its link and tells the
  * views that showed the ticket as kept by it, and takes back the worktree
