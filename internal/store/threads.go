@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"slices"
@@ -299,7 +300,9 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	}
 	if ticketLink.Valid {
 		t.TicketLink = new(ThreadTicketLink)
-		if err := json.Unmarshal([]byte(ticketLink.String), t.TicketLink); err != nil {
+		// json/v2 decodes it in about a quarter of v1's time; the list
+		// read decodes one per linked thread (BenchmarkListThreadsLinked).
+		if err := jsonv2.Unmarshal([]byte(ticketLink.String), t.TicketLink); err != nil {
 			return Thread{}, fmt.Errorf("read the ticket link of thread %s: %w", t.ID, err)
 		}
 	}

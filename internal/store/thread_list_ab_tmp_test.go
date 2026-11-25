@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -71,7 +72,7 @@ func BenchmarkThreadLinkColumnAlone(b *testing.B) {
 		}
 		s := openTestStore(b, path)
 		linkThreadListBench(b, s, linked)
-		for _, v := range []struct{ name, col string }{{"column", threadTicketLinkColumn}, {"null", "NULL"}} {
+		for _, v := range []struct{ name, col string }{{"column", threadTicketLinkColumn}, {"null", "NULL"}, {"nodecode", threadTicketLinkColumn}, {"v2", threadTicketLinkColumn}} {
 			q := `SELECT ` + v.col + ` FROM threads`
 			b.Run(fmt.Sprintf("linked=%d/link=%s", linked, v.name), func(b *testing.B) {
 				for b.Loop() {
@@ -85,7 +86,15 @@ func BenchmarkThreadLinkColumnAlone(b *testing.B) {
 						if err := rows.Scan(&raw); err != nil {
 							b.Fatal(err)
 						}
-						if raw.Valid {
+						if raw.Valid && v.name == "nodecode" {
+							got++
+						} else if raw.Valid && v.name == "v2" {
+							var link ThreadTicketLink
+							if err := jsonv2.Unmarshal([]byte(raw.String), &link); err != nil {
+								b.Fatal(err)
+							}
+							got++
+						} else if raw.Valid {
 							var link ThreadTicketLink
 							if err := json.Unmarshal([]byte(raw.String), &link); err != nil {
 								b.Fatal(err)
@@ -94,7 +103,7 @@ func BenchmarkThreadLinkColumnAlone(b *testing.B) {
 						}
 						n++
 					}
-					if err := rows.Close(); err != nil || n != threadListBenchThreads || (v.name == "column" && got != linked) {
+					if err := rows.Close(); err != nil || n != threadListBenchThreads || (v.name != "null" && got != linked) {
 						b.Fatalf("read %d rows, %d links, %v", n, got, err)
 					}
 				}
