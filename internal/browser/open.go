@@ -21,7 +21,7 @@ func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts O
 		return PageInfo{}, fmt.Errorf("browser: invalid URL: %w", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return PageInfo{}, fmt.Errorf("browser: URL scheme %q is not allowed; use browser_open_file for local files", parsed.Scheme)
+		return PageInfo{}, fmt.Errorf("browser: URL scheme %q is not allowed; use browser_open with path for local files", parsed.Scheme)
 	}
 	if parsed.Host == "" {
 		return PageInfo{}, fmt.Errorf("browser: URL host is required")

@@ -76,10 +76,10 @@ func TestAssistantsOffShapeSaysNothingOfAssistants(t *testing.T) {
 			t.Errorf("the guide no longer has %q", sentence)
 		}
 	}
-	if !strings.Contains(instructionsStopping, "With a `label` it stops your loop or watch.") {
-		t.Error("the Stopping paragraph no longer has the sentence the off shape rewrites")
+	if !strings.Contains(instructionsStopping, "(stop a loop or watch)") {
+		t.Error("the Stopping paragraph no longer has the text the off shape rewrites")
 	}
-	for _, words := range []string{"no background work, loop, watch or reminder,", "a loop or watch it keeps armed holds it"} {
+	for _, words := range []string{"no background work, loop, watch, reminder or child threads", "an armed loop or watch holds completion"} {
 		if !strings.Contains(instructionsWaiting(soloShape()), words) {
 			t.Errorf("the Waiting paragraph no longer has %q, which the off shape rewrites", words)
 		}

@@ -143,7 +143,7 @@ func partViews(kind string, res tracker.Result, at int64) []PartView {
 			if err != nil {
 				f = ClassifyFailure(kind, err)
 			}
-			msg := unknownOutcome(kind, p.Step)
+			msg := unknownOutcome(responderOf(kind, err), p.Step)
 			if pe, ok := errors.AsType[*jira.PokerError](err); ok {
 				// The answer arrived and was not one that says: say which.
 				msg = pe.Step + " " + pe.Detail + ", so this change may or may not have been made; " + LostWriteCheck(p.Step)

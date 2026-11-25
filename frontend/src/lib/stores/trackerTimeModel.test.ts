@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorklogDays, WorklogView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { addDays, isWeekend, localDay, mondayOf, weekDays, weekShape } from './trackerTimeModel';
+import { addDays, isWeekend, localDay, mondayOf, weekDays, weekShape, weekTickets } from './trackerTimeModel';
 
 function log(id: string, day: string, spent: number, issue = '10001', key = 'WEB-1', title = 'First story'): WorklogView {
   return { id, issue, key, title, author: 'acct-1', day, spent_seconds: spent, updated: 1 };
@@ -66,7 +66,7 @@ describe('weekShape', () => {
     expect(shape.days.map((d) => d.uncounted)).toEqual([null, 'partial', 'partial', 'partial', 'partial']);
     expect(shape.total).toBe(3600);
     // A ticket's total counts the counted days alone, as the week's does.
-    expect(shape.tickets.map((t) => [t.key, t.total])).toEqual([['WEB-1', 3600], ['WEB-2', 0]]);
+    expect(weekTickets(shape).map((t) => [t.key, t.total])).toEqual([['WEB-1', 3600], ['WEB-2', 0]]);
   });
 
   it('makes a row per ticket by key, with each day\'s entries in its cells', () => {
@@ -77,14 +77,14 @@ describe('weekShape', () => {
       log('4', '2026-11-10', 300, '10012', 'WEB-12'),
       log('5', '2026-11-10', 60, '99', '', ''),
     ]));
-    expect(shape.tickets.map((t) => t.key || t.issue)).toEqual(['WEB-12', 'WEB-101', '99']);
-    const web12 = shape.tickets[0];
+    expect(weekTickets(shape).map((t) => t.key || t.issue)).toEqual(['WEB-12', 'WEB-101', '99']);
+    const web12 = weekTickets(shape)[0];
     expect(web12.cells.map((c) => c.map((w) => w.id))).toEqual([['2'], ['3', '4'], [], [], []]);
     expect(web12.total).toBe(3000);
   });
 
   it('names a ticket from any entry that names it', () => {
     const shape = weekShape(MONDAY, answer([log('1', '2026-11-09', 60, '7', '', ''), log('2', '2026-11-10', 60, '7', 'WEB-7', 'Seventh')]));
-    expect(shape.tickets.map((t) => [t.key, t.title])).toEqual([['WEB-7', 'Seventh']]);
+    expect(weekTickets(shape).map((t) => [t.key, t.title])).toEqual([['WEB-7', 'Seventh']]);
   });
 });

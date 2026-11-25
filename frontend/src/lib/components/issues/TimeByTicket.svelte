@@ -4,7 +4,10 @@
   // each day's total and the week's. A cell is a control: empty, it logs
   // on its ticket and day; with entries, the screen opens the one or a
   // menu of them. Under compact the rows show keys without titles and the
-  // cells narrow, so the page does not scroll sideways.
+  // cells narrow, so the page does not scroll sideways. On a desktop list
+  // narrower than the table's least width (a ticket open beside it), the
+  // table scrolls sideways in its own frame, so every column and the
+  // totals stay reachable.
   import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
   import { dayHeader, ticketLabel, uncountedText, type WeekShape, type WeekTicket } from '../../stores/trackerTimeModel';
@@ -12,6 +15,8 @@
 
   interface Props {
     shape: WeekShape;
+    /** The week's rows, `weekTickets(shape)`. */
+    tickets: readonly WeekTicket[];
     today: string;
     compact: boolean;
     openIssue: string | null;
@@ -22,11 +27,13 @@
     onLogOther: (anchor: HTMLElement) => void;
   }
 
-  let { shape, today, compact, openIssue, onOpenTicket, onCell, onCellMenu, onLogOther }: Props = $props();
+  let { shape, tickets, today, compact, openIssue, onOpenTicket, onCell, onCellMenu, onLogOther }: Props = $props();
 
   const columns = $derived(compact
     ? `minmax(3.5rem, 1fr) repeat(${shape.days.length}, minmax(0, 2.6rem)) 3rem`
-    : `minmax(10rem, 1fr) repeat(${shape.days.length}, 4.5rem) 5.5rem`);
+    : `minmax(6rem, 1fr) repeat(${shape.days.length}, minmax(3rem, 4.5rem)) minmax(4rem, 5.5rem)`);
+  // The least width of the desktop tracks; compact's fit any width.
+  const leastWidth = $derived(compact ? undefined : `${6 + shape.days.length * 3 + 4}rem`);
 
   function cellTotal(entries: readonly { spent_seconds: number }[]): number {
     return entries.reduce((s, w) => s + w.spent_seconds, 0);
@@ -34,7 +41,8 @@
 </script>
 
 <div class="flex flex-col gap-2" data-testid="time-by-ticket">
-  <div class="overflow-hidden rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 text-xs" role="table" aria-label="Time by ticket">
+  <div class="overflow-x-auto rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 text-xs" data-testid="time-by-ticket-table">
+  <div style:min-width={leastWidth} role="table" aria-label="Time by ticket">
     <div class="grid min-h-8 items-center bg-surface-0 text-fg-muted" style:grid-template-columns={columns} role="row">
       <span role="columnheader"></span>
       {#each shape.days as d (d.day)}
@@ -43,7 +51,7 @@
       {/each}
       <span class="border-l border-border-subtle px-2 text-right" role="columnheader">Total</span>
     </div>
-    {#each shape.tickets as t (t.issue)}
+    {#each tickets as t (t.issue)}
       <div class="grid min-h-9 items-stretch border-t border-border-subtle" style:grid-template-columns={columns} role="row" data-testid="time-ticket-row" data-issue={t.issue}>
         <span role="rowheader" class="flex min-w-0 items-center {openIssue === t.issue ? 'bg-accent/10' : ''}">
           {#if t.key}
@@ -89,8 +97,9 @@
           {/if}
         </span>
       {/each}
-      <span class="border-l border-border-subtle px-2 text-right font-semibold tabular-nums text-fg" role="cell">{formatTimeSpent(shape.total)}</span>
+      <span class="border-l border-border-subtle px-2 text-right font-semibold tabular-nums text-fg" role="cell" data-testid="time-grid-week-total">{formatTimeSpent(shape.total)}</span>
     </div>
+  </div>
   </div>
   <button type="button" class="inline-flex items-center gap-1 self-start rounded-[var(--radius-control)] px-2 py-1 text-xs text-fg-muted hover:bg-surface-1 hover:text-fg" data-testid="time-log-other" onclick={(event) => onLogOther(event.currentTarget)}>
     <Icon icon={Plus} size={12} strokeWidth={2} />

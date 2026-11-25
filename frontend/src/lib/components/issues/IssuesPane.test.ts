@@ -2252,4 +2252,33 @@ describe('the Time screen in the pane', () => {
     expect(await view.findByTestId('time-linear')).toBeInTheDocument();
     expect(getBindingMock('TrackerWorklogs')?.mock.calls ?? []).toHaveLength(0);
   });
+
+  it('opens on Time with the saved board\'s computer not connected and says so, not that it is listing boards', async () => {
+    stageBackend({ status: 'reconnecting' });
+    setCarriedSessionScopes('laptop', ['tracker:read']);
+    writeFromAnotherWindow(BOARD_KEY, boardRef('7', 'p9', 'laptop'));
+    localStorage.setItem('agent-overflow:frontend:issues-screen', JSON.stringify('time'));
+    install({ choices: [choice('1', { opens_first: true })] });
+    const view = mount();
+    expect(await view.findByTestId('time-offline')).toHaveTextContent('Laptop is not connected. Your time shows when it connects.');
+    expect(view.queryByTestId('issues-time-listing')).toBeNull();
+    view.unmount();
+  });
+
+  it('says the board is gone when its listing goes while Time shows it', async () => {
+    let rows = [choice('1', { opens_first: true })];
+    install();
+    setBindingMock('TrackerBoardChoices', async () => rows);
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [] }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Time');
+    await view.findByTestId('time-toolbar');
+    rows = [];
+    applyTrackerConnectionsChanged(HOME_BACKEND);
+    expect(await view.findByTestId('time-board-gone')).toHaveTextContent('No project lists this board any more, or its connection was removed. Pick another board to see your time.');
+    expect(view.queryByTestId('issues-time-listing')).toBeNull();
+    view.unmount();
+  });
 });

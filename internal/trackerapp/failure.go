@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -264,6 +265,56 @@ type answeredBy struct {
 
 func (e *answeredBy) Error() string { return e.err.Error() }
 func (e *answeredBy) Unwrap() error { return e.err }
+
+// timeAnswered is err, a failure of a connection's time whose tracker is
+// timeBy (a store.TrackerKind*; empty for the connection's own), marked
+// with that tracker, except a request the time made to Jira
+// (tracker.ErrWorklogJira). Nil stays nil.
+func timeAnswered(timeBy string, err error) error {
+	if err == nil || timeBy == "" || errors.Is(err, tracker.ErrWorklogJira) {
+		return err
+	}
+	return &answeredBy{tracker: timeBy, err: err}
+}
+
+// timeAnsweredParts is res with each worklog part's failure marked as
+// timeAnswered marks it, so its sentence and the connection's problem
+// name the tracker that failed.
+func timeAnsweredParts(timeBy string, res tracker.Result) tracker.Result {
+	if timeBy == "" {
+		return res
+	}
+	parts := slices.Clone(res.Parts)
+	for i, p := range parts {
+		if p.Step != tracker.StepWorklog || p.Outcome.Err() == nil {
+			continue
+		}
+		err := timeAnswered(timeBy, p.Outcome.Err())
+		switch p.Outcome.State() {
+		case tracker.StateRefused:
+			r, _ := p.Outcome.Refusal()
+			r.Err = err
+			parts[i].Outcome = tracker.Refused(r)
+		case tracker.StateUnknown:
+			parts[i].Outcome = tracker.Unknown(err)
+		case tracker.StateNotSent:
+			parts[i].Outcome = tracker.NotSent(err)
+		case tracker.StateApplied:
+			// An applied part has no error, so the loop skipped it.
+		}
+	}
+	res.Parts = parts
+	return res
+}
+
+// responderOf is the tracker kind err names: the one it was marked as
+// answered by, else kind.
+func responderOf(kind string, err error) string {
+	if by, ok := errors.AsType[*answeredBy](err); ok {
+		return by.tracker
+	}
+	return kind
+}
 
 // worklogRefusal is the failure of a worklog read of author's days from
 // to to that the tracker refused for what it asked, and true; false for
