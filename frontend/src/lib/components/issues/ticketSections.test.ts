@@ -100,7 +100,7 @@ describe('the poker section', () => {
     // The scroller's viewport as the observer reports it, by the test.
     const observers: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
     vi.stubGlobal('IntersectionObserver', class {
-      constructor(private readonly report: (entries: Array<{ isIntersecting: boolean }>) => void) {
+      constructor(report: (entries: Array<{ isIntersecting: boolean }>) => void) {
         observers.push(report);
       }
       observe(): void {}
