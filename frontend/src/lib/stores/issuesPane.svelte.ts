@@ -1,11 +1,14 @@
 // The Issues pane's view state (docs/specs/issues.md, "The Issues pane"):
-// the board a pane shows (`createBoardSelection`), which card fields each
-// board shows (Display), Only mine, and the column a compact screen shows.
-// The board a person picked last and Only mine are saved for this client
-// (frontendStorage) and seed the next pane that opens; Display follows
-// another window of the client as it changes; the compact column lasts
-// while the app runs. No computer is asked for any of it. The subscription
-// itself is trackerBoard.svelte.ts's, the boards to pick from
+// the board a pane shows and the ticket open over or beside it
+// (`createBoardSelection`), which card fields each board shows (Display),
+// Only mine, the column a compact screen shows, and the ticket's
+// remembered choices: over or beside, which sections are open, and the
+// comment order. The board a person picked last and Only mine are saved
+// for this client (frontendStorage) and seed the next pane that opens;
+// Display follows another window of the client as it changes; the compact
+// column lasts while the app runs. No computer is asked for any of it. The
+// subscriptions themselves are trackerBoard.svelte.ts's and
+// trackerTicket.svelte.ts's, the boards to pick from
 // trackerBoardChoices.svelte.ts's.
 
 import { untrack } from 'svelte';
@@ -20,6 +23,8 @@ import {
   type TrackerBoardAttachment,
   type TrackerBoardRef,
 } from './trackerBoard.svelte';
+import { attachTrackerTicket, type TrackerTicketAttachment, type TrackerTicketRef } from './trackerTicket.svelte';
+import type { CommentOrder } from './trackerTicketModel';
 import {
   acquireTrackerBoardChoices,
   isBoardChoiceOpenable,
@@ -31,7 +36,7 @@ import {
   type ListedBoardChoice,
 } from './trackerBoardChoices.svelte';
 import { pageGrantsKnownTracked, scopeGrant } from '../transport/scopes';
-import type { BoardChoice } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { BoardChoice, CardView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 
 /** A card field the Display menu turns on and off. Title always shows. */
 export type CardField = 'type' | 'key' | 'parent' | 'labels' | 'priority' | 'estimate' | 'assignee' | 'days';
@@ -52,8 +57,15 @@ const FIELD_NAMES: ReadonlySet<string> = new Set(CARD_FIELDS.map((f) => f.field)
 const BOARD_KEY = 'issues-board';
 const HIDDEN_FIELDS_KEY = 'issues-hidden-fields';
 const ONLY_MINE_KEY = 'issues-only-mine';
+const PLACEMENT_KEY = 'issues-ticket-placement';
+const SECTIONS_KEY = 'issues-ticket-folds';
+const COMMENT_ORDER_KEY = 'issues-ticket-comment-order';
 // Boards whose Display was changed, newest last; the oldest goes past this.
 const MAX_BOARDS_REMEMBERED = 200;
+// Sections whose fold was changed, newest last; the oldest goes past this.
+const MAX_SECTIONS_REMEMBERED = 200;
+// Tickets a pane steps back through, each opened from the one before.
+const MAX_TICKET_TRAIL = 20;
 
 function isString(v: unknown): v is string {
   return typeof v === 'string';
@@ -138,6 +150,99 @@ export function setCompactColumn(ref: TrackerBoardRef, column: number): void {
   compactColumns.set(trackerBoardOnComputer(ref), column);
 }
 
+/** Where a screen shows a ticket: over the list, or beside it. */
+export type TicketPlacement = 'over' | 'beside';
+
+/** The screens that open a ticket; only the Board is built. */
+type TicketScreen = 'board';
+
+function readPlacements(): Partial<Record<TicketScreen, TicketPlacement>> {
+  const v = readFrontendValue(PLACEMENT_KEY) as Record<string, unknown> | null;
+  return v && typeof v === 'object' && (v.board === 'over' || v.board === 'beside') ? { board: v.board } : {};
+}
+
+let placements = $state.raw(readPlacements());
+
+/** Where the screen shows a ticket when the pane is wide enough for
+ * beside; over until the person chose. Reactive. */
+export function ticketPlacement(screen: TicketScreen): TicketPlacement {
+  return placements[screen] ?? 'over';
+}
+
+export function setTicketPlacement(screen: TicketScreen, placement: TicketPlacement): void {
+  const next = { ...placements, [screen]: placement };
+  if (writeFrontendValue(PLACEMENT_KEY, next)) placements = next;
+}
+
+/** A section of a ticket on its computer: a tracker field's ID (a Jira
+ * field is the site's, so its fold holds on every ticket of the
+ * connection) or one of the screen's own (`more-sections`, `more-fields`,
+ * `history`). */
+export interface TicketSection {
+  readonly backend: string;
+  readonly connection: string;
+  readonly section: string;
+}
+
+function sectionKeyOf(s: TicketSection): string {
+  return `${s.backend}\n${s.connection}\n${s.section}`;
+}
+
+/** Each section's fold as the person set it, by sectionKeyOf, oldest first. */
+function readSections(): ReadonlyMap<string, boolean> {
+  const v = readFrontendValue(SECTIONS_KEY);
+  if (!Array.isArray(v)) return new Map();
+  const out = new Map<string, boolean>();
+  for (const entry of v.slice(-MAX_SECTIONS_REMEMBERED)) {
+    if (Array.isArray(entry) && entry.length === 2 && isString(entry[0]) && typeof entry[1] === 'boolean') out.set(entry[0], entry[1]);
+  }
+  return out;
+}
+
+let sections = $state.raw(readSections());
+
+/** Whether a section is open: as the person left it, else `opens`.
+ * Reactive. */
+export function ticketSectionOpen(s: TicketSection, opens: boolean): boolean {
+  return sections.get(sectionKeyOf(s)) ?? opens;
+}
+
+export function setTicketSectionOpen(s: TicketSection, open: boolean): void {
+  const key = sectionKeyOf(s);
+  const next = new Map(sections);
+  // Re-inserted so the section changed last is kept longest.
+  next.delete(key);
+  next.set(key, open);
+  while (next.size > MAX_SECTIONS_REMEMBERED) next.delete(next.keys().next().value!);
+  if (writeFrontendValue(SECTIONS_KEY, [...next])) sections = next;
+}
+
+let commentOrder = $state<CommentOrder>(readFrontendValue(COMMENT_ORDER_KEY) === 'newest' ? 'newest' : 'oldest');
+
+/** The order comments read in, oldest first until the person chose.
+ * Reactive. */
+export function ticketCommentOrder(): CommentOrder {
+  return commentOrder;
+}
+
+export function setTicketCommentOrder(order: CommentOrder): void {
+  if (writeFrontendValue(COMMENT_ORDER_KEY, order)) commentOrder = order;
+}
+
+/** What the pane knew of a ticket when it opened, drawn until its view is
+ * read: the card clicked on the board, or the parent a ticket named. */
+export interface TicketSeed {
+  readonly key: string;
+  readonly title: string;
+  readonly card: CardView | null;
+}
+
+/** A ticket open in a pane. */
+export interface OpenTicket {
+  readonly ref: TrackerTicketRef;
+  readonly seed: TicketSeed;
+}
+
 /** What the opening rule decided: a board, or none, and whether it still
  * waits on a computer's boards. */
 export interface OpeningDecision {
@@ -180,7 +285,8 @@ export function openingBoard(
   return { board: first ? firstOf(first.backend, first.choice.project) : null, waiting: false };
 }
 
-/** The board a pane shows, and the subscription that shows it. */
+/** The board a pane shows and the ticket open on it, and the
+ * subscriptions that show them. */
 export interface BoardSelection {
   /** The board shown; null while the opening rule waits or when it found
    * none. Reactive. */
@@ -189,9 +295,29 @@ export interface BoardSelection {
   readonly attachment: TrackerBoardAttachment | null;
   /** The opening rule is waiting on a computer's boards. Reactive. */
   readonly choosing: boolean;
+  /** The ticket open over or beside the board; null for none. Reactive. */
+  readonly ticket: OpenTicket | null;
+  /** Its subscription, null with no ticket. Reactive. */
+  readonly ticketAttachment: TrackerTicketAttachment | null;
+  /** Where the ticket shows now: beside only when the pane fits it and the
+   * person chose it. Reactive. */
+  readonly placement: TicketPlacement;
+  /** Whether the person sees the board: the pane is on screen and no
+   * ticket covers it. The board's subscription votes this. Reactive. */
+  readonly boardShown: boolean;
+  /** How many tickets Back steps through before it closes the ticket.
+   * Reactive. */
+  readonly trail: number;
   /** The person picked `ref`: shown and saved for the next pane. A pick of
    * the board shown while it has ended subscribes it again. */
   pick(ref: TrackerBoardRef): void;
+  /** Opens issue `issue` of the board's connection: from the board, or
+   * from the ticket open now, which Back then returns to. */
+  openTicket(issue: string, seed: TicketSeed, from: 'board' | 'ticket'): void;
+  /** Back: the ticket this one was opened from, else closes it. */
+  stepBack(): void;
+  /** Close: the ticket goes, and the tickets it was opened from. */
+  closeTicket(): void;
   destroy(): void;
 }
 
@@ -200,6 +326,8 @@ export interface BoardSelectionOptions {
   readonly openedFromProject: string | null;
   /** Whether the pane is on screen now; reactive. */
   readonly shown: () => boolean;
+  /** Whether the pane fits a ticket beside the board now; reactive. */
+  readonly besideFits: () => boolean;
 }
 
 /** Where a board's computer stands for the pane: `waiting` until the page
@@ -243,6 +371,16 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   // only an answer read after it moves the board to another listing.
   let attachedAfter = 0;
   const computer = $derived(board ? boardComputer(board.backend) : 'waiting');
+  let ticket = $state.raw<OpenTicket | null>(null);
+  let trail = $state.raw<readonly OpenTicket[]>([]);
+  let ticketAttachment = $state.raw<TrackerTicketAttachment | null>(null);
+  const placement: TicketPlacement = $derived(opts.besideFits() ? ticketPlacement('board') : 'over');
+  // The one rule for whether the board is seen: the pane on screen, and no
+  // ticket over it.
+  const boardShown = $derived(opts.shown() && !(ticket && placement === 'over'));
+  // The board on its computer: the ticket and its trail go when it changes,
+  // and stay when only the project listing it does.
+  const boardOnComputer = $derived(board ? trackerBoardOnComputer(board) : null);
 
   const stop = $effect.root(() => {
     $effect(() => {
@@ -257,9 +395,9 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
         attachment = null;
         return;
       }
-      // The subscribe carries whether the pane shows the board, so a board
+      // The subscribe carries whether the person sees the board, so a board
       // opened hidden reads nothing from the tracker until it shows.
-      const held = untrack(() => attachTrackerBoard(ref, opts.shown()));
+      const held = untrack(() => attachTrackerBoard(ref, boardShown));
       attachment = held;
       renewAfter = null;
       attachedAfter = untrack(() => trackerBoardChoicesReadStarted(ref.backend));
@@ -268,8 +406,33 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
 
     $effect(() => {
       const key = attachment?.key;
-      const shown = opts.shown();
+      const shown = boardShown;
       if (key) untrack(() => setTrackerBoardShown(key, shown));
+    });
+
+    $effect.pre(() => {
+      void boardOnComputer;
+      untrack(() => {
+        ticket = null;
+        trail = [];
+      });
+    });
+
+    $effect(() => {
+      const open = ticket;
+      if (!open) {
+        ticketAttachment = null;
+        return;
+      }
+      const held = untrack(() => attachTrackerTicket(open.ref, opts.shown()));
+      ticketAttachment = held;
+      return () => held.release();
+    });
+
+    $effect(() => {
+      const held = ticketAttachment;
+      const shown = opts.shown();
+      if (held) untrack(() => held.setShown(shown));
     });
 
     $effect(() => {
@@ -327,6 +490,29 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     get board() { return board; },
     get attachment() { return attachment; },
     get choosing() { return choosing; },
+    get ticket() { return ticket; },
+    get ticketAttachment() { return ticketAttachment; },
+    get placement() { return placement; },
+    get boardShown() { return boardShown; },
+    get trail() { return trail.length; },
+    openTicket(issue, seed, from) {
+      if (!board || ticket?.ref.issue === issue) return;
+      const next: OpenTicket = { ref: { backend: board.backend, connection: board.connection, issue }, seed };
+      trail = from === 'ticket' && ticket ? [...trail, ticket].slice(-MAX_TICKET_TRAIL) : [];
+      ticket = next;
+    },
+    stepBack() {
+      if (trail.length === 0) {
+        ticket = null;
+        return;
+      }
+      ticket = trail[trail.length - 1];
+      trail = trail.slice(0, -1);
+    },
+    closeTicket() {
+      ticket = null;
+      trail = [];
+    },
     pick(ref) {
       savePick(ref);
       unconfirmed = false;
@@ -350,4 +536,7 @@ export function choiceRef({ backend, choice }: ListedBoardChoice): TrackerBoardR
 export function resetIssuesPaneForTest(): void {
   hiddenFields = new Map();
   compactColumns.clear();
+  placements = {};
+  sections = new Map();
+  commentOrder = 'oldest';
 }
