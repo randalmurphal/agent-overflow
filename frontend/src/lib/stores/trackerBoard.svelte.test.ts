@@ -386,6 +386,84 @@ describe('the board subscription', () => {
     board.release();
   });
 
+  it('leaves a failed recovery read for Refresh when a column is scrolled, and reads the scroll after it', async () => {
+    const kanban = () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
+    const mocks = install({ view: kanban() });
+    mocks.board.mockImplementation(async () => kanban());
+    mocks.page.mockImplementation(async (_id: string, _s: Section, after: { issue: string }) => {
+      const from = Number(after.issue) + 1;
+      return { section: COLUMN, rows: rows(from, 100), next: { order: `k${String(from + 99).padStart(4, '0')}`, issue: String(from + 99), lifetime: 1, revision: 1 } };
+    });
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    loadMoreOfSection(board.key, COLUMN);
+    await flush();
+    expect(heldIds(board)[0]).toHaveLength(200);
+    // A gap's recovery fails while it reads the column back to its depth.
+    mocks.page.mockImplementationOnce(async () => {
+      throw new TransportError('timeout', 'the computer did not answer in time');
+    });
+    await resyncTrackerBoardsAfterGap(HOME_BACKEND);
+    expect(board.current?.readError).toBeInstanceOf(TransportError);
+    mocks.board.mockClear();
+    mocks.page.mockClear();
+    // The reader scrolls near the end of the column, again and again.
+    for (let i = 0; i < 3; i += 1) {
+      loadMoreOfSection(board.key, COLUMN);
+      await flush();
+    }
+    expect(mocks.board).not.toHaveBeenCalled();
+    expect(mocks.page).not.toHaveBeenCalled();
+    expect(board.current?.paging.size).toBe(0);
+    // Refresh reads the board whole, back to its depth, then the page asked for.
+    await refreshTrackerBoard(board.key);
+    await flush();
+    expect(mocks.board).toHaveBeenCalledTimes(1);
+    expect(heldIds(board)[0]).toHaveLength(300);
+    expect(board.current?.readError).toBeNull();
+    board.release();
+  });
+
+  it('reads a failed patch again with each next update, and with Refresh', async () => {
+    const kanban = () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
+    const mocks = install({ view: kanban() });
+    mocks.board.mockImplementation(async () => kanban());
+    mocks.patch.mockImplementation(async () => {
+      throw new TransportError('timeout', 'the computer did not answer in time');
+    });
+    mocks.board.mockImplementationOnce(async () => {
+      throw new TransportError('timeout', 'the computer did not answer in time');
+    });
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    applyTrackerBoardEvent(event(11, { changed: ['5'] }), HOME_BACKEND);
+    await flush();
+    // The patch failed; the full read it owes waits for the next update.
+    expect(mocks.patch).toHaveBeenCalledTimes(1);
+    expect(mocks.board).not.toHaveBeenCalled();
+    expect(board.current?.readError).toBeInstanceOf(TransportError);
+    applyTrackerBoardEvent(event(12, { changed: ['6'] }), HOME_BACKEND);
+    await flush();
+    // That full read failed too; the next update reads it again.
+    expect(mocks.board).toHaveBeenCalledTimes(1);
+    applyTrackerBoardEvent(event(13, { changed: ['7'] }), HOME_BACKEND);
+    await flush();
+    expect(mocks.board).toHaveBeenCalledTimes(2);
+    expect(board.current?.readError).toBeNull();
+
+    mocks.board.mockImplementationOnce(async () => {
+      throw new TransportError('timeout', 'the computer did not answer in time');
+    });
+    applyTrackerBoardEvent(event(14, { read_again: true }), HOME_BACKEND);
+    await flush();
+    expect(board.current?.readError).toBeInstanceOf(TransportError);
+    await refreshTrackerBoard(board.key);
+    await flush();
+    expect(mocks.board).toHaveBeenCalledTimes(4);
+    expect(board.current?.readError).toBeNull();
+    board.release();
+  });
+
   it('reads whole again on Refresh when a full read failed reading a section back to its depth', async () => {
     const kanban = () => view([{ section: COLUMN, rows: rows(0, 100), next: true }], { kanban: true });
     const mocks = install({ view: kanban() });

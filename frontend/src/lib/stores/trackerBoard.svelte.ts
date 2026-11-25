@@ -25,12 +25,16 @@
 // subscribe shows the board at once and the one read in flight reads each
 // unread section's first page in turn, as it reads a further page.
 //
-// A full or patch read that fails, a timeout with the connection up among
-// them, is shown (`readError`) and owed again: the next event or Refresh
-// runs it. A page read that fails is its section's (`sectionErrors`): the
-// section keeps its demand, the read goes on to the other sections, and
-// only the next event, a gap or Refresh reads it again, never a scroll
-// alone. Only a dropped connection is left to the reconnect, which
+// Who reads a failed read again is decided by the kind of trigger, in
+// `run`: a recovery trigger (an update from the tracker, a gap, Refresh;
+// a reconnect subscribes afresh) reads every failed read again
+// (`releaseRetries`), and a demand trigger (a scroll, a filter) only adds
+// its demand. A full or patch read that fails, a timeout with the
+// connection up among them, is shown (`readError`) and stays owed; while it
+// is, nothing is read until a recovery trigger. A page read that fails is
+// its section's (`sectionErrors`): the section keeps its demand, the read
+// goes on to the other sections, and only a recovery trigger reads it
+// again. Only a dropped connection is left to the reconnect, which
 // subscribes again. `paging` is the section whose page is being read, and
 // nothing else, so a column says it is loading only while it is.
 //
@@ -139,6 +143,9 @@ interface Live {
   pending: Set<string>;
   /** A full read is owed. */
   readAgain: boolean;
+  /** A full or patch read failed and is owed: nothing is read until a
+   * recovery trigger (`releaseRetries`). */
+  retryHeld: boolean;
   /** Sections owed one more page: asked by a scroll, or whose page read
    * failed. */
   wantPage: Set<string>;
@@ -210,7 +217,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   const live: Live = {
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: FIRST_STATE,
-    pending: new Set(), readAgain: false, wantPage: new Set(), staleAt: -1,
+    pending: new Set(), readAgain: false, retryHeld: false, wantPage: new Set(), staleAt: -1,
     intern: createRowInterner(), running: null, voted: visibleOf(key),
   };
   lives.set(key, live);
@@ -284,8 +291,7 @@ function fold(live: Live, event: TrackerBoardEvent): void {
   }
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
   if (event.read_again || event.truncated) live.readAgain = true;
-  // An event reads a failed section again.
-  next.sectionErrors = NO_SECTION_ERRORS;
+  releaseRetries(live, next);
   for (const id of ids) live.pending.add(id);
   if (live.pending.size > MAX_PATCH_IDS) {
     live.pending.clear();
@@ -318,8 +324,9 @@ function resyncTrackerBoardsAfterGap(backend: BackendKey): Promise<void> | undef
   for (const live of lives.values()) {
     if (live.ref.backend !== backend || !live.id || live.state.ended) continue;
     live.readAgain = true;
-    // A gap reads a failed section again.
-    update(live, { sectionErrors: NO_SECTION_ERRORS });
+    const next: StateChange = {};
+    releaseRetries(live, next);
+    update(live, next);
     runs.push(drain(live));
   }
   return runs.length === 0 ? undefined : Promise.all(runs).then(() => undefined);
@@ -336,10 +343,20 @@ function drain(live: Live): Promise<void> {
   return live.running;
 }
 
+/** A recovery trigger: the next drain reads every failed read again, the
+ * board's and each section's. `next` is the state change it lands in. */
+function releaseRetries(live: Live, next: StateChange): void {
+  live.retryHeld = false;
+  next.sectionErrors = NO_SECTION_ERRORS;
+}
+
 async function run(live: Live): Promise<void> {
   for (;;) {
     if (live.aborted || live.state.ended) return;
     const held = live.state.held;
+    // A failed full or patch read waits for a recovery trigger, and every
+    // page read waits behind it.
+    if (live.retryHeld && (live.readAgain || (held && live.pending.size > 0))) return;
     try {
       if (live.readAgain) {
         await readWhole(live);
@@ -359,6 +376,8 @@ async function run(live: Live): Promise<void> {
         store.invalidate(live.key);
         return;
       }
+      // Only a full or patch read fails here: a page read keeps its own.
+      live.retryHeld = true;
       update(live, { readError: err });
       return;
     }
@@ -498,9 +517,10 @@ function withoutKey(errors: ReadonlyMap<string, unknown>, k: string): ReadonlyMa
   return out.size === 0 ? NO_SECTION_ERRORS : out;
 }
 
-/** Reads the next page of a held section, once. A section whose page
- * read failed keeps the request, and the next event, gap or Refresh reads
- * it: a column nearing its end asks again as soon as it stops loading. */
+/** Asks for the next page of a held section, once: a demand trigger. A
+ * failed read stays for a recovery trigger (`run`), so a column nearing
+ * its end, which asks again as soon as it stops loading, never retries
+ * one. */
 export function loadMoreOfSection(key: string, section: Section): void {
   const live = lives.get(key);
   const held = live?.state.held;
@@ -509,7 +529,6 @@ export function loadMoreOfSection(key: string, section: Section): void {
   const sec = held.sections.find((s) => sectionKey(s.section) === k);
   if (!sec?.next && !sec?.unread) return;
   live.wantPage.add(k);
-  if (live.state.sectionErrors.has(k)) return;
   void drain(live);
 }
 
@@ -544,8 +563,9 @@ export async function refreshTrackerBoard(key: string): Promise<void> {
     }
   }
   if (lives.get(key) !== live) return;
-  // Refresh reads a failed section again.
-  update(live, { refreshing: false, refreshNotice: notice, sectionErrors: NO_SECTION_ERRORS });
+  const next: StateChange = { refreshing: false, refreshNotice: notice };
+  releaseRetries(live, next);
+  update(live, next);
   void drain(live);
 }
 
