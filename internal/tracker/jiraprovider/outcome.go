@@ -30,6 +30,10 @@ import (
 //   - not applied, and Jira or Tempo answered a 4xx other than a rate
 //     limit, to the write or to a read it depended on: refused by the
 //     tracker.
+//   - a planning poker call the gateway or the poker app refused with a
+//     4xx inside a 200 (a *jira.PokerError that is Refused): refused by
+//     the tracker. Any other *jira.PokerError is judged by the transport
+//     error it wraps, unknown when it wraps none.
 //   - any other write not applied, which nobody judged (the call ended,
 //     the client was closed, the credential could not be read, the rate
 //     gate was closed, the connection was never made, a read it depended
@@ -38,6 +42,8 @@ func outcome(err error) tracker.Outcome {
 	switch {
 	case err == nil || applied(err):
 		return tracker.Applied()
+	case pokerRefused(err):
+		return tracker.Refused(refusal(err))
 	case !trackerapi.WriteNotApplied(err):
 		return tracker.Unknown(err)
 	case errors.Is(err, tracker.ErrInvalidInput) || isMoved(err) || answered4xx(err):
@@ -57,6 +63,27 @@ func stale(issue, what string) error {
 // not read as the write's own answer.
 func beforeSend(err error) tracker.Outcome {
 	return outcome(&trackerapi.NotSentError{Err: err})
+}
+
+// pokerRefused reports a poker write whose own answer is a refusal: the
+// outermost of a *jira.PokerError and a *trackerapi.NotSentError (a read
+// the write needed failing) in err's chain is a PokerError that is
+// Refused.
+func pokerRefused(err error) bool {
+	for err != nil {
+		switch e := err.(type) {
+		case *trackerapi.NotSentError:
+			return false
+		case *jira.PokerError:
+			return e.Refused
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
 }
 
 // isMoved reports a check that found what a write names moved.
@@ -141,6 +168,11 @@ func refusal(err error) tracker.Refusal {
 		// Before the status: a not found it carries is the reason, not
 		// the tracker's refusal of a write.
 		r.Reason, r.Message = tracker.ReasonStale, e.Error()
+		return r
+	}
+	if e, ok := errors.AsType[*jira.PokerError](err); ok && e.Refused {
+		// Before the status: a poker refusal says which call refused.
+		r.Reason, r.Message = tracker.ReasonTracker, e.Step+" "+e.Detail
 		return r
 	}
 	if e, ok := errors.AsType[*trackerapi.AuthError](err); ok {

@@ -55,7 +55,7 @@ type MirrorBoardPatch struct {
 
 // ReadMirrorBoardPatch reads a board's patch for issueIDs (at most
 // mirrorMaxLookup, sorted or not, a repeated one read once) in sections
-// (at most mirrorMaxViewSections) in one snapshot (mirrorReadSnapshot):
+// (at most MirrorMaxViewSections) in one snapshot (mirrorReadSnapshot):
 // the board's row, one statement per section and the names, and, unless
 // held names the board's lifetime and totals revision, the columns'
 // statuses and the two count statements of CountMirrorSections. ok is
@@ -63,8 +63,8 @@ type MirrorBoardPatch struct {
 func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, sections []MirrorSection, issueIDs []string,
 	held MirrorTotalsAt) (patch MirrorBoardPatch, ok bool, err error) {
 	switch {
-	case len(sections) > mirrorMaxViewSections:
-		return MirrorBoardPatch{}, false, fmt.Errorf("%w: %d sections, over %d", ErrInvalidTrackerCache, len(sections), mirrorMaxViewSections)
+	case len(sections) > MirrorMaxViewSections:
+		return MirrorBoardPatch{}, false, fmt.Errorf("%w: %d sections, over %d", ErrInvalidTrackerCache, len(sections), MirrorMaxViewSections)
 	case len(issueIDs) > mirrorMaxLookup:
 		return MirrorBoardPatch{}, false, fmt.Errorf("%w: %d issues, over %d", ErrInvalidTrackerCache, len(issueIDs), mirrorMaxLookup)
 	}

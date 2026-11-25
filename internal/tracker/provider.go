@@ -202,4 +202,7 @@ type Provider interface {
 	// Time is the connection's logged time; nil for a tracker with no time
 	// tracking.
 	Time() TimeTracker
+	// Poker is the connection's planning poker; nil for a tracker that
+	// cannot have it.
+	Poker() Poker
 }

@@ -15,6 +15,7 @@ import {
   syncToolPanesFromAppStorage,
   toggleTool,
   toolKindOf,
+  toolOpenedFromProject,
 } from './toolPanes.svelte';
 import {
   createPane,
@@ -144,6 +145,19 @@ describe('opening a tool', () => {
     expect(getPane('mid')).toBeUndefined();
     expect(getFocusedPaneId()).toBe('tool-workflows');
     expect(focusedToolKind()).toBe('workflows');
+  });
+
+  it('remembers the project of the thread it was opened from, which the open replaces', async () => {
+    threadLayout([threadItem('left'), threadItem('mid')], 'mid');
+    await getPane('mid')!.switchThread(makeThread());
+    openTool('issues');
+    expect(getPane('mid')).toBeUndefined();
+    expect(toolOpenedFromProject('issues')).toBe('project-1');
+    // Opened again with no thread focused, it was opened from none.
+    closeToolPane('tool-issues');
+    focusPane('left');
+    openTool('issues');
+    expect(toolOpenedFromProject('issues')).toBeNull();
   });
 
   it('closes the replaced thread pane through its close path, companions included', () => {

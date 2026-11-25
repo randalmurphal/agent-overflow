@@ -1,7 +1,10 @@
 # Issues
 
-Status: product rulings and screen designs recorded 2026-11-15. Nothing is
-implemented, and the tool row has no Issues entry until it is.
+Status: product rulings and screen designs recorded 2026-11-15. Built:
+the connections and a project's board list, in Settings > Issues
+(Connections, Boards), and the Issues pane with its Board screen, opened
+from the tool row's Issues entry. The other screens are not built; the
+[Board](#board) section says what of it is.
 
 ## Goal
 
@@ -224,6 +227,24 @@ Widths are CSS pixels of the pane, not the window.
 
 ### Pane
 
+- The pane opens on the board the person picked last. When its computer
+  refuses that board (no project lists it, or its connection is off or
+  removed), when that computer is no longer paired or does not let this
+  window read boards, or when none was picked, it opens the board that
+  opens first of the project it was opened from, else of the first project
+  by name that lists one, on this computer first and then on the others in
+  the order the app lists them, once each computer has answered or could
+  not be read. An archived project's board opens this way only when no
+  other project lists one; the picker lists it, and a pick of it opens. With no board listed, its way to Settings is the project it
+  was opened from, else the first project by name. A board whose connection is turned
+  off is listed in the picker but not offered, and the pane never opens it
+  on its own. While the board's computer is not connected, the pane says so
+  and shows the board when it connects.
+  Each open pane keeps its board and Only mine; a pick and Only mine are
+  what the next pane opens with. A board that ended because its connection
+  was turned off opens again once the connection is turned back on. A board
+  its project stops listing while another project of the same computer
+  lists it stays open under that project, and a pick of it moves with it.
 - The top bar holds the board picker, the tabs Board, Backlog, Dashboards
   and Time, Display, Only mine and Search. As the pane narrows, the
   right-hand controls become icons, then the tabs fold into one picker.
@@ -236,6 +257,17 @@ Widths are CSS pixels of the pane, not the window.
   least 380 and the list at least 520.
 
 ### Board
+
+Status: built: the columns of a sprint or kanban board, cards, Display,
+Only mine, Search, Refresh, the board picker and the compact strip. Not
+built: the summary row, changing a card's fields from the card, and
+carrying a card. A sprint on the board is read whole, and while Only mine
+or Search is on every column is read whole, so a board of thousands of
+cards holds them all. A card's state line shows days in the status but not a
+running thread or what blocks it; its parent shows as a chip but is not
+known to be an epic; its type and priority marks are picked by name, not
+the tracker's icons; its assignee shows as initials, not the tracker's
+avatar.
 
 - A summary row sits above the columns. It is one line of chips until
   expanded into tiles. Its tiles are dashboard widgets pinned to the board,
@@ -379,9 +411,12 @@ sidebar and the thread header, on desktop and on a phone.
 
 ### Setup
 
+- Setup is the Issues group of Settings, where the mockup draws it inside
+  the pane: one page per section, Connections and Boards first.
 - Connections belong to the computer. Each shows who it is signed in as
-  and how long its token has left, and warns before the token lapses.
-  Adding one walks the credential steps in the rulings.
+  and how long its token has left, and warns before the token lapses
+  (two weeks before the date entered). Adding one walks the credential
+  steps in the rulings. Tempo is added from its Jira connection.
 - The rest is per project: which boards the picker lists and which opens
   first; which group each status belongs to, including left out of counts;
   pinned fields, pinned sections and card marks; Start work defaults; the

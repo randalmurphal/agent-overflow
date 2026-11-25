@@ -37,23 +37,50 @@ import {
   destroyPane,
   focusPane,
   getFocusedPaneId,
+  getFocusedPaneOrNull,
   getPane,
   removeToolPaneFromLayout,
   resolveNewPaneInsertIndex,
   revealPane,
 } from './panes.svelte';
 import { appStorageGet, appStorageSet } from './appStorage';
+import { getAttachedBackends } from './attachedBackends.svelte';
+import { scopeGrant, type Scope } from '../transport/scopes';
 
 export type { ToolPaneKind } from './paneLayout.svelte';
 
 const LAST_TOOL_KEY = 'tools:last';
+// Listed whatever this window's grants, so the row always has a tool to
+// label.
 const DEFAULT_TOOL: ToolPaneKind = 'pulls';
+
+// The grant a tool needs on some attached computer; a tool missing here
+// needs none.
+const TOOL_SCOPES: Partial<Record<ToolPaneKind, Exclude<Scope, 'host'>>> = { issues: 'tracker:read' };
+
+/**
+ * Reactive: whether this window may use the tool, which the tools row, the
+ * palette and every open read. A tool that needs a scope is available
+ * while an attached computer grants it.
+ */
+export function isToolAvailable(kind: ToolPaneKind): boolean {
+  const scope = TOOL_SCOPES[kind];
+  return !scope || getAttachedBackends().some((entry) => scopeGrant(scope, entry.id) === 'granted');
+}
 
 function parseLastTool(raw: string | null): ToolPaneKind {
   return isToolKind(raw) ? raw : DEFAULT_TOOL;
 }
 
 let lastTool = $state<ToolPaneKind>(parseLastTool(appStorageGet(LAST_TOOL_KEY)));
+
+const openedFromProject = new Map<ToolPaneKind, string | null>();
+
+/** The project of the thread focused when the tool last opened, null when
+ * none was. Not reactive: a tool reads it when its pane mounts. */
+export function toolOpenedFromProject(kind: ToolPaneKind): string | null {
+  return openedFromProject.get(kind) ?? null;
+}
 
 /** The tool kind of a mounted tool pane, null for any other id. */
 export function toolKindOf(paneId: string | null): ToolPaneKind | null {
@@ -78,7 +105,8 @@ export function lastToolKind(): ToolPaneKind {
 
 /** The sidebar's labelled tool: the focused tool pane, else the last used. */
 export function activeToolKind(): ToolPaneKind {
-  return focusedToolKind() ?? lastTool;
+  const kind = focusedToolKind() ?? lastTool;
+  return isToolAvailable(kind) ? kind : DEFAULT_TOOL;
 }
 
 /** Record use of a tool. ToolPane calls it whenever its pane takes focus. */
@@ -194,6 +222,9 @@ export function openTool(kind: ToolPaneKind, options: OpenToolOptions = {}): voi
   if (slot !== undefined && (!Number.isInteger(slot) || slot < 0)) {
     throw new RangeError(`openTool: insert index ${slot} is not a layout slot`);
   }
+  if (!isToolAvailable(kind)) {
+    throw new Error(`openTool: no attached computer grants this window ${TOOL_SCOPES[kind]}, which the ${kind} tool needs`);
+  }
   closeSettingsSurface();
   noteToolUsed(kind);
   const paneId = toolPaneIdFor(kind);
@@ -203,6 +234,8 @@ export function openTool(kind: ToolPaneKind, options: OpenToolOptions = {}): voi
     revealPane(paneId);
     return;
   }
+  // Read before a plain open replaces the thread pane.
+  openedFromProject.set(kind, getFocusedPaneOrNull()?.thread?.projectId || null);
   if (slot !== undefined) {
     notePaneLayoutMutation();
     addPaneLayoutItem({ id: paneId, paneId, kind, widthPx: averagePaneWidthPx() }, slot);
@@ -280,6 +313,7 @@ export function toggleTool(kind: ToolPaneKind): void {
 
 export function resetToolPanesForTest(): void {
   lastTool = DEFAULT_TOOL;
+  openedFromProject.clear();
   unsubscribeReplaced?.();
   unsubscribeReplaced = null;
 }

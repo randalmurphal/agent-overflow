@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/tracker"
@@ -439,5 +442,230 @@ func TestAnOlderVerifyNeverOverwritesANewerOne(t *testing.T) {
 				t.Errorf("the row's verification is %d, want the newer Verify's %d", row.VerifiedAt, newer.VerifiedAt)
 			}
 		})
+	}
+}
+
+// rows is the connection list, failing the test on an error.
+func (f *fixture) rows() []Connection {
+	f.t.Helper()
+	list, err := f.svc.Connections()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return list
+}
+
+// A check counts for the token in the key file only while the file holds
+// the token it verified: a token moved into place with an older time is
+// not it, the checked token put back is, and a restart keeps the binding.
+func TestAVerificationCountsWhileTheFileHoldsItsToken(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	conn := f.addJira()
+	f.writeToken(conn, jiraToken)
+	f.jira.On("GET", myselfPath, myself(t, jiraToken))
+	if got := f.verify(conn.ID); !got.CheckedTokenInFile || got.VerifiedAccountID != "acc-user1" {
+		t.Fatalf("a verified token = %+v, checked token in file %v", got.TrackerConnection, got.CheckedTokenInFile)
+	}
+
+	// Another token, saved an hour before the check, moved over the file.
+	saved := filepath.Join(filepath.Dir(conn.KeyFilePath), "saved")
+	if err := os.WriteFile(saved, []byte(token("b")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hourAgo := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(saved, hourAgo, hourAgo); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(saved, conn.KeyFilePath); err != nil {
+		t.Fatal(err)
+	}
+	if row := f.rows()[0]; row.CheckedTokenInFile || row.VerifiedAccountID != "acc-user1" {
+		t.Fatalf("a token moved over the checked one lists as checked: %+v", row)
+	}
+
+	f.writeToken(conn, jiraToken)
+	f.restart(t)
+	if row := f.rows()[0]; !row.CheckedTokenInFile {
+		t.Fatalf("the checked token, after a restart, lists as not checked: %+v", row)
+	}
+}
+
+// A fresh check's failure is about the token the file holds, however the
+// file was saved: the same token pasted and saved again keeps its 403
+// current, the same failure of the same token tells no one, and a token
+// saved after it makes the 403 history until that token's own failure.
+func TestAFailureIsAboutTheTokenItsCallUsed(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	conn := f.addJira()
+	f.writeToken(conn, jiraToken)
+	f.jira.On("GET", myselfPath, echoing(http.StatusForbidden))
+	if got := f.verify(conn.ID); got.Problem == nil || got.Problem.Kind != FailureForbidden || !got.Problem.Current {
+		t.Fatalf("a 403 = problem %+v", got.Problem)
+	}
+	f.writeToken(conn, jiraToken)
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(conn.KeyFilePath, later, later); err != nil {
+		t.Fatal(err)
+	}
+	before := f.changes.Load()
+	if got := f.verify(conn.ID); got.Problem == nil || !got.Problem.Current {
+		t.Fatalf("a 403 after the same token was saved again = problem %+v", got.Problem)
+	}
+	if f.changes.Load() != before {
+		t.Fatal("the same failure of the same token told the list")
+	}
+
+	f.writeToken(conn, token("b"))
+	if row := f.rows()[0]; row.Problem == nil || row.Problem.Current {
+		t.Fatalf("a 403 of the token the file no longer holds lists as current: %+v", row.Problem)
+	}
+	before = f.changes.Load()
+	if got := f.verify(conn.ID); got.Problem == nil || !got.Problem.Current {
+		t.Fatalf("the new token's 403 = problem %+v", got.Problem)
+	}
+	if f.changes.Load() != before+1 {
+		t.Fatal("the new token's failure did not tell the list")
+	}
+	// A token replaced with no list between: the check's own key file
+	// read hands it to the client, and the failure is about it.
+	f.writeToken(conn, token("c"))
+	if got := f.verify(conn.ID); got.Problem == nil || !got.Problem.Current {
+		t.Fatalf("a check of a token no list read yet = problem %+v", got.Problem)
+	}
+}
+
+// A connection printed whole names no token digest.
+func TestAPrintedConnectionCarriesNoTokenDigest(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	conn := f.addJira()
+	f.writeToken(conn, jiraToken)
+	f.jira.On("GET", myselfPath, echoing(http.StatusForbidden))
+	got := f.verify(conn.ID)
+	digest := tokenDigest(conn.ID, []byte(jiraToken))
+	printed := fmt.Sprintf("%v %+v %#v %v", got, got, *got.Problem, got.Problem)
+	for _, form := range []string{fmt.Sprintf("%d", digest[:]), fmt.Sprintf("%x", digest[:]), fmt.Sprintf("%d %d", digest[0], digest[1])} {
+		if strings.Contains(printed, form) {
+			t.Fatalf("a printed connection carries its token digest: %s", printed)
+		}
+	}
+}
+
+// A key file that gave no token is the failure while the file holds
+// none, and history once it holds one.
+func TestAKeyFileReadFailureIsHistoryOnceTheFileHoldsAToken(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	conn := f.addJira()
+	if got := f.verify(conn.ID); got.Problem == nil || !strings.Contains(got.Problem.Message, "is empty") || !got.Problem.Current {
+		t.Fatalf("a check of an empty key file = problem %+v", got.Problem)
+	}
+	f.writeToken(conn, jiraToken)
+	if row := f.rows()[0]; row.Problem == nil || row.Problem.Current {
+		t.Fatalf("an empty key file's failure lists as current once the file holds a token: %+v", row.Problem)
+	}
+}
+
+// A token that changed while the call ran (the file was replaced and the
+// client read it again after a 401) could have answered either way, so
+// the failure is history, not the new token's; a check settles it. The
+// same holds on a client that had sent nothing before the call.
+func TestAFailureDuringATokenChangeIsAboutNeither(t *testing.T) {
+	t.Parallel()
+	for _, warm := range []bool{true, false} {
+		t.Run(fmt.Sprintf("warm=%t", warm), func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			conn := f.addJira()
+			f.writeToken(conn, jiraToken)
+			if warm {
+				f.jira.On("GET", myselfPath, myself(t, jiraToken))
+				f.verify(conn.ID)
+			}
+			var calls atomic.Int32
+			f.jira.On("GET", myselfPath, func(w http.ResponseWriter, r *http.Request, body []byte) {
+				if calls.Add(1) == 1 {
+					if err := os.WriteFile(conn.KeyFilePath, []byte(token("b")), 0o600); err != nil {
+						t.Error(err)
+					}
+				}
+				echoing(http.StatusUnauthorized)(w, r, body)
+			})
+			got := f.verify(conn.ID)
+			if calls.Load() != 2 {
+				t.Fatalf("the identity call was sent %d times, want a retry after the 401", calls.Load())
+			}
+			if got.Problem == nil || got.Problem.Kind != FailureSetup || got.Problem.Current {
+				t.Fatalf("a refusal answered while the token changed = problem %+v", got.Problem)
+			}
+			if got := f.verify(conn.ID); got.Problem == nil || !got.Problem.Current {
+				t.Fatalf("the next check's refusal = problem %+v", got.Problem)
+			}
+		})
+	}
+}
+
+// A check of token A on a client that has sent nothing, whose answer
+// arrived before the file was replaced with B and a check of B began,
+// binds no token: its User 1 is not recorded as B's, before B's own
+// check fails or after a restart.
+func TestACheckWhoseTokenChangedBeforeItSettledBindsNoToken(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	conn := f.addJira()
+	f.writeToken(conn, jiraToken)
+	arrivedB, releaseB := make(chan struct{}, 1), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseB) })
+	t.Cleanup(release) // before the fake's own, which waits for its handlers
+	f.jira.On("GET", myselfPath, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		switch got := r.Header.Get("Authorization"); got {
+		case basic(jiraToken):
+			jiratest.Reply(http.StatusOK, myselfJSON)(w, r, body)
+		case basic(token("b")):
+			arrivedB <- struct{}{}
+			<-releaseB
+			jiratest.Reply(http.StatusUnauthorized, `{}`)(w, r, body)
+		default:
+			t.Errorf("GET myself carried %q", got)
+			jiratest.Reply(http.StatusUnauthorized, `{}`)(w, r, body)
+		}
+	})
+	var paused atomic.Bool
+	checkB := make(chan Connection, 1)
+	var early *Connection // B's check, when it returned without sending B
+	f.svc.afterIdentity = func() {
+		if paused.Swap(true) {
+			return // B's check
+		}
+		f.writeToken(conn, token("b"))
+		go func() {
+			got, err := f.svc.Verify(context.Background(), conn.ID)
+			if err != nil {
+				t.Errorf("B's Verify: %v", err)
+			}
+			checkB <- got
+		}()
+		select {
+		case <-arrivedB:
+		case got := <-checkB:
+			early = &got
+		}
+	}
+	gotA := f.verify(conn.ID)
+	if early != nil {
+		t.Fatalf("B's check returned before its request reached the tracker: %+v, checked token in file %v", early.TrackerConnection, early.CheckedTokenInFile)
+	}
+	if gotA.CheckedTokenInFile || gotA.VerifiedToken.Known() || gotA.VerifiedAccountID != "acc-user1" {
+		t.Fatalf("A's check, settled after B was handed = %+v, checked token in file %v", gotA.TrackerConnection, gotA.CheckedTokenInFile)
+	}
+	release()
+	if got := <-checkB; got.CheckedTokenInFile || got.Problem == nil || !got.Problem.Current {
+		t.Fatalf("B's refused check = %+v, checked token in file %v, problem %+v", got.TrackerConnection, got.CheckedTokenInFile, got.Problem)
+	}
+	f.restart(t)
+	if row := f.rows()[0]; row.CheckedTokenInFile || row.VerifiedAccountID != "acc-user1" {
+		t.Fatalf("after a restart, B lists as %+v, checked token in file %v", row.TrackerConnection, row.CheckedTokenInFile)
 	}
 }

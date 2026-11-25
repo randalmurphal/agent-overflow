@@ -14,17 +14,29 @@ import (
 // anonymous request gets its not-found answer rather than a 401 (Jira),
 // whether it only reads, and its handler. A route that does not set
 // reads is a write, and its handler runs on a saved copy of the tenant
-// (txn.go); TestReadRoutesChangeNothing drives every one that sets it.
+// (txn.go); TestReadRoutesChangeNothing drives every one that sets it. A
+// route whose requests read or write by what they carry (one GraphQL
+// endpoint) sets readsWhen instead, which reports a request body that
+// only reads.
 type route[C any] struct {
 	method, pattern string
 	query           []string
 	repeat          []string
 	anonymous404    bool
 	reads           bool
+	readsWhen       func(body []byte) bool
 	handle          func(c C) answer
 }
 
 func (r route[C]) name() string { return r.method + " " + r.pattern }
+
+// readsFor reports whether the route's request x only reads.
+func (r route[C]) readsFor(x *exchange) bool {
+	if r.readsWhen != nil {
+		return r.readsWhen(x.body)
+	}
+	return r.reads
+}
 
 // findRoute matches x to the route with the most literal segments.
 func findRoute[C any](routes []route[C], x *exchange) (route[C], map[string]string, bool) {

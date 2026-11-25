@@ -129,10 +129,10 @@ type FailureView struct {
 }
 
 // BoardView is a board as the pane opens it: its structure, the totals of
-// its sections (All its rows) at its TotalsRevision, its sync state and
-// the first page of each section asked for, at the board's Lifetime and
-// Revision (which a patch moves forward, BoardPatch). Project is empty for
-// a board of no one project.
+// its sections (All its rows) at its TotalsRevision, its sync state, the
+// sections the Board screen shows (Screen) and the first page of each
+// section read, at the board's Lifetime and Revision (which a patch moves
+// forward, BoardPatch). Project is empty for a board of no one project.
 type BoardView struct {
 	ID             string        `json:"id"`
 	Lifetime       int64         `json:"lifetime"`
@@ -147,11 +147,34 @@ type BoardView struct {
 	All            SectionTotal  `json:"all"`
 	Backlog        SectionTotal  `json:"backlog"`
 	Sync           SyncView      `json:"sync"`
+	Screen         []Section     `json:"screen"`
 	Sections       []SectionPage `json:"sections"`
 }
 
-// maxViewSections bounds the sections one board view reads pages of.
+// maxViewSections bounds the sections one board view reads pages of. The
+// Board screen of a board with more reads the rest a page at a time.
 const maxViewSections = 20
+
+// screenSections is the sections the Board screen shows of a board of
+// structure m, in order, as the wire and the store name them: its active
+// sprints when it plans sprints, else every column.
+func screenSections(m store.MirrorStructure) (screen []Section, stored []store.MirrorSection) {
+	screen = []Section{}
+	if m.Board.PlansSprints {
+		for _, sp := range m.Sprints {
+			if sp.State == store.MirrorSprintActive {
+				screen = append(screen, Section{Kind: SectionSprint, Sprint: sp.ID})
+				stored = append(stored, store.MirrorSection{Kind: store.MirrorSectionSprint, SprintID: sp.ID})
+			}
+		}
+		return screen, stored
+	}
+	for i := range m.Columns {
+		screen = append(screen, Section{Kind: SectionColumn, Column: i})
+		stored = append(stored, store.MirrorSection{Kind: store.MirrorSectionColumn, Column: i})
+	}
+	return screen, stored
+}
 
 // The wire names of the model's enums, indexed by value: arrays, which
 // cost nothing to link, read through nameOf.
@@ -170,11 +193,13 @@ func nameOf[T ~uint8](names []string, v T) string {
 }
 
 // Board is the view of scope's board with the first page of each of
-// sections, at most maxViewSections. The structure, the totals and the
-// pages are one state of the mirror (store ReadMirrorBoardView), so the
-// totals count the rows the pages show, and a page's Next continues that
-// state or fails with ErrStalePage. A board whose structure the mirror
-// does not hold fails with ErrNotMirrored.
+// sections, at most maxViewSections. No sections asks for the Board
+// screen's (Screen), chosen from the same state as the view: the first
+// page of the first maxViewSections of them. The structure, the totals and
+// the pages are one state of the mirror (store ReadMirrorBoardView), so
+// the totals count the rows the pages show, and a page's Next continues
+// that state or fails with ErrStalePage. A board whose structure the
+// mirror does not hold fails with ErrNotMirrored.
 func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 	if err := scope.boardOnly(); err != nil {
 		return BoardView{}, err
@@ -195,17 +220,30 @@ func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 		return BoardView{}, err
 	}
 	defer s.leave()
-	snap, ok, err := s.store.ReadMirrorBoardView(root, string(scope.Board), asked)
+	// read is the sections the pages are of: those asked, or the screen's
+	// first. The pick may run again when the snapshot is retried.
+	var screen, read []Section
+	snap, ok, err := s.store.ReadMirrorBoardView(root, string(scope.Board), func(m store.MirrorStructure) []store.MirrorSection {
+		var stored []store.MirrorSection
+		screen, stored = screenSections(m)
+		if len(sections) > 0 {
+			read = sections
+			return asked
+		}
+		n := min(len(screen), maxViewSections)
+		read = screen[:n]
+		return stored[:n]
+	})
 	if err != nil {
 		return BoardView{}, fmt.Errorf("trackerapp: read board %s from the mirror: %w", scope.Board, err)
 	}
 	if !ok {
 		return BoardView{}, fmt.Errorf("%w: board %s", ErrNotMirrored, scope.Board)
 	}
-	pages := make([]SectionPage, len(asked))
-	cards := make([][]shownCard, len(asked))
+	pages := make([]SectionPage, len(snap.Pages))
+	cards := make([][]shownCard, len(snap.Pages))
 	for i, page := range snap.Pages {
-		pages[i], cards[i] = sectionOf(sections[i], page)
+		pages[i], cards[i] = sectionOf(read[i], page)
 	}
 	// The columns' statuses and the cards of every page are named from the
 	// snapshot their rows came from.
@@ -222,6 +260,7 @@ func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)
 	}
 	v.Sync = syncViewOf(sync.MirrorSyncOutcome)
+	v.Screen = screen
 	v.Sections = pages
 	return v, nil
 }

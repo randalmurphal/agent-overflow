@@ -33,6 +33,7 @@ import { peekPRCI } from './prReviewCI.svelte';
 import { setPRCILogFollow } from './prReviewCIFollows.svelte';
 import { prKey } from '../utils/prReference';
 import { setPullsReceiver } from './pullsStore.svelte';
+import { attachTrackerBoard } from './trackerBoard.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { getConnectionId } from '../transport/clientIdentity';
 import { emitWailsEvent, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
@@ -237,6 +238,31 @@ describe('setupEventListeners', () => {
     cleanup();
     expect(wailsListenerCount('pulls:updated')).toBe(0);
     expect(wailsListenerCount('ci:pipeline_updated')).toBe(0);
+    cleanup = setupEventListeners();
+  });
+
+  it('routes tracker:board_updated to the board it names on its computer', async () => {
+    expect(wailsListenerCount('tracker:board_updated')).toBe(1);
+    const view = {
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'none' },
+      columns: [], sprints: [], all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {}, screen: [], sections: [],
+    };
+    setBindingMock('SubscribeTrackerBoard', async () => ({ id: 'sub-1', seq: 4, loaded: true, view, poll_every: 10_000 }));
+    setBindingMock('ReleaseTrackerSubscription', async () => undefined);
+    const patch = setBindingMock('TrackerBoardPatch', async () => ({ lifetime: 1, revision: 2, sections: [] }));
+    const board = attachTrackerBoard({ backend: HOME_BACKEND, projectId: 'p1', connection: 'c1', board: '1' }, true);
+    try {
+      await vi.waitFor(() => expect(board.current).not.toBeNull());
+      emitWailsEvent('tracker:board_updated', { scope: { connection: 'c1', board: '2' }, seq: 5, changed: ['10101'] });
+      emitWailsEvent('tracker:board_updated', { scope: { connection: 'c1', board: '1' }, seq: 6, changed: ['10101'] });
+      await vi.waitFor(() => expect(patch).toHaveBeenCalledWith('sub-1', [], ['10101'], { lifetime: 1, revision: 1 }));
+      expect(patch).toHaveBeenCalledTimes(1);
+    } finally {
+      board.release();
+    }
+
+    cleanup();
+    expect(wailsListenerCount('tracker:board_updated')).toBe(0);
     cleanup = setupEventListeners();
   });
 

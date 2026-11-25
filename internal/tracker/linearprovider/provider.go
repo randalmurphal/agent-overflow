@@ -52,6 +52,9 @@ func (p *Provider) Capabilities() tracker.Capabilities {
 // Time is nil: Linear has no time tracking.
 func (p *Provider) Time() tracker.TimeTracker { return nil }
 
+// Poker is nil: Linear has no planning poker.
+func (p *Provider) Poker() tracker.Poker { return nil }
+
 // Identity is the key's user.
 func (p *Provider) Identity(ctx context.Context) (tracker.User, error) {
 	v, err := p.c.Viewer(ctx)

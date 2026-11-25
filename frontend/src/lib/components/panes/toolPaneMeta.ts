@@ -3,6 +3,7 @@
 // the tools row's order.
 import type { Component } from 'svelte';
 import GitPullRequestArrow from '@lucide/svelte/icons/git-pull-request-arrow';
+import Kanban from '@lucide/svelte/icons/kanban';
 import Workflow from '@lucide/svelte/icons/workflow';
 import type { ToolPaneKind } from '../../stores/paneLayout.svelte';
 
@@ -16,6 +17,7 @@ export interface ToolPaneMeta {
 export const TOOL_PANES: readonly ToolPaneMeta[] = [
   { kind: 'pulls', title: 'Pull requests', icon: GitPullRequestArrow },
   { kind: 'workflows', title: 'Workflows', icon: Workflow },
+  { kind: 'issues', title: 'Issues', icon: Kanban },
 ];
 
 export function toolPaneMeta(kind: ToolPaneKind): ToolPaneMeta {

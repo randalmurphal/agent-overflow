@@ -17,6 +17,7 @@ func tempoReq(method, path, body string) call {
 // reads, and per Linear query root field; TestReadRoutesChangeNothing
 // fails for one with no row.
 var readRows = map[string]call{
+	"GET _edge/tenant_info":                                         jiraReq("GET", "/_edge/tenant_info", ""),
 	"GET rest/api/3/myself":                                         jiraReq("GET", "/rest/api/3/myself", ""),
 	"GET rest/api/3/user":                                           jiraReq("GET", "/rest/api/3/user?accountId=acc-user1", ""),
 	"GET rest/api/3/user/search":                                    jiraReq("GET", "/rest/api/3/user/search?query=user", ""),

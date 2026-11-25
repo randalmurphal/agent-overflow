@@ -191,6 +191,7 @@ var harnessTimerOwners = map[string]string{
 	"usage-poll":           "Isolation.UsagePollInterval",
 	"wake-retry":           "Isolation.ThreadWakeRetryBase",
 	"agent-settled-window": "Isolation.AgentSettledWindow",
+	"tracker-poll":         "Isolation.TrackerPollInterval",
 	"unreachable-settle":   "page unreachable-settle",
 	"agent-row-linger":     "page agent-row-linger",
 }

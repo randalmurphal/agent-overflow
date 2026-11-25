@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 
 	"agent-overflow/internal/entityid"
 
@@ -37,7 +39,9 @@ var ErrInvalidTrackerConnection = errors.New("store: invalid tracker connection"
 // Account is the Jira account email and empty otherwise. ParentID names the
 // Jira connection a Tempo connection belongs to and is empty otherwise.
 // VerifiedAccountID and VerifiedName are who the token belongs to as of
-// VerifiedAt (unix milliseconds, 0 until verified). TokenExpiresAt is when
+// VerifiedAt (unix milliseconds, 0 until verified); VerifiedToken is the
+// digest of the token that verification checked, zero when it is not
+// known. TokenExpiresAt is when
 // the user said the token expires, 0 when they have not; no tracker reports
 // it.
 type TrackerConnection struct {
@@ -51,6 +55,7 @@ type TrackerConnection struct {
 	VerifiedAccountID string
 	VerifiedName      string
 	VerifiedAt        int64
+	VerifiedToken     TrackerTokenDigest
 	TokenExpiresAt    int64
 	CreatedAt         int64
 }
@@ -68,20 +73,64 @@ type NewTrackerConnection struct {
 
 // TrackerVerification is the answer of one identity call to the tracker.
 // AccountID and Name may be empty for a tracker whose token check names
-// nobody.
+// nobody. Token is the digest of the token the call checked, zero when it
+// is not known.
 type TrackerVerification struct {
 	AccountID  string
 	Name       string
 	VerifiedAt int64
+	Token      TrackerTokenDigest
+}
+
+// TrackerTokenDigest is the SHA-256 digest of a tracker token
+// (trackerapp's tokenDigest), stored as tracker_connections.verified_token:
+// 32 bytes, or none for the zero value. It formats as a placeholder, so no
+// log or error that prints a row carries it.
+type TrackerTokenDigest [32]byte
+
+// Known reports whether d names a token.
+func (d TrackerTokenDigest) Known() bool { return d != TrackerTokenDigest{} }
+
+// Format writes a placeholder whatever the verb.
+func (d TrackerTokenDigest) Format(f fmt.State, _ rune) {
+	if d.Known() {
+		_, _ = io.WriteString(f, "TrackerTokenDigest(set)")
+		return
+	}
+	_, _ = io.WriteString(f, "TrackerTokenDigest(none)")
+}
+
+// Value stores the digest, or an empty blob for the zero value.
+func (d TrackerTokenDigest) Value() (driver.Value, error) {
+	if !d.Known() {
+		return []byte{}, nil
+	}
+	return d[:], nil
+}
+
+// Scan reads an empty blob as the zero value and a 32-byte one as itself.
+func (d *TrackerTokenDigest) Scan(src any) error {
+	b, ok := src.([]byte)
+	switch {
+	case !ok:
+		return fmt.Errorf("store: a verified token digest is %T, not a blob", src)
+	case len(b) == 0:
+		*d = TrackerTokenDigest{}
+	case len(b) == len(d):
+		copy(d[:], b)
+	default:
+		return fmt.Errorf("store: a verified token digest is %d bytes, not %d", len(b), len(d))
+	}
+	return nil
 }
 
 const trackerConnectionColumns = `id, kind, site, account, COALESCE(parent_id, ''), label, enabled,
- verified_account_id, verified_name, verified_at, token_expires_at, created_at`
+ verified_account_id, verified_name, verified_at, verified_token, token_expires_at, created_at`
 
 func scanTrackerConnection(scan func(...any) error) (TrackerConnection, error) {
 	var c TrackerConnection
 	err := scan(&c.ID, &c.Kind, &c.Site, &c.Account, &c.ParentID, &c.Label, &c.Enabled,
-		&c.VerifiedAccountID, &c.VerifiedName, &c.VerifiedAt, &c.TokenExpiresAt, &c.CreatedAt)
+		&c.VerifiedAccountID, &c.VerifiedName, &c.VerifiedAt, &c.VerifiedToken, &c.TokenExpiresAt, &c.CreatedAt)
 	return c, err
 }
 
@@ -222,13 +271,13 @@ func (s *Store) RecordTrackerConnectionVerification(id string, v TrackerVerifica
 	if v.VerifiedAt <= 0 {
 		return TrackerConnection{}, false, fmt.Errorf("%w: a verification needs its time", ErrInvalidTrackerConnection)
 	}
-	values := []any{v.AccountID, v.Name, v.VerifiedAt}
+	values := []any{v.AccountID, v.Name, v.VerifiedAt, v.Token}
 	return commitRowWrite(s, rowWrite{
 		Action:     fmt.Sprintf("store: record tracker connection %s verification", id),
 		ID:         id,
-		Set:        "verified_account_id = ?, verified_name = ?, verified_at = ?",
+		Set:        "verified_account_id = ?, verified_name = ?, verified_at = ?, verified_token = ?",
 		SetArgs:    values,
-		Change:     "(verified_account_id IS NOT ? OR verified_name IS NOT ? OR verified_at IS NOT ?)",
+		Change:     "(verified_account_id IS NOT ? OR verified_name IS NOT ? OR verified_at IS NOT ? OR verified_token IS NOT ?)",
 		ChangeArgs: values,
 	}, applyTrackerConnectionRowWriteTx)
 }

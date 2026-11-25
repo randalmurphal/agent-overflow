@@ -21,6 +21,8 @@ import (
 type ticketPump struct {
 	core pump.Core[readRequest]
 	key  ticketKey
+	// kind is the connection's tracker kind.
+	kind string
 	// number names the pump within the service's session: its row in the
 	// mirror's open tickets, which keeps its issue. kept reports that the
 	// row committed under root (keepTicketLocked), and dropped that the
@@ -45,6 +47,10 @@ type ticketPump struct {
 	// tickets that owe one (buildShown). One queued nudge is enough; a
 	// hidden pump builds when shown again.
 	viewChanged chan struct{}
+	// pokerRuns are the poker runs not yet returned: the current one and
+	// any ended one still finishing. The pump's goroutine waits for them
+	// before it exits (awaitPokerRuns). Under subMu.
+	pokerRuns map[*pokerRun]struct{}
 
 	// dirty counts the stored changes to an input of the view
 	// (tellTicketLocked), built is the count the view was built after, and
@@ -72,6 +78,8 @@ type ticketPump struct {
 	failure          *FailureView
 	changed, pending bool
 	over             bool
+	// poker is the ticket's planning poker while a handle follows it.
+	poker pokerFollow
 }
 
 // toldView is what a ticket's subscribers were last told of its view: the
@@ -196,7 +204,7 @@ func (s *Service) takeTicketHandle(key ticketKey, tie Tie) (id string, tp *ticke
 		}
 		s.subs.pumps++
 		tp = &ticketPump{
-			core: s.newCore(), key: key, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind),
+			core: s.newCore(), key: key, kind: kind, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind),
 			exited: make(chan struct{}), viewChanged: make(chan struct{}, 1), dirty: 1,
 		}
 		s.subs.tickets[key] = tp
@@ -269,17 +277,19 @@ func (s *Service) digestOf(v DetailView) uint64 {
 // runTicketPump is a ticket pump's goroutine: an interactive first read
 // that records the opening, a full read on a person's request, and the
 // builds of its connection's views when an input of one moved, made when
-// shown again if it came while hidden. A failed read is retried by the
-// connection's round. The mirror keeps the ticket's issue from the bind
-// its first read makes (bindTickets) until the goroutine returns
-// (dropTicket), which every end of the pump comes to: its last handle
-// released, its connection turned off or removed, Stop, and a read that
-// found the pump ended; for a pump stopped before its launch, its first
-// read ends at once with its context.
+// shown again if it came while hidden. Its planning poker is read by a
+// run of its own (runPoker), which it waits for before it exits. A
+// failed read is retried by the connection's round. The mirror keeps the
+// ticket's issue from the bind its first read makes (bindTickets) until
+// the goroutine returns (dropTicket), which every end of the pump comes
+// to: its last handle released, its connection turned off or removed,
+// Stop, and a read that found the pump ended; for a pump stopped before
+// its launch, its first read ends at once with its context.
 func (s *Service) runTicketPump(tp *ticketPump) {
 	defer s.workers.Done()
 	defer close(tp.exited)
 	defer s.dropTicket(tp)
+	defer s.awaitPokerRuns(tp)
 	ctx, conn, self := tp.core.Context(), tp.key.connection, []*ticketPump{tp}
 	over := s.readTickets(ctx, conn, self, Interactive, false, true).over
 	for !over {
@@ -313,9 +323,9 @@ func (s *Service) flushTicketLocked(tp *ticketPump, end bool) {
 	}
 	ev := IssueEvent{
 		Connection: tp.key.connection, Issue: tp.key.issue, Seq: s.nextSeqLocked(),
-		Changed: tp.changed, Failure: tp.failure, Ended: end,
+		Changed: tp.changed, Failure: tp.failure, Poker: tp.poker.changed, Ended: end,
 	}
-	tp.changed, tp.pending = false, false
+	tp.changed, tp.pending, tp.poker.changed = false, false, false
 	s.emitIssue(ev)
 }
 
@@ -354,6 +364,7 @@ func (s *Service) endTicketLocked(tp *ticketPump) {
 // caller holds subMu.
 func (s *Service) retireTicketLocked(tp *ticketPump) {
 	tp.core.StopLocked()
+	s.admitPokerLocked(tp)
 	if s.subs.tickets[tp.key] == tp {
 		delete(s.subs.tickets, tp.key)
 	}

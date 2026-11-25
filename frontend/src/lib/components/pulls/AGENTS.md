@@ -66,6 +66,6 @@ seed so the backend owns the whole checkout-record-draft sequence and its
 rollback.
 
 A failure renders through the shared error report controls with the
-error behind it: `PullsErrorNotice` for the refresh, `PullsProjectError`
+error behind it: `shared/ErrorNotice` for the refresh, `PullsProjectError`
 for a project (`causeCapture.ts` captures each distinct failure once,
 across snapshots and row remounts).

@@ -23,17 +23,17 @@ import type { AgentPaneScopeSnapshot } from '../types/settings';
 // live/ephemeral; plan, review, and agent companions are persisted by layout
 // persistence and restored through companionPanes.svelte.ts.
 //
-// Tool panes ('pulls', 'workflows') are a third class: an app-wide surface
+// Tool panes ('pulls', 'workflows', 'issues') are a third class: an app-wide surface
 // with no thread and no source pane. A tool item leads its own layout block
 // like a thread pane does (resnap, move and reorder treat it as a lead), is
 // not in the ThreadPane registry, and exists at most once per kind under the
 // id `tool-<kind>` (toolPanes.svelte.ts).
-export type ToolPaneKind = 'pulls' | 'workflows';
+export type ToolPaneKind = 'pulls' | 'workflows' | 'issues';
 export type CompanionPaneKind = 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat' | 'agent-thread';
 export type PaneLayoutKind = 'thread' | CompanionPaneKind | ToolPaneKind;
 
 export function isToolKind(kind: unknown): kind is ToolPaneKind {
-  return kind === 'pulls' || kind === 'workflows';
+  return kind === 'pulls' || kind === 'workflows' || kind === 'issues';
 }
 
 /** The one layout id a tool kind's pane has. */

@@ -74,6 +74,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2932719708: 'thread', // CheckThreadImportUpdates
 	544013229: 'home', // ClearBrowserSiteData
 	1055713894: 'home', // ClearPushSenderCredential
+	3142429700: 'home', // ClearTrackerPokerVotes
 	2321581502: 'home', // CloseComputerPairing
 	2702963191: 'home', // CloseTerminal
 	1705768020: 'thread', // CloseThreadTerminals
@@ -130,6 +131,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1601396603: 'home', // FinishPasskeyRegistration
 	1569276637: 'home', // FinishPasskeyStepUp
 	3520335973: 'home', // FinishProviderAccountReset
+	2943151489: 'home', // FollowTrackerPoker
 	516065248: 'home', // ForgetAccessDevice
 	767560289: 'home', // ForgetTailnetNode
 	2246569884: 'thread', // ForkSideChat
@@ -423,6 +425,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1113976056: 'thread', // ResyncLiveCode
 	650634694: 'selected', // RetryThreadTransfer
 	1657104469: 'thread', // RetryThreadWorktreeSetup
+	3151648721: 'home', // RevealTrackerPoker
 	2059566413: 'thread', // RevertConversationAndResendMessage
 	2945903583: 'home', // RevokeAccessDevice
 	2284519219: 'home', // RevokeAccessSession
@@ -525,6 +528,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	515024442: 'selected', // ThreadToolWatch
 	3346989894: 'home', // TrackerAssignableUsers
 	3524633257: 'home', // TrackerBoard
+	1666670763: 'all', // TrackerBoardChoices
 	2847247437: 'home', // TrackerBoardPatch
 	2450480430: 'home', // TrackerBoards
 	1109598697: 'home', // TrackerChoices
@@ -535,6 +539,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2754714292: 'home', // TrackerLinkTypes
 	2194444141: 'home', // TrackerLookup
 	3632796459: 'home', // TrackerMoves
+	3990595752: 'home', // TrackerPoker
+	4253452655: 'home', // TrackerPokerSupport
 	2816087609: 'home', // TrackerProjects
 	1584024747: 'home', // TrackerSearch
 	4150293291: 'home', // TrackerSectionRows
@@ -572,6 +578,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3907724148: 'thread', // VerifyEditDiffs
 	1424176184: 'home', // VerifyTrackerConnection
 	2431199839: 'home', // Version
+	141171752: 'home', // VoteTrackerPoker
 	777755931: 'thread', // WakeThreadWakeNow
 	2263729048: 'thread', // WatchBackgroundTaskOutput
 	4150249282: 'home', // WorkflowAnswerQuestion
@@ -624,6 +631,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	2367642633: 720000, // AttachThreadWorktree
 	2347956003: 60000, // CheckForUpdate
 	987486764: 120000, // CheckProviderUpdates
+	3142429700: 180000, // ClearTrackerPokerVotes
 	3259977090: 180000, // CompleteTrackerSprint
 	2579322833: 720000, // CreateThread
 	3981856226: 180000, // CreateTrackerIssue
@@ -655,6 +663,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	2660387675: 720000, // OpenPRThread
 	2870364785: 720000, // PrepareThreadWorktree
 	4067581165: 180000, // RankTrackerIssues
+	3151648721: 180000, // RevealTrackerPoker
 	1986917811: 1800000, // SaveCIArtifacts
 	2960563266: 660000, // SaveForgeAttachment
 	1537914193: 900000, // SavePRCIJobLog
@@ -669,6 +678,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	1291217507: 90000, // TriggerMcpAuth
 	417766274: 90000, // TriggerWorkspaceMcpAuth
 	1599312374: 180000, // UnlinkTrackerIssues
+	141171752: 180000, // VoteTrackerPoker
 	1792283305: 1320000, // WorkflowCreateItemPR
 	3006532931: 720000, // WorkflowMergeItem
 };

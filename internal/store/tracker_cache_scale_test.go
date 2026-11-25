@@ -183,10 +183,10 @@ func readyListedAgainAtScale(t *testing.T, s *Store, rec *mirrorWriteRecorder) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listed[1:]); err != nil {
+	if _, _, err := replaceFromStored(s, defaultTestProjectID, listed[1:]); err != nil {
 		t.Fatal(err)
 	}
-	_, listing, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listed)
+	_, listing, err := replaceFromStored(s, defaultTestProjectID, listed)
 	if err != nil || len(listing.Relisted) != 1 {
 		t.Fatalf("listing board 0 again: %+v, %v", listing, err)
 	}
@@ -342,7 +342,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		return err
 	})
 	out["board view, 3 sections"] = measureScale(t, rec, nil, func(int) error {
-		_, _, err := s.ReadMirrorBoardView(root, board, sections)
+		_, _, err := s.ReadMirrorBoardView(root, board, theseSections(sections))
 		return err
 	})
 	out["section page, middle of a column"] = measureScale(t, rec, func(int) {

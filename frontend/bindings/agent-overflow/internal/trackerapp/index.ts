@@ -3,8 +3,10 @@
 
 export {
     AttachmentView,
+    BoardChoice,
     BoardInfoView,
     BoardPatch,
+    BoardRef,
     BoardSubscription,
     BoardTotals,
     BoardView,
@@ -45,6 +47,10 @@ export {
     ParentView,
     PartView,
     PatchSection,
+    PokerSupport,
+    PokerView,
+    PokerVoteRequest,
+    PokerVoteView,
     ProjectBoard,
     ProjectView,
     RankRequest,

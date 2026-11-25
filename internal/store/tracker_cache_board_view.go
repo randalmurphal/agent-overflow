@@ -6,9 +6,9 @@ import (
 	"fmt"
 )
 
-// mirrorMaxViewSections bounds the sections one board view reads: every
-// sprint, the backlog and every column.
-const mirrorMaxViewSections = mirrorMaxSprints + 1 + mirrorMaxColumns
+// MirrorMaxViewSections bounds the sections one board view or patch reads:
+// every sprint, the backlog and every column, so no board has more.
+const MirrorMaxViewSections = mirrorMaxSprints + 1 + mirrorMaxColumns
 
 // MirrorBoardView is one board's structure (with no catalog), section
 // totals and the first page of each section asked for, in its order, read
@@ -32,20 +32,13 @@ var mirrorBoardViewSQL = `SELECT b.board_id, b.project_id, b.name, b.plans_sprin
 
 // ReadMirrorBoardView reads, in one snapshot (mirrorReadSnapshot), a
 // board's structure (as GetMirrorBoard), its section totals (as
-// CountMirrorSections), the first page of each of sections (as
-// ListMirrorSection) and what they name (MirrorNames): one statement per
-// part, the board's columns and their statuses read once for the
-// structure and the totals. ok is false for a board the mirror does not
-// show.
-func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, sections []MirrorSection) (view MirrorBoardView, ok bool, err error) {
-	if len(sections) > mirrorMaxViewSections {
-		return MirrorBoardView{}, false, fmt.Errorf("%w: %d sections, over %d", ErrInvalidTrackerCache, len(sections), mirrorMaxViewSections)
-	}
-	for _, section := range sections {
-		if _, ok := mirrorSectionSQL[section.Kind]; !ok {
-			return MirrorBoardView{}, false, fmt.Errorf("%w: section kind %d", ErrInvalidTrackerCache, section.Kind)
-		}
-	}
+// CountMirrorSections), the first page of each section pick names from
+// that structure (as ListMirrorSection) and what they name (MirrorNames):
+// one statement per part, the board's columns and their statuses read once
+// for the structure and the totals. pick runs inside the snapshot, again on
+// each of its retries, so the sections it chooses are the structure's. ok is false for a board
+// the mirror does not show.
+func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, pick func(MirrorStructure) []MirrorSection) (view MirrorBoardView, ok bool, err error) {
 	label := fmt.Sprintf("read tracker mirror %d board %s view", rootID, boardID)
 	view, err = mirrorReadSnapshot(s, label, func(tx sqlQueryer) (MirrorBoardView, error) {
 		var v MirrorBoardView
@@ -76,6 +69,15 @@ func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, sections []Mir
 		}
 		if v.Counts, err = countMirrorSectionsTx(tx, rootID, boardID, board, columns); err != nil {
 			return MirrorBoardView{}, err
+		}
+		sections := pick(*st)
+		if len(sections) > MirrorMaxViewSections {
+			return MirrorBoardView{}, fmt.Errorf("%w: %d sections, over %d", ErrInvalidTrackerCache, len(sections), MirrorMaxViewSections)
+		}
+		for _, section := range sections {
+			if _, known := mirrorSectionSQL[section.Kind]; !known {
+				return MirrorBoardView{}, fmt.Errorf("%w: section kind %d", ErrInvalidTrackerCache, section.Kind)
+			}
 		}
 		v.Pages = make([]MirrorSectionPage, len(sections))
 		rows := make([][]MirrorRow, len(sections))

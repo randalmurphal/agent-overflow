@@ -198,7 +198,7 @@ func TestConnectionChangesEndSubscriptions(t *testing.T) {
 			if root := m.root(); root != 0 {
 				t.Fatalf("turning the connection on again found mirror %d", root)
 			}
-			if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, untied); err != nil {
+			if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, true, untied); err != nil {
 				t.Fatalf("a subscribe after turning it on again: %v", err)
 			}
 		})
@@ -209,7 +209,7 @@ func TestConnectionChangesEndSubscriptions(t *testing.T) {
 		if _, err := m.svc.SetEnabled(m.conn.ID, false); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, untied); !errors.Is(err, ErrDisabled) {
+		if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, true, untied); !errors.Is(err, ErrDisabled) {
 			t.Fatalf("a board of a connection turned off: %v", err)
 		}
 		if _, err := m.svc.SubscribeTicket(m.conn.ID, "10001", untied); !errors.Is(err, ErrDisabled) {
@@ -418,7 +418,7 @@ type readHook struct {
 	before func()
 }
 
-func (h *readHook) ReadMirrorBoardView(root int64, board string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error) {
+func (h *readHook) ReadMirrorBoardView(root int64, board string, sections func(store.MirrorStructure) []store.MirrorSection) (store.MirrorBoardView, bool, error) {
 	h.once.Do(h.before)
 	return h.Store.ReadMirrorBoardView(root, board, sections)
 }
@@ -482,7 +482,7 @@ func TestStopJoinsPumpsAndLoop(t *testing.T) {
 			t.Fatalf("goroutine %d of %d runs after Stop", i, len(exited))
 		}
 	}
-	if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, untied); !errors.Is(err, ErrStopped) {
+	if _, err := m.svc.SubscribeBoard(m.project(), m.scope(), nil, true, untied); !errors.Is(err, ErrStopped) {
 		t.Fatalf("a subscribe after Stop: %v", err)
 	}
 	if b, _, _ := m.events.snapshot(); slices.ContainsFunc(b, func(e BoardEvent) bool { return e.Ended }) {

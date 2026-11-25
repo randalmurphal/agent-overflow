@@ -70,6 +70,61 @@ type Failure struct {
 	Message string
 }
 
+// Problem is a connection's last failure and what it is about (settle).
+// Current says whether that is the token in the key file now, or no token
+// at all; the view that reads the file sets it (viewWith).
+type Problem struct {
+	Failure
+	Current bool
+	about   evidence
+}
+
+// Format prints the failure and whether it is current, never what it is
+// about: fmt reads an unexported field without its Format method, so the
+// token digest evidence holds would print as bytes.
+func (p Problem) Format(f fmt.State, _ rune) {
+	_, _ = fmt.Fprintf(f, "{Kind:%s Message:%q Current:%t}", p.Kind, p.Message, p.Current)
+}
+
+// evidence is what an outcome is about: the token its call used, a key
+// file that could not be read, no token, or a token that changed while
+// the call ran, which could be either.
+type evidence struct {
+	kind  evidenceKind
+	token store.TrackerTokenDigest
+}
+
+type evidenceKind uint8
+
+const (
+	// aboutNoToken is a call that used no token: no client could be
+	// built, or it failed before reading one. It is always current.
+	aboutNoToken evidenceKind = iota
+	// aboutToken is a call made with the token evidence.token names.
+	aboutToken
+	// aboutKeyFile is a key file that gave no token (KeyFileError). It is
+	// current while the file still holds none.
+	aboutKeyFile
+	// aboutChangedToken is a call during which the client's token
+	// changed. It is never current: a check settles it.
+	aboutChangedToken
+)
+
+// currentFor reports whether evidence is about the token in the key file
+// now, whose digest is found (zero when the file holds none).
+func (e evidence) currentFor(found store.TrackerTokenDigest) bool {
+	switch e.kind {
+	case aboutNoToken:
+		return true
+	case aboutToken:
+		return sameToken(e.token, found)
+	case aboutKeyFile:
+		return !found.Known()
+	case aboutChangedToken:
+	}
+	return false
+}
+
 // CallFailure is a tracker call of a form read, a download or a write's
 // start that failed, with the Failure a person reads. It unwraps to the
 // call's error.
@@ -144,6 +199,8 @@ func ClassifyFailure(kind string, err error) Failure {
 	var source *trackerapi.SourceError
 	var cut *trackerapi.CutError
 	switch {
+	case pokerOwn(err):
+		return pokerFailure(err)
 	case errors.As(err, &source):
 		return Failure{Kind: FailureUpload, Message: "the file stopped arriving before its end, so " + name + " stored none of it; attach it again"}
 	case errors.As(err, &cut):
@@ -194,6 +251,11 @@ func refusedToken(kind, refuser string) string {
 		file = "the key file of the linked " + trackerName(refuser) + " connection"
 	}
 	msg := trackerName(refuser) + " refused the token in " + file + "; put a valid token in it"
+	if refuser == store.TrackerKindJira {
+		// A scoped token answers only through Atlassian's gateway, and the
+		// client calls the site (tracker-api-measurements.md).
+		msg += ". A token made with Create API token with scopes cannot reach the Jira site: make one with Create API token"
+	}
 	if refuser == store.TrackerKindTempo {
 		msg += ", and check that the region is the one the site's Tempo data is in"
 	}
