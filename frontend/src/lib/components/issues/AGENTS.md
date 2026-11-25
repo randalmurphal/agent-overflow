@@ -92,6 +92,12 @@ editor in place and what a pick or a typed value sends; the ticket saves
 each edit at once, and `TicketMoveForm.svelte` collects them for a move
 whose screen takes fields, its pickers asking that move's values.
 
+A ticket's Log time opens the Time screen's `WorklogForm.svelte` with the
+ticket and today, and the link form (`TicketLinkForm.svelte`) finds the
+other ticket with `TicketFinder.svelte`; neither has a second copy here.
+Every input of a ticket write (an editor, the move form, the link form,
+the poker votes) is disabled while its target's write is pending.
+
 `TicketMarkdown.svelte` is the one renderer of a ticket's text, its long
 text fields and comments: ChatMarkdown with embedded HTML and
 `trackerMedia`, which shows a tracker's `media:` image or attachment as a
