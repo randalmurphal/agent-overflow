@@ -108,7 +108,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 		"worklogs": {
 			store: func(readAt int64, v string) error {
 				spent := map[string]int64{"a": 60, "b": 120}[v]
-				_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(readAt), []MirrorWorklog{webWorklog("w1", "2026-01-05", spent)})
+				_, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(readAt), []MirrorWorklog{webWorklog("w1", "2026-01-05", spent)})
 				return err
 			},
 			content: func() string {

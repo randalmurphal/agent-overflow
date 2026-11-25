@@ -140,10 +140,10 @@ var (
 	mirrorWorklogDaysSQL = `INSERT INTO tracker_cache_worklog_days(root_id, author_id, day, read_at)
 		SELECT ?1, ?2, value, ?3 FROM json_each(?4) WHERE true
 		ON CONFLICT(root_id, author_id, day) DO UPDATE SET read_at = excluded.read_at WHERE excluded.read_at > read_at`
-	// mirrorWorklogSourceSQL is root ?1's time source: its connection's
-	// enabled Tempo connection, or empty.
-	mirrorWorklogSourceSQL = `SELECT coalesce((SELECT t.id FROM tracker_cache_roots r
-		JOIN tracker_connections t ON t.parent_id = r.connection_id AND t.enabled = 1 WHERE r.id = ?1), '')`
+	// mirrorWorklogSourceGenSQL is live root ?1's connection's time source
+	// generation (migration v168).
+	mirrorWorklogSourceGenSQL = `SELECT c.time_source_gen FROM tracker_cache_roots r
+		JOIN tracker_connections c ON c.id = r.connection_id WHERE r.id = ?1`
 )
 
 // ReplaceMirrorWorklogs makes logs the whole of authorID's worklogs whose
@@ -157,13 +157,12 @@ var (
 // replaced is left as it was and reported in SupersededDays; a replace
 // from the same read as the stored one writes nothing.
 //
-// source is the time source the logs were read from: the ID of the
-// root's connection's Tempo connection, or empty for Jira's own worklogs.
-// One the connection no longer uses (no enabled Tempo connection of that
-// ID, or one where empty says none) is refused with
-// ErrTrackerCacheSourceChanged in the write's transaction, since the
-// change of source deleted the root's worklogs (migration v168).
-func (s *Store) ReplaceMirrorWorklogs(rootID int64, source, authorID, fromDay, toDay string, read MirrorRead, logs []MirrorWorklog) (changes MirrorWorklogChanges, err error) {
+// sourceGen is the time source generation of the root's connection that
+// the read began under (TrackerConnection.TimeSourceGen). A replace under
+// another generation is refused with ErrTrackerCacheSourceChanged in the
+// write's transaction: the source changed since, and the change deleted
+// the root's worklogs and read days (migration v168).
+func (s *Store) ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read MirrorRead, logs []MirrorWorklog) (changes MirrorWorklogChanges, err error) {
 	times, err := read.in(rootID)
 	if err != nil {
 		return MirrorWorklogChanges{}, err
@@ -187,12 +186,12 @@ func (s *Store) ReplaceMirrorWorklogs(rootID int64, source, authorID, fromDay, t
 	}
 	action := fmt.Sprintf("store: replace tracker mirror %d worklogs of %s", rootID, authorID)
 	err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
-		var current string
-		if err := tx.QueryRow(mirrorWorklogSourceSQL, rootID).Scan(&current); err != nil {
-			return fmt.Errorf("read the time source: %w", err)
+		var current int64
+		if err := tx.QueryRow(mirrorWorklogSourceGenSQL, rootID).Scan(&current); err != nil {
+			return fmt.Errorf("read the time source generation: %w", err)
 		}
-		if current != source {
-			return fmt.Errorf("read from %q, now %q: %w", source, current, ErrTrackerCacheSourceChanged)
+		if current != sourceGen {
+			return fmt.Errorf("read under time source generation %d, now %d: %w", sourceGen, current, ErrTrackerCacheSourceChanged)
 		}
 		args := []any{rootID, authorID, fromDay, toDay, readAt, encoded}
 		var stored int

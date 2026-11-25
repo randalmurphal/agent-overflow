@@ -26,7 +26,7 @@ type worklogGateStore struct {
 	gate func()
 }
 
-func (g *worklogGateStore) ReplaceMirrorWorklogs(root int64, source, author, from, to string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
+func (g *worklogGateStore) ReplaceMirrorWorklogs(root, sourceGen int64, author, from, to string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
 	g.mu.Lock()
 	gate := g.gate
 	g.gate = nil
@@ -34,7 +34,7 @@ func (g *worklogGateStore) ReplaceMirrorWorklogs(root int64, source, author, fro
 	if gate != nil {
 		gate()
 	}
-	return g.Store.ReplaceMirrorWorklogs(root, source, author, from, to, read, logs)
+	return g.Store.ReplaceMirrorWorklogs(root, sourceGen, author, from, to, read, logs)
 }
 
 // timeScenario is a fake scenario with a Jira connection whose site and
@@ -246,6 +246,21 @@ func TestALateWorklogReplaceFromAnEarlierSourceIsRefused(t *testing.T) {
 			must[Connection](t)(s.svc.SetEnabled(tempo.ID, false))
 			return func() { must[Connection](t)(s.svc.SetEnabled(tempo.ID, true)) }
 		}, "20001", "7001"},
+		{"Tempo turned on and off again", func(t *testing.T, s *timeScenario) func() {
+			tempo := s.addTempoOn(t)
+			must[Connection](t)(s.svc.SetEnabled(tempo.ID, false))
+			return func() {
+				must[Connection](t)(s.svc.SetEnabled(tempo.ID, true))
+				must[Connection](t)(s.svc.SetEnabled(tempo.ID, false))
+			}
+		}, "20001", "20001"},
+		{"Tempo turned off and on again", func(t *testing.T, s *timeScenario) func() {
+			tempo := s.addTempoOn(t)
+			return func() {
+				must[Connection](t)(s.svc.SetEnabled(tempo.ID, false))
+				must[Connection](t)(s.svc.SetEnabled(tempo.ID, true))
+			}
+		}, "7001", "7001"},
 		{"Tempo removed", func(t *testing.T, s *timeScenario) func() {
 			tempo := s.addTempoOn(t)
 			return func() {
@@ -274,6 +289,32 @@ func TestALateWorklogReplaceFromAnEarlierSourceIsRefused(t *testing.T) {
 			s.refreshed(t, "after the change", tc.now)
 		})
 	}
+}
+
+// A Tempo connection that is turned off is no time source: adding one
+// turned off and removing it leave the Jira connection's own worklogs as
+// the mirror holds them.
+func TestATempoConnectionTurnedOffIsNoTimeSource(t *testing.T) {
+	t.Parallel()
+	s := newTimeScenario(t)
+	tempo := s.addTempoOn(t)
+	must[Connection](t)(s.svc.SetEnabled(tempo.ID, false))
+	s.refreshed(t, "with Tempo off", "20001")
+	kept := func(what string) {
+		t.Helper()
+		if ids, unread := s.mirrored(t); !slices.Equal(ids, []string{"20001"}) || len(unread) != 0 {
+			t.Fatalf("after %s the mirror reads %v unread %v; want Jira's 20001 with every day read", what, ids, unread)
+		}
+	}
+	// Writes to the Tempo row that leave it off change no source.
+	must[Connection](t)(s.svc.SetEnabled(tempo.ID, false))
+	kept("Tempo was turned off again")
+	must[Connection](t)(s.svc.Rename(tempo.ID, "Time"))
+	kept("Tempo, turned off, was renamed")
+	if err := s.svc.Remove(tempo.ID); err != nil {
+		t.Fatal(err)
+	}
+	kept("Tempo, turned off, was removed")
 }
 
 // The mirror read of worklogs refuses what the refresh refuses, from the

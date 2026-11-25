@@ -442,7 +442,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 		logs = append(logs, MirrorWorklog{ID: fmt.Sprintf("w%d", i), IssueID: "1", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 60})
 	}
 	for i, l := range [][]MirrorWorklog{logs, nil} {
-		if _, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(int64(i+1)), l); err != nil {
+		if _, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user1", "2026-01-05", "2026-01-05", mirrorReadAt(int64(i+1)), l); err != nil {
 			t.Fatal(err)
 		}
 	}

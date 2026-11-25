@@ -429,7 +429,7 @@ func TestEveryMirrorWriterRefusesAReadOfAnotherRoot(t *testing.T) {
 			return err
 		}},
 		{"ReplaceMirrorWorklogs", func(read MirrorRead) error {
-			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-05", read, nil)
+			_, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user1", "2026-01-05", "2026-01-05", read, nil)
 			return err
 		}},
 		{"StoreMirrorTickets read", func(read MirrorRead) error {

@@ -171,9 +171,9 @@ func (c *countingStore) ReadMirrorRefreshTargets(root int64, cards, details, boa
 	return c.Store.ReadMirrorRefreshTargets(root, cards, details, boards)
 }
 
-func (c *countingStore) ReplaceMirrorWorklogs(root int64, source, author, from, to string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
+func (c *countingStore) ReplaceMirrorWorklogs(root, sourceGen int64, author, from, to string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
 	c.count("ReplaceMirrorWorklogs")
-	return c.Store.ReplaceMirrorWorklogs(root, source, author, from, to, read, logs)
+	return c.Store.ReplaceMirrorWorklogs(root, sourceGen, author, from, to, read, logs)
 }
 
 func (c *countingStore) ReadMirrorWorklogDays(connection, author, from, to string) (store.MirrorWorklogDays, error) {

@@ -205,7 +205,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"ReplaceMirrorWorklogs": func(root int64) error {
-			_, err := s.ReplaceMirrorWorklogs(root, "", "acc-user1", "2026-01-05", "2026-01-06", mirrorReadOf(root, 1), nil)
+			_, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadOf(root, 1), nil)
 			return err
 		},
 		"RecordMirrorSyncAttempt": func(root int64) error {

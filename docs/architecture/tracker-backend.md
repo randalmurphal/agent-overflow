@@ -142,11 +142,14 @@ this is its shape.
   edit and delete, or none for a tracker with no time tracking. A Jira
   connection's is Tempo while its Tempo connection is on, and Jira's own
   worklogs otherwise, a Tempo connection turned off included. The mirror
-  keeps the worklogs of one source: adding, turning on or off, or removing
-  the Tempo connection empties the Jira connection's worklogs and their
-  read days in the same statement (store triggers, v168), and a replace
-  read from the earlier source is refused (`ReplaceMirrorWorklogs`
-  compares the source the run read from, in its transaction), so the
+  keeps the worklogs of one source. A change of source (the Tempo
+  connection added while on, turned on or off, or removed while on)
+  advances the Jira row's `time_source_gen` and empties its worklogs and
+  read days in the same transaction (store triggers, v168); adding or
+  removing a Tempo connection that is off changes nothing. A run captures
+  the generation with the row its provider is built from
+  (`providerLocked`), and a replace under an earlier generation is
+  refused in its transaction, however many changes came between, so the
   refresh answers that the time tracking changed and to refresh again.
   An edit or a delete is sent only while the worklog is the copy the
   caller read, at the tracker revision the copy carries (`updated`,

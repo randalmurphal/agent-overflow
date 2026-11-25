@@ -71,7 +71,7 @@ type MirrorStore interface {
 	ListMirrorIssueBoards(rootID int64, issueIDs, parentIDs []string) ([]store.MirrorIssueBoard, error)
 	ReadMirrorRefreshTargets(rootID int64, cardIDs, detailIDs, boardIDs []string) (store.MirrorRefreshTargets, error)
 
-	ReplaceMirrorWorklogs(rootID int64, source, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
+	ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
 	ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay string) (store.MirrorWorklogDays, error)
 }
 

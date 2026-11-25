@@ -39,9 +39,11 @@ func (s *Service) Provider(ctx context.Context, id string) (tracker.Provider, er
 
 // providerLocked is the provider of connection row, with the client of
 // the connection itself that its calls are stamped on (begin) and the
-// time source its worklogs come from (store ReplaceMirrorWorklogs): the
-// enabled Tempo connection's ID, or empty for Jira's own worklogs and a
-// tracker with none. The caller holds opMu and read row under it.
+// kind of the tracker that answers for its time: store.TrackerKindTempo
+// while its Tempo connection is on, empty otherwise. The caller holds
+// opMu and read row under it, so row.TimeSourceGen is the time source
+// generation the provider was built for (every connection change holds
+// opMu).
 func (s *Service) providerLocked(row store.TrackerConnection) (tracker.Provider, *clients, string, error) {
 	if err := usable(row); err != nil {
 		return nil, nil, "", err
@@ -51,7 +53,7 @@ func (s *Service) providerLocked(row store.TrackerConnection) (tracker.Provider,
 		return nil, nil, "", err
 	}
 	var timeClients *clients
-	source := ""
+	timeBy := ""
 	if row.Kind == store.TrackerKindJira {
 		timeRow, ok, err := s.tempoOf(row.ID)
 		if err != nil {
@@ -61,14 +63,14 @@ func (s *Service) providerLocked(row store.TrackerConnection) (tracker.Provider,
 			if timeClients, err = s.use(timeRow); err != nil {
 				return nil, nil, "", fmt.Errorf("trackerapp: the Tempo connection of %s: %w", row.ID, err)
 			}
-			source = timeRow.ID
+			timeBy = store.TrackerKindTempo
 		}
 	}
 	p, err := s.makeProvider(row, c, timeClients)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return p, c, source, nil
+	return p, c, timeBy, nil
 }
 
 // usable refuses a connection no provider serves: a Tempo connection
