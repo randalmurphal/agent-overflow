@@ -100,7 +100,7 @@ func (s *Store) listItemsInRange(threadID string, from, to TimelineCursor, limit
 	if !includeChildren {
 		where += "\n		   AND " + topLevelItemsFilterFor("items.")
 	}
-	selectedSQL, selectedArgs, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
+	selectedSQL, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
 		Where:     where,
 		WhereArgs: []any{from.TurnIndex, from.ItemIndex, to.TurnIndex, to.ItemIndex},
 		OrderBy:   "turn_index " + direction + ", item_index " + direction,
@@ -109,7 +109,7 @@ func (s *Store) listItemsInRange(threadID string, from, to TimelineCursor, limit
 	if err != nil {
 		return nil, err
 	}
-	items, err := queryHydratedTimelineItems(s.reader(), threadID, selectedSQL, selectedArgs...)
+	items, err := queryHydratedTimelineItems(s.reader(), threadID, selectedSQL)
 	if err != nil {
 		return nil, fmt.Errorf("store: list items in range for %s: %w", threadID, err)
 	}

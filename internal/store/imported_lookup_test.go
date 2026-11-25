@@ -52,14 +52,14 @@ func TestImportedLookupProbesIdentityBeforeChunkMembership(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 	q := &lookupPlanReader{sqlQueryer: s.reader(), t: t, db: s.reader()}
-	items, err := queryHydratedTimelineItems(q, timelineParityThreadID, "SELECT 'imp-child-0' AS id UNION ALL SELECT 'loc-child-2'")
+	items, err := queryHydratedTimelineItems(q, timelineParityThreadID, fixedIDSelection("SELECT 'imp-child-0' AS id UNION ALL SELECT 'loc-child-2'"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(items) != 2 {
 		t.Fatalf("hydrated %d rows", len(items))
 	}
-	scan, err := queryActivityScanRows(q, timelineParityThreadID, 2, "SELECT 'imp-child-0' AS id UNION ALL SELECT 'loc-child-2'")
+	scan, err := queryActivityScanRows(q, timelineParityThreadID, 2, fixedIDSelection("SELECT 'imp-child-0' AS id UNION ALL SELECT 'loc-child-2'"))
 	if err != nil {
 		t.Fatal(err)
 	}

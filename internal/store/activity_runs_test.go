@@ -406,7 +406,7 @@ func TestActivityRunStubIgnoresSettledBackgroundLaunch(t *testing.T) {
 		t.Fatalf("InsertItem live launch: %v", err)
 	}
 
-	rows, err := queryActivityScanRows(s.reader(), threadID, 2, `SELECT id FROM items WHERE thread_id = ?`, threadID)
+	rows, err := queryActivityScanRows(s.reader(), threadID, 2, fixedIDSelection(`SELECT id FROM items WHERE thread_id = ?`, threadID))
 	if err != nil {
 		t.Fatalf("queryActivityScanRows: %v", err)
 	}

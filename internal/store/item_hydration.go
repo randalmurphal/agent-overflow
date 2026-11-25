@@ -1,6 +1,10 @@
 package store
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"slices"
+)
 
 // itemHydrationColumns is the canonical frontend-bound Item projection with
 // caller-supplied expressions for the logical thread id, the three payload
@@ -51,8 +55,8 @@ func importedItemHydrationColumns(thread, rev string) string {
 	)
 }
 
-// resolveSelectedTimelineSQL renders the branches that resolve a
-// MATERIALIZED `selected(id)` set to rows of one thread, each through the
+// resolveSelectedTimelineSQL renders the branches that resolve the
+// `selected(id)` set of selectedIDsSQL to rows of one thread, each through the
 // physical source that owns the id:
 //
 //   - local rows probe items(thread_id,id) and payloads(thread_id,id);
@@ -70,8 +74,7 @@ func importedItemHydrationColumns(thread, rev string) string {
 // local and imported render a branch's projection from its logical thread
 // id and row revision expressions. localJoin is a join the own local
 // branch's projection reads (servedItemJoin for served meta), or "". It
-// returns the branches and their bind values, which follow the
-// selection's.
+// returns the branches and their bind values, which follow the ids'.
 func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported func(thread, rev string) string, localJoin, orderBy string) (string, []any, error) {
 	depth, err := forkLineageDepth(q, threadID)
 	if err != nil {
@@ -130,61 +133,114 @@ func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported f
 		 ORDER BY ` + orderBy, args, nil
 }
 
-// queryHydratedTimelineItems selects logical item ids first, then resolves each
-// id through the physical branch that owns it. This shape is deliberately not
-// expressed as `timeline_items LEFT JOIN timeline_payloads`: SQLite materializes
-// that compound payload view, scans every payload in the database, and builds
-// an automatic index before returning even a one-row lookup.
+// idSelection is SQL that returns one `id` column, and its bind values.
+// perLevel marks a selection rendered with a pair of arms per lineage
+// level (renderTimelineArms), whose statement grows with the fork's depth.
+type idSelection struct {
+	sql      string
+	args     []any
+	perLevel bool
+}
+
+// fixedIDSelection is a selection whose text does not depend on the thread.
+func fixedIDSelection(sql string, args ...any) idSelection {
+	return idSelection{sql: sql, args: args}
+}
+
+// selectedIDsSQL is the `selected(id)` set of resolveSelectedTimelineSQL's
+// branches as a list of ids bound as one JSON array.
+const selectedIDsSQL = `
+		WITH selected(id) AS MATERIALIZED (SELECT value FROM json_each(?))`
+
+// selectedSet renders the `selected(id)` set resolveSelectedTimelineSQL's
+// branches read from sel, and its bind values; found is false when sel
+// selected nothing. The set is MATERIALIZED: every branch reads it.
 //
-// selectedSQL must return one `id` column. It runs once (MATERIALIZED matters
-// because every physical branch consumes it), then each id resolves through
-// the branch that owns it (resolveSelectedTimelineSQL).
+// sel is the set's body unless it is perLevel. SQLite copies a CTE's body
+// into the statement once for every reference, and from 3.54 refuses to
+// expand a CTE reference once the statement holds 1000 cursors; a
+// per-level selection grows with depth, so it runs as its own statement
+// and the set is the ids it returned.
+func selectedSet(q sqlQueryer, sel idSelection) (set string, args []any, found bool, err error) {
+	if !sel.perLevel {
+		return `
+		WITH selected(id) AS MATERIALIZED (
+			` + sel.sql + `
+		)`, sel.args, true, nil
+	}
+	ids, err := queryIDs(q, sel.sql, sel.args...)
+	if err != nil {
+		return "", nil, false, err
+	}
+	return selectedIDList(ids)
+}
+
+// selectedIDList renders ids as the `selected(id)` set.
+func selectedIDList(ids []string) (string, []any, bool, error) {
+	if len(ids) == 0 {
+		return "", nil, false, nil
+	}
+	list, err := jsonList(ids)
+	if err != nil {
+		return "", nil, false, err
+	}
+	return selectedIDsSQL, []any{list}, true, nil
+}
+
+// queryHydratedTimelineItems resolves each id sel selects through the
+// physical branch that owns it, in timeline order. This shape is
+// deliberately not expressed as `timeline_items LEFT JOIN
+// timeline_payloads`: SQLite materializes that compound payload view,
+// scans every payload in the database, and builds an automatic index
+// before returning even a one-row lookup.
 //
 // The caller chooses q, so SyncThreadWindow can keep selection, hydration,
 // decoration, and its history stamps in one WAL snapshot.
-func queryHydratedTimelineItems(
-	q sqlQueryer,
-	threadID string,
-	selectedSQL string,
-	selectedArgs ...any,
-) ([]Item, error) {
+func queryHydratedTimelineItems(q sqlQueryer, threadID string, sel idSelection) ([]Item, error) {
+	set, args, found, err := selectedSet(q, sel)
+	if err != nil {
+		return nil, fmt.Errorf("store: select hydrated timeline items for %s: %w", threadID, err)
+	}
+	return hydrateSelectedSet(q, threadID, set, args, found)
+}
+
+// hydrateTimelineIDs is queryHydratedTimelineItems for ids a caller holds.
+func hydrateTimelineIDs(q sqlQueryer, threadID string, ids []string) ([]Item, error) {
+	set, args, found, err := selectedIDList(ids)
+	if err != nil {
+		return nil, err
+	}
+	return hydrateSelectedSet(q, threadID, set, args, found)
+}
+
+func hydrateSelectedSet(q sqlQueryer, threadID, set string, setArgs []any, found bool) ([]Item, error) {
+	if !found {
+		return []Item{}, nil
+	}
 	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localItemHydrationColumns, importedItemHydrationColumns, servedItemJoin, "3, 4")
 	if err != nil {
 		return nil, fmt.Errorf("store: query hydrated timeline items for %s: %w", threadID, err)
 	}
-	args := append(append([]any{}, selectedArgs...), branchArgs...)
-	rows, err := q.Query(`
-		WITH selected(id) AS MATERIALIZED (
-			`+selectedSQL+`
-		)`+branches,
-		args...,
-	)
+	rows, err := q.Query(set+branches, append(slices.Clone(setArgs), branchArgs...)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query hydrated timeline items for %s: %w", threadID, err)
 	}
-	defer rows.Close()
-
 	items := []Item{}
 	for rows.Next() {
 		item, err := scanItemRow(rows)
 		if err != nil {
-			return nil, fmt.Errorf("store: scan hydrated timeline item row: %w", err)
+			return nil, errors.Join(fmt.Errorf("store: scan hydrated timeline item row: %w", err), rows.Close())
 		}
 		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("store: iterate hydrated timeline items for %s: %w", threadID, err)
 	}
 	return items, nil
 }
 
-func queryOneHydratedTimelineItem(
-	q sqlQueryer,
-	threadID string,
-	selectedSQL string,
-	selectedArgs ...any,
-) (Item, bool, error) {
-	items, err := queryHydratedTimelineItems(q, threadID, selectedSQL, selectedArgs...)
+func queryOneHydratedTimelineItem(q sqlQueryer, threadID string, sel idSelection) (Item, bool, error) {
+	items, err := queryHydratedTimelineItems(q, threadID, sel)
 	if err != nil {
 		return Item{}, false, err
 	}

@@ -132,11 +132,8 @@ func (c gatedConnector) Connect(ctx context.Context) (driver.Conn, error) {
 				return c.commits.hook()
 			}
 		}
+		// The driver forgets a connection's hooks when it closes.
 		hooked.RegisterCommitHook(hook)
-		// The driver keeps each registered hook in a process-wide map
-		// until it is unregistered, so a closed connection would
-		// otherwise leave its entry behind.
-		cached.beforeClose = func() { hooked.RegisterCommitHook(nil) }
 	}
 	return cached, nil
 }

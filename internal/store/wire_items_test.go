@@ -175,10 +175,11 @@ func TestIDListReadsProbeEachIDByKey(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 	ids := jsonListForTest(t, "loc-launch-2", "imp-launch-1")
-	wire, wireArgs, err := wireItemsSelection(s.reader(), timelineParityThreadID, ids)
+	wireSelection, err := wireItemsSelection(s.reader(), timelineParityThreadID, ids)
 	if err != nil {
 		t.Fatal(err)
 	}
+	wire, wireArgs := wireSelection.sql, wireSelection.args
 	launches, launchArgs, err := subagentLaunchRowsQuery(s.reader(), timelineParityThreadID, ids)
 	if err != nil {
 		t.Fatal(err)

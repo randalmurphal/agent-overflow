@@ -100,7 +100,7 @@ func TestNonPositiveLimitIsRefusedBeforeSQL(t *testing.T) {
 				return scanWorkItemTreeRuns(s.reader(), "root", 4, limit, func(WorkItemTreeRun) error { return nil })
 			}},
 			{"timelineKeyedIDSelection", named, func() error {
-				_, _, err := timelineKeyedIDSelection(s.reader(), "t", "items.created_at AS created_at",
+				_, err := timelineKeyedIDSelection(s.reader(), "t", "items.created_at AS created_at",
 					"items.id = ?", []any{"x"}, "created_at DESC", limit)
 				return err
 			}},

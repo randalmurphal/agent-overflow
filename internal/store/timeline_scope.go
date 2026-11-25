@@ -75,28 +75,28 @@ func (s *Store) resolveTimelineScope(q sqlQueryer, threadID string, selection Ti
 		err := s.resolveTimelineDigest(q, threadID, &scope)
 		return scope, err
 	}
-	carriers, args, err := timelineKeyedIDSelection(q, threadID,
+	carriers, err := timelineKeyedIDSelection(q, threadID,
 		"items.turn_index AS turn_index, items.item_index AS item_index",
 		`items.kind = 'tool_call' AND `+jsonFieldExpr("items.meta", "$.transcript_root_id")+` = ?`, []any{root.ID},
 		"turn_index DESC, item_index DESC", 1)
 	if err != nil {
 		return scope, err
 	}
-	rows, err := queryHydratedTimelineItems(q, threadID, carriers, args...)
+	rows, err := queryHydratedTimelineItems(q, threadID, carriers)
 	if err != nil {
 		return scope, fmt.Errorf("read scope lifecycle: %w", err)
 	}
 	if len(rows) > 0 {
 		context.Lifecycle = rows[0]
 	}
-	completions, args, err := timelineKeyedIDSelection(q, threadID,
+	completions, err := timelineKeyedIDSelection(q, threadID,
 		"items.turn_index AS turn_index, items.item_index AS item_index",
 		`items.completion_of <> '' AND items.completion_of = ? AND items.status <> 'parked'`, []any{context.Lifecycle.ID},
 		"turn_index DESC, item_index DESC", 1)
 	if err != nil {
 		return scope, err
 	}
-	rows, err = queryHydratedTimelineItems(q, threadID, completions, args...)
+	rows, err = queryHydratedTimelineItems(q, threadID, completions)
 	if err != nil {
 		return scope, fmt.Errorf("read scope completion: %w", err)
 	}

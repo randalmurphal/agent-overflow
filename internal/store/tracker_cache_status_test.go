@@ -46,7 +46,7 @@ func seedStatusBoards(t *testing.T, s *Store, connectionID string, root int64) [
 func boardRevisions(t *testing.T, s *Store, root int64) map[string]int64 {
 	t.Helper()
 	got := map[string]int64{}
-	err := scanMirrorRows(s.db, `SELECT board_id, revision FROM tracker_cache_boards WHERE root_id = ?`, []any{root}, func(r rowScanner) error {
+	err := scanMirrorRows(s.db, `SELECT board_id, revision FROM tracker_cache_boards WHERE root_id = `+boundInt, []any{root}, func(r rowScanner) error {
 		var id string
 		var revision int64
 		err := r.Scan(&id, &revision)

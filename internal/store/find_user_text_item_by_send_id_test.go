@@ -145,18 +145,18 @@ func TestSendIdentityLookupUsesBothSparseIndexes(t *testing.T) {
 	s := newTestStore(t)
 	for _, tc := range []struct {
 		name    string
-		query   func(sqlQueryer, string, string) (string, []any, error)
+		query   func(sqlQueryer, string, string) (idSelection, error)
 		indexes []string
 	}{
 		{"sendId", sendIdentityQuery, []string{"idx_items_send_id", "idx_import_history_items_send_id"}},
 		{"joinedSendIds", joinedSendIdentityQuery, []string{"idx_items_joined_send_ids", "idx_import_history_items_joined_send_ids"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			query, args, err := tc.query(s.db, "thread", "send-id")
+			selection, err := tc.query(s.db, "thread", "send-id")
 			if err != nil {
 				t.Fatal(err)
 			}
-			plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+query, args...)
+			plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+selection.sql, selection.args...)
 			for _, index := range tc.indexes {
 				if !strings.Contains(plan, index) {
 					t.Fatalf("missing %s in plan:\n%s", index, plan)

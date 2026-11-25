@@ -108,20 +108,20 @@ type mirrorWorklogRow struct {
 // read that began later replaced it (tracker_cache_worklog_days).
 const (
 	mirrorWorklogDaySupersededSQL = `EXISTS (SELECT 1 FROM tracker_cache_worklog_days wd
-		WHERE wd.root_id = ?1 AND wd.author_id = ?2 AND wd.day = %s AND wd.read_at > ?5)`
+		WHERE wd.root_id = CAST(?1 AS INTEGER) AND wd.author_id = ?2 AND wd.day = %s AND wd.read_at > ?5)`
 )
 
 var (
 	mirrorWorklogSupersededDaysSQL = `SELECT day FROM tracker_cache_worklog_days
-		WHERE root_id = ?1 AND author_id = ?2 AND day BETWEEN ?3 AND ?4 AND read_at > ?5 ORDER BY day`
+		WHERE root_id = CAST(?1 AS INTEGER) AND author_id = ?2 AND day BETWEEN ?3 AND ?4 AND read_at > ?5 ORDER BY day`
 	mirrorWorklogCountSQL = `SELECT count(*) FROM (SELECT 1 FROM tracker_cache_worklogs
-		WHERE root_id = ?1 AND author_id = ?2 AND day BETWEEN ?3 AND ?4 LIMIT ` + strconv.Itoa(clearMirrorChunk+1) + `)`
+		WHERE root_id = CAST(?1 AS INTEGER) AND author_id = ?2 AND day BETWEEN ?3 AND ?4 LIMIT ` + strconv.Itoa(clearMirrorChunk+1) + `)`
 	mirrorWorklogsUpsertSQL = `INSERT INTO tracker_cache_worklogs(root_id, worklog_id, issue_id, author_id, day,
 		        spent_seconds, description, updated_at)
 		SELECT ?1, w.value ->> 'i', w.value ->> 's', ?2, w.value ->> 'y', w.value ->> 't', w.value ->> 'd', w.value ->> 'u'
 		  FROM json_each(?6) w
 		 WHERE NOT ` + fmt.Sprintf(mirrorWorklogDaySupersededSQL, `w.value ->> 'y'`) + `
-		   AND NOT EXISTS (SELECT 1 FROM tracker_cache_worklogs o WHERE o.root_id = ?1 AND o.worklog_id = w.value ->> 'i'
+		   AND NOT EXISTS (SELECT 1 FROM tracker_cache_worklogs o WHERE o.root_id = CAST(?1 AS INTEGER) AND o.worklog_id = w.value ->> 'i'
 		                    AND ` + fmt.Sprintf(mirrorWorklogDaySupersededSQL, `o.day`) + `)
 		ON CONFLICT(root_id, worklog_id) DO UPDATE SET issue_id = excluded.issue_id, author_id = excluded.author_id,
 		    day = excluded.day, spent_seconds = excluded.spent_seconds, description = excluded.description,
@@ -131,7 +131,7 @@ var (
 		   OR updated_at IS NOT excluded.updated_at
 		RETURNING worklog_id, day`
 	mirrorWorklogsRemoveSQL = `DELETE FROM tracker_cache_worklogs
-		WHERE root_id = ?1 AND author_id = ?2 AND day BETWEEN ?3 AND ?4
+		WHERE root_id = CAST(?1 AS INTEGER) AND author_id = ?2 AND day BETWEEN ?3 AND ?4
 		  AND worklog_id NOT IN (SELECT w.value ->> 'i' FROM json_each(?6) w)
 		  AND NOT ` + fmt.Sprintf(mirrorWorklogDaySupersededSQL, `tracker_cache_worklogs.day`) + `
 		RETURNING worklog_id, day`
@@ -239,7 +239,7 @@ func (s *Store) ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay
 const mirrorWorklogColumns = `w.worklog_id, w.issue_id, w.author_id, w.day, w.spent_seconds, w.description, w.updated_at`
 
 // mirrorRootLiveSQL holds for a live root ?1.
-const mirrorRootLiveSQL = `EXISTS (SELECT 1 FROM tracker_cache_roots live_root WHERE live_root.id = ?1 AND live_root.connection_id IS NOT NULL)`
+const mirrorRootLiveSQL = `EXISTS (SELECT 1 FROM tracker_cache_roots live_root WHERE live_root.id = CAST(?1 AS INTEGER) AND live_root.connection_id IS NOT NULL)`
 
 // mirrorAuthorWorklogsSQL reads root ?1's worklogs of author ?2 from day
 // ?3 to ?4, by day and ID, at most mirrorWorklogLimit and one more.
@@ -301,7 +301,7 @@ func (s *Store) ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay str
 // at most mirrorWorklogLimit; more reports that the issue has more.
 func (s *Store) ListMirrorIssueWorklogs(rootID int64, issueID string) (logs []MirrorWorklog, more bool, err error) {
 	logs, more, err = queryMirrorWorklogs(s.reader(), `SELECT `+mirrorWorklogColumns+` FROM tracker_cache_worklogs w
-		WHERE w.root_id = ?1 AND w.issue_id = ?2 AND `+mirrorRootLiveSQL+`
+		WHERE w.root_id = CAST(?1 AS INTEGER) AND w.issue_id = ?2 AND `+mirrorRootLiveSQL+`
 		ORDER BY w.day, w.worklog_id LIMIT `+strconv.Itoa(mirrorWorklogLimit+1), rootID, issueID)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: list tracker mirror %d issue %s worklogs: %w", rootID, issueID, err)
@@ -426,7 +426,7 @@ func (o *MirrorSyncOutcome) outcomeDest() []any {
 // wait cost nothing.
 var mirrorSyncStateSQL = `SELECT rt.connection_id IS NOT NULL, coalesce(rt.sweep, 0),
 	  coalesce(bl.lifetime, 0), coalesce((SELECT iif(max(p.named_at) >= bl.read_at, max(p.named_at), 0) FROM tracker_cache_board_unexplained p
-	    WHERE p.root_id = ?1 AND p.board_id = ?2 AND p.named_at > 0), 0), coalesce(bl.estimate_reset_at, 0), coalesce(bl.structure_wall, 0),
+	    WHERE p.root_id = CAST(?1 AS INTEGER) AND p.board_id = ?2 AND p.named_at > 0), 0), coalesce(bl.estimate_reset_at, 0), coalesce(bl.structure_wall, 0),
 	  ` + mirrorHistoryDueExistsSQL("?3") + `,
 	  s.root_id IS NOT NULL, s.cursor, coalesce(s.read_at, 0), coalesce(s.read_wall, 0),
 	  coalesce(s.reconciled_at, 0), coalesce(s.reconciled_wall, 0), coalesce(s.failed_at, 0), coalesce(s.failed_wall, 0),
@@ -434,12 +434,12 @@ var mirrorSyncStateSQL = `SELECT rt.connection_id IS NOT NULL, coalesce(rt.sweep
 	  coalesce(s.reconcile_failed_at, 0), coalesce(s.reconcile_failed_wall, 0), coalesce(s.reconcile_failure_kind, ''),
 	  coalesce(s.reconcile_failure_message, ''), coalesce(s.reconcile_refused, 0)
 	FROM (SELECT 1)
-	LEFT JOIN tracker_cache_roots rt ON rt.id = ?1
-	LEFT JOIN tracker_cache_boards bl ON bl.root_id = ?1 AND bl.board_id = ?2 AND bl.retired = 0
+	LEFT JOIN tracker_cache_roots rt ON rt.id = CAST(?1 AS INTEGER)
+	LEFT JOIN tracker_cache_boards bl ON bl.root_id = CAST(?1 AS INTEGER) AND bl.board_id = ?2 AND bl.retired = 0
 	  AND EXISTS (SELECT 1 FROM tracker_cache_roots lr JOIN project_tracker_boards lp ON lp.connection_id = lr.connection_id
-	               WHERE lr.id = ?1 AND lp.board_id = ?2)
-	LEFT JOIN tracker_cache_sync s ON s.root_id = ?1 AND s.board_id = ?2 AND ` + mirrorRootLiveSQL + `
-	  AND (?2 = '' OR ` + mirrorBoardShown("?1", "?2") + `)`
+	               WHERE lr.id = CAST(?1 AS INTEGER) AND lp.board_id = ?2)
+	LEFT JOIN tracker_cache_sync s ON s.root_id = CAST(?1 AS INTEGER) AND s.board_id = ?2 AND ` + mirrorRootLiveSQL + `
+	  AND (?2 = '' OR ` + mirrorBoardShown(intParam("?1"), "?2") + `)`
 
 // GetMirrorSync reads a scope's sync state, if any was written: none for a
 // board the mirror does not show, with HistoryDue as of now, the caller's
@@ -609,7 +609,7 @@ var mirrorSyncAttemptSQL = strings.NewReplacer(
 
 // mirrorSyncOutcomeSQL reads a scope's outcome, for an attempt that
 // changed nothing.
-var mirrorSyncOutcomeSQL = `SELECT ` + mirrorSyncOutcomeColumns + ` FROM tracker_cache_sync WHERE root_id = ?1 AND board_id = ?2`
+var mirrorSyncOutcomeSQL = `SELECT ` + mirrorSyncOutcomeColumns + ` FROM tracker_cache_sync WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2`
 
 // RecordMirrorSyncAttempt records the outcome of one tick of a scope in
 // one upsert, after the root check (and a board's lifetime check) every

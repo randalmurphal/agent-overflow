@@ -130,7 +130,7 @@ func (s *Store) ListPendingThreadPullRequests() ([]ThreadPullRequest, error) {
 // request (forge, host, project, number), handled or not, in thread order.
 func (s *Store) ListThreadPullRequestsForPR(forge, host, project string, number int) ([]ThreadPullRequest, error) {
 	rows, err := s.reader().QueryContext(context.Background(), `SELECT `+threadPullRequestColumns+`
-		FROM thread_pull_requests WHERE forge = ? AND host = ? AND project = ? AND number = ? ORDER BY thread_id`,
+		FROM thread_pull_requests WHERE forge = ? AND host = ? AND project = ? AND number = `+boundInt+` ORDER BY thread_id`,
 		forge, host, project, number)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads on %s %s#%d: %w", forge, project, number, err)
@@ -157,7 +157,7 @@ func (s *Store) MarkThreadPullRequestsMerged(forge, host, project string, number
 		return 0, fmt.Errorf("store: mark pull request merged: merge time is required")
 	}
 	result, err := s.db.Exec(`UPDATE thread_pull_requests SET merged_at = ?
-		WHERE forge = ? AND host = ? AND project = ? AND number = ? AND handled_at = 0 AND merged_at = 0`,
+		WHERE forge = ? AND host = ? AND project = ? AND number = `+boundInt+` AND handled_at = 0 AND merged_at = 0`,
 		mergedAt, forge, host, project, number)
 	if err != nil {
 		return 0, fmt.Errorf("store: mark %s %s#%d merged: %w", forge, project, number, err)
@@ -175,7 +175,7 @@ func (s *Store) MarkThreadPullRequestsRemovalFailed(forge, host, project string,
 		return false, fmt.Errorf("store: mark pull request removal failed: time is required")
 	}
 	result, err := s.db.Exec(`UPDATE thread_pull_requests SET removal_failed_at = ?
-		WHERE forge = ? AND host = ? AND project = ? AND number = ? AND handled_at = 0 AND removal_failed_at = 0`,
+		WHERE forge = ? AND host = ? AND project = ? AND number = `+boundInt+` AND handled_at = 0 AND removal_failed_at = 0`,
 		at, forge, host, project, number)
 	if err != nil {
 		return false, fmt.Errorf("store: mark %s %s#%d removal failed: %w", forge, project, number, err)
@@ -201,7 +201,7 @@ func (s *Store) MarkThreadPullRequestsHandled(forge, host, project string, numbe
 		return 0, fmt.Errorf("store: mark pull request handled: handled time is required")
 	}
 	result, err := s.db.Exec(`UPDATE thread_pull_requests SET handled_at = ?, outcome = ?
-		WHERE forge = ? AND host = ? AND project = ? AND number = ? AND handled_at = 0`,
+		WHERE forge = ? AND host = ? AND project = ? AND number = `+boundInt+` AND handled_at = 0`,
 		handledAt, outcome, forge, host, project, number)
 	if err != nil {
 		return 0, fmt.Errorf("store: mark %s %s#%d %s: %w", forge, project, number, outcome, err)

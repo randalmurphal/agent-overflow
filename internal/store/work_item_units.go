@@ -122,7 +122,7 @@ func (s *Store) StartWorkItemUnit(itemID, phaseID string, attempt int, unitID st
 		`UPDATE work_item_units
 		 SET status = 'running', unit_attempt = ?, feedback = ?, envelope = '',
 		     provider_usage_scope_id = 0, started_at = ?, ended_at = 0
-		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
+		 WHERE item_id = ? AND phase_id = ? AND attempt = `+boundInt+` AND unit_id = ?`,
 		unitAttempt, feedback, startedAt, itemID, phaseID, attempt, unitID,
 	)
 	if err != nil {
@@ -157,7 +157,7 @@ func (s *Store) RetryWorkItemUnit(itemID, phaseID string, attempt int, unitID st
 		`UPDATE work_item_units
 		 SET status = 'pending', unit_attempt = ?, feedback = ?, envelope = '',
 		     provider_usage_scope_id = 0, started_at = 0, ended_at = 0
-		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
+		 WHERE item_id = ? AND phase_id = ? AND attempt = `+boundInt+` AND unit_id = ?`,
 		unitAttempt, feedback, itemID, phaseID, attempt, unitID,
 	)
 	if err != nil {
@@ -175,7 +175,7 @@ func (s *Store) RetryWorkItemUnit(itemID, phaseID string, attempt int, unitID st
 func (s *Store) AttachWorkItemUnitWorkspace(itemID, phaseID string, attempt int, unitID, branch, worktreePath string) error {
 	result, err := s.db.Exec(
 		`UPDATE work_item_units SET branch = ?, worktree_path = ?
-		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
+		 WHERE item_id = ? AND phase_id = ? AND attempt = `+boundInt+` AND unit_id = ?`,
 		branch, worktreePath, itemID, phaseID, attempt, unitID,
 	)
 	if err != nil {
@@ -190,7 +190,7 @@ func (s *Store) AttachWorkItemUnitWorkspace(itemID, phaseID string, attempt int,
 func (s *Store) AttachWorkItemUnitRun(itemID, phaseID string, attempt int, unitID, threadID, narrativePath string) error {
 	result, err := s.db.Exec(
 		`UPDATE work_item_units SET thread_id = ?, narrative_path = ?
-		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
+		 WHERE item_id = ? AND phase_id = ? AND attempt = `+boundInt+` AND unit_id = ?`,
 		threadID, narrativePath, itemID, phaseID, attempt, unitID,
 	)
 	if err != nil {
@@ -216,7 +216,7 @@ func (s *Store) AttachWorkItemJoinRun(itemID, phaseID string, attempt int, unitI
 
 	result, err := tx.Exec(
 		`UPDATE work_item_units SET thread_id = ?, narrative_path = ?
-		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
+		 WHERE item_id = ? AND phase_id = ? AND attempt = `+boundInt+` AND unit_id = ?`,
 		threadID, narrativePath, itemID, phaseID, attempt, unitID,
 	)
 	if err != nil {
@@ -228,7 +228,7 @@ func (s *Store) AttachWorkItemJoinRun(itemID, phaseID string, attempt int, unitI
 
 	result, err = tx.Exec(
 		`UPDATE work_item_phases SET thread_id = ?, narrative_path = ?
-		 WHERE item_id = ? AND phase_id = ? AND attempt = ?`,
+		 WHERE item_id = ? AND phase_id = ? AND attempt = `+boundInt,
 		threadID, narrativePath, itemID, phaseID, attempt,
 	)
 	if err != nil {
@@ -250,7 +250,7 @@ func (s *Store) CompleteWorkItemUnit(itemID, phaseID string, attempt int, unitID
 	result, err := s.db.Exec(
 		`UPDATE work_item_units
 		 SET status = ?, envelope = ?, feedback = ?, provider_usage_scope_id = ?, ended_at = ?
-		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
+		 WHERE item_id = ? AND phase_id = ? AND attempt = `+boundInt+` AND unit_id = ?`,
 		status, jsonText(envelope), feedback, providerUsageScopeID, endedAt, itemID, phaseID, attempt, unitID,
 	)
 	if err != nil {
@@ -268,7 +268,7 @@ func (s *Store) FailRunningWorkItemUnits(itemID, phaseID string, attempt int, fe
 	result, err := s.db.Exec(
 		`UPDATE work_item_units
 		 SET status = 'failed', feedback = ?, provider_usage_scope_id = 0, ended_at = ?
-		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND status = 'running'`,
+		 WHERE item_id = ? AND phase_id = ? AND attempt = `+boundInt+` AND status = 'running'`,
 		feedback, endedAt, itemID, phaseID, attempt,
 	)
 	if err != nil {
@@ -298,7 +298,7 @@ func (s *Store) ListWorkItemUnits(itemID string) ([]WorkItemUnit, error) {
 func (s *Store) ListWorkItemPhaseUnits(itemID, phaseID string, attempt int) ([]WorkItemUnit, error) {
 	rows, err := s.reader().Query(
 		`SELECT `+workItemUnitColumns+` FROM work_item_units
-		 WHERE item_id = ? AND phase_id = ? AND attempt = ?
+		 WHERE item_id = ? AND phase_id = ? AND attempt = `+boundInt+`
 		 ORDER BY unit_index ASC, unit_id ASC`, itemID, phaseID, attempt,
 	)
 	if err != nil {
@@ -336,7 +336,7 @@ func (s *Store) GetWorkItemUnitByThread(threadID string) (WorkItemUnit, bool, er
 func (s *Store) GetWorkItemUnit(itemID, phaseID string, attempt int, unitID string) (WorkItemUnit, bool, error) {
 	unit, err := scanWorkItemUnit(s.reader().QueryRow(
 		`SELECT `+workItemUnitColumns+` FROM work_item_units
-		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
+		 WHERE item_id = ? AND phase_id = ? AND attempt = `+boundInt+` AND unit_id = ?`,
 		itemID, phaseID, attempt, unitID,
 	))
 	if errors.Is(err, sql.ErrNoRows) {

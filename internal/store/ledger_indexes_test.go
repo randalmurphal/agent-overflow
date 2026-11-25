@@ -248,12 +248,12 @@ func compilesOnceWithStatistics(t *testing.T, shape agentTreeShape, namedFirst b
 			if !ok {
 				t.Fatalf("%s is not cached", read.name)
 			}
-			recompiles, err := cachedStmtRecompiles(el.Value.(*cachedStmt).stmt)
+			reason, err := cachedStmtRecompiles(el.Value.(*cachedStmt).stmt)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if recompiles {
-				t.Fatalf("%s compiles again on its rebind %d after ANALYZE", read.name, shift+1)
+			if reason != "" {
+				t.Fatalf("%s compiles again on its rebind %d after ANALYZE: %s", read.name, shift+1, reason)
 			}
 		}
 	}

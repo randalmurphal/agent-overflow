@@ -49,10 +49,10 @@ const (
 	// root's issues rather than keep an index by status that every card
 	// write would maintain.
 	mirrorStatusGroupRevisionSQL = `UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1
-		WHERE root_id = ?1 AND board_id IN (
+		WHERE root_id = CAST(?1 AS INTEGER) AND board_id IN (
 		SELECT b.board_id FROM tracker_cache_issues i
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.issue_id = i.issue_id
-		 WHERE i.root_id = ?1 AND i.status_id IN (SELECT value FROM json_each(?2)))`
+		 WHERE i.root_id = CAST(?1 AS INTEGER) AND i.status_id IN (SELECT value FROM json_each(?2)))`
 )
 
 // MirrorCatalogWrite is what a write of a catalog changed: whether any
