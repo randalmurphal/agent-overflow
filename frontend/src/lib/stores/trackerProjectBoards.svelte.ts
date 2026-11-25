@@ -68,12 +68,13 @@ class HeldBoards {
     }
   }
 
-  async save(boards: TrackerProjectBoard[]): Promise<void> {
+  async save(edit: BoardListEdit): Promise<void> {
     if (this.saving) throw new Error('The board list is still saving; try again once it has saved.');
     if (!this.current) throw new Error('The board list has not been read since it changed; try again once it shows.');
+    const boards = edit(this.list);
+    const held = heldOf(this.list);
     this.saving = true;
     const generation = ++this.generation;
-    const held = heldOf(this.list);
     try {
       const list = await withBackendTarget(this.backend, () => SetProjectTrackerBoards(this.projectId, held, boards));
       if (this.dropped || generation !== this.generation) return;
@@ -156,30 +157,29 @@ export function refreshTrackerProjectBoards(backend: BackendKey, projectId: stri
   return held.get(keyOf(backend, projectId))?.read() ?? Promise.resolve();
 }
 
+/** An edit of a project's list: the list to save, built from the one held (`withBoard…`). */
+export type BoardListEdit = (list: readonly TrackerBoardChoice[]) => TrackerProjectBoard[];
+
 /**
- * Makes `boards`, built from the list held now, the project's whole list.
+ * Applies `edit` to the list held now and makes the result the project's
+ * whole list, sent with that held list as the one it was built from.
  * Rejects with the computer's refusal, while an earlier save of the
  * project still runs, or while the held list is not known to be the
  * stored one.
  */
-export function saveTrackerProjectBoards(backend: BackendKey, projectId: string, boards: TrackerProjectBoard[]): Promise<void> {
+export function saveTrackerProjectBoards(backend: BackendKey, projectId: string, edit: BoardListEdit): Promise<void> {
   const entry = held.get(keyOf(backend, projectId));
   if (!entry) return Promise.reject(new Error('The board list is not open any more; open it again.'));
-  return entry.save(boards);
+  return entry.save(edit);
 }
 
 /**
- * The list a save sends: each board as it is shown, its name included,
- * which the computer stores only for a board the save adds.
+ * The boards a save keeps, as it sends them: no name or tracker project,
+ * since the computer keeps those it stored when each was added, and the
+ * name shown may be a synced one longer than a listing holds.
  */
 function boardsOf(list: readonly TrackerBoardChoice[]): TrackerProjectBoard[] {
-  return list.map((b) => ({
-    connection: b.connection,
-    board: b.board,
-    opens_first: b.opens_first,
-    name: b.name,
-    tracker_project: b.tracker_project,
-  }));
+  return list.map((b) => ({ connection: b.connection, board: b.board, opens_first: b.opens_first }));
 }
 
 /** `list` with `board` added last; the first board added opens first. */

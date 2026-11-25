@@ -23,12 +23,13 @@
     withBoardMoved,
     withBoardRemoved,
     withOpensFirst,
+    type BoardListEdit,
   } from '../../stores/trackerProjectBoards.svelte';
   import {
     requestedTrackerBoardsProject,
     takeRequestedTrackerBoardsProject,
   } from '../../stores/settingsOverlay.svelte';
-  import type { TrackerBoardChoice, TrackerConnection, TrackerProjectBoard } from '../../stores/bindings';
+  import type { TrackerBoardChoice, TrackerConnection } from '../../stores/bindings';
   import { disambiguatedPathLabels, formatPathLabel } from '../../utils/pathDisplay';
   import { userFacingError } from '../../utils/userFacingError';
   import IconButton from '../primitives/IconButton.svelte';
@@ -103,11 +104,11 @@
   // after a read or a save failed until a read answers.
   let locked = $derived(operateReason !== '' || (boards?.saving ?? false) || !(boards?.current ?? false));
 
-  async function save(next: TrackerProjectBoard[]): Promise<boolean> {
+  async function save(edit: BoardListEdit): Promise<boolean> {
     const id = selectedId;
     saveError = null;
     try {
-      await saveTrackerProjectBoards(backend, id, next);
+      await saveTrackerProjectBoards(backend, id, edit);
       return true;
     } catch (err) {
       if (id === selectedId) saveError = err;
@@ -214,7 +215,7 @@
                     size="sm"
                     disabled={locked || index === 0}
                     testId="tracker-board-up"
-                    onClick={() => void save(withBoardMoved(list, index, -1))}
+                    onClick={() => void save((held) => withBoardMoved(held, index, -1))}
                   >
                     {#snippet children()}<Icon icon={ArrowUp} size={14} />{/snippet}
                   </IconButton>
@@ -223,7 +224,7 @@
                     size="sm"
                     disabled={locked || index === list.length - 1}
                     testId="tracker-board-down"
-                    onClick={() => void save(withBoardMoved(list, index, 1))}
+                    onClick={() => void save((held) => withBoardMoved(held, index, 1))}
                   >
                     {#snippet children()}<Icon icon={ArrowDown} size={14} />{/snippet}
                   </IconButton>
@@ -233,7 +234,7 @@
                       class={GHOST_BUTTON_CLASS}
                       disabled={locked}
                       title={operateReason || undefined}
-                      onclick={() => void save(withOpensFirst(list, index))}
+                      onclick={() => void save((held) => withOpensFirst(held, index))}
                       data-testid="tracker-board-open-first"
                     >Open first</button>
                   {/if}
@@ -242,7 +243,7 @@
                     class={GHOST_BUTTON_CLASS}
                     disabled={locked}
                     title={operateReason || undefined}
-                    onclick={() => void save(withBoardRemoved(list, index))}
+                    onclick={() => void save((held) => withBoardRemoved(held, index))}
                     data-testid="tracker-board-remove"
                   >Remove</button>
                 </div>
@@ -271,7 +272,7 @@
               disabled={locked}
               disabledReason={operateReason || undefined}
               unavailable={addUnavailable}
-              onAdd={(board) => save(withBoardAdded(list, board))}
+              onAdd={(board) => save((held) => withBoardAdded(held, board))}
             />
           {/key}
         {/if}

@@ -49,9 +49,17 @@ describe('the board list edits', () => {
     expect(ids(withOpensFirst([a, b, c], 2))).toEqual(['1', '2', 'team-1*']);
   });
 
-  it('send each board with the name and tracker project it was shown with', () => {
-    expect(withOpensFirst([b], 0)).toEqual([
-      { connection: 'jira-1', board: '2', opens_first: true, name: 'Ops board', tracker_project: 'OPS' },
+  // The computer keeps a kept board's stored name; only a board the save
+  // adds carries one. A synced name can be longer than a listing holds.
+  it('send a kept board without its name, and an added one with the name it was chosen by', () => {
+    const synced = { ...b, name: 'x'.repeat(300) };
+    expect(withBoardMoved([a, synced], 1, -1)).toEqual([
+      { connection: 'jira-1', board: '2', opens_first: false },
+      { connection: 'jira-1', board: '1', opens_first: true },
+    ]);
+    expect(withBoardAdded([synced], { connection: 'jira-1', board: '3', name: 'New', tracker_project: 'NEW' })).toEqual([
+      { connection: 'jira-1', board: '2', opens_first: false },
+      { connection: 'jira-1', board: '3', name: 'New', tracker_project: 'NEW', opens_first: false },
     ]);
   });
 });
@@ -71,14 +79,14 @@ describe('a held project board list', () => {
     const save = setBindingMock('SetProjectTrackerBoards', async (_p: string, _held: unknown, boards: TrackerProjectBoard[]) =>
       boards.map((x) => trackerBoardChoice({ ...x, opens_first: x.opens_first ?? false })),
     );
-    await saveTrackerProjectBoards(HOME_BACKEND, 'p1', withBoardAdded([a], { connection: 'jira-1', board: '2', name: 'Ops board', tracker_project: 'OPS' }));
+    await saveTrackerProjectBoards(HOME_BACKEND, 'p1', (list) => withBoardAdded(list, { connection: 'jira-1', board: '2', name: 'Ops board', tracker_project: 'OPS' }));
     expect(save).toHaveBeenCalledTimes(1);
     expect(ids(trackerProjectBoardsOf(HOME_BACKEND, 'p1').list)).toEqual(['1*', '2']);
     expect(read).toHaveBeenCalledTimes(1);
 
     release();
     expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').loaded).toBe(false);
-    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', [])).rejects.toThrow('not open any more');
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', () => [])).rejects.toThrow('not open any more');
   });
 
   it('refuses a second save while one runs, and a read that started before a save never lands over it', async () => {
@@ -94,9 +102,9 @@ describe('a held project board list', () => {
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
     const saving = deferred<TrackerBoardChoice[]>();
     setBindingMock('SetProjectTrackerBoards', () => saving.promise);
-    const first = saveTrackerProjectBoards(HOME_BACKEND, 'p1', withBoardRemoved([a], 0));
+    const first = saveTrackerProjectBoards(HOME_BACKEND, 'p1', (list) => withBoardRemoved(list, 0));
     expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').saving).toBe(true);
-    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', [])).rejects.toThrow('still saving');
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', () => [])).rejects.toThrow('still saving');
 
     saving.resolve([]);
     await first;
@@ -113,9 +121,33 @@ describe('a held project board list', () => {
     await vi.waitFor(() => expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').loaded).toBe(true));
     const refusal = new Error('this tracker connection was removed from this computer');
     setBindingMock('SetProjectTrackerBoards', async () => { throw refusal; });
-    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', [])).rejects.toBe(refusal);
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', () => [])).rejects.toBe(refusal);
     expect(ids(trackerProjectBoardsOf(HOME_BACKEND, 'p1').list)).toEqual(['1*']);
     expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').saving).toBe(false);
+  });
+
+  // The edit is applied to the list the store holds when it saves, the
+  // list it sends as the one the save was built from: no caller can pair
+  // an edit with another list.
+  it('applies each edit to the list it holds, and sends that list as the one the edit was built from', async () => {
+    const first = deferred<TrackerBoardChoice[]>();
+    const answers = [first.promise, Promise.resolve([a, b])];
+    setBindingMock('ProjectTrackerBoards', () => answers.shift()!);
+    acquireTrackerProjectBoards(HOME_BACKEND, 'p1');
+    first.resolve([a]);
+    await vi.waitFor(() => expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').loaded).toBe(true));
+    await refreshTrackerProjectBoards(HOME_BACKEND, 'p1');
+    const built: string[][] = [];
+    const save = setBindingMock('SetProjectTrackerBoards', async () => [b]);
+    await saveTrackerProjectBoards(HOME_BACKEND, 'p1', (list) => {
+      built.push(ids(list));
+      return withBoardRemoved(list, 0);
+    });
+    expect(built).toEqual([['1*', '2']]);
+    expect(save).toHaveBeenCalledWith('p1', [
+      { connection: 'jira-1', board: '1', opens_first: true },
+      { connection: 'jira-1', board: '2', opens_first: false },
+    ], [{ connection: 'jira-1', board: '2', opens_first: true }]);
   });
 
   it('sends, with each save, the list it holds as the one the save was built from', async () => {
@@ -123,11 +155,11 @@ describe('a held project board list', () => {
     acquireTrackerProjectBoards(HOME_BACKEND, 'p1');
     await vi.waitFor(() => expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').loaded).toBe(true));
     const save = setBindingMock('SetProjectTrackerBoards', async () => [b]);
-    await saveTrackerProjectBoards(HOME_BACKEND, 'p1', withBoardRemoved([a, b], 0));
+    await saveTrackerProjectBoards(HOME_BACKEND, 'p1', (list) => withBoardRemoved(list, 0));
     expect(save).toHaveBeenCalledWith('p1', [
       { connection: 'jira-1', board: '1', opens_first: true },
       { connection: 'jira-1', board: '2', opens_first: false },
-    ], [{ connection: 'jira-1', board: '2', opens_first: true, name: 'Ops board', tracker_project: 'OPS' }]);
+    ], [{ connection: 'jira-1', board: '2', opens_first: true }]);
   });
 
   it('shows a failed first read as a failure, never as an empty list, a dropped connection included', async () => {
@@ -139,7 +171,7 @@ describe('a held project board list', () => {
     acquireTrackerProjectBoards(HOME_BACKEND, 'p1');
     await vi.waitFor(() => expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').error).toBeInstanceOf(DisconnectedError));
     expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1')).toMatchObject({ loaded: false, current: false, list: [] });
-    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', [])).rejects.toThrow('has not been read');
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', () => [])).rejects.toThrow('has not been read');
     await refreshTrackerProjectBoards(HOME_BACKEND, 'p1');
     expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1')).toMatchObject({ loaded: true, current: true, error: null });
     expect(ids(trackerProjectBoardsOf(HOME_BACKEND, 'p1').list)).toEqual(['1*']);
@@ -159,7 +191,7 @@ describe('a held project board list', () => {
     expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1')).toMatchObject({ loaded: true, current: false });
     expect(ids(trackerProjectBoardsOf(HOME_BACKEND, 'p1').list)).toEqual(['1*']);
     const save = setBindingMock('SetProjectTrackerBoards', async () => []);
-    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', [])).rejects.toThrow('has not been read');
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', () => [])).rejects.toThrow('has not been read');
     expect(save).not.toHaveBeenCalled();
     const retried = refreshTrackerProjectBoards(HOME_BACKEND, 'p1');
     reading.resolve([a, b]);
@@ -178,10 +210,10 @@ describe('a held project board list', () => {
     const read = setBindingMock('ProjectTrackerBoards', () => reading.promise);
     const failure = new TransportError('method_error', 'trackerapp: the boards of project p1 are saved, and reading them back failed, so read them again');
     setBindingMock('SetProjectTrackerBoards', async () => { throw failure; });
-    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', withBoardAdded([a], { connection: 'jira-1', board: '2' }))).rejects.toBe(failure);
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', (list) => withBoardAdded(list, { connection: 'jira-1', board: '2' }))).rejects.toBe(failure);
     expect(read).toHaveBeenCalledTimes(1);
     expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').current).toBe(false);
-    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', [])).rejects.toThrow('has not been read');
+    await expect(saveTrackerProjectBoards(HOME_BACKEND, 'p1', () => [])).rejects.toThrow('has not been read');
     reading.resolve([a, b]);
     await vi.waitFor(() => expect(trackerProjectBoardsOf(HOME_BACKEND, 'p1').current).toBe(true));
     expect(ids(trackerProjectBoardsOf(HOME_BACKEND, 'p1').list)).toEqual(['1*', '2']);
@@ -209,7 +241,7 @@ describe('a held project board list', () => {
     });
     acquireTrackerProjectBoards('laptop', 'p9');
     await vi.waitFor(() => expect(trackerProjectBoardsOf('laptop', 'p9').loaded).toBe(true));
-    await saveTrackerProjectBoards('laptop', 'p9', []);
+    await saveTrackerProjectBoards('laptop', 'p9', () => []);
     expect(targets).toEqual(['laptop', 'laptop']);
     expect(trackerProjectBoardsOf(HOME_BACKEND, 'p9').loaded).toBe(false);
 

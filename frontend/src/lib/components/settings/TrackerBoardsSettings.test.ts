@@ -21,16 +21,20 @@ import type { TrackerBoardChoice, TrackerProjectBoard } from '../../stores/bindi
 let stored: Record<string, TrackerBoardChoice[]> = {};
 
 function asStored(project: string, boards: TrackerProjectBoard[]): TrackerBoardChoice[] {
-  return boards.map((b) =>
-    trackerBoardChoice({
+  // As the store keeps it: a kept board keeps the name it stored, and only
+  // a board the save adds takes the one sent.
+  const was = new Map((stored[project] ?? []).map((b) => [`${b.connection}\u0000${b.board}`, b]));
+  return boards.map((b) => {
+    const kept = was.get(`${b.connection}\u0000${b.board}`);
+    return trackerBoardChoice({
       project,
       connection: b.connection,
       board: b.board,
-      name: b.name ?? '',
-      tracker_project: b.tracker_project ?? '',
+      name: kept ? kept.name : (b.name ?? ''),
+      tracker_project: kept ? kept.tracker_project : (b.tracker_project ?? ''),
       opens_first: b.opens_first ?? false,
-    }),
-  );
+    });
+  });
 }
 
 let saves: TrackerProjectBoard[][] = [];
@@ -319,6 +323,24 @@ describe('<TrackerBoardsSettings>', () => {
     const add = (await screen.findByTestId('tracker-board-add-open')) as HTMLButtonElement;
     expect(add.disabled).toBe(false);
     expect(screen.queryByTestId('settings-tracker-boards-connections-error')).toBeNull();
+  });
+
+  // The mirror's name is shown once a board is read, and can be longer
+  // than a listing holds (255); the computer refuses a longer one it is sent.
+  it('reorders boards whose synced name is longer than a listing holds', async () => {
+    stored.p1 = [trackerBoardChoice({ board: '1', name: 'x'.repeat(300), opens_first: true }), trackerBoardChoice({ board: '2', name: 'B' })];
+    setBindingMock('SetProjectTrackerBoards', async (project: string, _held: unknown, boards: TrackerProjectBoard[]) => {
+      if (boards.some((b) => (b.name ?? '').length > 255)) {
+        throw new TransportError('tracker_boards_refused', 'this board list cannot be saved; fix what the detail names and save again', { detail: { ref: 'r', method: 'SetProjectTrackerBoards', at: 1, chain: [] } });
+      }
+      stored[project] = asStored(project, boards);
+      return stored[project];
+    });
+    await renderOnP1();
+    await waitFor(() => expect(names()).toHaveLength(2));
+    await fireEvent.click(screen.getAllByTestId('tracker-board-down')[0]);
+    await waitFor(() => expect(names()).toEqual(['B', 'x'.repeat(300)]));
+    expect(screen.queryByTestId('settings-tracker-boards-save-error')).toBeNull();
   });
 
   it('names a board that was never read by its id', async () => {
