@@ -173,8 +173,8 @@ func TestTrackerSetupRefusalsSayWhatToDo(t *testing.T) {
 }
 
 // A save whose write may or may not have happened says so, names the
-// file, and says that the setup shown is the file's: the setup's read
-// answers what the file holds.
+// file and why, and says to read the setup again before changing it
+// again: the read answers what the file holds.
 func TestATrackerSetupWriteThatMayHaveHappenedSaysSo(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -201,7 +201,8 @@ func TestATrackerSetupWriteThatMayHaveHappenedSaysSo(t *testing.T) {
 	_, err = f.a.SetProjectTrackerSetup(ctx, f.project, save.Stored.Revision, groups("left_out"))
 	code, message, _ := errorsx.PublicDetails(err)
 	if code != "tracker_setup_unsure" || !errors.Is(err, trackerapp.ErrSetupWriteUnsure) || !strings.Contains(message, "may or may not be stored") ||
-		!strings.Contains(message, path) || !strings.Contains(message, "the setup shown is what that file holds now") {
+		!strings.Contains(message, path) || !strings.Contains(message, "read the project's tracker setup again before you change it again") ||
+		strings.Contains(message, "shown") {
 		t.Fatalf("a save whose sync failed = %v (code %q, %q)", err, code, message)
 	}
 	got, err := f.a.ProjectTrackerSetup(ctx, f.project)

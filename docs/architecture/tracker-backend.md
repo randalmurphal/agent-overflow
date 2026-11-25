@@ -360,7 +360,8 @@ no step runs at root creation, restore or start.
   removes the file. The write is atomic (`atomicfile`, 0600), and both a
   write and a removal sync the directory. A write or a removal that fails
   fails as `tracker_setup_unsure`, which says the change may or may not be
-  stored and names the file: a failed directory sync follows the rename
+  stored, names the file and why, and says to read the setup again before
+  changing it again: a failed directory sync follows the rename
   or the unlink, and `atomicfile` does not tell it from an earlier step's
   failure.
 - **A file that cannot be read** or does not validate is refused with its

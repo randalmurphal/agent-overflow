@@ -359,7 +359,7 @@ func trackerRefusal(err error) (code, message string) {
 			unreadable.Reason + "); fix the file or remove it, and it is read again at its next use"
 	case errors.As(err, &unsureWrite):
 		return "tracker_setup_unsure", "this change may or may not be stored: the computer that holds the project could not finish updating " +
-			unsureWrite.Path + " (" + unsureWrite.Err.Error() + "); the setup shown is what that file holds now"
+			unsureWrite.Path + " (" + unsureWrite.Err.Error() + "); read the project's tracker setup again before you change it again"
 	case errors.Is(err, trackerapp.ErrSetupNewer):
 		return "tracker_setup_newer", "this part of the setup was saved by a newer version of Agent Overflow; update this computer to change it"
 	case errors.As(err, &refusedSetup):
