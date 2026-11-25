@@ -118,7 +118,8 @@ var threadColumns = `id, COALESCE(project_id, ''),
     attention_kind, attention_reason, attention_at,
     spawn_instructions, spawn_level,
     threads.mode = 'scratch' AND EXISTS (SELECT 1 FROM scratch_threads
-      WHERE scratch_threads.thread_id = threads.id AND scratch_threads.request_token IS NOT NULL)`
+      WHERE scratch_threads.thread_id = threads.id AND scratch_threads.request_token IS NOT NULL),
+    ` + threadTicketLinkColumn
 
 // threadAgentColumn is the record column threadColumns reads for an
 // assistant's current thread.
@@ -235,6 +236,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var agentRecord sql.NullString
 	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt, attentionAt sql.NullInt64
 	var attentionKind, attentionReason string
+	var ticketLink sql.NullString
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
@@ -250,7 +252,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&hasActionableProposedPlan, &newestTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
 		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID, &t.SpawnedByComputerID,
 		&attentionKind, &attentionReason, &attentionAt,
-		&t.SpawnInstructions, &t.SpawnLevel, &askCopy,
+		&t.SpawnInstructions, &t.SpawnLevel, &askCopy, &ticketLink,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -293,6 +295,12 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		t.AgentID, t.AgentAllProjects = agent.ID, agent.AllProjects != 0
 		if len(agent.ProjectIDs) > 0 {
 			t.AgentProjectIDs = agent.ProjectIDs
+		}
+	}
+	if ticketLink.Valid {
+		t.TicketLink = new(ThreadTicketLink)
+		if err := json.Unmarshal([]byte(ticketLink.String), t.TicketLink); err != nil {
+			return Thread{}, fmt.Errorf("read the ticket link of thread %s: %w", t.ID, err)
 		}
 	}
 	return t, nil

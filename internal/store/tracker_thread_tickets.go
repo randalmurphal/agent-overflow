@@ -49,6 +49,62 @@ type ThreadTicket struct {
 
 const threadTicketColumns = `thread_id, kind, site, issue_id, issue_key, issue_title, origin, linked_at`
 
+// What a thread row says of its link's copy (ThreadTicketLink.State),
+// derived on the computer that reads the row.
+const (
+	// TicketLinkCurrent: the copy equals the card of a live mirror here.
+	TicketLinkCurrent = "current"
+	// TicketLinkNotFound: the last read of the issue by a live mirror here
+	// did not return it: deleted, or hidden from the token's user.
+	TicketLinkNotFound = "not_found"
+	// TicketLinkNotChecked: a connection to the site is on here, and none
+	// of its reads has stored the issue since it started.
+	TicketLinkNotChecked = "not_checked"
+	// TicketLinkTurnedOff: every connection to the site here is off.
+	TicketLinkTurnedOff = "turned_off"
+	// TicketLinkNoConnection: this computer has no connection to the site.
+	TicketLinkNoConnection = "no_connection"
+)
+
+// ThreadTicketLink is a thread's link as its row shows it: the ticket,
+// its key, title and status as last seen, and how the link came to be.
+// State and ConnectionID are derived when the row is read: State as the
+// constants above say, ConnectionID the connection here that reads the
+// ticket ("" when none is on).
+type ThreadTicketLink struct {
+	Kind         string `json:"kind"`
+	Site         string `json:"site"`
+	IssueID      string `json:"issueId"`
+	Key          string `json:"key"`
+	Title        string `json:"title"`
+	StatusID     string `json:"statusId"`
+	StatusName   string `json:"statusName"`
+	StatusGroup  int    `json:"statusGroup"`
+	Origin       string `json:"origin"`
+	LinkedAt     int64  `json:"linkedAt"`
+	State        string `json:"state"`
+	ConnectionID string `json:"connectionId"`
+}
+
+// threadTicketLinkColumn is threadColumns' column of a thread's link, a
+// ThreadTicketLink as JSON or NULL: one probe of thread_tickets' key per
+// thread, and for a linked thread one of its root and at most two of the
+// connections of its site. The copy is current while seen_root names a
+// root that is attached; a root's ID is never reused, so a detached,
+// removed or emptied mirror's copy is not.
+const threadTicketLinkColumn = `(SELECT json_object(
+        'kind', tt.kind, 'site', tt.site, 'issueId', tt.issue_id, 'key', tt.issue_key, 'title', tt.issue_title,
+        'statusId', tt.status_id, 'statusName', tt.status_name, 'statusGroup', tt.status_group,
+        'origin', tt.origin, 'linkedAt', tt.linked_at,
+        'state', CASE WHEN seen.connection_id IS NOT NULL THEN iif(tt.missing, 'not_found', 'current')
+          ELSE CASE (SELECT MAX(c.enabled) FROM tracker_connections c
+                      WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL)
+            WHEN 1 THEN 'not_checked' WHEN 0 THEN 'turned_off' ELSE 'no_connection' END END,
+        'connectionId', COALESCE(seen.connection_id, (SELECT c.id FROM tracker_connections c
+          WHERE c.kind = tt.kind AND c.site = tt.site AND c.parent_id IS NULL AND c.enabled = 1 ORDER BY c.id LIMIT 1), ''))
+      FROM thread_tickets tt LEFT JOIN tracker_cache_roots seen ON seen.id = tt.seen_root
+     WHERE tt.thread_id = threads.id)`
+
 func scanThreadTicket(scan func(...any) error) (ThreadTicket, error) {
 	var t ThreadTicket
 	err := scan(&t.ThreadID, &t.Ticket.Kind, &t.Ticket.Site, &t.Ticket.IssueID, &t.IssueKey, &t.IssueTitle, &t.Origin, &t.LinkedAt)
