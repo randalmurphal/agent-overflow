@@ -66,15 +66,15 @@ async function openWork(page: Page, issueId: string, compact: boolean, column?: 
   return { ticket, work: await workOf(ticket, compact) };
 }
 
-/** The Work section on the ticket's rail; the compact ticket is narrow, and
- * opens it from Details once the ticket is read. */
+/** The Work section on the ticket's rail; a narrow ticket (always on
+ * compact, and on desktop beside a second pane) opens it from Details once
+ * the ticket is read. */
 async function workOf(ticket: Locator, compact: boolean): Promise<Locator> {
   const details = ticket.getByTestId('ticket-details');
-  if (compact) {
-    await expect(details).toBeVisible({ timeout: 30_000 });
-    if ((await details.getAttribute('aria-expanded')) !== 'true') await press(details, compact);
-  }
   const work = ticket.getByTestId('ticket-rail').getByTestId('ticket-work');
+  await expect(work.or(details).first()).toBeVisible({ timeout: 30_000 });
+  if (compact) await expect(details).toBeVisible();
+  if ((await details.isVisible()) && (await details.getAttribute('aria-expanded')) !== 'true') await press(details, compact);
   await expect(work).toBeVisible();
   return work;
 }
