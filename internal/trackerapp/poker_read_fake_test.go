@@ -225,7 +225,9 @@ func fakeVote(t *testing.T, s *fakeScenario, account string) float64 {
 }
 
 // Stop and a connection turned off return with no poker run left, a run
-// held in its request included.
+// held in its request included, and that request ends. The proxy sees the
+// request end when the disconnect reaches its side, which can be after
+// the client returned, so that is waited for.
 func TestPokerRunEndsWithTheService(t *testing.T) {
 	t.Parallel()
 	for name, end := range map[string]func(t *testing.T, s *fakeScenario, conn Connection){
@@ -254,11 +256,7 @@ func TestPokerRunEndsWithTheService(t *testing.T) {
 			if runs != 0 {
 				t.Fatalf("%d poker runs left after %s returned", runs, name)
 			}
-			select {
-			case <-hold.ended:
-			default:
-				t.Fatalf("%s returned with the poker read still in its request", name)
-			}
+			receive(t, "the held read's end after "+name, hold.ended)
 		})
 	}
 }
