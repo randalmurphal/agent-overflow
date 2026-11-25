@@ -234,12 +234,17 @@ to the computer and are rows in `tracker_connections`.
   applied its own. A failure that arrives late cannot replace a newer
   success, and nothing is applied once the service stopped.
 - Each outcome is bound to what it is about, where it is applied
-  (`settle`): the token the client holds then, a key file that gave no
-  token, no token (no client, or a failure before a token was read), or a
-  token that changed during the call. The stamp holds the client's token
-  when the call began (a verification takes it after its key file read),
-  and a different one at the end means either token could have answered:
-  a failure is then about neither and a success records no token. A
+  (`settle`): the token every request of the call carried, a key file that
+  gave no token, no token (no client, or a failure before a token was
+  read), or a token that changed during the call. The connection's
+  credential source hands the client every token it sends and counts the
+  times the token the client may send stopped being the one it held (a
+  list's key file read made it drop the token, or a read handed another);
+  a first token on a client that held none is not a change. The stamp
+  holds that count when the call began (a verification takes it after its
+  key file read), and a different count at the end means either token
+  could have answered: a failure is then about neither and a success
+  records the identity with no token. A
   verification stores its token's digest beside the identity
   (`tracker_connections.verified_token`). Each read of the key file for a
   list or a status compares the token in the file with that evidence: the
@@ -266,8 +271,9 @@ to the computer and are rows in `tracker_connections`.
   row: open the token page, open the key file, the optional expiry date
   (the start of that day on the screen that entered it) and Check. The
   steps show while the key file holds no token or one no check has
-  verified, or the current problem is a setup one. A verification of
-  another token reads as who the connection was last checked as, and a
+  verified, or the current problem is a setup one. A verification not
+  bound to the token in the file (another token, or none recorded) reads
+  as who the connection was last checked as, and a
   failure that is not current as history after "Before the change". The
   row compares nothing itself (`trackerConnectionStatus`). The row warns from 14
   days before the expiry and shows a passed one as an error, each with
@@ -327,7 +333,7 @@ Durable records, restored and kept like other application records:
 
 | Table | Holds |
 |---|---|
-| `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity, time and token digest (v166 cleared the verifications recorded before it, which name no token), and the token expiry the user entered. |
+| `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity, time and token digest (empty for a verification recorded before v166 or one whose token changed during its call), and the token expiry the user entered. |
 | `project_tracker_boards` | Which boards an app project lists, in order, and which opens first, with the board's name and tracker project as the picker showed them (v166). Keyed by project, connection and board; the project and the connection cascade. |
 | `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
 

@@ -47,18 +47,19 @@ describe('a connection row’s status', () => {
   });
 
   // The computer says whether the file holds the token the check verified;
-  // a replaced token, whatever its file's times, is not signed in.
-  it('says who the file was last checked as while it holds another token', () => {
+  // a replaced token, or a check that recorded none, is not signed in, and
+  // the row does not claim which.
+  it('says who it was last checked as while the token in the file is not the one checked', () => {
     expect(trackerConnectionStatus(trackerConnection({ checkedTokenInFile: false }))).toEqual({
       tone: 'muted',
       label: 'Token not checked',
-      detail: 'It was last checked as User 1 (user1@example.com). The key file holds another token now; check the connection to see whose.',
+      detail: 'It was last checked as User 1 (user1@example.com). The token in the key file now has not been checked; check the connection to see whose it is.',
       needsSetup: true,
     });
     const tempo = trackerConnection({ kind: 'tempo', account: '', verifiedAccountId: '', verifiedName: '', checkedTokenInFile: false });
     expect(trackerConnectionStatus(tempo)).toMatchObject({
       label: 'Token not checked',
-      detail: 'The key file holds another token than the one last checked; check the connection to test it.',
+      detail: 'The token in the key file now has not been checked; check the connection to test it.',
     });
   });
 

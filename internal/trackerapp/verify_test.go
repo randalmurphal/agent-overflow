@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -569,31 +570,94 @@ func TestAKeyFileReadFailureIsHistoryOnceTheFileHoldsAToken(t *testing.T) {
 
 // A token that changed while the call ran (the file was replaced and the
 // client read it again after a 401) could have answered either way, so
-// the failure is history, not the new token's; a check settles it.
+// the failure is history, not the new token's; a check settles it. The
+// same holds on a client that had sent nothing before the call.
 func TestAFailureDuringATokenChangeIsAboutNeither(t *testing.T) {
+	t.Parallel()
+	for _, warm := range []bool{true, false} {
+		t.Run(fmt.Sprintf("warm=%t", warm), func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			conn := f.addJira()
+			f.writeToken(conn, jiraToken)
+			if warm {
+				f.jira.On("GET", myselfPath, myself(t, jiraToken))
+				f.verify(conn.ID)
+			}
+			var calls atomic.Int32
+			f.jira.On("GET", myselfPath, func(w http.ResponseWriter, r *http.Request, body []byte) {
+				if calls.Add(1) == 1 {
+					if err := os.WriteFile(conn.KeyFilePath, []byte(token("b")), 0o600); err != nil {
+						t.Error(err)
+					}
+				}
+				echoing(http.StatusUnauthorized)(w, r, body)
+			})
+			got := f.verify(conn.ID)
+			if calls.Load() != 2 {
+				t.Fatalf("the identity call was sent %d times, want a retry after the 401", calls.Load())
+			}
+			if got.Problem == nil || got.Problem.Kind != FailureSetup || got.Problem.Current {
+				t.Fatalf("a refusal answered while the token changed = problem %+v", got.Problem)
+			}
+			if got := f.verify(conn.ID); got.Problem == nil || !got.Problem.Current {
+				t.Fatalf("the next check's refusal = problem %+v", got.Problem)
+			}
+		})
+	}
+}
+
+// A check of token A on a client that has sent nothing, whose answer
+// arrived before the file was replaced with B and a check of B began,
+// binds no token: its User 1 is not recorded as B's, before B's own
+// check fails or after a restart.
+func TestACheckWhoseTokenChangedBeforeItSettledBindsNoToken(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	conn := f.addJira()
 	f.writeToken(conn, jiraToken)
-	f.jira.On("GET", myselfPath, myself(t, jiraToken))
-	f.verify(conn.ID)
-	var calls atomic.Int32
+	arrivedB, releaseB := make(chan struct{}, 1), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseB) })
+	t.Cleanup(release) // before the fake's own, which waits for its handlers
 	f.jira.On("GET", myselfPath, func(w http.ResponseWriter, r *http.Request, body []byte) {
-		if calls.Add(1) == 1 {
-			if err := os.WriteFile(conn.KeyFilePath, []byte(token("b")), 0o600); err != nil {
-				t.Error(err)
-			}
+		switch got := r.Header.Get("Authorization"); got {
+		case basic(jiraToken):
+			jiratest.Reply(http.StatusOK, myselfJSON)(w, r, body)
+		case basic(token("b")):
+			arrivedB <- struct{}{}
+			<-releaseB
+			jiratest.Reply(http.StatusUnauthorized, `{}`)(w, r, body)
+		default:
+			t.Errorf("GET myself carried %q", got)
+			jiratest.Reply(http.StatusUnauthorized, `{}`)(w, r, body)
 		}
-		echoing(http.StatusUnauthorized)(w, r, body)
 	})
-	got := f.verify(conn.ID)
-	if calls.Load() != 2 {
-		t.Fatalf("the identity call was sent %d times, want a retry after the 401", calls.Load())
+	var paused atomic.Bool
+	checkB := make(chan Connection, 1)
+	f.svc.afterIdentity = func() {
+		if paused.Swap(true) {
+			return // B's check
+		}
+		f.writeToken(conn, token("b"))
+		go func() {
+			got, err := f.svc.Verify(context.Background(), conn.ID)
+			if err != nil {
+				t.Errorf("B's Verify: %v", err)
+			}
+			checkB <- got
+		}()
+		<-arrivedB
 	}
-	if got.Problem == nil || got.Problem.Kind != FailureSetup || got.Problem.Current {
-		t.Fatalf("a refusal answered while the token changed = problem %+v", got.Problem)
+	gotA := f.verify(conn.ID)
+	if gotA.CheckedTokenInFile || gotA.VerifiedToken.Known() || gotA.VerifiedAccountID != "acc-user1" {
+		t.Fatalf("A's check, settled after B was handed = %+v, checked token in file %v", gotA.TrackerConnection, gotA.CheckedTokenInFile)
 	}
-	if got := f.verify(conn.ID); got.Problem == nil || !got.Problem.Current {
-		t.Fatalf("the next check's refusal = problem %+v", got.Problem)
+	release()
+	if got := <-checkB; got.CheckedTokenInFile || got.Problem == nil || !got.Problem.Current {
+		t.Fatalf("B's refused check = %+v, checked token in file %v, problem %+v", got.TrackerConnection, got.CheckedTokenInFile, got.Problem)
+	}
+	f.restart(t)
+	if row := f.rows()[0]; row.CheckedTokenInFile || row.VerifiedAccountID != "acc-user1" {
+		t.Fatalf("after a restart, B lists as %+v, checked token in file %v", row.TrackerConnection, row.CheckedTokenInFile)
 	}
 }

@@ -16,13 +16,13 @@ package store
 // SHA-256), written by RecordTrackerConnectionVerification with the
 // identity. A connection's identity counts as the token in its key file
 // only while that file holds the verified token. A verification recorded
-// before v166 names no token, so v166 clears it: the connection reads as
-// not checked until its next check.
+// before v166 keeps its identity and time and names no token: it says who
+// the connection was last checked as, not that the token in the file is
+// that one's.
 const trackerBoardNamesMigrationVersion = 166
 
 const trackerBoardNamesV166SQL = `
 ALTER TABLE project_tracker_boards ADD COLUMN name TEXT NOT NULL DEFAULT '' CHECK(length(name) <= 255);
 ALTER TABLE project_tracker_boards ADD COLUMN tracker_project TEXT NOT NULL DEFAULT '' CHECK(length(tracker_project) <= 255);
 ALTER TABLE tracker_connections ADD COLUMN verified_token BLOB NOT NULL DEFAULT x'' CHECK(length(verified_token) IN (0, 32));
-UPDATE tracker_connections SET verified_account_id = '', verified_name = '', verified_at = 0;
 `

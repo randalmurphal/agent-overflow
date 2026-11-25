@@ -35,7 +35,7 @@ test('a token moved over the checked one, with an older time, is not signed in',
   const row = page.locator('li[data-kind="jira"]');
   await expect(row.getByTestId('tracker-connection-status')).toHaveText('Token not checked');
   await expect(row.getByTestId('tracker-connection-detail')).toHaveText(
-    'It was last checked as User 1 (user1@example.com). The key file holds another token now; check the connection to see whose.',
+    'It was last checked as User 1 (user1@example.com). The token in the key file now has not been checked; check the connection to see whose it is.',
   );
   await expect(row.getByTestId('tracker-connection-setup')).toBeVisible();
 });

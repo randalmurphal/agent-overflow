@@ -67,6 +67,7 @@ func (c *clients) syncCredential(found store.TrackerTokenDigest) {
 		return
 	}
 	c.source.handed = store.TrackerTokenDigest{}
+	c.source.changes++
 	c.forgetCredential()
 }
 
@@ -148,16 +149,32 @@ type keyFileSource struct {
 	// read ForgetCredential overtook) also leaves it holding nothing.
 	// Never the token, and never logged.
 	handed store.TrackerTokenDigest
+	// changes counts the times the token the client may send stopped
+	// being the one it held: syncCredential dropped it, or a read handed
+	// another than handed. A first token handed after none does not count,
+	// so a call that saw the count unchanged sent only the token handed
+	// now (heldSince).
+	changes uint64
 	// reads counts the file reads the client asked for, for tests.
 	reads atomic.Int64
 }
 
-// held is the digest of the token the source last handed the client, zero
-// when it holds none.
-func (k *keyFileSource) held() store.TrackerTokenDigest {
+// changeCount is the count heldSince compares with.
+func (k *keyFileSource) changeCount() uint64 {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	return k.handed
+	return k.changes
+}
+
+// heldSince is the digest of the token the source last handed the client
+// (zero for none), and whether the token the client may send stayed that
+// one since changeCount returned count. Every request runs the
+// transport's credential load, which waits for a read in flight, so a
+// request sent after count was taken carried that token or none.
+func (k *keyFileSource) heldSince(count uint64) (store.TrackerTokenDigest, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.handed, k.changes == count
 }
 
 func (k *keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential, error) {
@@ -169,8 +186,12 @@ func (k *keyFileSource) Credential(ctx context.Context) (*trackerapi.Credential,
 	if err != nil {
 		return nil, &KeyFileError{Path: k.file.Path(), Err: err}
 	}
+	d := tokenDigest(k.id, token.Reveal())
 	k.mu.Lock()
-	k.handed = tokenDigest(k.id, token.Reveal())
+	if k.handed.Known() && !sameToken(k.handed, d) {
+		k.changes++
+	}
+	k.handed = d
 	k.mu.Unlock()
 	switch k.kind {
 	case store.TrackerKindJira:

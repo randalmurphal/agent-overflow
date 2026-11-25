@@ -186,7 +186,7 @@ describe('<TrackerConnectionsSettings>', () => {
     const row = await screen.findByTestId('tracker-connection-jira-1');
     expect(within(row).getByTestId('tracker-connection-status').textContent).toBe('Token not checked');
     expect(within(row).getByTestId('tracker-connection-detail').textContent).toBe(
-      'It was last checked as User 1 (user1@example.com). The key file holds another token now; check the connection to see whose.',
+      'It was last checked as User 1 (user1@example.com). The token in the key file now has not been checked; check the connection to see whose it is.',
     );
     await fireEvent.click(within(row).getByTestId('tracker-connection-setup-check'));
     await waitFor(() => expect(verify).toHaveBeenCalledWith('jira-1'));

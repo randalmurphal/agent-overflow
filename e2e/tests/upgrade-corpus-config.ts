@@ -52,7 +52,6 @@ export const migrationExceptions: MigrationException[] = [
   { version: 154, table: 'remote_watches', rowsMayShrink: true, reason: 'v154 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
   { version: 158, table: 'thread_requests', columns: ['next_check'], reason: 'v158 makes the acknowledgement it owes again for an answer from a paired computer due at once' },
   { version: 165, table: 'tracker_cache_issue_details', dropped: true, reason: 'v165 drops the documents of opened tracker issues; each ticket body is read again into tracker_cache_issue_bodies at its next opening' },
-  { version: 166, table: 'tracker_connections', columns: ['verified_account_id', 'verified_name', 'verified_at'], reason: "v166 clears a connection's verification recorded before it, which names no token; the connection reads as not checked until its next check records the token it verified" },
 ];
 
 /**

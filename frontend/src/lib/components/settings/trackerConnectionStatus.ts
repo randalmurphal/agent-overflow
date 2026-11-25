@@ -142,8 +142,8 @@ export function trackerConnectionStatus(connection: TrackerConnection): TrackerC
     tone: 'muted',
     label: 'Token not checked',
     detail: who
-      ? `It was last checked as ${who}. The key file holds another token now; check the connection to see whose.`
-      : 'The key file holds another token than the one last checked; check the connection to test it.',
+      ? `It was last checked as ${who}. The token in the key file now has not been checked; check the connection to see whose it is.`
+      : 'The token in the key file now has not been checked; check the connection to test it.',
     needsSetup: true,
   };
 }

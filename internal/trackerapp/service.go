@@ -148,6 +148,10 @@ type Service struct {
 	// beforePublish, set only by tests, runs in settle between its record
 	// and the publication, where Stop may overtake a settlement.
 	beforePublish func()
+	// afterIdentity, set only by tests, runs in Verify between its
+	// tracker call and its settlement, where other calls may change the
+	// token the client holds.
+	afterIdentity func()
 	// makeProvider builds the provider of a connection in use from its
 	// client; tests replace it with a scripted provider.
 	makeProvider func(row store.TrackerConnection, c *clients, tempo *clients) (tracker.Provider, error)
@@ -414,31 +418,33 @@ func (s *Service) Connections() ([]Connection, error) {
 
 // stamp is when a call on a connection began: the client it was made with
 // and its place among the calls begun on that client, which orders the
-// call's outcome against theirs (settle), and the token the client held
-// then (zero for none), against which settle tells a token that changed
-// during the call. The zero stamp is a failure to start using the
-// connection at all.
+// call's outcome against theirs (settle), and the client's count of token
+// changes then (keyFileSource.changes), against which settle tells a
+// token that changed during the call. The zero stamp is a failure to
+// start using the connection at all.
 type stamp struct {
-	c    *clients
-	gen  uint64
-	held store.TrackerTokenDigest
+	c       *clients
+	gen     uint64
+	changes uint64
 }
 
 // begin stamps a call about to be made with c, the client of a
 // connection in use.
 func (s *Service) begin(c *clients) stamp {
-	held := c.source.held()
+	changes := c.source.changeCount()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c.gen++
-	return stamp{c: c, gen: c.gen, held: held}
+	return stamp{c: c, gen: c.gen, changes: changes}
 }
 
 // evidenceOf is what the outcome of the call begun at at, with callErr,
-// is about: a key file that gave no token; no token, for a call with no
-// client or one whose client never held one; a changed token, when the
-// client's token at the end is not the one it held at the start (either
-// could have answered); otherwise the token the client holds.
+// is about. An outcome is about token T only when every request of its
+// call carried T: a key file that gave no token; no token, for a call
+// with no client or one whose client was handed none; a changed token,
+// when the token the client may send changed since at (either could have
+// answered, even on a client that held none at the start); otherwise the
+// one token the client was handed.
 func evidenceOf(at stamp, callErr error) evidence {
 	if _, ok := errors.AsType[*KeyFileError](callErr); ok {
 		return evidence{kind: aboutKeyFile}
@@ -446,9 +452,9 @@ func evidenceOf(at stamp, callErr error) evidence {
 	if at.c == nil {
 		return evidence{kind: aboutNoToken}
 	}
-	held := at.c.source.held()
+	held, kept := at.c.source.heldSince(at.changes)
 	switch {
-	case at.held.Known() && held != at.held:
+	case !kept:
 		return evidence{kind: aboutChangedToken}
 	case held.Known():
 		return evidence{kind: aboutToken, token: held}

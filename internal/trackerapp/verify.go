@@ -63,13 +63,17 @@ func (s *Service) Verify(ctx context.Context, id string) (Connection, error) {
 	at := s.begin(c)
 	s.opMu.Unlock()
 
-	// The key file read that shows its state also hands a replaced token
-	// to the client, so the call checks the token in the file. The token
-	// the client holds is taken after that read, so a token the read
-	// replaced is not a token that changed during the call (evidenceOf).
+	// The key file read that shows its state also makes the client drop
+	// a replaced token, so the call checks the token in the file. The
+	// count of token changes is taken after that read, so a token the
+	// read replaced is not a token that changed during the call
+	// (evidenceOf).
 	s.look(row)
-	at.held = c.source.held()
+	at.changes = c.source.changeCount()
 	verification, callErr := s.identity(ctx, row, c)
+	if s.afterIdentity != nil {
+		s.afterIdentity()
+	}
 
 	s.opMu.Lock()
 	out, changed, err := s.settleVerification(row, at, verification, callErr)
