@@ -98,6 +98,14 @@ func TestChoices(t *testing.T) {
 	if _, err := p.AssignableUsers(ctx, tracker.OnCreate(web, "type-1"), ""); !errors.Is(err, tracker.ErrInvalidInput) {
 		t.Errorf("an issue type scope: %v", err)
 	}
+	// A Linear move takes no fields, so nothing asks a move's values.
+	onMove := tracker.OnMove(tracker.IssueID(issueID(1)), "state-done")
+	if _, err := p.Choices(ctx, onMove, tracker.FieldPriority, ""); !errors.Is(err, tracker.ErrInvalidInput) {
+		t.Errorf("a move's choices: %v", err)
+	}
+	if _, err := p.AssignableUsers(ctx, onMove, ""); !errors.Is(err, tracker.ErrInvalidInput) {
+		t.Errorf("a move's assignable users: %v", err)
+	}
 }
 
 // A pick list returns at most pickLimit rows: a longer match list is cut

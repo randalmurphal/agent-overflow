@@ -1,6 +1,7 @@
 package jiraprovider
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -165,5 +166,31 @@ func assignable(n int) func(*testing.T, *jiratest.Server) {
 			}
 			jiratest.Reply(200, usersJSON(n))(w, r, b)
 		})
+	}
+}
+
+// TestMoveChoices proves a move's scope answers the values of a field its
+// transition's screen takes and the issue's edit screen lacks, from the
+// one transitions read and no edit screen read, and refuses a move the
+// issue cannot make now and one it does not have.
+func TestMoveChoices(t *testing.T) {
+	f, p := detailSite(t, 0)
+	got, err := p.Choices(t.Context(), tracker.OnMove("10001", "31"), "resolution", "")
+	if err != nil || len(got.Choices) != 1 || got.Choices[0] != (tracker.Choice{ID: "1", Name: "Fixed"}) || got.More {
+		t.Errorf("Resolve's resolutions: %+v %v", got, err)
+	}
+	if n := f.Count("GET", "/rest/api/3/issue/10001/transitions"); n != 1 {
+		t.Errorf("transitions read %d times, want 1", n)
+	}
+	if n := f.Count("GET", editMetaPath); n != 0 {
+		t.Errorf("edit screen read %d times, want 0", n)
+	}
+	if _, err := p.Choices(t.Context(), tracker.OnIssue("10001"), "resolution", ""); !errors.Is(err, tracker.ErrInvalidInput) {
+		t.Errorf("resolution on the edit screen: %v", err)
+	}
+	for _, move := range []tracker.MoveID{"41", "99"} {
+		if _, err := p.Choices(t.Context(), tracker.OnMove("10001", move), "resolution", ""); !errors.Is(err, tracker.ErrInvalidInput) || !strings.Contains(err.Error(), "can make now") {
+			t.Errorf("move %s: %v", move, err)
+		}
 	}
 }

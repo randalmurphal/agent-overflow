@@ -1303,10 +1303,12 @@ export class FieldMessageView {
 
 /**
  * FieldScopeInput is where a pick list's values are asked for: an existing
- * Issue's fields, or a create's in Project with Type.
+ * Issue's fields, the fields its Move's screen takes (MoveView.Fields), or
+ * a create's in Project with Type.
  */
 export class FieldScopeInput {
     "issue"?: string;
+    "move"?: string;
     "project"?: string;
     "type"?: string;
 

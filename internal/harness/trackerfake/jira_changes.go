@@ -211,7 +211,7 @@ func (s *jiraSite) customChange(f *fieldDef, is *JiraIssue) changeValue {
 	case kindDoc:
 		return changeValue{text: strPtr(strings.TrimSpace(docText(raw)))}
 	case kindUnsupported, kindReadOnly, kindText, kindNumber, kindDate, kindDateTime,
-		kindPriority, kindIssueType, kindComponents, kindParent, kindTimeEstimate:
+		kindPriority, kindResolution, kindIssueType, kindComponents, kindParent, kindTimeEstimate:
 		// Text only, read from the stored string or number below.
 	}
 	var v any
