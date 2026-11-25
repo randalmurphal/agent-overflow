@@ -485,13 +485,14 @@ func importedTurnRange(turn string) string {
 	return "refs.max_turn_index >= " + turn + " AND refs.min_turn_index <= " + turn
 }
 
+// forkLineageDepthSQL reads how many ancestor levels a thread reads.
+const forkLineageDepthSQL = `SELECT COALESCE(MAX(depth), 0) FROM thread_fork_lineage WHERE thread_id = ?`
+
 // forkLineageDepth is the number of ancestor levels threadID reads
 // through: zero for every thread that is not a pointer fork.
 func forkLineageDepth(q sqlQueryer, threadID string) (int, error) {
 	var depth int
-	if err := q.QueryRow(
-		`SELECT COALESCE(MAX(depth), 0) FROM thread_fork_lineage WHERE thread_id = ?`, threadID,
-	).Scan(&depth); err != nil {
+	if err := q.QueryRow(forkLineageDepthSQL, threadID).Scan(&depth); err != nil {
 		return 0, fmt.Errorf("store: read fork lineage depth for %s: %w", threadID, err)
 	}
 	return depth, nil

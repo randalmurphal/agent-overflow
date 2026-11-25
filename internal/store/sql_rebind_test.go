@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql/driver"
+	"encoding/binary"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -88,8 +89,11 @@ func cachedStmtRecompiles(stmt driver.Stmt) (bool, error) {
 		// compiles it per run.
 		return false, err
 	}
-	vdbe := (*sqlite3.TVdbe)(unsafe.Pointer(pstmt))
-	return vdbe.Fexpmask&^vdbe.Fsmimask != 0 || sqlite3.Xsqlite3_expired(tls, pstmt) != 0, nil
+	var layout sqlite3.TVdbe
+	vdbe := libc.GoBytes(pstmt, int(unsafe.Sizeof(layout)))
+	expmask := binary.NativeEndian.Uint32(vdbe[unsafe.Offsetof(layout.Fexpmask):])
+	smimask := binary.NativeEndian.Uint32(vdbe[unsafe.Offsetof(layout.Fsmimask):])
+	return expmask&^smimask != 0 || sqlite3.Xsqlite3_expired(tls, pstmt) != 0, nil
 }
 
 func recordRecompiling(query, site string) {

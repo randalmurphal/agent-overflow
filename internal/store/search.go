@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -204,11 +203,7 @@ func (s *Store) SearchThreadItems(ctx context.Context, threadID, query string, s
 				if len(hits) == 0 {
 					return answer, nil
 				}
-				list, err := json.Marshal(hits)
-				if err != nil {
-					return answer, fmt.Errorf("store: search thread items: %w", err)
-				}
-				items, err := s.querySelectedPagedItems(q, threadID, `SELECT value AS id FROM json_each(?)`, string(list))
+				items, err := s.hydratePageItems(q, threadID, hits)
 				if err != nil {
 					return answer, fmt.Errorf("store: search thread items: %w", err)
 				}

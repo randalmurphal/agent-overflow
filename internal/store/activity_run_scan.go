@@ -203,18 +203,22 @@ func queryActivityScanRows(
 	selectedSQL string,
 	selectedArgs ...any,
 ) ([]activityScanRow, error) {
+	ids, err := selectTimelineIDs(q, selectedSQL, selectedArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("store: select activity scan rows for %s: %w", threadID, err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	list, err := jsonList(ids)
+	if err != nil {
+		return nil, err
+	}
 	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localActivityScanColumns, importedActivityScanColumns, "", "2, 3")
 	if err != nil {
 		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
 	}
-	ids, n, err := selectTimelineIDs(q, selectedSQL, selectedArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("store: select activity scan rows for %s: %w", threadID, err)
-	}
-	if n == 0 {
-		return nil, nil
-	}
-	rows, err := q.Query(selectedIDsSQL+branches, append([]any{ids}, branchArgs...)...)
+	rows, err := q.Query(selectedIDsSQL+branches, append([]any{list}, branchArgs...)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
 	}

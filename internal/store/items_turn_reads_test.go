@@ -259,13 +259,20 @@ func TestNarrowTurnReadsPlans(t *testing.T) {
 				}
 				checked := 0
 				for i, stmt := range stmts {
-					// The hydrator reads the lineage depth, runs the
-					// selection, then resolves its ids in a statement that
-					// opens with selectedIDsSQL.
-					if i == 0 || !strings.HasPrefix(stmt.query, selectedIDsSQL) {
+					// The hydrator runs the selection, then reads the
+					// lineage depth and resolves the ids in a statement
+					// that opens with selectedIDsSQL.
+					if !strings.HasPrefix(stmt.query, selectedIDsSQL) {
 						continue
 					}
-					selected := stmts[i-1]
+					at := i - 1
+					for at >= 0 && stmts[at].query == forkLineageDepthSQL {
+						at--
+					}
+					if at < 0 {
+						t.Fatalf("no selection ran before %s", stmt.query)
+					}
+					selected := stmts[at]
 					plan := explainPlan(t, s, selected.query, selected.args...)
 					checked++
 					local, imported := 0, 0
