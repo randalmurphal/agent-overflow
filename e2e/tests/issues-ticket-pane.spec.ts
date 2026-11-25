@@ -9,7 +9,10 @@
 // the pane back on its ticket. In its own pane in a ticket's menu moves
 // the ticket open in the Issues pane, with what was typed on it, without
 // subscribing it again, and the board shows. A closed pane gives back
-// what it held: its subscription, its DOM and its heap.
+// what it held: its subscription, its DOM and its heap. The pane's
+// header, with maximize and close, shows while its code loads and when
+// the ticket's code fails to load; the pane-navigation chord puts the
+// keyboard in the ticket while it loads and once it shows.
 //
 // The compact layout offers no ticket pane (compact-issues-ticket.spec.ts
 // and IssuesPane.test.ts); the move's hold, drafts and a restore that
@@ -139,6 +142,10 @@ test('the pane-navigation chord moves the keyboard focus into a ticket pane whil
   await expect(page.locator('section[data-pane-id]')).toHaveCount(3);
   const ticketPane = page.locator('section[data-pane-kind="ticket"]');
   await expect(ticketPane).toHaveCount(1);
+  // The pane's header while its code loads.
+  await expect(ticketPane.getByTestId('ticket-pane-loading')).toBeVisible();
+  await expect(ticketPane.getByTestId('tool-pane-header').getByTestId('pane-promote')).toBeVisible();
+  await expect(ticketPane.getByTestId('tool-pane-header').getByTestId('pane-close')).toBeVisible();
   const focusInTicketPane = () => page.evaluate(() => !!document.activeElement?.closest('section[data-pane-kind="ticket"]'));
 
   // Loading: the chord from the composer, through the Issues pane.
@@ -163,6 +170,24 @@ test('the pane-navigation chord moves the keyboard focus into a ticket pane whil
   await page.keyboard.type('stray');
   await expect(composer).toHaveValue('kept draft');
 });
+
+for (const [chunk, sentence] of [[/\/TicketPaneBody-[^/]*\.js$/, 'ticket-pane-load-error'], [/\/TicketScreen-[^/]*\.js$/, 'ticket-load-error']] as const) {
+  test(`a ticket pane whose code fails to load says so under its header (${sentence}), and closes`, async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    await page.route(chunk, (route) => route.abort());
+    await connectFakeJiraBoard(harness, `issues-ticket-pane-${sentence}`, LINKED);
+    await harness.open(page);
+    const issues = await openIssuesPane(page, false);
+    await expect(card(issues, '10105')).toBeVisible({ timeout: 30_000 });
+    await card(issues, '10105').getByTestId('issues-card-open').click({ modifiers: ['ControlOrMeta'] });
+    const own = page.getByTestId('ticket-pane');
+    await expect(own.getByTestId(sentence)).toContainText('Reload the window to try again');
+    const header = own.getByTestId('tool-pane-header');
+    await expect(header.getByTestId('pane-promote')).toBeVisible();
+    await header.getByTestId('pane-close').click();
+    await expect(own).toHaveCount(0);
+  });
+}
 
 test('In its own pane moves the ticket open in the Issues pane, with what was typed on it, and the board shows again', async ({ harness, page }) => {
   test.setTimeout(120_000);
