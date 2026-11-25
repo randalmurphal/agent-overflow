@@ -141,7 +141,8 @@ export function dropOwner(board: string): DropOwner {
     },
     close() {
       closed = true;
-      for (const end of [...open]) end();
+      // Each end deletes itself, which a Set's iteration allows.
+      for (const end of open) end();
     },
   };
 }
