@@ -6,6 +6,7 @@
   // adds nothing to startup. A computer with no such connection, a release
   // with no trackers and a computer that refuses this device say so and
   // close.
+  import { onMount } from 'svelte';
   import TicketFinder, { type FinderSource, type FoundTicket } from './TicketFinder.svelte';
   import { trackerConnectionName, trackerKindName } from '../settings/trackerConnectionStatus';
   import { acquireTrackerConnections, trackerConnectionsOf, trackerReadGate } from '../../stores/trackerConnections.svelte';
@@ -18,8 +19,12 @@
 
   const LINKABLE = new Set(['jira', 'linear']);
 
-  const backend = $derived(threadMachine(finding.thread.id, finding.thread.projectId));
-  $effect(() => acquireTrackerConnections(backend));
+  // The host mounts one finder per open (keyed by it), so its thread and
+  // computer are fixed for its life.
+  // svelte-ignore state_referenced_locally
+  const { thread, anchor } = finding;
+  const backend = threadMachine(thread.id, thread.projectId);
+  onMount(() => acquireTrackerConnections(backend));
   const view = $derived(trackerConnectionsOf(backend));
   const gate = $derived(trackerReadGate(view));
   const connections = $derived(view.list.filter((c) => LINKABLE.has(c.kind) && c.enabled));
@@ -48,10 +53,10 @@
       addToast('error', `The thread was not linked to ${ticket.key || 'the ticket'}: its connection is no longer turned on on ${computerName()}.`);
       return;
     }
-    void linkThreadTicket(finding.thread, { kind: connection.kind, site: connection.site, issueId: ticket.issue, key: ticket.key });
+    void linkThreadTicket(thread, { kind: connection.kind, site: connection.site, issueId: ticket.issue, key: ticket.key });
   }
 </script>
 
 {#if gate === 'open' && sources.length > 0}
-  <TicketFinder anchor={finding.anchor} open {sources} onPick={pick} onClose={closeThreadTicketFinder} />
+  <TicketFinder {anchor} open {sources} onPick={pick} onClose={closeThreadTicketFinder} />
 {/if}

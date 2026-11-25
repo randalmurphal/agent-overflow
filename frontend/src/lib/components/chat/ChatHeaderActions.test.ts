@@ -9,6 +9,7 @@ import { resetStagedBackends, stageBackend } from '../../../test/helpers/backend
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 import { getPaneLayoutItems, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
+import { closeThreadTicketFinder, threadTicketFinding } from '../../stores/threadTicketLinks.svelte';
 import type { ThreadTicketLink } from '../../../../bindings/agent-overflow/internal/store/models';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
@@ -396,7 +397,7 @@ describe('<ChatHeaderActions> compact header menu', () => {
     expect(desktop.getByTestId('take-control-toggle')).toBeInTheDocument();
     await fireEvent.click(desktop.getByTestId('chat-header-more'));
     await flush();
-    expect(menuRows()).toEqual(['Terminal', 'New terminal pane', 'Regenerate title']);
+    expect(menuRows()).toEqual(['Terminal', 'New terminal pane', 'Regenerate title', 'Link ticket…']);
     desktop.unmount();
 
     setCompactLayoutForTest(true);
@@ -415,6 +416,7 @@ describe('<ChatHeaderActions> compact header menu', () => {
       'Take control',
       'Search messages',
       'Regenerate title',
+      'Link ticket…',
       'Git actions…',
     ]);
   });
@@ -715,7 +717,7 @@ describe('<ChatHeaderActions> the linked ticket', () => {
     await flush();
     await fireEvent.contextMenu(view.getByTestId('chat-header-ticket'));
     await flush();
-    expect(menuRowTexts()).toEqual(['Open ticket', 'Copy key', 'Remove link']);
+    expect(menuRowTexts()).toEqual(['Open ticket', 'Copy key', 'Change ticket…', 'Remove link']);
     await fireEvent.click(within(document.body).getByTestId('chat-header-ticket-remove'));
     await vi.waitFor(() => expect(view.queryByTestId('chat-header-ticket')).toBeNull());
     expect(clear).toHaveBeenCalledWith(pane.threadId);
@@ -733,6 +735,27 @@ describe('<ChatHeaderActions> the linked ticket', () => {
     await fireEvent.click(view.getByTestId('chat-header-more'));
     await flush();
     expect(within(document.body).getByTestId('chat-header-menu-ticket-remove')).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('opens the ticket finder from Change ticket… at the button, and from Link ticket… at the menu button', async () => {
+    const view = render(ChatHeaderActions, { props: { pane: await linkedPane() } });
+    await flush();
+    await fireEvent.contextMenu(view.getByTestId('chat-header-ticket'));
+    await flush();
+    await fireEvent.click(within(document.body).getByTestId('chat-header-ticket-change'));
+    expect(threadTicketFinding()?.anchor).toBe(view.getByTestId('chat-header-ticket'));
+    closeThreadTicketFinder();
+    view.unmount();
+
+    const bare = render(ChatHeaderActions, { props: { pane: await linkedPane(null) } });
+    await flush();
+    await fireEvent.click(bare.getByTestId('chat-header-more'));
+    await flush();
+    const find = within(document.body).getByTestId('chat-header-menu-ticket-find');
+    expect(find.textContent).toContain('Link ticket…');
+    await fireEvent.click(find);
+    expect(threadTicketFinding()?.anchor).toBe(bare.getByTestId('chat-header-more'));
+    closeThreadTicketFinder();
   });
 
   it("is the compact menu's row above the pull request, and opens the ticket", async () => {
