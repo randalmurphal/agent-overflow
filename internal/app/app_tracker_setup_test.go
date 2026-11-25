@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -253,5 +255,55 @@ func TestASetupArgumentThisComputerCannotReadIsRefused(t *testing.T) {
 	if frame != nil || json.Unmarshal(result, &save) != nil || !save.Saved || len(save.Stored.StatusGroups) != 0 ||
 		!slices.Equal(save.Stored.Newer, []string{"card_marks"}) {
 		t.Fatalf("an empty setup = %s, %+v; want saved, keeping the newer app's section", result, frame)
+	}
+}
+
+// A site the setup refuses is never repeated: a pasted address can hold a
+// credential, so neither the refusal of a save nor that of a file written
+// by hand carries it, in its sentence, its detail or the log. Not
+// parallel: it reads the process's log.
+func TestARefusedSiteIsNeverRepeated(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	f := newTrackerBoardFixture(t)
+	rpc := newAppDispatch(t, f.a)
+	const marker = "tok3n-MARKER"
+	told := func(what string, frame *transport.FrameError, code string) {
+		t.Helper()
+		if frame == nil || frame.Code != code {
+			t.Fatalf("%s = %+v; want %s", what, frame, code)
+		}
+		text := frame.Message
+		if frame.Detail != nil {
+			text += strings.Join(frame.Detail.Chain, "\n")
+		}
+		if strings.Contains(text, marker) {
+			t.Errorf("%s repeats the site: %s", what, text)
+		}
+	}
+	for _, site := range []string{"https://user1:" + marker + "@a.example.com", "a.example.com/?token=" + marker} {
+		setup := `{"status_groups": [{"tracker": "jira", "site": "` + site + `", "statuses": {"10001": "done"}}]}`
+		_, frame := rpc.call("SetProjectTrackerSetup", f.project, "", json.RawMessage(setup))
+		told("a save of "+site, frame, "tracker_setup_refused")
+
+		path := f.setupPath(t)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		file := `{"status_groups": {"version": 1, "sites": [{"tracker": "jira", "site": "` + site + `", "statuses": {"10001": "done"}}]}}`
+		if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, frame = rpc.call("ProjectTrackerSetup", f.project)
+		told("a read of a file naming "+site, frame, "tracker_setup_unreadable")
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Contains(logs.String(), marker) {
+		t.Errorf("the log repeats a refused site:\n%s", logs.String())
 	}
 }

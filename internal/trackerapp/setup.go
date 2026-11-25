@@ -705,11 +705,19 @@ func validateSetup(setup Setup) (Setup, error) {
 	return out, nil
 }
 
-// checkSite checks a section's entry's tracker and site, and returns the
-// site as a connection of the tracker names it, by the rule a connection's
-// site is read by (jiraSite, linearSite), so the entry is found by the
-// board handles of every connection to the site however it is spelled;
-// once each in the section (seen), after that rule.
+// checkSite checks a section's entry's tracker and site and returns the
+// site as a connection of the tracker names it, once each in the section
+// (seen). It keeps three things true:
+//   - the site it returns is the connection's rule's (jiraSite,
+//     linearSite): the value stored and the key a board handle looks up,
+//     so an entry applies however its site is spelled;
+//   - every bound applies to that value, so checking a checked setup
+//     returns it unchanged, and whatever a save writes the reader of the
+//     same build accepts;
+//   - a refusal names the section, the tracker and the rule's reason,
+//     never the text given for the site, which may hold a credential (a
+//     pasted address's user info or token); a sentence quotes only a value
+//     the rule returned, which holds none.
 func checkSite(tracker, site, section string, seen map[siteKey]bool) (siteKey, error) {
 	if tracker != store.TrackerKindJira && tracker != store.TrackerKindLinear {
 		return siteKey{}, invalidSetup("%s names tracker %q, which is neither jira nor linear", section, tracker)
@@ -723,11 +731,11 @@ func checkSite(tracker, site, section string, seen map[siteKey]bool) (siteKey, e
 	}
 	canonical, err := named(site)
 	if err != nil {
-		var refused *InvalidError
-		if !errors.As(err, &refused) {
-			return siteKey{}, err
+		reason := "it is not one"
+		if refused, ok := errors.AsType[*InvalidError](err); ok {
+			reason = refused.Reason
 		}
-		return siteKey{}, invalidSetup("%s names %s site %q: %s", section, tracker, truncateID(site), refused.Reason)
+		return siteKey{}, invalidSetup("%s names a %s site its connection could not use: %s", section, tracker, reason)
 	}
 	key := siteKey{tracker, canonical}
 	if seen[key] {

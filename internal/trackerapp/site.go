@@ -127,7 +127,8 @@ func normalizeLabel(label string) (string, error) {
 
 // jiraSite is the site's https origin with its host lowercased. Input may
 // leave out the scheme and end in a slash; a path, query, fragment, user
-// info or a scheme other than https is refused.
+// info or a scheme other than https is refused, with a reason that never
+// quotes the input, which may hold a credential.
 func jiraSite(site string) (string, error) {
 	site = strings.TrimSpace(site)
 	if !strings.Contains(site, "://") {
@@ -185,7 +186,8 @@ func tempoSite(site string) (string, error) {
 }
 
 // linearSite is a workspace URL key, lowercased, given bare or as a
-// linear.app address whose first path segment is the key.
+// linear.app address whose first path segment is the key; its refusal
+// never quotes the input.
 func linearSite(site string) (string, error) {
 	key := strings.ToLower(strings.TrimSpace(site))
 	key = strings.TrimPrefix(key, "https://")
