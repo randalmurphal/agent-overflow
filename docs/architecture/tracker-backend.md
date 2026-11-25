@@ -708,9 +708,11 @@ mirror does not know yet counts as not done. A board that plans no sprints
 shows every row that is not done. A status the project leaves out of
 counts (`left_out`) is in no backlog and adds to no total; its rows still
 show in their columns and sprints. The rule is one set of SQL fragments
-(`mirrorNotDone`, `mirrorLeftOut` in `tracker_cache_sections.go`), which
-lists the statuses that count as done once a statement, from the root's
-catalog and the bound groups.
+in `tracker_cache_sections.go`: `mirrorNotDoneSQL` with no regrouping,
+which probes a row's status by its key, and `mirrorRegroupedNotDone` and
+`mirrorLeftOut` under one, which list the statuses that count as done
+once a statement, from the root's catalog and the bound groups
+(`MirrorSection.statement` picks the form).
 
 ## Sync
 
@@ -1139,11 +1141,15 @@ named rows.
 
 A project's status groups ([Project setup](#project-setup)) add one
 list of the done statuses to the backlog, count and patch statements. No
-setup file, and a file with no entry for the board's site, bind the
-empty regrouping; at 20,000 issues, the fastest of three runs alternated
-with the branch's base, its board view took 41.7 ms against 42.1 and its
-counts 36.8 ms against 37.8. Thirty regrouped statuses the board does
-not use took 46.4 ms and 39.5 ms. A regrouping that counts a fifth of
+setup file, and a file with no entry for the board's site, run the plain
+statements, which probe a row's status by its key: a one-issue backlog
+patch runs 99 VM steps at 5 and at 1,000 catalog statuses, and the
+regrouped form 168 and 12,114 (`TestABoardWithNoRegroupingReadsNoCatalog`
+pins that the plain form does not grow with the catalog). At 20,000
+issues, the fastest of three runs alternated with the branch's base,
+thirty regrouped statuses the board does not use took 46.4 ms for the
+board view and 39.5 ms for the counts, against 42.1 and 37.8 on the
+base. A regrouping that counts a fifth of
 the board's rows as done and leaves another fifth out of counts took
 56.5 ms, 49.3 ms, and 48.1 ms for a patch whose totals moved: the left-out
 rows' IDs reach the sprint totals as one bound list.
