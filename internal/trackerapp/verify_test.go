@@ -545,7 +545,7 @@ func TestAPrintedConnectionCarriesNoTokenDigest(t *testing.T) {
 	got := f.verify(conn.ID)
 	digest := tokenDigest(conn.ID, []byte(jiraToken))
 	printed := fmt.Sprintf("%v %+v %#v %v", got, got, *got.Problem, got.Problem)
-	for _, form := range []string{fmt.Sprint(digest[:]), fmt.Sprintf("%x", digest[:]), fmt.Sprint(digest[0], " ", digest[1])} {
+	for _, form := range []string{fmt.Sprintf("%d", digest[:]), fmt.Sprintf("%x", digest[:]), fmt.Sprintf("%d %d", digest[0], digest[1])} {
 		if strings.Contains(printed, form) {
 			t.Fatalf("a printed connection carries its token digest: %s", printed)
 		}

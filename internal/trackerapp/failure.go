@@ -120,6 +120,7 @@ func (e evidence) currentFor(found store.TrackerTokenDigest) bool {
 		return sameToken(e.token, found)
 	case aboutKeyFile:
 		return !found.Known()
+	case aboutChangedToken:
 	}
 	return false
 }
