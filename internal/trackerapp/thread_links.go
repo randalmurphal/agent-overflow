@@ -200,9 +200,10 @@ func (s *Service) UnlinkThread(threadID string) (had bool, _ error) {
 // this computer holds of each one's ticket, as a link made here would,
 // with no request: for links another computer's thread carried here,
 // whose copy names no mirror of this one. A link whose ticket no mirror
-// here holds stays not checked until a read stores its card. It returns
-// the first failure, having tried every link; a link it could not adopt
-// stays as it was.
+// here holds stays not checked until a read stores its card. It tells
+// Deps.LinksChanged nothing: the caller announces the rows it received.
+// It returns every failure, having tried every link; a link it could not
+// adopt stays as it was.
 func (s *Service) AdoptLinks(threadIDs []string) error {
 	if err := s.enter(); err != nil {
 		return err
@@ -213,50 +214,41 @@ func (s *Service) AdoptLinks(threadIDs []string) error {
 		return fmt.Errorf("trackerapp: read the links of %d threads: %w", len(threadIDs), err)
 	}
 	var errs []error
-	var moved []string
 	for _, link := range links {
-		changed, err := s.adoptLink(link)
-		if err != nil {
+		if err := s.adoptLink(link); err != nil {
 			errs = append(errs, fmt.Errorf("trackerapp: adopt the link of thread %s: %w", link.ThreadID, err))
 		}
-		if changed {
-			moved = append(moved, link.ThreadID)
-		}
-	}
-	if len(moved) > 0 {
-		s.linksChanged(ordered(moved))
 	}
 	return errors.Join(errs...)
 }
 
 // adoptLink writes link from the card the mirror of its connection holds,
-// once more when the mirror replaced the card meanwhile, and reports
-// whether the link changed.
-func (s *Service) adoptLink(link store.ThreadTicket) (bool, error) {
+// once more when the mirror replaced the card meanwhile.
+func (s *Service) adoptLink(link store.ThreadTicket) error {
 	id, _, err := s.store.TicketConnection(link.Ticket)
 	if err != nil || id == "" {
-		return false, err
+		return err
 	}
 	root, ok, err := s.store.GetMirrorRoot(id)
 	if err != nil || !ok {
-		return false, err
+		return err
 	}
 	for again := false; ; again = true {
 		held, err := s.store.ListMirrorCards(root, []string{link.Ticket.IssueID})
 		if err != nil || len(held) != 1 {
-			return false, err
+			return err
 		}
 		card, ok := cardOf(held[0])
 		if !ok {
-			return false, nil
+			return nil
 		}
 		w := store.ThreadTicketWrite{ThreadID: link.ThreadID, Origin: link.Origin, LinkedAt: link.LinkedAt, Root: root, Card: held[0]}
 		w.Card.Title = card.Title
-		set, err := s.store.SetThreadTicket(w)
+		_, err = s.store.SetThreadTicket(w)
 		if errors.Is(err, store.ErrThreadTicketCardMoved) && !again {
 			continue
 		}
-		return set.Changed, err
+		return err
 	}
 }
 

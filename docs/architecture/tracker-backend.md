@@ -298,7 +298,7 @@ Durable records, restored and kept like other application records:
 |---|---|
 | `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity and time, and the token expiry the user entered. |
 | `project_tracker_boards` | Which boards an app project lists, in order, and which opens first. Keyed by project, connection and board; the project and the connection cascade. |
-| `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
+| `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key, title and status as last seen, and the mirror root whose card that copy equals ([Thread links](#thread-links)). Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
 
 The mirror is every table named `tracker_cache_*`. The name is the
 classification:
@@ -1448,6 +1448,66 @@ totals; with the totals held it reads only the named rows. Tests pin
 the bytes, the calls and `ReadMirrorBoardPatch`'s statements. The full read is only for the first paint, a reconnect and
 `ReadAgain`.
 
+### Thread links
+
+A thread links to at most one ticket (`thread_tickets`), named by kind,
+site and issue ID, so the link means the same ticket on every computer.
+
+- **The copy.** The link holds the ticket's key, title and status (ID,
+  name, group) as a mirror here last stored its card, and `seen_root`,
+  that mirror's root. Every card write (`storeMirrorCardsTx`: row pages,
+  card reads, ticket reads) runs one more statement,
+  `mirrorLinkCopySQL`, which copies the cards it stored to the writable
+  links of their tickets and returns the threads whose shown values,
+  root or not-found mark moved; a card that moves none of them writes no
+  link and names no thread. With no link at all it stops at its guard. A
+  read that does not return an issue marks its links not found
+  (`MarkMirrorLinksMissing`), unless a later read stored its card.
+- **The state** is derived when the row is read, on the computer that
+  answers: `current` or `not_found` while `seen_root` names an attached
+  root, else from the site's connections, `not_checked` (one is on),
+  `turned_off` (all are off) or `no_connection`. `connectionId` is the
+  root's connection, else the lowest ID turned on (`TicketConnection`).
+  A turn off, a removal or a restore detaches or empties the root, and
+  no root ID returns, so no write resets a copy.
+- **The row.** `threadColumns` carries the link as one JSON column
+  (`threadTicketLinkColumn`), guarded by one `EXISTS` on
+  `thread_tickets` that runs once per statement: a full thread list read
+  of 5,000 threads costs about 0.1% more with no link and a few percent
+  more with 500 (`BenchmarkListThreadsLinked`).
+- **Writes.** `SetThreadTicket` (bound, `threads:operate`) links through
+  `trackerapp.Service.LinkThread`: the connection `TicketConnection`
+  names, the card the mirror holds with no request, otherwise one card
+  read stored with the link in one transaction (a card the mirror
+  replaced meanwhile is read from the mirror once more). A refusal leaves
+  the link and the mirror as they were. `ClearThreadTicket` unlinks;
+  `ThreadsForTicket` (`threads:read`, route selected) lists a ticket's
+  threads by the issue index.
+- **Frames.** A method announces its own thread's row. Every other
+  thread whose link a write moved, and every thread linked to a site
+  whose connection was added, turned on or off, or removed
+  (`ListThreadsLinkedToSite`), is told to `Deps.LinksChanged`, which the
+  app announces on one serial queue (`announceThreadLinks`), one job per
+  call; the announcer has no batching, so it is one `thread:updated`
+  frame per thread.
+- **Keep.** A link keeps its issue in the mirror (`mirrorIssueKept`).
+  When links end (an unlink, a link replaced, a thread's delete commit,
+  a move away), `LinksEnded` tells the issues no longer kept as
+  `Changes.Visibility`, as an open ticket's drop does.
+- **Fork and transfer.** `CreatePointerFork` copies the link in its
+  transaction. A transfer's manifest carries `store.Thread`, link
+  included; `CommitIncomingThreadTransfer` replaces the receiver's link
+  with the carried ticket, key, title, status, origin and time, never a
+  carried state, connection or root, and the app then takes the card a
+  mirror here holds (`AdoptLinks`). A receiver too old to read the link
+  drops it; a sender too old to carry one leaves the thread unlinked.
+
+Sequences left as they are: a card write that commits between a link's
+mirror read and its commit leaves the copy of the earlier card until the
+ticket's next change; a link set between a delete's read of the family's
+links and its commit tells no Visibility, which the board's next read
+repairs; two connections to one site read through the lowest ID.
+
 ## Agent tools
 
 The tools read, search, create, edit, move, comment, move between sprints
@@ -1517,10 +1577,12 @@ owed by the app layer:
   is the frontend's.
 - The warning before a token lapses, from the expiry the user entered,
   its only source.
-- A thread's ticket link carried by a fork, which starts with its
-  source's link, and by a transfer, whose header carries it and whose
-  receiver replaces the link it held (a receiver too old to read it drops
-  it). The table and its accessors exist; nothing writes it.
+- Sidebar search by a linked ticket's key and title: the frontend's
+  `threadMatchesQuery` (`components/sidebar/threadSearch.ts`) adds
+  `ticketLink.key` and `ticketLink.title` to what it matches.
+- A status renamed or moved to another group in the tracker reaches a
+  link's copy at the ticket's next card change, not at the catalog write
+  ([Thread links](#thread-links)).
 - The project's tracker setup: one file in the project's app directory
   (`project.ConfigDir`), beside its workflow profile, that `trackerapp`
   reads and replaces whole, holding status-group overrides (a status's

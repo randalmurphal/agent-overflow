@@ -234,8 +234,8 @@ func TestAdoptLinksTakesTheMirrorsCard(t *testing.T) {
 	if link := m.rowLink("carried-unheld"); link.State != store.TicketLinkNotChecked {
 		t.Fatalf("a link the mirror does not hold = %+v; want not checked", link)
 	}
-	if got, calls := m.events.linkedThreads(); !slices.Contains(got, "carried") || slices.Contains(got, "held") || calls != before+1 {
-		t.Fatalf("told %v in %d calls; want carried in one", got, calls-before)
+	if _, calls := m.events.linkedThreads(); calls != before {
+		t.Fatalf("adopting told LinksChanged %d times; want none, the caller announces the received rows", calls-before)
 	}
 }
 
