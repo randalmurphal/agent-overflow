@@ -31,9 +31,11 @@
     /** Sets the ticket's estimate on its board row; null when no board
      * the app mirrors shows the ticket. */
     onSetEstimate: ((value: number) => void) | null;
+    /** The board row estimates in hours, not points. */
+    hours: boolean;
   }
 
-  let { attachment, ctx, poker, onSetEstimate }: Props = $props();
+  let { attachment, ctx, poker, onSetEstimate, hours }: Props = $props();
 
   /** The deck's cards; any other number from 0 to 1000 is typed. */
   const DECK = [0, 1, 2, 3, 5, 8, 13, 21] as const;
@@ -42,6 +44,7 @@
   const view = $derived(poker?.view ?? null);
   const readAt = $derived(view?.read_at ?? 0);
   const pending = $derived(ticketWrite(ctx.key, 'poker')?.pending ?? false);
+  const settingEstimate = $derived(ticketWrite(ctx.key, 'points')?.pending ?? false);
   const mine = $derived(view?.votes?.find((v) => v.mine) ?? null);
   const result = $derived(view?.revealed ? pokerResult(view.votes ?? []) : []);
   const failure = $derived(poker?.error ? errString(poker.error) : view?.failure?.message ?? '');
@@ -82,6 +85,24 @@
   }
 
   let clearing = $state(false);
+  let deck: HTMLElement | undefined = $state();
+  let clearButton: HTMLButtonElement | undefined = $state();
+
+  /** The menu's Vote: the caret on the first card. */
+  export function focusVote(): void {
+    const first = deck?.querySelector<HTMLButtonElement>('[data-testid="ticket-poker-card"]');
+    first?.scrollIntoView({ block: 'nearest' });
+    first?.focus();
+  }
+
+  /** The menu's Clear votes: its first press; the second is the
+   * person's, here. */
+  export function askClear(): void {
+    clearing = true;
+    clearButton?.scrollIntoView({ block: 'nearest' });
+    clearButton?.focus();
+  }
+
   function clearVotes(): void {
     if (!clearing) {
       clearing = true;
@@ -114,7 +135,7 @@
       {#if readAt}Read {relativeTime(readAt, 'locale', ctx.ref.backend)}.{/if}
     </p>
   {/if}
-  <div class="flex flex-wrap items-center gap-1" role="group" aria-label="Your vote">
+  <div bind:this={deck} class="flex flex-wrap items-center gap-1" role="group" aria-label="Your vote">
     {#each DECK as card (card)}
       <button
         type="button"
@@ -132,6 +153,7 @@
         placeholder="Other"
         aria-label="Another vote, from 0 to {MAX_VOTE}"
         aria-invalid={typed !== '' && !typedValid}
+        disabled={pending}
         data-testid="ticket-poker-typed"
         bind:value={typed}
       />
@@ -143,7 +165,7 @@
   {/if}
   <div class="flex flex-wrap items-center gap-2">
     <button type="button" class="text-xs text-accent hover:underline disabled:opacity-60" disabled={pending} data-testid="ticket-poker-reveal" onclick={() => { clearing = false; void revealTicketPoker(ctx); }}>Reveal</button>
-    <button type="button" class="text-xs hover:underline disabled:opacity-60 {clearing ? 'font-medium text-error' : 'text-accent'}" disabled={pending} data-testid="ticket-poker-clear" onclick={clearVotes}>{clearing ? 'Clear everyone\'s votes' : 'Clear votes'}</button>
+    <button bind:this={clearButton} type="button" class="text-xs hover:underline disabled:opacity-60 {clearing ? 'font-medium text-error' : 'text-accent'}" disabled={pending} data-testid="ticket-poker-clear" onclick={clearVotes}>{clearing ? 'Clear everyone\'s votes' : 'Clear votes'}</button>
     {#if clearing}
       <button type="button" class="text-xs text-fg-muted hover:underline" data-testid="ticket-poker-clear-cancel" onclick={() => { clearing = false; }}>Keep them</button>
     {/if}
@@ -154,8 +176,8 @@
       {#if onSetEstimate}
         {@const set = onSetEstimate}
         {#each result as r (r.value)}
-          <button type="button" class="rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-xs text-fg hover:bg-surface-1 compact:min-h-9" data-testid="ticket-poker-set-estimate" onclick={() => set(r.value)}>
-            Set estimate to {r.value} <span class="text-fg-muted">({r.count} {r.count === 1 ? 'vote' : 'votes'})</span>
+          <button type="button" class="rounded-[var(--radius-control)] border border-border-subtle px-2 py-0.5 text-xs text-fg hover:bg-surface-1 disabled:opacity-60 compact:min-h-9" disabled={settingEstimate} data-testid="ticket-poker-set-estimate" onclick={() => set(r.value)}>
+            Set estimate to {r.value}{hours ? (r.value === 1 ? ' hour' : ' hours') : ''} <span class="text-fg-muted">({r.count} {r.count === 1 ? 'vote' : 'votes'})</span>
           </button>
         {/each}
       {:else}

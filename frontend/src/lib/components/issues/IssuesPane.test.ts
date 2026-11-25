@@ -50,7 +50,6 @@ import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
-import { getToasts } from '../../stores/toast.svelte';
 import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
 import { ticketDraft } from '../../stores/trackerTicketWrites.svelte';
 
@@ -1127,23 +1126,6 @@ describe('the ticket in the pane', () => {
     }
   });
 
-  it('says a ticket link that is not a web address cannot be opened, and opens nothing', async () => {
-    install();
-    installTicket((issue) => ({ ...ticketDetail(issue), url: 'javascript:alert(1)' }) as DetailView);
-    const host = setBindingMock('OpenExternalURL', async () => undefined);
-    const open = vi.spyOn(window, 'open').mockReturnValue(null);
-    try {
-      const view = mount();
-      const screen = await openCard(view, '1');
-      await fireEvent.click(await within(screen).findByTestId('ticket-open-tracker'));
-      await waitFor(() => expect(getToasts().map((t) => t.message)).toContain('Could not open WEB-1 in the tracker: its link javascript:alert(1) is not a web address.'));
-      expect(host).not.toHaveBeenCalled();
-      expect(open).not.toHaveBeenCalled();
-    } finally {
-      open.mockRestore();
-    }
-  });
-
   it('asks the tracker for typed text when its list holds more matches, once per pause, showing only the answer for the latest text', async () => {
     install();
     installTicket();
@@ -1998,6 +1980,42 @@ describe('the ticket in the pane', () => {
     expect(within(screen).getByTestId('ticket-comment-editor')).toHaveValue('Comment 1, half edited');
   });
 
+  it('keeps an open edit of a comment past the newest five in view after a switch to History and back', async () => {
+    install();
+    installTicket((issue) => ticketDetail(issue, { comments: 8 }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const mounted = () => within(screen).queryAllByTestId('ticket-comment').map((c) => c.dataset.comment);
+    await waitFor(() => expect(mounted()).toEqual(['c4', 'c5', 'c6', 'c7', 'c8']));
+    await fireEvent.click(within(screen).getByTestId('ticket-comments-earlier'));
+    await waitFor(() => expect(mounted()).toHaveLength(8));
+    const oldest = within(screen).getAllByTestId('ticket-comment').find((c) => c.dataset.comment === 'c2')!;
+    await fireEvent.contextMenu(oldest);
+    await fireEvent.click(await within(document.body).findByTestId('ticket-comment-menu-edit'));
+    await fireEvent.input(within(oldest).getByTestId('ticket-comment-editor'), { target: { value: 'Comment 2, half edited' } });
+    await fireEvent.click(within(screen).getByRole('radio', { name: 'History' }));
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-comments')).toBeNull());
+    await fireEvent.click(within(screen).getByRole('radio', { name: 'Comments' }));
+    // The window reaches back to the edit, and stays one run.
+    await waitFor(() => expect(mounted()).toEqual(['c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8']));
+    expect(within(screen).getByTestId('ticket-comment-editor')).toHaveValue('Comment 2, half edited');
+    expect(within(screen).getByTestId('ticket-comments-earlier')).toHaveTextContent('Show 1 earlier comment');
+  });
+
+  it.each(['mailto:user@example.com', 'javascript:alert(1)'])('offers neither Open in the tracker nor Copy link for %s, which is not a web page', async (url) => {
+    install();
+    installTicket((issue) => ({ ...ticketDetail(issue), url }) as DetailView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await waitFor(() => expect(within(screen).getByTestId('ticket-title')).toHaveTextContent('Issue 1'));
+    await within(screen).findByTestId('ticket-comment-input');
+    expect(within(screen).queryByTestId('ticket-open-tracker')).toBeNull();
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await within(document.body).findByTestId('ticket-menu-copy-key');
+    expect(within(document.body).queryByTestId('ticket-menu-open-tracker')).toBeNull();
+    expect(within(document.body).queryByTestId('ticket-menu-copy-link')).toBeNull();
+  });
+
   it('keeps unsent text and its edit base across a dropped connection to the ticket\'s computer', async () => {
     install();
     const ticket = installTicket((issue) => ticketDetail(issue, { comments: 1 }));
@@ -2092,5 +2110,218 @@ describe('the ticket in the pane', () => {
     expect(page).toHaveBeenCalledWith('c1', '1', 'page-2');
     expect(mounted()[0]).toBe('old9');
     expect(within(screen).queryByTestId('ticket-comments-earlier')).toBeNull();
+  });
+});
+
+describe("the ticket's attachments, links, poker, estimate and logged time", () => {
+  beforeAll(async () => {
+    await import('./TicketScreen.svelte');
+  });
+
+  const applied = (): WriteView => ({ parts: [{ step: 'write', state: 'applied' }] }) as WriteView;
+  const file = (name: string, type = 'application/pdf') => new File(['bytes'], name, { type });
+
+  /** Uploads that answer applied; the mint's file names, in order. */
+  function installUploads(): string[] {
+    const names: string[] = [];
+    setBindingMock('MintTrackerAttachmentUploadTicket', async (_c: string, _i: string, name: string) => {
+      names.push(name);
+      return `/attachments/tracker/upload?ticket=${name}`;
+    });
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify(applied()), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    return names;
+  }
+
+  it('attaches files dropped anywhere on a Jira ticket, and files pasted into its comment box, whose text stays', async () => {
+    install();
+    installTicket();
+    const names = installUploads();
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await within(screen).findByTestId('ticket-attachments');
+      // Folded, the drop opens the section.
+      await fireEvent.click(within(screen).getByTestId('ticket-attachments-fold'));
+      expect(within(screen).getByTestId('ticket-attachments-fold')).toHaveAttribute('aria-expanded', 'false');
+      const dataTransfer = { types: ['Files'], files: [file('report.pdf')], dropEffect: 'none' };
+      expect(await fireEvent.dragOver(within(screen).getByTestId('ticket-content'), { dataTransfer })).toBe(false);
+      expect(within(screen).getByTestId('ticket-drop')).toHaveTextContent('Drop the files to attach them to WEB-1');
+      await fireEvent.drop(within(screen).getByTestId('ticket-content'), { dataTransfer });
+      expect(within(screen).queryByTestId('ticket-drop')).toBeNull();
+      await waitFor(() => expect(names).toEqual(['report.pdf']));
+      expect(within(screen).getByTestId('ticket-attachments-fold')).toHaveAttribute('aria-expanded', 'true');
+
+      const box = within(screen).getByTestId('ticket-comment-input');
+      const shot = file('shot.png', 'image/png');
+      const pasted = await fireEvent.paste(box, {
+        clipboardData: { types: ['text/plain', 'Files'], items: [{ kind: 'file', type: 'image/png', getAsFile: () => shot }, { kind: 'string', type: 'text/plain', getAsFile: () => null }] },
+      });
+      // Not prevented: the text part goes into the box.
+      expect(pasted).toBe(true);
+      await waitFor(() => expect(names).toEqual(['report.pdf', 'shot.png']));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('takes no drop or paste of files on a Linear ticket, and offers it no Attach', async () => {
+    install({ choices: [choice('1', { opens_first: true, connection_kind: 'linear' })] });
+    installTicket();
+    const names = installUploads();
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await within(screen).findByTestId('ticket-comment-input');
+      expect(within(screen).queryByTestId('ticket-attachments')).toBeNull();
+      const dataTransfer = { types: ['Files'], files: [file('report.pdf')] };
+      expect(await fireEvent.dragOver(within(screen).getByTestId('ticket-content'), { dataTransfer })).toBe(true);
+      await fireEvent.drop(within(screen).getByTestId('ticket-content'), { dataTransfer });
+      await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+      await within(document.body).findByTestId('ticket-menu-copy-key');
+      expect(within(document.body).queryByTestId('ticket-menu-attach')).toBeNull();
+      expect(within(document.body).queryByTestId('ticket-menu-log-time')).toBeNull();
+      expect(within(screen).queryByTestId('ticket-estimate')).toBeNull();
+      expect(names).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('shows a file the description names with its size and Save once the ticket holds it', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      description: 'See [report.pdf](media:abc).',
+      attachments: [{ id: 'a1', name: 'report.pdf', mime_type: 'application/pdf', size: 2048, created: 1, author: { id: 'u1', name: 'User 1' } }],
+    }) as unknown as DetailView);
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const chip = await waitFor(() => {
+      const found = screen.querySelector<HTMLElement>('[data-testid="ticket-section"] [data-tracker-media]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    await waitFor(() => expect(chip.textContent?.replace(/\s+/g, ' ')).toContain('report.pdf'));
+    expect(within(chip).getByRole('button')).toBeInTheDocument();
+    expect(chip.textContent).toContain('2 KB');
+  });
+
+  it('offers planning poker only where the site has it, folded until opened, and follows the votes only while it shows', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerPokerSupport', async () => ({ available: true }));
+    const follow = setBindingMock('FollowTrackerPoker', async () => ({ loaded: true, revealed: false, votes: [], read_at: 1 }));
+    const observers: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(report: (entries: Array<{ isIntersecting: boolean }>) => void) {
+        observers.push(report);
+      }
+      observe(): void {
+        observers.at(-1)?.([{ isIntersecting: true }]);
+      }
+      disconnect(): void {}
+    });
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      const fold = await within(screen).findByTestId('ticket-poker-fold');
+      expect(fold).toHaveAttribute('aria-expanded', 'false');
+      expect(follow).not.toHaveBeenCalled();
+      await fireEvent.click(fold);
+      await waitFor(() => expect(follow).toHaveBeenCalledWith('ticket-1-1', true));
+      expect(await within(screen).findByTestId('ticket-poker-votes')).toBeInTheDocument();
+      await fireEvent.click(fold);
+      await waitFor(() => expect(follow).toHaveBeenLastCalledWith('ticket-1-1', false));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('offers no planning poker on a site without it', async () => {
+    install();
+    installTicket();
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: false }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-comment-input');
+    await waitFor(() => expect(support).toHaveBeenCalledWith('c1'));
+    expect(within(screen).queryByTestId('ticket-poker-fold')).toBeNull();
+  });
+
+  it('links the ticket to one found by key on the side its phrase reads, taking no change while the link is out', async () => {
+    install();
+    installTicket();
+    setBindingMock('TrackerLinkTypes', async () => [{ id: '10000', name: 'Blocks', outward: 'blocks', inward: 'is blocked by' }]);
+    setBindingMock('TrackerLookup', async () => ({ found: [{ key: 'WEB-7', card: { id: '7', key: 'WEB-7', title: 'Issue 7' } }] }));
+    let answer: ((view: WriteView) => void) | null = null;
+    const link = setBindingMock('LinkTrackerIssues', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(await within(screen).findByTestId('ticket-link-add'));
+    const form = await within(document.body).findByTestId('ticket-link-form');
+    const relation = await within(form).findByTestId('ticket-link-form-relation');
+    expect(Array.from((relation as HTMLSelectElement).options).map((o) => o.text)).toEqual(['blocks', 'is blocked by']);
+    await fireEvent.change(relation, { target: { value: '1' } });
+    expect(relation).toHaveDisplayValue('is blocked by');
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-find'));
+    await fireEvent.input(await within(document.body).findByTestId('ticket-picker-find'), { target: { value: 'WEB-7' } });
+    await fireEvent.click(await within(document.body).findByTestId('ticket-picker-item'));
+    await waitFor(() => expect(within(form).getByTestId('ticket-link-form-other')).toHaveTextContent('WEB-7'));
+    await fireEvent.click(within(form).getByTestId('ticket-link-form-save'));
+    await waitFor(() => expect(link).toHaveBeenCalledWith('c1', { type: '10000', outward: '7', inward: '1' }));
+    expect(relation).toBeDisabled();
+    expect(within(form).getByTestId('ticket-link-form-find')).toBeDisabled();
+    expect(within(form).getByTestId('ticket-link-form-save')).toBeDisabled();
+    answer!(applied());
+    await waitFor(() => expect(within(document.body).queryByTestId('ticket-link-form')).toBeNull());
+  });
+
+  it('removes a link at once from its row and says so until the ticket drops it', async () => {
+    install();
+    installTicket((issue) => ({
+      ...ticketDetail(issue),
+      links: [{ id: '40001', type: '10000', relation: 'blocks', issue: { id: '6', key: 'WEB-6', title: 'Issue 6', status: { id: 's1', name: 'To Do', group: 'todo' } } }],
+    }) as unknown as DetailView);
+    let answer: ((view: WriteView) => void) | null = null;
+    const unlink = setBindingMock('UnlinkTrackerIssues', () => new Promise<WriteView>((resolve) => { answer = resolve; }));
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await fireEvent.click(await within(screen).findByTestId('ticket-link-remove'));
+    expect(unlink).toHaveBeenCalledWith('c1', { issue: '1', link: '40001', other: '6' });
+    expect(await within(screen).findByTestId('ticket-link-removing')).toHaveTextContent('Removing…');
+    expect(within(screen).getByTestId('ticket-link-remove')).toBeDisabled();
+    answer!(applied());
+    await waitFor(() => expect(within(screen).queryByTestId('ticket-link-removing')).toBeNull());
+  });
+
+  it("opens the estimate's editor from the header, and Log time's form filled with the ticket and today", async () => {
+    install();
+    installTicket();
+    const view = mount();
+    const screen = await openCard(view, '1');
+    const estimate = await within(screen).findByTestId('ticket-estimate');
+    expect(estimate).toHaveAccessibleName('Estimate: 2');
+    await fireEvent.click(estimate);
+    const points = within(screen).getByTestId('ticket-rail').querySelector<HTMLElement>('[data-field="points"]')!;
+    await waitFor(() => expect(within(points).getByTestId('ticket-field-input')).toHaveValue(2));
+
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    await fireEvent.click(await within(document.body).findByTestId('ticket-menu-log-time'));
+    const form = await within(document.body).findByTestId('worklog-form');
+    expect(within(form).getByTestId('worklog-form-ticket')).toHaveTextContent('WEB-1');
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    expect(within(form).getByTestId('worklog-form-day')).toHaveValue(today);
+    expect(within(form).queryByTestId('worklog-form-find')).toBeNull();
+  });
+
+  it('offers no Log time while the app does not know whose time it logs', async () => {
+    install({ choices: [choice('1', { opens_first: true, verified_account: '' })] });
+    installTicket();
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-comment-input');
+    await fireEvent.click(within(screen).getByTestId('ticket-menu-button'));
+    expect(await within(document.body).findByTestId('ticket-menu-log-time')).toHaveAttribute('aria-disabled', 'true');
   });
 });

@@ -88,9 +88,9 @@ describe('comments', () => {
 
   it('mounts the newest of them, in the order they read', () => {
     const held = heldComments(detail, [{ comments: [comment('6', 6), comment('5', 5)] }]);
-    expect(commentWindow(held, 2, 'oldest')).toEqual({ comments: [held[1], held[0]], hidden: 3 });
-    expect(commentWindow(held, 2, 'newest')).toEqual({ comments: [held[0], held[1]], hidden: 3 });
-    expect(commentWindow(held, 50, 'oldest').hidden).toBe(0);
+    expect(commentWindow(held, 2, 'oldest', new Set())).toEqual({ comments: [held[1], held[0]], hidden: 3 });
+    expect(commentWindow(held, 2, 'newest', new Set())).toEqual({ comments: [held[0], held[1]], hidden: 3 });
+    expect(commentWindow(held, 50, 'oldest', new Set()).hidden).toBe(0);
   });
 
   it('widens to the oldest comment holding unsent text, keeping the window one run', () => {

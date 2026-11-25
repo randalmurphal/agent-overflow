@@ -448,6 +448,7 @@
               board={openBoard.board}
               kind={choices.find((c) => c.backend === openBoard.backend && c.choice.connection === openBoard.connection)?.choice.connection_kind ?? ''}
               computerName={computerName(openBoard.backend)}
+              account={me}
               offline={boardOffline}
               {compact}
               trail={selection.trail}

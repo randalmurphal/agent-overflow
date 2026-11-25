@@ -200,6 +200,14 @@ export function ticketDraft(ticket: string, target: string): TicketDraft | null 
   return held?.kind === 'text' ? held : null;
 }
 
+/** The comments of the ticket whose edit a person is writing; reactive. */
+export function ticketCommentDrafts(ticket: string): ReadonlySet<string> {
+  const prefix = writeKey(ticket, commentTarget(''));
+  const ids = new Set<string>();
+  for (const k of drafts.keys()) if (k.startsWith(prefix)) ids.add(k.slice(prefix.length));
+  return ids;
+}
+
 /** Opens or changes the text being written to the target, edited from
  * `from`. */
 export function setTicketDraft(ticket: string, target: string, text: string, from: string): void {

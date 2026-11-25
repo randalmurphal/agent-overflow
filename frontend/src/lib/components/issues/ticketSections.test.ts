@@ -108,7 +108,7 @@ describe('the poker section', () => {
     });
     const onScreen: boolean[] = [];
     const { getAllByTestId, unmount } = render(TicketPoker, {
-      props: { attachment: attachment(onScreen), ctx: CTX, poker: { view: view(false, [['User 1', 5, true], ['User 2', null]]), error: null }, onSetEstimate: null },
+      props: { attachment: attachment(onScreen), ctx: CTX, poker: { view: view(false, [['User 1', 5, true], ['User 2', null]]), error: null }, onSetEstimate: null, hours: false },
     });
     expect(getAllByTestId('ticket-poker-vote').map((v) => v.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['User 1 (you) 5', 'User 2 voted']);
     expect(onScreen).toEqual([]);
@@ -123,7 +123,7 @@ describe('the poker section', () => {
   it('clears everyone\'s votes only on the second press', async () => {
     const clear = setBindingMock('ClearTrackerPokerVotes', async () => ({ parts: [{ step: 'poker', state: 'applied' }] }));
     const { getByTestId } = render(TicketPoker, {
-      props: { attachment: attachment([]), ctx: CTX, poker: { view: view(false, []), error: null }, onSetEstimate: null },
+      props: { attachment: attachment([]), ctx: CTX, poker: { view: view(false, []), error: null }, onSetEstimate: null, hours: false },
     });
     await fireEvent.click(getByTestId('ticket-poker-clear'));
     expect(clear).not.toHaveBeenCalled();
@@ -135,18 +135,20 @@ describe('the poker section', () => {
   it('offers the estimate from each value voted once revealed, most votes first, or says where to set it', async () => {
     const set = vi.fn();
     const poker = { view: view(true, [['User 1', 3], ['User 2', 5], ['User 3', 5]]), error: null };
-    const { getAllByTestId, rerender, getByTestId } = render(TicketPoker, { props: { attachment: attachment([]), ctx: CTX, poker, onSetEstimate: set } });
+    const { getAllByTestId, rerender, getByTestId } = render(TicketPoker, { props: { attachment: attachment([]), ctx: CTX, poker, onSetEstimate: set, hours: false } });
     const offers = getAllByTestId('ticket-poker-set-estimate');
     expect(offers.map((o) => o.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['Set estimate to 5 (2 votes)', 'Set estimate to 3 (1 vote)']);
     await fireEvent.click(offers[0]);
     expect(set).toHaveBeenCalledWith(5);
-    await rerender({ attachment: attachment([]), ctx: CTX, poker, onSetEstimate: null });
+    await rerender({ attachment: attachment([]), ctx: CTX, poker, onSetEstimate: set, hours: true });
+    expect(getAllByTestId('ticket-poker-set-estimate')[0].textContent?.replace(/\s+/g, ' ').trim()).toBe('Set estimate to 5 hours (2 votes)');
+    await rerender({ attachment: attachment([]), ctx: CTX, poker, onSetEstimate: null, hours: false });
     expect(getByTestId('ticket-poker-no-row').textContent).toBe('Open the ticket\'s board in Issues to set its estimate.');
   });
 
   it('refuses a typed vote outside 0 to 1000 and sends one inside', async () => {
     const vote = setBindingMock('VoteTrackerPoker', async () => ({ parts: [{ step: 'poker', state: 'applied' }] }));
-    const { getByTestId } = render(TicketPoker, { props: { attachment: attachment([]), ctx: CTX, poker: { view: view(false, []), error: null }, onSetEstimate: null } });
+    const { getByTestId } = render(TicketPoker, { props: { attachment: attachment([]), ctx: CTX, poker: { view: view(false, []), error: null }, onSetEstimate: null, hours: false } });
     const typed = getByTestId('ticket-poker-typed') as HTMLInputElement;
     await fireEvent.input(typed, { target: { value: '1001' } });
     expect(getByTestId('ticket-poker-typed-invalid').textContent).toBe('A vote is a number from 0 to 1000.');

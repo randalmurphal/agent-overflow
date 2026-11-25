@@ -103,7 +103,7 @@ export function commentWindow(
   held: readonly CommentView[],
   shown: number,
   order: CommentOrder,
-  drafted: ReadonlySet<string> = new Set(),
+  drafted: ReadonlySet<string>,
 ): { readonly comments: readonly CommentView[]; readonly hidden: number } {
   let count = Math.max(0, shown);
   if (drafted.size > 0) {
