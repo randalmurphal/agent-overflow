@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ROUTE_BY_ID_FAMILY, familyBackend } from './methodFamilies';
 import { METHOD_ROUTES } from './methodRoutes';
+import generatedBindings from '../../../bindings/agent-overflow/app.ts?raw';
 import {
   __resetEntityIndexForTest,
   noteFamilyRowsFromCall,
@@ -41,6 +42,22 @@ describe('the id-family route table', () => {
     for (const id of Object.keys(ROUTE_BY_ID_FAMILY).map(Number)) {
       expect(METHOD_ROUTES[id], `id ${id} is not a bound method parked on home`).toBe('home');
     }
+  });
+
+  it('pins every tracker method that names a connection or a subscription', () => {
+    // A connection, and a subscription its computer minted, mean one
+    // computer; unpinned, the call goes home and finds neither there.
+    const bound = /^export function (\w+)\((connectionID|subscriptionID): string[^\n]*\n(?:[^\n]*\n)*?\s*return \$Call\.ByID\((\d+)/gm;
+    const missing: string[] = [];
+    let seen = 0;
+    for (const [, name, arg, id] of generatedBindings.matchAll(bound)) {
+      if (!name.includes('Tracker')) continue;
+      seen++;
+      const want = arg === 'connectionID' ? 'trackerConnection' : 'subscription';
+      if (ROUTE_BY_ID_FAMILY[Number(id)] !== want) missing.push(`${name} (${id}) as ${want}`);
+    }
+    expect(seen).toBeGreaterThan(40);
+    expect(missing).toEqual([]);
   });
 });
 

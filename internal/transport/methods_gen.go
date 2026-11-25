@@ -127,6 +127,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ClearBrowserSiteData", ID: 544013229, Scope: "terminal:operate", Route: "home"},                                                  // main.App.ClearBrowserSiteData
 	{Name: "ClearPushSenderCredential", ID: 1055713894, Scope: "access:admin", Route: "home", StepUp: true},                                  // main.App.ClearPushSenderCredential
 	{Name: "ClearThreadTicket", ID: 347935562, Scope: "threads:operate", Route: "thread"},                                                    // main.App.ClearThreadTicket
+	{Name: "ClearTrackerPokerVotes", ID: 3142429700, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                       // main.App.ClearTrackerPokerVotes
 	{Name: "CloseComputerPairing", ID: 2321581502, Scope: "access:admin", Route: "home"},                                                     // main.App.CloseComputerPairing
 	{Name: "CloseTerminal", ID: 2702963191, Scope: "terminal:operate", Route: "home"},                                                        // main.App.CloseTerminal
 	{Name: "CloseThreadTerminals", ID: 1705768020, Scope: "terminal:operate", Route: "thread"},                                               // main.App.CloseThreadTerminals
@@ -183,6 +184,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin", Route: "home", Remote: true},                                  // main.App.FinishPasskeyRegistration
 	{Name: "FinishPasskeyStepUp", ID: 1569276637, Scope: "session", Route: "home"},                                                           // main.App.FinishPasskeyStepUp
 	{Name: "FinishProviderAccountReset", ID: 3520335973, Scope: "access:admin", Route: "home", Budget: 1 * time.Minute},                      // main.App.FinishProviderAccountReset
+	{Name: "FollowTrackerPoker", ID: 2943151489, Scope: "tracker:read", Route: "home"},                                                       // main.App.FollowTrackerPoker
 	{Name: "ForgetAccessDevice", ID: 516065248, Scope: "access:admin", Route: "home"},                                                        // main.App.ForgetAccessDevice
 	{Name: "ForgetTailnetNode", ID: 767560289, Scope: "host", Route: "home"},                                                                 // main.App.ForgetTailnetNode
 	{Name: "ForkSideChat", ID: 2246569884, Scope: "threads:operate", Route: "thread", Budget: 2 * time.Minute},                               // main.App.ForkSideChat
@@ -476,6 +478,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ResyncLiveCode", ID: 1113976056, Scope: "files:read", Route: "thread"},                                                           // main.App.ResyncLiveCode
 	{Name: "RetryThreadTransfer", ID: 650634694, Scope: "threads:operate", Route: "selected"},                                                // main.App.RetryThreadTransfer
 	{Name: "RetryThreadWorktreeSetup", ID: 1657104469, Scope: "terminal:operate", Route: "thread"},                                           // main.App.RetryThreadWorktreeSetup
+	{Name: "RevealTrackerPoker", ID: 3151648721, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                           // main.App.RevealTrackerPoker
 	{Name: "RevertConversationAndResendMessage", ID: 2059566413, Scope: "threads:operate", Route: "thread"},                                  // main.App.RevertConversationAndResendMessage
 	{Name: "RevokeAccessDevice", ID: 2945903583, Scope: "access:admin", Route: "home"},                                                       // main.App.RevokeAccessDevice
 	{Name: "RevokeAccessSession", ID: 2284519219, Scope: "access:admin", Route: "home"},                                                      // main.App.RevokeAccessSession
@@ -580,6 +583,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ThreadsForTicket", ID: 1230945765, Scope: "threads:read", Route: "selected"},                                                     // main.App.ThreadsForTicket
 	{Name: "TrackerAssignableUsers", ID: 3346989894, Scope: "tracker:read", Route: "home"},                                                   // main.App.TrackerAssignableUsers
 	{Name: "TrackerBoard", ID: 3524633257, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerBoard
+	{Name: "TrackerBoardChoices", ID: 1666670763, Scope: "tracker:read", Route: "all"},                                                       // main.App.TrackerBoardChoices
 	{Name: "TrackerBoardPatch", ID: 2847247437, Scope: "tracker:read", Route: "home"},                                                        // main.App.TrackerBoardPatch
 	{Name: "TrackerBoards", ID: 2450480430, Scope: "tracker:read", Route: "home"},                                                            // main.App.TrackerBoards
 	{Name: "TrackerChoices", ID: 1109598697, Scope: "tracker:read", Route: "home"},                                                           // main.App.TrackerChoices
@@ -590,6 +594,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "TrackerLinkTypes", ID: 2754714292, Scope: "tracker:read", Route: "home"},                                                         // main.App.TrackerLinkTypes
 	{Name: "TrackerLookup", ID: 2194444141, Scope: "tracker:read", Route: "home"},                                                            // main.App.TrackerLookup
 	{Name: "TrackerMoves", ID: 3632796459, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerMoves
+	{Name: "TrackerPoker", ID: 3990595752, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerPoker
+	{Name: "TrackerPokerSupport", ID: 4253452655, Scope: "tracker:read", Route: "home"},                                                      // main.App.TrackerPokerSupport
 	{Name: "TrackerProjects", ID: 2816087609, Scope: "tracker:read", Route: "home"},                                                          // main.App.TrackerProjects
 	{Name: "TrackerSearch", ID: 1584024747, Scope: "tracker:read", Route: "home"},                                                            // main.App.TrackerSearch
 	{Name: "TrackerSectionRows", ID: 4150293291, Scope: "tracker:read", Route: "home"},                                                       // main.App.TrackerSectionRows
@@ -627,6 +633,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "VerifyEditDiffs", ID: 3907724148, Scope: "files:read", Route: "thread"},                                                          // main.App.VerifyEditDiffs
 	{Name: "VerifyTrackerConnection", ID: 1424176184, Scope: "tracker:operate", Route: "home"},                                               // main.App.VerifyTrackerConnection
 	{Name: "Version", ID: 2431199839, Scope: "threads:read", Route: "home"},                                                                  // main.App.Version
+	{Name: "VoteTrackerPoker", ID: 141171752, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                              // main.App.VoteTrackerPoker
 	{Name: "WakeThreadWakeNow", ID: 777755931, Scope: "threads:operate", Route: "thread"},                                                    // main.App.WakeThreadWakeNow
 	{Name: "WatchBackgroundTaskOutput", ID: 2263729048, Scope: "threads:read", Route: "thread", CallerBound: true},                           // main.App.WatchBackgroundTaskOutput
 	{Name: "WorkflowAnswerQuestion", ID: 4150249282, Scope: "threads:autonomy", Route: "home"},                                               // main.App.WorkflowAnswerQuestion

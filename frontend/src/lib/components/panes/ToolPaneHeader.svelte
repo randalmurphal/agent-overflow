@@ -7,7 +7,9 @@
   //
   // Back has one meaning at a time. With a detail step open the tool passes
   // `onBack` and the control steps back to its list; otherwise the compact
-  // layout's control returns to the thread list, as the chat header's does.
+  // layout's control takes the phone's one step back (`utils/stepBack.ts`):
+  // what is open on the page (a find bar, a menu) closes first, then the
+  // tool returns to the thread list.
   import type { Snippet } from 'svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
@@ -17,7 +19,8 @@
   import PaneCloseButton from './PaneCloseButton.svelte';
   import PanePromoteButton from './PanePromoteButton.svelte';
   import { togglePanePromotion } from '../../stores/panes.svelte';
-  import { isCompactLayout, showCompactList } from '../../stores/layoutMode.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { stepBack } from '../../utils/stepBack';
   import type { ToolPaneKind } from '../../stores/paneLayout.svelte';
   import { toolPaneMeta } from './toolPaneMeta';
 
@@ -56,7 +59,7 @@
       <Icon icon={ChevronLeft} size={14} strokeWidth={2} />
     </PaneHeaderIconButton>
   {:else if compact}
-    <PaneHeaderIconButton label="Back to threads" testId="compact-back" onclick={showCompactList}>
+    <PaneHeaderIconButton label="Back to threads" testId="compact-back" onclick={() => { stepBack(); }}>
       <Icon icon={ArrowLeft} size={14} strokeWidth={2} />
     </PaneHeaderIconButton>
   {/if}

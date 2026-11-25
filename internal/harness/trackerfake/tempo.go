@@ -51,7 +51,7 @@ func (tempoService) route(e *Engine, x *exchange) match {
 		return match{unhandled: why}
 	}
 	c := &tempoCall{e: e, s: s, t: s.Tempo, x: x, params: params, query: q}
-	return match{name: r.name(), reads: r.reads, run: func() answer { return r.handle(c) }}
+	return match{name: r.name(), reads: r.readsFor(x), run: func() answer { return r.handle(c) }}
 }
 
 // rateLimited is Tempo's 429, which documents no headers and no body.

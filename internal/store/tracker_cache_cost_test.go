@@ -187,7 +187,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 			return err
 		},
 		func() error {
-			_, _, err := s.ReadMirrorBoardView(root, "10", []MirrorSection{{Kind: MirrorSectionBacklog}})
+			_, _, err := s.ReadMirrorBoardView(root, "10", theseSections([]MirrorSection{{Kind: MirrorSectionBacklog}}))
 			return err
 		},
 	}

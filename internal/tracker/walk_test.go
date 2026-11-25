@@ -73,8 +73,8 @@ type probed struct {
 func (f probed) see(ctx context.Context) { *f.walked = f.p.inWalk(ctx) }
 
 // TestOneCredentialWalksEveryRead calls every method of a OneCredential
-// provider and of its time tracker: each read runs inside a walk, each
-// write outside one.
+// provider, of its time tracker and of its poker: each read runs inside a
+// walk, each write outside one.
 func TestOneCredentialWalksEveryRead(t *testing.T) {
 	pr := newProbe(t)
 	var walked bool
@@ -101,6 +101,7 @@ func TestOneCredentialWalksEveryRead(t *testing.T) {
 	}
 	check(reflect.ValueOf(wrapped), reflect.TypeFor[Provider]())
 	check(reflect.ValueOf(wrapped.Time()), reflect.TypeFor[TimeTracker]())
+	check(reflect.ValueOf(wrapped.Poker()), reflect.TypeFor[Poker]())
 	if pr.inWalk(t.Context()) {
 		t.Error("the probe finds a walk outside one")
 	}
@@ -264,3 +265,16 @@ func (f *probedTime) DeleteWorklog(ctx context.Context, _ WorklogDelete) Result 
 	f.see(ctx)
 	return Result{}
 }
+
+func (f *probedProvider) Poker() Poker { return &probedPoker{f.probed} }
+
+type probedPoker struct{ probed }
+
+func (f *probedPoker) Support(ctx context.Context) (bool, error) { f.see(ctx); return false, nil }
+func (f *probedPoker) Read(ctx context.Context, _ IssueID) (PokerRound, error) {
+	f.see(ctx)
+	return PokerRound{}, nil
+}
+func (f *probedPoker) Vote(ctx context.Context, _ PokerVoteInput) Result { f.see(ctx); return Result{} }
+func (f *probedPoker) Reveal(ctx context.Context, _ IssueID) Result      { f.see(ctx); return Result{} }
+func (f *probedPoker) Clear(ctx context.Context, _ IssueID) Result       { f.see(ctx); return Result{} }

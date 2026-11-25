@@ -38,10 +38,11 @@ func pollEvery(kind string) time.Duration {
 }
 
 // Cadence is the service's sync intervals. A zero Delta or Ticket is the
-// poll interval of the connection's kind (pollEvery); any other zero field
-// is the constant of the same name. Tests shorten them.
+// poll interval of the connection's kind (pollEvery), and a zero Poker is
+// PokerEvery (poker.go); any other zero field is the constant of the same
+// name. Tests shorten them.
 type Cadence struct {
-	Delta, Reconcile, Structure, Ticket, Linked, RetryBase time.Duration
+	Delta, Reconcile, Structure, Ticket, Linked, RetryBase, Poker time.Duration
 }
 
 // withDefaults is c with each zero field that has one constant set to it.
@@ -71,4 +72,12 @@ func (c Cadence) ticket(kind string) time.Duration {
 		return c.Ticket
 	}
 	return pollEvery(kind)
+}
+
+// poker is a followed ticket's planning poker interval.
+func (c Cadence) poker() time.Duration {
+	if c.Poker > 0 {
+		return c.Poker
+	}
+	return PokerEvery
 }

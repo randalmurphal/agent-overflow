@@ -14,7 +14,7 @@
   import PipelineView from './PipelineView.svelte';
   import PipelinesFilterChips from './PipelinesFilterChips.svelte';
   import PipelinesList from './PipelinesList.svelte';
-  import PullsErrorNotice from './PullsErrorNotice.svelte';
+  import ErrorNotice from '../shared/ErrorNotice.svelte';
   import PullsList from './PullsList.svelte';
   import PullsListResizer from './PullsListResizer.svelte';
   import PullsToolbar from './PullsToolbar.svelte';
@@ -310,7 +310,7 @@
     </div>
   </ToolPaneHeader>
   {#if refreshFailure && refreshFailure !== dismissedRefresh}
-    <PullsErrorNotice
+    <ErrorNotice
       message="Could not refresh the merge requests: {refreshFailure.report.reason}"
       captured={refreshFailure}
       onDismiss={() => { dismissedRefresh = refreshFailure; }}

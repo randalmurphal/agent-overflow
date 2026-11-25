@@ -2,6 +2,7 @@ package jira
 
 import (
 	"bytes"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/tracker/adf"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // issueCases are the conformance cases of the platform API: users,
@@ -67,6 +69,16 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 	"User": func(t *testing.T, f *fakeEnv) {
 		if u := got(f.c.User(f.ctx, "acc-user2")).must(t); u.DisplayName != "User 2" {
 			t.Fatalf("user is %+v", u)
+		}
+	},
+	"PokerVoter": func(t *testing.T, f *fakeEnv) {
+		if u := got(f.c.PokerVoter(f.ctx, "acc-user2")).must(t); u.DisplayName != "User 2" {
+			t.Fatalf("voter is %+v", u)
+		}
+		for range 2 {
+			if _, err := f.c.PokerVoter(f.ctx, "acc-gone"); !errors.Is(err, ErrUserWithheld) || !errors.Is(err, trackerapi.ErrNotFound) {
+				t.Fatalf("a voter the site lacks: %v", err)
+			}
 		}
 	},
 	"SearchUsers": func(t *testing.T, f *fakeEnv) {

@@ -170,6 +170,25 @@ func (c *Core[R]) wakeUp() {
 	}
 }
 
+// AwaitShown is a pump goroutine's wait before its first poll: a pump
+// launched with every handle hidden makes no call until a handle shows it.
+// It returns at once while a handle shows the pump; otherwise when one
+// does, when a request arrives (req, which the goroutine serves as its
+// first poll), or when the core stops (stopped).
+func (c *Core[R]) AwaitShown() (req *Request[R], stopped bool) {
+	c.mustBeMade()
+	for c.Paused() {
+		select {
+		case <-c.done:
+			return nil, true
+		case req := <-c.requests:
+			return req, false
+		case <-c.wake:
+		}
+	}
+	return nil, false
+}
+
 // ErrNotTaken marks a request whose caller gave up before the goroutine
 // took it: the goroutine never ran it.
 var ErrNotTaken = errors.New("pump: the request was not taken")
@@ -228,6 +247,11 @@ type noCopy struct{}
 
 func (*noCopy) Lock()   {}
 func (*noCopy) Unlock() {}
+
+// VisibleLocked reports whether the handle's caller shows the pump: its
+// last vote, visible from its take until it votes otherwise. A released
+// handle shows nothing.
+func (h *Handle[R]) VisibleLocked() bool { return h.visible && !h.released }
 
 // VoteLocked records whether the handle's caller shows the pump. The core
 // pauses while every handle is hidden, and a vote that resumes it wakes

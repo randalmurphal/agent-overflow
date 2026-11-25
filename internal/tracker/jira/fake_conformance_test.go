@@ -54,6 +54,7 @@ func conformanceSite(start time.Time) trackerfake.JiraSite {
 	day := start.Add(-48 * time.Hour)
 	return trackerfake.JiraSite{
 		Site: fakeSite, Account: "acc-user1", Token: "conformance-token-1",
+		Poker: &trackerfake.JiraPoker{},
 		Users: []trackerfake.JiraUser{
 			{AccountID: "acc-user1", DisplayName: "User 1", Email: "user1@example.com"},
 			{AccountID: "acc-user2", DisplayName: "User 2", Email: "user2@example.com"},
@@ -163,6 +164,7 @@ func (f *fakeEnv) issueOf(t *testing.T, key string) trackerfake.JiraIssue {
 var conformanceCases = func() map[string]func(t *testing.T, f *fakeEnv) {
 	out := maps.Clone(issueCases)
 	maps.Copy(out, boardCases)
+	maps.Copy(out, pokerCases)
 	return out
 }()
 

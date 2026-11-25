@@ -31,6 +31,7 @@ import { attachedBackends, onBackendsChanged, withBackendTarget } from '../trans
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { TransportError } from '../transport/wsClient';
 import { onBackendStatusChange } from './transportStatus.svelte';
+import { trackerBoardListsChanged } from './trackerBoardEvents';
 
 class HeldBoards {
   list = $state<TrackerBoardChoice[]>([]);
@@ -78,9 +79,12 @@ class HeldBoards {
     const generation = ++this.generation;
     try {
       const list = await withBackendTarget(this.backend, () => SetProjectTrackerBoards(this.projectId, held, boards));
+      trackerBoardListsChanged(this.backend);
       if (this.dropped || generation !== this.generation) return;
       this.settle(list);
     } catch (err) {
+      // It may have stored the list before it failed.
+      trackerBoardListsChanged(this.backend);
       if (!this.dropped && generation === this.generation) {
         this.current = false;
         void this.read();

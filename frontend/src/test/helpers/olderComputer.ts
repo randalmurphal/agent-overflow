@@ -25,7 +25,7 @@ export const METHODS_AFTER_V0_0_19 = [
   'TrackerConnections', 'AddTrackerConnection', 'RenameTrackerConnection', 'SetTrackerConnectionEnabled',
   'SetTrackerConnectionTokenExpiry', 'RemoveTrackerConnection', 'VerifyTrackerConnection',
   'EditTrackerKeyFile', 'OpenTrackerTokenPage', 'TrackerProjects', 'TrackerBoards',
-  'ProjectTrackerBoards', 'SetProjectTrackerBoards',
+  'ProjectTrackerBoards', 'SetProjectTrackerBoards', 'TrackerBoardChoices',
 ] as const;
 
 /**

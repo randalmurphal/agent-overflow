@@ -1,6 +1,7 @@
 <script lang="ts">
   // The sidebar's tools row (docs/specs/pull-requests.md, "Tools row"): one
-  // control per tool pane kind, in the fixed order of `TOOL_PANES`. The
+  // control per tool pane kind, in the fixed order of `TOOL_PANES`, for the
+  // tools this window may use (`isToolAvailable`). The
   // active tool (the focused tool pane, else the tool used last) shows its
   // icon and label and takes the row's spare width; the others show their
   // icon, with the name as hover text.
@@ -23,7 +24,7 @@
   import { buttonClasses } from '../primitives/buttonClasses';
   import { TOOL_PANES } from '../panes/toolPaneMeta';
   import { getWorkflowAttentionCount } from '../../stores/workflowRuns.svelte';
-  import { activeToolKind, isToolOpen, openTool } from '../../stores/toolPanes.svelte';
+  import { activeToolKind, isToolAvailable, isToolOpen, openTool } from '../../stores/toolPanes.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import type { ToolPaneKind } from '../../stores/paneLayout.svelte';
   import { activationIntent, type ActivationIntent } from '../../utils/modClick';
@@ -38,6 +39,7 @@
   let active = $derived(activeToolKind());
   let compact = $derived(isCompactLayout());
   let workflowsCount = $derived(getWorkflowAttentionCount());
+  let tools = $derived(TOOL_PANES.filter((tool) => isToolAvailable(tool.kind)));
 
   function hoverText(kind: ToolPaneKind, title: string): string {
     if (kind !== 'workflows' || workflowsCount <= 0) return title;
@@ -67,7 +69,7 @@
 </script>
 
 <div class="flex shrink-0 items-center gap-1 border-t border-border-subtle p-2" data-testid="sidebar-tools-row">
-  {#each TOOL_PANES as tool (tool.kind)}
+  {#each tools as tool (tool.kind)}
     {@const isActive = tool.kind === active}
     {@const pressed = isToolOpen(tool.kind)}
     {@const title = hoverText(tool.kind, tool.title)}

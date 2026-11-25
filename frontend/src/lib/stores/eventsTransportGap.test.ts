@@ -9,6 +9,7 @@ import type { TransportHello } from '../transport/wsClient';
 import { applyShellCommandEvent, getShellRun, resetShellRunsForTest } from './shellCommands.svelte';
 import { prependThread, removeThread } from './threads.svelte';
 import { setPullsReceiver } from './pullsStore.svelte';
+import { attachTrackerBoard } from './trackerBoard.svelte';
 import { resetPanesForTest } from './panes.svelte';
 import {
   registerComposerDraft,
@@ -637,3 +638,36 @@ describe('transport gap — the Pull requests channels', () => {
   });
 });
 
+describe('transport gap — the tracker board channel', () => {
+  it("reads the computer's held board whole and holds its recovery until the read settles", async () => {
+    const laptop = stageBackend();
+    const phases: string[] = [];
+    const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
+    const view = {
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'none' },
+      columns: [], sprints: [], all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {}, screen: [], sections: [],
+    };
+    setBindingMock('SubscribeTrackerBoard', async () => ({ id: 'sub-1', seq: 4, loaded: true, view, poll_every: 10_000 }));
+    setBindingMock('ReleaseTrackerSubscription', async () => undefined);
+    let answer!: (value: unknown) => void;
+    const read = setBindingMock('TrackerBoard', () => new Promise((resolve) => {
+      answer = resolve;
+    }));
+    const board = attachTrackerBoard({ backend: 'laptop', projectId: 'p1', connection: 'c1', board: '1' }, true);
+    try {
+      await vi.waitFor(() => expect(board.current).not.toBeNull());
+      laptop.replay('start');
+      applyTransportGap({ channel: 'tracker:board_updated', seq: 3 }, { backendId: backendById('laptop')!.backendId });
+      laptop.replay('complete');
+      expect(read).toHaveBeenCalledWith('sub-1', []);
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      expect(phases).toEqual(['laptop:start']);
+      answer(view);
+      await vi.waitFor(() => expect(phases).toEqual(['laptop:start', 'laptop:complete']));
+    } finally {
+      board.release();
+      off();
+      resetStagedBackends();
+    }
+  });
+});

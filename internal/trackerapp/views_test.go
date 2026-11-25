@@ -90,6 +90,60 @@ func TestBoardView(t *testing.T) {
 	}
 }
 
+// No sections asks for the Board screen's, chosen from the structure the
+// view reads: a sprint board's active sprints, a board of no sprints its
+// columns, with pages of the first maxViewSections of them and the rest
+// listed for the client to read by page.
+func TestBoardScreen(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.seedBoard(t)
+	v := must[BoardView](t)(m.svc.Board(m.scope(), nil))
+	if !slices.Equal(v.Screen, []Section{{Kind: SectionSprint, Sprint: "1"}}) || len(v.Sections) != 1 ||
+		v.Sections[0].Section != v.Screen[0] || !slices.Equal(rowIssues(v.Sections[0].Rows), []string{"10001"}) {
+		t.Fatalf("sprint board: screen %+v, sections %+v", v.Screen, v.Sections)
+	}
+	// Asked sections are read as asked, and the screen is listed beside them.
+	v = must[BoardView](t)(m.svc.Board(m.scope(), []Section{{Kind: SectionBacklog}}))
+	if len(v.Sections) != 1 || v.Sections[0].Section.Kind != SectionBacklog || len(v.Screen) != 1 {
+		t.Fatalf("asked: screen %+v, sections %+v", v.Screen, v.Sections)
+	}
+
+	const columns = maxViewSections + 5
+	m.p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+		st := webStructure(b)
+		st.Board.Sprints, st.Sprints = false, nil
+		for i := len(st.Columns); i < columns; i++ {
+			st.Columns = append(st.Columns, tracker.Column{Name: fmt.Sprintf("Column %d", i)})
+		}
+		return st, nil
+	}
+	if out := must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true}, Background)); out.Failure != nil || out.Ended {
+		t.Fatalf("tick %+v", out)
+	}
+	v = must[BoardView](t)(m.svc.Board(m.scope(), nil))
+	if len(v.Screen) != columns || len(v.Sections) != maxViewSections {
+		t.Fatalf("kanban board: %d screen sections, %d pages", len(v.Screen), len(v.Sections))
+	}
+	for i, sec := range v.Screen {
+		if sec != (Section{Kind: SectionColumn, Column: i}) || (i < maxViewSections && v.Sections[i].Section != sec) {
+			t.Fatalf("screen section %d: %+v, page %+v", i, sec, v.Sections[min(i, maxViewSections-1)].Section)
+		}
+	}
+	if got := rowIssues(v.Sections[0].Rows); !slices.Equal(got, []string{"10001", "10002", "10004"}) {
+		t.Fatalf("first column %v", got)
+	}
+	// A patch reads every section the screen holds, up to every section a
+	// board can have.
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), v.Screen, ids("10001"), TotalsAt{}))
+	if len(patch.Sections) != columns || !slices.Equal(rowIssues(patch.Sections[0].Rows), []string{"10001"}) {
+		t.Fatalf("patch of the screen: %+v", patch.Sections)
+	}
+	if _, err := m.svc.BoardPatch(m.scope(), slices.Repeat([]Section{{Kind: SectionBacklog}}, store.MirrorMaxViewSections+1), nil, TotalsAt{}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("a patch past every section a board can have: %v", err)
+	}
+}
+
 // A board of no one project (the tracker names none) syncs and shows
 // with no project.
 func TestBoardOfNoProject(t *testing.T) {

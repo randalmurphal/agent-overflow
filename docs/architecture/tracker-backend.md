@@ -142,6 +142,9 @@ this is its shape.
   edit and delete, or none for a tracker with no time tracking. A Jira
   connection's is Tempo while its Tempo connection is on, and Jira's own
   worklogs otherwise, a Tempo connection turned off included.
+- Planning poker: whether the site has the add-on, an issue's votes, and
+  vote, reveal and clear (`tracker.Poker`), or none for a tracker that
+  cannot have it (Linear). See [Planning poker](#planning-poker).
 
 **A sync cursor is the provider's own bytes.** `trackerapp` stores what a
 page returns and hands it back; it never builds or adjusts one. A page's
@@ -1163,7 +1166,8 @@ added with the agent tools.
 
 The connection methods (`internal/app/app_tracker.go`), the board
 methods (`app_tracker_boards.go`), the ticket and form-read methods
-(`app_tracker_ticket.go`) and the writes (`app_tracker_writes.go`) are
+(`app_tracker_ticket.go`), the writes (`app_tracker_writes.go`) and the
+planning poker methods (`app_tracker_poker.go`) are
 bound: each takes a leading context and carries a scope, `tracker:read`
 at the observe tier or `tracker:operate` at the execute tier, and a
 route. Their events are `tracker:connections_updated`, sent when a
@@ -1187,8 +1191,9 @@ selected computer.
 | `TrackerProjects(connectionID)` | `Projects` | read | connection |
 | `TrackerBoards(connectionID, project)` | `Boards` | read | connection |
 | `ProjectTrackerBoards(projectID)` | `ProjectBoards` | read | project |
+| `TrackerBoardChoices()` | `BoardChoices` | read | all |
 | `SetProjectTrackerBoards(projectID, held, boards)` | `SetProjectBoards` | operate | project |
-| `SubscribeTrackerBoard(projectID, connectionID, boardID, sections)` | `SubscribeBoard` | read | project, caller-bound |
+| `SubscribeTrackerBoard(projectID, connectionID, boardID, sections, visible)` | `SubscribeBoard` | read | project, caller-bound |
 | `TrackerBoard(subscriptionID, sections)` | `Board` | read | home |
 | `TrackerSectionRows(subscriptionID, section, after)` | `SectionRows` | read | home |
 | `TrackerBoardPatch(subscriptionID, sections, issues, held)` | `BoardPatch` | read | home |
@@ -1201,6 +1206,10 @@ selected computer.
 | `MintTrackerAttachmentDownloadTicket(subscriptionID, attachmentID)` | `TicketAttachment`, then the download route's `Download` | read | home |
 | `TrackerIssueTypes`, `TrackerCreateFields`, `TrackerMoves`, `TrackerAssignableUsers`, `TrackerChoices`, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`, `TrackerComments` | the form reads of the same names | read | connection |
 | `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog` | operate | connection, budget 3m |
+| `TrackerPokerSupport(connectionID)` | `PokerSupport` | read | connection |
+| `FollowTrackerPoker(subscriptionID, follow)` | `FollowPoker` | read | home |
+| `TrackerPoker(subscriptionID)` | `Poker` | read | home |
+| `VoteTrackerPoker(connectionID, in)`, `RevealTrackerPoker(connectionID, issue)`, `ClearTrackerPokerVotes(connectionID, issue)` | `PokerVote`, `RevealPoker`, `ClearPoker` | operate | connection, budget 3m |
 
 - **The picker's lists and the form reads** (`TrackerProjects`,
   `TrackerBoards`, `TrackerMoves` and the rest) ask the tracker, each
@@ -1344,15 +1353,23 @@ selected computer.
 
 A board answer is bounded: the subscribe returns the board's structure,
 its sprints and the cards of the sections on screen, and a section's
-remaining cards are read by page.
+remaining cards are read by page. A board view asked for no sections
+answers the Board screen's (`BoardView.Screen`): the active sprints of a
+board that plans sprints, else every column, chosen in the same snapshot
+as the structure, with the first page of the first 20 and the rest left
+to the client to read by page.
 
 ### Subscriptions
 
-- `SubscribeBoard(projectID, scope, sections, tie)` answers from the mirror
-  alone, before any tracker call: a handle, a sequence number, the view of
-  the sections or "not loaded", and the poll interval. It is refused for a
-  board the project does not list, a connection turned off, removed or
-  Tempo, and past 64 board handles.
+- `SubscribeBoard(projectID, scope, sections, visible, tie)` answers from
+  the mirror alone, before any tracker call: a handle, a sequence number,
+  the view of the sections or "not loaded", and the poll interval. It is
+  refused for a board the project does not list, a connection turned off,
+  removed or Tempo, and past 64 board handles. The handle starts with
+  `visible` as its vote. A pump made with every handle hidden makes no
+  tracker call until a handle shows it or a person refreshes it
+  (`pump.Core.AwaitShown`). A ticket pump reads at once: its subscribe
+  carries no vote yet.
 - `SubscribeTicket(connection, issue, tie)` answers the same way with
   the ticket's view built from the record, or the view its subscribers
   were last told when its pump runs already; at most 64 ticket handles.
@@ -1372,7 +1389,9 @@ remaining cards are read by page.
 - `TicketDetail(handle)` is the ticket as its subscribers were last told:
   its failure, and its view or not loaded, from memory.
 - `BoardPatch(scope, sections, issues, held)` is the patch read below;
-  `held` names the totals the client holds.
+  `held` names the totals the client holds. It takes up to every section
+  a board can have (`store.MirrorMaxViewSections`, 301), since it reads
+  only the named issues' rows of each.
 - `StartLinkedSync` arms the linked-issues loop. `New` starts nothing.
   The app's boot step `tracker.start` (`startTrackers`, with the
   unattended work) arms it, and once the first client's reads settle runs
@@ -1476,6 +1495,81 @@ moves that follow a workflow change no update time shows, matches against
 the whole tracker, and pages and files it does not store. Statuses and
 users an answer names without names are named from the mirror; a found
 card's parent is named by ID.
+
+### Planning poker
+
+Planning poker's votes belong to an add-on, Easy Agile TeamRhythm, held
+on the vendor's servers and reached through two undocumented Atlassian
+endpoints ([measurements](../references/tracker-api-measurements.md#planning-poker-add-on);
+the client's calls in [tracker clients](tracker-clients.md#planning-poker)).
+Nothing about them is in the mirror, and **no vote writes the issue's
+estimate**: a person sets the agreed estimate as any other edit
+(`SetTrackerEstimate`).
+
+- **Whether a site has it** is `TrackerPokerSupport(connectionID)`, which
+  a ticket asks when it opens so it can leave the control out. A Linear
+  or Tempo connection answers `available: false` with no request. A Jira
+  connection's client reads the cloud ID and the site's extension
+  listing once, and keeps the listing 30 minutes (`siteAge`), present or
+  absent, so a second ask costs nothing; it never invokes the add-on. It
+  is a read by connection, not a field of the ticket subscribe's answer,
+  because a subscribe answers from the mirror with no tracker call. A
+  listing that fails answers `available: false` with its failure, which
+  is poker's alone and settles nothing of the connection.
+- **The votes follow a ticket while its poker panel is open.**
+  `FollowTrackerPoker(subscriptionID, true)` makes that ticket handle a
+  follower. While at least one handle both follows and shows the ticket,
+  a poker run of the ticket's reads the votes at once and then every 5
+  seconds (`trackerapp.PokerEvery`, `Cadence.Poker`), one read for every
+  follower. The run is its own goroutine, so a slow add-on never holds
+  the ticket's own refresh; when no handle both follows and shows the
+  ticket, the run ends, its read in flight is cancelled, and nothing it
+  read after is applied. The ticket's pump and `Stop` wait for it. A read
+  whose view differs from the last
+  sends `tracker:issue_updated` with `poker: true`, and the client reads
+  `TrackerPoker(subscriptionID)` from memory; a read that changed nothing
+  sends nothing. A hidden ticket, an unfollowed one and a closed one make
+  no poker request; showing a followed ticket again reads at once. The
+  last follower's unfollow or release drops the votes held. A Linear
+  ticket's follow is refused (`tracker_unsupported`).
+- **What a read shows** (`trackerapp.PokerView`): whether the votes are
+  revealed, and each vote's voter, named from the tracker's users (one
+  user read for each voter the client has not kept in 30 minutes), and
+  whether it is the caller's own. A voter Jira does not show (a 404, or a
+  403 for a credential that may not see users) is shown by account ID,
+  the round stands, and the poker read keeps that answer 30 minutes as
+  it keeps a name (`jira.Client.PokerVoter`; every other user lookup asks
+  each time). Before the reveal only the caller's own vote has a value, whatever the add-on answered (the provider hides the
+  rest). A read that fails keeps the last votes, carries its failure, and
+  is retried on the round's retry schedule or when a rate limit lifts.
+  The failure is never the ticket's or the connection's; a change in the
+  shape of the undocumented calls reads "planning poker is unavailable on
+  this site right now", with the step and what was wrong, and that the
+  rest of the ticket is unaffected.
+- **The writes** (`VoteTrackerPoker`, `RevealTrackerPoker`,
+  `ClearTrackerPokerVotes`) go through `Service.write` and answer a
+  `WriteView` with one `poker` part, as every write does: refused with a
+  sentence (a site without the add-on, a vote outside 0 to 1000, the
+  add-on's or the gateway's 4xx), unknown with "look at the ticket's
+  poker votes before you try again" (a 5xx, or an answer that could not
+  be read), or applied. A `VoteTrackerPoker` request whose `vote` is
+  missing or null fails with `tracker_request_invalid` before anything is
+  sent; a vote of 0 is a vote. A write that may have happened makes the
+  issue's following pump read the votes at once, including after a read
+  that was in flight when the write landed.
+- **The context token** the add-on needs is per issue and lives about 15
+  minutes. The Jira client keeps it in memory only (at most 16 issues),
+  reuses it until 60 seconds before it expires, and drops it when the
+  gateway refuses it. It is never logged, stored, put in an error, or
+  sent to a client: an invoke answer that repeats it, however spelled, is
+  refused with none of its text (see [tracker clients](tracker-clients.md#planning-poker)).
+- **Cost.** A follower's ticket costs one invoke every 5 seconds while
+  its panel is shown: 720 an hour per open panel, on top of the ticket's
+  own reads. The first read of an issue, and one every 14 minutes after,
+  adds the issue read and the token request; the first read on a
+  connection adds the cloud ID and the listing, and the listing is read
+  again at most every 30 minutes. A write is one invoke, plus the
+  token's two requests when none is kept, plus the read it triggers.
 
 ### The patch read
 
@@ -1645,24 +1739,28 @@ guide and each read tool say so.
 
 Built: `internal/tracker` and the two providers, `internal/keyfile`, the
 tracker tables and their accessors, `trackerfake`, and `trackerapp` with
-its sync, pumps, reads and writes; the connection, board, ticket, write
-and form-read bound methods, the ticket file routes,
+its sync, pumps, reads and writes; the connection, board, ticket, write,
+form-read and planning poker bound methods, the ticket file routes,
 `tracker:board_updated` and `tracker:issue_updated`, the app's calls at
 start, the harness's fake trackers (`HarnessTrackerSeed`), and the Issues
 settings screen (Settings > Issues: Connections and Boards), with the
 `bindings.ts` wrappers of the connection methods, the two picker lists,
 `ProjectTrackerBoards` and `SetProjectTrackerBoards`, and their stores
 (`stores/trackerConnections.svelte.ts`,
-`stores/trackerProjectBoards.svelte.ts`). A failure of the linked-issues
+`stores/trackerProjectBoards.svelte.ts`), and the Issues pane's Board
+screen, with the `bindings.ts` wrappers of `TrackerBoardChoices` and the
+board subscription's methods and `tracker:board_updated`'s TypeScript
+type (`components/issues/AGENTS.md`). A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
 failure of the loop's sync shows on its connection's row as its problem.
 Not built, owed by the app layer:
 
-- The board and ticket screens: the `bindings.ts` wrappers of the board,
-  ticket, write and form-read methods and the two events' TypeScript
-  types ship with them, as the connection methods' wrappers ship with the
-  Issues settings screen.
+- The ticket screen: the `bindings.ts` wrappers of the ticket, write,
+  form-read and planning poker methods and `tracker:issue_updated`'s
+  TypeScript type ship with it, as the board methods' wrappers ship with
+  the Board screen. The ticket subscribe takes its visibility then, as the
+  board subscribe does.
 - The Time screen's bound methods: `Worklogs`, `RefreshWorklogs`,
   `EditWorklog` and `DeleteWorklog`. `EditSprint` is bound when a screen
   edits a sprint.

@@ -114,6 +114,8 @@ func sameWorld(t *testing.T, g, twin *rig) {
 // refusals is one refused request per route that may write, and per
 // mutation; TestEveryRefusalChangesNothing fails for one with no row.
 var refusals = map[string]call{
+	"POST gateway/api/graphql":                        jiraReq("POST", "/gateway/api/graphql", `{"operationName":"Invoke","bogus":1}`),
+	"POST rest/internal/2/forge/context/token":        jiraReq("POST", "/rest/internal/2/forge/context/token", `{"bogus":1}`),
 	"POST rest/api/3/issue":                           jiraReq("POST", "/rest/api/3/issue", `{"fields":{"project":{"key":"NOPE"},"issuetype":{"id":"10001"},"summary":"x"}}`),
 	"PUT rest/api/3/issue/{issue}":                    jiraReq("PUT", "/rest/api/3/issue/WEB-1", `{"fields":{"summary":"Changed","customfield_19999":1}}`),
 	"PUT rest/api/3/issue/{issue}/assignee":           jiraReq("PUT", "/rest/api/3/issue/WEB-1/assignee", `{"accountId":"acc-nobody"}`),
